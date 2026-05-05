@@ -317,11 +317,13 @@ def start_clustering_endpoint():
             "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
             "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
             "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
-            "openai_api_key_param": data.get('openai_api_key') or OPENAI_API_KEY,  # Use env var if empty string
-            # This line already falls back to the config value if the request doesn't contain it.
-            "gemini_api_key_param": data.get('gemini_api_key', GEMINI_API_KEY),
+            # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
+            # Any client-supplied *_api_key field is ignored to prevent token
+            # exfiltration via the API surface.
+            "openai_api_key_param": OPENAI_API_KEY,
+            "gemini_api_key_param": GEMINI_API_KEY,
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),
-            "mistral_api_key_param": data.get('mistral_api_key', MISTRAL_API_KEY),
+            "mistral_api_key_param": MISTRAL_API_KEY,
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),

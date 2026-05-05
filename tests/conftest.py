@@ -22,9 +22,9 @@ def _import_module(mod_name: str, relative_path: str):
 
     Args:
         mod_name: Dotted module name to register in sys.modules
-                  (e.g. 'tasks.mcp_server').
+                  (e.g. 'tasks.mcp_helper').
         relative_path: Path relative to the repo root
-                       (e.g. 'tasks/mcp_server.py').
+                       (e.g. 'tasks/mcp_helper.py').
     """
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -45,14 +45,12 @@ def _import_module(mod_name: str, relative_path: str):
 
 @pytest.fixture(scope='session')
 def mcp_server_mod():
-    """Load tasks.mcp_server directly (session-scoped)."""
-    return _import_module('tasks.mcp_server', 'tasks/mcp_server.py')
+    """Load tasks.mcp_helper directly (session-scoped).
 
-
-@pytest.fixture(scope='session')
-def ai_mcp_client_mod():
-    """Load ai_mcp_client directly (session-scoped)."""
-    return _import_module('ai_mcp_client', 'ai_mcp_client.py')
+    Fixture name kept as ``mcp_server_mod`` for historical reasons; the
+    underlying module is now ``tasks.mcp_helper``.
+    """
+    return _import_module('tasks.mcp_helper', 'tasks/mcp_helper.py')
 
 
 @pytest.fixture(scope='session')

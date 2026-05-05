@@ -1326,7 +1326,9 @@ function clearLyricsApiSlot(slot) {
     if (urlInput) urlInput.value = '';
 }
 
-document.getElementById('lyrics-api-1-analyze-btn').addEventListener('click', function() { analyzeLyricsApiSlot(1); });
-document.getElementById('lyrics-api-2-analyze-btn').addEventListener('click', function() { analyzeLyricsApiSlot(2); });
+var _lyricsBtn1 = document.getElementById('lyrics-api-1-analyze-btn');
+if (_lyricsBtn1) { _lyricsBtn1.addEventListener('click', function() { analyzeLyricsApiSlot(1); }); }
+var _lyricsBtn2 = document.getElementById('lyrics-api-2-analyze-btn');
+if (_lyricsBtn2) { _lyricsBtn2.addEventListener('click', function() { analyzeLyricsApiSlot(2); }); }
 
 loadSetupData();

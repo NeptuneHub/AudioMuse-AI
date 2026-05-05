@@ -29,7 +29,7 @@ The following table details the most important paths in the repository, their pu
 | app.py, app_*.py | The main entry point for the Flask web application. It handles the initialization of the Flask app, database connections, and the registration of API routes and blueprints. |
 | tasks/ | **The Core Logic Hub.** This is where the most intensive computations occur. Each API or async task then point to an specific implementation in this directory|
 | tasks/mediaserver.py | In this fail the generic method to interact with the mediaservers are specialized to call the specific one |
-| ai.py | This module centralizes all interactions with Large Language Models (LLMs). It contains the logic for communicating with services like self-hosted Ollama or the Google Gemini API for tasks such as AI-powered playlist naming and translating natural language requests into SQL queries. |
+| tasks/ai_api.py | Main AI dispatcher. Called from `app_chat.py` via `tasks.ai_api.call_with_tools()`. Provider backends are `tasks/ai_api_openai.py`, `tasks/ai_api_gemini.py`, `tasks/ai_api_mistral.py`, and `tasks/ai_api_ollama.py`. MCP tool schema lives in `tasks/mcp_tools.py`; execution happens in `tasks/mcp_tool_impl.py`. |
 | config.py | Contains the application's default, non-sensitive configuration parameters. These values serve as fallbacks and can be easily overridden by environment variables, providing a flexible and secure configuration system. |
 | Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` and `app_helepr.py` functionality |
 | static/ & templates/ | These directories contain all frontend assets. |
