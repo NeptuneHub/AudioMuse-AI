@@ -58,6 +58,11 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
     Returns ``(True, None)`` on success, or ``(False, error_message)`` if the
     provider is unknown or its required URL/key is missing/inconsistent. We
     always log_error on failure and never fall back to another provider.
+
+    SECURITY: ``ai_config`` may contain API keys. Error messages returned to
+    the caller include the offending URL/provider for diagnostics, but the
+    ``logger.error`` lines log ONLY a static identifier so CodeQL's
+    clear-text-logging taint analysis cannot flag a leak via this dict.
     """
     provider = (ai_config.get("provider") or "NONE").upper()
 
@@ -65,7 +70,7 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
         msg = (
             f"Unknown AI provider {provider!r}. Valid: {sorted(VALID_PROVIDERS)}"
         )
-        logger.error(msg)
+        logger.error("validate_ai_config: unknown provider")
         return False, msg
 
     if provider == "NONE":
@@ -75,18 +80,18 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
         url = (ai_config.get("ollama_url") or "").lower()
         if not url:
             msg = "Provider=OLLAMA but ollama_url is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: OLLAMA url empty")
             return False, msg
         if not ("/api/generate" in url or "/api/chat" in url):
             msg = (
                 f"Provider=OLLAMA but URL {ai_config.get('ollama_url')!r} does not look like an Ollama endpoint "
                 "(expected path /api/generate or /api/chat)"
             )
-            logger.error(msg)
+            logger.error("validate_ai_config: OLLAMA url path mismatch")
             return False, msg
         if not ai_config.get("ollama_model"):
             msg = "Provider=OLLAMA but ollama_model is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: OLLAMA model empty")
             return False, msg
 
     elif provider == "OPENAI":
@@ -95,44 +100,44 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
         key = ai_config.get("openai_key")
         if not url:
             msg = "Provider=OPENAI but openai_url is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: OPENAI url empty")
             return False, msg
         if "/api/generate" in url_l or "/api/chat" in url_l:
             msg = (
                 f"Provider=OPENAI but URL {url!r} looks like an Ollama endpoint. "
                 "OpenAI/OpenRouter URLs use /v1/chat/completions."
             )
-            logger.error(msg)
+            logger.error("validate_ai_config: OPENAI url looks like Ollama")
             return False, msg
         if not key or key == "no-key-needed":
             msg = "Provider=OPENAI but openai_key is missing"
-            logger.error(msg)
+            logger.error("validate_ai_config: OPENAI key missing")
             return False, msg
         if not ai_config.get("openai_model"):
             msg = "Provider=OPENAI but openai_model is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: OPENAI model empty")
             return False, msg
 
     elif provider == "GEMINI":
         key = ai_config.get("gemini_key")
         if not key or key == "YOUR-GEMINI-API-KEY-HERE":
             msg = "Provider=GEMINI but no API key configured"
-            logger.error(msg)
+            logger.error("validate_ai_config: GEMINI key missing")
             return False, msg
         if not ai_config.get("gemini_model"):
             msg = "Provider=GEMINI but gemini_model is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: GEMINI model empty")
             return False, msg
 
     elif provider == "MISTRAL":
         key = ai_config.get("mistral_key")
         if not key or key == "YOUR-MISTRAL-API-KEY-HERE":
             msg = "Provider=MISTRAL but no API key configured"
-            logger.error(msg)
+            logger.error("validate_ai_config: MISTRAL key missing")
             return False, msg
         if not ai_config.get("mistral_model"):
             msg = "Provider=MISTRAL but mistral_model is empty"
-            logger.error(msg)
+            logger.error("validate_ai_config: MISTRAL model empty")
             return False, msg
 
     return True, None

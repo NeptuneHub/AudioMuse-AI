@@ -121,7 +121,11 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return {"error": f"Unknown tool: {tool_name}"}
 
     except Exception as e:
-        logger.exception(f"Error executing MCP tool {tool_name}")
+        # SECURITY: do not interpolate user-controlled `tool_name` into the log
+        # message (CodeQL clear-text-logging). The exception traceback already
+        # captures the offending call site; the returned error string is for
+        # the API caller, not the log.
+        logger.exception("Error executing MCP tool")
         return {"error": f"Tool execution error: {str(e)}"}
 
 

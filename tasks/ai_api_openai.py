@@ -158,14 +158,20 @@ def generate_text(
                     extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
 
             if extracted_text:
-                logger.info("OpenAI/OpenRouter API returned: '%s'", extracted_text)
+                # SECURITY: log only length, not content (model output may
+                # echo back sensitive data from prompts/tool results).
+                logger.info(
+                    "OpenAI/OpenRouter API returned non-empty content (length=%d chars).",
+                    len(extracted_text),
+                )
                 return extracted_text
             logger.warning(
-                "OpenAI/OpenRouter returned empty content. Full raw response: %s",
-                full_raw_response_content,
+                "OpenAI/OpenRouter returned empty content (raw response length: %d chars).",
+                len(full_raw_response_content),
             )
             logger.debug(
-                "Raw SSE lines received (%d total, last 50): %s", len(raw_sse_lines), raw_sse_lines[-50:]
+                "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",
+                len(raw_sse_lines),
             )
             if attempt < max_retries:
                 sleep_time = base_delay * (2 ** attempt)

@@ -280,18 +280,26 @@ def chat_playlist_api():
     # exfiltration via the chat endpoint -- the user explicitly may select a
     # provider/model/url from the client, but the secret token must already be
     # saved on the server.
+    #
+    # Secrets are kept in a SEPARATE dict (`ai_secrets`) so they never coexist
+    # with loggable fields. This breaks CodeQL's clear-text-logging taint flow:
+    # nothing logged below ever indexes into a dict that holds keys.
     ai_config = {
         'provider': ai_provider,
         'ollama_url': data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
         'ollama_model': ai_model_from_request or config.OLLAMA_MODEL_NAME,
         'openai_url': data.get('openai_server_url', config.OPENAI_SERVER_URL),
         'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
+        'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
+        'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME,
+    }
+    ai_secrets = {
         'openai_key': config.OPENAI_API_KEY,
         'gemini_key': config.GEMINI_API_KEY,
-        'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
         'mistral_key': config.MISTRAL_API_KEY,
-        'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME
     }
+    # The downstream AI layer expects a single merged dict.
+    ai_config_with_secrets = {**ai_config, **ai_secrets}
 
     # Log the resolved AI target so it shows up in the flask log (without keys).
     _resolved_url = {
@@ -314,9 +322,9 @@ def chat_playlist_api():
         config.AI_MODEL_PROVIDER,
         bool(data.get('ai_provider')),
     )
-    
+
     # Validate API keys for cloud providers
-    if ai_provider == "OPENAI" and not ai_config['openai_key']:
+    if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
         error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
         return jsonify({"response": {
@@ -328,7 +336,7 @@ def chat_playlist_api():
             "query_results": None
         }}), 400
     
-    if ai_provider == "GEMINI" and (not ai_config['gemini_key'] or ai_config['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
+    if ai_provider == "GEMINI" and (not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
         error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
         return jsonify({"response": {
@@ -340,7 +348,7 @@ def chat_playlist_api():
             "query_results": None
         }}), 400
     
-    if ai_provider == "MISTRAL" and (not ai_config['mistral_key'] or ai_config['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
+    if ai_provider == "MISTRAL" and (not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
         error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
         return jsonify({"response": {
@@ -524,7 +532,7 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
         tool_calling_result = call_ai_with_mcp_tools(
             user_message=ai_context,
             tools=mcp_tools,
-            ai_config=ai_config,
+            ai_config=ai_config_with_secrets,
             log_messages=log_messages,
             library_context=library_context,
         )
@@ -537,7 +545,7 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
             if iteration == 0:
                 fallback_genres = library_context.get('top_genres', ['pop', 'rock'])[:2] if library_context else ['pop', 'rock']
                 log_messages.append(f"\n🔄 Fallback: Trying genre search with {fallback_genres}...")
-                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 200}, ai_config)
+                fallback_result = execute_mcp_tool('search_database', {'genres': fallback_genres, 'get_songs': 200}, ai_config_with_secrets)
                 if 'songs' in fallback_result:
                     songs = fallback_result['songs']
                     for song in songs:
@@ -672,7 +680,7 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
                         detected_min_rating = rating_val
 
             # Execute the tool
-            tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
+            tool_result = execute_mcp_tool(tool_name, tool_args, ai_config_with_secrets)
 
             if 'error' in tool_result:
                 log_messages.append(f"   ❌ Error: {tool_result['error']}")
