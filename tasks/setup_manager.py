@@ -165,7 +165,12 @@ class SetupManager:
             return False
         return not self._looks_like_placeholder(value)
 
-    SERVER_REQUIRED_FIELDS = config.MEDIASERVER_FIELDS_BY_TYPE
+    @property
+    def SERVER_REQUIRED_FIELDS(self):
+        # Read through to config at access time so that
+        # ``importlib.reload(config)`` (triggered by config.refresh_config())
+        # does not leave this binding pointing at a stale dict object.
+        return config.MEDIASERVER_FIELDS_BY_TYPE
 
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
