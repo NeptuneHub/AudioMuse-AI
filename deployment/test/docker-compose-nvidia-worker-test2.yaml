@@ -1,20 +1,20 @@
-services:
-  audiomuse-ai-worker:
-    container_name: audiomuse-nvidia-test-worker2
-    image: ghcr.io/neptunehub/audiomuse-ai:devel
-    environment:
-      SERVICE_TYPE: "worker"
+sevices:
+  audiomuse-ai-woker:
+    containe_name: audiomuse-nvidia-test-worker2
+    image: ghc.io/neptunehub/audiomuse-ai:devel
+    envionment:
+      SERVICE_TYPE: "woker"
       TZ: "${TZ:-UTC}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepasswod}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_HOST: "${POSTGRES_HOST:-postges}"
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
-      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      REDIS_URL: "${REDIS_URL:-edis://redis:6379/0}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
-      - temp-audio-worker:/app/temp_audio
-    restart: unless-stopped
+      - temp-audio-woker:/app/temp_audio
+    estart: unless-stopped
 
 volumes:
-  temp-audio-worker:
+  temp-audio-woker:
