@@ -8,7 +8,7 @@ import unicodedata
 import google.genai as genai # Import Gemini library
 from mistralai import Mistral
 import os # Import os to potentially read GEMINI_API_CALL_DELAY_SECONDS
-from config import MAX_SONGS_IN_AI_PROMPT, AI_MODEL_PROVIDER
+from config import MAX_SONGS_IN_AI_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def clean_playlist_name(name):
 
 
 # --- OpenAI-Compatible API Function (used for both Ollama and OpenAI/OpenRouter) ---
-def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=False):
+def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=False, *, is_openai_format=True):
     """
     Calls an OpenAI-compatible API endpoint to get a playlist name.
     This works for Ollama (no API key needed) and OpenAI/OpenRouter (API key required).
@@ -60,8 +60,13 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    # Detect which format to use: OpenAI chat-completions (messages array) vs Ollama generate (prompt string). fix 360
-    is_openai_format = AI_MODEL_PROVIDER == "OPENAI"
+    # Format is declared by the caller via the is_openai_format kwarg
+    # (default True). Each caller already knows whether it's hitting an
+    # OpenAI-compatible server or Ollama, so encoding that knowledge at
+    # the call site is more robust than reading the global AI_MODEL_PROVIDER
+    # (which can disagree with the per-call provider in clustering's UI
+    # dropdown — see issue #467) or matching URL patterns (brittle for
+    # custom proxies / path rewrites).
 
     headers = {
         "Content-Type": "application/json"
@@ -120,12 +125,14 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
             response = requests.post(server_url, headers=headers, data=json.dumps(payload), stream=True, timeout=960)
             response.raise_for_status()
             full_raw_response_content = ""
+            raw_sse_lines = []  # Captured for diagnostics if content ends up empty
 
             for line in response.iter_lines():
                 if not line:
                     continue
 
                 line_str = line.decode('utf-8', errors='ignore').strip()
+                raw_sse_lines.append(line_str)
 
                 # Skip SSE comments (lines starting with :)
                 if line_str.startswith(':'):
@@ -149,23 +156,28 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                         if 'choices' in chunk and len(chunk['choices']) > 0:
                             choice = chunk['choices'][0]
 
-                            # Check for finish
-                            finish_reason = choice.get('finish_reason')
-                            if finish_reason == 'stop':
-                                break
-                            elif finish_reason == 'length':
-                                logger.warning("Response truncated due to max_tokens limit")
-                                break
-
-                            # Extract text from delta.content or text field
-                            if 'delta' in choice:
-                                content = choice['delta'].get('content')
+                            # Extract content FIRST. OpenRouter (and some
+                            # providers behind it) may bundle delta.content
+                            # with finish_reason='stop' in a single chunk
+                            # (issue #467) - reading content after the break
+                            # would silently drop short outputs.
+                            delta = choice.get('delta')
+                            if isinstance(delta, dict):
+                                content = delta.get('content')
                                 if content is not None:
                                     full_raw_response_content += content
                             elif 'text' in choice:
                                 text = choice.get('text')
                                 if text is not None:
                                     full_raw_response_content += text
+
+                            # Then check for finish
+                            finish_reason = choice.get('finish_reason')
+                            if finish_reason == 'length':
+                                logger.warning("Response truncated due to max_tokens limit")
+                                break
+                            elif finish_reason in ('stop', 'tool_calls', 'content_filter', 'error'):
+                                break
                     else:
                         # Ollama format
                         if 'response' in chunk:
@@ -190,6 +202,7 @@ def get_openai_compatible_playlist_name(server_url, model_name, full_prompt, api
                 return extracted_text
             else:
                 logger.warning("OpenAI/OpenRouter returned empty content. Full raw response: %s", full_raw_response_content)
+                logger.debug("Raw SSE lines received (%d total, last 50): %s", len(raw_sse_lines), raw_sse_lines[-50:])
                 if attempt < max_retries:
                     sleep_time = base_delay * (2 ** attempt)
                     logger.info("Retrying in %s seconds due to empty content...", sleep_time)
@@ -267,7 +280,7 @@ def get_ollama_playlist_name(ollama_url, model_name, full_prompt, skip_delay=Fal
     Returns:
         str: The extracted playlist name from the model's response, or an error message.
     """
-    return get_openai_compatible_playlist_name(ollama_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=skip_delay)
+    return get_openai_compatible_playlist_name(ollama_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=skip_delay, is_openai_format=False)
 
 # --- Gemini Specific Function ---
 def get_gemini_playlist_name(gemini_api_key, model_name, full_prompt, skip_delay=False):

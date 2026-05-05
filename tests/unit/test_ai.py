@@ -81,7 +81,6 @@ class TestCleanPlaylistName:
 class TestGetOpenAICompatiblePlaylistName:
     """Tests for OpenAI-compatible API function"""
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
@@ -130,7 +129,8 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="deepseek-r1:1.5b",
             full_prompt="Create a playlist name",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
+            is_openai_format=False,
         )
 
         assert result == "Morning Calm"
@@ -152,7 +152,8 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="model",
             full_prompt="test",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
+            is_openai_format=False,
         )
 
         assert result == "Final Name"
@@ -191,13 +192,13 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="model",
             full_prompt="test",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
+            is_openai_format=False,
         )
 
         # Should still extract the valid chunk
         assert result == "Valid"
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.requests.post')
     def test_openrouter_headers(self, mock_post):
         """Test OpenRouter-specific headers are added"""
@@ -223,7 +224,149 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "HTTP-Referer" in headers
         assert "X-Title" in headers
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_combined_content_and_finish_reason_chunk(self, mock_sleep, mock_post):
+        """Regression test for issue #467.
+
+        OpenRouter (and some providers behind it, notably Anthropic via Vertex)
+        can emit a single SSE chunk that contains both ``delta.content`` AND
+        ``finish_reason: "stop"``. The parser must extract the content from
+        such a chunk before terminating the loop. Short outputs (5-12 token
+        playlist titles) are particularly vulnerable because the entire
+        response can fit in one or two such combined chunks.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Quiet Storm"},"finish_reason":"stop"}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="openai/gpt-4o-mini",
+            full_prompt="prompt",
+            api_key="test-key",
+        )
+
+        assert result == "Quiet Storm"
+        # Success path must not trigger the empty-content retry/backoff.
+        # The pre-call rate-limit delay calls time.sleep once with skip_delay=False;
+        # ensure no additional retry-backoff sleeps happened.
+        assert mock_sleep.call_count == 1
+
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_content_split_across_chunks_with_final_combined_chunk(self, mock_sleep, mock_post):
+        """Regression test for issue #467 (multi-chunk variant).
+
+        Some content arrives in early chunks and the LAST content fragment is
+        bundled with finish_reason='stop' in a single chunk. All fragments
+        (including the bundled one) must be captured.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"Quiet "}}]}\n',
+            b'data: {"choices":[{"delta":{"content":"Storm"},"finish_reason":"stop"}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="openai/gpt-4o-mini",
+            full_prompt="prompt",
+            api_key="test-key",
+        )
+
+        assert result == "Quiet Storm"
+        # Success path must not trigger the empty-content retry/backoff.
+        # Only the pre-call rate-limit delay (one sleep) is expected.
+        assert mock_sleep.call_count == 1
+
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_ollama_format_via_explicit_kwarg(self, mock_sleep, mock_post):
+        """Caller declares Ollama format via is_openai_format=False.
+
+        Covers the authenticated-Ollama scenario (real bearer token + Ollama
+        URL) and any other case where the caller knows it's Ollama. The
+        function trusts the caller's declaration and uses Ollama's
+        request/response format.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        # Ollama-format response chunks (response/done keys, not delta/text).
+        mock_response.iter_lines.return_value = [
+            b'{"response":"Quiet","done":false}\n',
+            b'{"response":" Storm","done":false}\n',
+            b'{"response":"","done":true}\n',
+        ]
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="http://ollama-proxy.example.com:11434/api/generate",
+            model_name="llama3.1:8b",
+            full_prompt="prompt",
+            api_key="real-bearer-token",
+            is_openai_format=False,
+        )
+
+        assert result == "Quiet Storm"
+        # And the request body must use Ollama's `prompt` field, not OpenAI's `messages`.
+        sent_body = json.loads(mock_post.call_args[1]['data'])
+        assert 'prompt' in sent_body
+        assert 'messages' not in sent_body
+
+    @patch('ai.requests.post')
+    @patch('ai.time.sleep')
+    def test_openai_format_default_handles_text_field_chunks(self, mock_sleep, mock_post):
+        """Regression test for issue #467 — provider-mismatch root cause.
+
+        Pre-fix the function decided format from the global AI_MODEL_PROVIDER,
+        so a user with global=OLLAMA but a clustering call to OpenRouter
+        ended up parsing chat-completion chunks with the Ollama branch and
+        always returning empty content. With the explicit kwarg defaulting
+        to is_openai_format=True, OpenAI callers no longer need to pass
+        anything and the OpenAI parser is used.
+
+        The chunks here mirror the real OpenRouter-via-Bedrock shape where
+        content lives in `choice.text` instead of `choice.delta.content`.
+        """
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = Mock()
+        mock_response.iter_lines.return_value = [
+            b':' + b' OPENROUTER PROCESSING\n',
+            b'data: {"choices":[{"index":0,"finish_reason":null,"text":"Late"}]}\n',
+            b'data: {"choices":[{"index":0,"finish_reason":null,"text":" Night Blues"}]}\n',
+            b'data: {"choices":[{"index":0,"finish_reason":"stop","text":""}]}\n',
+            b'data: [DONE]\n',
+        ]
+        mock_post.return_value = mock_response
+
+        # No is_openai_format kwarg — defaults to True.
+        result = get_openai_compatible_playlist_name(
+            server_url="https://openrouter.ai/api/v1/chat/completions",
+            model_name="anthropic/claude-sonnet-4.6",
+            full_prompt="prompt",
+            api_key="sk-or-v1-test",
+        )
+
+        assert result == "Late Night Blues"
+        # And the request body must use OpenAI's `messages` field, not Ollama's
+        # `prompt` field — the same kwarg drives both payload and parser.
+        sent_body = json.loads(mock_post.call_args[1]['data'])
+        assert 'messages' in sent_body
+        assert 'prompt' not in sent_body
+        assert 'prompt' not in sent_body
+
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
@@ -257,7 +400,6 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 5 in sleep_calls  # Exponential backoff for attempt 0
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -308,7 +450,6 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -373,7 +514,6 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in third_call_data
         assert 'max_completion_tokens' not in third_call_data
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -427,7 +567,6 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
         assert len(sleep_calls) >= 1  # At least one sleep for rate limit
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     @patch('ai.time.sleep')
@@ -489,7 +628,6 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should be exactly 3 calls total
         assert mock_post.call_count == 3
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
@@ -535,7 +673,6 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
     @patch('ai.os.environ.get')
     @patch('ai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
@@ -606,7 +743,8 @@ class TestGetOllamaPlaylistName:
             "deepseek-r1:1.5b",
             "test prompt",
             api_key="no-key-needed",
-            skip_delay=False
+            skip_delay=False,
+            is_openai_format=False,
         )
         assert result == "Test Playlist"
 
