@@ -1,6 +1,6 @@
-"""Unit tests for tasks/mcp_server.py
+"""Unit tests for tasks/mcp_helper.py and tasks/mcp_tool_impl.py.
 
-Tests cover MCP server tool functions:
+Tests cover MCP helper + tool functions:
 - get_library_context(): Library statistics with caching
 - _database_genre_query_sync(): Genre regex matching, filters, relevance scoring
 - _ai_brainstorm_sync(): Two-stage matching (exact + fuzzy normalized)
@@ -8,8 +8,9 @@ Tests cover MCP server tool functions:
 - Energy normalization in execute_mcp_tool()
 - Pre-execution validation (filterless search_database rejection)
 
-NOTE: uses importlib to load tasks.mcp_server directly, bypassing
-tasks/__init__.py which pulls in pydub (requires audioop removed in Python 3.14).
+NOTE: uses importlib to load tasks.mcp_helper / tasks.mcp_tool_impl directly,
+bypassing tasks/__init__.py which pulls in pydub (requires audioop removed in
+Python 3.14).
 """
 import json
 import re
@@ -25,12 +26,16 @@ from unittest.mock import Mock, MagicMock, patch, call
 # ---------------------------------------------------------------------------
 
 def _import_mcp_server():
-    """Load tasks.mcp_server directly without triggering tasks/__init__.py."""
+    """Load tasks.mcp_helper directly without triggering tasks/__init__.py.
+
+    Name kept as ``_import_mcp_server`` for historical reasons -- the module
+    was renamed to ``mcp_helper`` but tests still use this loader.
+    """
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_server.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_helper.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'tasks.mcp_server'
+    mod_name = 'tasks.mcp_helper'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
         mod = importlib.util.module_from_spec(spec)
@@ -40,13 +45,33 @@ def _import_mcp_server():
 
 
 def _import_ai_mcp_client():
-    """Load ai_mcp_client directly."""
+    """Load tasks.mcp_tools (was previously the ``ai_mcp_client`` module)."""
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'ai_mcp_client.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tools.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'ai_mcp_client'
+    mod_name = 'tasks.mcp_tools'
     if mod_name not in sys.modules:
+        # mcp_tools imports from mcp_tool_impl which imports from mcp_helper -- preload them
+        _import_mcp_server()
+        _import_mcp_impl()
+        spec = importlib.util.spec_from_file_location(mod_name, mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[mod_name]
+
+
+def _import_mcp_impl():
+    """Load tasks.mcp_tool_impl directly without triggering tasks/__init__.py."""
+    mod_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tool_impl.py'
+    )
+    mod_path = os.path.normpath(mod_path)
+    mod_name = 'tasks.mcp_tool_impl'
+    if mod_name not in sys.modules:
+        # mcp_tool_impl imports from mcp_helper, ai_api, ai_prompts, etc. -- preload mcp_helper
+        _import_mcp_server()
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
         mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
@@ -295,7 +320,7 @@ class TestDatabaseGenreQuery:
         Also asserts the (?i) inline flag is present so case-mismatched MOOD_LABELS
         like 'Mellow', 'Hip-Hop', 'Progressive rock' still match user-supplied lowercase.
         """
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -311,7 +336,7 @@ class TestDatabaseGenreQuery:
         assert any("(?i)" in str(p) for p in params), "genre regex must use (?i)"
 
     def test_tempo_range_filter(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -322,7 +347,7 @@ class TestDatabaseGenreQuery:
         assert "tempo <=" in sql
 
     def test_key_filter_uppercased(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -334,7 +359,7 @@ class TestDatabaseGenreQuery:
         assert "C" in params  # should be uppercased
 
     def test_scale_filter_case_insensitive(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -344,7 +369,7 @@ class TestDatabaseGenreQuery:
         assert "LOWER(scale)" in sql
 
     def test_year_range_filter(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -355,7 +380,7 @@ class TestDatabaseGenreQuery:
         assert "year <=" in sql
 
     def test_min_rating_filter(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -368,7 +393,7 @@ class TestDatabaseGenreQuery:
         """Mood filter must extract per-mood score from other_features and apply a confidence
         threshold. A bare LIKE would match every song (every row contains all 6 mood labels),
         which is the bug from issue #472."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -392,7 +417,7 @@ class TestDatabaseGenreQuery:
 
     def test_mood_filter_does_not_use_bare_like(self):
         """Regression guard for issue #472: bare LIKE on other_features matches every song."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -402,7 +427,7 @@ class TestDatabaseGenreQuery:
         assert "other_features LIKE" not in sql
 
     def test_combined_filters_use_and(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -415,7 +440,7 @@ class TestDatabaseGenreQuery:
         assert sql.count("AND") >= 5  # Multiple AND conditions
 
     def test_results_returned_as_list(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
         cur.fetchall = Mock(return_value=[
             _make_dict_row({"item_id": "1", "title": "Song A", "author": "Artist A",
@@ -433,7 +458,7 @@ class TestDatabaseGenreQuery:
 
     def test_get_songs_converted_to_int(self):
         """Gemini may send float for get_songs - should be converted to int."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
@@ -446,28 +471,28 @@ class TestRerouteMoodLabelsFromGenres:
     """The helper that fixes AI confusion: mood labels passed as genres -> rerouted to moods."""
 
     def test_no_genres_is_noop(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(None, ["happy"])
         assert g is None
         assert m == ["happy"]
         assert msg is None
 
     def test_only_real_genres_is_noop(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(["rock", "metal"], None)
         assert g == ["rock", "metal"]
         assert m is None
         assert msg is None
 
     def test_mood_label_in_genres_gets_rerouted(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], None)
         assert g == []
         assert m == ["aggressive"]
         assert msg is not None and "aggressive" in msg
 
     def test_mixed_keeps_real_genres_reroutes_mood(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(
             ["rock", "aggressive", "metal"], None
         )
@@ -476,20 +501,20 @@ class TestRerouteMoodLabelsFromGenres:
         assert msg is not None
 
     def test_case_insensitive(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(["Aggressive"], None)
         assert g == []
         assert m == ["aggressive"]  # canonicalized to lowercase
 
     def test_no_duplicate_when_already_in_moods(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(["aggressive"], ["aggressive"])
         assert m == ["aggressive"]  # unchanged, no dup
         assert g == []
 
     def test_rerouting_applied_in_database_query(self):
         """End-to-end: AI passes 'aggressive' as a genre, query treats it as a mood."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
@@ -576,7 +601,6 @@ class TestExecuteMcpToolEnergyConversion:
 
     def test_search_database_energy_conversion(self):
         ai_mod = _import_ai_mcp_client()
-        mcp_mod = _import_mcp_server()
 
         mock_query = Mock(return_value={"songs": []})
         import config as cfg
@@ -584,14 +608,13 @@ class TestExecuteMcpToolEnergyConversion:
         try:
             cfg.ENERGY_MIN = 0.01
             cfg.ENERGY_MAX = 0.15
-            with patch.object(mcp_mod, '_database_genre_query_sync', mock_query):
-                # Patch the lazy import inside execute_mcp_tool
-                with patch.dict('sys.modules', {'tasks.mcp_server': mcp_mod}):
-                    ai_mod.execute_mcp_tool("search_database", {
-                        "genres": ["rock"],
-                        "energy_min": 0.5,
-                        "energy_max": 0.8
-                    }, {})
+            # Dispatcher binds the impl at import time -- patch the bound name on the dispatcher module.
+            with patch.object(ai_mod, '_database_genre_query_sync', mock_query):
+                ai_mod.execute_mcp_tool("search_database", {
+                    "genres": ["rock"],
+                    "energy_min": 0.5,
+                    "energy_max": 0.8
+                }, {})
 
             # Check the raw energy values passed to the query function
             if mock_query.called:
@@ -617,7 +640,7 @@ class TestSongSimilarityLookup:
     """Tests for _song_similarity_api_sync patterns."""
 
     def test_exact_match_case_insensitive(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
@@ -642,7 +665,7 @@ class TestSongSimilarityLookup:
         assert cur.execute.called
 
     def test_no_match_returns_empty(self):
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
@@ -681,7 +704,7 @@ class TestArtistSimilarityApiSync:
 
     def test_exact_match_returns_songs(self):
         """Exact DB match -> find_similar_artists -> songs returned."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Radiohead"}))
@@ -705,7 +728,7 @@ class TestArtistSimilarityApiSync:
 
     def test_fuzzy_match_fallback(self):
         """No exact match -> fuzzy ILIKE match used."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(side_effect=[
@@ -731,7 +754,7 @@ class TestArtistSimilarityApiSync:
 
     def test_no_match_returns_empty(self):
         """All DB lookups return None -> empty songs with message."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=None)
@@ -749,7 +772,7 @@ class TestArtistSimilarityApiSync:
 
     def test_gmm_empty_fallback_to_reverse_artist_map(self):
         """GMM returns [] -> fallback to reverse_artist_map fuzzy match."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Queen"}))
@@ -775,7 +798,7 @@ class TestArtistSimilarityApiSync:
 
     def test_special_chars_fallback_via_resub(self):
         """Artist with special chars, GMM empty, re.sub cleanup triggers fallback."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "P!nk"}))
@@ -801,7 +824,7 @@ class TestArtistSimilarityApiSync:
 
     def test_result_structure_has_required_keys(self):
         """Returned dict has songs, similar_artists, component_matches, message."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Nirvana"}))
@@ -827,7 +850,7 @@ class TestArtistSimilarityApiSync:
 
     def test_component_matches_includes_original_artist(self):
         """component_matches marks the original artist with is_original=True."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "The Beatles"}))
@@ -854,7 +877,7 @@ class TestArtistSimilarityApiSync:
 
     def test_get_songs_limits_results(self):
         """get_songs value is passed as LIMIT to the SQL query."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Coldplay"}))
@@ -900,7 +923,7 @@ class TestSongAlchemySync:
 
     def test_correct_args_passed(self):
         """Verify add_items and subtract_items are forwarded correctly."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
 
         add = [{"type": "song", "id": "s1"}, {"type": "artist", "id": "a1"}]
         sub = [{"type": "song", "id": "s2"}]
@@ -920,7 +943,7 @@ class TestSongAlchemySync:
 
     def test_empty_add_items(self):
         """Empty add_items list should still call song_alchemy without error."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
 
         alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
 
@@ -932,7 +955,7 @@ class TestSongAlchemySync:
 
     def test_exception_returns_error(self):
         """If song_alchemy raises, result has empty songs and error message."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
 
         alchemy_mod = self._setup_alchemy_module(side_effect=Exception("Voyager index missing"))
 
@@ -948,7 +971,7 @@ class TestSongAlchemySync:
 
     def test_result_structure(self):
         """Returned dict has 'songs' and 'message' keys."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
 
         alchemy_mod = self._setup_alchemy_module(
             return_value={"results": [{"item_id": "r1", "title": "T", "artist": "A"}]}
@@ -974,7 +997,7 @@ class TestAiBrainstormSync:
 
     def _make_ai_module(self, response="[]"):
         mock_mod = MagicMock()
-        mock_mod.call_ai_for_chat = Mock(return_value=response)
+        mock_mod.generate_text = Mock(return_value=response)
         return mock_mod
 
     def _make_ai_config(self):
@@ -993,7 +1016,7 @@ class TestAiBrainstormSync:
 
     def test_ai_error_response_returns_empty(self):
         """AI returns 'Error: ...' -> result has empty songs."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1001,7 +1024,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Error: API rate limit exceeded")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock classics", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1009,7 +1032,7 @@ class TestAiBrainstormSync:
 
     def test_valid_json_array_parsed(self):
         """AI returns valid JSON array, DB finds matching rows."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         ai_response = json.dumps([
@@ -1026,7 +1049,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("classic rock", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 2
@@ -1035,7 +1058,7 @@ class TestAiBrainstormSync:
 
     def test_markdown_code_blocks_stripped(self):
         """AI response wrapped in ```json...``` is still parsed correctly."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         ai_response = '```json\n[{"title": "Hey Jude", "artist": "The Beatles"}]\n```'
@@ -1048,7 +1071,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("beatles hits", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1056,7 +1079,7 @@ class TestAiBrainstormSync:
 
     def test_stage1_exact_match(self):
         """AI suggests song in DB with exact title+artist -> found via stage 1."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         ai_response = json.dumps([{"title": "Creep", "artist": "Radiohead"}])
@@ -1069,7 +1092,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("90s alternative", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1077,7 +1100,7 @@ class TestAiBrainstormSync:
 
     def test_stage2_fuzzy_normalized_match(self):
         """AI suggests 'Don't Stop Me Now' by 'Queen', DB has 'Dont Stop Me Now' -> fuzzy match."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         ai_response = json.dumps([{"title": "Don't Stop Me Now", "artist": "Queen"}])
@@ -1101,7 +1124,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("fun queen songs", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1130,7 +1153,7 @@ class TestAiBrainstormSync:
 
     def test_float_get_songs_converted_to_int(self):
         """Passing get_songs=50.0 (Gemini float) should not raise."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1141,14 +1164,14 @@ class TestAiBrainstormSync:
         cur.fetchall = Mock(return_value=[])
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 50.0)
 
         assert "songs" in result
 
     def test_invalid_json_returns_empty(self):
         """AI returns non-JSON text -> result has empty songs."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1156,7 +1179,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Here are some great rock songs that you might enjoy!")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1164,7 +1187,7 @@ class TestAiBrainstormSync:
 
     def test_results_trimmed_to_get_songs(self):
         """AI suggests 30 songs, get_songs=10 -> only 10 returned."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         suggestions = [
@@ -1182,7 +1205,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 10)
 
         assert len(result["songs"]) <= 10
@@ -1213,7 +1236,7 @@ class TestTextSearchSync:
 
     def test_clap_disabled_returns_message(self):
         """CLAP_ENABLED=False -> message says not enabled."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1234,7 +1257,7 @@ class TestTextSearchSync:
 
     def test_empty_description_returns_empty(self):
         """Empty description -> empty songs."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1254,7 +1277,7 @@ class TestTextSearchSync:
 
     def test_no_clap_results(self):
         """search_by_text returns [] -> empty songs."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1274,7 +1297,7 @@ class TestTextSearchSync:
 
     def test_no_filters_returns_clap_results_directly(self):
         """No tempo/energy filters -> CLAP results returned as-is."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1299,7 +1322,7 @@ class TestTextSearchSync:
 
     def test_tempo_filter_applied(self):
         """Tempo filter 'slow' triggers DB filtering of CLAP results."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         clap_results = [
@@ -1329,7 +1352,7 @@ class TestTextSearchSync:
 
     def test_energy_filter_applied(self):
         """Energy filter 'high' triggers DB filtering of CLAP results."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         clap_results = [
@@ -1359,7 +1382,7 @@ class TestTextSearchSync:
 
     def test_combined_tempo_and_energy_filters(self):
         """Both tempo and energy filters applied together."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
         clap_results = [
@@ -1392,7 +1415,7 @@ class TestTextSearchSync:
 
     def test_results_limited_to_get_songs(self):
         """CLAP returns 50 results, get_songs=10 -> only 10 returned."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1417,7 +1440,7 @@ class TestTextSearchSync:
 
     def test_exception_returns_empty_with_message(self):
         """search_by_text raises -> empty songs with error message."""
-        mod = _import_mcp_server()
+        mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
@@ -1436,71 +1459,3 @@ class TestTextSearchSync:
 
         assert result["songs"] == []
         assert "error" in result["message"].lower()
-
-
-# ---------------------------------------------------------------------------
-# _vibe_match_sync — genre filter must use threshold-based regex (not LIKE)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-class TestVibeMatchGenreFilter:
-    """Regression guard for PR #480 review: _vibe_match_sync's genre filter previously
-    used `mood_vector LIKE %{genre}%` which (a) substring-matches "rock" against
-    "indie rock" and (b) ignores confidence scores. It must now use the same
-    SUBSTRING-with-regex-and-threshold approach as _database_genre_query_sync.
-    """
-
-    def _setup(self, ai_response: str):
-        mod = _import_mcp_server()
-        cur = MagicMock()
-        cur.__enter__ = Mock(return_value=cur)
-        cur.__exit__ = Mock(return_value=False)
-        cur.fetchall = Mock(return_value=[])
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        ai_config = {
-            'provider': 'ollama',
-            'ollama_url': 'http://x',
-            'ollama_model': 'm',
-        }
-        return mod, cur, conn, ai_config, ai_response
-
-    def _run(self, mod, conn, ai_config, ai_response):
-        # `from ai import call_ai_for_chat` is inside the function, so patch the
-        # source module attribute (not a binding inside mcp_server).
-        fake_ai = MagicMock()
-        fake_ai.call_ai_for_chat = Mock(return_value=ai_response)
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'ai': fake_ai}):
-            return mod._vibe_match_sync("workout vibe", ai_config, 10)
-
-    def test_genre_uses_substring_regex_not_like(self):
-        """Genre filter must build SUBSTRING(mood_vector FROM regex) with threshold."""
-        ai_response = json.dumps({"genres": ["rock"], "moods": []})
-        mod, cur, conn, ai_config, resp = self._setup(ai_response)
-
-        self._run(mod, conn, ai_config, resp)
-
-        sql = cur.execute.call_args[0][0]
-        params = cur.execute.call_args[0][1]
-        assert "SUBSTRING(mood_vector FROM" in sql
-        # The substring-LIKE bug must not return.
-        assert "mood_vector LIKE" not in sql
-        # rock: regex param emitted
-        assert any("rock:" in str(p) for p in params)
-        # Case-insensitive flag — matches MOOD_LABELS like 'Mellow', 'Hip-Hop'.
-        assert any("(?i)" in str(p) for p in params), "vibe genre regex must use (?i)"
-        # A meaningful confidence threshold (above the noise floor) is supplied.
-        assert any(isinstance(p, float) and 0.5 <= p < 1 for p in params)
-
-    def test_genre_and_mood_both_use_threshold(self):
-        ai_response = json.dumps({"genres": ["rock"], "moods": ["aggressive"]})
-        mod, cur, conn, ai_config, resp = self._setup(ai_response)
-
-        self._run(mod, conn, ai_config, resp)
-
-        sql = cur.execute.call_args[0][0]
-        assert "SUBSTRING(mood_vector FROM" in sql
-        assert "SUBSTRING(other_features FROM" in sql
-        assert "mood_vector LIKE" not in sql

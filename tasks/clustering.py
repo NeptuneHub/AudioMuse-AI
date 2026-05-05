@@ -29,7 +29,8 @@ from config import (MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
                     CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS)
 
 # Import AI naming function and prompt template
-from ai import get_ai_playlist_name, creative_prompt_template
+from tasks.ai_api import get_ai_playlist_name
+from tasks.ai_prompts import creative_prompt_template
 # Import media server functions
 from .mediaserver import create_playlist, delete_automatic_playlists
 # Import refactored clustering helpers
@@ -284,6 +285,21 @@ def run_clustering_task(
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
     logger.info(f"Starting main clustering task {current_task_id}")
+
+    # Resolve the URL/model that will actually be used for AI naming so it
+    # appears in the worker log. API keys are deliberately NOT logged.
+    _ai_naming_summary = {
+        "OLLAMA": (ollama_server_url_param, ollama_model_name_param),
+        "OPENAI": (openai_server_url_param, openai_model_name_param),
+        "GEMINI": ("(gemini-api)", gemini_model_name_param),
+        "MISTRAL": ("(mistral-api)", mistral_model_name_param),
+    }.get(ai_model_provider_param, ("(none)", "(none)"))
+    logger.info(
+        "Clustering AI naming -> provider=%s url=%s model=%s",
+        ai_model_provider_param,
+        _ai_naming_summary[0],
+        _ai_naming_summary[1],
+    )
 
     # Capture initial parameters for the final report
     initial_params = {
@@ -922,15 +938,18 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
                 if embeddings_used:
                     feature1, feature2, feature3 = "Vibe", "Focused", "Collection"
 
+                ai_config = {
+                    'provider': ai_provider,
+                    'ollama_url': ollama_url, 'ollama_model': ollama_model,
+                    'openai_url': openai_url, 'openai_model': openai_model, 'openai_key': openai_key,
+                    'gemini_key': gemini_key, 'gemini_model': gemini_model,
+                    'mistral_key': mistral_key, 'mistral_model': mistral_model,
+                }
                 ai_name = get_ai_playlist_name(
-                    ai_provider, ollama_url, ollama_model, gemini_key, gemini_model,
-                    mistral_key, mistral_model,
-                    creative_prompt_template, feature1, feature2, feature3,
+                    creative_prompt_template,
                     [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
                     centroids.get(original_name, {}),
-                    openai_server_url=openai_url,
-                    openai_model_name=openai_model,
-                    openai_api_key=openai_key
+                    ai_config,
                 )
                 if ai_name and "Error" not in ai_name:
                     final_name = ai_name.strip().replace("\n", " ")

@@ -241,7 +241,8 @@ def chat_playlist_api():
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     
     from app_helper import get_db
-    from ai_mcp_client import call_ai_with_mcp_tools, execute_mcp_tool, get_mcp_tools
+    from tasks.ai_api import call_with_tools as call_ai_with_mcp_tools
+    from tasks.mcp_tools import execute_mcp_tool, get_mcp_tools
     
     if not data or 'userInput' not in data:
         return jsonify({"error": "Missing userInput in request"}), 400
@@ -273,19 +274,46 @@ def chat_playlist_api():
             }
         }), 200
     
-    # Build AI configuration object
+    # Build AI configuration object.
+    # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
+    # Any *_api_key field in the client payload is ignored to prevent token
+    # exfiltration via the chat endpoint -- the user explicitly may select a
+    # provider/model/url from the client, but the secret token must already be
+    # saved on the server.
     ai_config = {
         'provider': ai_provider,
         'ollama_url': data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
         'ollama_model': ai_model_from_request or config.OLLAMA_MODEL_NAME,
         'openai_url': data.get('openai_server_url', config.OPENAI_SERVER_URL),
         'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
-        'openai_key': data.get('openai_api_key') or config.OPENAI_API_KEY,
-        'gemini_key': data.get('gemini_api_key') or config.GEMINI_API_KEY,
+        'openai_key': config.OPENAI_API_KEY,
+        'gemini_key': config.GEMINI_API_KEY,
         'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
-        'mistral_key': data.get('mistral_api_key') or config.MISTRAL_API_KEY,
+        'mistral_key': config.MISTRAL_API_KEY,
         'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME
     }
+
+    # Log the resolved AI target so it shows up in the flask log (without keys).
+    _resolved_url = {
+        "OLLAMA": ai_config['ollama_url'],
+        "OPENAI": ai_config['openai_url'],
+        "GEMINI": "(gemini-api)",
+        "MISTRAL": "(mistral-api)",
+    }.get(ai_provider, "(none)")
+    _resolved_model = {
+        "OLLAMA": ai_config['ollama_model'],
+        "OPENAI": ai_config['openai_model'],
+        "GEMINI": ai_config['gemini_model'],
+        "MISTRAL": ai_config['mistral_model'],
+    }.get(ai_provider, "(none)")
+    logger.info(
+        "chat_playlist_api -> provider=%s url=%s model=%s (default_provider=%s, client_override=%s)",
+        ai_provider,
+        _resolved_url,
+        _resolved_model,
+        config.AI_MODEL_PROVIDER,
+        bool(data.get('ai_provider')),
+    )
     
     # Validate API keys for cloud providers
     if ai_provider == "OPENAI" and not ai_config['openai_key']:
@@ -336,7 +364,7 @@ def chat_playlist_api():
     log_messages.append(f"Available tools: {', '.join([t['name'] for t in mcp_tools])}")
 
     # Fetch library context for smarter AI prompting
-    from tasks.mcp_server import get_library_context
+    from tasks.mcp_helper import get_library_context
     library_context = get_library_context()
     if library_context.get('total_songs', 0) > 0:
         log_messages.append(f"Library: {library_context['total_songs']} songs, {library_context['unique_artists']} artists")
@@ -446,7 +474,7 @@ def chat_playlist_api():
             collected_ids = [s['item_id'] for s in all_songs]
             if collected_ids:
                 try:
-                    from tasks.mcp_server import get_db_connection
+                    from tasks.mcp_helper import get_db_connection
                     from psycopg2.extras import DictCursor
                     db_conn_feedback = get_db_connection()
                     with db_conn_feedback.cursor(cursor_factory=DictCursor) as cur:
@@ -494,12 +522,11 @@ If no more songs match, STOP calling tools — do NOT broaden filters."""
         # AI decides which tools to call
         log_messages.append(f"\n--- AI Decision (Iteration {iteration + 1}) ---")
         tool_calling_result = call_ai_with_mcp_tools(
-            provider=ai_provider,
             user_message=ai_context,
             tools=mcp_tools,
             ai_config=ai_config,
             log_messages=log_messages,
-            library_context=library_context
+            library_context=library_context,
         )
         
         if 'error' in tool_calling_result:

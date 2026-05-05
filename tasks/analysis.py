@@ -47,7 +47,6 @@ from config import (
 
 
 # Import other project modules
-from ai import get_ai_playlist_name, creative_prompt_template
 from .commons import score_vector
 # MODIFIED: Import from voyager_manager instead of annoy_manager
 from .voyager_manager import build_and_store_voyager_index

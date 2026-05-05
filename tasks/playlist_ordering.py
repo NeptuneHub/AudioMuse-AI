@@ -90,7 +90,7 @@ def order_playlist(song_ids: List[str], energy_arc: bool = False) -> List[str]:
     if len(song_ids) <= 2:
         return song_ids
 
-    from tasks.mcp_server import get_db_connection
+    from tasks.mcp_helper import get_db_connection
     from psycopg2.extras import DictCursor
 
     # Fetch song attributes

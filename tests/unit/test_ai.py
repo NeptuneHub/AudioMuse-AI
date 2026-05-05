@@ -1,21 +1,137 @@
-"""Unit tests for ai.py
+"""Unit tests for the new tasks/ai_api*.py modules.
 
 Tests cover AI playlist naming functions including cleaning, API calls,
-and provider routing.
+and provider routing. These tests bypass tasks/__init__.py (which pulls
+heavy deps like librosa) by pre-loading the relevant submodules directly.
 """
+import os
+import sys
+import types
+import importlib.util
+from unittest.mock import MagicMock as _MagicMock
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap: load only the AI submodules without running tasks/__init__.py.
+# ---------------------------------------------------------------------------
+_REPO_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+)
+
+
+def _ensure_namespace_pkg(name: str, sub_path: str) -> None:
+    if name in sys.modules:
+        return
+    pkg = types.ModuleType(name)
+    pkg.__path__ = [os.path.join(_REPO_ROOT, sub_path)]
+    sys.modules[name] = pkg
+
+
+def _load_submodule(name: str, relpath: str):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(_REPO_ROOT, relpath)
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Stub optional dependencies that aren't installed in the test env.
+# ---------------------------------------------------------------------------
+def _ensure_httpx_stub():
+    if 'httpx' in sys.modules:
+        return
+    try:
+        import httpx  # noqa: F401
+        return
+    except ImportError:
+        pass
+    httpx_mod = types.ModuleType('httpx')
+
+    class _ReadTimeout(Exception):
+        pass
+
+    class _TimeoutException(Exception):
+        pass
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, *a, **kw): raise NotImplementedError("stub")
+
+    httpx_mod.ReadTimeout = _ReadTimeout
+    httpx_mod.TimeoutException = _TimeoutException
+    httpx_mod.Client = _Client
+    sys.modules['httpx'] = httpx_mod
+
+
+def _ensure_google_genai_stub():
+    try:
+        import google.genai  # noqa: F401
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    if 'google' not in sys.modules:
+        google_mod = types.ModuleType('google')
+        google_mod.__path__ = []
+        sys.modules['google'] = google_mod
+    from unittest.mock import MagicMock as _MM
+    from unittest.mock import MagicMock as _MM
+    genai_mod = types.ModuleType('google.genai')
+    genai_mod.Client = _MM
+    genai_types = types.ModuleType('google.genai.types')
+    genai_types.Tool = _MM
+    genai_types.GenerateContentConfig = _MM
+    genai_types.ToolConfig = _MM
+    genai_types.FunctionCallingConfig = _MM
+    genai_mod.types = genai_types
+    sys.modules['google.genai'] = genai_mod
+    sys.modules['google.genai.types'] = genai_types
+
+
+def _ensure_mistralai_stub():
+    if 'mistralai' in sys.modules:
+        return
+    try:
+        import mistralai  # noqa: F401
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    mod = types.ModuleType('mistralai')
+    mod.Mistral = _MagicMock  # type: ignore
+    sys.modules['mistralai'] = mod
+
+
+_ensure_namespace_pkg('tasks', 'tasks')
+_ensure_httpx_stub()
+_ensure_google_genai_stub()
+_ensure_mistralai_stub()
+for _name, _relpath in (
+    ('tasks.ai_prompts',     'tasks/ai_prompts.py'),
+    ('tasks.ai_api_openai',  'tasks/ai_api_openai.py'),
+    ('tasks.ai_api_ollama',  'tasks/ai_api_ollama.py'),
+    ('tasks.ai_api_gemini',  'tasks/ai_api_gemini.py'),
+    ('tasks.ai_api_mistral', 'tasks/ai_api_mistral.py'),
+    ('tasks.ai_api',         'tasks/ai_api.py'),
+):
+    _load_submodule(_name, _relpath)
+
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch, call
 import requests
 import json
-from ai import (
-    clean_playlist_name,
-    get_openai_compatible_playlist_name,
-    get_ollama_playlist_name,
-    get_gemini_playlist_name,
-    get_mistral_playlist_name,
-    get_ai_playlist_name,
-    creative_prompt_template
-)
+from tasks.ai_api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai_api_openai import generate_text as get_openai_compatible_playlist_name
+from tasks.ai_api_ollama import generate_text as get_ollama_playlist_name
+from tasks.ai_api_gemini import generate_text as get_gemini_playlist_name
+from tasks.ai_api_mistral import generate_text as get_mistral_playlist_name
+from tasks.ai_prompts import creative_prompt_template
 
 
 class TestCleanPlaylistName:
@@ -81,9 +197,8 @@ class TestCleanPlaylistName:
 class TestGetOpenAICompatiblePlaylistName:
     """Tests for OpenAI-compatible API function"""
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
         """Test successful OpenAI format API call"""
         # Mock streaming response
@@ -110,7 +225,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Sunset Vibes"
         assert mock_sleep.called  # Should delay for rate limiting
 
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_ollama_format_success(self, mock_post):
         """Test successful Ollama format API call"""
         mock_response = Mock()
@@ -135,7 +250,7 @@ class TestGetOpenAICompatiblePlaylistName:
 
         assert result == "Morning Calm"
 
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_handles_think_tags(self, mock_post):
         """Test extraction of text after think tags"""
         mock_response = Mock()
@@ -158,7 +273,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Final Name"
         assert "<think>" not in result
 
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_handles_api_error(self, mock_post):
         """Test handling of API request errors"""
         mock_post.side_effect = requests.exceptions.RequestException("Connection failed")
@@ -173,7 +288,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "Error" in result
         assert "unavailable" in result
 
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_handles_invalid_json(self, mock_post):
         """Test handling of malformed JSON responses"""
         mock_response = Mock()
@@ -197,8 +312,7 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should still extract the valid chunk
         assert result == "Valid"
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_openrouter_headers(self, mock_post):
         """Test OpenRouter-specific headers are added"""
         mock_response = Mock()
@@ -223,9 +337,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "HTTP-Referer" in headers
         assert "X-Title" in headers
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_combined_content_and_finish_reason_chunk(self, mock_sleep, mock_post):
         """Regression test for issue #467.
 
@@ -258,9 +371,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # ensure no additional retry-backoff sleeps happened.
         assert mock_sleep.call_count == 1
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_content_split_across_chunks_with_final_combined_chunk(self, mock_sleep, mock_post):
         """Regression test for issue #467 (multi-chunk variant).
 
@@ -290,9 +402,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # Only the pre-call rate-limit delay (one sleep) is expected.
         assert mock_sleep.call_count == 1
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_authenticated_ollama_url_uses_ollama_format(self, mock_sleep, mock_post):
         """Detection must use the URL, not the api_key, so a real bearer token
         passed to an Ollama deployment (e.g. Ollama behind a reverse proxy or
@@ -322,9 +433,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'prompt' in sent_body
         assert 'messages' not in sent_body
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OLLAMA')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_openai_format_detected_from_url_when_global_is_ollama(self, mock_sleep, mock_post):
         """Regression test for issue #467 — provider-mismatch root cause.
 
@@ -364,9 +474,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'messages' in sent_body
         assert 'prompt' not in sent_body
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
         """Test that rate limit errors (429) retry with exponential backoff"""
         # First call: 429 rate limit
@@ -398,10 +507,9 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 5 in sleep_calls  # Exponential backoff for attempt 0
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_aggressive_fallback_on_unsupported_parameter(self, mock_sleep, mock_post, mock_env):
         """Test aggressive fallback removes temperature and switches to max_completion_tokens"""
         # Disable initial delay for cleaner testing
@@ -449,10 +557,9 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_ultra_minimal_fallback_after_aggressive_fails(self, mock_sleep, mock_post, mock_env):
         """Test ultra-minimal fallback removes max_completion_tokens if aggressive fails"""
         # Disable initial delay for cleaner testing
@@ -514,10 +621,9 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in third_call_data
         assert 'max_completion_tokens' not in third_call_data
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_rate_limit_then_parameter_error(self, mock_sleep, mock_post, mock_env):
         """Test rate limit retry followed by parameter error fallback"""
         # Disable initial delay for cleaner testing
@@ -568,10 +674,9 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
         assert len(sleep_calls) >= 1  # At least one sleep for rate limit
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
-    @patch('ai.time.sleep')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai_api_openai.time.sleep')
     def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
         """Test that parameter fallbacks use continue and don't increment attempt counter"""
         # Disable initial delay for cleaner testing
@@ -630,9 +735,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should be exactly 3 calls total
         assert mock_post.call_count == 3
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
         """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
         # Disable initial delay for cleaner testing
@@ -676,9 +780,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('ai.AI_MODEL_PROVIDER', 'OPENAI')
-    @patch('ai.os.environ.get')
-    @patch('ai.requests.post')
+    @patch('tasks.ai_api_openai.os.environ.get')
+    @patch('tasks.ai_api_openai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
         """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
         # Disable initial delay for cleaner testing
@@ -731,7 +834,7 @@ class TestGetOpenAICompatiblePlaylistName:
 class TestGetOllamaPlaylistName:
     """Tests for Ollama-specific wrapper function"""
 
-    @patch('ai.get_openai_compatible_playlist_name')
+    @patch('tasks.ai_api_openai.generate_text')
     def test_calls_openai_compatible_with_correct_params(self, mock_func):
         """Test that Ollama wrapper calls underlying function correctly"""
         mock_func.return_value = "Test Playlist"
@@ -755,8 +858,8 @@ class TestGetOllamaPlaylistName:
 class TestGetGeminiPlaylistName:
     """Tests for Google Gemini API function"""
 
-    @patch('ai.genai.Client')
-    @patch('ai.time.sleep')
+    @patch('google.genai.Client')
+    @patch('tasks.ai_api_gemini.time.sleep')
     def test_successful_gemini_call(self, mock_sleep, mock_client_class):
         """Test successful Gemini API call"""
         # Mock response structure for new google-genai API
@@ -771,7 +874,7 @@ class TestGetGeminiPlaylistName:
         mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
-            gemini_api_key="valid-key",
+            api_key="valid-key",
             model_name="gemini-2.5-pro",
             full_prompt="Create a name"
         )
@@ -783,7 +886,7 @@ class TestGetGeminiPlaylistName:
     def test_rejects_empty_api_key(self):
         """Test that empty API key returns error"""
         result = get_gemini_playlist_name(
-            gemini_api_key="",
+            api_key="",
             model_name="gemini-2.5-pro",
             full_prompt="test"
         )
@@ -794,15 +897,15 @@ class TestGetGeminiPlaylistName:
     def test_rejects_placeholder_api_key(self):
         """Test that placeholder API key returns error"""
         result = get_gemini_playlist_name(
-            gemini_api_key="YOUR-GEMINI-API-KEY-HERE",
+            api_key="YOUR-GEMINI-API-KEY-HERE",
             model_name="gemini-2.5-pro",
             full_prompt="test"
         )
 
         assert "Error" in result
 
-    @patch('ai.genai.Client')
-    @patch('ai.time.sleep')
+    @patch('google.genai.Client')
+    @patch('tasks.ai_api_gemini.time.sleep')
     def test_handles_gemini_api_error(self, mock_sleep, mock_client_class):
         """Test handling of Gemini API errors"""
         mock_models = Mock()
@@ -813,7 +916,7 @@ class TestGetGeminiPlaylistName:
         mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
-            gemini_api_key="valid-key",
+            api_key="valid-key",
             model_name="gemini-2.5-pro",
             full_prompt="test"
         )
@@ -825,8 +928,8 @@ class TestGetGeminiPlaylistName:
 class TestGetMistralPlaylistName:
     """Tests for Mistral API function"""
 
-    @patch('ai.Mistral')
-    @patch('ai.time.sleep')
+    @patch('mistralai.Mistral')
+    @patch('tasks.ai_api_mistral.time.sleep')
     def test_successful_mistral_call(self, mock_sleep, mock_mistral_class):
         """Test successful Mistral API call"""
         # Mock response structure
@@ -847,7 +950,7 @@ class TestGetMistralPlaylistName:
         mock_mistral_class.return_value = mock_client
 
         result = get_mistral_playlist_name(
-            mistral_api_key="valid-key",
+            api_key="valid-key",
             model_name="ministral-3b-latest",
             full_prompt="Create a name"
         )
@@ -858,7 +961,7 @@ class TestGetMistralPlaylistName:
     def test_rejects_empty_api_key(self):
         """Test that empty API key returns error"""
         result = get_mistral_playlist_name(
-            mistral_api_key="",
+            api_key="",
             model_name="ministral-3b-latest",
             full_prompt="test"
         )
@@ -869,7 +972,7 @@ class TestGetMistralPlaylistName:
     def test_rejects_placeholder_api_key(self):
         """Test that placeholder API key returns error"""
         result = get_mistral_playlist_name(
-            mistral_api_key="YOUR-MISTRAL-API-KEY-HERE",
+            api_key="YOUR-MISTRAL-API-KEY-HERE",
             model_name="ministral-3b-latest",
             full_prompt="test"
         )
@@ -878,215 +981,157 @@ class TestGetMistralPlaylistName:
 
 
 class TestGetAIPlaylistName:
-    """Tests for the main AI playlist name orchestration function"""
+    """Tests for the main AI playlist name orchestration function.
 
-    @patch('ai.get_ollama_playlist_name')
-    def test_routes_to_ollama(self, mock_ollama):
-        """Test provider routing to Ollama"""
-        mock_ollama.return_value = "Test Playlist"
+    The new dispatcher signature is:
+        get_ai_playlist_name(prompt_template, song_list, other_feature_scores_dict, ai_config)
+
+    Provider routing is driven by ``ai_config['provider']`` and dispatched
+    through ``tasks.ai_api.generate_text``. Tests here mock that single entry
+    point — provider-specific transports are covered by their own test classes.
+    """
+
+    @staticmethod
+    def _ai_config(provider, **extra):
+        cfg = {"provider": provider}
+        cfg.update(extra)
+        return cfg
+
+    @patch('tasks.ai_api.generate_text')
+    def test_routes_to_ollama(self, mock_generate):
+        mock_generate.return_value = "Test Playlist"
 
         result = get_ai_playlist_name(
-            provider="OLLAMA",
-            ollama_url="http://localhost:11434/api/generate",
-            ollama_model_name="deepseek-r1:1.5b",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="rock",
-            feature2="energetic",
-            feature3="upbeat",
-            song_list=[{"title": "Song 1", "author": "Artist 1"}],
-            other_feature_scores_dict={"energy": 0.8}
+            creative_prompt_template,
+            [{"title": "Song 1", "author": "Artist 1"}],
+            {"energy": 0.8},
+            self._ai_config("OLLAMA",
+                            ollama_url="http://localhost:11434/api/generate",
+                            ollama_model="deepseek-r1:1.5b"),
         )
 
         assert result == "Test Playlist"
-        mock_ollama.assert_called_once()
+        mock_generate.assert_called_once()
 
-    @patch('ai.get_gemini_playlist_name')
-    def test_routes_to_gemini(self, mock_gemini):
-        """Test provider routing to Gemini"""
-        mock_gemini.return_value = "Gemini Playlist"
+    @patch('tasks.ai_api.generate_text')
+    def test_routes_to_gemini(self, mock_generate):
+        mock_generate.return_value = "Gemini Playlist"
 
         result = get_ai_playlist_name(
-            provider="GEMINI",
-            ollama_url="",
-            ollama_model_name="",
-            gemini_api_key="valid-key",
-            gemini_model_name="gemini-2.5-pro",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="jazz",
-            feature2="smooth",
-            feature3="relaxed",
-            song_list=[{"title": "Song 1", "author": "Artist 1"}],
-            other_feature_scores_dict={}
+            creative_prompt_template,
+            [{"title": "Song 1", "author": "Artist 1"}],
+            {},
+            self._ai_config("GEMINI", gemini_key="valid-key", gemini_model="gemini-2.5-pro"),
         )
 
         assert result == "Gemini Playlist"
-        mock_gemini.assert_called_once()
+        mock_generate.assert_called_once()
 
-    @patch('ai.get_mistral_playlist_name')
-    def test_routes_to_mistral(self, mock_mistral):
-        """Test provider routing to Mistral"""
-        mock_mistral.return_value = "Mistral Playlist"
+    @patch('tasks.ai_api.generate_text')
+    def test_routes_to_mistral(self, mock_generate):
+        mock_generate.return_value = "Mistral Playlist"
 
         result = get_ai_playlist_name(
-            provider="MISTRAL",
-            ollama_url="",
-            ollama_model_name="",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="valid-key",
-            mistral_model_name="ministral-3b-latest",
-            prompt_template=creative_prompt_template,
-            feature1="classical",
-            feature2="peaceful",
-            feature3="calm",
-            song_list=[{"title": "Symphony", "author": "Beethoven"}],
-            other_feature_scores_dict={}
+            creative_prompt_template,
+            [{"title": "Symphony", "author": "Beethoven"}],
+            {},
+            self._ai_config("MISTRAL", mistral_key="valid-key", mistral_model="ministral-3b-latest"),
         )
 
         assert result == "Mistral Playlist"
-        mock_mistral.assert_called_once()
+        mock_generate.assert_called_once()
 
-    @patch('ai.get_openai_compatible_playlist_name')
-    def test_routes_to_openai(self, mock_openai):
-        """Test provider routing to OpenAI"""
-        mock_openai.return_value = "OpenAI Playlist"
+    @patch('tasks.ai_api.generate_text')
+    def test_routes_to_openai(self, mock_generate):
+        mock_generate.return_value = "OpenAI Playlist"
 
         result = get_ai_playlist_name(
-            provider="OPENAI",
-            ollama_url="",
-            ollama_model_name="",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="hip-hop",
-            feature2="energetic",
-            feature3="modern",
-            song_list=[{"title": "Track", "author": "Artist"}],
-            other_feature_scores_dict={},
-            openai_server_url="https://api.openai.com/v1/chat/completions",
-            openai_model_name="gpt-4",
-            openai_api_key="test-key"
+            creative_prompt_template,
+            [{"title": "Track", "author": "Artist"}],
+            {},
+            self._ai_config("OPENAI",
+                            openai_url="https://api.openai.com/v1/chat/completions",
+                            openai_model="gpt-4",
+                            openai_key="test-key"),
         )
 
         assert result == "OpenAI Playlist"
-        mock_openai.assert_called_once()
+        mock_generate.assert_called_once()
 
-    def test_handles_none_provider(self):
-        """Test handling of NONE provider"""
+    @patch('tasks.ai_api.generate_text')
+    def test_handles_none_provider(self, mock_generate):
+        """NONE provider is signalled by generate_text returning the skip sentinel."""
+        mock_generate.return_value = "AI Naming Skipped"
+
         result = get_ai_playlist_name(
-            provider="NONE",
-            ollama_url="",
-            ollama_model_name="",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="",
-            feature2="",
-            feature3="",
-            song_list=[],
-            other_feature_scores_dict={}
+            creative_prompt_template,
+            [],
+            {},
+            self._ai_config("NONE"),
         )
 
         assert result == "AI Naming Skipped"
 
-    @patch('ai.clean_playlist_name')
-    @patch('ai.get_ollama_playlist_name')
-    def test_applies_length_constraints(self, mock_ollama, mock_clean):
-        """Test that length constraints are enforced"""
-        # Name too short (MIN_LENGTH is 5, so use 4 chars)
-        mock_ollama.return_value = "Test"
-        mock_clean.return_value = "Test"
+    @patch('tasks.ai_api.clean_playlist_name')
+    @patch('tasks.ai_api.generate_text')
+    def test_applies_length_constraints(self, mock_generate, mock_clean):
+        """Names shorter than MIN_LENGTH (5) cause an error after retries."""
+        mock_generate.return_value = "Test"
+        mock_clean.return_value = "Test"  # 4 chars — too short
 
         result = get_ai_playlist_name(
-            provider="OLLAMA",
-            ollama_url="http://localhost:11434/api/generate",
-            ollama_model_name="model",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="",
-            feature2="",
-            feature3="",
-            song_list=[{"title": "Test", "author": "Artist"}],
-            other_feature_scores_dict={}
+            creative_prompt_template,
+            [{"title": "Test", "author": "Artist"}],
+            {},
+            self._ai_config("OLLAMA",
+                            ollama_url="http://localhost:11434/api/generate",
+                            ollama_model="model"),
         )
 
         assert "Error" in result
         assert "outside" in result
 
-    @patch('ai.clean_playlist_name')
-    @patch('ai.get_ollama_playlist_name')
-    def test_cleans_playlist_name(self, mock_ollama, mock_clean):
-        """Test that playlist names are cleaned"""
-        mock_ollama.return_value = "Rock & Roll - Best Hits!"
+    @patch('tasks.ai_api.clean_playlist_name')
+    @patch('tasks.ai_api.generate_text')
+    def test_cleans_playlist_name(self, mock_generate, mock_clean):
+        mock_generate.return_value = "Rock & Roll - Best Hits!"
         mock_clean.return_value = "Rock & Roll - Best Hits!"
 
         result = get_ai_playlist_name(
-            provider="OLLAMA",
-            ollama_url="http://localhost:11434/api/generate",
-            ollama_model_name="model",
-            gemini_api_key="",
-            gemini_model_name="",
-            mistral_api_key="",
-            mistral_model_name="",
-            prompt_template=creative_prompt_template,
-            feature1="",
-            feature2="",
-            feature3="",
-            song_list=[{"title": "Test", "author": "Artist"}],
-            other_feature_scores_dict={}
+            creative_prompt_template,
+            [{"title": "Test", "author": "Artist"}],
+            {},
+            self._ai_config("OLLAMA",
+                            ollama_url="http://localhost:11434/api/generate",
+                            ollama_model="model"),
         )
 
         mock_clean.assert_called_once()
         assert result == "Rock & Roll - Best Hits!"
 
-    def test_formats_song_list_in_prompt(self):
-        """Test that song list is properly formatted in prompt"""
+    @patch('tasks.ai_api.generate_text')
+    def test_formats_song_list_in_prompt(self, mock_generate):
+        """The {song_list_sample} placeholder must contain title and author lines."""
+        mock_generate.return_value = "Test Playlist Name"
         song_list = [
             {"title": "Song One", "author": "Artist A"},
-            {"title": "Song Two", "author": "Artist B"}
+            {"title": "Song Two", "author": "Artist B"},
         ]
 
-        # We can't easily test the full prompt without mocking,
-        # but we can test that the function constructs it
-        with patch('ai.get_ollama_playlist_name') as mock_ollama:
-            mock_ollama.return_value = "Test Playlist Name"
+        get_ai_playlist_name(
+            creative_prompt_template,
+            song_list,
+            {},
+            self._ai_config("OLLAMA",
+                            ollama_url="http://localhost:11434/api/generate",
+                            ollama_model="model"),
+        )
 
-            get_ai_playlist_name(
-                provider="OLLAMA",
-                ollama_url="http://localhost:11434/api/generate",
-                ollama_model_name="model",
-                gemini_api_key="",
-                gemini_model_name="",
-                mistral_api_key="",
-                mistral_model_name="",
-                prompt_template=creative_prompt_template,
-                feature1="",
-                feature2="",
-                feature3="",
-                song_list=song_list,
-                other_feature_scores_dict={}
-            )
-
-            # Check that the prompt was passed to Ollama
-            call_args = mock_ollama.call_args
-            prompt = call_args[0][2]  # third argument is full_prompt
-            assert "Song One" in prompt
-            assert "Artist A" in prompt
-            assert "Song Two" in prompt
-            assert "Artist B" in prompt
+        prompt = mock_generate.call_args[0][0]  # first positional arg
+        assert "Song One" in prompt
+        assert "Artist A" in prompt
+        assert "Song Two" in prompt
+        assert "Artist B" in prompt
 
     def test_prompt_includes_length_requirement(self):
         """Ensure the prompt specifies the 5-40 character length requirement"""
