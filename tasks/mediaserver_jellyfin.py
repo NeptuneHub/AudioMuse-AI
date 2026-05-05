@@ -510,7 +510,7 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
     Returns plain text (newline-separated lines) or None.
     """
     try:
-        url = f"{config.JELLYFIN_URL}/Items/{track_id}/Lyrics"
+        url = f"{config.JELLYFIN_URL}/Audio/{track_id}/Lyrics"
         r = requests.get(url, headers=config.HEADERS, timeout=timeout)
         r.raise_for_status()
         data = r.json()
