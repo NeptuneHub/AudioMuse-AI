@@ -114,36 +114,40 @@ def get_library_context(force_refresh: bool = False) -> Dict:
 
             # Top genres from mood_vector (extract genre names and count occurrences)
             # mood_vector format: "rock:0.82,pop:0.45,..."
+            # Use SQL-side GROUP BY/COUNT to avoid fetching all rows into Python.
+            # split_part(..., ':', 1) strips the confidence score before grouping.
             cur.execute("""
-                SELECT unnest(string_to_array(mood_vector, ',')) AS tag
-                FROM public.score
-                WHERE mood_vector IS NOT NULL AND mood_vector != ''
+                SELECT split_part(trim(tag), ':', 1) AS name, COUNT(*) AS cnt
+                FROM (
+                    SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+                    FROM public.score
+                    WHERE mood_vector IS NOT NULL AND mood_vector != ''
+                ) t
+                WHERE trim(tag) != ''
+                GROUP BY 1
+                ORDER BY 2 DESC
+                LIMIT 15
             """)
-            genre_counts = {}
-            for r in cur:
-                tag = r['tag'].strip()
-                if ':' in tag:
-                    name = tag.split(':')[0].strip()
-                    if name:
-                        genre_counts[name] = genre_counts.get(name, 0) + 1
-            top_genres = sorted(genre_counts, key=genre_counts.get, reverse=True)[:15]
+            top_genres = [r['name'] for r in cur.fetchall() if r['name']]
 
             # Available scales
             cur.execute("SELECT DISTINCT scale FROM public.score WHERE scale IS NOT NULL AND scale != '' ORDER BY scale")
             scales = [r['scale'] for r in cur.fetchall()]
 
-            # Top moods from other_features
+            # Top moods from other_features (same pattern: GROUP BY in SQL)
             cur.execute("""
-                SELECT unnest(string_to_array(other_features, ',')) AS mood
-                FROM public.score
-                WHERE other_features IS NOT NULL AND other_features != ''
+                SELECT lower(split_part(trim(mood), ':', 1)) AS name, COUNT(*) AS cnt
+                FROM (
+                    SELECT unnest(string_to_array(other_features, ',')) AS mood
+                    FROM public.score
+                    WHERE other_features IS NOT NULL AND other_features != ''
+                ) t
+                WHERE trim(mood) != ''
+                GROUP BY 1
+                ORDER BY 2 DESC
+                LIMIT 10
             """)
-            mood_counts = {}
-            for r in cur:
-                mood = r['mood'].strip().lower()
-                if mood:
-                    mood_counts[mood] = mood_counts.get(mood, 0) + 1
-            top_moods = sorted(mood_counts, key=mood_counts.get, reverse=True)[:10]
+            top_moods = [r['name'] for r in cur.fetchall() if r['name']]
 
         ctx = {
             'total_songs': total_songs,

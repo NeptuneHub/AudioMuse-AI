@@ -198,13 +198,13 @@ class TestGetLibraryContext:
             _make_dict_row({"rated": 200}),
         ])
 
-        cur.__iter__ = Mock(side_effect=[
-            iter([_make_dict_row({"tag": "rock:0.82"}), _make_dict_row({"tag": "pop:0.45"})]),
-            iter([_make_dict_row({"mood": "danceable"}), _make_dict_row({"mood": "happy"})]),
-        ])
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"scale": "major"}),
-            _make_dict_row({"scale": "minor"}),
+        cur.fetchall = Mock(side_effect=[
+            # genres query (name/cnt)
+            [_make_dict_row({"name": "rock", "cnt": 120}), _make_dict_row({"name": "pop", "cnt": 90})],
+            # scales query
+            [_make_dict_row({"scale": "major"}), _make_dict_row({"scale": "minor"})],
+            # moods query (name/cnt)
+            [_make_dict_row({"name": "danceable", "cnt": 80}), _make_dict_row({"name": "happy", "cnt": 60})],
         ])
 
         conn = _make_connection(cur)
