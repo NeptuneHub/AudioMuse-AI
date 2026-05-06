@@ -784,6 +784,14 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
+    var lyricsValidation = validateLyricsApiSlots(config);
+    if (!lyricsValidation.ok) {
+        saveFeedback.className = 'status-failure inline-feedback';
+        saveFeedback.style.display = 'block';
+        saveFeedback.textContent = '✕ ' + lyricsValidation.message;
+        saveButton.disabled = false;
+        return;
+    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -917,6 +925,12 @@ function analyzeLyricsApiSlot(slot) {
             else if (pname === g.apikey_param) state.paramRoles[pname] = 'apikey';
             else                               state.paramRoles[pname] = 'none';
         });
+        // Apply server-side path-segment role guesses (e.g. last two segments => artist/title)
+        if (g.path_roles && typeof g.path_roles === 'object') {
+            Object.keys(g.path_roles).forEach(function(idx) {
+                state.pathRoles[idx] = g.path_roles[idx];
+            });
+        }
         // Auto-suggest timeout: actual response time + 20%, minimum 2 extra seconds
         if (data.elapsed_ms != null) {
             var elapsed = data.elapsed_ms / 1000;
@@ -1178,6 +1192,40 @@ function buildUrlTemplate(exampleUrl, paramRoles, params, pathSegments, pathRole
         var template = parsed.origin + newPath + (qs ? '?' + qs : '');
         return {template: template, artistParam: artistParam, titleParam: titleParam, apikeyParam: apikeyParam, apikeyValue: apikeyValue};
     } catch(e) { return null; }
+}
+
+// Block save when a lyrics API slot is partially configured. A slot is considered
+// "in use" when ANY of its identifying fields is set. Once in use, it must have:
+//   - a URL template
+//   - a lyrics field
+//   - an artist source: either {artist} placeholder in the URL template OR an artist param
+//   - a title source:  either {title} placeholder in the URL template OR a title param
+function validateLyricsApiSlots(config) {
+    for (var i = 1; i <= 2; i++) {
+        var pre = 'LYRICS_API_' + i + '_';
+        var url    = String(config[pre + 'URL_TEMPLATE'] || '').trim();
+        var artist = String(config[pre + 'ARTIST_PARAM'] || '').trim();
+        var title  = String(config[pre + 'TITLE_PARAM']  || '').trim();
+        var lyrics = String(config[pre + 'LYRICS_FIELD'] || '').trim();
+        var apikey = String(config[pre + 'APIKEY_PARAM'] || '').trim();
+        var inUse = !!(url || artist || title || lyrics || apikey);
+        if (!inUse) continue;
+        var hasArtist = artist || url.indexOf('{artist}') !== -1;
+        var hasTitle  = title  || url.indexOf('{title}')  !== -1;
+        var missing = [];
+        if (!url)       missing.push('URL template');
+        if (!hasArtist) missing.push('Artist (param or {artist} placeholder)');
+        if (!hasTitle)  missing.push('Title (param or {title} placeholder)');
+        if (!lyrics)    missing.push('Lyrics field');
+        if (missing.length) {
+            return {
+                ok: false,
+                message: 'Lyrics API slot ' + i + ' is incomplete. Missing: ' + missing.join(', ') +
+                         '. Either complete the configuration (analyze an example URL and assign all roles), or click Delete on the slot to remove it before saving.',
+            };
+        }
+    }
+    return {ok: true};
 }
 
 function updateLyricsApiHiddenInputs(slot) {

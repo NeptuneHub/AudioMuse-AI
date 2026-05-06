@@ -559,20 +559,12 @@ def setup_lyrics_api_analyze():
     except Exception:
         return jsonify({'error': 'Invalid URL'}), 400
 
-    # Detect dynamic path segments for path-based APIs (e.g. /v1/Red Hot Chili Peppers/By the Way)
-    path_parts = [p for p in parsed.path.split('/') if p]
-    path_segments = []
-    for idx, part in enumerate(path_parts):
-        decoded = urllib.parse.unquote_plus(part)
-        # Include if URL-encoded, contains spaces, or is long — i.e. looks like a dynamic value
-        if decoded != part or ' ' in decoded or len(decoded) > 10:
-            path_segments.append({'index': idx, 'value': decoded})
-
     # Auto-detect likely roles for each query param
     _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}
     _TITLE  = {'track', 'track_name', 'trackname', 'title', 'song', 'song_name', 't', 'name', 's', 'q'}
     _APIKEY = {'apikey', 'api_key', 'key', 'token', 'access_token', 'api_token', 'usertoken', 'user_token'}
-    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None}
+    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None,
+               'path_roles': {}}
     for pname in flat_params:
         plow = pname.lower().replace('-', '_')
         if plow in _ARTIST and not guesses['artist_param']:
@@ -581,6 +573,36 @@ def setup_lyrics_api_analyze():
             guesses['title_param'] = pname
         elif plow in _APIKEY and not guesses['apikey_param']:
             guesses['apikey_param'] = pname
+
+    # Detect dynamic path segments for path-based APIs. We surface every non-empty path segment
+    # except obvious API-prefix or verb tokens (e.g. ``api``, ``v1``, ``get``, ``search``,
+    # ``lyrics``) so short artist/title segments without spaces are still presented for role
+    # assignment in the wizard. If the query string already provides both artist and title, we
+    # don't need any path roles at all and drop the segments entirely to avoid confusing the
+    # user with stray dropdowns.
+    _PATH_PREFIX_RE = re.compile(r'^(?:api|v\d+|api[-_]?v\d+)$', re.IGNORECASE)
+    _PATH_VERBS = {
+        'get', 'search', 'lookup', 'find', 'fetch', 'query', 'lyrics', 'lyric', 'song', 'songs',
+        'track', 'tracks', 'artist', 'artists', 'album', 'albums', 'public', 'rest',
+    }
+    path_parts = [p for p in parsed.path.split('/') if p]
+    path_segments = []
+    if not (guesses['artist_param'] and guesses['title_param']):
+        for idx, part in enumerate(path_parts):
+            decoded = urllib.parse.unquote_plus(part)
+            if _PATH_PREFIX_RE.match(decoded):
+                continue
+            if decoded.lower() in _PATH_VERBS:
+                continue
+            path_segments.append({'index': idx, 'value': decoded})
+
+    # For path-based APIs without artist/title query params, the convention is
+    # ``/.../<artist>/<title>`` — guess the last two surfaced segments accordingly.
+    if not guesses['artist_param'] and not guesses['title_param'] and len(path_segments) >= 2:
+        guesses['path_roles'][path_segments[-2]['index']] = 'artist'
+        guesses['path_roles'][path_segments[-1]['index']] = 'title'
+    elif not guesses['title_param'] and not guesses['artist_param'] and len(path_segments) == 1:
+        guesses['path_roles'][path_segments[-1]['index']] = 'title'
 
     # Call the URL
     http_error = None
