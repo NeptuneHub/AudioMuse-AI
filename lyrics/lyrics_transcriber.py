@@ -1132,8 +1132,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         try:
             import config as _cfg
             from tasks.mediaserver import get_lyrics as _ms_get_lyrics
-            _ms_timeout = float(getattr(_cfg, 'MUSICSERVER_LYRICS_TIMEOUT', 2.5) or 2.5)
-            ms_text = _ms_get_lyrics(track_id, timeout=_ms_timeout)
+            _ms_timeout = float(getattr(_cfg, 'MUSICSERVER_LYRICS_TIMEOUT', 2.5))
+            ms_text = _ms_get_lyrics(track_id, timeout=_ms_timeout) if _ms_timeout > 0 else None
             if ms_text:
                 sanitized = _sanitize_api_lyrics(ms_text)
                 if sanitized:
