@@ -65,7 +65,7 @@ def run_inference(session, feed_dict, output_tensor_name=None):
         logger.error("No ONNX output name available to run inference.")
         return None
     result = session.run([out], mapped)
-    return result[0] if isinstance(result, list) and result else result
+    return result[0] if isinstance(result, list) and len(result) > 0 else result
 
 
 def sigmoid(x):
@@ -161,6 +161,8 @@ def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
         result = run_inference(cpu_session, feed_dict, output_tensor_name)
+        if result is None:
+            raise RuntimeError(f"CPU fallback inference returned None for {label} ({file_basename})")
         logger.info(f"Successfully completed {label} inference on CPU after OOM")
         return result, cpu_session
 
