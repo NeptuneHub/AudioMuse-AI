@@ -25,29 +25,29 @@ class TestAnalyzeTrackMemoryCleanup:
     """Test memory cleanup in analyze_track function."""
     
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    @patch('tasks.analysis.librosa')
-    @patch('tasks.analysis.ort')
+    @patch('tasks.analysis_helper.librosa')
+    @patch('tasks.analysis.create_onnx_session')
     @patch('tasks.analysis.cleanup_onnx_session')
     @patch('tasks.analysis.cleanup_cuda_memory')
     def test_cleanup_on_inference_error(
-        self, mock_cuda_cleanup, mock_session_cleanup, 
-        mock_ort, mock_librosa, mock_load_audio
+        self, mock_cuda_cleanup, mock_session_cleanup,
+        mock_create_sess, mock_librosa, mock_load_audio
     ):
         """Test that cleanup happens when inference fails."""
         from tasks.analysis import analyze_track
-        
+
         # Setup mocks
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
         mock_librosa.beat.beat_track.return_value = (120.0, None)
         mock_librosa.feature.rms.return_value = np.array([[0.5]])
         mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
         mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
-        
-        # Mock ONNX sessions
+
+        # Mock ONNX sessions — patch create_onnx_session directly so the
+        # ort module itself stays real (needed by run_inference_with_oom_fallback).
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
-        mock_ort.InferenceSession.side_effect = [mock_embedding_sess, mock_prediction_sess]
-        mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
+        mock_create_sess.side_effect = [mock_embedding_sess, mock_prediction_sess]
         
         # Make inference fail with non-OOM error
         mock_embedding_sess.run.side_effect = RuntimeError("Model error")
@@ -223,8 +223,8 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
     @patch('app_helper.get_db')
-    @patch('tasks.analysis.ort')
-    @patch('tasks.analysis.cleanup_onnx_session')
+    @patch('tasks.analysis_helper.create_onnx_session')
+    @patch('tasks.analysis_helper.cleanup_onnx_session')
     @patch('tasks.analysis.cleanup_cuda_memory')
     @patch('app_helper.save_task_status')
     @patch('app_helper.get_task_info_from_db')
@@ -233,30 +233,31 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.os.remove')
     def test_cleanup_onnx_sessions_on_success(
         self, mock_remove, mock_save_track, mock_get_job, mock_get_task_info,
-        mock_save_task, mock_cuda_cleanup, mock_session_cleanup, mock_ort,
+        mock_save_task, mock_cuda_cleanup, mock_session_cleanup, mock_create_sess,
         mock_get_db, mock_analyze, mock_download, mock_get_tracks
     ):
         """Test that ONNX sessions are cleaned up after successful album analysis."""
         from tasks.analysis import analyze_album_task
-        
+
         # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
             {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
-        
+
         # Mock database
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
         mock_cur.fetchall.return_value = []  # No existing tracks
         mock_get_db.return_value = mock_conn
-        
-        # Mock ONNX sessions
-        mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
+
+        # Mock ONNX session creation (used by load_musicnn_sessions in analysis_helper).
+        # cleanup_onnx_session is patched in analysis_helper so cleanup_musicnn_sessions
+        # calls are captured.
         mock_session = MagicMock()
-        mock_ort.InferenceSession.return_value = mock_session
+        mock_create_sess.return_value = mock_session
         
         # Mock analyze_track to return results including audio for lyrics analysis
         mock_analyze.return_value = (

@@ -224,6 +224,10 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     embeddings_per_patch = None
     mood_logits = None
     mood_probs_per_patch = None
+    # Initialized here so the finally block can always reference them safely, even
+    # if create_onnx_session raises before the in-try assignment is reached.
+    original_embedding_sess = None
+    original_prediction_sess = None
 
     try:
         if onnx_sessions is not None:
@@ -239,7 +243,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         # Capture originals so we can detect OOM-fallback replacements below.
         original_embedding_sess = embedding_sess
         original_prediction_sess = prediction_sess
-
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch, embedding_sess = run_inference_with_oom_fallback(
             embedding_sess, embedding_feed_dict,
