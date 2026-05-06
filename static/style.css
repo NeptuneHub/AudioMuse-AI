@@ -485,6 +485,14 @@ body.dark-mode #cancel-sync-btn:disabled {
     background-color: var(--status-failure-bg);
 }
 
+/* Error message styling for status log - highlights error messages prominently */
+#error-message,
+.error-message {
+    color: var(--status-failure-text);
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
 .progress-bar-container {
     width: 100%;
     background-color: var(--border-color);

@@ -47,6 +47,38 @@ let lastPolledTaskDetails = {};
 // --- Functions ---
 
 /**
+ * Extracts a human-readable error message from task details.
+ * Handles various error formats from the backend.
+ * @param {object} details The task details object containing error information.
+ * @returns {string|null} The error message or null if not found.
+ */
+function extractErrorMessage(details) {
+    if (!details || typeof details !== 'object') return null;
+
+    // Check for error in details.error (most common format)
+    if (details.error) {
+        return String(details.error).substring(0, 500);
+    }
+
+    // Check for error_message (set by RQ for failed jobs)
+    if (details.error_message) {
+        return String(details.error_message).substring(0, 500);
+    }
+
+    // Check for final_summary_details.error (from task failure handlers)
+    if (details.final_summary_details?.error) {
+        return String(details.final_summary_details.error).substring(0, 500);
+    }
+
+    // Check for message if it looks like an error
+    if (details.message && (details.status === 'FAILURE' || details.message.includes('failed') || details.message.includes('error') || details.message.includes('Exception'))) {
+        return String(details.message).substring(0, 500);
+    }
+
+    return null;
+}
+
+/**
  * Formats a duration in seconds into a HH : MM : SS string.
  * @param {number} totalSeconds The total seconds to format.
  * @returns {string} The formatted time string.
@@ -230,9 +262,16 @@ async function checkActiveTasks() {
                 let alertTitle = 'Task Update';
                 let alertMessage = `Task ${mainActiveTask.task_id} (${mainActiveTask.task_type_from_db || 'Unknown Type'}) has ${currentStatusUpper.toLowerCase()}.`;
                 if (['SUCCESS', 'FINISHED'].includes(currentStatusUpper)) alertTitle = 'Task Completed';
-                else if (['FAILURE', 'FAILED'].includes(currentStatusUpper)) alertTitle = 'Task Failed';
+                else if (['FAILURE', 'FAILED'].includes(currentStatusUpper)) {
+                    alertTitle = 'Task Failed';
+                    // Extract error message from details
+                    const errorMsg = extractErrorMessage(mainActiveTask.details);
+                    if (errorMsg) {
+                        alertMessage = `Task failed with error:\n\n${errorMsg}`;
+                    }
+                }
                 else if (['REVOKED', 'CANCELED'].includes(currentStatusUpper)) alertTitle = 'Task Canceled';
-                
+
                 showMessageBox(alertTitle, alertMessage);
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
@@ -258,9 +297,15 @@ async function checkActiveTasks() {
                         let alertTitle = 'Task Finished';
                         let alertMessage = `Task ${finalStatusData.task_id} (${finalStatusData.task_type_from_db || 'Unknown Type'}) has ${upperFinalStatus.toLowerCase()}.`;
                         if (['SUCCESS', 'FINISHED'].includes(upperFinalStatus)) alertTitle = 'Task Completed';
-                        else if (['FAILURE', 'FAILED'].includes(upperFinalStatus)) alertTitle = 'Task Failed';
+                        else if (['FAILURE', 'FAILED'].includes(upperFinalStatus)) {
+                            alertTitle = 'Task Failed';
+                            const errorMsg = extractErrorMessage(finalStatusData.details);
+                            if (errorMsg) {
+                                alertMessage = `Task failed with error:\n\n${errorMsg}`;
+                            }
+                        }
                         else if (['REVOKED', 'CANCELED'].includes(upperFinalStatus)) alertTitle = 'Task Canceled';
-                        
+
                         showMessageBox(alertTitle, alertMessage);
                     }
                     displayTaskStatus(finalStatusData);
@@ -326,11 +371,15 @@ function displayTaskStatus(task) {
 
 
     if (['SUCCESS', 'FINISHED'].includes(stateUpper) && (task.task_type_from_db || task.task_type || '').toLowerCase().includes('clustering')) {
-        fetchPlaylists(); 
+        fetchPlaylists();
     }
 
+    // For failed tasks, highlight the error message prominently
     let statusMessage = 'N/A';
-    if (task.details) {
+    const errorMsg = extractErrorMessage(task.details);
+    if (errorMsg && ['FAILURE', 'FAILED'].includes(stateUpper)) {
+        statusMessage = `ERROR: ${errorMsg}`;
+    } else if (task.details) {
         if (task.details.status_message) {
             statusMessage = task.details.status_message;
         } else if (Array.isArray(task.details.log) && task.details.log.length > 0) {
@@ -341,6 +390,12 @@ function displayTaskStatus(task) {
     }
     statusLog.textContent = statusMessage;
 
+    // Add error styling to status log when there's an error
+    if (errorMsg && ['FAILURE', 'FAILED'].includes(stateUpper)) {
+        statusLog.classList.add('error-message');
+    } else {
+        statusLog.classList.remove('error-message');
+    }
 
     statusDetails.textContent = typeof task.details === 'object' ? JSON.stringify(task.details, null, 2) : task.details;
     statusDetails.scrollTop = statusDetails.scrollHeight;
