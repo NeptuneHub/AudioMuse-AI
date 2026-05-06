@@ -2,6 +2,7 @@
 """Reusable building blocks extracted from tasks.analysis."""
 
 import gc
+import importlib
 import logging
 
 import numpy as np
@@ -24,6 +25,7 @@ from app_helper import (
     save_mulan_embedding,
 )
 from app_helper_artist import upsert_artist_mapping
+from psycopg2 import sql as pgsql
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +139,7 @@ def cleanup_optional_models(context=""):
     suffix = f" ({context})" if context else ""
     for label, mod, is_loaded_fn, unload_fn in _OPTIONAL_MODELS:
         try:
-            module = __import__(__package__ + mod, fromlist=[is_loaded_fn, unload_fn])
+            module = importlib.import_module(mod, package=__package__)
             if getattr(module, is_loaded_fn)():
                 logger.info(f"Cleaning up {label.upper()} model{suffix}")
                 getattr(module, unload_fn)()
@@ -224,8 +226,10 @@ def get_missing_ids_in_table(table_name, track_ids):
         return set()
     ids = _str_ids(track_ids)
     with get_db() as conn, conn.cursor() as cur:
-        # table_name is a constant supplied by callers in this module — never user input.
-        cur.execute(f"SELECT item_id FROM {table_name} WHERE item_id IN %s", (tuple(ids),))
+        cur.execute(
+            pgsql.SQL("SELECT item_id FROM {} WHERE item_id IN %s").format(pgsql.Identifier(table_name)),
+            (tuple(ids),),
+        )
         existing = {row[0] for row in cur.fetchall()}
     return set(ids) - existing
 
@@ -244,12 +248,20 @@ def refresh_track_metadata(item, album_name):
     )
     if not any(v is not None for v in values):
         return False
-    set_clause = ", ".join(f"{f} = COALESCE(%s, {f})" for f in _REFRESH_FIELDS)
-    where_clause = " OR ".join(f"(%s IS NOT NULL AND {f} IS DISTINCT FROM %s)" for f in _REFRESH_FIELDS)
+    set_parts = pgsql.SQL(", ").join(
+        pgsql.SQL("{} = COALESCE(%s, {})").format(pgsql.Identifier(f), pgsql.Identifier(f))
+        for f in _REFRESH_FIELDS
+    )
+    where_parts = pgsql.SQL(" OR ").join(
+        pgsql.SQL("(%s IS NOT NULL AND {} IS DISTINCT FROM %s)").format(pgsql.Identifier(f))
+        for f in _REFRESH_FIELDS
+    )
+    query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})")\
+        .format(set_parts, where_parts)
     params = (*values, str(item['Id']), *(p for v in values for p in (v, v)))
     try:
         with get_db() as conn, conn.cursor() as cur:
-            cur.execute(f"UPDATE score SET {set_clause} WHERE item_id = %s AND ({where_clause})", params)
+            cur.execute(query, params)
             changed = cur.rowcount
             conn.commit()
         return bool(changed)
