@@ -236,6 +236,10 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             prediction_sess = create_onnx_session(model_paths['prediction'], provider_options, label='prediction')
             should_cleanup_sessions = True
 
+        # Capture originals so we can detect OOM-fallback replacements below.
+        original_embedding_sess = embedding_sess
+        original_prediction_sess = prediction_sess
+
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
         embeddings_per_patch, embedding_sess = run_inference_with_oom_fallback(
             embedding_sess, embedding_feed_dict,
@@ -268,10 +272,16 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return (None, None, None, None) if return_audio else (None, None)
     finally:
-        if should_cleanup_sessions:
+        # Clean up sessions we own outright, plus any OOM-fallback sessions that
+        # were created even when shared sessions were originally provided.
+        cleanup_embedding = should_cleanup_sessions or (embedding_sess is not original_embedding_sess)
+        cleanup_prediction = should_cleanup_sessions or (prediction_sess is not original_prediction_sess)
+        if cleanup_embedding or cleanup_prediction:
             try:
-                cleanup_onnx_session(embedding_sess, "embedding")
-                cleanup_onnx_session(prediction_sess, "prediction")
+                if cleanup_embedding:
+                    cleanup_onnx_session(embedding_sess, "embedding")
+                if cleanup_prediction:
+                    cleanup_onnx_session(prediction_sess, "prediction")
                 cleanup_cuda_memory(force=True)
                 logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)}")
             except Exception as cleanup_error:
