@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import jsonify, request, render_template, g
 import json
 import logging
 import threading
@@ -40,7 +40,9 @@ if ENABLE_PROXY_FIX:
   from werkzeug.middleware.proxy_fix import ProxyFix
 
 # --- Flask App Setup ---
-app = Flask(__name__)
+# The Flask instance lives in `flask_app` so RQ task modules can import it
+# without creating a circular import back into this file.
+from flask_app import app
 setup_manager = SetupManager()
 
 # Import helper functions
