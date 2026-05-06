@@ -1106,7 +1106,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
     Pipeline order:
-      STEP -1  media server embedded lyrics (Jellyfin/Emby/Navidrome/Lyrion, 2.5s timeout)
+      STEP -1  media server embedded lyrics (Jellyfin/Emby/Navidrome/Lyrion, MUSICSERVER_LYRICS_TIMEOUT seconds)
       STEP  0  user-configured external APIs (slot 1 then slot 2)
       STEP  1  load / clip audio
       STEP  1b VAD pre-filter
@@ -1130,8 +1130,10 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
         try:
+            import config as _cfg
             from tasks.mediaserver import get_lyrics as _ms_get_lyrics
-            ms_text = _ms_get_lyrics(track_id, timeout=2.5)
+            _ms_timeout = float(getattr(_cfg, 'MUSICSERVER_LYRICS_TIMEOUT', 2.5) or 2.5)
+            ms_text = _ms_get_lyrics(track_id, timeout=_ms_timeout)
             if ms_text:
                 sanitized = _sanitize_api_lyrics(ms_text)
                 if sanitized:
