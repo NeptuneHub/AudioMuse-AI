@@ -30,15 +30,34 @@ _LYRION_REMOTE_URL_PREFIXES = tuple(f'{name}:' for name in _LYRION_REMOTE_SERVIC
 
 
 def _lyrion_is_remote(item):
-    """Detect remote/stream-only tracks in Lyrion sample data
-    (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer)."""
+    """Detect remote/stream-only tracks in Lyrion responses
+    (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer).
+
+    Two-tier detection so the same helper works for both the connection
+    probe and the per-album track filter:
+
+    1. URL-like fields (``url``, ``path``, ``Path``) — strict scheme
+       prefix match on lowercase, so ``spotify://...``,
+       ``Spotify://...`` etc. all match but unrelated text containing
+       a service name does not.
+    2. Classification fields (``genre``, ``type``, ``service``,
+       ``source``) — substring match because Lyrion sometimes labels
+       these like ``"Spotify (some folder)"`` rather than just the bare
+       service name.
+    """
     if not isinstance(item, dict):
         return False
-    url = item.get('url') or item.get('path') or ''
-    if isinstance(url, str) and url.startswith(_LYRION_REMOTE_URL_PREFIXES):
-        return True
-    genre = item.get('genre') or item.get('type') or ''
-    return isinstance(genre, str) and genre.lower() in _LYRION_REMOTE_SERVICES
+    for key in ('url', 'path', 'Path'):
+        val = item.get(key)
+        if isinstance(val, str) and val.lower().startswith(_LYRION_REMOTE_URL_PREFIXES):
+            return True
+    for key in ('genre', 'type', 'service', 'source'):
+        val = item.get(key)
+        if isinstance(val, str):
+            v = val.lower()
+            if any(svc in v for svc in _LYRION_REMOTE_SERVICES):
+                return True
+    return False
 
 
 def _lyrion_track(item):
@@ -1184,22 +1203,10 @@ def get_tracks_from_album(album_id, user_creds=None):
         logger.warning(f"Lyrion API response for tracks of album {album_id} did not contain any song entries.")
         return []
 
-    # Robust Spotify detection: check several possible fields and make it case-insensitive.
-    def is_spotify_track(item: dict) -> bool:
-        for key in ("genre", "service", "source"):
-            val = item.get(key)
-            if isinstance(val, str) and "spotify" in val.lower():
-                return True
-        # Also check the URL/path for spotify links
-        url = (item.get("url") or item.get("Path") or item.get("path") or "")
-        if isinstance(url, str) and "spotify" in url.lower():
-            return True
-        return False
-
     local_songs = []
     skipped_tracks = []
     for s in songs:
-        if is_spotify_track(s):
+        if _lyrion_is_remote(s):
             skipped_tracks.append(s)
         else:
             local_songs.append(s)
