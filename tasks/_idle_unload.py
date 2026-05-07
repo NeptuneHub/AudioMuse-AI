@@ -15,6 +15,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import logging
+import sys
 import threading
 import time
 from typing import Callable, Dict, Optional
@@ -32,8 +33,11 @@ def _malloc_trim() -> None:
     Without this, RSS stays inflated after unloading large ONNX sessions or
     voyager indexes because glibc's malloc keeps freed pages cached in its
     own arenas. ``malloc_trim(0)`` triggers a sweep that hands them back.
-    No-op on musl (Alpine) and other platforms where the symbol is missing.
+    No-op on non-Linux platforms or when the symbol is unavailable.
     """
+    if not sys.platform.startswith("linux"):
+        return
+
     global _LIBC_MALLOC_TRIM, _LIBC_PROBED
     if not _LIBC_PROBED:
         _LIBC_PROBED = True

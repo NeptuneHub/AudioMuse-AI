@@ -57,7 +57,7 @@ artist_index = None  # voyager.Index object
 artist_map = None  # {voyager_int_id: artist_name}
 reverse_artist_map = None  # {artist_name: voyager_int_id}
 artist_gmm_params = None  # {artist_name: gmm_params_dict}
-_index_lock = threading.Lock()
+_ARTIST_LOAD_LOCK = threading.Lock()
 
 from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
 
@@ -99,7 +99,9 @@ def refresh_artist_cache() -> bool:
 
 def _ensure_artist_loaded() -> None:
     if artist_index is None or artist_map is None or reverse_artist_map is None or artist_gmm_params is None:
-        load_artist_index_for_querying()
+        with _ARTIST_LOAD_LOCK:
+            if artist_index is None or artist_map is None or reverse_artist_map is None or artist_gmm_params is None:
+                _load_artist_index_locked(force_reload=False)
     if artist_index is None or artist_map is None or reverse_artist_map is None or artist_gmm_params is None:
         raise RuntimeError("Artist similarity index is not loaded in memory.")
 
@@ -783,188 +785,197 @@ def load_artist_index_for_querying(force_reload=False):
     """
     global artist_index, artist_map, reverse_artist_map, artist_gmm_params
     
-    with _index_lock:
+    if artist_index is not None and not force_reload:
+        logger.info("Artist index already loaded in memory")
+        return
+    
+    with _ARTIST_LOAD_LOCK:
         if artist_index is not None and not force_reload:
             logger.info("Artist index already loaded in memory")
             return
+        _load_artist_index_locked(force_reload)
+
+
+def _load_artist_index_locked(force_reload=False):
+    global artist_index, artist_map, reverse_artist_map, artist_gmm_params
+
+    from app_helper import get_db
+    
+    logger.info("Loading artist similarity index from database...")
+    
+    conn = get_db()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("""
+            SELECT index_data, artist_map_json, gmm_params_json
+            FROM artist_index_data
+            WHERE index_name = %s
+        """, (ARTIST_INDEX_NAME,))
         
-        from app_helper import get_db
-        
-        logger.info("Loading artist similarity index from database...")
-        
-        conn = get_db()
-        cur = conn.cursor()
-        
-        try:
-            cur.execute("""
-                SELECT index_data, artist_map_json, gmm_params_json
-                FROM artist_index_data
-                WHERE index_name = %s
-            """, (ARTIST_INDEX_NAME,))
-            
-            row = cur.fetchone()
+        row = cur.fetchone()
 
-            if row and row[0]:
-                # Single-row index found (backwards compatible)
-                index_bytes, artist_map_json, gmm_params_json = row
+        if row and row[0]:
+            # Single-row index found (backwards compatible)
+            index_bytes, artist_map_json, gmm_params_json = row
 
-                logger.info(f"Retrieved artist index from database: {len(index_bytes)} bytes")
+            logger.info(f"Retrieved artist index from database: {len(index_bytes)} bytes")
 
-                # Deserialize mappings and GMM parameters
-                artist_map_dict = json.loads(artist_map_json)
-                gmm_params_dict = json.loads(gmm_params_json)
+            # Deserialize mappings and GMM parameters
+            artist_map_dict = json.loads(artist_map_json)
+            gmm_params_dict = json.loads(gmm_params_json)
 
-                logger.info(f"Deserialized metadata: {len(artist_map_dict)} artists")
+            logger.info(f"Deserialized metadata: {len(artist_map_dict)} artists")
 
-                # Convert string keys to integers for artist_map
-                artist_map = {int(k): v for k, v in artist_map_dict.items()}
+            # Convert string keys to integers for artist_map
+            artist_map = {int(k): v for k, v in artist_map_dict.items()}
 
-                # Build reverse map
-                reverse_artist_map = {v: k for k, v in artist_map.items()}
+            # Build reverse map
+            reverse_artist_map = {v: k for k, v in artist_map.items()}
 
-                # Store GMM parameters
-                artist_gmm_params = gmm_params_dict
+            # Store GMM parameters
+            artist_gmm_params = gmm_params_dict
 
-                # Load Voyager index from bytes using BytesIO stream
-                logger.info("Loading Voyager index from BytesIO stream...")
-                try:
-                    index_stream = io.BytesIO(index_bytes)
-                    index = voyager.Index.load(index_stream)
-
-                    artist_index = index
-
-                    logger.info(f"Artist index loaded successfully ({len(artist_map)} artists, num_elements={artist_index.num_elements})")
-                    _touch_artist_idle()
-                except Exception as load_error:
-                    logger.error(f"Failed to load Voyager index from BytesIO: {load_error}", exc_info=True)
-                    raise
-
-                return
-
-            # Not found as single row — try segmented parts named ARTIST_INDEX_NAME_<part>_<total>
-            cur.execute(
-                "SELECT index_name, index_data, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
-            )
-            candidates = cur.fetchall()
-
-            if not candidates:
-                logger.warning("Artist index not found in database (single or segmented)")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
-            seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
-            parts = []
-            total_expected = None
-            artist_map_json_candidate = None
-            gmm_params_json_candidate = None
-
-            for row in candidates:
-                name, part_data, part_artist_map_json, part_gmm_params_json = row
-                m = seg_pattern.match(name)
-                if not m:
-                    continue
-                part_no = int(m.group(1))
-                total = int(m.group(2))
-                if total_expected is None:
-                    total_expected = total
-                elif total_expected != total:
-                    logger.error(f"Segment total mismatch for Artist index parts (found totals {total_expected} and {total}). Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
-                    return
-
-                parts.append((part_no, part_data, part_artist_map_json, part_gmm_params_json))
-                if part_artist_map_json and not artist_map_json_candidate:
-                    artist_map_json_candidate = part_artist_map_json
-                if part_gmm_params_json and not gmm_params_json_candidate:
-                    gmm_params_json_candidate = part_gmm_params_json
-
-            if not parts:
-                logger.error(f"No valid segmented Artist index rows found for prefix '{ARTIST_INDEX_NAME}'.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
-            if total_expected is None or len(parts) != total_expected:
-                logger.error(f"Incomplete Artist index segments: expected {total_expected}, found {len(parts)}. Aborting load to avoid corruption.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
-            parts.sort(key=lambda p: p[0])
-
-            # Reassemble segments into a temporary file and load from that stream
-            index_stream = tempfile.TemporaryFile()
+            # Load Voyager index from bytes using BytesIO stream
+            logger.info("Loading Voyager index from BytesIO stream...")
             try:
-                for _, part_data, _, _ in parts:
-                    index_stream.write(part_data)
-                index_stream.seek(0)
-
-                if not artist_map_json_candidate or not gmm_params_json_candidate:
-                    logger.error("No non-empty artist_map_json/gmm_params_json found in segmented Artist index rows. Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
-                    return
-
+                index_stream = io.BytesIO(index_bytes)
                 index = voyager.Index.load(index_stream)
 
-                parsed_artist_map = {int(k): v for k, v in json.loads(artist_map_json_candidate).items()}
-                # Validate element counts if possible
-                try:
-                    idx_count = getattr(index, 'num_elements', None)
-                except Exception:
-                    idx_count = None
-
-                if idx_count is not None and idx_count != len(parsed_artist_map):
-                    logger.error(f"Artist index element count mismatch after reassembly: index.num_elements={idx_count}, artist_map={len(parsed_artist_map)}. Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
-                    return
-
                 artist_index = index
-                artist_map = parsed_artist_map
-                reverse_artist_map = {v: k for k, v in artist_map.items()}
-                artist_gmm_params = json.loads(gmm_params_json_candidate)
 
-                logger.info(f"Artist segmented index ({len(parts)} parts) with {len(artist_map)} artists loaded successfully into memory.")
+                logger.info(f"Artist index loaded successfully ({len(artist_map)} artists, num_elements={artist_index.num_elements})")
                 _touch_artist_idle()
-                return
             except Exception as load_error:
-                logger.error(f"Failed to load reassembled Artist index: {load_error}", exc_info=True)
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-            finally:
-                try:
-                    index_stream.close()
-                except Exception as close_error:
-                    logger.warning("Failed to close Artist index stream: %s", close_error, exc_info=True)
-            
-        except Exception as e:
-            logger.error(f"Failed to load artist index: {e}", exc_info=True)
+                logger.error(f"Failed to load Voyager index from BytesIO: {load_error}", exc_info=True)
+                raise
+
+            return
+
+        # Not found as single row — try segmented parts named ARTIST_INDEX_NAME_<part>_<total>
+        cur.execute(
+            "SELECT index_name, index_data, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+            (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
+        )
+        candidates = cur.fetchall()
+
+        if not candidates:
+            logger.warning("Artist index not found in database (single or segmented)")
             artist_index = None
             artist_map = None
             reverse_artist_map = None
             artist_gmm_params = None
-        
+            return
+
+        seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
+        parts = []
+        total_expected = None
+        artist_map_json_candidate = None
+        gmm_params_json_candidate = None
+
+        for row in candidates:
+            name, part_data, part_artist_map_json, part_gmm_params_json = row
+            m = seg_pattern.match(name)
+            if not m:
+                continue
+            part_no = int(m.group(1))
+            total = int(m.group(2))
+            if total_expected is None:
+                total_expected = total
+            elif total_expected != total:
+                logger.error(f"Segment total mismatch for Artist index parts (found totals {total_expected} and {total}). Aborting load.")
+                artist_index = None
+                artist_map = None
+                reverse_artist_map = None
+                artist_gmm_params = None
+                return
+
+            parts.append((part_no, part_data, part_artist_map_json, part_gmm_params_json))
+            if part_artist_map_json and not artist_map_json_candidate:
+                artist_map_json_candidate = part_artist_map_json
+            if part_gmm_params_json and not gmm_params_json_candidate:
+                gmm_params_json_candidate = part_gmm_params_json
+
+        if not parts:
+            logger.error(f"No valid segmented Artist index rows found for prefix '{ARTIST_INDEX_NAME}'.")
+            artist_index = None
+            artist_map = None
+            reverse_artist_map = None
+            artist_gmm_params = None
+            return
+
+        if total_expected is None or len(parts) != total_expected:
+            logger.error(f"Incomplete Artist index segments: expected {total_expected}, found {len(parts)}. Aborting load to avoid corruption.")
+            artist_index = None
+            artist_map = None
+            reverse_artist_map = None
+            artist_gmm_params = None
+            return
+
+        parts.sort(key=lambda p: p[0])
+
+        # Reassemble segments into a temporary file and load from that stream
+        index_stream = tempfile.TemporaryFile()
+        try:
+            for _, part_data, _, _ in parts:
+                index_stream.write(part_data)
+            index_stream.seek(0)
+
+            if not artist_map_json_candidate or not gmm_params_json_candidate:
+                logger.error("No non-empty artist_map_json/gmm_params_json found in segmented Artist index rows. Aborting load.")
+                artist_index = None
+                artist_map = None
+                reverse_artist_map = None
+                artist_gmm_params = None
+                return
+
+            index = voyager.Index.load(index_stream)
+
+            parsed_artist_map = {int(k): v for k, v in json.loads(artist_map_json_candidate).items()}
+            # Validate element counts if possible
+            try:
+                idx_count = getattr(index, 'num_elements', None)
+            except Exception:
+                idx_count = None
+
+            if idx_count is not None and idx_count != len(parsed_artist_map):
+                logger.error(f"Artist index element count mismatch after reassembly: index.num_elements={idx_count}, artist_map={len(parsed_artist_map)}. Aborting load.")
+                artist_index = None
+                artist_map = None
+                reverse_artist_map = None
+                artist_gmm_params = None
+                return
+
+            artist_index = index
+            artist_map = parsed_artist_map
+            reverse_artist_map = {v: k for k, v in artist_map.items()}
+            artist_gmm_params = json.loads(gmm_params_json_candidate)
+
+            logger.info(f"Artist segmented index ({len(parts)} parts) with {len(artist_map)} artists loaded successfully into memory.")
+            _touch_artist_idle()
+            return
+        except Exception as load_error:
+            logger.error(f"Failed to load reassembled Artist index: {load_error}", exc_info=True)
+            artist_index = None
+            artist_map = None
+            reverse_artist_map = None
+            artist_gmm_params = None
+            return
         finally:
-            cur.close()
+            try:
+                index_stream.close()
+            except Exception as close_error:
+                logger.warning("Failed to close Artist index stream: %s", close_error, exc_info=True)
+    
+    except Exception as e:
+        logger.error(f"Failed to load artist index: {e}", exc_info=True)
+        artist_index = None
+        artist_map = None
+        reverse_artist_map = None
+        artist_gmm_params = None
+    
+    finally:
+        cur.close()
 
 
 def get_representative_songs_for_component(artist_name: str, component_index: int, top_k: int = 3) -> List[Dict]:
@@ -1290,7 +1301,7 @@ def cleanup_resources():
     """Cleanup loaded index and release memory."""
     global artist_index, artist_map, reverse_artist_map, artist_gmm_params
     
-    with _index_lock:
+    with _ARTIST_LOAD_LOCK:
         artist_index = None
         artist_map = None
         reverse_artist_map = None
