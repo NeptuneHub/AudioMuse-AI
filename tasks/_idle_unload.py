@@ -13,8 +13,10 @@ thread per cache. No locks held during ``unload_fn`` execution.
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 import gc
 import logging
+import os
 import sys
 import threading
 import time
@@ -33,16 +35,22 @@ def _malloc_trim() -> None:
     Without this, RSS stays inflated after unloading large ONNX sessions or
     voyager indexes because glibc's malloc keeps freed pages cached in its
     own arenas. ``malloc_trim(0)`` triggers a sweep that hands them back.
-    No-op on non-Linux platforms or when the symbol is unavailable.
+    This helper is Linux/glibc-specific and may be ineffective when jemalloc
+    is loaded via LD_PRELOAD.
+    No-op on non-Linux platforms, on jemalloc-prefixed processes, or when the
+    symbol is unavailable.
     """
     if not sys.platform.startswith("linux"):
+        return
+    if 'jemalloc' in os.environ.get('LD_PRELOAD', ''):
         return
 
     global _LIBC_MALLOC_TRIM, _LIBC_PROBED
     if not _LIBC_PROBED:
         _LIBC_PROBED = True
         try:
-            libc = ctypes.CDLL('libc.so.6')
+            libc_name = ctypes.util.find_library('c') or 'libc.so.6'
+            libc = ctypes.CDLL(libc_name)
             trim = libc.malloc_trim
             trim.argtypes = [ctypes.c_int]
             trim.restype = ctypes.c_int

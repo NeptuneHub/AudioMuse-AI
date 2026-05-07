@@ -1,6 +1,7 @@
 import json
 import math
 import logging
+import threading
 from flask import Blueprint, jsonify, render_template, request, Response, current_app
 import numpy as np
 import gzip
@@ -25,6 +26,7 @@ map_bp = Blueprint('map_bp', __name__)
 # In-memory cached JSON (and compressed) for fast map responses.
 # Keys: '100','75','50','25' each maps to dict with 'json_bytes' and 'json_gzip_bytes' and 'projection'
 MAP_JSON_CACHE = {}
+MAP_JSON_CACHE_LOCK = threading.Lock()
 
 
 # Map JSON cache stays resident for the lifetime of the process.
@@ -287,10 +289,13 @@ def _ensure_map_cache():
     global MAP_JSON_CACHE
     if MAP_JSON_CACHE:
         return
-    try:
-        build_map_cache()
-    except Exception:
-        logger.exception('Lazy build of map cache failed')
+    with MAP_JSON_CACHE_LOCK:
+        if MAP_JSON_CACHE:
+            return
+        try:
+            build_map_cache()
+        except Exception:
+            logger.exception('Lazy build of map cache failed')
 
 
 @map_bp.route('/api/map', methods=['GET'])

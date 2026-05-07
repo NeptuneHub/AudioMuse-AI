@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import time
@@ -54,12 +55,12 @@ def _strip_legacy_role_refs(src_path, log):
     skipped = 0
     try:
         fd, new_path = tempfile.mkstemp(suffix='.sql', prefix='restore_filtered_')
-        with open(src_path, 'r', encoding='utf-8', errors='ignore') as src, \
-             os.fdopen(fd, 'w', encoding='utf-8') as out:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out, \
+             open(src_path, 'r', encoding='utf-8', errors='replace') as src:
             for line in src:
                 head = line.lstrip().lower()
                 if head.startswith('grant ') or head.startswith('revoke '):
-                    if any(role in line for role in _LEGACY_ROLE_NAMES):
+                    if any(re.search(rf"\b{re.escape(role)}\b", head) for role in _LEGACY_ROLE_NAMES):
                         skipped += 1
                         continue
                 out.write(line)

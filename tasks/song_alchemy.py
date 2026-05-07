@@ -275,10 +275,20 @@ def _project_with_umap(vectors: List[np.ndarray], n_components: int = 2) -> List
     if not vectors:
         return []
     mat = np.vstack(vectors)
+    if mat.shape[0] < 3:
+        coords = mat[:, :n_components].astype(np.float64)
+        coords = coords - coords.mean(axis=0)
+        if coords.shape[1] < n_components:
+            coords = np.pad(coords, ((0, 0), (0, n_components - coords.shape[1])), mode='constant')
+        max_abs = np.max(np.abs(coords))
+        if max_abs == 0:
+            return [(0.0, 0.0) for _ in vectors]
+        scaled = np.clip(coords / max_abs, -1.0, 1.0)
+        return [(float(x), float(y)) for x, y in scaled]
     # UMAP's default n_neighbors=15 emits a UserWarning when the dataset has
     # ≤15 rows (typical on tiny libraries / artists with only a few GMM
     # components). Clamp it ahead of time so we get a clean run.
-    n_neighbors = min(15, max(2, mat.shape[0] - 1))
+    n_neighbors = min(15, mat.shape[0] - 1)
     reducer = umap.UMAP(n_components=n_components, n_neighbors=n_neighbors,
                        random_state=None, n_jobs=-1)
     embedding = reducer.fit_transform(mat)
