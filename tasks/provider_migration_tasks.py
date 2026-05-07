@@ -226,6 +226,9 @@ def execute_provider_migration(session_id):
         # 4. Reflect FK names and check for optional tables before opening tx
         fk_embedding      = find_fk(cur, 'embedding', 'item_id')
         fk_clap_embedding = find_fk(cur, 'clap_embedding', 'item_id')
+        cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
+        lyrics_exists = bool(cur.fetchone()[0])
+        fk_lyrics_embedding = find_fk(cur, 'lyrics_embedding', 'item_id') if lyrics_exists else None
         cur.execute("SELECT to_regclass('public.mulan_embedding') IS NOT NULL")
         mulan_exists = bool(cur.fetchone()[0])
         fk_mulan_embedding = find_fk(cur, 'mulan_embedding', 'item_id') if mulan_exists else None
@@ -238,6 +241,8 @@ def execute_provider_migration(session_id):
                 new_meta=new_meta,
                 fk_embedding=fk_embedding,
                 fk_clap_embedding=fk_clap_embedding,
+                fk_lyrics_embedding=fk_lyrics_embedding,
+                lyrics_exists=lyrics_exists,
                 fk_mulan_embedding=fk_mulan_embedding,
                 mulan_exists=mulan_exists,
                 target_type=target_type,
@@ -380,8 +385,10 @@ def _merge_mapping(state):
 
 
 def _run_migration_transaction(cur, mapping, new_meta,
-                               fk_embedding, fk_clap_embedding, fk_mulan_embedding,
-                               mulan_exists, target_type, target_creds, session_id,
+                               fk_embedding, fk_clap_embedding,
+                               fk_lyrics_embedding, lyrics_exists,
+                               fk_mulan_embedding, mulan_exists,
+                               target_type, target_creds, session_id,
                                selected_libraries=None):
     """Execute every SQL statement for the migration transaction.
 
@@ -421,6 +428,8 @@ def _run_migration_transaction(cur, mapping, new_meta,
         cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
     if fk_clap_embedding:
         cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
     if mulan_exists and fk_mulan_embedding:
         cur.execute(f"ALTER TABLE mulan_embedding DROP CONSTRAINT {fk_mulan_embedding}")
 
@@ -456,6 +465,18 @@ def _run_migration_transaction(cur, mapping, new_meta,
             f"WHERE {alias}.item_id = %s || m.new_id",
             (prefix,),
         )
+    if lyrics_exists:
+        cur.execute(
+            "UPDATE lyrics_embedding e SET item_id = %s || m.new_id "
+            "FROM item_id_migration_map m WHERE e.item_id = m.old_id",
+            (prefix,),
+        )
+        cur.execute(
+            "UPDATE lyrics_embedding e SET item_id = m.new_id "
+            "FROM item_id_migration_map m "
+            "WHERE e.item_id = %s || m.new_id",
+            (prefix,),
+        )
     if mulan_exists:
         cur.execute(
             "UPDATE mulan_embedding e SET item_id = %s || m.new_id "
@@ -478,6 +499,11 @@ def _run_migration_transaction(cur, mapping, new_meta,
     if fk_clap_embedding:
         cur.execute(
             f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(
+            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
     if mulan_exists and fk_mulan_embedding:
