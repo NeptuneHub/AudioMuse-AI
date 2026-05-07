@@ -337,13 +337,9 @@ LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyric
 LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
 LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
 LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
-# Whisper / e5 / Marian all run on CPU via onnxruntime in this image. The
-# LYRICS_USE_GPU flag is kept for legacy callers but is effectively a no-op
-# unless onnxruntime-gpu is installed (gpu.txt build).
-LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
-LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
+# Whisper / e5 / Marian all run on CPU via onnxruntime against pre-exported
+# ONNX models stored in LYRICS_MODEL_DIR.
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
-LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
 }

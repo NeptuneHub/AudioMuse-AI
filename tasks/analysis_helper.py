@@ -72,18 +72,13 @@ def sigmoid(x):
 
 
 def get_provider_options():
-    """Return [(provider_name, options), ...] preferring CUDA when available."""
-    if 'CUDAExecutionProvider' in ort.get_available_providers():
-        cuda = {
-            'device_id': 0,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        logger.info("CUDA provider available - attempting to use GPU for analysis")
-        return [('CUDAExecutionProvider', cuda), ('CPUExecutionProvider', {})]
-    logger.info("CUDA provider not available - using CPU only")
-    return [('CPUExecutionProvider', {})]
+    """Return [(provider_name, options), ...] preferring CUDA when available.
+
+    Thin wrapper over the centralized helper so every ONNX session in the
+    repo (analysis + lyrics) goes through the same provider selection.
+    """
+    from ._ort_providers import pick_provider_options
+    return pick_provider_options()
 
 
 def create_onnx_session(model_path, provider_options=None, label=""):

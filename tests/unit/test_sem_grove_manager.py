@@ -167,6 +167,10 @@ class TestCacheHelpers:
             "loaded":   loaded,
             "id_map":   id_map,
             "song_count": len(id_map) if id_map else 0,
+            # ``get_sem_grove_item_ids`` short-circuits on ``index is None`` so
+            # it can lazy-load from DB; provide a truthy sentinel when loaded
+            # so the helper returns the id_map values without hitting the DB.
+            "index": object() if loaded else None,
         }
         return patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", fake_cache)
 

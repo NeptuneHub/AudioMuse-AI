@@ -89,7 +89,15 @@ def refresh_voyager_cache() -> bool:
 
 def _ensure_voyager_loaded() -> None:
     if voyager_index is None or id_map is None or reverse_id_map is None:
-        load_voyager_index_for_querying()
+        try:
+            load_voyager_index_for_querying()
+        except Exception as exc:
+            # Lazy-load can fail outside a Flask app context (e.g. unit tests
+            # patching voyager_index to None) or when the DB is unreachable.
+            # Log and fall through so callers see the canonical
+            # "Voyager index is not loaded" error below instead of a stack
+            # trace from get_db / Flask.
+            logger.warning("Voyager lazy-load failed: %s", exc)
     if voyager_index is None or id_map is None or reverse_id_map is None:
         raise RuntimeError("Voyager index is not loaded in memory.")
 

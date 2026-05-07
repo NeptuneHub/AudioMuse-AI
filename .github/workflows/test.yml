@@ -86,25 +86,26 @@ jobs:
 
     - name: Download lyrics model bundle (release v4.0.0-model)
       run: |
-        # The Dockerfile downloads lyrics_model.tar.gz from the v4.0.0-model
-        # release and extracts its contents flat into /app/model/. The lyrics
-        # transcriber then loads e5-base-v2 from
-        # ${LYRICS_MODEL_DIR}/e5-base-v2/ (NOT from a HF Hub cache).
+        # The Dockerfile downloads lyrics_model_onnx.tar.gz from the
+        # v4.0.0-model release and extracts its contents flat into
+        # /app/model/. The lyrics pipeline then loads:
+        #   - tokenizer from ${LYRICS_MODEL_DIR}/e5-base-v2/
+        #   - ONNX encoder from ${LYRICS_MODEL_DIR}/e5-base-v2.onnx
         # We mirror that layout under test/models/.
         base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
         mkdir -p test/models
-        if [ ! -d test/models/e5-base-v2 ]; then
-          echo "Downloading lyrics_model.tar.gz..."
-          curl -L "${base_url}/lyrics_model.tar.gz" -o /tmp/lyrics_model.tar.gz
+        if [ ! -f test/models/e5-base-v2.onnx ]; then
+          echo "Downloading lyrics_model_onnx.tar.gz..."
+          curl -L "${base_url}/lyrics_model_onnx.tar.gz" -o /tmp/lyrics_model_onnx.tar.gz
           rm -rf /tmp/lyrics_unpack
           mkdir -p /tmp/lyrics_unpack
-          tar -xzf /tmp/lyrics_model.tar.gz -C /tmp/lyrics_unpack
+          tar -xzf /tmp/lyrics_model_onnx.tar.gz -C /tmp/lyrics_unpack
           if [ -d /tmp/lyrics_unpack/lyrics_model ]; then
             cp -r /tmp/lyrics_unpack/lyrics_model/* test/models/
           else
             cp -r /tmp/lyrics_unpack/* test/models/
           fi
-          rm -rf /tmp/lyrics_unpack /tmp/lyrics_model.tar.gz
+          rm -rf /tmp/lyrics_unpack /tmp/lyrics_model_onnx.tar.gz
         fi
         echo "test/models/ after extraction:"
         ls -la test/models/

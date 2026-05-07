@@ -146,14 +146,26 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'transformers not importable: {exc}')
 
-    # The flat e5 directory must exist (extracted from lyrics_model.tar.gz).
+    # The flat e5 directory must exist (extracted from lyrics_model_onnx.tar.gz).
     e5_dir = models_dir / 'e5-base-v2'
     if not (e5_dir / 'config.json').exists():
         pytest.skip(
             f'e5-base-v2 model directory not found at {e5_dir}. '
-            f'In CI the workflow extracts lyrics_model.tar.gz from release '
-            f'v4.0.0-model into test/models/. For a local run download and '
-            f'extract it manually.'
+            f'In CI the workflow extracts lyrics_model_onnx.tar.gz from '
+            f'release v4.0.0-model into test/models/. For a local run '
+            f'download and extract it manually.'
+        )
+
+    # The ONNX-exported e5 encoder must also be present. The pre-ONNX
+    # tarball only carried the HuggingFace tokenizer + PyTorch weights;
+    # the new pipeline needs the ``e5-base-v2.onnx`` exported by
+    # ``scripts/onnx_export/export_e5_to_onnx.py``. Skip cleanly if the
+    # CI fixture hasn't been refreshed yet.
+    e5_onnx = models_dir / 'e5-base-v2.onnx'
+    if not e5_onnx.exists():
+        pytest.skip(
+            f'e5-base-v2.onnx not found at {e5_onnx}. CI needs to extract '
+            f'lyrics_model_onnx.tar.gz (not the legacy lyrics_model.tar.gz).'
         )
 
     # ---- Force offline / CPU / no LLM / no real HTTP API ------------------
@@ -164,7 +176,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     os.environ.setdefault('HF_XET_DISABLE', '1')
 
     os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
-    os.environ['LYRICS_USE_GPU'] = 'false'
 
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
     os.environ['LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR'] = str(e5_dir)
@@ -174,7 +185,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
 
     import config
     config.LYRICS_API_ENABLE = True
-    config.LYRICS_USE_GPU = 'false'
     config.LYRICS_MODEL_DIR = str(models_dir)
     config.LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = str(e5_dir)
 

@@ -48,34 +48,36 @@ def _strip_legacy_role_refs(src_path, log):
     psql should consume — either a freshly written temp file (if we found
     matches) or the original ``src_path`` (if nothing needed stripping).
     """
-    try:
-        with open(src_path, 'r', encoding='utf-8', errors='ignore') as src:
-            lines = src.readlines()
-    except Exception as exc:
-        log.write(f"Could not read dump for legacy-role filter: {exc}; using as-is.\n")
-        log.flush()
-        return src_path
-
+    # Stream the dump line-by-line and write filtered output to a temp file.
+    # Multi-GB dumps would OOM if we slurped via ``readlines()`` first.
+    new_path = None
     skipped = 0
-    out_lines = []
-    for line in lines:
-        head = line.lstrip().lower()
-        if head.startswith('grant ') or head.startswith('revoke '):
-            if any(role in line for role in _LEGACY_ROLE_NAMES):
-                skipped += 1
-                continue
-        out_lines.append(line)
-
-    if skipped == 0:
-        return src_path
-
     try:
         fd, new_path = tempfile.mkstemp(suffix='.sql', prefix='restore_filtered_')
-        with os.fdopen(fd, 'w', encoding='utf-8') as out:
-            out.writelines(out_lines)
+        with open(src_path, 'r', encoding='utf-8', errors='ignore') as src, \
+             os.fdopen(fd, 'w', encoding='utf-8') as out:
+            for line in src:
+                head = line.lstrip().lower()
+                if head.startswith('grant ') or head.startswith('revoke '):
+                    if any(role in line for role in _LEGACY_ROLE_NAMES):
+                        skipped += 1
+                        continue
+                out.write(line)
     except Exception as exc:
-        log.write(f"Could not write filtered dump: {exc}; using original.\n")
+        log.write(f"Could not process dump for legacy-role filter: {exc}; using as-is.\n")
         log.flush()
+        if new_path:
+            try:
+                os.remove(new_path)
+            except Exception:
+                pass
+        return src_path
+
+    if skipped == 0:
+        try:
+            os.remove(new_path)
+        except Exception:
+            pass
         return src_path
 
     log.write(

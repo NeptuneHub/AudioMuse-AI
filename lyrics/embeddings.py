@@ -53,12 +53,14 @@ def _resolve_paths(model_name: Optional[str]) -> Tuple[str, str]:
             model_name = 'intfloat/e5-base-v2'
 
     try:
-        from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
+        from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR, LYRICS_MODEL_DIR
         tokenizer_dir = LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
+        default_onnx = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2.onnx')
     except Exception:
         tokenizer_dir = '/app/model/e5-base-v2'
+        default_onnx = '/app/model/e5-base-v2.onnx'
 
-    onnx_path = os.environ.get('LYRICS_E5_ONNX_PATH', '/app/model/e5-base-v2.onnx')
+    onnx_path = os.environ.get('LYRICS_E5_ONNX_PATH', default_onnx)
     return (tokenizer_dir if os.path.isdir(tokenizer_dir) else model_name), onnx_path
 
 
@@ -114,10 +116,11 @@ def load_topic_embedding_model(model_name: Optional[str] = None):
             sess_options.intra_op_num_threads = cpu_threads
         except Exception:
             pass
+        from tasks._ort_providers import pick_providers
         session = ort.InferenceSession(
             onnx_path,
             sess_options=sess_options,
-            providers=['CPUExecutionProvider'],
+            providers=pick_providers(),
         )
 
         _embedding_tokenizer = tokenizer

@@ -53,8 +53,9 @@ def _load_session(model_path: Optional[str] = None):
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+        from tasks._ort_providers import pick_providers
         _session = ort.InferenceSession(
-            path, sess_options=opts, providers=['CPUExecutionProvider'])
+            path, sess_options=opts, providers=pick_providers())
         _session_path = path
         logger.info('Silero VAD ONNX session ready (path=%s)', path)
         return _session

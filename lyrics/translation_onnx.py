@@ -90,10 +90,12 @@ def _load_translator(model_dir: Optional[str] = None):
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+        from tasks._ort_providers import pick_providers
+        providers = pick_providers()
         encoder_session = ort.InferenceSession(
-            encoder_path, sess_options=opts, providers=['CPUExecutionProvider'])
+            encoder_path, sess_options=opts, providers=providers)
         decoder_session = ort.InferenceSession(
-            decoder_path, sess_options=opts, providers=['CPUExecutionProvider'])
+            decoder_path, sess_options=opts, providers=providers)
 
         # decoder_start_token_id lives in config.json (Marian usually uses pad)
         decoder_start = None

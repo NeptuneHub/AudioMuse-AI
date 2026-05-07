@@ -162,10 +162,12 @@ def _load(model_dir: Optional[str] = None):
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
+        from tasks._ort_providers import pick_providers
+        providers = pick_providers()
         encoder_session = ort.InferenceSession(
-            encoder_path, sess_options=opts, providers=['CPUExecutionProvider'])
+            encoder_path, sess_options=opts, providers=providers)
         decoder_session = ort.InferenceSession(
-            decoder_path, sess_options=opts, providers=['CPUExecutionProvider'])
+            decoder_path, sess_options=opts, providers=providers)
 
         # Find the encoder's input name (optimum sometimes uses 'input_features').
         enc_inputs = encoder_session.get_inputs()
@@ -215,6 +217,12 @@ def _encode(audio_chunk: np.ndarray) -> np.ndarray:
     return encoder_outputs[0]
 
 
+# Whisper's encoder always emits 1500 frames so the encoder attention mask
+# is constant for every decoder step. Allocating it once and reusing it
+# avoids ~thousands of np.ones() calls per chunk on CPU.
+_WHISPER_FULL_ATTN_MASK: Dict[Tuple[int, int], np.ndarray] = {}
+
+
 def _decoder_feed(decoder_input_ids: np.ndarray,
                   encoder_hidden: np.ndarray) -> Dict[str, np.ndarray]:
     feed: Dict[str, np.ndarray] = {}
@@ -224,11 +232,12 @@ def _decoder_feed(decoder_input_ids: np.ndarray,
         elif name == 'encoder_hidden_states':
             feed[name] = encoder_hidden
         elif name in ('encoder_attention_mask', 'attention_mask'):
-            # Whisper encoder always emits 1500 frames; build a full-attention mask.
-            feed[name] = np.ones(
-                (encoder_hidden.shape[0], encoder_hidden.shape[1]),
-                dtype=np.int64,
-            )
+            shape = (encoder_hidden.shape[0], encoder_hidden.shape[1])
+            mask = _WHISPER_FULL_ATTN_MASK.get(shape)
+            if mask is None:
+                mask = np.ones(shape, dtype=np.int64)
+                _WHISPER_FULL_ATTN_MASK[shape] = mask
+            feed[name] = mask
     return feed
 
 
@@ -353,3 +362,4 @@ def reset_session() -> None:
             _state[k] = None
         _state['model_dir'] = None
         _state['dec_input_names'] = ()
+        _WHISPER_FULL_ATTN_MASK.clear()
