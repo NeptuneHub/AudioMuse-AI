@@ -657,7 +657,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         logger.info(f"✅ Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
         return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
 
-    playlist_id = existing.get("Id") or existing.get("id")
+    playlist_id = existing.get("Id")
     if not playlist_id:
         logger.error(f"Jellyfin create_or_replace_playlist: existing playlist '{playlist_name}' has no Id")
         return None
@@ -670,7 +670,9 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
     if not _add_items_to_playlist(playlist_id, item_ids):
+        # Items were already cleared above; signal failure so the cron handler doesn't log success.
         logger.error(f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
+        return None
 
     logger.info(f"✅ Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
     return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}

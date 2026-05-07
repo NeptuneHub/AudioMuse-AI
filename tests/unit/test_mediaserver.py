@@ -2259,6 +2259,24 @@ class TestNavidromeCreateOrReplacePlaylist:
         mock_get.assert_not_called()
         mock_request.assert_not_called()
 
+    @patch('tasks.mediaserver_navidrome._add_to_playlist')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_returns_none_when_add_fails_after_clear(self, mock_get, mock_request, mock_add):
+        """If clear succeeds but add fails, return None so the cron handler doesn't log success."""
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        mock_get.return_value = {'id': 'pl-1', 'name': 'SF'}
+        mock_request.side_effect = [
+            {'playlist': {'id': 'pl-1', 'songCount': 1}},
+            {'status': 'ok'},
+        ]
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['new1'])
+
+        assert result is None
+
 
 class TestJellyfinCreateOrReplacePlaylist:
     """Jellyfin upsert via /Playlists/{Id}/Items POST/DELETE/GET."""
@@ -2335,6 +2353,29 @@ class TestJellyfinCreateOrReplacePlaylist:
         assert result is None
         mock_get.assert_not_called()
 
+    @patch('tasks.mediaserver_jellyfin._add_items_to_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_returns_none_when_add_fails_after_clear(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_add
+    ):
+        """If clear succeeds but add fails, return None instead of misreporting success."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'pl-1', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.return_value = True
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['new1'])
+
+        assert result is None
+
 
 class TestEmbyCreateOrReplacePlaylist:
     """Emby upsert under /emby/ prefix with uppercase params."""
@@ -2370,6 +2411,28 @@ class TestEmbyCreateOrReplacePlaylist:
         assert post_call[1]['params']['UserId'] == 'admin-emby'
         assert result['Id'] == 'emby-pl'
 
+    @patch('tasks.mediaserver_emby._add_items_to_playlist')
+    @patch('tasks.mediaserver_emby._remove_playlist_entries')
+    @patch('tasks.mediaserver_emby._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_emby.get_playlist_by_name')
+    @patch('tasks.mediaserver_emby.config')
+    def test_returns_none_when_add_fails_after_clear(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_add
+    ):
+        from tasks.mediaserver_emby import create_or_replace_playlist
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'admin-emby'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_get.return_value = {'Id': 'emby-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.return_value = True
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['n1'])
+
+        assert result is None
+
 
 class TestLyrionCreateOrReplacePlaylist:
     """Lyrion upsert: deletes existing then creates fresh (ID may change — known limitation)."""
@@ -2381,6 +2444,7 @@ class TestLyrionCreateOrReplacePlaylist:
         from tasks.mediaserver_lyrion import create_or_replace_playlist
 
         mock_get.return_value = {'Id': 99, 'Name': 'SF'}
+        mock_delete.return_value = True
         mock_create.return_value = {'Id': 100, 'Name': 'SF'}
 
         result = create_or_replace_playlist('SF', ['t1'])
@@ -2402,6 +2466,21 @@ class TestLyrionCreateOrReplacePlaylist:
 
         mock_delete.assert_not_called()
         mock_create.assert_called_once_with('SF', ['t1'])
+
+    @patch('tasks.mediaserver_lyrion._create_playlist_batched')
+    @patch('tasks.mediaserver_lyrion.delete_playlist')
+    @patch('tasks.mediaserver_lyrion.get_playlist_by_name')
+    def test_aborts_when_delete_fails(self, mock_get, mock_delete, mock_create):
+        """If delete fails, return None instead of creating a duplicate playlist."""
+        from tasks.mediaserver_lyrion import create_or_replace_playlist
+
+        mock_get.return_value = {'Id': 99, 'Name': 'SF'}
+        mock_delete.return_value = False
+
+        result = create_or_replace_playlist('SF', ['t1'])
+
+        assert result is None
+        mock_create.assert_not_called()
 
 
 class TestDispatcherCreateOrReplacePlaylist:

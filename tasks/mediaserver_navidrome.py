@@ -734,7 +734,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     if not existing:
         return _create_playlist_batched(playlist_name, item_ids, user_creds=user_creds)
 
-    playlist_id = existing.get("id") or existing.get("Id")
+    playlist_id = existing.get("id")
     if not playlist_id:
         logger.error(f"Navidrome create_or_replace_playlist: existing playlist '{playlist_name}' has no id")
         return None
@@ -743,12 +743,16 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
     if not _add_to_playlist(playlist_id, item_ids, user_creds=user_creds):
+        # Playlist was cleared above. Returning None signals the cron handler not to log success;
+        # the playlist will remain empty until the next run, which is preferable to silently
+        # reporting a populated playlist when it isn't.
         logger.error(
             f"Navidrome create_or_replace_playlist: failed to add tracks to playlist {playlist_id}"
         )
+        return None
 
     return {
         **existing,
         'Id': playlist_id,
-        'Name': existing.get('name') or existing.get('Name') or playlist_name,
+        'Name': existing.get('name') or playlist_name,
     }

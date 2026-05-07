@@ -352,8 +352,9 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     """Cron-only upsert: create the playlist if missing, or replace its contents in place.
 
     Used by the scheduled sonic_fingerprint task so the same server-side playlist (and ID,
-    where the backend allows) gets reused across runs. Raises NotImplementedError for MPD —
-    the cron handler catches that and falls back to legacy date-suffixed playlist creation.
+    where the backend allows) gets reused across runs. Raises NotImplementedError for MPD
+    and any other unsupported backend — the cron handler catches that and falls back to
+    legacy date-suffixed playlist creation.
     """
     if not playlist_name:
         raise ValueError("Playlist name is required.")
@@ -368,8 +369,6 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return emby_create_or_replace_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_create_or_replace_playlist(playlist_name, item_ids, user_creds)
-    if config.MEDIASERVER_TYPE == 'mpd':
-        raise NotImplementedError("create_or_replace_playlist is not implemented for MPD")
     raise NotImplementedError(
         f"create_or_replace_playlist not supported for MEDIASERVER_TYPE={config.MEDIASERVER_TYPE!r}"
     )
