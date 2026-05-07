@@ -687,3 +687,68 @@ def create_instant_playlist(playlist_name, item_ids, user_creds):
     """Creates a new instant playlist on Navidrome for a specific user, with batching."""
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids, user_creds)
+
+
+def _clear_playlist_items(playlist_id, user_creds=None):
+    """Removes every track from an existing Navidrome playlist while keeping the playlist itself.
+
+    Reads the current ``songCount`` via ``getPlaylist`` and issues batched ``updatePlaylist``
+    calls with ``songIndexToRemove`` in **descending** order so earlier indices stay valid as
+    higher ones are removed. Returns True on success, False on any failed batch.
+    """
+    detail = _navidrome_request("getPlaylist", {"id": playlist_id}, user_creds=user_creds)
+    if not (detail and "playlist" in detail):
+        logger.error(f"Navidrome _clear_playlist_items: failed to fetch playlist {playlist_id}")
+        return False
+
+    song_count = int(detail["playlist"].get("songCount") or 0)
+    if song_count == 0:
+        return True
+
+    indices = list(range(song_count - 1, -1, -1))
+    for i in range(0, len(indices), NAVIDROME_API_BATCH_SIZE):
+        batch = indices[i:i + NAVIDROME_API_BATCH_SIZE]
+        params = {
+            "playlistId": playlist_id,
+            "songIndexToRemove": batch,
+        }
+        response = _navidrome_request("updatePlaylist", params, method='post', user_creds=user_creds)
+        if not (response and response.get("status") == "ok"):
+            logger.error(
+                f"Navidrome _clear_playlist_items: failed to remove batch starting at index {batch[0]}"
+            )
+            return False
+    return True
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert: create the playlist if missing, or replace its contents preserving the ID.
+
+    Always batches both removals and additions at NAVIDROME_API_BATCH_SIZE. Returns the playlist
+    dict (with 'Id'/'Name' keys, matching `_create_playlist_batched`) or None on failure.
+    """
+    if not item_ids:
+        return None
+
+    existing = get_playlist_by_name(playlist_name, user_creds=user_creds)
+    if not existing:
+        return _create_playlist_batched(playlist_name, item_ids, user_creds=user_creds)
+
+    playlist_id = existing.get("id") or existing.get("Id")
+    if not playlist_id:
+        logger.error(f"Navidrome create_or_replace_playlist: existing playlist '{playlist_name}' has no id")
+        return None
+
+    if not _clear_playlist_items(playlist_id, user_creds=user_creds):
+        return None
+
+    if not _add_to_playlist(playlist_id, item_ids, user_creds=user_creds):
+        logger.error(
+            f"Navidrome create_or_replace_playlist: failed to add tracks to playlist {playlist_id}"
+        )
+
+    return {
+        **existing,
+        'Id': playlist_id,
+        'Name': existing.get('name') or existing.get('Name') or playlist_name,
+    }

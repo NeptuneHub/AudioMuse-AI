@@ -19,6 +19,7 @@ from tasks.mediaserver_jellyfin import (
     get_playlist_by_name as jellyfin_get_playlist_by_name,
     create_playlist as jellyfin_create_playlist,
     create_instant_playlist as jellyfin_create_instant_playlist,
+    create_or_replace_playlist as jellyfin_create_or_replace_playlist,
     get_top_played_songs as jellyfin_get_top_played_songs,
     get_last_played_time as jellyfin_get_last_played_time,
     list_libraries as _jellyfin_list_libraries,
@@ -36,6 +37,7 @@ from tasks.mediaserver_navidrome import (
     get_playlist_by_name as navidrome_get_playlist_by_name,
     create_playlist as navidrome_create_playlist,
     create_instant_playlist as navidrome_create_instant_playlist,
+    create_or_replace_playlist as navidrome_create_or_replace_playlist,
     get_top_played_songs as navidrome_get_top_played_songs,
     get_last_played_time as navidrome_get_last_played_time,
     list_libraries as _navidrome_list_libraries,
@@ -53,6 +55,7 @@ from tasks.mediaserver_lyrion import (
     get_playlist_by_name as lyrion_get_playlist_by_name,
     create_playlist as lyrion_create_playlist,
     create_instant_playlist as lyrion_create_instant_playlist,
+    create_or_replace_playlist as lyrion_create_or_replace_playlist,
     get_top_played_songs as lyrion_get_top_played_songs,
     get_last_played_time as lyrion_get_last_played_time,
     list_libraries as _lyrion_list_libraries,
@@ -85,6 +88,7 @@ from tasks.mediaserver_emby import (
     get_playlist_by_name as emby_get_playlist_by_name,
     create_playlist as emby_create_playlist,
     create_instant_playlist as emby_create_instant_playlist,
+    create_or_replace_playlist as emby_create_or_replace_playlist,
     get_top_played_songs as emby_get_top_played_songs,
     get_last_played_time as emby_get_last_played_time,
     list_libraries as _emby_list_libraries,
@@ -330,7 +334,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
     if not playlist_name: raise ValueError("Playlist name is required.")
     if not item_ids: raise ValueError("Track IDs are required.")
-    
+
     if config.MEDIASERVER_TYPE == 'jellyfin':
         return jellyfin_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'navidrome':
@@ -342,6 +346,33 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert: create the playlist if missing, or replace its contents in place.
+
+    Used by the scheduled sonic_fingerprint task so the same server-side playlist (and ID,
+    where the backend allows) gets reused across runs. Raises NotImplementedError for MPD —
+    the cron handler catches that and falls back to legacy date-suffixed playlist creation.
+    """
+    if not playlist_name:
+        raise ValueError("Playlist name is required.")
+    if not item_ids:
+        raise ValueError("Track IDs are required.")
+
+    if config.MEDIASERVER_TYPE == 'jellyfin':
+        return jellyfin_create_or_replace_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'navidrome':
+        return navidrome_create_or_replace_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'emby':
+        return emby_create_or_replace_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'lyrion':
+        return lyrion_create_or_replace_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'mpd':
+        raise NotImplementedError("create_or_replace_playlist is not implemented for MPD")
+    raise NotImplementedError(
+        f"create_or_replace_playlist not supported for MEDIASERVER_TYPE={config.MEDIASERVER_TYPE!r}"
+    )
 
 def get_top_played_songs(limit, user_creds=None):
     """Fetches top played songs. Uses user_creds if provided, otherwise admin."""

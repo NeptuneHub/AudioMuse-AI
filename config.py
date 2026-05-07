@@ -549,6 +549,10 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
 SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
+SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
+    "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
+    "Sonic Fingerprint by AudioMuse-AI",
+)
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums to delete in one run

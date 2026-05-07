@@ -1340,3 +1340,24 @@ def create_instant_playlist(playlist_name, item_ids):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids)
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert for Lyrion.
+
+    Lyrion's `_add_to_playlist` is destructive — it deletes-and-resaves under the original
+    name, and may assign a new numeric id (see lines 1062-1068). True ID preservation isn't
+    possible with the current primitives, so when the playlist exists we delete it and
+    recreate with the same name. End-state matches `_add_to_playlist`'s observed behavior.
+    Lyrion clients track playlists by name, so the unstable numeric id rarely matters.
+    """
+    if not item_ids:
+        return None
+
+    existing = get_playlist_by_name(playlist_name)
+    if existing:
+        old_id = existing.get('Id') or existing.get('id')
+        if old_id:
+            delete_playlist(old_id)
+
+    return _create_playlist_batched(playlist_name, item_ids)
