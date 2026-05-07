@@ -1135,8 +1135,12 @@ def get_all_playlists():
 def delete_playlist(playlist_id):
     """Deletes a playlist on Lyrion using JSON-RPC."""
     # The correct command is 'playlists delete'.
+    # LMS returns an empty dict ({}) on success; `_jsonrpc_request` raises on
+    # transport/protocol errors. So the only way to reach here with `response`
+    # set is server success — including the empty-dict case, which `if response:`
+    # used to mis-treat as failure.
     response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
-    if response:
+    if response is not None:
         logger.info(f"🗑️ Deleted Lyrion playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Lyrion")
