@@ -1,354 +1,346 @@
 {% extends 'includes/layout.html' %}
 
 {% block headAdditions %}
-<style>
-    label {
-        display: block;
-        margin-bottom: 0.35rem;
-        font-weight: 600;
-    }
-    input[type="text"], input[type="password"], select, textarea {
-        width: 100%;
-        border: 1px solid var(--border-color, #ccc);
-        border-radius: 8px;
-        padding: 0.85rem 0.9rem;
-        margin-bottom: 1rem;
-        font-size: 0.98rem;
-        background: var(--bg-input, #fff);
-        color: var(--text-main, #111);
-    }
-    textarea {
-        min-height: 92px;
-        font-family: inherit;
-        resize: vertical;
-    }
-    .section {
-        margin-top: 1.5rem;
-    }
-    .field-grid {
-        display: grid;
-        gap: 1rem;
-    }
-    .required-label::after {
-        content: ' *';
-        color: #c0392b;
-    }
-    #setup-form button {
-        border: none;
-        border-radius: 10px;
-        padding: 0.95rem 1.25rem;
-        cursor: pointer;
-        color: #fff;
-        background: var(--accent-color, #3675f1);
-        font-weight: 700;
-        font-size: 1rem;
-    }
-    #setup-form button:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-    .notice {
-        padding: 1rem 1.15rem;
-        margin: 1rem 0;
-        border-radius: 10px;
-        background: var(--status-idle-bg, #eef5ff);
-        color: var(--status-idle-text, #1f3c72);
-        border: 1px solid var(--border-color, #d6e4ff);
-    }
-    .field-row {
-        margin-bottom: 1rem;
-    }
-    .field-row.inline {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        flex-wrap: wrap;
-    }
-    .field-row.inline .inline-feedback {
-        width: auto;
-        flex: 1;
-        min-width: 220px;
-    }
-    .field-row label {
-        display: block;
-        word-break: break-word;
-        white-space: normal;
-    }
-    .field-row input,
-    .field-row textarea,
-    .field-row select {
-        width: 100%;
-        min-width: 0;
-        box-sizing: border-box;
-    }
-    .field-row small {
-        color: var(--text-muted, #666);
-    }
-    .inline-feedback {
-        display: block;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        width: 100%;
-        max-width: 100%;
-        min-height: 2.5rem;
-        padding: 0.8rem 1rem;
-        border-radius: 14px;
-        font-size: 0.96rem;
-        border: 1px solid transparent;
-        line-height: 1.3;
-        background: var(--bg-card, #f8f9fb);
-        color: var(--text-main, #111);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        word-break: break-word;
-        box-sizing: border-box;
-        margin: 0;
-    }
-    @media (max-width: 640px) {
-        #setup-form button {
-            width: 100%;
-        }
-        .field-row {
-            display: block;
-        }
-    }
-    .inline-feedback.status-success {
-        background: var(--status-success-bg, #e6f4ea);
-        color: var(--status-success-text, #1f4f1f);
-        border-color: var(--status-success-border, #a0d8a8);
-    }
-    .inline-feedback.status-failure {
-        background: var(--status-failure-bg, #fdecea);
-        color: var(--status-failure-text, #7a1f1f);
-        border-color: var(--status-failure-border, #f5c2c0);
-    }
-    .inline-feedback.status-pending {
-        background: var(--status-pending-bg, #fff4db);
-        color: var(--status-pending-text, #7a5c1a);
-        border-color: var(--status-pending-border, #ecd8a9);
-    }
-    #advanced-config summary,
-    #lyrics-api-config summary {
-        cursor: pointer;
-    }
-    #lyrics-api-config {
-        margin-top: 1.5rem;
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='setup-wizard.css') }}">
 {% endblock %}
 
 {% block content %}
-<div id="main-content-inner">
-    <section>
-        <div class="page-header">
-            <h1>AudioMuse-AI - Setup Wizard</h1>
-            <p class="subtitle">Configure your media server, authentication and advanced settings.</p>
-        </div>
-    </section>
+<div id="main-content-inner" class="setup-wizard">
+    <header class="wizard-head">
+        <h1>AudioMuse-AI &mdash; Setup Wizard</h1>
+        <p class="subtitle">Configure your media server, authentication and analysis options. Sections below are independent &mdash; save anytime.</p>
+    </header>
 
-    <form id="setup-form">
-        <section class="section">
-                <h2>Media Server</h2>
-                <div class="field-row">
-                    <label for="MEDIASERVER_TYPE" class="label-with-tooltip">
-                        Media server type
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL.</span>
-                        </span>
-                    </label>
-                    <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
-                        <option value="jellyfin">Jellyfin</option>
-                        <option value="navidrome">Navidrome</option>
-                        <option value="lyrion">Lyrion</option>
-                        <option value="emby">Emby</option>
-                    </select>
-                </div>
-                <div id="server-config-fields"></div>
-                <div class="field-row">
-                    <button id="test-button" type="button" disabled>Test connection</button>
-                </div>
-                <div class="field-row">
-                    <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
-                </div>
-                <div id="music-libraries-section" class="field-row" style="display:none; flex-direction:column; align-items:flex-start;">
-                    <label class="label-with-tooltip" style="margin-bottom:0.5rem;">
-                        Music libraries to scan
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick which libraries to analyze. Check "No restriction" to scan every library on the server (including any added later) — this disables the per-library checkboxes. Otherwise check only the specific libraries you want; the rest will be skipped. This list is fetched live from your media server after a successful connection test.</span>
-                        </span>
-                    </label>
-                    <div id="music-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem; width:100%;"></div>
-                    <small style="margin-top:0.5rem; opacity:0.85;">Changes apply to new analyses only. Run a Cleaning task to remove already-analyzed tracks from libraries you uncheck.</small>
-                    <small id="music-libraries-hint" style="display:none; margin-top:0.5rem;">Select at least one library, or check "No restriction" to scan everything.</small>
-                </div>
-            </section>
+    <div class="wizard-toolbar">
+        <label class="wizard-search" for="wizard-search-input">
+            <svg class="wizard-search-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M20 20l-3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+            <input id="wizard-search-input" type="search" placeholder="Search settings (e.g. JWT, ollama, voyager, lyrics)…" autocomplete="off">
+            <button id="wizard-search-clear" type="button" class="wizard-search-clear" aria-label="Clear search" hidden>&times;</button>
+        </label>
+    </div>
 
-            <section class="section">
-                <h2>Authentication</h2>
-                <div class="field-row">
-                    <label for="AUTH_ENABLED" class="required-label label-with-tooltip">
-                        Enable authentication
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">When True, the web UI and API require login. When False, AudioMuse-AI is fully open to anyone who can reach it.</span>
-                        </span>
-                    </label>
-                    <select id="AUTH_ENABLED" name="AUTH_ENABLED" required>
-                        <option value="true">True</option>
-                        <option value="false">False</option>
-                    </select>
-                </div>
-                <div id="auth-admin-exists" class="field-row" style="display:none;">
-                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--card-bg, #f5f5f5); border:1px solid var(--border-color, #ccc);">
-                        An admin account already exists. To add, remove, or change
-                        admin and normal user accounts, go to the
-                        <a href="/users">Users</a> page.
-                    </p>
-                </div>
-                <div id="auth-credentials" class="field-grid">
-                    <div class="auth-admin-credential">
-                        <label for="AUDIOMUSE_USER" class="label-with-tooltip">
-                            Admin Username
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">The admin username you'll use to log into the AudioMuse-AI web interface. The admin has full access, including the Administration menu (Setup Wizard, Users, Cleaning, Scheduled Tasks, Backup, Provider Migration, Analysis and Clustering). Additional non-admin users can be created later from the Users page.</span>
-                            </span>
-                        </label>
-                        <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
-                    </div>
-                    <div class="auth-admin-credential">
-                        <label for="AUDIOMUSE_PASSWORD" class="label-with-tooltip">
-                            Admin Password
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">The password for the admin user above.</span>
-                            </span>
-                        </label>
-                        <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
-                    </div>
-                    <div class="auth-admin-credential">
-                        <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
-                            Confirm Admin Password
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">Re-enter the admin password above to confirm it. Both fields must match before saving.</span>
-                            </span>
-                        </label>
-                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
-                    </div>
-                    <div>
-                        <label for="JWT_SECRET" class="label-with-tooltip">
-                            JWT Secret
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">Random secret used to sign login tokens. Leave blank to auto-generate a strong one. Changing it invalidates all existing sessions.</span>
-                            </span>
-                        </label>
-                        <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
-                    </div>
-                </div>
-                <div id="api-token-row" class="field-row">
-                    <label for="API_TOKEN" class="label-with-tooltip">
-                        API token
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Optional bearer token for programmatic API access, needed for AudioMuse-AI plugin.</span>
-                        </span>
-                    </label>
-                    <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
-                </div>
-            </section>
+    <div class="wizard-layout">
+        <aside class="wizard-rail" aria-label="Setup sections">
+            <nav class="wizard-rail-nav">
+                <a class="wizard-rail-item" href="#group-server" data-group-link="group-server">
+                    <span class="wizard-rail-title">Media server</span>
+                    <span class="wizard-rail-desc">Connect your music library.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-auth" data-group-link="group-auth">
+                    <span class="wizard-rail-title">Authentication &amp; API</span>
+                    <span class="wizard-rail-desc">Login, admin user, JWT, API token.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-ai" data-group-link="group-ai">
+                    <span class="wizard-rail-title">AI provider</span>
+                    <span class="wizard-rail-desc">Pick the model that names playlists.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-lyrics" data-group-link="group-lyrics">
+                    <span class="wizard-rail-title">Lyrics</span>
+                    <span class="wizard-rail-desc">External APIs and Whisper fallback.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-clustering" data-group-link="group-clustering">
+                    <span class="wizard-rail-title">Clustering &amp; analysis</span>
+                    <span class="wizard-rail-desc">Algorithm, ranges, batching.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-playlists" data-group-link="group-playlists">
+                    <span class="wizard-rail-title">Playlists &amp; similarity</span>
+                    <span class="wizard-rail-desc">Voyager, sonic fingerprint, CLAP.</span>
+                </a>
+                <a class="wizard-rail-item" href="#group-everything-else" data-group-link="group-everything-else">
+                    <span class="wizard-rail-title">Everything else</span>
+                    <span class="wizard-rail-desc">Rarely-touched advanced toggles.</span>
+                </a>
+            </nav>
+        </aside>
 
-            <details id="advanced-config">
-                <summary>Advanced configuration</summary>
-                <div class="notice" style="margin-top: 1rem;">
-                    <strong>⚠️ Read the documentation first.</strong>
-                    These settings tune analysis, clustering and internal behavior. Wrong values can break analysis runs or produce poor playlists. Please review the
-                    <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS documentation on GitHub</a>
-                    before changing anything here.
-                </div>
-                <div id="advanced-fields"></div>
-            </details>
+        <main class="wizard-main">
+            <form id="setup-form">
 
-            {% if lyrics_enabled %}
-            <details id="lyrics-api-config">
-                <summary>Lyrics API</summary>
-                <div class="notice" style="margin-top: 1rem;">
-                    These are the external APIs used to fetch lyrics before analysis.
-                    If no API is configured, or if all configured APIs fail or time out,
-                    AudioMuse-AI will fall back to local transcription with <strong>Whisper</strong>.
-                    <br><br>
-                    Paste a real example URL (with actual artist and track values) and click <strong>Analyze</strong>.
-                    AudioMuse-AI will call the URL, detect the parameters automatically, and show the JSON response
-                    so you can click the field that contains the lyrics.
-                </div>
+                <!-- ============================================================
+                     Group: Media server
+                     ============================================================ -->
+                <section class="wizard-card" id="group-server" data-group="group-server">
+                    <header class="wizard-card-head">
+                        <h2>Media server</h2>
+                        <p>Tell AudioMuse-AI where your music lives. Each option asks for slightly different credentials below.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div class="field-row">
+                            <label for="MEDIASERVER_TYPE" class="label-with-tooltip">
+                                Media server type
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL.</span>
+                                </span>
+                            </label>
+                            <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
+                                <option value="jellyfin">Jellyfin</option>
+                                <option value="navidrome">Navidrome</option>
+                                <option value="lyrion">Lyrion</option>
+                                <option value="emby">Emby</option>
+                            </select>
+                        </div>
+                        <div id="server-config-fields"></div>
+                        <div class="field-row">
+                            <button id="test-button" type="button" class="wizard-btn-secondary" disabled>Test connection</button>
+                        </div>
+                        <div class="field-row">
+                            <p id="test-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
+                        </div>
+                        <div id="music-libraries-section" class="field-row" style="display:none; flex-direction:column; align-items:flex-start;">
+                            <label class="label-with-tooltip" style="margin-bottom:0.5rem;">
+                                Music libraries to scan
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Pick which libraries to analyze. Check "No restriction" to scan every library on the server (including any added later) — this disables the per-library checkboxes. Otherwise check only the specific libraries you want; the rest will be skipped. This list is fetched live from your media server after a successful connection test.</span>
+                                </span>
+                            </label>
+                            <div id="music-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem; width:100%;"></div>
+                            <small style="margin-top:0.5rem; opacity:0.85;">Changes apply to new analyses only. Run a Cleaning task to remove already-analyzed tracks from libraries you uncheck.</small>
+                            <small id="music-libraries-hint" style="display:none; margin-top:0.5rem;">Select at least one library, or check "No restriction" to scan everything.</small>
+                        </div>
+                        <div id="group-server-extras" class="grouped-fields"></div>
+                    </div>
+                </section>
 
-                <!-- API Slot 1 -->
-                <div class="section" style="margin-top: 1.5rem;">
-                    <h3 style="margin-bottom: 1rem;">API Slot 1</h3>
-                    <div id="lyrics-api-1-input-row" class="field-row inline" style="align-items:center;">
-                        <input id="lyrics-api-1-example-url" type="text" style="flex:1; min-width:200px; margin-bottom:0;">
-                        <button type="button" id="lyrics-api-1-analyze-btn" style="white-space:nowrap;">Analyze</button>
+                <!-- ============================================================
+                     Group: Authentication & API
+                     ============================================================ -->
+                <section class="wizard-card" id="group-auth" data-group="group-auth">
+                    <header class="wizard-card-head">
+                        <h2>Authentication &amp; API</h2>
+                        <p>Control who can reach the web UI and how external clients authenticate.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div class="field-row">
+                            <label for="AUTH_ENABLED" class="required-label label-with-tooltip">
+                                Enable authentication
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">When True, the web UI and API require login. When False, AudioMuse-AI is fully open to anyone who can reach it.</span>
+                                </span>
+                            </label>
+                            <select id="AUTH_ENABLED" name="AUTH_ENABLED" required>
+                                <option value="true">True</option>
+                                <option value="false">False</option>
+                            </select>
+                        </div>
+                        <div id="auth-admin-exists" class="field-row" style="display:none;">
+                            <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--bg-card, #f5f5f5); border:1px solid var(--border-color, #ccc);">
+                                An admin account already exists. To add, remove, or change
+                                admin and normal user accounts, go to the
+                                <a href="/users">Users</a> page.
+                            </p>
+                        </div>
+                        <div id="auth-credentials" class="field-grid">
+                            <div class="auth-admin-credential">
+                                <label for="AUDIOMUSE_USER" class="label-with-tooltip">
+                                    Admin username
+                                    <span class="info-tooltip" tabindex="0">
+                                        <span class="info-icon"></span>
+                                        <span class="tooltip-text">The admin username you'll use to log into the AudioMuse-AI web interface. The admin has full access, including the Administration menu (Setup Wizard, Users, Cleaning, Scheduled Tasks, Backup, Provider Migration, Analysis and Clustering). Additional non-admin users can be created later from the Users page.</span>
+                                    </span>
+                                </label>
+                                <input id="AUDIOMUSE_USER" name="AUDIOMUSE_USER" type="text" placeholder="alice">
+                            </div>
+                            <div class="auth-admin-credential">
+                                <label for="AUDIOMUSE_PASSWORD" class="label-with-tooltip">
+                                    Admin password
+                                    <span class="info-tooltip" tabindex="0">
+                                        <span class="info-icon"></span>
+                                        <span class="tooltip-text">The password for the admin user above.</span>
+                                    </span>
+                                </label>
+                                <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
+                            </div>
+                            <div class="auth-admin-credential">
+                                <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
+                                    Confirm admin password
+                                    <span class="info-tooltip" tabindex="0">
+                                        <span class="info-icon"></span>
+                                        <span class="tooltip-text">Re-enter the admin password above to confirm it. Both fields must match before saving.</span>
+                                    </span>
+                                </label>
+                                <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                            </div>
+                            <div>
+                                <label for="JWT_SECRET" class="label-with-tooltip">
+                                    JWT secret
+                                    <span class="info-tooltip" tabindex="0">
+                                        <span class="info-icon"></span>
+                                        <span class="tooltip-text">Random secret used to sign login tokens. Leave blank to auto-generate a strong one. Changing it invalidates all existing sessions.</span>
+                                    </span>
+                                </label>
+                                <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
+                            </div>
+                        </div>
+                        <div id="api-token-row" class="field-row">
+                            <label for="API_TOKEN" class="label-with-tooltip">
+                                API token
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Optional bearer token for programmatic API access, needed for AudioMuse-AI plugin.</span>
+                                </span>
+                            </label>
+                            <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
+                        </div>
+                        <div id="group-auth-extras" class="grouped-fields"></div>
                     </div>
-                    <div id="lyrics-api-1-analyze-status" class="field-row" style="display:none;">
-                        <p id="lyrics-api-1-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
-                    </div>
-                    <div id="lyrics-api-1-analyze-area" style="display:none; margin-top:1rem;"></div>
-                    <div id="lyrics-api-1-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
-                    <div id="lyrics-api-1-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
-                        <label for="LYRICS_API_1_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
-                        <input id="LYRICS_API_1_TIMEOUT" name="LYRICS_API_1_TIMEOUT" type="number" min="1" step="0.5"
-                               style="width:100px; margin-bottom:0;" value="5">
-                    </div>
-                    <input type="hidden" id="LYRICS_API_1_URL_TEMPLATE" name="LYRICS_API_1_URL_TEMPLATE">
-                    <input type="hidden" id="LYRICS_API_1_ARTIST_PARAM" name="LYRICS_API_1_ARTIST_PARAM">
-                    <input type="hidden" id="LYRICS_API_1_TITLE_PARAM" name="LYRICS_API_1_TITLE_PARAM">
-                    <input type="hidden" id="LYRICS_API_1_LYRICS_FIELD" name="LYRICS_API_1_LYRICS_FIELD">
-                    <input type="hidden" id="LYRICS_API_1_APIKEY_PARAM" name="LYRICS_API_1_APIKEY_PARAM">
-                    <input type="hidden" id="LYRICS_API_1_APIKEY_VALUE" name="LYRICS_API_1_APIKEY_VALUE">
-                </div>
+                </section>
 
-                <!-- API Slot 2 -->
-                <div class="section" style="margin-top: 1.5rem; padding-top:1.5rem; border-top:1px solid var(--border-color,#eee);">
-                    <h3 style="margin-bottom: 1rem;">API Slot 2</h3>
-                    <div id="lyrics-api-2-input-row" class="field-row inline" style="align-items:center;">
-                        <input id="lyrics-api-2-example-url" type="text" style="flex:1; min-width:200px; margin-bottom:0;">
-                        <button type="button" id="lyrics-api-2-analyze-btn" style="white-space:nowrap;">Analyze</button>
+                <!-- ============================================================
+                     Group: AI provider
+                     ============================================================ -->
+                <section class="wizard-card" id="group-ai" data-group="group-ai">
+                    <header class="wizard-card-head">
+                        <h2>AI provider</h2>
+                        <p>Pick the LLM family that names playlists and powers chat. Provider-specific fields appear once a provider is selected.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div id="group-ai-fields" class="grouped-fields"></div>
                     </div>
-                    <div id="lyrics-api-2-analyze-status" class="field-row" style="display:none;">
-                        <p id="lyrics-api-2-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
-                    </div>
-                    <div id="lyrics-api-2-analyze-area" style="display:none; margin-top:1rem;"></div>
-                    <div id="lyrics-api-2-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
-                    <div id="lyrics-api-2-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
-                        <label for="LYRICS_API_2_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
-                        <input id="LYRICS_API_2_TIMEOUT" name="LYRICS_API_2_TIMEOUT" type="number" min="1" step="0.5"
-                               style="width:100px; margin-bottom:0;" value="5">
-                    </div>
-                    <input type="hidden" id="LYRICS_API_2_URL_TEMPLATE" name="LYRICS_API_2_URL_TEMPLATE">
-                    <input type="hidden" id="LYRICS_API_2_ARTIST_PARAM" name="LYRICS_API_2_ARTIST_PARAM">
-                    <input type="hidden" id="LYRICS_API_2_TITLE_PARAM" name="LYRICS_API_2_TITLE_PARAM">
-                    <input type="hidden" id="LYRICS_API_2_LYRICS_FIELD" name="LYRICS_API_2_LYRICS_FIELD">
-                    <input type="hidden" id="LYRICS_API_2_APIKEY_PARAM" name="LYRICS_API_2_APIKEY_PARAM">
-                    <input type="hidden" id="LYRICS_API_2_APIKEY_VALUE" name="LYRICS_API_2_APIKEY_VALUE">
-                </div>
-            </details>
-            {% endif %}
+                </section>
 
-            <div style="margin-top: 2rem;"></div>
-            <div class="field-row">
-                <button id="save-button" type="submit">Save configuration</button>
-            </div>
-            <div class="field-row">
-                <p id="save-feedback" class="inline-feedback" style="display:none; margin:0; width:100%;"></p>
-            </div>
-        </form>
+                <!-- ============================================================
+                     Group: Lyrics
+                     ============================================================ -->
+                <section class="wizard-card" id="group-lyrics" data-group="group-lyrics">
+                    <header class="wizard-card-head">
+                        <h2>Lyrics</h2>
+                        <p>Lyric transcription and embeddings. External APIs are tried before falling back to local Whisper.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div id="group-lyrics-fields" class="grouped-fields"></div>
+
+                        {% if lyrics_enabled %}
+                        <div id="lyrics-api-config" class="lyrics-api-block">
+                            <div class="notice">
+                                These are the external APIs used to fetch lyrics before analysis.
+                                If no API is configured, or if all configured APIs fail or time out,
+                                AudioMuse-AI will fall back to local transcription with <strong>Whisper</strong>.
+                                <br><br>
+                                Paste a real example URL (with actual artist and track values) and click <strong>Analyze</strong>.
+                                AudioMuse-AI will call the URL, detect the parameters automatically, and show the JSON response
+                                so you can click the field that contains the lyrics.
+                            </div>
+
+                            <!-- API Slot 1 -->
+                            <div class="lyrics-api-slot">
+                                <h3 class="lyrics-api-slot-title">API slot 1</h3>
+                                <div id="lyrics-api-1-input-row" class="field-row inline" style="align-items:center;">
+                                    <input id="lyrics-api-1-example-url" type="text" placeholder="https://api.example.com/lyrics?artist=…&amp;track=…" style="flex:1; min-width:200px; margin-bottom:0;">
+                                    <button type="button" id="lyrics-api-1-analyze-btn" class="wizard-btn-secondary" style="white-space:nowrap;">Analyze</button>
+                                </div>
+                                <div id="lyrics-api-1-analyze-status" class="field-row" style="display:none;">
+                                    <p id="lyrics-api-1-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
+                                </div>
+                                <div id="lyrics-api-1-analyze-area" style="display:none; margin-top:1rem;"></div>
+                                <div id="lyrics-api-1-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
+                                <div id="lyrics-api-1-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                                    <label for="LYRICS_API_1_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
+                                    <input id="LYRICS_API_1_TIMEOUT" name="LYRICS_API_1_TIMEOUT" type="number" min="1" step="0.5"
+                                           style="width:100px; margin-bottom:0;" value="5">
+                                </div>
+                                <input type="hidden" id="LYRICS_API_1_URL_TEMPLATE" name="LYRICS_API_1_URL_TEMPLATE">
+                                <input type="hidden" id="LYRICS_API_1_ARTIST_PARAM" name="LYRICS_API_1_ARTIST_PARAM">
+                                <input type="hidden" id="LYRICS_API_1_TITLE_PARAM" name="LYRICS_API_1_TITLE_PARAM">
+                                <input type="hidden" id="LYRICS_API_1_LYRICS_FIELD" name="LYRICS_API_1_LYRICS_FIELD">
+                                <input type="hidden" id="LYRICS_API_1_APIKEY_PARAM" name="LYRICS_API_1_APIKEY_PARAM">
+                                <input type="hidden" id="LYRICS_API_1_APIKEY_VALUE" name="LYRICS_API_1_APIKEY_VALUE">
+                            </div>
+
+                            <!-- API Slot 2 -->
+                            <div class="lyrics-api-slot lyrics-api-slot--divided">
+                                <h3 class="lyrics-api-slot-title">API slot 2</h3>
+                                <div id="lyrics-api-2-input-row" class="field-row inline" style="align-items:center;">
+                                    <input id="lyrics-api-2-example-url" type="text" placeholder="https://api.example.com/lyrics?artist=…&amp;track=…" style="flex:1; min-width:200px; margin-bottom:0;">
+                                    <button type="button" id="lyrics-api-2-analyze-btn" class="wizard-btn-secondary" style="white-space:nowrap;">Analyze</button>
+                                </div>
+                                <div id="lyrics-api-2-analyze-status" class="field-row" style="display:none;">
+                                    <p id="lyrics-api-2-status-msg" class="inline-feedback" style="margin:0; width:100%;"></p>
+                                </div>
+                                <div id="lyrics-api-2-analyze-area" style="display:none; margin-top:1rem;"></div>
+                                <div id="lyrics-api-2-config-summary" style="display:none; margin-top:1rem; padding:1rem; border-radius:10px; background:var(--bg-card,#f8f9fb); border:1px solid var(--border-color,#ccc);"></div>
+                                <div id="lyrics-api-2-timeout-row" class="field-row" style="display:none; margin-top:0.75rem; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+                                    <label for="LYRICS_API_2_TIMEOUT" style="margin-bottom:0; white-space:nowrap;">Timeout before falling back to Whisper (seconds)</label>
+                                    <input id="LYRICS_API_2_TIMEOUT" name="LYRICS_API_2_TIMEOUT" type="number" min="1" step="0.5"
+                                           style="width:100px; margin-bottom:0;" value="5">
+                                </div>
+                                <input type="hidden" id="LYRICS_API_2_URL_TEMPLATE" name="LYRICS_API_2_URL_TEMPLATE">
+                                <input type="hidden" id="LYRICS_API_2_ARTIST_PARAM" name="LYRICS_API_2_ARTIST_PARAM">
+                                <input type="hidden" id="LYRICS_API_2_TITLE_PARAM" name="LYRICS_API_2_TITLE_PARAM">
+                                <input type="hidden" id="LYRICS_API_2_LYRICS_FIELD" name="LYRICS_API_2_LYRICS_FIELD">
+                                <input type="hidden" id="LYRICS_API_2_APIKEY_PARAM" name="LYRICS_API_2_APIKEY_PARAM">
+                                <input type="hidden" id="LYRICS_API_2_APIKEY_VALUE" name="LYRICS_API_2_APIKEY_VALUE">
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </section>
+
+                <!-- ============================================================
+                     Group: Clustering & analysis
+                     ============================================================ -->
+                <section class="wizard-card" id="group-clustering" data-group="group-clustering">
+                    <header class="wizard-card-head">
+                        <h2>Clustering &amp; analysis</h2>
+                        <p>Algorithm choice drives which sub-fields apply. Read the
+                            <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS docs</a>
+                            before tuning &mdash; bad values can break analysis runs.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div id="group-clustering-fields" class="grouped-fields"></div>
+                    </div>
+                </section>
+
+                <!-- ============================================================
+                     Group: Playlists & similarity
+                     ============================================================ -->
+                <section class="wizard-card" id="group-playlists" data-group="group-playlists">
+                    <header class="wizard-card-head">
+                        <h2>Playlists &amp; similarity</h2>
+                        <p>Voyager index, sonic fingerprint, CLAP text-search and pathfinding defaults.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div id="group-playlists-fields" class="grouped-fields"></div>
+                    </div>
+                </section>
+
+                <!-- ============================================================
+                     Group: Everything else (catch-all)
+                     ============================================================ -->
+                <section class="wizard-card" id="group-everything-else" data-group="group-everything-else">
+                    <header class="wizard-card-head">
+                        <h2>Everything else</h2>
+                        <p>Advanced toggles that didn't fit anywhere else. Use the search box at the top of the page to find a specific key fast.</p>
+                    </header>
+                    <div class="wizard-card-body">
+                        <div id="group-everything-else-fields" class="grouped-fields"></div>
+                        <p id="group-everything-else-empty" class="grouped-empty" hidden>No additional advanced settings.</p>
+                    </div>
+                </section>
+
+                <!-- Hidden staging container — must remain in DOM so setup.js can populate it.
+                     setup-wizard.js relocates each rendered child into the right group. -->
+                <div id="advanced-fields" class="wizard-staging" aria-hidden="true"></div>
+
+                <div class="wizard-savebar">
+                    <div class="wizard-savebar-inner">
+                        <button id="save-button" type="submit" class="wizard-btn-primary">Save configuration</button>
+                        <p id="save-feedback" class="inline-feedback" style="display:none; margin:0;"></p>
+                    </div>
+                </div>
+            </form>
+        </main>
+    </div>
 </div>
 {% endblock %}
 
 {% block bodyAdditions %}
 <script src="{{ url_for('static', filename='setup.js') }}"></script>
+<script src="{{ url_for('static', filename='setup-wizard.js') }}"></script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 {% endblock %}

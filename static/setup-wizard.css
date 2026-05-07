@@ -1,0 +1,534 @@
+/* ============================================================================
+   AudioMuse-AI — Setup Wizard
+   Sticky-rail layout, grouped cards, search, sticky save bar.
+   Inherits design tokens from style.css (--bg-card, --text-main, etc.).
+   ============================================================================ */
+
+/* Wizard sits inside .container; .container is already centered + max-width: 960px.
+   We widen on the setup page only so the rail + content fit comfortably. */
+.setup-wizard {
+    --wizard-rail-width: 18rem;
+    --wizard-gap: 1.25rem;
+    --wizard-card-radius: 1rem;
+    --wizard-savebar-height: 4.5rem;
+    margin: 0 auto;
+    max-width: 1200px;
+    padding-bottom: calc(var(--wizard-savebar-height) + 2rem);
+}
+
+/* The page container caps width at 960px. The wizard wants more horizontal
+   real estate, so we let it break out of that constraint. */
+.main-content .container:has(.setup-wizard),
+.main-content .container:has(> .setup-wizard) {
+    max-width: 100%;
+}
+
+/* ---------- Header ---------- */
+.setup-wizard .wizard-head {
+    margin-bottom: 1.5rem;
+}
+.setup-wizard .wizard-head h1 {
+    margin: 0 0 0.35rem 0;
+    border: none;
+    padding: 0;
+}
+.setup-wizard .wizard-head .subtitle {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1.5;
+    max-width: 60ch;
+}
+
+/* ---------- Search ---------- */
+.setup-wizard .wizard-toolbar {
+    margin-bottom: 1.25rem;
+}
+.setup-wizard .wizard-search {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.7rem 0.95rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    box-shadow: var(--shadow-input);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.setup-wizard .wizard-search:focus-within {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.setup-wizard .wizard-search-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+.setup-wizard .wizard-search input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-main);
+    font-size: 0.98rem;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+.setup-wizard .wizard-search input::placeholder {
+    color: var(--text-muted);
+}
+.setup-wizard .wizard-search-clear {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+}
+.setup-wizard .wizard-search-clear:hover {
+    color: var(--text-main);
+    background: var(--bg-body);
+}
+
+/* ---------- Layout: rail + main ---------- */
+.setup-wizard .wizard-layout {
+    display: grid;
+    grid-template-columns: var(--wizard-rail-width) minmax(0, 1fr);
+    gap: var(--wizard-gap);
+    align-items: start;
+}
+
+.setup-wizard .wizard-rail {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+    /* Keep the rail navigable even on shorter viewports. */
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+}
+
+.setup-wizard .wizard-rail-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.6rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--wizard-card-radius);
+    box-shadow: var(--shadow-input);
+}
+
+.setup-wizard .wizard-rail-item {
+    display: block;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.6rem;
+    text-decoration: none;
+    color: var(--text-main);
+    border: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    min-height: 44px; /* touch target */
+}
+.setup-wizard .wizard-rail-item:hover {
+    background: var(--bg-body);
+}
+.setup-wizard .wizard-rail-item.is-active {
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+    color: var(--color-primary);
+}
+.setup-wizard .wizard-rail-title {
+    display: block;
+    font-weight: 600;
+    font-size: 0.96rem;
+    line-height: 1.3;
+}
+.setup-wizard .wizard-rail-desc {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+    line-height: 1.35;
+}
+.setup-wizard .wizard-rail-item.is-active .wizard-rail-desc {
+    color: color-mix(in srgb, var(--color-primary) 75%, var(--text-muted));
+}
+
+/* ---------- Cards ---------- */
+.setup-wizard .wizard-main {
+    min-width: 0;
+}
+
+.setup-wizard .wizard-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--wizard-card-radius);
+    box-shadow: var(--shadow-card);
+    margin-bottom: 1.25rem;
+    /* Override style.css's section{padding:1.5rem} since we need tighter control. */
+    padding: 0;
+    /* So scroll-into-view leaves space for any fixed header. */
+    scroll-margin-top: 1rem;
+}
+
+.setup-wizard .wizard-card-head {
+    padding: 1.25rem 1.5rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+.setup-wizard .wizard-card-head h2 {
+    border: none;
+    padding: 0;
+    margin: 0 0 0.25rem;
+    font-size: 1.25rem;
+}
+.setup-wizard .wizard-card-head p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    line-height: 1.45;
+}
+.setup-wizard .wizard-card-body {
+    padding: 1.25rem 1.5rem 1.5rem;
+}
+
+/* ---------- Form fields shared with setup.js's renderer ---------- */
+.setup-wizard label {
+    display: block;
+    margin-bottom: 0.4rem;
+    font-weight: 600;
+    color: var(--text-main);
+}
+.setup-wizard input[type="text"],
+.setup-wizard input[type="password"],
+.setup-wizard input[type="number"],
+.setup-wizard input[type="search"],
+.setup-wizard select,
+.setup-wizard textarea {
+    width: 100%;
+    border: 1px solid var(--border-color-darker, var(--border-color));
+    border-radius: 0.6rem;
+    padding: 0.7rem 0.85rem;
+    margin-bottom: 1rem;
+    font-size: 0.98rem;
+    background: var(--bg-input);
+    color: var(--text-main);
+    box-shadow: var(--shadow-input);
+    box-sizing: border-box;
+    /* Touch target ≥ 44px on mobile */
+    min-height: 44px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.setup-wizard input:focus,
+.setup-wizard select:focus,
+.setup-wizard textarea:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.setup-wizard textarea {
+    min-height: 92px;
+    font-family: inherit;
+    resize: vertical;
+}
+.setup-wizard .field-row {
+    margin-bottom: 1rem;
+}
+.setup-wizard .field-row.inline {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+.setup-wizard .field-row.inline .inline-feedback {
+    width: auto;
+    flex: 1;
+    min-width: 220px;
+}
+.setup-wizard .field-row label {
+    word-break: break-word;
+}
+.setup-wizard .field-row small {
+    color: var(--text-muted);
+}
+.setup-wizard .field-grid {
+    display: grid;
+    gap: 1rem;
+}
+@media (min-width: 720px) {
+    .setup-wizard .field-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+.setup-wizard .required-label::after {
+    content: ' *';
+    color: var(--color-danger);
+}
+
+/* Link styling — the rest of the app has no global <a> rule, so the
+   browser-default colors render unreadably on dark mode (#0000EE / #551A8B
+   on near-black). Scope to the wizard only. */
+.setup-wizard a {
+    color: var(--color-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+    transition: color 0.15s;
+}
+.setup-wizard a:hover,
+.setup-wizard a:focus-visible {
+    color: var(--color-primary-hover);
+    text-decoration-thickness: 2px;
+}
+.setup-wizard a:visited {
+    color: var(--color-primary);
+}
+/* Rail items are <a> too — keep them looking like nav, not body text. */
+.setup-wizard a.wizard-rail-item,
+.setup-wizard a.wizard-rail-item:visited {
+    text-decoration: none;
+    color: var(--text-main);
+}
+.setup-wizard a.wizard-rail-item.is-active,
+.setup-wizard a.wizard-rail-item.is-active:visited {
+    color: var(--color-primary);
+}
+
+/* The hidden staging container that setup.js writes into. We move children
+   out of here into the right group, but the node itself must stay in the
+   DOM (with an id) so setup.js can find it on first render. */
+.setup-wizard .wizard-staging {
+    display: none !important;
+}
+
+/* Each group container becomes a flat list of .field-row entries inside the
+   card body — the same .field-row structure setup.js renders, just relocated. */
+.setup-wizard .grouped-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.setup-wizard .grouped-fields:empty {
+    display: none;
+}
+.setup-wizard .grouped-empty {
+    color: var(--text-muted);
+    font-size: 0.92rem;
+    margin: 0;
+}
+
+/* ---------- Buttons ---------- */
+.setup-wizard .wizard-btn-primary,
+.setup-wizard .wizard-btn-secondary,
+.setup-wizard #setup-form button {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.98rem;
+    padding: 0.75rem 1.2rem;
+    border-radius: 0.6rem;
+    border: 1px solid transparent;
+    min-height: 44px;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.setup-wizard .wizard-btn-primary {
+    background: var(--color-primary);
+    color: #fff;
+    border-color: var(--color-primary);
+}
+.setup-wizard .wizard-btn-primary:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-hover);
+}
+.setup-wizard .wizard-btn-primary:disabled,
+.setup-wizard #setup-form button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+.setup-wizard .wizard-btn-secondary {
+    background: var(--bg-card);
+    color: var(--text-main);
+    border: 1px solid var(--border-color-darker, var(--border-color));
+    box-shadow: var(--shadow-input);
+}
+.setup-wizard .wizard-btn-secondary:hover:not(:disabled) {
+    background: var(--bg-body);
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+/* ---------- Notices ---------- */
+.setup-wizard .notice {
+    padding: 0.95rem 1.1rem;
+    margin: 1rem 0;
+    border-radius: 0.6rem;
+    background: var(--status-idle-bg);
+    color: var(--status-idle-text);
+    border: 1px solid var(--border-color);
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+/* ---------- Inline feedback (inherits status colors from style.css) ---------- */
+.setup-wizard .inline-feedback {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-height: 2.5rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.6rem;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+    line-height: 1.4;
+    background: var(--bg-card);
+    color: var(--text-main);
+    box-shadow: var(--shadow-input);
+    word-break: break-word;
+    box-sizing: border-box;
+    margin: 0;
+}
+.setup-wizard .inline-feedback.status-success {
+    background: var(--status-success-bg);
+    color: var(--status-success-text);
+    border-color: color-mix(in srgb, var(--status-success-text) 30%, transparent);
+}
+.setup-wizard .inline-feedback.status-failure {
+    background: var(--status-failure-bg);
+    color: var(--status-failure-text);
+    border-color: color-mix(in srgb, var(--status-failure-text) 30%, transparent);
+}
+.setup-wizard .inline-feedback.status-pending {
+    background: var(--status-pending-bg);
+    color: var(--status-pending-text);
+    border-color: color-mix(in srgb, var(--status-pending-text) 30%, transparent);
+}
+
+/* ---------- Lyrics API block ---------- */
+.setup-wizard .lyrics-api-block {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px dashed var(--border-color);
+}
+.setup-wizard .lyrics-api-slot {
+    margin-top: 1.25rem;
+}
+.setup-wizard .lyrics-api-slot--divided {
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-color);
+}
+.setup-wizard .lyrics-api-slot-title {
+    margin: 0 0 0.85rem;
+    font-size: 1.05rem;
+    color: var(--text-main);
+}
+
+/* ---------- Save bar (sticky on desktop) ---------- */
+.setup-wizard .wizard-savebar {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 1.5rem 0 0;
+    padding: 0.85rem 1rem;
+    background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--wizard-card-radius);
+    box-shadow: var(--shadow-card);
+}
+.setup-wizard .wizard-savebar-inner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+.setup-wizard .wizard-savebar #save-button {
+    flex-shrink: 0;
+}
+
+/* ---------- Search-hidden state ---------- */
+.setup-wizard .field-row.is-search-hidden,
+.setup-wizard .wizard-card.is-search-hidden,
+.setup-wizard .wizard-rail-item.is-search-hidden {
+    display: none !important;
+}
+.setup-wizard .wizard-card.is-search-match .wizard-card-head {
+    border-color: var(--color-primary);
+}
+
+/* ============================================================================
+   Responsive: tablets and phones
+   ============================================================================ */
+
+/* At <= 1024px the rail collapses into a horizontal scroll-pill bar above
+   the main column. */
+@media (max-width: 1024px) {
+    .setup-wizard {
+        --wizard-rail-width: 100%;
+    }
+    .setup-wizard .wizard-layout {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 1rem;
+    }
+    .setup-wizard .wizard-rail {
+        position: sticky;
+        top: 0;
+        z-index: 4;
+        max-height: none;
+        overflow: visible;
+        margin: 0 -0.5rem;
+    }
+    .setup-wizard .wizard-rail-nav {
+        display: flex;
+        flex-direction: row;
+        gap: 0.4rem;
+        padding: 0.5rem;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        border-radius: 0.75rem;
+        background: color-mix(in srgb, var(--bg-card) 92%, transparent);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+    .setup-wizard .wizard-rail-nav::-webkit-scrollbar { display: none; }
+    .setup-wizard .wizard-rail-item {
+        flex: 0 0 auto;
+        padding: 0.5rem 0.85rem;
+        border-radius: 999px;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        white-space: nowrap;
+    }
+    .setup-wizard .wizard-rail-desc {
+        display: none;
+    }
+    .setup-wizard .wizard-rail-title {
+        font-size: 0.92rem;
+        font-weight: 600;
+    }
+}
+
+@media (max-width: 720px) {
+    .setup-wizard .wizard-card-head {
+        padding: 1rem 1rem 0.6rem;
+    }
+    .setup-wizard .wizard-card-body {
+        padding: 1rem 1rem 1.25rem;
+    }
+    .setup-wizard .wizard-savebar {
+        padding: 0.7rem 0.9rem;
+    }
+    .setup-wizard .wizard-savebar #save-button {
+        width: 100%;
+    }
+    .setup-wizard .wizard-savebar-inner {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .setup-wizard .wizard-head h1 {
+        font-size: 1.5rem;
+    }
+}
