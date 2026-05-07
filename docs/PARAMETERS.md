@@ -168,6 +168,7 @@ These are the default parameters used when launching analysis or clustering task
 | `SCORE_WEIGHT_DAVIES_BOULDIN`               | Weight for Davies-Bouldin Index (cluster separation).                                     | `0.0`                                  |
 | `SCORE_WEIGHT_CALINSKI_HARABASZ`            | Weight for Calinski-Harabasz Index (cluster separation).                                  | `0.0`                                  |
 | **Lyrics & SemGrove (Semantic + Groove) Search** |                                                                                      |                                        |
+| `MUSICSERVER_LYRICS_TIMEOUT`                | Timeout (seconds) for fetching embedded lyrics from the media server (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics on-the-fly via plugins that may take several seconds to respond. | `2.5` |
 | `LYRICS_ENABLED`                            | When `false`, the lyrics transcription/embedding step is skipped entirely during analysis. | `true`                                |
 | `LYRICS_LLM_ENABLED`                        | When `true`, uses a local LLM (Qwen2.5-1.5B GGUF) to clean/summarise transcribed lyrics before embedding. | `false`               |
 | `LYRICS_API_ENABLE`                         | When `true`, fetches lyrics from external APIs (slots 1 & 2) before falling back to Whisper transcription. | `true`               |

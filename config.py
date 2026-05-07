@@ -97,7 +97,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v1.1.1"
+APP_VERSION = "v1.1.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -317,6 +317,11 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
+# Timeout (seconds) for fetching embedded lyrics from the configured media server
+# (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
+# on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
+# seconds to respond. Set 0 to disable the lookup.
+MUSICSERVER_LYRICS_TIMEOUT = float(os.environ.get("MUSICSERVER_LYRICS_TIMEOUT", "2.5"))
 # User-configurable lyrics API slots (up to 2).
 # Each slot stores: url_template, lyrics_field, artist_param, title_param, api_key_param, api_key_value
 # e.g. LYRICS_API_1_URL_TEMPLATE = "https://lrclib.net/api/get?{artist_param}={artist}&{title_param}={title}"
