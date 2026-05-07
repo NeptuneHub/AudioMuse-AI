@@ -1200,14 +1200,27 @@ function buildUrlTemplate(exampleUrl, paramRoles, params, pathSegments, pathRole
 //   - a lyrics field
 //   - an artist source: either {artist} placeholder in the URL template OR an artist param
 //   - a title source:  either {title} placeholder in the URL template OR a title param
-function validateLyricsApiSlots(config) {
+//
+// IMPORTANT: read directly from the form inputs (not from the diff'd ``config``
+// passed in). ``collectConfigFromForm`` deliberately drops fields whose current
+// value matches ``dataset.originalValue`` so the wire payload only carries
+// CHANGED fields. Slot validation needs the FULL current state, otherwise an
+// edit that only changes URL_TEMPLATE (e.g. after re-analyzing the same URL on
+// an already-saved slot) would falsely report that LYRICS_FIELD / ARTIST_PARAM
+// / TITLE_PARAM are missing — the saved values are still in the form, just
+// suppressed from the diff.
+function validateLyricsApiSlots(_config) {
+    function fieldValue(pre, name) {
+        var el = document.getElementById(pre + name);
+        return el ? String(el.value || '').trim() : '';
+    }
     for (var i = 1; i <= 2; i++) {
         var pre = 'LYRICS_API_' + i + '_';
-        var url    = String(config[pre + 'URL_TEMPLATE'] || '').trim();
-        var artist = String(config[pre + 'ARTIST_PARAM'] || '').trim();
-        var title  = String(config[pre + 'TITLE_PARAM']  || '').trim();
-        var lyrics = String(config[pre + 'LYRICS_FIELD'] || '').trim();
-        var apikey = String(config[pre + 'APIKEY_PARAM'] || '').trim();
+        var url    = fieldValue(pre, 'URL_TEMPLATE');
+        var artist = fieldValue(pre, 'ARTIST_PARAM');
+        var title  = fieldValue(pre, 'TITLE_PARAM');
+        var lyrics = fieldValue(pre, 'LYRICS_FIELD');
+        var apikey = fieldValue(pre, 'APIKEY_PARAM');
         var inUse = !!(url || artist || title || lyrics || apikey);
         if (!inUse) continue;
         var hasArtist = artist || url.indexOf('{artist}') !== -1;
