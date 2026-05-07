@@ -502,6 +502,14 @@ def build_and_store_voyager_index(db_conn=None):
 
                 logger.info(f"Stored Voyager index in {num_parts} parts (prefix='{INDEX_NAME}_<part>_<total>').")
 
+            # Record the indexed-song count in dashboard_stats so the dashboard
+            # shows it without needing the in-memory cache to be loaded.
+            try:
+                from app_dashboard import record_index_count
+                record_index_count(db_conn, 'musicnn_indexed', len(local_id_map))
+            except Exception as e:
+                logger.warning("Failed to record musicnn_indexed dashboard count: %s", e)
+
             # Commit the transaction atomically so readers never see partial state
             db_conn.commit()
             logger.info("Voyager index build and database storage complete.")

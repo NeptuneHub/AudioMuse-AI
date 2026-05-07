@@ -323,6 +323,14 @@ def build_and_store_clap_index(db_conn=None):
                     cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, CLAP_EMBEDDING_DIMENSION))
                 logger.info(f"Stored CLAP index in {num_parts} segmented rows in clap_index_data.")
 
+        # Record the indexed-song count in dashboard_stats so the dashboard
+        # shows it without needing the in-memory cache to be loaded.
+        try:
+            from app_dashboard import record_index_count
+            record_index_count(db_conn, 'clap_indexed', len(id_map))
+        except Exception as e:
+            logger.warning("Failed to record clap_indexed dashboard count: %s", e)
+
         db_conn.commit()
         logger.info("CLAP text search index build successful.")
         return True

@@ -745,6 +745,15 @@ def build_and_store_artist_index(db_conn=None):
 
                 logger.info(f"Stored artist index in {num_parts} parts (prefix='{ARTIST_INDEX_NAME}_<part>_<total>').")
 
+            # Record the indexed-artist count in dashboard_stats so the
+            # dashboard shows it without needing the in-memory cache to
+            # be loaded.
+            try:
+                from app_dashboard import record_index_count
+                record_index_count(db_conn, 'gmm_indexed', len(artist_gmms))
+            except Exception as e:
+                logger.warning("Failed to record gmm_indexed dashboard count: %s", e)
+
             db_conn.commit()
             logger.info(f"Artist similarity index built and stored successfully ({len(artist_gmms)} artists)")
 

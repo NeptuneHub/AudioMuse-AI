@@ -21,12 +21,9 @@ GPU-bound sessions get consistent tuning.
 
 from __future__ import annotations
 
-import logging
 from typing import Dict, List, Tuple
 
 import onnxruntime as ort
-
-logger = logging.getLogger(__name__)
 
 
 _CUDA_OPTIONS: Dict[str, object] = {
@@ -36,8 +33,6 @@ _CUDA_OPTIONS: Dict[str, object] = {
     'do_copy_in_default_stream': True,
 }
 
-_CACHED_OPTIONS: List[Tuple[str, Dict]] | None = None
-
 
 def pick_provider_options() -> List[Tuple[str, Dict]]:
     """Return ordered ``(provider, options)`` pairs.
@@ -45,20 +40,17 @@ def pick_provider_options() -> List[Tuple[str, Dict]]:
     Prefers ``CUDAExecutionProvider`` when ``onnxruntime-gpu`` reports it
     available and always appends ``CPUExecutionProvider`` as a safety
     fallback so a failed CUDA init doesn't crash the load.
+
+    Recomputed every call (no module-level cache) so unit tests can
+    monkey-patch ``ort.get_available_providers`` without leaking state
+    across test cases.
     """
-    global _CACHED_OPTIONS
-    if _CACHED_OPTIONS is not None:
-        return _CACHED_OPTIONS
     if 'CUDAExecutionProvider' in ort.get_available_providers():
-        logger.info("ONNX Runtime: CUDA available — using GPU with CPU fallback.")
-        _CACHED_OPTIONS = [
+        return [
             ('CUDAExecutionProvider', dict(_CUDA_OPTIONS)),
             ('CPUExecutionProvider', {}),
         ]
-    else:
-        logger.info("ONNX Runtime: CUDA not available — using CPU only.")
-        _CACHED_OPTIONS = [('CPUExecutionProvider', {})]
-    return _CACHED_OPTIONS
+    return [('CPUExecutionProvider', {})]
 
 
 def pick_providers() -> List[str]:

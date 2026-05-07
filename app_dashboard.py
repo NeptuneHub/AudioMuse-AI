@@ -58,38 +58,45 @@ def _table_exists(cur, name):
         return False
 
 
-def _get_musicnn_index_count():
+# Index-count keys persisted in ``dashboard_stats.content`` so the dashboard
+# never has to query the in-memory caches (which idle-unload after 5 min).
+# Each index build writes its own key here via ``record_index_count``; the
+# hourly refresh below preserves them.
+_INDEX_COUNT_KEYS = ('musicnn_indexed', 'clap_indexed', 'gmm_indexed')
+
+
+def record_index_count(db_conn, key, count):
+    """Persist an index-build size into ``dashboard_stats.content``.
+
+    Called from ``build_and_store_*_index`` right after a successful index
+    write so the dashboard reflects the freshly-built size without having
+    to introspect any in-memory cache. Uses a JSONB merge (``||``) so
+    other keys in ``content`` are preserved.
+
+    Safe to call concurrently with ``refresh_dashboard_stats`` because the
+    refresh path also uses an UPSERT and reads existing index counts back
+    in via ``_collect_content_metrics``.
+    """
+    if key not in _INDEX_COUNT_KEYS:
+        logger.warning("record_index_count: unknown key %r ignored", key)
+        return
     try:
-        from tasks.voyager_manager import voyager_index, id_map
-        if id_map is not None:
-            return len(id_map)
-        if voyager_index is not None:
-            return getattr(voyager_index, 'num_elements', 0)
-    except Exception:
-        pass
-    return 0
-
-
-def _get_clap_index_count():
-    try:
-        from tasks.clap_text_search import is_clap_cache_loaded, get_clap_cache_size
-        if is_clap_cache_loaded():
-            return get_clap_cache_size()
-    except Exception:
-        pass
-    return 0
-
-
-def _get_gmm_index_count():
-    try:
-        from tasks.artist_gmm_manager import artist_map, artist_index
-        if artist_map is not None:
-            return len(artist_map)
-        if artist_index is not None:
-            return getattr(artist_index, 'num_elements', 0)
-    except Exception:
-        pass
-    return 0
+        cur = db_conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO dashboard_stats (id, updated_at, content) "
+                "VALUES (1, NOW(), %s::jsonb) "
+                "ON CONFLICT (id) DO UPDATE SET "
+                "content = dashboard_stats.content || EXCLUDED.content, "
+                "updated_at = EXCLUDED.updated_at",
+                (json.dumps({key: int(count)}),),
+            )
+        finally:
+            cur.close()
+        # Caller is responsible for commit/rollback so this happens atomically
+        # with the index_data write.
+    except Exception as e:
+        logger.warning("record_index_count(%s=%d) failed: %s", key, count, e)
 
 
 def _collect_workers():
@@ -156,10 +163,22 @@ def _collect_content_metrics(cur):
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _safe_count(cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"),
         'distinct_albums': _safe_count(cur, "SELECT COUNT(DISTINCT album) FROM score WHERE album IS NOT NULL"),
-        'musicnn_indexed': _get_musicnn_index_count(),
-        'clap_indexed': _get_clap_index_count(),
-        'gmm_indexed': _get_gmm_index_count(),
     }
+
+    # Index counts are written at build time by ``record_index_count``
+    # (each ``build_and_store_*_index`` calls it). We just read whatever
+    # the most recent build wrote, so the value is correct regardless of
+    # whether the in-memory cache is currently loaded.
+    try:
+        cur.execute("SELECT content FROM dashboard_stats WHERE id = 1")
+        row = cur.fetchone()
+        existing = row[0] if row and row[0] else {}
+    except Exception as e:
+        logger.debug("dashboard: could not read previous index counts: %s", e)
+        _safe_rollback(cur)
+        existing = {}
+    for key in _INDEX_COUNT_KEYS:
+        metrics[key] = int(existing.get(key, 0))
 
     # Parse mood vectors to collect the two signals actually rendered by
     # the dashboard:
