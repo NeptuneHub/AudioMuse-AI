@@ -412,14 +412,22 @@ def test_connection(user_creds=None):
 
 
 def get_playlist_by_name(playlist_name):
-    """Finds a Jellyfin playlist by its exact name using admin credentials."""
+    """Finds a Jellyfin playlist by its exact name using admin credentials.
+
+    Jellyfin's /Users/{userId}/Items endpoint silently ignores the Name query
+    parameter and returns every playlist regardless of value, so we have to
+    filter client-side by exact match (mirrors the Emby version).
+    """
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True, "Name": playlist_name}
+    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         playlists = r.json().get("Items", [])
-        return playlists[0] if playlists else None
+        for playlist in playlists:
+            if playlist.get("Name") == playlist_name:
+                return playlist
+        return None
     except Exception as e:
         logger.error(f"Jellyfin get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
         return None
