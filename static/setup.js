@@ -784,14 +784,6 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
-    var lyricsValidation = validateLyricsApiSlots(config);
-    if (!lyricsValidation.ok) {
-        saveFeedback.className = 'status-failure inline-feedback';
-        saveFeedback.style.display = 'block';
-        saveFeedback.textContent = '✕ ' + lyricsValidation.message;
-        saveButton.disabled = false;
-        return;
-    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1061,6 +1053,7 @@ function renderLyricsApiAnalysis(slot) {
     var toInput = document.getElementById('LYRICS_API_' + slot + '_TIMEOUT');
     if (toInput && state.suggestedTimeout) {
         toInput.value = state.suggestedTimeout;
+        try { delete toInput.dataset.originalValue; } catch (_) { toInput.dataset.originalValue = undefined; }
     }
 }
 
@@ -1194,58 +1187,19 @@ function buildUrlTemplate(exampleUrl, paramRoles, params, pathSegments, pathRole
     } catch(e) { return null; }
 }
 
-// Block save when a lyrics API slot is partially configured. A slot is considered
-// "in use" when ANY of its identifying fields is set. Once in use, it must have:
-//   - a URL template
-//   - a lyrics field
-//   - an artist source: either {artist} placeholder in the URL template OR an artist param
-//   - a title source:  either {title} placeholder in the URL template OR a title param
-//
-// IMPORTANT: read directly from the form inputs (not from the diff'd ``config``
-// passed in). ``collectConfigFromForm`` deliberately drops fields whose current
-// value matches ``dataset.originalValue`` so the wire payload only carries
-// CHANGED fields. Slot validation needs the FULL current state, otherwise an
-// edit that only changes URL_TEMPLATE (e.g. after re-analyzing the same URL on
-// an already-saved slot) would falsely report that LYRICS_FIELD / ARTIST_PARAM
-// / TITLE_PARAM are missing — the saved values are still in the form, just
-// suppressed from the diff.
-function validateLyricsApiSlots(_config) {
-    function fieldValue(pre, name) {
-        var el = document.getElementById(pre + name);
-        return el ? String(el.value || '').trim() : '';
-    }
-    for (var i = 1; i <= 2; i++) {
-        var pre = 'LYRICS_API_' + i + '_';
-        var url    = fieldValue(pre, 'URL_TEMPLATE');
-        var artist = fieldValue(pre, 'ARTIST_PARAM');
-        var title  = fieldValue(pre, 'TITLE_PARAM');
-        var lyrics = fieldValue(pre, 'LYRICS_FIELD');
-        var apikey = fieldValue(pre, 'APIKEY_PARAM');
-        var inUse = !!(url || artist || title || lyrics || apikey);
-        if (!inUse) continue;
-        var hasArtist = artist || url.indexOf('{artist}') !== -1;
-        var hasTitle  = title  || url.indexOf('{title}')  !== -1;
-        var missing = [];
-        if (!url)       missing.push('URL template');
-        if (!hasArtist) missing.push('Artist (param or {artist} placeholder)');
-        if (!hasTitle)  missing.push('Title (param or {title} placeholder)');
-        if (!lyrics)    missing.push('Lyrics field');
-        if (missing.length) {
-            return {
-                ok: false,
-                message: 'Lyrics API slot ' + i + ' is incomplete. Missing: ' + missing.join(', ') +
-                         '. Either complete the configuration (analyze an example URL and assign all roles), or click Delete on the slot to remove it before saving.',
-            };
-        }
-    }
-    return {ok: true};
-}
-
 function updateLyricsApiHiddenInputs(slot) {
     var state = lyricsApiState[slot];
     var result = buildUrlTemplate(state.exampleUrl, state.paramRoles, state.params, state.pathSegments, state.pathRoles);
     var pre = 'LYRICS_API_' + slot + '_';
-    function setVal(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
+    function setVal(id, val) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.value = val;
+        // Mark as user-modified so collectConfigFromForm() always includes
+        // it in the diff, even if the new value happens to match what was
+        // previously saved.
+        try { delete el.dataset.originalValue; } catch (_) { el.dataset.originalValue = undefined; }
+    }
     if (result) {
         setVal(pre + 'URL_TEMPLATE', result.template);
         setVal(pre + 'ARTIST_PARAM', result.artistParam || '');
