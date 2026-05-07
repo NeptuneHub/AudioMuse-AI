@@ -1,47 +1,62 @@
-"""Export Helsinki-NLP/opus-mt-mul-en to ONNX.
+"""Export Helsinki-NLP/opus-mt-mul-en to ONNX for the optimum runtime.
 
 One multilingual Marian model that translates from ~70 source languages to
 English. Run once at Docker build time; ``lyrics/translation_onnx.py`` then
-consumes the resulting ``encoder_model.onnx`` + ``decoder_model.onnx`` files
-at runtime via raw onnxruntime, with a numpy greedy-decode loop — no torch
-required at runtime.
+loads the resulting bundle via ``optimum.onnxruntime.ORTModelForSeq2SeqLM``
+at runtime — no torch required at runtime, but the export step itself does
+need torch (which is why this lives in a separate one-shot script).
 
 Usage
 -----
-    python3 export_marian_to_onnx.py \
-        --model Helsinki-NLP/opus-mt-mul-en \
+    python3 export_marian_to_onnx.py \\
+        --model Helsinki-NLP/opus-mt-mul-en \\
         --output /app/model/opus-mt-mul-en-onnx
 
-The output directory will contain:
+The output directory will contain (everything ``ORTModelForSeq2SeqLM``
+expects):
+
     encoder_model.onnx
-    decoder_model.onnx
+    decoder_model_merged.onnx       ← single decoder file that handles both
+                                       first-step and KV-cache-step paths
     config.json
+    generation_config.json
     tokenizer files (sentencepiece + vocab)
+
+We deliberately drop the split ``decoder_model.onnx`` /
+``decoder_with_past_model.onnx`` produced alongside the merge. Optimum's
+runtime defaults ``use_merged=True`` when the merged file is present and
+loads it instead — same behavior, half the disk footprint per model.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 
 
+# Files we drop after the export to keep only the merged decoder. Optimum's
+# default post-processing produces all three (``decoder_model.onnx``,
+# ``decoder_with_past_model.onnx``, ``decoder_model_merged.onnx``) plus their
+# matching ``*_data`` external-weight blobs; the merged variant is the only
+# one we need at runtime.
+_DROP_AFTER_EXPORT = (
+    'decoder_model.onnx',
+    'decoder_model.onnx_data',
+    'decoder_with_past_model.onnx',
+    'decoder_with_past_model.onnx_data',
+)
+
+
 def export_marian_to_onnx(model_id: str, output_dir: str) -> None:
-    """Run ``optimum-cli export onnx`` to produce the encoder/decoder ONNX pair."""
+    """Run ``optimum-cli export onnx`` then prune to keep only the merged decoder."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # optimum-cli is the canonical path: it ships an exporter that handles the
-    # encoder/decoder split, the past_key_values plumbing, etc. We deliberately
-    # do NOT pass --task because optimum auto-detects it from the model config.
-    # Use --no-post-process to keep the exported graphs simple (we run our own
-    # decode loop, so we don't need merged decoder graphs).
     cmd = [
         sys.executable, '-m', 'optimum.exporters.onnx',
         '--model', model_id,
-        '--task', 'text2text-generation',
-        '--no-post-process',
+        '--task', 'text2text-generation-with-past',
         output_dir,
     ]
     print(f'$ {" ".join(cmd)}', flush=True)
@@ -49,29 +64,17 @@ def export_marian_to_onnx(model_id: str, output_dir: str) -> None:
     if completed.returncode != 0:
         raise SystemExit(f'optimum-cli export failed (rc={completed.returncode})')
 
-    # Trim files we don't need at runtime to keep image size down. We only need
-    # encoder_model.onnx, decoder_model.onnx, config.json, and the tokenizer
-    # files. The decoder_with_past / decoder_model_merged variants double the
-    # disk footprint and are not used by our greedy-decode loop.
-    keep_prefixes = (
-        'encoder_model',
-        'decoder_model.onnx',  # NB: precise filename, not the prefix
-        'config.json',
-        'generation_config.json',
-        'special_tokens_map.json',
-        'tokenizer',
-        'source.spm',
-        'target.spm',
-        'vocab.json',
-    )
-    for entry in os.listdir(output_dir):
+    merged_path = os.path.join(output_dir, 'decoder_model_merged.onnx')
+    if not os.path.isfile(merged_path):
+        raise SystemExit(
+            f'ERROR: {merged_path} was not produced. The merging post-process '
+            f'requires the ``accelerate`` package; install it in your venv '
+            f'(``pip install "accelerate>=0.26,<1.0"``) and re-run.')
+
+    for entry in _DROP_AFTER_EXPORT:
         full = os.path.join(output_dir, entry)
-        if entry == 'decoder_model_merged.onnx' or entry == 'decoder_model_merged.onnx_data':
+        if os.path.isfile(full):
             os.remove(full)
-            continue
-        if entry == 'decoder_with_past_model.onnx' or entry == 'decoder_with_past_model.onnx_data':
-            os.remove(full)
-            continue
 
     total = 0
     for entry in os.listdir(output_dir):

@@ -30,9 +30,13 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# Lyrics ONNX models are bundled in ``lyrics_model_onnx.tar.gz`` on the v4.0.0
-# release and downloaded here. The archive expands to ``model/{e5-base-v2.onnx,
-# e5-base-v2/<tokenizer files>, opus-mt-mul-en-onnx/, whisper-small-onnx/}``.
+# Lyrics ONNX models live in three separate archives on the v4.0.0 release
+# (split because each GitHub release asset is capped at 2 GB):
+#   lyrics_model_e5.tar.gz      → e5-base-v2.onnx + e5-base-v2/<tokenizer>
+#   lyrics_model_marian.tar.gz  → opus-mt-mul-en-onnx/
+#   lyrics_model_whisper.tar.gz → whisper-small-onnx/
+# Each tarball is created with ``cd model && tar -czf ../<name>.tar.gz <paths>``
+# so its entries are already at the right level — no --strip-components needed.
 # Other small ONNX models (musicnn, silero) come from their own URLs below.
 RUN set -eux; \
     mkdir -p /app/model; \
@@ -61,64 +65,57 @@ RUN set -eux; \
             exit 1; \
         fi; \
     done; \
-    # ----- Lyrics ONNX bundle (e5 + Marian + Whisper, ~2 GB) ----- \
-    lyrics_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_onnx.tar.gz"; \
-    lyrics_dest="/tmp/lyrics_model_onnx.tar.gz"; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$lyrics_dest" "$lyrics_url"; then \
-            echo "Downloaded lyrics ONNX bundle -> $lyrics_dest"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for lyrics ONNX bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download lyrics_model_onnx.tar.gz after 5 attempts"; \
-        exit 1; \
-    fi; \
-    # The archive contains a top-level ``model/`` directory. Strip that level so \
-    # the contents land directly under /app/model/. \
-    echo "Extracting lyrics ONNX bundle to /app/model..."; \
-    tar -xzf "$lyrics_dest" -C /app/model --strip-components=1; \
-    rm -f "$lyrics_dest"; \
-    # The release archive ships e5-base-v2.onnx (weights) but does NOT bundle \
-    # the e5-base-v2/ tokenizer directory. Fetch the 5 small tokenizer files \
-    # (~3 MB total) from HF Hub if they aren't already there. \
-    if [ ! -f /app/model/e5-base-v2/tokenizer.json ]; then \
-        echo "e5-base-v2 tokenizer not in bundle; fetching from HF Hub..."; \
-        mkdir -p /app/model/e5-base-v2; \
-        e5_base="https://huggingface.co/intfloat/e5-base-v2/resolve/main"; \
-        for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json vocab.txt; do \
-            n=0; \
-            until [ "$n" -ge 5 ]; do \
-                if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
-                    --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                    -O "/app/model/e5-base-v2/$f" "$e5_base/$f"; then \
-                    echo "Downloaded e5 tokenizer file: $f"; \
-                    break; \
-                fi; \
-                n=$((n+1)); \
-                echo "wget attempt $n for e5 $f failed — retrying in $((n*n))s"; \
-                sleep $((n*n)); \
-            done; \
-            if [ "$n" -ge 5 ]; then \
-                echo "ERROR: failed to download e5 tokenizer file $f after 5 attempts"; \
-                exit 1; \
+    # ----- Lyrics ONNX bundles (split into 3 archives so each stays well \
+    # under the 2 GB GitHub release-asset cap; each is downloaded, extracted \
+    # into /app/model/, then deleted). \
+    # \
+    #   lyrics_model_e5.tar.gz       (~420 MB)  e5-base-v2.onnx + e5 tokenizer dir \
+    #   lyrics_model_marian.tar.gz   (~520 MB)  opus-mt-mul-en-onnx/ (encoder + \
+    #                                            decoder_model_merged) \
+    #   lyrics_model_whisper.tar.gz  (~1.0 GB)  whisper-small-onnx/  (encoder + \
+    #                                            decoder_model_merged + \
+    #                                            preprocessor + tokenizer) \
+    # \
+    # The merged-decoder layout (single decoder_model_merged.onnx instead of \
+    # decoder_model + decoder_with_past) cuts the lyrics bundle total from \
+    # ~3 GB down to ~2 GB. Optimum's runtime auto-detects use_merged=True. \
+    # ----- \
+    lyrics_base="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    for archive in lyrics_model_e5.tar.gz lyrics_model_marian.tar.gz lyrics_model_whisper.tar.gz; do \
+        url="${lyrics_base}/${archive}"; \
+        dest="/tmp/${archive}"; \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "$dest" "$url"; then \
+                echo "Downloaded ${archive} -> ${dest}"; \
+                break; \
             fi; \
+            n=$((n+1)); \
+            echo "wget attempt $n for ${archive} failed — retrying in $((n*n))s"; \
+            sleep $((n*n)); \
         done; \
-    fi; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: failed to download ${archive} after 5 attempts"; \
+            exit 1; \
+        fi; \
+        echo "Extracting ${archive} to /app/model..."; \
+        tar -xzf "$dest" -C /app/model; \
+        rm -f "$dest"; \
+    done; \
     # Verify all required lyrics artifacts ended up in the right place. \
+    # ``decoder_model_merged.onnx`` is the single decoder file that handles \
+    # both first-step and KV-cache-step paths. Optimum's ORTModelFor* runtime \
+    # auto-detects it via ``use_merged=True`` (the default when present). \
     for required in \
         /app/model/e5-base-v2.onnx \
         /app/model/e5-base-v2/tokenizer.json \
         /app/model/opus-mt-mul-en-onnx/encoder_model.onnx \
-        /app/model/opus-mt-mul-en-onnx/decoder_model.onnx \
+        /app/model/opus-mt-mul-en-onnx/decoder_model_merged.onnx \
         /app/model/whisper-small-onnx/encoder_model.onnx \
-        /app/model/whisper-small-onnx/decoder_model.onnx \
+        /app/model/whisper-small-onnx/decoder_model_merged.onnx \
+        /app/model/whisper-small-onnx/preprocessor_config.json \
     ; do \
         if [ ! -f "$required" ]; then \
             echo "ERROR: expected lyrics ONNX artifact missing after extraction: $required"; \
@@ -126,7 +123,7 @@ RUN set -eux; \
             exit 1; \
         fi; \
     done; \
-    echo "✓ Lyrics ONNX bundle ready at /app/model/"
+    echo "✓ Lyrics ONNX bundles ready at /app/model/"
 
 # NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 

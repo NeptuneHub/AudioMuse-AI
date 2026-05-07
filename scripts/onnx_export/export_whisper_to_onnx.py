@@ -1,23 +1,31 @@
-"""Export openai/whisper-small to ONNX.
+"""Export openai/whisper-small to ONNX for the optimum runtime.
 
-Run once at export time (with torch + optimum installed). The resulting
-``encoder_model.onnx`` + ``decoder_model.onnx`` pair is then consumed at
-runtime by ``lyrics/whisper_onnx.py`` via raw onnxruntime + a numpy greedy
-decoder — no torch needed at runtime.
+Run once at Docker build time. The resulting bundle is loaded at runtime by
+``lyrics/whisper_onnx.py`` via ``optimum.onnxruntime.ORTModelForSpeechSeq2Seq``
+— no torch required at runtime, but the export step itself does need torch
+(which is why this lives in a separate one-shot script).
 
 Usage
 -----
-    python3 export_whisper_to_onnx.py \
-        --model openai/whisper-small \
+    python3 export_whisper_to_onnx.py \\
+        --model openai/whisper-small \\
         --output /app/model/whisper-small-onnx
 
-The output directory will contain:
+The output directory will contain (everything ``ORTModelForSpeechSeq2Seq``
+expects):
+
     encoder_model.onnx
-    decoder_model.onnx
+    decoder_model_merged.onnx       ← single decoder file that handles both
+                                       first-step and KV-cache-step paths
     config.json
     generation_config.json
-    preprocessor_config.json   (mel filterbank parameters)
-    tokenizer.json + vocab.json + merges.txt + special_tokens_map.json + ...
+    preprocessor_config.json         (mel filterbank parameters)
+    tokenizer files (tokenizer.json + vocab.json + merges.txt + ...)
+
+We deliberately drop the split ``decoder_model.onnx`` /
+``decoder_with_past_model.onnx`` produced alongside the merge. Optimum's
+runtime defaults ``use_merged=True`` when the merged file is present and
+loads it instead — same behavior, half the disk footprint per model.
 """
 
 from __future__ import annotations
@@ -28,14 +36,23 @@ import subprocess
 import sys
 
 
+# See note in export_marian_to_onnx.py — we keep only the merged decoder.
+_DROP_AFTER_EXPORT = (
+    'decoder_model.onnx',
+    'decoder_model.onnx_data',
+    'decoder_with_past_model.onnx',
+    'decoder_with_past_model.onnx_data',
+)
+
+
 def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
+    """Run ``optimum-cli export onnx`` then prune to keep only the merged decoder."""
     os.makedirs(output_dir, exist_ok=True)
 
     cmd = [
         sys.executable, '-m', 'optimum.exporters.onnx',
         '--model', model_id,
-        '--task', 'automatic-speech-recognition',
-        '--no-post-process',
+        '--task', 'automatic-speech-recognition-with-past',
         output_dir,
     ]
     print(f'$ {" ".join(cmd)}', flush=True)
@@ -43,16 +60,14 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
     if completed.returncode != 0:
         raise SystemExit(f'optimum-cli export failed (rc={completed.returncode})')
 
-    # Trim files we don't need at runtime. Our greedy decode loop only consumes
-    # encoder_model.onnx + decoder_model.onnx; the merged / past variants would
-    # double the disk footprint.
-    drop = (
-        'decoder_model_merged.onnx',
-        'decoder_model_merged.onnx_data',
-        'decoder_with_past_model.onnx',
-        'decoder_with_past_model.onnx_data',
-    )
-    for entry in drop:
+    merged_path = os.path.join(output_dir, 'decoder_model_merged.onnx')
+    if not os.path.isfile(merged_path):
+        raise SystemExit(
+            f'ERROR: {merged_path} was not produced. The merging post-process '
+            f'requires the ``accelerate`` package; install it in your venv '
+            f'(``pip install "accelerate>=0.26,<1.0"``) and re-run.')
+
+    for entry in _DROP_AFTER_EXPORT:
         full = os.path.join(output_dir, entry)
         if os.path.isfile(full):
             os.remove(full)
