@@ -390,7 +390,6 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
                 _delete_from_child_table("embedding")
                 _delete_from_child_table("lyrics_embedding")
                 _delete_from_child_table("clap_embedding")
-                _delete_from_child_table("mulan_embedding")
 
                 # Delete from score table
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")

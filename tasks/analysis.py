@@ -29,7 +29,7 @@ from config import (
     TEMP_DIR, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH,
     OTHER_FEATURE_LABELS,
     REBUILD_INDEX_BATCH_SIZE, MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
-    AUDIO_LOAD_TIMEOUT, MULAN_ENABLED, LYRICS_ENABLED,
+    AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED,
 )
 
 
@@ -374,7 +374,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             track_ids_all = [str(t['Id']) for t in tracks]
             existing_track_ids_set = _ah.get_existing_track_ids(track_ids_all)
             missing_clap_ids_set = _ah.get_missing_ids_in_table('clap_embedding', track_ids_all) if is_clap_available() else set()
-            missing_mulan_ids_set = _ah.get_missing_ids_in_table('mulan_embedding', track_ids_all) if MULAN_ENABLED else set()
             missing_lyrics_ids_set = _ah.get_missing_ids_in_table('lyrics_embedding', track_ids_all) if LYRICS_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
@@ -394,16 +393,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 _ah.upsert_artist_mappings_for_tracks([item], album_name=album_name)
 
                 track_id_str = str(item['Id'])
-                needs_musicnn, needs_clap, needs_mulan, needs_lyrics = _ah.decide_track_needs(
+                needs_musicnn, needs_clap, needs_lyrics = _ah.decide_track_needs(
                     track_id_str, existing_track_ids_set, missing_clap_ids_set,
-                    missing_mulan_ids_set, missing_lyrics_ids_set, LYRICS_ENABLED,
+                    missing_lyrics_ids_set, LYRICS_ENABLED,
                 )
                 track_audio, track_sr = None, None
 
-                if not (needs_musicnn or needs_clap or needs_mulan or needs_lyrics):
+                if not (needs_musicnn or needs_clap or needs_lyrics):
                     tracks_skipped_count += 1
                     status_parts = _ah.build_feature_status_parts(
-                        is_clap_available(), MULAN_ENABLED, LYRICS_ENABLED, include_check_marks=True,
+                        is_clap_available(), LYRICS_ENABLED, include_check_marks=True,
                     )
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
@@ -413,7 +412,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     continue
 
                 try:
-                    track_processed = False  # MusiCNN | CLAP | MuLan | Lyrics produced data?
+                    track_processed = False  # MusiCNN | CLAP | Lyrics produced data?
 
                     if needs_musicnn:
                         if onnx_sessions is None:
@@ -469,8 +468,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
                     if _ah.run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                                                 needs_lyrics, LYRICS_ENABLED, robust_load_audio_with_fallback):
-                        track_processed = True
-                    if _ah.run_mulan_for_track(path, item, track_name_full, needs_mulan, MULAN_ENABLED):
                         track_processed = True
 
                     if track_processed:
@@ -639,8 +636,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album.get('Name'))
 
                 try:
-                    existing_count, needs_clap_analysis, needs_mulan_analysis, needs_lyrics_analysis = _ah.compute_album_needs(
-                        tracks, is_clap_available(), MULAN_ENABLED, LYRICS_ENABLED,
+                    existing_count, needs_clap_analysis, needs_lyrics_analysis = _ah.compute_album_needs(
+                        tracks, is_clap_available(), LYRICS_ENABLED,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to verify existing tracks for album '{album.get('Name')}' (ID: {album.get('Id')}): {e}")
@@ -649,12 +646,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     continue
 
                 # Skip only when MusiCNN + every enabled feature is already complete.
-                if existing_count >= len(tracks) and not (needs_clap_analysis or needs_mulan_analysis or needs_lyrics_analysis):
+                if existing_count >= len(tracks) and not (needs_clap_analysis or needs_lyrics_analysis):
                     for item in tracks:
                         _ah.refresh_track_metadata(item, album.get('Name'))
                     albums_skipped += 1
                     checked_album_ids.add(album['Id'])
-                    status_parts = _ah.build_feature_status_parts(is_clap_available(), MULAN_ENABLED, LYRICS_ENABLED)
+                    status_parts = _ah.build_feature_status_parts(is_clap_available(), LYRICS_ENABLED)
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {existing_count}/{len(tracks)} tracks already analyzed ({' + '.join(status_parts)}).")
                     continue
 

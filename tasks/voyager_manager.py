@@ -49,6 +49,50 @@ voyager_index = None
 id_map = None # {voyager_int_id: item_id_str}
 reverse_id_map = None # {item_id_str: voyager_int_id}
 
+from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
+
+
+def _unload_voyager_cache() -> None:
+    global voyager_index, id_map, reverse_id_map
+    voyager_index = None
+    id_map = None
+    reverse_id_map = None
+    _get_cached_vector.cache_clear()
+    logger.info("Voyager index cache unloaded from memory.")
+
+_VOYAGER_IDLE = _IdleUnloader(
+    name="voyager-index",
+    idle_seconds=int(os.environ.get("VOYAGER_INDEX_IDLE_SECONDS", "300")),
+    unload_fn=_unload_voyager_cache,
+)
+
+
+def _touch_voyager_idle() -> None:
+    try:
+        _VOYAGER_IDLE.set_idle_seconds(int(os.environ.get("VOYAGER_INDEX_IDLE_SECONDS", "300")))
+    except Exception:
+        pass
+    _VOYAGER_IDLE.touch()
+
+
+def is_voyager_cache_loaded() -> bool:
+    return voyager_index is not None and id_map is not None and reverse_id_map is not None
+
+
+def refresh_voyager_cache() -> bool:
+    if not is_voyager_cache_loaded():
+        logger.info("Voyager refresh skipped: index not currently loaded (will lazy-load on first query).")
+        return False
+    load_voyager_index_for_querying(force_reload=True)
+    return is_voyager_cache_loaded()
+
+
+def _ensure_voyager_loaded() -> None:
+    if voyager_index is None or id_map is None or reverse_id_map is None:
+        load_voyager_index_for_querying()
+    if voyager_index is None or id_map is None or reverse_id_map is None:
+        raise RuntimeError("Voyager index is not loaded in memory.")
+
 
 def _split_bytes(data: bytes, part_size: int) -> list:
     """Split `data` into a list of byte chunks, each <= part_size."""
@@ -142,6 +186,9 @@ def get_direct_distance(v1, v2):
     return _get_direct_euclidean_distance(v1, v2)
 
 
+_VOYAGER_LOAD_LOCK = threading.Lock()
+
+
 def load_voyager_index_for_querying(force_reload=False):
     """
     Loads the Voyager index from the database into the global in-memory cache.
@@ -152,6 +199,17 @@ def load_voyager_index_for_querying(force_reload=False):
     if voyager_index is not None and not force_reload:
         logger.info("Voyager index is already loaded in memory. Skipping reload.")
         return
+
+    # Serialize concurrent callers (preload worker + an inline lazy-load
+    # from a user search) so they don't both allocate the ~500 MB index.
+    with _VOYAGER_LOAD_LOCK:
+        if voyager_index is not None and not force_reload:
+            return
+        return _load_voyager_index_locked(force_reload)
+
+
+def _load_voyager_index_locked(force_reload):
+    global voyager_index, id_map, reverse_id_map
 
     # Clear the vector cache when reloading
     if force_reload:
@@ -187,6 +245,7 @@ def load_voyager_index_for_querying(force_reload=False):
             reverse_id_map = {v: k for k, v in id_map.items()}
 
             logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
+            _touch_voyager_idle()
             return
 
         # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
@@ -464,6 +523,14 @@ def get_vector_by_id(item_id: str) -> np.ndarray | None:
     Retrieves the embedding vector for a given item_id from the loaded Voyager index.
     Uses caching for better performance.
     """
+    if voyager_index is None or reverse_id_map is None:
+        try:
+            load_voyager_index_for_querying()
+        except Exception:
+            return None
+        if voyager_index is None or reverse_id_map is None:
+            return None
+    _touch_voyager_idle()
     return _get_cached_vector(item_id)
 
 def _normalize_string(text: str) -> str:
@@ -1375,8 +1442,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
     If radius_similarity is True, re-orders results based on the 70/30 weighted score.
     """
-    if voyager_index is None or id_map is None or reverse_id_map is None:
-        raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+    _ensure_voyager_loaded()
+    _touch_voyager_idle()
 
     from app_helper import get_db, get_score_data_by_ids
     db_conn = get_db()
@@ -1548,8 +1615,8 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     """
     Finds the N nearest neighbors for a given query vector.
     """
-    if voyager_index is None or id_map is None:
-        raise RuntimeError("Voyager index is not loaded in memory.")
+    _ensure_voyager_loaded()
+    _touch_voyager_idle()
 
     from app_helper import get_db, get_score_data_by_ids
     db_conn = get_db()

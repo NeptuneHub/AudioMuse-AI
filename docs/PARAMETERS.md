@@ -170,7 +170,6 @@ These are the default parameters used when launching analysis or clustering task
 | **Lyrics & SemGrove (Semantic + Groove) Search** |                                                                                      |                                        |
 | `MUSICSERVER_LYRICS_TIMEOUT`                | Timeout (seconds) for fetching embedded lyrics from the media server (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics on-the-fly via plugins that may take several seconds to respond. | `2.5` |
 | `LYRICS_ENABLED`                            | When `false`, the lyrics transcription/embedding step is skipped entirely during analysis. | `true`                                |
-| `LYRICS_LLM_ENABLED`                        | When `true`, uses a local LLM (Qwen2.5-1.5B GGUF) to clean/summarise transcribed lyrics before embedding. | `false`               |
 | `LYRICS_API_ENABLE`                         | When `true`, fetches lyrics from external APIs (slots 1 & 2) before falling back to Whisper transcription. | `true`               |
 | `LYRICS_API_1_URL_TEMPLATE`                 | URL template for lyrics API slot 1. Use `{artist_param}`, `{title_param}` placeholders. e.g. `https://lrclib.net/api/get?{artist_param}={artist}&{title_param}={title}` | `""` |
 | `LYRICS_API_1_ARTIST_PARAM`                 | Query parameter name for the artist in API slot 1.                                        | `artist_name`                          |

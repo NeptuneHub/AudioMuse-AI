@@ -13,16 +13,15 @@ from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
 # `app_helper` and `app_helper_artist` are safe at module top: they have no
 # import cycle back into this module. Optional ML modules
-# (.clap_analyzer / .mulan_analyzer / lyrics.lyrics_transcriber) stay inline
-# inside the per-feature helpers so workers without those models can still
-# import this module.
+# (.clap_analyzer / lyrics.lyrics_transcriber) stay inline inside the
+# per-feature helpers so workers without those models can still import
+# this module.
 from app_helper import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
     save_clap_embedding,
     save_lyrics_embedding,
-    save_mulan_embedding,
 )
 from app_helper_artist import upsert_artist_mapping
 from psycopg2 import sql as pgsql
@@ -130,12 +129,11 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
 # (loader, is_loaded, unloader, label) for each optional model.
 _OPTIONAL_MODELS = (
     ('clap', '.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
-    ('mulan', '.mulan_analyzer', 'is_mulan_model_loaded', 'unload_mulan_model'),
 )
 
 
 def cleanup_optional_models(context=""):
-    """Unload CLAP / MuLan models if currently loaded."""
+    """Unload optional ML models (currently just CLAP) if currently loaded."""
     suffix = f" ({context})" if context else ""
     for label, mod, is_loaded_fn, unload_fn in _OPTIONAL_MODELS:
         try:
@@ -288,52 +286,40 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
 
 # --- Per-track decision / status --------------------------------------------
 
-def decide_track_needs(track_id, existing, missing_clap, missing_mulan, missing_lyrics, lyrics_enabled):
-    """Return (needs_musicnn, needs_clap, needs_mulan, needs_lyrics) for a single track."""
+def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
+    """Return (needs_musicnn, needs_clap, needs_lyrics) for a single track."""
     return (
         track_id not in existing,
         track_id in missing_clap,
-        track_id in missing_mulan,
         lyrics_enabled and track_id in missing_lyrics,
     )
 
 
-def compute_album_needs(tracks, clap_available, mulan_enabled, lyrics_enabled):
-    """Return (existing_count, needs_clap, needs_mulan, needs_lyrics) for an album."""
+def compute_album_needs(tracks, clap_available, lyrics_enabled):
+    """Return (existing_count, needs_clap, needs_lyrics) for an album."""
     ids = [str(t['Id']) for t in tracks]
     existing = len(get_existing_track_ids(ids))
     needs_in = lambda flag, table: flag and bool(get_missing_ids_in_table(table, ids))
     return (
         existing,
         needs_in(clap_available, 'clap_embedding'),
-        needs_in(mulan_enabled, 'mulan_embedding'),
         needs_in(lyrics_enabled, 'lyrics_embedding'),
     )
 
 
-def build_feature_status_parts(clap_available, mulan_enabled, lyrics_enabled, include_check_marks=False):
-    """Build the list of enabled-feature labels for skip log messages.
-
-    The two callers historically used different orderings: per-track skip logs
-    list Lyrics before MuLan; album skip logs list MuLan before Lyrics.
-    """
+def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
+    """Build the list of enabled-feature labels for skip log messages."""
     parts = ["MusiCNN"]
     if clap_available:
         parts.append("CLAP")
-    if include_check_marks:
-        if lyrics_enabled:
-            parts.append("Lyrics")
-        if mulan_enabled:
-            parts.append("MuLan")
-        return [f"{p}: ✓" for p in parts]
-    if mulan_enabled:
-        parts.append("MuLan")
     if lyrics_enabled:
         parts.append("Lyrics")
+    if include_check_marks:
+        return [f"{p}: ✓" for p in parts]
     return parts
 
 
-# --- CLAP / MuLan / Lyrics per-track sub-tasks ------------------------------
+# --- CLAP / Lyrics per-track sub-tasks ------------------------------
 
 def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_song_reload):
     """Run CLAP audio analysis; returns the embedding or None."""
@@ -431,24 +417,4 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
         return True
     except Exception as e:
         logger.warning(f"  - Lyrics analysis failed: {e}", exc_info=True)
-        return False
-
-
-def run_mulan_for_track(path, item, track_name_full, needs_mulan, mulan_enabled):
-    """Run MuLan analysis and persist embedding. Returns True on save."""
-    if not (needs_mulan and mulan_enabled):
-        if mulan_enabled and not needs_mulan:
-            logger.info("  - MuLan embedding already exists, skipping")
-        return False
-    logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
-    try:
-        from .mulan_analyzer import analyze_audio_file
-        emb, duration, _ = analyze_audio_file(path)
-        if emb is None:
-            return False
-        save_mulan_embedding(item['Id'], emb)
-        logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
-        return True
-    except Exception as e:
-        logger.warning(f"  - MuLan analysis failed: {e}")
         return False

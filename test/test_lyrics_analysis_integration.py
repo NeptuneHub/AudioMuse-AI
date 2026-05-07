@@ -164,7 +164,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     os.environ.setdefault('HF_XET_DISABLE', '1')
 
     os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
-    os.environ['LYRICS_LLM_ENABLED'] = 'false'  # no Qwen cleanup
     os.environ['LYRICS_USE_GPU'] = 'false'
 
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
@@ -175,13 +174,13 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
 
     import config
     config.LYRICS_API_ENABLE = True
-    config.LYRICS_LLM_ENABLED = False
     config.LYRICS_USE_GPU = 'false'
     config.LYRICS_MODEL_DIR = str(models_dir)
     config.LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = str(e5_dir)
 
     from lyrics import lyrics_transcriber
-    from lyrics.lyrics_transcriber import analyze_lyrics, axis_columns
+    from lyrics.lyrics_transcriber import analyze_lyrics
+    from lyrics.axes import axis_columns
 
     # ---- Fake the external API: STEP 0 returns our hand-written text -----
     current = {'name': None}

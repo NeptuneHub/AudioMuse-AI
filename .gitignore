@@ -55,9 +55,6 @@ nul
 test/models/*.onnx
 test/models/*.onnx.data
 
-# Exported MuLan models
-mulan_model_export/
-
 # Student CLAP training artifacts
 student_clap/cache/
 student_clap/checkpoints/

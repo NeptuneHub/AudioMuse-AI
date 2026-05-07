@@ -95,7 +95,7 @@ def _get_jwt_secret():
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
-    from config import CLAP_ENABLED, MULAN_ENABLED, LYRICS_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
@@ -104,7 +104,6 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
@@ -594,34 +593,82 @@ def listen_for_index_reloads():
       if message_data == 'reload':
         # We need the application context to access 'g' and the database connection.
         with app.app_context():
-          logger.info("Triggering in-memory Voyager index and map reload from background listener.")
+          logger.info(
+              "Received post-analysis 'reload' signal. Refreshing only caches "
+              "that are currently in memory; others will lazy-load on next "
+              "user request."
+          )
           try:
-            from tasks.voyager_manager import load_voyager_index_for_querying
-            load_voyager_index_for_querying(force_reload=True)
-            from tasks.artist_gmm_manager import load_artist_index_for_querying
-            load_artist_index_for_querying(force_reload=True)
-            from app_helper import load_map_projection, load_artist_projection
-            load_map_projection('main_map', force_reload=True)
-            load_artist_projection('artist_map', force_reload=True)
-            # Rebuild the map JSON cache used by the /api/map endpoint
-            from app_map import build_map_cache
-            build_map_cache()
-            
-            # Reload CLAP cache (with logging)
-            logger.info("Reloading CLAP embedding cache...")
+            # Voyager index: refresh only if currently loaded.
+            try:
+              from tasks.voyager_manager import refresh_voyager_cache, is_voyager_cache_loaded
+              if is_voyager_cache_loaded():
+                logger.info("Reloading Voyager index cache...")
+                voyager_success = refresh_voyager_cache()
+              else:
+                voyager_success = False
+                logger.info("Voyager index reload skipped: not currently loaded (will lazy-load on next query).")
+            except Exception as e:
+              logger.warning(f"Voyager cache reload failed: {e}")
+              voyager_success = False
+
+            # Artist similarity index: refresh only if currently loaded.
+            try:
+              from tasks.artist_gmm_manager import refresh_artist_cache, is_artist_cache_loaded
+              if is_artist_cache_loaded():
+                logger.info("Reloading Artist similarity index cache...")
+                artist_success = refresh_artist_cache()
+              else:
+                artist_success = False
+                logger.info("Artist similarity index reload skipped: not currently loaded (will lazy-load on next query).")
+            except Exception as e:
+              logger.warning(f"Artist similarity cache reload failed: {e}")
+              artist_success = False
+
+            # Song / artist map projections: refresh only if currently loaded.
+            try:
+              from app_helper import (
+                load_map_projection, load_artist_projection,
+                is_map_projection_loaded, is_artist_projection_loaded,
+              )
+              if is_map_projection_loaded('main_map'):
+                load_map_projection('main_map', force_reload=True)
+                logger.info("Reloaded song map projection.")
+              else:
+                logger.info("Song map projection reload skipped: not currently loaded.")
+              if is_artist_projection_loaded('artist_map'):
+                load_artist_projection('artist_map', force_reload=True)
+                logger.info("Reloaded artist map projection.")
+              else:
+                logger.info("Artist map projection reload skipped: not currently loaded.")
+            except ImportError:
+              # Older app_helper without the is_*_loaded helpers — fall back to
+              # "refresh always" only if the projections are obviously already
+              # loaded (memo dict non-empty). The new helpers are added in this
+              # PR so this fallback is just defense-in-depth.
+              logger.info("Map projection helpers not available; skipping projection reload.")
+
+            # Map JSON cache for /api/map: refresh only if currently populated.
+            # The cache is populated by `_ensure_map_cache()` on first request,
+            # so an empty MAP_JSON_CACHE means nobody has hit /api/map yet.
+            try:
+              from app_map import build_map_cache, MAP_JSON_CACHE
+              if MAP_JSON_CACHE:
+                logger.info("Rebuilding /api/map JSON cache...")
+                build_map_cache()
+              else:
+                logger.info("Map JSON cache rebuild skipped: cache not currently populated (will lazy-build on next /api/map).")
+            except Exception as e:
+              logger.warning(f"Map JSON cache rebuild failed: {e}")
+
+            # CLAP / Lyrics / SemGrove caches: their refresh_* functions
+            # already short-circuit when the cache isn't loaded.
             from tasks.clap_text_search import refresh_clap_cache
             clap_success = refresh_clap_cache()
-            
-            # Reload MuLan cache (with logging)
-            logger.info("Reloading MuLan embedding cache...")
-            from tasks.mulan_text_search import refresh_mulan_cache
-            mulan_success = refresh_mulan_cache()
 
-            # Reload Lyrics cache (voyager index + axis matrix)
             try:
               from config import LYRICS_ENABLED
               if LYRICS_ENABLED:
-                logger.info("Reloading Lyrics search cache...")
                 from tasks.lyrics_manager import refresh_lyrics_cache
                 lyrics_success = refresh_lyrics_cache()
               else:
@@ -630,18 +677,24 @@ def listen_for_index_reloads():
               logger.warning(f"Lyrics cache reload failed: {e}")
               lyrics_success = False
 
-            # Reload SemGrove merged lyrics+audio index
             try:
-              logger.info("Reloading SemGrove merged index...")
               from tasks.sem_grove_manager import refresh_sem_grove_cache
               sg_success = refresh_sem_grove_cache()
             except Exception as e:
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
+            logger.info(
+                f"Post-analysis refresh complete: "
+                f"Voyager {'✓' if voyager_success else '—'}, "
+                f"Artist {'✓' if artist_success else '—'}, "
+                f"CLAP {'✓' if clap_success else '—'}, "
+                f"Lyrics {'✓' if lyrics_success else '—'}, "
+                f"SemGrove {'✓' if sg_success else '—'} "
+                f"(— = not loaded, will lazy-load on next request)"
+            )
           except Exception as e:
-            logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
+            logger.error(f"Error refreshing caches from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
         # Reload artist similarity index only (legacy support)
         with app.app_context():
@@ -680,7 +733,6 @@ from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
-from app_mulan_search import mulan_search_bp
 from app_lyrics import lyrics_search_bp
 from app_sem_grove import sem_grove_bp
 from app_backup import backup_bp
@@ -701,7 +753,6 @@ app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
-app.register_blueprint(mulan_search_bp)
 app.register_blueprint(lyrics_search_bp)
 app.register_blueprint(sem_grove_bp)
 app.register_blueprint(backup_bp)
@@ -719,100 +770,49 @@ except OSError:
 if not _is_worker:
   with app.app_context():
     # --- Initial Voyager Index Load ---
-    from tasks.voyager_manager import load_voyager_index_for_querying
-    load_voyager_index_for_querying()
-    # --- Load Artist Similarity Index ---
-    from tasks.artist_gmm_manager import load_artist_index_for_querying
-    try:
-      load_artist_index_for_querying()
-      logger.info("Artist similarity index loaded at startup.")
-    except Exception as e:
-      logger.warning(f"Failed to load artist similarity index at startup: {e}")
-    # Also try to load precomputed map projection into memory if available
-    try:
-      from app_helper import load_map_projection
-      load_map_projection('main_map')
-      logger.info("In-memory map projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
-    # Also try to load artist component projection into memory
-    try:
-      from app_helper import load_artist_projection
-      load_artist_projection('artist_map')
-      logger.info("In-memory artist component projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
-    # Load CLAP embeddings cache (model will lazy-load on first use)
+    logger.info("Voyager index will lazy-load on first similarity request.")
+    logger.info("Artist similarity index will lazy-load on first artist similarity request.")
+    logger.info("Map JSON cache will lazy-load on first map request.")
+    # ------------------------------------------------------------------
+    # RAM optimization: auxiliary text-search indexes and map caches are NOT
+    # loaded at startup anymore. They now load lazily on the first request
+    # that needs them.
+    #
+    # On a 170k-song library each of these can use 200-800 MB RAM:
+    #   - CLAP text-search voyager index   (~500 MB)
+    #   - Lyrics voyager index + axis idx  (~800 MB)
+    #   - SemGrove merged audio+lyrics idx (~800 MB; duplicates the others)
+    # ------------------------------------------------------------------
     try:
       from config import CLAP_ENABLED
       if CLAP_ENABLED:
-        # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
-        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
-        if load_clap_cache_from_db():
-          logger.info("CLAP text search cache loaded at startup (embeddings only).")
-          logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-        
-        # Load top queries from database (default queries only, no computation)
-        # This must run even if no CLAP embeddings exist yet (first startup)
-        has_existing = load_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded top queries from database (defaults).")
-        else:
-          logger.info("No queries found in database (should not happen - check DB)")
+        logger.info("CLAP top queries will lazy-load on first request.")
+        logger.info("CLAP text-search index will lazy-load on first search request.")
     except Exception as e:
-      logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load MuLan embeddings cache (model will lazy-load on first use)
-    try:
-      from config import MULAN_ENABLED
-      if MULAN_ENABLED:
-        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
-        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
-        if load_mulan_cache_from_db():
-          logger.info("MuLan text search cache loaded at startup (embeddings only).")
-          logger.info("MuLan models will lazy-load on first text search.")
-        
-        # Load top queries from database
-        # This must run even if no MuLan embeddings exist yet (first startup)
-        has_existing = load_mulan_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded MuLan top queries from database (defaults).")
-        else:
-          logger.info("No MuLan queries found in database (defaults inserted)")
-    except Exception as e:
-      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
-    # Load Lyrics search cache (voyager index over per-song e5 embeddings + axis-score matrix)
+      logger.debug(f"CLAP startup metadata skipped: {e}")
     try:
       from config import LYRICS_ENABLED
       if LYRICS_ENABLED:
-        from tasks.lyrics_manager import load_lyrics_cache_from_db
-        if load_lyrics_cache_from_db():
-          logger.info("Lyrics search cache loaded at startup (voyager index + axis matrix).")
-        else:
-          logger.info("Lyrics search cache empty at startup (run analysis to populate).")
-    except Exception as e:
-      logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
-    # Load SemGrove merged lyrics+audio index
+        logger.info("Lyrics search index will lazy-load on first search request.")
+    except Exception:
+      pass
+    logger.info("SemGrove merged index will lazy-load on first search request.")
+
+    # Map JSON cache: build at startup and never unload (per user directive).
+    # The first /map page open should be instant. Enqueued on the shared
+    # preload pool so it doesn't block other startup work.
     try:
-      from tasks.sem_grove_manager import load_sem_grove_cache_from_db
-      if load_sem_grove_cache_from_db():
-        logger.info("SemGrove merged index loaded at startup.")
-      else:
-        logger.info("SemGrove index not found at startup (build it after analysis completes).")
-    except Exception as e:
-      logger.debug(f"SemGrove cache not loaded at startup: {e}")
+      from tasks._preload_queue import PRELOAD_QUEUE as _STARTUP_PRELOAD_QUEUE
 
-    def _start_map_init_background():
-      try:
-        from app_map import init_map_cache
-        logger.info('Starting background map JSON cache build.')
-        with app.app_context():
-          init_map_cache()
-        logger.info('Background map JSON cache build finished.')
-      except Exception:
-        logger.exception('Background init_map_cache failed')
+      def _startup_warm_map():
+        from app_map import _ensure_map_cache
+        _ensure_map_cache()
 
-    t = threading.Thread(target=_start_map_init_background, daemon=True)
-    t.start()
+      _STARTUP_PRELOAD_QUEUE.enqueue('map', _startup_warm_map)
+      logger.info("Map JSON cache warmup enqueued at startup (persistent).")
+    except Exception:
+      logger.exception("Failed to enqueue startup map warmup; map will lazy-load on first request.")
+
 
 # --- Start Background Listener Thread (Flask server only) ---
 if not _is_worker:

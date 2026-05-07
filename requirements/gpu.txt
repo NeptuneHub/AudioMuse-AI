@@ -2,3 +2,7 @@
 cupy-cuda12x==13.6.0
 onnxruntime-gpu==1.19.2
 cuml-cu12==24.12.0
+# torch on GPU builds: default PyPI wheels include CUDA support on Linux x86_64.
+# CPU builds get the +cpu variant from cpu.txt instead.
+torch==2.6.0
+torchaudio==2.6.0

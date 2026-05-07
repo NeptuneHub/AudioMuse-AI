@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -75,6 +76,34 @@ _SEM_GROVE_CACHE: Dict = {
     "loaded":         False,
     "song_count":     0,
 }
+
+
+# --- Idle auto-unload of the in-memory SemGrove index ----------------------
+# The merged lyrics+audio index is the largest of all (~800 MB on 170k songs).
+# Release it after SEM_GROVE_INDEX_IDLE_SECONDS (default 300s = 5 min) of
+# inactivity. The next user search lazy-loads it again.
+from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
+
+
+def _unload_sem_grove_cache() -> None:
+    _SEM_GROVE_CACHE.update({
+        "index":          None,
+        "id_map":         None,
+        "reverse_id_map": None,
+        "std_lyrics":     None,
+        "std_audio":      None,
+        "lyrics_dim":     None,
+        "audio_dim":      None,
+        "loaded":         False,
+        "song_count":     0,
+    })
+
+
+_SEM_GROVE_IDLE = _IdleUnloader(
+    name="sem-grove-index",
+    idle_seconds=int(getattr(config, 'SEM_GROVE_INDEX_IDLE_SECONDS', 300)),
+    unload_fn=_unload_sem_grove_cache,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -520,8 +549,22 @@ def _load_sem_grove_index_from_db() -> bool:
 # Public cache management
 # ---------------------------------------------------------------------------
 
+_SEM_GROVE_LOAD_LOCK = threading.Lock()
+
+
 def load_sem_grove_cache_from_db() -> bool:
     """Load the SemGrove index from the DB into the global in-memory cache."""
+    # Skip-if-loaded fast-path + load lock so concurrent callers don't
+    # double-allocate the ~800 MB merged index.
+    if _SEM_GROVE_CACHE.get("loaded"):
+        return True
+    with _SEM_GROVE_LOAD_LOCK:
+        if _SEM_GROVE_CACHE.get("loaded"):
+            return True
+        return _load_sem_grove_cache_locked()
+
+
+def _load_sem_grove_cache_locked() -> bool:
     ok = _load_sem_grove_index_from_db()
     if not ok:
         _SEM_GROVE_CACHE.update({
@@ -537,7 +580,15 @@ def load_sem_grove_cache_from_db() -> bool:
 
 
 def refresh_sem_grove_cache() -> bool:
-    """Reload the SemGrove index from the DB (hot-reload without restart)."""
+    """Reload the SemGrove index from the DB (hot-reload without restart).
+
+    RAM optimization: skipped when the cache isn't currently loaded —
+    the next user search will lazy-load it. Avoids paying ~800 MB during
+    the analysis pub/sub reload storm when nobody is using SemGrove.
+    """
+    if not _SEM_GROVE_CACHE["loaded"]:
+        logger.info("SemGrove refresh skipped: cache not currently loaded (will lazy-load on first search).")
+        return False
     old = _SEM_GROVE_CACHE["song_count"]
     logger.info("SemGrove: refreshing cache (current=%d songs)…", old)
     result = load_sem_grove_cache_from_db()
@@ -545,6 +596,13 @@ def refresh_sem_grove_cache() -> bool:
         "SemGrove: cache refreshed (%d → %d songs).",
         old, _SEM_GROVE_CACHE["song_count"],
     )
+    if result:
+        # Restart the 5-minute idle-unload count on a successful refresh.
+        try:
+            _SEM_GROVE_IDLE.set_idle_seconds(int(getattr(config, 'SEM_GROVE_INDEX_IDLE_SECONDS', 300)))
+        except Exception:
+            pass
+        _SEM_GROVE_IDLE.touch()
     return result
 
 
@@ -572,12 +630,35 @@ def get_sem_grove_stats() -> Dict:
 def get_sem_grove_item_ids() -> set:
     """Return the set of item_ids present in the loaded SemGrove index.
 
-    Returns an empty set if the index is not loaded.
-    Used by the autocomplete endpoint to restrict suggestions to songs that
-    are actually searchable via the merged index.
+    Lazy-loads the cache on first call so the "By song" autocomplete works
+    out of the box: without this, the autocomplete returns no rows, the user
+    can never select a seed, and ``search_by_song`` never fires — meaning
+    the cache would otherwise never get loaded.
+
+    Returns an empty set if the index can't be loaded (no SemGrove build
+    in the DB).
     """
-    if not _SEM_GROVE_CACHE["loaded"]:
-        return set()
+    if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+        logger.info(
+            "SemGrove index not in memory — lazy-loading from DB on first "
+            "autocomplete request..."
+        )
+        try:
+            load_sem_grove_cache_from_db()
+        except Exception as exc:
+            logger.error("SemGrove cache lazy-load (autocomplete) failed: %s", exc)
+        if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+            return set()
+
+    # Touching the idle timer here keeps the index alive while the user is
+    # typing into the autocomplete; without this the timer could elapse
+    # between the autocomplete fetch and the actual search submit.
+    try:
+        _SEM_GROVE_IDLE.set_idle_seconds(int(getattr(config, 'SEM_GROVE_INDEX_IDLE_SECONDS', 300)))
+    except Exception:
+        pass
+    _SEM_GROVE_IDLE.touch()
+
     return set(_SEM_GROVE_CACHE["id_map"].values())
 
 
@@ -595,8 +676,22 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
     by descending merged-cosine similarity, excluding the seed itself.
     """
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
-        logger.error("SemGrove index not loaded.")
-        return []
+        # Lazy-load on first use.
+        logger.info("SemGrove index not in memory — lazy-loading from DB on first request...")
+        try:
+            load_sem_grove_cache_from_db()
+        except Exception as e:
+            logger.error(f"SemGrove cache lazy-load failed: {e}")
+        if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+            logger.error("SemGrove index not loaded.")
+            return []
+
+    # Reset idle-unload timer.
+    try:
+        _SEM_GROVE_IDLE.set_idle_seconds(int(getattr(config, 'SEM_GROVE_INDEX_IDLE_SECONDS', 300)))
+    except Exception:
+        pass
+    _SEM_GROVE_IDLE.touch()
 
     index          = _SEM_GROVE_CACHE["index"]
     id_map         = _SEM_GROVE_CACHE["id_map"]

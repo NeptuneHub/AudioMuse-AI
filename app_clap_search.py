@@ -56,40 +56,36 @@ def clap_search_api():
     }
     """
     from config import CLAP_ENABLED
-    from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
-    
+    from tasks.clap_text_search import search_by_text
+
     if not CLAP_ENABLED:
         return jsonify({
             'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
             'results': []
         }), 400
-    
+
     try:
         data = request.get_json()
-        
+
         if not data or 'query' not in data:
             return jsonify({'error': 'Missing "query" in request body'}), 400
-        
+
         query = data['query'].strip()
         limit = data.get('limit', 100)
-        
+
         if not query:
             return jsonify({'error': 'Query cannot be empty'}), 400
-        
+
         if len(query) < 3:
             return jsonify({'error': 'Query must be at least 3 characters'}), 400
-        
+
         # Validate limit
         limit = min(max(1, int(limit)), 500)  # Between 1 and 500
-        
-        # Check if cache is loaded
-        if not is_clap_cache_loaded():
-            return jsonify({
-                'error': 'CLAP cache not loaded. Please run song analysis first.',
-                'results': []
-            }), 503
-        
-        # Perform search
+
+        # No is_clap_cache_loaded() pre-check here — search_by_text() already
+        # lazy-loads the index from DB on first call. The pre-check used to
+        # return 503 "please run song analysis first" before lazy-load could
+        # fire, blocking the very first search forever.
         results = search_by_text(query, limit=limit)
         
         return jsonify({
@@ -110,34 +106,21 @@ def clap_search_api():
 
 @clap_search_bp.route('/api/clap/warmup', methods=['POST'])
 def warmup_model_api():
-    """
-    API endpoint to preload DCLAP model and start/reset 10-minute timer.
-    Call this when the search page loads to ensure fast searches.
-    
-    Returns:
-    {
-        "loaded": true,
-        "expiry_seconds": 600
-    }
+    """Schedule a background preload of the DCLAP text model.
+
+    Routed through the preload queue (one cache loads at a time process-wide)
+    so opening multiple search pages in sequence doesn't stack concurrent
+    half-GB model loads on top of each other.
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import warmup_text_search_model
-    
+    from tasks._preload_queue import PRELOAD_QUEUE
+
     if not CLAP_ENABLED:
-        return jsonify({
-            'error': 'CLAP text search is disabled',
-            'loaded': False
-        }), 400
-    
-    try:
-        status = warmup_text_search_model()
-        return jsonify(status)
-    except Exception as e:
-        logger.error(f"Model warmup failed: {e}")
-        return jsonify({
-            'error': str(e),
-            'loaded': False
-        }), 500
+        return jsonify({'queued': False, 'reason': 'clap_disabled', 'loaded': False}), 400
+
+    queued = PRELOAD_QUEUE.enqueue('clap_text_model', warmup_text_search_model)
+    return jsonify({'queued': queued, 'loaded': False})
 
 
 @clap_search_bp.route('/api/clap/warmup/status', methods=['GET'])
@@ -163,6 +146,42 @@ def warmup_status_api():
     except Exception as e:
         logger.error(f"Failed to get warmup status: {e}")
         return jsonify({'active': False, 'seconds_remaining': 0})
+
+
+@clap_search_bp.route('/api/clap/cache/preload', methods=['POST'])
+def clap_preload_cache_api():
+    """Schedule a background preload of the CLAP voyager index."""
+    from config import CLAP_ENABLED
+    from tasks.clap_text_search import (
+        load_clap_cache_from_db, is_clap_cache_loaded,
+        get_cache_stats, _CLAP_INDEX_IDLE,
+    )
+    from tasks._preload_queue import PRELOAD_QUEUE
+    import config as _cfg
+
+    if not CLAP_ENABLED:
+        return jsonify({'queued': False, 'reason': 'clap_disabled'}), 400
+
+    def _touch():
+        try:
+            _CLAP_INDEX_IDLE.set_idle_seconds(int(_cfg.CLAP_TEXT_SEARCH_WARMUP_DURATION))
+        except Exception:
+            pass
+        _CLAP_INDEX_IDLE.touch()
+
+    if is_clap_cache_loaded():
+        _touch()
+        return jsonify({'queued': False, 'reason': 'already_loaded',
+                        'stats': get_cache_stats()})
+
+    def _do_load():
+        if not is_clap_cache_loaded():
+            load_clap_cache_from_db()
+        if is_clap_cache_loaded():
+            _touch()
+
+    queued = PRELOAD_QUEUE.enqueue('clap_index', _do_load)
+    return jsonify({'queued': queued})
 
 
 @clap_search_bp.route('/api/clap/cache/refresh', methods=['POST'])

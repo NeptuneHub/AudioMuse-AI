@@ -27,6 +27,15 @@ map_bp = Blueprint('map_bp', __name__)
 MAP_JSON_CACHE = {}
 
 
+# Map JSON cache stays resident for the lifetime of the process.
+# The cache is built once (eagerly enqueued at Flask startup, see app.py)
+# and is never auto-unloaded — the user wants the /map page to feel instant
+# on every visit, with no chance of a re-build pause after idle. Cost is
+# ~50-100 MB always resident, which is the explicit trade.
+def _touch_map_json_idle() -> None:
+    pass
+
+
 def _pick_top_mood(mood_vector_str):
     """Return top mood label from 'label:score,label2:score' string.
     If parsing fails, return 'unknown'."""
@@ -207,6 +216,7 @@ def build_map_cache():
 
     MAP_JSON_CACHE = new_cache
     logger.info('Map JSON cache built: %d total items; cache sizes: %s', n, {k: v['count'] for k, v in MAP_JSON_CACHE.items()})
+    _touch_map_json_idle()
 
 
 def init_map_cache():
@@ -272,13 +282,29 @@ def _rows_to_items(rows):
     return items
 
 
+def _ensure_map_cache():
+    """Build the in-memory map JSON cache on first request if it is not already ready."""
+    global MAP_JSON_CACHE
+    if MAP_JSON_CACHE:
+        return
+    try:
+        build_map_cache()
+    except Exception:
+        logger.exception('Lazy build of map cache failed')
+
+
 @map_bp.route('/api/map', methods=['GET'])
 def map_api():
     """Return up to 2000 embeddings sampled across configured genres, projected to 2D.
 
     Response: JSON list of items with title, artist, embedding_2d, mood_vector, other_feature
     """
-    # Serve exclusively from the in-memory MAP_JSON_CACHE built at startup.
+    # Build the map cache lazily on first request instead of at startup.
+    _ensure_map_cache()
+    # Touch the idle timer so the cache stays alive while the user is active.
+    if MAP_JSON_CACHE:
+        _touch_map_json_idle()
+
     # Accept either explicit percent param (?percent=25|50|75|100) or legacy ?n=<count>.
     if not MAP_JSON_CACHE:
         # Cache not built or empty
@@ -350,6 +376,7 @@ def map_api():
 def map_cache_status():
     """Return diagnostic information about the in-memory map JSON cache."""
     try:
+        _ensure_map_cache()
         if not MAP_JSON_CACHE:
             return jsonify({'ok': False, 'reason': 'empty_cache', 'buckets': {}})
         info = {}

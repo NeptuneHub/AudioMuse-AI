@@ -125,6 +125,54 @@ def lyrics_search_text_api():
         return jsonify({'error': 'An internal error occurred.'}), 500
 
 
+@lyrics_search_bp.route('/api/lyrics/cache/preload', methods=['POST'])
+def lyrics_preload_cache_api():
+    """Schedule a background preload of the lyrics indexes.
+
+    Returns immediately — the actual lazy-load runs on the shared preload
+    worker thread (see ``tasks/_preload_queue.py``) so concurrent page-opens
+    don't try to load multiple large indexes into RAM in parallel.
+    """
+    from config import LYRICS_ENABLED
+    from tasks.lyrics_manager import (
+        load_lyrics_cache_from_db, is_lyrics_cache_loaded,
+        _touch_lyrics_idle, get_cache_stats,
+    )
+    from tasks._preload_queue import PRELOAD_QUEUE
+
+    if not LYRICS_ENABLED:
+        return jsonify({'queued': False, 'reason': 'lyrics_disabled'}), 400
+
+    if is_lyrics_cache_loaded():
+        _touch_lyrics_idle()
+        return jsonify({'queued': False, 'reason': 'already_loaded',
+                        'stats': get_cache_stats()})
+
+    def _do_load():
+        if not is_lyrics_cache_loaded():
+            load_lyrics_cache_from_db()
+        if is_lyrics_cache_loaded():
+            _touch_lyrics_idle()
+        # Warm the e5 ONNX session + axis description embeddings here so the
+        # first user query doesn't pay the ~440 MB / 2-4 s lazy-load inside
+        # the request handler. Both calls are no-ops on subsequent invocations
+        # (internal load lock + cached return).
+        try:
+            from lyrics.embeddings import (
+                load_topic_embedding_model,
+                _get_axis_embeddings,
+            )
+            load_topic_embedding_model()
+            _get_axis_embeddings()
+        except Exception:
+            logger.exception(
+                "Lyrics preload: e5 model warmup failed — first query will lazy-load."
+            )
+
+    queued = PRELOAD_QUEUE.enqueue('lyrics', _do_load)
+    return jsonify({'queued': queued})
+
+
 @lyrics_search_bp.route('/api/lyrics/cache/refresh', methods=['POST'])
 def lyrics_refresh_cache_api():
     from config import LYRICS_ENABLED

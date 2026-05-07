@@ -35,6 +35,68 @@ MAP_PROJECTION_CACHE = None
 # In-memory cache for the precomputed 2D artist component projections
 ARTIST_PROJECTION_CACHE = None
 
+
+def is_map_projection_loaded(index_name='main_map'):
+    """Return True if MAP_PROJECTION_CACHE currently holds ``index_name``.
+
+    Used by the post-analysis Redis listener to decide whether to refresh
+    the in-memory map projection or leave it unloaded (lazy-load on next
+    /api/map request).
+    """
+    return bool(MAP_PROJECTION_CACHE
+                and MAP_PROJECTION_CACHE.get('index_name') == index_name
+                and MAP_PROJECTION_CACHE.get('id_map') is not None)
+
+
+def is_artist_projection_loaded(index_name='artist_map'):
+    """Return True if ARTIST_PROJECTION_CACHE currently holds ``index_name``.
+
+    Counterpart of :func:`is_map_projection_loaded` for the artist component
+    projection.
+    """
+    return bool(ARTIST_PROJECTION_CACHE
+                and ARTIST_PROJECTION_CACHE.get('index_name') == index_name
+                and ARTIST_PROJECTION_CACHE.get('id_map') is not None)
+
+
+# --- Idle auto-unload for map projection caches ----------------------------
+# Both projections together can consume ~150-300 MB on large libraries. They
+# get freed after MAP_PROJECTION_IDLE_SECONDS (default 300s = 5 min) of
+# inactivity; the next /api/map or autocomplete-style call lazy-loads them.
+import os as _os_for_map_idle  # avoid shadowing the module-level os import below
+from tasks._idle_unload import IdleUnloader as _IdleUnloader_for_maps  # noqa: E402
+
+_MAP_PROJECTION_IDLE_SECONDS = int(
+    _os_for_map_idle.environ.get('MAP_PROJECTION_IDLE_SECONDS', '300'))
+
+
+def _unload_map_projections() -> None:
+    global MAP_PROJECTION_CACHE, ARTIST_PROJECTION_CACHE
+    MAP_PROJECTION_CACHE = None
+    ARTIST_PROJECTION_CACHE = None
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+
+_MAP_PROJECTION_IDLE = _IdleUnloader_for_maps(
+    name='map-projections',
+    idle_seconds=_MAP_PROJECTION_IDLE_SECONDS,
+    unload_fn=_unload_map_projections,
+)
+
+
+def _touch_map_projection_idle() -> None:
+    try:
+        _MAP_PROJECTION_IDLE.set_idle_seconds(int(
+            _os_for_map_idle.environ.get('MAP_PROJECTION_IDLE_SECONDS', '300')))
+    except Exception:
+        pass
+    _MAP_PROJECTION_IDLE.touch()
+
+
 # --- Constants ---
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
 
@@ -220,12 +282,11 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
-            # Create 'mulan_embedding' table only if MuLan is enabled
-            from config import MULAN_ENABLED
-            if MULAN_ENABLED:
-                cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
-                if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
+            # MuLan support has been removed; the mulan_embedding table is no
+            # longer created on fresh installs. Existing databases that
+            # already have it from older versions are left intact (they are
+            # ignored at runtime and migrated correctly by
+            # tasks/provider_migration_tasks.py).
             # Create 'voyager_index_data' table
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'clap_index_data' table for stored CLAP text search indexes
@@ -1047,26 +1108,6 @@ def get_lyrics_embedding(item_id):
         cur.close()
 
 
-def save_mulan_embedding(item_id, mulan_embedding_vector):
-    """Saves MuLan embedding for a track."""
-    if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
-        return
-    
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        embedding_blob = mulan_embedding_vector.astype(np.float32).tobytes()
-        cur.execute("""
-            INSERT INTO mulan_embedding (item_id, embedding) VALUES (%s, %s)
-            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Error saving MuLan embedding for {item_id}: {e}")
-        raise
-    finally:
-        cur.close()
 
 def get_all_tracks():
     """Fetches all tracks and their embeddings from the database."""
@@ -1303,6 +1344,7 @@ def load_map_projection(index_name, force_reload=False):
         id_map = json.loads(id_map_json)
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
         logger.info(f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory.")
+        _touch_map_projection_idle()
         return id_map, proj
     except Exception as e:
         logger.error(f"Failed to load map projection: {e}", exc_info=True)
@@ -1365,6 +1407,7 @@ def build_and_store_map_projection(index_name='main_map'):
         # update in-memory cache
         global MAP_PROJECTION_CACHE
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': ids, 'projection': projections}
+        _touch_map_projection_idle()
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
@@ -1400,6 +1443,7 @@ def load_artist_projection(index_name='artist_map', force_reload=False):
         component_map = json.loads(component_map_json)
         ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': proj}
         logger.info(f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory.")
+        _touch_map_projection_idle()
         return component_map, proj
     except Exception as e:
         logger.error(f"Failed to load artist projection: {e}", exc_info=True)
@@ -1504,6 +1548,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         # Update in-memory cache
         global ARTIST_PROJECTION_CACHE
         ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': projections}
+        _touch_map_projection_idle()
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:

@@ -242,6 +242,11 @@
 
 {% block bodyAdditions %}
 <script>
+    // Preload the artist similarity index on page open so the user's first
+    // query doesn't pay the lazy-load cost.
+    fetch("{{ url_for('artist_similarity_bp.artist_similarity_preload_api') }}",
+          {method: 'POST'}).catch(() => {});
+
     (() => {
         let currentArtist = null;
         let similarArtists = [];

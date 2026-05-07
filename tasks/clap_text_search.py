@@ -50,6 +50,30 @@ _WARM_CACHE_TIMER = {
 }
 
 
+# --- Idle auto-unload of the in-memory voyager index --------------------
+# The voyager index itself (~200-800 MB on big libraries) used to stay loaded
+# forever after the first search. We now release it after
+# CLAP_TEXT_SEARCH_WARMUP_DURATION seconds (default 300s = 5 min) of
+# inactivity. The next search lazy-loads it again.
+from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
+
+
+def _unload_clap_index_cache() -> None:
+    global _CLAP_CACHE
+    _CLAP_INDEX_CACHE['index'] = None
+    _CLAP_INDEX_CACHE['id_map'] = None
+    _CLAP_INDEX_CACHE['reverse_id_map'] = None
+    _CLAP_INDEX_CACHE['loaded'] = False
+    _CLAP_CACHE['loaded'] = False
+
+
+_CLAP_INDEX_IDLE = _IdleUnloader(
+    name="clap-text-index",
+    idle_seconds=300,  # actual value applied lazily from config on first touch()
+    unload_fn=_unload_clap_index_cache,
+)
+
+
 def get_clap_cache_size() -> int:
     """Return the number of items in the loaded CLAP index."""
     if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['id_map'] is not None:
@@ -400,18 +424,39 @@ def get_warm_cache_status() -> Dict:
     return {'active': True, 'seconds_remaining': remaining}
 
 
+_CLAP_LOAD_LOCK = threading.Lock()
+
+
 def load_clap_cache_from_db():
     """
     Load the persisted CLAP Voyager index from the database.
     Returns True if successful, False otherwise.
     """
     global _CLAP_CACHE
-    
+
     from app_helper import get_db
     from config import CLAP_ENABLED
-    
+
     if not CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
+        return False
+
+    # Skip-if-loaded fast-path + load lock so two concurrent callers (preload
+    # worker + a simultaneous user search) don't double-allocate the ~500 MB
+    # voyager index.
+    if _CLAP_INDEX_CACHE['loaded']:
+        return True
+    with _CLAP_LOAD_LOCK:
+        if _CLAP_INDEX_CACHE['loaded']:
+            return True
+        return _load_clap_cache_from_db_locked()
+
+
+def _load_clap_cache_from_db_locked():
+    global _CLAP_CACHE
+    from app_helper import get_db
+    from config import CLAP_ENABLED
+    if not CLAP_ENABLED:
         return False
 
     if _load_clap_index_from_db():
@@ -428,14 +473,31 @@ def load_clap_cache_from_db():
 
 
 def refresh_clap_cache():
-    """Force refresh of CLAP cache from database."""
+    """Force refresh of CLAP cache from database.
+
+    RAM optimization: if the index isn't currently loaded (because no user
+    has issued a CLAP search yet on this Flask process), do nothing. The
+    next search request will lazy-load the freshest copy from the DB. This
+    avoids loading a 200-800 MB index just because an analysis ran.
+    """
     global _CLAP_CACHE
+    if not _CLAP_INDEX_CACHE['loaded']:
+        logger.info("CLAP refresh skipped: index not currently loaded (will lazy-load on first search).")
+        return False
     old_count = get_clap_cache_size()
     logger.info(f"Refreshing CLAP cache... (current: {old_count} songs)")
     result = load_clap_cache_from_db()
     new_count = get_clap_cache_size()
     if result:
         logger.info(f"✓ CLAP cache refreshed: {old_count} → {new_count} songs ({new_count - old_count:+d})")
+        # Restart the 5-minute idle-unload count on a successful refresh so a
+        # post-analysis 'reload' from the worker doesn't immediately fall off
+        # the end of an already-running idle window.
+        try:
+            _CLAP_INDEX_IDLE.set_idle_seconds(int(config.CLAP_TEXT_SEARCH_WARMUP_DURATION))
+        except Exception:
+            pass
+        _CLAP_INDEX_IDLE.touch()
     else:
         logger.error(f"✗ CLAP cache refresh failed! Still at {new_count} songs")
     return result
@@ -462,11 +524,21 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     
     if not CLAP_ENABLED:
         return []
-    
-    # CLAP search must use the persisted index only
+
+    # Lazy-load on first use (RAM optimization: index is no longer eagerly
+    # loaded at Flask startup; first search pays the load cost once).
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
-        logger.error("Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index.")
-        return []
+        logger.info("CLAP index not in memory — lazy-loading from DB on first search request...")
+        if not load_clap_cache_from_db() or _CLAP_INDEX_CACHE['index'] is None:
+            logger.error("Cannot search: CLAP index could not be loaded from DB.")
+            return []
+
+    # Reset idle-unload timer so the index stays loaded while the user is active.
+    try:
+        _CLAP_INDEX_IDLE.set_idle_seconds(int(config.CLAP_TEXT_SEARCH_WARMUP_DURATION))
+    except Exception:
+        pass
+    _CLAP_INDEX_IDLE.touch()
     
     try:
         # Auto-warmup: ensures model is loaded and resets timer
@@ -745,8 +817,13 @@ def save_top_queries_to_db(queries: List[str], scores: List[float]):
 def get_cached_top_queries() -> List[str]:
     """
     Get precomputed top queries from cache.
-    Returns empty list if not ready yet.
+    Lazy-loads the top queries from the database on first request.
+    Returns an empty list if loading fails.
     """
     if _TOP_QUERIES_CACHE['ready']:
         return _TOP_QUERIES_CACHE['queries']
-    return []
+    try:
+        load_top_queries_from_db()
+    except Exception:
+        logger.exception("Failed to lazy-load CLAP top queries")
+    return _TOP_QUERIES_CACHE['queries'] if _TOP_QUERIES_CACHE['ready'] else []

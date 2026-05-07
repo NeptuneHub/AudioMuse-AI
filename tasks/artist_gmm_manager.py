@@ -59,6 +59,50 @@ reverse_artist_map = None  # {artist_name: voyager_int_id}
 artist_gmm_params = None  # {artist_name: gmm_params_dict}
 _index_lock = threading.Lock()
 
+from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
+
+
+def _unload_artist_cache() -> None:
+    global artist_index, artist_map, reverse_artist_map, artist_gmm_params
+    artist_index = None
+    artist_map = None
+    reverse_artist_map = None
+    artist_gmm_params = None
+    logger.info("Artist similarity index cache unloaded from memory.")
+
+_ARTIST_IDLE = _IdleUnloader(
+    name="artist-similarity-index",
+    idle_seconds=int(os.environ.get("ARTIST_INDEX_IDLE_SECONDS", "300")),
+    unload_fn=_unload_artist_cache,
+)
+
+
+def _touch_artist_idle() -> None:
+    try:
+        _ARTIST_IDLE.set_idle_seconds(int(os.environ.get("ARTIST_INDEX_IDLE_SECONDS", "300")))
+    except Exception:
+        pass
+    _ARTIST_IDLE.touch()
+
+
+def is_artist_cache_loaded() -> bool:
+    return artist_index is not None and artist_map is not None and reverse_artist_map is not None and artist_gmm_params is not None
+
+
+def refresh_artist_cache() -> bool:
+    if not is_artist_cache_loaded():
+        logger.info("Artist similarity refresh skipped: index not currently loaded (will lazy-load on first query).")
+        return False
+    load_artist_index_for_querying(force_reload=True)
+    return is_artist_cache_loaded()
+
+
+def _ensure_artist_loaded() -> None:
+    if artist_index is None or artist_map is None or reverse_artist_map is None or artist_gmm_params is None:
+        load_artist_index_for_querying()
+    if artist_index is None or artist_map is None or reverse_artist_map is None or artist_gmm_params is None:
+        raise RuntimeError("Artist similarity index is not loaded in memory.")
+
 
 def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = GMM_N_COMPONENTS_MIN, max_components: int = GMM_N_COMPONENTS_MAX) -> int:
     """
@@ -781,6 +825,7 @@ def load_artist_index_for_querying(force_reload=False):
                     artist_index = index
 
                     logger.info(f"Artist index loaded successfully ({len(artist_map)} artists, num_elements={artist_index.num_elements})")
+                    _touch_artist_idle()
                 except Exception as load_error:
                     logger.error(f"Failed to load Voyager index from BytesIO: {load_error}", exc_info=True)
                     raise
@@ -887,6 +932,7 @@ def load_artist_index_for_querying(force_reload=False):
                 artist_gmm_params = json.loads(gmm_params_json_candidate)
 
                 logger.info(f"Artist segmented index ({len(parts)} parts) with {len(artist_map)} artists loaded successfully into memory.")
+                _touch_artist_idle()
                 return
             except Exception as load_error:
                 logger.error(f"Failed to load reassembled Artist index: {load_error}", exc_info=True)
@@ -929,6 +975,12 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
     from app_helper import get_db
     
     # Get GMM parameters for this artist
+    if artist_gmm_params is None:
+        try:
+            _ensure_artist_loaded()
+        except Exception:
+            return []
+
     if artist_gmm_params is None or artist_name not in artist_gmm_params:
         logger.warning(f"No GMM found for artist '{artist_name}'")
         return []
@@ -1047,9 +1099,8 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     Returns: List of dictionaries with 'artist', 'artist_id', 'divergence' keys
              If include_component_matches=True, also includes 'component_matches' key
     """
-    if artist_index is None or artist_map is None or artist_gmm_params is None:
-        logger.error("Artist index not loaded")
-        raise RuntimeError("Artist similarity index not available")
+    _ensure_artist_loaded()
+    _touch_artist_idle()
     
     # Try to resolve artist ID to name if it looks like an ID (not in reverse_artist_map)
     artist_name = query_artist
@@ -1235,4 +1286,5 @@ def cleanup_resources():
         artist_map = None
         reverse_artist_map = None
         artist_gmm_params = None
+        _ARTIST_IDLE.cancel()
         logger.info("Artist index resources cleaned up")

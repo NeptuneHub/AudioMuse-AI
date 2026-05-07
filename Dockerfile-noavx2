@@ -64,37 +64,35 @@ RUN set -eux; \
 # NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 
 # ============================================================================
-# Stage 2: Base - System dependencies and build tools
+# Stage 2a: runtime-base — minimal RUNTIME-ONLY system libs (used by `runner`)
 # ============================================================================
-FROM ${BASE_IMAGE} AS base
+# This stage intentionally has NO compilers, NO -dev headers, NO cuda-compiler,
+# NO git/vim/strace. It only contains the shared libraries Python wheels load
+# at runtime + the small set of tools the entrypoint/supervisord need.
+# Removing the build toolchain saves ~500 MB on CPU and ~2.5 GB on GPU images.
+FROM ${BASE_IMAGE} AS runtime-base
 
 ARG BASE_IMAGE
 
 SHELL ["/bin/bash", "-c"]
 
-# Copy uv for fast package management (10-100x faster than pip)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-
-# Install system dependencies with exponential backoff retry and version pinning
-# Version pinning ensures reproducible builds across different build times
-# cuda-compiler is conditionally installed for NVIDIA base images (needed for cupy JIT)
 RUN set -ux; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if apt-get update && apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-dev \
-            libfftw3-3=3.3.8-2ubuntu8 libfftw3-dev \
-            libyaml-0-2 libyaml-dev \
-            libsamplerate0 libsamplerate0-dev \
-            libsndfile1=1.0.31-2ubuntu0.2 libsndfile1-dev \
-            libopenblas-dev=0.3.20+ds-1 \
-            liblapack-dev=3.10.0-2ubuntu1 \
-            libpq-dev postgresql-client \
-            ffmpeg wget curl \
+            python3 python3-pip \
+            libfftw3-3=3.3.8-2ubuntu8 \
+            libyaml-0-2 \
+            libsamplerate0 \
+            libsndfile1=1.0.31-2ubuntu0.2 \
+            libopenblas0 \
+            liblapack3 \
+            libgomp1 \
+            libpq5 postgresql-client \
+            libjemalloc2 \
+            ffmpeg wget curl ca-certificates \
             supervisor procps \
-            gcc g++ \
-            git vim redis-tools strace iputils-ping \
-            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            redis-tools; then \
             break; \
         fi; \
         n=$((n+1)); \
@@ -103,12 +101,58 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/* && \
     apt-get remove -y python3-numpy || true && \
-    apt-get autoremove -y || true
+    apt-get autoremove -y --purge || true
+
+# Symlink libjemalloc.so.2 to a stable, arch-agnostic path so LD_PRELOAD
+# resolves regardless of build arch (x86_64 vs aarch64).
+RUN set -eux; \
+    arch_dir="/usr/lib/$(uname -m)-linux-gnu"; \
+    test -f "$arch_dir/libjemalloc.so.2" || { \
+        echo "ERROR: libjemalloc.so.2 not found at $arch_dir"; exit 1; \
+    }; \
+    ln -sf "$arch_dir/libjemalloc.so.2" /usr/local/lib/libjemalloc.so.2; \
+    ldconfig
+
+# ============================================================================
+# Stage 2b: build-base — runtime-base + COMPILERS and -dev headers.
+# Used only by the `libraries` stage to build/install Python wheels.
+# ============================================================================
+FROM runtime-base AS build-base
+
+ARG BASE_IMAGE
+
+# Copy uv for fast package management (10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+RUN set -ux; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if apt-get update && apt-get install -y --no-install-recommends \
+            python3-dev \
+            libfftw3-dev \
+            libyaml-dev \
+            libsamplerate0-dev \
+            libsndfile1-dev \
+            libopenblas-dev=0.3.20+ds-1 \
+            liblapack-dev=3.10.0-2ubuntu1 \
+            libpq-dev \
+            gcc g++ \
+            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+# Backwards-compatible alias for any external tooling targeting the old `base` stage.
+FROM build-base AS base
 
 # ============================================================================
 # Stage 3: Libraries - Python packages installation
 # ============================================================================
-FROM base AS libraries
+FROM build-base AS libraries
 
 ARG BASE_IMAGE
 
@@ -133,9 +177,8 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
-# These are the text encoders needed by laion-clap library for text embeddings
-# and T5 for MuLan text encoding
+# Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
+# These are the text encoders needed by laion-clap library for text embeddings.
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
@@ -177,21 +220,24 @@ RUN set -eux; \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
 
-# NOTE: MuLan model download moved to runner stage (like CLAP) to avoid EOF errors with large file transfers
 
 # ============================================================================
 # Stage 4: Runner - Final production image
 # ============================================================================
-FROM base AS runner
+# IMPORTANT: this stage extends `runtime-base` (NOT `build-base`). That keeps
+# compilers, -dev headers and `cuda-compiler-XX-X` *out* of the final image.
+FROM runtime-base AS runner
 
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
-    HF_XET_DISABLE=1
+    HF_XET_DISABLE=1 \
+    LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 \
+    MALLOC_CONF=background_thread:true,metadata_thp:auto,dirty_decay_ms:1000,muzzy_decay_ms:0
 
-# Note: bundled HuggingFace models (RoBERTa, MuLan, ...) load with
+# Note: bundled HuggingFace models (RoBERTa, ...) load with
 # local_files_only=True per call. Lyrics is force-disabled on this image
 # (see ENV LYRICS_ENABLED=false below), so Marian translator is never invoked.
 
@@ -301,62 +347,8 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
-# Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
-# MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
-# Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
-RUN set -eux; \
-    if false; then \
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-        mulan_dir="/app/model/mulan"; \
-        mkdir -p "$mulan_dir"; \
-        \
-        # List of files to download (onnx models + data files + tokenizer)
-        files=( \
-            "mulan_audio_encoder.onnx" \
-            "mulan_audio_encoder.onnx.data" \
-            "mulan_text_encoder.onnx" \
-            "mulan_text_encoder.onnx.data" \
-            "mulan_tokenizer.tar.gz" \
-        ); \
-        \
-        echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
-        for f in "${files[@]}"; do \
-            n=0; \
-            until [ "$n" -ge 5 ]; do \
-                if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                    --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                    -O "$mulan_dir/$f" "$base_url/$f"; then \
-                    echo "✓ Downloaded: $f"; \
-                    break; \
-                fi; \
-                n=$((n+1)); \
-                echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
-                sleep $((n*n)); \
-            done; \
-            if [ "$n" -ge 5 ]; then \
-                echo "ERROR: Failed to download $f after 5 attempts"; \
-                exit 1; \
-            fi; \
-        done; \
-        \
-        # Extract tokenizer files
-        echo "Extracting MuLan tokenizer..."; \
-        tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
-        rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
-        \
-        # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
-        for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
-                 mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
-                 sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
-            if [ ! -f "$mulan_dir/$f" ]; then \
-                echo "ERROR: Missing file: $f"; \
-                exit 1; \
-            fi; \
-        done; \
-        \
-        echo "✓ MuQ-MuLan ONNX models ready"; \
-        ls -lh "$mulan_dir"; \
-    fi
+# MuLan support has been removed; the MuQ-MuLan ONNX download block (~2.5 GB)
+# that lived here is gone.
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
@@ -397,9 +389,10 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
 
-# Lyrics analysis requires whisper / silero-vad / llama-cpp / torch which either
-# need AVX2 prebuilt wheels or are intentionally not shipped in the no-AVX2
-# image. Force-disable the feature here so the rest of the app starts cleanly.
+# Lyrics analysis requires the pre-exported ONNX artifacts (whisper-small-onnx,
+# opus-mt-mul-en-onnx, e5-base-v2.onnx + tokenizer) which are intentionally not
+# shipped in the no-AVX2 image. Force-disable the feature here so the rest of
+# the app starts cleanly.
 ENV LYRICS_ENABLED=false
 
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app

@@ -38,6 +38,29 @@ def artist_similarity_page():
     return render_template('artist_similarity.html', title='AudioMuse-AI - Artist Similarity', active='artist_similarity')
 
 
+@artist_similarity_bp.route('/api/artist_similarity/preload', methods=['POST'])
+def artist_similarity_preload_api():
+    """Schedule a background preload of the artist similarity index."""
+    from tasks.artist_gmm_manager import (
+        load_artist_index_for_querying, is_artist_cache_loaded,
+        _touch_artist_idle,
+    )
+    from tasks._preload_queue import PRELOAD_QUEUE
+
+    if is_artist_cache_loaded():
+        _touch_artist_idle()
+        return jsonify({'queued': False, 'reason': 'already_loaded'})
+
+    def _do_load():
+        if not is_artist_cache_loaded():
+            load_artist_index_for_querying()
+        if is_artist_cache_loaded():
+            _touch_artist_idle()
+
+    queued = PRELOAD_QUEUE.enqueue('artist', _do_load)
+    return jsonify({'queued': queued})
+
+
 @artist_similarity_bp.route('/api/search_artists', methods=['GET'])
 def search_artists_endpoint():
     """

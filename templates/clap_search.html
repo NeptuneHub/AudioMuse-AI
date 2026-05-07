@@ -186,18 +186,16 @@
     </div>
     {% else %}
     
-    {% if cache_stats.loaded %}
     <div class="cache-stats">
-        <strong>✓ DCLAP Search Ready</strong> | 
-        <strong>{{ cache_stats.song_count }}</strong> songs indexed | 
+        {% if cache_stats.loaded %}
+        <strong>✓ DCLAP Search Ready</strong> |
+        <strong>{{ cache_stats.song_count }}</strong> songs indexed |
         {{ cache_stats.memory_mb }} MB in memory
+        {% else %}
+        <strong>⚠️ DCLAP index not loaded yet.</strong>
+        <p>The index will lazy-load from the database on the first search. If no CLAP embeddings exist in the DB, the search will return no results — run song analysis first to populate them.</p>
+        {% endif %}
     </div>
-    {% else %}
-    <div class="error-message">
-        <strong>⚠️ No CLAP embeddings found.</strong>
-        <p>Please run song analysis first to generate CLAP embeddings for text search.</p>
-    </div>
-    {% endif %}
     
     <div class="search-container">
         <form id="search-form">
@@ -209,15 +207,14 @@
                         <span class="tooltip-text">Describe the music you want to find using music terms. This functionality perform well with mood, genre and instrument.</span>
                     </span>
                 </label>
-                <input 
-                    type="text" 
-                    id="search-query" 
-                    name="query" 
+                <input
+                    type="text"
+                    id="search-query"
+                    name="query"
                     class="search-box"
                     placeholder="e.g., Energertic POP song with femlace voice, Sax Jazz"
                     autocomplete="off"
                     required
-                    {% if not cache_stats.loaded %}disabled{% endif %}
                 >
             </div>
             
@@ -232,7 +229,7 @@
                 <input type="number" id="limit" name="limit" value="50" min="1" max="500">
             </div>
             
-            <button type="submit" {% if not cache_stats.loaded %}disabled{% endif %}>
+            <button type="submit">
                 🔍 Search
             </button>
         </form>
@@ -279,9 +276,11 @@ document.addEventListener('DOMContentLoaded', function() {
     
     let currentResults = [];
     
-    // Warmup model on page load for instant searches
+    // Warmup model + lazy-load voyager index on page load for instant searches
     warmupModel();
-    
+    fetch("{{ url_for('clap_search_bp.clap_preload_cache_api') }}",
+          {method: 'POST'}).catch(() => {});
+
     // Load top queries on page load
     loadTopQueries();
     

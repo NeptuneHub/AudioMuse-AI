@@ -441,6 +441,29 @@ def get_similar_tracks_endpoint():
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
+@voyager_bp.route('/api/voyager/preload', methods=['POST'])
+def voyager_preload_api():
+    """Schedule a background preload of the Voyager similarity index."""
+    from tasks.voyager_manager import (
+        load_voyager_index_for_querying, is_voyager_cache_loaded,
+        _touch_voyager_idle,
+    )
+    from tasks._preload_queue import PRELOAD_QUEUE
+
+    if is_voyager_cache_loaded():
+        _touch_voyager_idle()
+        return jsonify({'queued': False, 'reason': 'already_loaded'})
+
+    def _do_load():
+        if not is_voyager_cache_loaded():
+            load_voyager_index_for_querying()
+        if is_voyager_cache_loaded():
+            _touch_voyager_idle()
+
+    queued = PRELOAD_QUEUE.enqueue('voyager', _do_load)
+    return jsonify({'queued': queued})
+
+
 @voyager_bp.route('/api/max_distance', methods=['GET'])
 def get_max_distance_endpoint():
   """

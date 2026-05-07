@@ -35,6 +35,57 @@ def _pg_cmd(tool, *extra_args):
     ]
 
 
+_LEGACY_ROLE_NAMES = ('ai_user',)
+
+
+def _strip_legacy_role_refs(src_path, log):
+    """Strip ``GRANT/REVOKE ... TO/FROM <legacy_role>`` lines from a dump.
+
+    Old AudioMuse-AI backups granted privileges to roles (e.g. ``ai_user``)
+    that the current schema no longer creates. With ``--single-transaction
+    -v ON_ERROR_STOP=1`` the missing role aborts the entire restore, so we
+    pre-process the dump to drop those lines. Returns the path of the file
+    psql should consume — either a freshly written temp file (if we found
+    matches) or the original ``src_path`` (if nothing needed stripping).
+    """
+    try:
+        with open(src_path, 'r', encoding='utf-8', errors='ignore') as src:
+            lines = src.readlines()
+    except Exception as exc:
+        log.write(f"Could not read dump for legacy-role filter: {exc}; using as-is.\n")
+        log.flush()
+        return src_path
+
+    skipped = 0
+    out_lines = []
+    for line in lines:
+        head = line.lstrip().lower()
+        if head.startswith('grant ') or head.startswith('revoke '):
+            if any(role in line for role in _LEGACY_ROLE_NAMES):
+                skipped += 1
+                continue
+        out_lines.append(line)
+
+    if skipped == 0:
+        return src_path
+
+    try:
+        fd, new_path = tempfile.mkstemp(suffix='.sql', prefix='restore_filtered_')
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            out.writelines(out_lines)
+    except Exception as exc:
+        log.write(f"Could not write filtered dump: {exc}; using original.\n")
+        log.flush()
+        return src_path
+
+    log.write(
+        f"Stripped {skipped} legacy GRANT/REVOKE lines referencing "
+        f"{', '.join(_LEGACY_ROLE_NAMES)} from the dump (was {src_path}, now {new_path}).\n"
+    )
+    log.flush()
+    return new_path
+
+
 def _run_restore_runner(dump_file, log_file):
     """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -64,13 +115,18 @@ def _run_restore_runner(dump_file, log_file):
             log.write("Continuing restore despite local Flask stop failure.\n")
             log.flush()
 
+        # Strip legacy role grants (e.g. GRANT ... TO ai_user) so a backup
+        # taken from an older AudioMuse-AI version doesn't abort the
+        # single-transaction restore on "role does not exist".
+        effective_dump = _strip_legacy_role_refs(dump_file, log)
+
         restore_cmd = _pg_cmd(
             'psql',
             '-d', POSTGRES_DB,
             '-v', 'ON_ERROR_STOP=1',
             '--single-transaction',
             '-c', 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;',
-            '-f', dump_file,
+            '-f', effective_dump,
         )
         log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
         log.flush()
@@ -124,6 +180,17 @@ def _run_restore_runner(dump_file, log_file):
         except Exception as exc:
             log.write(f"Could not delete temporary dump file {dump_file}: {exc}\n")
             log.flush()
+
+        # Clean up the filtered dump file too if _strip_legacy_role_refs
+        # created a separate temp copy.
+        if effective_dump and effective_dump != dump_file:
+            try:
+                os.unlink(effective_dump)
+                log.write(f"Deleted filtered dump file {effective_dump}\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Could not delete filtered dump file {effective_dump}: {exc}\n")
+                log.flush()
 
         log.write(f"Restore runner finished at {datetime.now().isoformat()}\n")
         log.flush()

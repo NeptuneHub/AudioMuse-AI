@@ -58,6 +58,39 @@ def sem_grove_search_api():
         return jsonify({"error": "An internal error occurred."}), 500
 
 
+@sem_grove_bp.route("/api/sem_grove/cache/preload", methods=["POST"])
+def sem_grove_preload_api():
+    """Schedule a background preload of the SemGrove merged index."""
+    from tasks.sem_grove_manager import (
+        load_sem_grove_cache_from_db, is_sem_grove_cache_loaded,
+        get_sem_grove_stats, _SEM_GROVE_IDLE,
+    )
+    from tasks._preload_queue import PRELOAD_QUEUE
+    import config as _cfg
+
+    def _touch():
+        try:
+            _SEM_GROVE_IDLE.set_idle_seconds(int(getattr(
+                _cfg, 'SEM_GROVE_INDEX_IDLE_SECONDS', 300)))
+        except Exception:
+            pass
+        _SEM_GROVE_IDLE.touch()
+
+    if is_sem_grove_cache_loaded():
+        _touch()
+        return jsonify({'queued': False, 'reason': 'already_loaded',
+                        'stats': get_sem_grove_stats()})
+
+    def _do_load():
+        if not is_sem_grove_cache_loaded():
+            load_sem_grove_cache_from_db()
+        if is_sem_grove_cache_loaded():
+            _touch()
+
+    queued = PRELOAD_QUEUE.enqueue('sem_grove', _do_load)
+    return jsonify({'queued': queued})
+
+
 @sem_grove_bp.route("/api/sem_grove/cache/refresh", methods=["POST"])
 def sem_grove_refresh_api():
     """Reload the SemGrove index from the database (hot-reload)."""

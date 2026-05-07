@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -47,6 +48,61 @@ _LYRICS_AXIS_CACHE = {
     'metadata': None,         # {item_id: {title, author}}
     'loaded': False,
 }
+
+
+# --- Idle auto-unload of the in-memory lyrics indexes -----------------
+# The two lyrics indexes (text + axis) together can use ~800 MB on a 170k
+# library. After 5 minutes of inactivity (configurable via
+# LYRICS_INDEX_IDLE_SECONDS, default 300s) we release them; the next
+# search request lazy-loads them again.
+from ._idle_unload import IdleUnloader as _IdleUnloader  # noqa: E402
+
+
+def _unload_lyrics_caches() -> None:
+    _LYRICS_INDEX_CACHE['index'] = None
+    _LYRICS_INDEX_CACHE['id_map'] = None
+    _LYRICS_INDEX_CACHE['reverse_id_map'] = None
+    _LYRICS_INDEX_CACHE['loaded'] = False
+    _LYRICS_AXIS_CACHE['index'] = None
+    _LYRICS_AXIS_CACHE['id_map'] = None
+    _LYRICS_AXIS_CACHE['reverse_id_map'] = None
+    _LYRICS_AXIS_CACHE['axis_columns'] = None
+    _LYRICS_AXIS_CACHE['metadata'] = None
+    _LYRICS_AXIS_CACHE['loaded'] = False
+
+    # Drop the heavy ONNX sessions + tokenizers tied to lyrics search/analysis.
+    # These were ~440 MB (e5) / ~500 MB (Marian) / ~1.1 GB (whisper) / ~2 MB
+    # (silero) of resident RAM that previously survived past the index unload.
+    # Each module's reset_session() is a no-op if nothing was loaded, so calling
+    # them on every unload is safe.
+    for module_path, label in (
+        ('lyrics.embeddings',       'e5 embedding'),
+        ('lyrics.translation_onnx', 'Marian translator'),
+        ('lyrics.whisper_onnx',     'whisper transcriber'),
+        ('lyrics.silero_onnx',      'silero VAD'),
+    ):
+        try:
+            mod = __import__(module_path, fromlist=['reset_session'])
+            reset_fn = getattr(mod, 'reset_session', None)
+            if callable(reset_fn):
+                reset_fn()
+        except Exception as exc:
+            logger.warning('Failed to reset %s session: %s', label, exc)
+
+
+_LYRICS_IDLE = _IdleUnloader(
+    name="lyrics-indexes",
+    idle_seconds=int(getattr(config, 'LYRICS_INDEX_IDLE_SECONDS', 300)),
+    unload_fn=_unload_lyrics_caches,
+)
+
+
+def _touch_lyrics_idle() -> None:
+    try:
+        _LYRICS_IDLE.set_idle_seconds(int(getattr(config, 'LYRICS_INDEX_IDLE_SECONDS', 300)))
+    except Exception:
+        pass
+    _LYRICS_IDLE.touch()
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +133,7 @@ def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
 
 def _axis_columns_from_axes() -> List[tuple]:
     """Return a stable ordered list of (axis_name, label) covering every axis label."""
-    from lyrics.lyrics_transcriber import axis_columns
+    from lyrics.axes import axis_columns
     return list(axis_columns())
 
 
@@ -586,6 +642,9 @@ def _load_lyrics_axes_index_from_db() -> bool:
 # Public load / refresh
 # ---------------------------------------------------------------------------
 
+_LYRICS_LOAD_LOCK = threading.Lock()
+
+
 def load_lyrics_cache_from_db() -> bool:
     """Load both the embedding voyager index and the axes voyager index into memory."""
     from config import LYRICS_ENABLED
@@ -594,8 +653,20 @@ def load_lyrics_cache_from_db() -> bool:
         logger.info("Lyrics is disabled; skipping lyrics cache load.")
         return False
 
-    index_ok = _load_lyrics_index_from_db()
-    axis_ok = _load_lyrics_axes_index_from_db()
+    # Concurrent callers (preload worker + simultaneous lazy-load from a user
+    # search) must not double-allocate the index. Fast-path: bail out if both
+    # caches are already populated. Slow-path: take the load lock and
+    # re-check before doing any actual DB work.
+    if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_AXIS_CACHE['loaded']:
+        return True
+
+    with _LYRICS_LOAD_LOCK:
+        if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_AXIS_CACHE['loaded']:
+            return True
+        index_ok = (_LYRICS_INDEX_CACHE['loaded']
+                    or _load_lyrics_index_from_db())
+        axis_ok = (_LYRICS_AXIS_CACHE['loaded']
+                   or _load_lyrics_axes_index_from_db())
 
     if not index_ok:
         _LYRICS_INDEX_CACHE['index'] = None
@@ -615,6 +686,11 @@ def load_lyrics_cache_from_db() -> bool:
 
 
 def refresh_lyrics_cache() -> bool:
+    # RAM optimization: skip if no lyrics search has happened on this Flask
+    # process yet. The next user search lazy-loads a fresh copy.
+    if not (_LYRICS_INDEX_CACHE['loaded'] or _LYRICS_AXIS_CACHE['loaded']):
+        logger.info("Lyrics refresh skipped: cache not currently loaded (will lazy-load on first search).")
+        return False
     old_index_count = (
         len(_LYRICS_INDEX_CACHE['id_map'])
         if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_INDEX_CACHE['id_map'] else 0
@@ -637,6 +713,11 @@ def refresh_lyrics_cache() -> bool:
         f"Lyrics cache refresh: index {old_index_count}->{new_index_count}, "
         f"axes {old_axis_count}->{new_axis_count}"
     )
+    if result:
+        # Restart the 5-minute idle-unload count on a successful refresh so
+        # a post-analysis 'reload' from the worker doesn't immediately fall
+        # off the end of an already-running idle window.
+        _touch_lyrics_idle()
     return result
 
 
@@ -682,7 +763,7 @@ def get_cache_stats() -> Dict:
 
 def get_axes_definition() -> Dict:
     """Return MUSIC_ANALYSIS_AXES as a JSON-friendly structure for the UI."""
-    from lyrics.lyrics_transcriber import MUSIC_ANALYSIS_AXES
+    from lyrics.axes import MUSIC_ANALYSIS_AXES
     return {
         axis_name: {
             'description': meta.get('description', ''),
@@ -708,9 +789,18 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 
     if not LYRICS_ENABLED:
         return []
+    # Lazy-load on first use.
     if not _LYRICS_AXIS_CACHE['loaded'] or _LYRICS_AXIS_CACHE['index'] is None:
-        logger.error("Lyrics axes voyager index not loaded.")
-        return []
+        logger.info("Lyrics axes index not in memory — lazy-loading from DB on first request...")
+        try:
+            load_lyrics_cache_from_db()
+        except Exception as e:
+            logger.error(f"Lyrics cache lazy-load failed: {e}")
+        if not _LYRICS_AXIS_CACHE['loaded'] or _LYRICS_AXIS_CACHE['index'] is None:
+            logger.error("Lyrics axes voyager index not loaded.")
+            return []
+
+    _touch_lyrics_idle()
 
     columns = _LYRICS_AXIS_CACHE['axis_columns'] or []
     if not columns:
@@ -787,13 +877,22 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
     """Search lyrics by embedding the query with e5-base-v2 and querying the voyager index."""
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
-    from lyrics.lyrics_transcriber import embed_query_text
+    from lyrics.embeddings import embed_query_text
 
     if not LYRICS_ENABLED:
         return []
+    # Lazy-load on first use.
     if not _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_INDEX_CACHE['index'] is None:
-        logger.error("Lyrics voyager index not loaded.")
-        return []
+        logger.info("Lyrics text index not in memory — lazy-loading from DB on first request...")
+        try:
+            load_lyrics_cache_from_db()
+        except Exception as e:
+            logger.error(f"Lyrics cache lazy-load failed: {e}")
+        if not _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_INDEX_CACHE['index'] is None:
+            logger.error("Lyrics voyager index not loaded.")
+            return []
+
+    _touch_lyrics_idle()
 
     text = (query_text or '').strip()
     if not text:
