@@ -1,0 +1,36 @@
+services:
+  audiomuse-ai-worker:
+    container_name: audiomuse-nvidia-test-worker
+    # Pulls the published :latest-nvidia image from GHCR instead of building
+    # locally. Use this variant to test against the same artifact end-users
+    # will get from ``docker pull`` — useful for reproducing user-reported
+    # issues without waiting on a local rebuild. For a from-source build,
+    # use ``docker-compose-nvidia-worker-test.yaml`` instead.
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-nvidia
+    pull_policy: always
+    environment:
+      SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
+      POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+      POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+      NVIDIA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      TEMP_DIR: "/app/temp_audio"
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  temp-audio-worker:

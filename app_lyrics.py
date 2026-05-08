@@ -153,12 +153,12 @@ def lyrics_preload_cache_api():
             load_lyrics_cache_from_db()
         if is_lyrics_cache_loaded():
             _touch_lyrics_idle()
-        # Warm the e5 ONNX session + axis description embeddings here so the
+        # Warm the e5 PyTorch model + axis description embeddings here so the
         # first user query doesn't pay the ~440 MB / 2-4 s lazy-load inside
         # the request handler. Both calls are no-ops on subsequent invocations
         # (internal load lock + cached return).
         try:
-            from lyrics.embeddings import (
+            from lyrics.lyrics_transcriber import (
                 load_topic_embedding_model,
                 _get_axis_embeddings,
             )

@@ -32,27 +32,20 @@ sympy==1.13.1
 mcp==1.27.0
 httpx==0.28.1
 voyager==2.1.0
-# Transformers must satisfy optimum 1.27.0's upper bound (<4.54.0). 4.53.3 is
-# the version used by scripts/onnx_export/run_exports.sh when producing the
-# ONNX bundles, so runtime + export are kept identical.
-transformers==4.53.3
+transformers==4.57.6
 huggingface-hub==0.36.2
 sentencepiece==0.2.1
-# Whisper transcription + Marian translation run via HuggingFace optimum's
-# ORTModel* classes against the pre-exported ONNX bundles in /app/model/.
-# This replaced ~600 lines of hand-rolled greedy-decode loops that broke on
-# non-trivial source languages (e.g. Italian Marian translation produced
-# empty output because we never fed past_key_values to the decoder).
-# e5 + silero VAD still use raw onnxruntime — they are single-pass models
-# that don't need beam search or KV-caching.
-# Legacy ``openai-whisper`` / ``silero-vad`` / ``llama-cpp-python`` deps are
-# all gone (STEP 5 Qwen LLM cleanup is also removed — raw whisper output
-# is good enough for axis scoring).
-# Pin must match the version in scripts/onnx_export/run_exports.sh that
-# produced the ONNX bundle, so the runtime sees the exact ONNX layout the
-# exporter wrote (especially for decoder_model_merged.onnx which evolved
-# between optimum minor versions).
-optimum[onnxruntime]==1.27.0
+# Lyrics analysis pipeline runs PyTorch end-to-end:
+#   * openai-whisper for STEP 2 transcription
+#   * silero-vad for whisper VAD pre-trim
+#   * transformers (AutoModel / AutoTokenizer / AutoModelForSeq2SeqLM)
+#     for STEP 4 Marian translation and STEP 6 e5 embedding + axis scoring.
+# torch + torchaudio are pulled in by ``requirements/cpu.txt`` (CPU image)
+# or ``requirements/gpu.txt`` (NVIDIA image). The legacy STEP 5 (Qwen LLM
+# cleanup) was removed as part of the disk-trim work, so llama-cpp-python
+# and qwen-asr are intentionally NOT here.
+openai-whisper==20250625
+silero-vad==5.1.2
 langdetect==1.0.9
 stopwords==1.0.2
 PyJWT==2.12.1

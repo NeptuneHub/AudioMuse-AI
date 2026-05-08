@@ -1,22 +1,17 @@
 """Canonical ONNX Runtime provider selection.
 
 Single source of truth for "what providers should we hand to
-``ort.InferenceSession``?". Used by:
-
-* ``tasks.analysis_helper`` (MusiCNN + analysis pipeline)
-* ``lyrics.embeddings`` (e5)
-* ``lyrics.silero_onnx`` (VAD)
-* ``lyrics.translation_onnx`` (Marian)
-* ``lyrics.whisper_onnx`` (Whisper)
+``ort.InferenceSession``?". Used by ``tasks.analysis_helper`` (the MusiCNN
++ CLAP analysis pipeline). The lyrics pipeline runs PyTorch end-to-end
+and does not consume this helper.
 
 On GPU images (``onnxruntime-gpu`` installed via ``requirements/gpu.txt``)
 sessions transparently use CUDA with a CPU fallback. On CPU images they
-keep using the CPU provider as before.
+keep using the CPU provider.
 
-The ``CUDAExecutionProvider`` options mirror what the MusiCNN pipeline has
-historically used (``arena_extend_strategy=kSameAsRequested`` to keep
-fragmentation down, ``EXHAUSTIVE`` cudnn convolution search, etc.) so all
-GPU-bound sessions get consistent tuning.
+The ``CUDAExecutionProvider`` options (``arena_extend_strategy=kSameAsRequested``
+to keep fragmentation down, ``EXHAUSTIVE`` cudnn convolution search, etc.)
+match what the MusiCNN pipeline has historically used.
 """
 
 from __future__ import annotations

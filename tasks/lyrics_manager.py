@@ -70,24 +70,15 @@ def _unload_lyrics_caches() -> None:
     _LYRICS_AXIS_CACHE['metadata'] = None
     _LYRICS_AXIS_CACHE['loaded'] = False
 
-    # Drop the heavy ONNX sessions + tokenizers tied to lyrics search/analysis.
-    # These were ~440 MB (e5) / ~500 MB (Marian) / ~1.1 GB (whisper) / ~2 MB
-    # (silero) of resident RAM that previously survived past the index unload.
-    # Each module's reset_session() is a no-op if nothing was loaded, so calling
-    # them on every unload is safe.
-    for module_path, label in (
-        ('lyrics.embeddings',       'e5 embedding'),
-        ('lyrics.translation_onnx', 'Marian translator'),
-        ('lyrics.whisper_onnx',     'whisper transcriber'),
-        ('lyrics.silero_onnx',      'silero VAD'),
-    ):
-        try:
-            mod = __import__(module_path, fromlist=['reset_session'])
-            reset_fn = getattr(mod, 'reset_session', None)
-            if callable(reset_fn):
-                reset_fn()
-        except Exception as exc:
-            logger.warning('Failed to reset %s session: %s', label, exc)
+    # Drop the heavy PyTorch models + tokenizers tied to lyrics analysis
+    # (whisper ~1.1 GB / Marian ~500 MB / e5 ~440 MB / silero ~2 MB) so they
+    # don't survive forever in worker memory after the last analysis.
+    # ``reset_session`` is a no-op if nothing was loaded.
+    try:
+        from lyrics.lyrics_transcriber import reset_session as _reset_lyrics
+        _reset_lyrics()
+    except Exception as exc:
+        logger.warning('Failed to reset lyrics_transcriber session: %s', exc)
 
 
 _LYRICS_IDLE = _IdleUnloader(
@@ -877,7 +868,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
     """Search lyrics by embedding the query with e5-base-v2 and querying the voyager index."""
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
-    from lyrics.embeddings import embed_query_text
+    from lyrics.lyrics_transcriber import embed_query_text
 
     if not LYRICS_ENABLED:
         return []

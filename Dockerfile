@@ -30,25 +30,51 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# Lyrics ONNX models live in three separate archives on the v4.0.0 release
-# (split because each GitHub release asset is capped at 2 GB):
-#   lyrics_model_e5.tar.gz      → e5-base-v2.onnx + e5-base-v2/<tokenizer>
-#   lyrics_model_marian.tar.gz  → opus-mt-mul-en-onnx/
-#   lyrics_model_whisper.tar.gz → whisper-small-onnx/
-# Each tarball is created with ``cd model && tar -czf ../<name>.tar.gz <paths>``
-# so its entries are already at the right level — no --strip-components needed.
-# Other small ONNX models (musicnn, silero) come from their own URLs below.
+# Lyrics models live in a single bundle on the v4.0.0-model release:
+#   lyrics_model.tar.gz → /app/model/{whisper-small/, e5-base-v2/,
+#                                     opus-mt-mul-en/, ...} PyTorch artifacts
+# The bundle is the same one used by main / v1.1.2; lyrics analysis runs
+# PyTorch end-to-end (whisper / silero-vad / Marian / e5) — no ONNX export
+# needed. The musicnn ONNX models are downloaded separately below.
 RUN set -eux; \
     mkdir -p /app/model; \
+    lyrics_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model.tar.gz"; \
+    lyrics_dest="/tmp/lyrics_model.tar.gz"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$lyrics_dest" "$lyrics_url"; then \
+            echo "Downloaded lyrics model bundle -> $lyrics_dest"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for $lyrics_url failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download lyrics_model.tar.gz after 5 attempts"; \
+        exit 1; \
+    fi; \
+    echo "Extracting lyrics_model.tar.gz to /app/model..."; \
+    rm -rf /tmp/lyrics_unpack; \
+    mkdir -p /tmp/lyrics_unpack; \
+    tar -xzf "$lyrics_dest" -C /tmp/lyrics_unpack; \
+    if [ -d "/tmp/lyrics_unpack/lyrics_model" ]; then \
+        mv /tmp/lyrics_unpack/lyrics_model/* /app/model/; \
+    else \
+        mv /tmp/lyrics_unpack/* /app/model/; \
+    fi; \
+    rm -rf /tmp/lyrics_unpack; \
+    rm -f "$lyrics_dest"; \
+    # MusiCNN ONNX models — pinned to the same v4.0.0-model release. \
     urls=( \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
-        "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx" \
     ); \
     for u in "${urls[@]}"; do \
         n=0; \
         fname="/app/model/$(basename "$u")"; \
-        # Diagnostic: print server response headers (helpful when downloads return 0 bytes) \
         wget --server-response --spider --timeout=15 --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" "$u" || true; \
         until [ "$n" -ge 5 ]; do \
             if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" -O "$fname" "$u"; then \
@@ -65,65 +91,7 @@ RUN set -eux; \
             exit 1; \
         fi; \
     done; \
-    # ----- Lyrics ONNX bundles (split into 3 archives so each stays well \
-    # under the 2 GB GitHub release-asset cap; each is downloaded, extracted \
-    # into /app/model/, then deleted). \
-    # \
-    #   lyrics_model_e5.tar.gz       (~420 MB)  e5-base-v2.onnx + e5 tokenizer dir \
-    #   lyrics_model_marian.tar.gz   (~520 MB)  opus-mt-mul-en-onnx/ (encoder + \
-    #                                            decoder_model_merged) \
-    #   lyrics_model_whisper.tar.gz  (~1.0 GB)  whisper-small-onnx/  (encoder + \
-    #                                            decoder_model_merged + \
-    #                                            preprocessor + tokenizer) \
-    # \
-    # The merged-decoder layout (single decoder_model_merged.onnx instead of \
-    # decoder_model + decoder_with_past) cuts the lyrics bundle total from \
-    # ~3 GB down to ~2 GB. Optimum's runtime auto-detects use_merged=True. \
-    # ----- \
-    lyrics_base="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
-    for archive in lyrics_model_e5.tar.gz lyrics_model_marian.tar.gz lyrics_model_whisper.tar.gz; do \
-        url="${lyrics_base}/${archive}"; \
-        dest="/tmp/${archive}"; \
-        n=0; \
-        until [ "$n" -ge 5 ]; do \
-            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                -O "$dest" "$url"; then \
-                echo "Downloaded ${archive} -> ${dest}"; \
-                break; \
-            fi; \
-            n=$((n+1)); \
-            echo "wget attempt $n for ${archive} failed — retrying in $((n*n))s"; \
-            sleep $((n*n)); \
-        done; \
-        if [ "$n" -ge 5 ]; then \
-            echo "ERROR: failed to download ${archive} after 5 attempts"; \
-            exit 1; \
-        fi; \
-        echo "Extracting ${archive} to /app/model..."; \
-        tar -xzf "$dest" -C /app/model; \
-        rm -f "$dest"; \
-    done; \
-    # Verify all required lyrics artifacts ended up in the right place. \
-    # ``decoder_model_merged.onnx`` is the single decoder file that handles \
-    # both first-step and KV-cache-step paths. Optimum's ORTModelFor* runtime \
-    # auto-detects it via ``use_merged=True`` (the default when present). \
-    for required in \
-        /app/model/e5-base-v2.onnx \
-        /app/model/e5-base-v2/tokenizer.json \
-        /app/model/opus-mt-mul-en-onnx/encoder_model.onnx \
-        /app/model/opus-mt-mul-en-onnx/decoder_model_merged.onnx \
-        /app/model/whisper-small-onnx/encoder_model.onnx \
-        /app/model/whisper-small-onnx/decoder_model_merged.onnx \
-        /app/model/whisper-small-onnx/preprocessor_config.json \
-    ; do \
-        if [ ! -f "$required" ]; then \
-            echo "ERROR: expected lyrics ONNX artifact missing after extraction: $required"; \
-            ls -laR /app/model | head -100; \
-            exit 1; \
-        fi; \
-    done; \
-    echo "✓ Lyrics ONNX bundles ready at /app/model/"
+    echo "✓ Lyrics + MusiCNN models ready at /app/model/"
 
 # NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 
@@ -246,48 +214,7 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \
     && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete \
-    # === Aggressive size cleanup of installed Python packages ===
-    # 1) Drop test/example/doc dirs that ship inside many wheels (torch, scipy,
-    #    transformers, llama_cpp, sklearn, …). Keeps the runtime, removes ballast.
-    && find /usr/local/lib/python3.12/dist-packages \
-        -type d \( -name tests -o -name test -o -name testing \
-                  -o -name examples -o -name example \
-                  -o -name docs -o -name doc \
-                  -o -name "*.dist-info" -prune -false \) \
-        -prune -exec rm -rf {} + 2>/dev/null || true \
-    # 2) Strip debug symbols from every shared object. Saves hundreds of MB on
-    #    GPU images (torch, onnxruntime, cupy ship with full symbol tables).
-    #    `--strip-unneeded` is safe for runtime use.
-    && find /usr/local/lib/python3.12/dist-packages -type f \
-            \( -name "*.so" -o -name "*.so.*" \) \
-            -exec strip --strip-unneeded {} + 2>/dev/null || true \
-    # 3) Drop wheel install metadata not needed at runtime.
-    && find /usr/local/lib/python3.12/dist-packages -type d -name "*.dist-info" \
-        -exec sh -c 'rm -f "$1/RECORD" "$1/INSTALLER" "$1/REQUESTED" "$1/direct_url.json" "$1/zip-safe"' _ {} \; 2>/dev/null || true \
-    # 4) Drop torch internals only used to build C++/CUDA extensions or for dev
-    #    tooling. Saves ~500 MB on CPU images and ~700 MB on GPU.
-    #    - torch/include       (~200 MB of C++ headers, build-time only)
-    #    - torch/share/cmake   (CMake config for downstream extensions)
-    #    - torch/test          (torch's own test suite)
-    #    - torch/utils/benchmark (perf-tooling, not used by the app)
-    && rm -rf /usr/local/lib/python3.12/dist-packages/torch/include \
-              /usr/local/lib/python3.12/dist-packages/torch/share/cmake \
-              /usr/local/lib/python3.12/dist-packages/torch/test \
-              /usr/local/lib/python3.12/dist-packages/torch/utils/benchmark \
-              2>/dev/null || true \
-    # 5) Drop static archives and C/C++ header files across all wheels.
-    #    Saves ~100-150 MB; these are build-time artifacts not used at runtime.
-    #    DO NOT include "*.pyi" here — librosa, scipy, networkx and other
-    #    scientific packages use lazy_loader.attach_stub() which reads .pyi
-    #    files as RUNTIME data to wire up their lazy-loaded public API.
-    #    Removing them produces:
-    #        ValueError: Cannot load imports from non-existent stub '__init__.pyi'
-    && find /usr/local/lib/python3.12/dist-packages -type f \
-            \( -name "*.a" -o -name "*.h" -o -name "*.hpp" \) \
-            -delete 2>/dev/null || true \
-    # 6) Strip uv cache leftovers
-    && rm -rf /root/.cache /tmp/* /var/tmp/* 2>/dev/null || true
+    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # Download HuggingFace models (BERT, RoBERTa, BART) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings.
@@ -352,10 +279,9 @@ ENV LANG=C.UTF-8 \
     MALLOC_CONF=background_thread:true,metadata_thp:auto,dirty_decay_ms:1000,muzzy_decay_ms:0
 
 # Note: bundled HuggingFace models (RoBERTa, ...) load with
-# local_files_only=True per call. e5 + Marian (opus-mt-mul-en) + whisper-small
-# come pre-exported to ONNX from the v4 release ``lyrics_model_onnx.tar.gz``
-# bundle and are loaded via raw onnxruntime — no torch is required at runtime
-# on the CPU image.
+# local_files_only=True per call. The lyrics analysis pipeline runs PyTorch
+# (whisper / silero-vad / Marian / e5) against the artifacts unpacked from
+# the v4 release ``lyrics_model.tar.gz`` bundle.
 
 WORKDIR /app
 
@@ -376,9 +302,8 @@ RUN ls -lah /app/.cache/huggingface/ && \
     du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
 # Copy all downloaded/extracted models from the models stage. This includes
-# the lyrics_model_onnx.tar.gz extraction (e5-base-v2.onnx + e5-base-v2/
-# tokenizer + opus-mt-mul-en-onnx/ + whisper-small-onnx/) plus musicnn ONNX
-# and silero_vad.onnx.
+# the lyrics_model.tar.gz extraction (whisper-small / e5-base-v2 /
+# opus-mt-mul-en PyTorch artifacts) plus the musicnn ONNX models.
 COPY --from=models /app/model/ /app/model/
 
 # Download CLAP ONNX models directly in runner stage
