@@ -217,11 +217,12 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
         print(f'{"=" * 80}')
 
         # No source_path / audio: pipeline goes through the API branch only.
+        # ``use_llm_cleanup`` was dropped along with STEP 5 (Qwen LLM cleanup);
+        # the kwarg no longer exists on ``analyze_lyrics``.
         result = analyze_lyrics(
             audio=None,
             sr=None,
             source_path=None,
-            use_llm_cleanup=False,
             artist='AudioMuseTest',
             track=track_name,
         )
