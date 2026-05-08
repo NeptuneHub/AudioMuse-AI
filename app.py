@@ -69,12 +69,8 @@ from app_provider_migration import migration_bp
 
 logger = logging.getLogger(__name__)
 
-# Configure basic logging for the entire application
-logging.basicConfig(
-    level=logging.INFO, # Set the default logging level (e.g., INFO, DEBUG, WARNING, ERROR, CRITICAL)
-    format='[%(levelname)s]-[%(asctime)s]-%(message)s', # Custom format string
-    datefmt='%d-%m-%Y %H-%M-%S' # Custom date/time format
-)
+from app_logging import configure_logging
+configure_logging()
 
 if ENABLE_PROXY_FIX:
   app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
