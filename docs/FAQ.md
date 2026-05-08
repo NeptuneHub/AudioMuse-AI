@@ -25,8 +25,8 @@ The parameters `MUSIC_LIBRARIES` can be used for match multiple music library on
 ### The analysis takes to long, can I speed up it?
 The time needed for the analysis really depends from your HW and how big is your music collection. For big collection (100k+ songs) or old HW 1week+ of analysis can be totally normal.
 If you want to have a faster analysis you can also disable the text search functionality by putting parameters `CLAP_ENABLED` to false. This will run the analysis only for the Musicnn model skipping the CLAP model.
-Alternatives could also be run multiple worker container in parallel, learn more by taking a look to the [ARCHITECTURE](docs/ARCHITECTURE.md) page and to the different example of deployment in `deployment/` folder.
-GPU analysis is also supported but still experimental. Take a look to [GPU DEPLOYMENT](docs/GPU.md) page.
+Alternatives could also be run multiple worker container in parallel, learn more by taking a look to the [ARCHITECTURE](ARCHITECTURE.md) page and to the different example of deployment in `deployment/` folder.
+GPU analysis is also supported but still experimental. Take a look to [GPU DEPLOYMENT](GPU.md) page.
 
 ## User Guide FAQs
 

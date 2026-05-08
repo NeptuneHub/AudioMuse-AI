@@ -25,15 +25,20 @@ def _decode_lyrion_url(url):
     return unquote(url)
 
 
-def _lyrion_is_spotify(item):
-    """Detect Spotify/stream-only tracks in Lyrion sample data."""
+_LYRION_REMOTE_SERVICES = ('spotify', 'qobuz', 'tidal', 'wimp', 'youtube', 'deezer')
+_LYRION_REMOTE_URL_PREFIXES = tuple(f'{name}:' for name in _LYRION_REMOTE_SERVICES)
+
+
+def _lyrion_is_remote(item):
+    """Detect remote/stream-only tracks in Lyrion sample data
+    (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer)."""
     if not isinstance(item, dict):
         return False
     url = item.get('url') or item.get('path') or ''
-    if isinstance(url, str) and url.startswith('spotify:'):
+    if isinstance(url, str) and url.startswith(_LYRION_REMOTE_URL_PREFIXES):
         return True
     genre = item.get('genre') or item.get('type') or ''
-    return isinstance(genre, str) and genre.lower() == 'spotify'
+    return isinstance(genre, str) and genre.lower() in _LYRION_REMOTE_SERVICES
 
 
 def _lyrion_track(item):
@@ -952,7 +957,7 @@ def test_connection(user_creds=None):
 
     sample = []
     for r in raws:
-        if _lyrion_is_spotify(r):
+        if _lyrion_is_remote(r):
             continue
         sample.append(_lyrion_track(r))
 

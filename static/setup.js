@@ -784,14 +784,6 @@ setupForm.addEventListener('submit', function(event) {
     if (mlValue !== null) {
         config.MUSIC_LIBRARIES = mlValue;
     }
-    var lyricsValidation = validateLyricsApiSlots(config);
-    if (!lyricsValidation.ok) {
-        saveFeedback.className = 'status-failure inline-feedback';
-        saveFeedback.style.display = 'block';
-        saveFeedback.textContent = '✕ ' + lyricsValidation.message;
-        saveButton.disabled = false;
-        return;
-    }
     fetch('/api/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1061,6 +1053,7 @@ function renderLyricsApiAnalysis(slot) {
     var toInput = document.getElementById('LYRICS_API_' + slot + '_TIMEOUT');
     if (toInput && state.suggestedTimeout) {
         toInput.value = state.suggestedTimeout;
+        try { delete toInput.dataset.originalValue; } catch (_) { toInput.dataset.originalValue = undefined; }
     }
 }
 
@@ -1194,45 +1187,19 @@ function buildUrlTemplate(exampleUrl, paramRoles, params, pathSegments, pathRole
     } catch(e) { return null; }
 }
 
-// Block save when a lyrics API slot is partially configured. A slot is considered
-// "in use" when ANY of its identifying fields is set. Once in use, it must have:
-//   - a URL template
-//   - a lyrics field
-//   - an artist source: either {artist} placeholder in the URL template OR an artist param
-//   - a title source:  either {title} placeholder in the URL template OR a title param
-function validateLyricsApiSlots(config) {
-    for (var i = 1; i <= 2; i++) {
-        var pre = 'LYRICS_API_' + i + '_';
-        var url    = String(config[pre + 'URL_TEMPLATE'] || '').trim();
-        var artist = String(config[pre + 'ARTIST_PARAM'] || '').trim();
-        var title  = String(config[pre + 'TITLE_PARAM']  || '').trim();
-        var lyrics = String(config[pre + 'LYRICS_FIELD'] || '').trim();
-        var apikey = String(config[pre + 'APIKEY_PARAM'] || '').trim();
-        var inUse = !!(url || artist || title || lyrics || apikey);
-        if (!inUse) continue;
-        var hasArtist = artist || url.indexOf('{artist}') !== -1;
-        var hasTitle  = title  || url.indexOf('{title}')  !== -1;
-        var missing = [];
-        if (!url)       missing.push('URL template');
-        if (!hasArtist) missing.push('Artist (param or {artist} placeholder)');
-        if (!hasTitle)  missing.push('Title (param or {title} placeholder)');
-        if (!lyrics)    missing.push('Lyrics field');
-        if (missing.length) {
-            return {
-                ok: false,
-                message: 'Lyrics API slot ' + i + ' is incomplete. Missing: ' + missing.join(', ') +
-                         '. Either complete the configuration (analyze an example URL and assign all roles), or click Delete on the slot to remove it before saving.',
-            };
-        }
-    }
-    return {ok: true};
-}
-
 function updateLyricsApiHiddenInputs(slot) {
     var state = lyricsApiState[slot];
     var result = buildUrlTemplate(state.exampleUrl, state.paramRoles, state.params, state.pathSegments, state.pathRoles);
     var pre = 'LYRICS_API_' + slot + '_';
-    function setVal(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
+    function setVal(id, val) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.value = val;
+        // Mark as user-modified so collectConfigFromForm() always includes
+        // it in the diff, even if the new value happens to match what was
+        // previously saved.
+        try { delete el.dataset.originalValue; } catch (_) { el.dataset.originalValue = undefined; }
+    }
     if (result) {
         setVal(pre + 'URL_TEMPLATE', result.template);
         setVal(pre + 'ARTIST_PARAM', result.artistParam || '');
