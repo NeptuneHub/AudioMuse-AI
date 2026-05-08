@@ -10,6 +10,7 @@ from tasks.mediaserver_helper import detect_path_format
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
+EMBY_PLAYLIST_BATCH_SIZE = 100
 
 # ##############################################################################
 # EMBY IMPLEMENTATION
@@ -920,4 +921,135 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
             playlist_name, user_id, e, exc_info=True
         )
         return None
+
+
+def _get_playlist_entry_ids(playlist_id, user_id, headers):
+    """Fetches every PlaylistItemId for an existing Emby playlist.
+
+    Emby returns playlist contents at GET /emby/Playlists/{Id}/Items?UserId=... with each item
+    carrying a PlaylistItemId distinct from the audio Item's Id. Removal needs PlaylistItemId.
+    """
+    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    params = {"UserId": user_id}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("Items", [])
+        entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
+        if len(entry_ids) != len(items):
+            logger.warning(
+                f"Emby _get_playlist_entry_ids: playlist {playlist_id} had "
+                f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
+            )
+        return entry_ids
+    except Exception as e:
+        logger.error(f"Emby _get_playlist_entry_ids failed for {playlist_id}: {e}", exc_info=True)
+        return None
+
+
+def _remove_playlist_entries(playlist_id, entry_ids, headers):
+    """DELETEs entries from an Emby playlist in batches. Returns True on full success."""
+    if not entry_ids:
+        return True
+    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    for i in range(0, len(entry_ids), EMBY_PLAYLIST_BATCH_SIZE):
+        batch = entry_ids[i:i + EMBY_PLAYLIST_BATCH_SIZE]
+        params = {"EntryIds": ",".join(batch)}
+        try:
+            r = requests.delete(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+        except Exception as e:
+            logger.error(
+                f"Emby _remove_playlist_entries: batch starting at {i} failed for playlist {playlist_id}: {e}",
+                exc_info=True,
+            )
+            return False
+    return True
+
+
+def _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
+    """POSTs items to an Emby playlist in batches. Returns True on full success."""
+    if not item_ids:
+        return True
+    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    for i in range(0, len(item_ids), EMBY_PLAYLIST_BATCH_SIZE):
+        batch = item_ids[i:i + EMBY_PLAYLIST_BATCH_SIZE]
+        params = {"Ids": ",".join(batch), "UserId": user_id}
+        try:
+            r = requests.post(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+        except Exception as e:
+            logger.error(
+                f"Emby _add_items_to_playlist: batch starting at {i} failed for playlist {playlist_id}: {e}",
+                exc_info=True,
+            )
+            return False
+    return True
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert: create the playlist if missing, or replace its contents preserving the ID.
+
+    Uses admin credentials by default. Returns the playlist dict (with 'Id'/'Name') or None.
+    """
+    if not item_ids:
+        return None
+
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
+    if not token or not user_id:
+        logger.error("Emby create_or_replace_playlist: token or user_id missing")
+        return None
+    headers = {"X-Emby-Token": token}
+
+    existing = get_playlist_by_name(playlist_name, user_creds=user_creds)
+    if not existing:
+        first_batch = item_ids[:EMBY_PLAYLIST_BATCH_SIZE]
+        rest = item_ids[EMBY_PLAYLIST_BATCH_SIZE:]
+        ids_param = ",".join(first_batch)
+        url = (
+            f"{config.EMBY_URL}/emby/Playlists"
+            f"?Name={requests.utils.quote(playlist_name)}"
+            f"&Ids={requests.utils.quote(ids_param)}"
+            f"&UserId={user_id}"
+            f"&MediaType=Audio"
+        )
+        try:
+            r = requests.post(url, headers=headers, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            created = r.json()
+        except Exception as e:
+            logger.error(f"Emby create_or_replace_playlist: create failed for '{playlist_name}': {e}", exc_info=True)
+            return None
+
+        new_id = created.get("Id")
+        if not new_id:
+            logger.error(f"Emby create_or_replace_playlist: created '{playlist_name}' but response had no Id")
+            return None
+
+        if rest and not _add_items_to_playlist(new_id, rest, user_id, headers):
+            logger.error(f"Emby create_or_replace_playlist: created '{playlist_name}' but failed to add overflow tracks")
+
+        logger.info(f"✅ Emby: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+        return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
+
+    playlist_id = existing.get("Id")
+    if not playlist_id:
+        logger.error(f"Emby create_or_replace_playlist: existing playlist '{playlist_name}' has no Id")
+        return None
+
+    entry_ids = _get_playlist_entry_ids(playlist_id, user_id, headers)
+    if entry_ids is None:
+        return None
+
+    if not _remove_playlist_entries(playlist_id, entry_ids, headers):
+        return None
+
+    if not _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
+        # Items were already cleared above; signal failure so the cron handler doesn't log success.
+        logger.error(f"Emby create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
+        return None
+
+    logger.info(f"✅ Emby: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
+    return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
 

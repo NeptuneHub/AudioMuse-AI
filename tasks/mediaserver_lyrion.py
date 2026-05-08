@@ -1140,8 +1140,12 @@ def get_all_playlists():
 def delete_playlist(playlist_id):
     """Deletes a playlist on Lyrion using JSON-RPC."""
     # The correct command is 'playlists delete'.
+    # LMS returns an empty dict ({}) on success; `_jsonrpc_request` raises on
+    # transport/protocol errors. So the only way to reach here with `response`
+    # set is server success — including the empty-dict case, which `if response:`
+    # used to mis-treat as failure.
     response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
-    if response:
+    if response is not None:
         logger.info(f"🗑️ Deleted Lyrion playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Lyrion")
@@ -1345,3 +1349,29 @@ def create_instant_playlist(playlist_name, item_ids):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids)
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert for Lyrion.
+
+    Lyrion's `_add_to_playlist` is destructive — it deletes-and-resaves under the original
+    name and may assign a new numeric id. True ID preservation isn't possible with the
+    current primitives, so when the playlist exists we delete it and recreate with the
+    same name. Lyrion clients track playlists by name, so the unstable numeric id rarely
+    matters; the important invariant is that we don't end up with two playlists sharing
+    a name (which is why we bail when delete fails instead of forging ahead).
+    """
+    if not item_ids:
+        return None
+
+    existing = get_playlist_by_name(playlist_name)
+    if existing:
+        old_id = existing.get('Id')
+        if old_id and not delete_playlist(old_id):
+            logger.error(
+                f"Lyrion create_or_replace_playlist: failed to delete existing '{playlist_name}' "
+                f"(id={old_id}); aborting to avoid creating a duplicate"
+            )
+            return None
+
+    return _create_playlist_batched(playlist_name, item_ids)
