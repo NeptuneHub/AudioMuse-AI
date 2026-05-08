@@ -1,7 +1,6 @@
 # /home/guido/Music/AudioMuse-AI/rq_worker_high_priority.py
 import os
 import sys
-import logging
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -27,11 +26,18 @@ from rq import Worker
 
 try:
     from app_helper import redis_conn
+    from app_logging import configure_logging
     from config import APP_VERSION
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
     sys.exit(1)
+
+# This worker deliberately does NOT import `app` (to skip Flask init / model preload),
+# so it must install the project's root-logger formatter itself. Without it, every
+# logger.info(...) from task modules falls through to Python's lastResort handler
+# and gets silently dropped during long-running jobs.
+configure_logging()
 
 # This worker ONLY listens to the 'high' queue.
 queues_to_listen = ['high']
