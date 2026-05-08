@@ -10,7 +10,7 @@ from tasks.mediaserver_helper import detect_path_format
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
-JELLYFIN_PLAYLIST_BATCH_SIZE = 100
+JELLYFIN_PLAYLIST_BATCH_SIZE = 50
 
 # ##############################################################################
 # JELLYFIN IMPLEMENTATION
@@ -591,13 +591,18 @@ def _get_playlist_entry_ids(playlist_id):
 
 
 def _remove_playlist_entries(playlist_id, entry_ids):
-    """DELETEs entries from a Jellyfin playlist in batches. Returns True on full success."""
+    """DELETEs entries from a Jellyfin playlist in batches. Returns True on full success.
+
+    ``userId`` must be passed as a query param: Jellyfin's DELETE handler can't resolve
+    a user from an API token alone and otherwise 400s with "Guid can't be empty".
+    See jellyfin/jellyfin#12999, #13476, #14910.
+    """
     if not entry_ids:
         return True
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     for i in range(0, len(entry_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
         batch = entry_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
-        params = {"entryIds": ",".join(batch)}
+        params = {"entryIds": ",".join(batch), "userId": config.JELLYFIN_USER_ID}
         try:
             r = requests.delete(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
