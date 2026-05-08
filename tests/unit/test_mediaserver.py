@@ -2376,6 +2376,59 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         assert result is None
 
+    @patch('tasks.mediaserver_jellyfin._create_fresh_playlist')
+    @patch('tasks.mediaserver_jellyfin.delete_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_falls_back_to_recreate_when_remove_fails(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
+    ):
+        """Jellyfin <10.11 + API token rejects DELETE /Playlists/{Id}/Items (jellyfin#13476).
+        When that happens, delete the whole playlist and recreate. Id will change."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1', 'e2']
+        mock_remove.return_value = False
+        mock_delete.return_value = True
+        mock_create.return_value = {'Id': 'new-pl', 'Name': 'SF'}
+
+        result = create_or_replace_playlist('SF', ['n1', 'n2'])
+
+        mock_delete.assert_called_once_with('old-pl')
+        mock_create.assert_called_once_with('SF', ['n1', 'n2'])
+        assert result['Id'] == 'new-pl'
+
+    @patch('tasks.mediaserver_jellyfin._create_fresh_playlist')
+    @patch('tasks.mediaserver_jellyfin.delete_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_fallback_returns_none_when_delete_playlist_fails(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
+    ):
+        """If the fallback delete itself fails, don't try to recreate — bail out."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.return_value = False
+        mock_delete.return_value = False
+
+        result = create_or_replace_playlist('SF', ['n1'])
+
+        assert result is None
+        mock_create.assert_not_called()
+
 
 class TestEmbyCreateOrReplacePlaylist:
     """Emby upsert under /emby/ prefix with uppercase params."""

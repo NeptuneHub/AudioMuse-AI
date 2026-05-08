@@ -630,8 +630,40 @@ def _add_items_to_playlist(playlist_id, item_ids):
     return True
 
 
+def _create_fresh_playlist(playlist_name, item_ids):
+    """POST a new Jellyfin playlist with ``item_ids``. Returns the playlist dict or None."""
+    url = f"{config.JELLYFIN_URL}/Playlists"
+    first_batch = item_ids[:JELLYFIN_PLAYLIST_BATCH_SIZE]
+    rest = item_ids[JELLYFIN_PLAYLIST_BATCH_SIZE:]
+    body = {"Name": playlist_name, "Ids": first_batch, "UserId": config.JELLYFIN_USER_ID}
+    try:
+        r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        created = r.json()
+    except Exception as e:
+        logger.error(f"Jellyfin _create_fresh_playlist: create failed for '{playlist_name}': {e}", exc_info=True)
+        return None
+
+    new_id = created.get("Id")
+    if not new_id:
+        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but response had no Id")
+        return None
+
+    if rest and not _add_items_to_playlist(new_id, rest):
+        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks")
+
+    logger.info(f"✅ Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+    return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
+
+
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
-    """Cron-only upsert: create the playlist if missing, or replace its contents preserving the ID.
+    """Cron-only upsert: create the playlist if missing, or replace its contents.
+
+    Tries to preserve the playlist Id by clearing then repopulating in place. Falls back
+    to deleting the whole playlist and recreating it when the in-place clear fails — this
+    is the case on Jellyfin < 10.11 with API-token auth (jellyfin/jellyfin#13476, server
+    fix shipped in 10.11.0). The fallback yields a new Id every cron tick; upgrade
+    Jellyfin to 10.11+ to keep stable Ids.
 
     Uses admin credentials. ``user_creds`` is accepted for dispatcher signature parity but
     not currently used (cron always runs as admin). Returns the playlist dict (with 'Id'/'Name')
@@ -642,28 +674,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
     existing = get_playlist_by_name(playlist_name)
     if not existing:
-        url = f"{config.JELLYFIN_URL}/Playlists"
-        first_batch = item_ids[:JELLYFIN_PLAYLIST_BATCH_SIZE]
-        rest = item_ids[JELLYFIN_PLAYLIST_BATCH_SIZE:]
-        body = {"Name": playlist_name, "Ids": first_batch, "UserId": config.JELLYFIN_USER_ID}
-        try:
-            r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
-            r.raise_for_status()
-            created = r.json()
-        except Exception as e:
-            logger.error(f"Jellyfin create_or_replace_playlist: create failed for '{playlist_name}': {e}", exc_info=True)
-            return None
-
-        new_id = created.get("Id")
-        if not new_id:
-            logger.error(f"Jellyfin create_or_replace_playlist: created '{playlist_name}' but response had no Id")
-            return None
-
-        if rest and not _add_items_to_playlist(new_id, rest):
-            logger.error(f"Jellyfin create_or_replace_playlist: created '{playlist_name}' but failed to add overflow tracks")
-
-        logger.info(f"✅ Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
-        return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
+        return _create_fresh_playlist(playlist_name, item_ids)
 
     playlist_id = existing.get("Id")
     if not playlist_id:
@@ -675,7 +686,18 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
     if not _remove_playlist_entries(playlist_id, entry_ids):
-        return None
+        logger.warning(
+            f"Jellyfin: reuse of existing playlist '{playlist_name}' (Id={playlist_id}) didn't work — "
+            f"in-place item removal failed (likely Jellyfin < 10.11 with API-token bug). "
+            f"Deleting and recreating; playlist Id will change. "
+            f"Upgrade Jellyfin to 10.11+ to keep stable playlist Ids."
+        )
+        if not delete_playlist(playlist_id):
+            logger.error(
+                f"Jellyfin: failed to delete playlist '{playlist_name}' (Id={playlist_id}) for fallback recreate"
+            )
+            return None
+        return _create_fresh_playlist(playlist_name, item_ids)
 
     if not _add_items_to_playlist(playlist_id, item_ids):
         # Items were already cleared above; signal failure so the cron handler doesn't log success.
