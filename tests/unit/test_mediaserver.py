@@ -2394,7 +2394,7 @@ class TestJellyfinCreateOrReplacePlaylist:
         mock_config.HEADERS = {'X-Emby-Token': 't'}
         mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
         mock_get_entries.return_value = ['e1', 'e2']
-        mock_remove.return_value = False
+        mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
         mock_delete.return_value = True
         mock_create.return_value = {'Id': 'new-pl', 'Name': 'SF'}
 
@@ -2421,7 +2421,7 @@ class TestJellyfinCreateOrReplacePlaylist:
         mock_config.HEADERS = {'X-Emby-Token': 't'}
         mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
         mock_get_entries.return_value = ['e1']
-        mock_remove.return_value = False
+        mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
         mock_delete.return_value = False
 
         result = create_or_replace_playlist('SF', ['n1'])

@@ -591,23 +591,17 @@ def _get_playlist_entry_ids(playlist_id):
 
 
 def _remove_playlist_entries(playlist_id, entry_ids):
-    """DELETEs entries from a Jellyfin playlist in batches. Returns True on full success."""
+    """DELETEs entries from a Jellyfin playlist in batches. Raises on HTTP failure;
+    callers must wrap in try/except if they want to handle the failure (e.g. fall
+    back to delete-and-recreate on Jellyfin < 10.11)."""
     if not entry_ids:
-        return True
+        return
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     for i in range(0, len(entry_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
         batch = entry_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
         params = {"entryIds": ",".join(batch)}
-        try:
-            r = requests.delete(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-            r.raise_for_status()
-        except Exception as e:
-            logger.error(
-                f"Jellyfin _remove_playlist_entries: batch starting at {i} failed for playlist {playlist_id}: {e}",
-                exc_info=True,
-            )
-            return False
-    return True
+        r = requests.delete(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
 
 
 def _add_items_to_playlist(playlist_id, item_ids):
@@ -685,12 +679,11 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     if entry_ids is None:
         return None
 
-    if not _remove_playlist_entries(playlist_id, entry_ids):
-        logger.warning(
-            f"Jellyfin: reuse of existing playlist '{playlist_name}' (Id={playlist_id}) didn't work — "
-            f"in-place item removal failed (likely Jellyfin < 10.11 with API-token bug). "
-            f"Deleting and recreating; playlist Id will change. "
-            f"Upgrade Jellyfin to 10.11+ to keep stable playlist Ids."
+    try:
+        _remove_playlist_entries(playlist_id, entry_ids)
+    except Exception:
+        logger.info(
+            f"Reuse of existing playlist '{playlist_name}' not supported from the Music Server, going to create a new one."
         )
         if not delete_playlist(playlist_id):
             logger.error(
