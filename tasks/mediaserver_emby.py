@@ -10,7 +10,7 @@ from tasks.mediaserver_helper import detect_path_format
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
-EMBY_PLAYLIST_BATCH_SIZE = 50
+EMBY_PLAYLIST_BATCH_SIZE = 100
 
 # ##############################################################################
 # EMBY IMPLEMENTATION
@@ -947,19 +947,14 @@ def _get_playlist_entry_ids(playlist_id, user_id, headers):
         return None
 
 
-def _remove_playlist_entries(playlist_id, entry_ids, user_id, headers):
-    """DELETEs entries from an Emby playlist in batches. Returns True on full success.
-
-    ``UserId`` is passed as a query param to mirror ``_add_items_to_playlist`` and avoid
-    the Jellyfin-style auth quirk where the DELETE handler can't resolve a user from a
-    bare API token. See parallel fix in tasks/mediaserver_jellyfin.py.
-    """
+def _remove_playlist_entries(playlist_id, entry_ids, headers):
+    """DELETEs entries from an Emby playlist in batches. Returns True on full success."""
     if not entry_ids:
         return True
     url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
     for i in range(0, len(entry_ids), EMBY_PLAYLIST_BATCH_SIZE):
         batch = entry_ids[i:i + EMBY_PLAYLIST_BATCH_SIZE]
-        params = {"EntryIds": ",".join(batch), "UserId": user_id}
+        params = {"EntryIds": ",".join(batch)}
         try:
             r = requests.delete(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
@@ -1047,7 +1042,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     if entry_ids is None:
         return None
 
-    if not _remove_playlist_entries(playlist_id, entry_ids, user_id, headers):
+    if not _remove_playlist_entries(playlist_id, entry_ids, headers):
         return None
 
     if not _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
