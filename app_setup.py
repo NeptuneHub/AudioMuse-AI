@@ -73,6 +73,16 @@ LYRICS_API_CONFIG_FIELDS = [
     'LYRICS_API_2_TIMEOUT',
 ]
 
+# Advanced fields whose value must be one of a fixed set. The wizard renders
+# these as <select> dropdowns and the save path normalizes the value to the
+# canonical casing so legacy free-text entries (e.g. "DBSCAN") are cleaned up.
+ENUM_FIELD_OPTIONS = {
+    'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
+    'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
+    'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
+    'VOYAGER_METRIC': ['angular', 'euclidean', 'dot'],
+}
+
 HIDDEN_ADVANCED_FIELDS = {
     'AI_CHAT_DB_USER_NAME',
     'DATABASE_URL',
@@ -158,6 +168,12 @@ def _normalize_config_value(key, value):
                 return True
             if normalized in ('0', 'false', 'no', 'off'):
                 return False
+        if key in ENUM_FIELD_OPTIONS:
+            stripped = value.strip()
+            for option in ENUM_FIELD_OPTIONS[key]:
+                if stripped.lower() == option.lower():
+                    return option
+            return stripped
     return value
 
 
@@ -296,6 +312,9 @@ def setup_api():
                 f['value'] = ''
                 f['has_value'] = False
                 f['overridden'] = False
+
+            if f['name'] in ENUM_FIELD_OPTIONS:
+                f['options'] = list(ENUM_FIELD_OPTIONS[f['name']])
 
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)

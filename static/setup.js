@@ -123,38 +123,106 @@ function createInputField(field, value) {
         label.textContent = field.label;
     }
     var input;
-    if (field.type === 'textarea') {
+    var selectOptions = null;
+    if (Array.isArray(field.options) && field.options.length > 0) {
+        selectOptions = field.options.map(function(opt) { return String(opt); });
+    } else if (field.type === 'boolean' && !field.secret) {
+        selectOptions = ['true', 'false'];
+    }
+    if (selectOptions) {
+        input = document.createElement('select');
+    } else if (field.type === 'textarea') {
         input = document.createElement('textarea');
     } else {
         input = document.createElement('input');
     }
     input.id = field.name;
     input.name = field.name;
-    if (field.inputType) {
-        input.type = field.inputType;
-    } else {
-        input.type = 'text';
-    }
-    if (field.placeholder) {
-        input.placeholder = field.placeholder;
-    }
     if (field.required) {
-        label.classList.add('required-label');
         input.required = true;
     }
-    var hasSecretValue = false;
-    if (field.secret) {
-        if (field.has_value) {
-            hasSecretValue = true;
+    if (selectOptions) {
+        // For booleans, normalize the incoming value (which may be 'True',
+        // 'False', '1', '0', etc. from the API) to canonical 'true'/'false'.
+        // For enums, do a case-insensitive match against the canonical
+        // options so legacy stale-cased entries (e.g. 'DBSCAN') still display
+        // selected — saving will persist the canonical casing.
+        var normalized = '';
+        if (value !== undefined && value !== null && String(value) !== '') {
+            var raw = String(value).trim();
+            if (field.type === 'boolean') {
+                var rl = raw.toLowerCase();
+                if (rl === '1' || rl === 'true' || rl === 'yes' || rl === 'on') {
+                    normalized = 'true';
+                } else if (rl === '0' || rl === 'false' || rl === 'no' || rl === 'off') {
+                    normalized = 'false';
+                }
+            } else {
+                for (var oi = 0; oi < selectOptions.length; oi++) {
+                    if (selectOptions[oi].toLowerCase() === raw.toLowerCase()) {
+                        normalized = selectOptions[oi];
+                        break;
+                    }
+                }
+            }
         }
-    }
-    if (field.secret) {
-        if (field.name === 'AUDIOMUSE_PASSWORD') {
-            input.value = '';
-            input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '';
-        } else if (hasSecretValue) {
-            input.value = '********';
-            input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '********';
+        // Fall back to the python-side default if the stored value didn't
+        // match anything. field.placeholder was loaded from `field.default`
+        // by renderAdvancedFields, so it's the canonical default for enums.
+        if (!normalized && field.placeholder) {
+            for (var pi = 0; pi < selectOptions.length; pi++) {
+                if (selectOptions[pi].toLowerCase() === String(field.placeholder).toLowerCase()) {
+                    normalized = selectOptions[pi];
+                    break;
+                }
+            }
+        }
+        // Last-resort fallback so the <select> never reflects 'no choice'
+        // (which would silently submit the first option anyway).
+        if (!normalized) {
+            normalized = selectOptions[0];
+        }
+        selectOptions.forEach(function(opt) {
+            var optEl = document.createElement('option');
+            optEl.value = opt;
+            optEl.textContent = opt;
+            if (opt === normalized) {
+                optEl.selected = true;
+            }
+            input.appendChild(optEl);
+        });
+        input.value = normalized;
+        input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : normalized;
+    } else {
+        if (field.inputType) {
+            input.type = field.inputType;
+        } else {
+            input.type = 'text';
+        }
+        if (field.placeholder) {
+            input.placeholder = field.placeholder;
+        }
+        var hasSecretValue = false;
+        if (field.secret) {
+            if (field.has_value) {
+                hasSecretValue = true;
+            }
+        }
+        if (field.secret) {
+            if (field.name === 'AUDIOMUSE_PASSWORD') {
+                input.value = '';
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '';
+            } else if (hasSecretValue) {
+                input.value = '********';
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : '********';
+            } else {
+                if (value) {
+                    input.value = value;
+                } else {
+                    input.value = '';
+                }
+                input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : input.value;
+            }
         } else {
             if (value) {
                 input.value = value;
@@ -163,20 +231,16 @@ function createInputField(field, value) {
             }
             input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : input.value;
         }
-    } else {
-        if (value) {
-            input.value = value;
-        } else {
-            input.value = '';
+        if (field.type === 'boolean') {
+            input.type = 'text';
+            input.placeholder = 'true or false';
         }
-        input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : input.value;
+        if (field.secret) {
+            input.type = 'password';
+        }
     }
-    if (field.type === 'boolean') {
-        input.type = 'text';
-        input.placeholder = 'true or false';
-    }
-    if (field.secret) {
-        input.type = 'password';
+    if (field.required) {
+        label.classList.add('required-label');
     }
     row.appendChild(label);
     row.appendChild(input);
@@ -254,6 +318,7 @@ function renderAdvancedFields(fields) {
             inputType: field.type === 'boolean' ? 'text' : 'text',
             secret: secret,
             has_value: field.has_value,
+            options: Array.isArray(field.options) ? field.options : null,
             originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
         };
         advancedFields.appendChild(createInputField(fieldConfig, field.value));

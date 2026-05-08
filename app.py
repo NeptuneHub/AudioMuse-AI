@@ -508,39 +508,46 @@ def get_active_tasks_endpoint():
 def get_config_endpoint():
     """
     Get the current server configuration values.
+
+    Reads attributes from the ``config`` module at request time rather than
+    using the names imported at app.py module load. ``config.refresh_config()``
+    reloads the module on save, but ``from config import X`` bindings here
+    would otherwise stay frozen to the values that existed when this file
+    was first imported (so a wizard change to e.g. CLUSTER_ALGORITHM would
+    not be visible until a real Flask process restart).
     """
     return jsonify({
-        "num_recent_albums": NUM_RECENT_ALBUMS, "max_distance": MAX_DISTANCE,
-        "max_songs_per_cluster": MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": MAX_SONGS_PER_ARTIST,
-        "cluster_algorithm": CLUSTER_ALGORITHM, "num_clusters_min": NUM_CLUSTERS_MIN, "num_clusters_max": NUM_CLUSTERS_MAX,
-        "dbscan_eps_min": DBSCAN_EPS_MIN, "dbscan_eps_max": DBSCAN_EPS_MAX, "gmm_covariance_type": GMM_COVARIANCE_TYPE,
-        "dbscan_min_samples_min": DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": DBSCAN_MIN_SAMPLES_MAX,
-        "gmm_n_components_min": GMM_N_COMPONENTS_MIN, "gmm_n_components_max": GMM_N_COMPONENTS_MAX,
-        "spectral_n_clusters_min": SPECTRAL_N_CLUSTERS_MIN, "spectral_n_clusters_max": SPECTRAL_N_CLUSTERS_MAX,
-        "pca_components_min": PCA_COMPONENTS_MIN, "pca_components_max": PCA_COMPONENTS_MAX,
-        "min_songs_per_genre_for_stratification": MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
-        "stratified_sampling_target_percentile": STRATIFIED_SAMPLING_TARGET_PERCENTILE,
-        "ai_model_provider": AI_MODEL_PROVIDER,
-        "ollama_server_url": OLLAMA_SERVER_URL, "ollama_model_name": OLLAMA_MODEL_NAME,
-        "openai_server_url": OPENAI_SERVER_URL, "openai_model_name": OPENAI_MODEL_NAME,
-        "gemini_model_name": GEMINI_MODEL_NAME,
-        "mistral_model_name": MISTRAL_MODEL_NAME,
-        "top_n_moods": TOP_N_MOODS, "mood_labels": MOOD_LABELS, "clustering_runs": CLUSTERING_RUNS,
-        "top_n_playlists": TOP_N_PLAYLISTS,
-        "enable_clustering_embeddings": ENABLE_CLUSTERING_EMBEDDINGS,
-        "score_weight_diversity": SCORE_WEIGHT_DIVERSITY,
-        "score_weight_silhouette": SCORE_WEIGHT_SILHOUETTE,
-        "score_weight_davies_bouldin": SCORE_WEIGHT_DAVIES_BOULDIN,
-        "score_weight_calinski_harabasz": SCORE_WEIGHT_CALINSKI_HARABASZ,
-        "score_weight_purity": SCORE_WEIGHT_PURITY,
-        "score_weight_other_feature_diversity": SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
-        "score_weight_other_feature_purity": SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-        "path_distance_metric": PATH_DISTANCE_METRIC
-      ,"alchemy_default_n_results": ALCHEMY_DEFAULT_N_RESULTS
-      ,"alchemy_max_n_results": ALCHEMY_MAX_N_RESULTS
-      ,"alchemy_subtract_distance": ALCHEMY_SUBTRACT_DISTANCE
-      ,"alchemy_subtract_distance_angular": ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-      ,"alchemy_subtract_distance_euclid": ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
+        "num_recent_albums": config.NUM_RECENT_ALBUMS, "max_distance": config.MAX_DISTANCE,
+        "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
+        "cluster_algorithm": config.CLUSTER_ALGORITHM, "num_clusters_min": config.NUM_CLUSTERS_MIN, "num_clusters_max": config.NUM_CLUSTERS_MAX,
+        "dbscan_eps_min": config.DBSCAN_EPS_MIN, "dbscan_eps_max": config.DBSCAN_EPS_MAX, "gmm_covariance_type": config.GMM_COVARIANCE_TYPE,
+        "dbscan_min_samples_min": config.DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": config.DBSCAN_MIN_SAMPLES_MAX,
+        "gmm_n_components_min": config.GMM_N_COMPONENTS_MIN, "gmm_n_components_max": config.GMM_N_COMPONENTS_MAX,
+        "spectral_n_clusters_min": config.SPECTRAL_N_CLUSTERS_MIN, "spectral_n_clusters_max": config.SPECTRAL_N_CLUSTERS_MAX,
+        "pca_components_min": config.PCA_COMPONENTS_MIN, "pca_components_max": config.PCA_COMPONENTS_MAX,
+        "min_songs_per_genre_for_stratification": config.MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
+        "stratified_sampling_target_percentile": config.STRATIFIED_SAMPLING_TARGET_PERCENTILE,
+        "ai_model_provider": config.AI_MODEL_PROVIDER,
+        "ollama_server_url": config.OLLAMA_SERVER_URL, "ollama_model_name": config.OLLAMA_MODEL_NAME,
+        "openai_server_url": config.OPENAI_SERVER_URL, "openai_model_name": config.OPENAI_MODEL_NAME,
+        "gemini_model_name": config.GEMINI_MODEL_NAME,
+        "mistral_model_name": config.MISTRAL_MODEL_NAME,
+        "top_n_moods": config.TOP_N_MOODS, "mood_labels": config.MOOD_LABELS, "clustering_runs": config.CLUSTERING_RUNS,
+        "top_n_playlists": config.TOP_N_PLAYLISTS,
+        "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
+        "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
+        "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,
+        "score_weight_davies_bouldin": config.SCORE_WEIGHT_DAVIES_BOULDIN,
+        "score_weight_calinski_harabasz": config.SCORE_WEIGHT_CALINSKI_HARABASZ,
+        "score_weight_purity": config.SCORE_WEIGHT_PURITY,
+        "score_weight_other_feature_diversity": config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
+        "score_weight_other_feature_purity": config.SCORE_WEIGHT_OTHER_FEATURE_PURITY,
+        "path_distance_metric": config.PATH_DISTANCE_METRIC
+      ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
+      ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
+      ,"alchemy_subtract_distance": config.ALCHEMY_SUBTRACT_DISTANCE
+      ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
+      ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
     })
 
 @app.route('/api/playlists', methods=['GET'])
