@@ -7,6 +7,7 @@ startup and then once per hour, and persisted in the singleton
 ``dashboard_stats`` table. The summary endpoint only reads that row and
 combines it with the cheap, always-live bits (workers, recent tasks, cron).
 """
+import datetime
 import json
 import logging
 import time
@@ -137,13 +138,18 @@ def _collect_task_metrics(cur):
                 LIMIT 10
             """)
             for r in cur.fetchall():
+                recorded = r['recorded_at']
+                # Stored as UTC (see record_task_history); render in container's
+                # local TZ so it matches the rest of the dashboard (issue #499).
+                if recorded is not None and hasattr(recorded, 'tzinfo') and recorded.tzinfo is None:
+                    recorded = recorded.replace(tzinfo=datetime.timezone.utc).astimezone()
                 recent.append({
                     'task_id': r['task_id'],
                     'task_type': r['task_type'],
                     'status': r['status'],
                     'duration_seconds': float(r['duration_seconds']) if r['duration_seconds'] is not None else None,
                     'note': r['note'] or '',
-                    'timestamp': r['recorded_at'].isoformat() if r['recorded_at'] else None,
+                    'timestamp': recorded.isoformat() if recorded else None,
                 })
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
@@ -345,6 +351,10 @@ def _load_dashboard_stats(cur):
         if not row:
             return {}, None
         updated_at = row['updated_at']
+        # Stored as UTC (see refresh_dashboard_stats); render in container's
+        # local TZ so it matches generated_at / cron last_run (issue #499).
+        if updated_at is not None and hasattr(updated_at, 'tzinfo') and updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=datetime.timezone.utc).astimezone()
         updated_iso = (
             updated_at.strftime('%Y-%m-%d %H:%M:%S')
             if hasattr(updated_at, 'strftime') else (str(updated_at) if updated_at else None)
@@ -380,7 +390,7 @@ def refresh_dashboard_stats(app):
                 try:
                     cur2.execute(
                         "INSERT INTO dashboard_stats (id, updated_at, content) "
-                        "VALUES (1, NOW(), %s::jsonb) "
+                        "VALUES (1, NOW() AT TIME ZONE 'UTC', %s::jsonb) "
                         "ON CONFLICT (id) DO UPDATE SET "
                         "updated_at = EXCLUDED.updated_at, "
                         "content = EXCLUDED.content",
@@ -393,7 +403,7 @@ def refresh_dashboard_stats(app):
                         cur2.execute("DELETE FROM dashboard_stats WHERE id = 1")
                         cur2.execute(
                             "INSERT INTO dashboard_stats (id, updated_at, content) "
-                            "VALUES (1, NOW(), %s::jsonb)",
+                            "VALUES (1, NOW() AT TIME ZONE 'UTC', %s::jsonb)",
                             (json.dumps(content),),
                         )
                     else:

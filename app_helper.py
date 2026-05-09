@@ -592,8 +592,8 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
                 return
             cur.execute(
                 """
-                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note, recorded_at)
+                VALUES (%s, %s, %s, %s, %s, NOW() AT TIME ZONE 'UTC')
                 """,
                 (task_id, task_type, status, duration_seconds, note),
             )
