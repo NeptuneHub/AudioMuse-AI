@@ -145,7 +145,7 @@ def _collect_task_metrics(cur):
                     'status': r['status'],
                     'duration_seconds': float(r['duration_seconds']) if r['duration_seconds'] is not None else None,
                     'note': r['note'] or '',
-                    'timestamp': recorded.isoformat() if recorded else None,
+                    'timestamp': recorded.strftime('%Y-%m-%d %H:%M:%S') if recorded is not None else None,
                 })
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
