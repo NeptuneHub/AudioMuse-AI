@@ -4,13 +4,15 @@
 # both `onnxruntime` (CPU) and `onnxruntime-gpu` (CUDA). Only ONE may be
 # installed; the Dockerfile branches accordingly.
 #
-# Wheels are published by AMD at repo.radeon.com. Available builds depend on
-# ROCm version + Python version of the base image. Verified combinations:
-#   ROCm 6.4.x + Python 3.10/3.12 -> onnxruntime-rocm 1.21.x
-#   ROCm 6.2.x + Python 3.10      -> onnxruntime-rocm 1.18.x
+# AMD publishes wheels at https://repo.radeon.com/rocm/manylinux/<release>/ as
+# a flat directory (NOT a PEP 503 simple index), so we install by direct URL.
+# Verified wheels for ROCm 6.4.2:
+#   Python 3.10 -> rocm-rel-6.4.2/onnxruntime_rocm-1.21.0-cp310-cp310-...whl
+#   Python 3.12 -> rocm-rel-6.4.2/onnxruntime_rocm-1.21.0-cp312-cp312-...whl
 #
-# Pinned to 1.21.0 to match the recommended base image
-# rocm/dev-ubuntu-24.04:6.4.2 (Python 3.12). If you build against a different
-# ROCm/Python combo, override the pin and the index URL accordingly.
---extra-index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.2/
-onnxruntime-rocm==1.21.0
+# The recommended base image rocm/dev-ubuntu-24.04:6.4.2 ships Python 3.12, so
+# we pin the cp312 wheel below. For the noavx2 build (Ubuntu 22.04 / Python
+# 3.10) swap the cp312 marker for cp310 — we ship both so a single rocm.txt
+# works for both Dockerfiles via PEP 508 markers.
+onnxruntime-rocm @ https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.2/onnxruntime_rocm-1.21.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == "3.12" and platform_machine == "x86_64"
+onnxruntime-rocm @ https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.2/onnxruntime_rocm-1.21.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; python_version == "3.10" and platform_machine == "x86_64"
