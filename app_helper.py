@@ -20,6 +20,7 @@ from rq.exceptions import NoSuchJobError
 
 # Import configuration
 from config import DATABASE_URL, REDIS_URL
+from tz_helper import UTC_NOW_SQL
 
 # Import RQ specifics
 from rq.command import send_stop_job_command
@@ -591,9 +592,9 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             if cur.fetchone():
                 return
             cur.execute(
-                """
-                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note)
-                VALUES (%s, %s, %s, %s, %s)
+                f"""
+                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note, recorded_at)
+                VALUES (%s, %s, %s, %s, %s, {UTC_NOW_SQL})
                 """,
                 (task_id, task_type, status, duration_seconds, note),
             )
