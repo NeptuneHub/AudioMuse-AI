@@ -21,6 +21,7 @@ import config
 from typing import Tuple, Optional
 from transformers import AutoTokenizer
 from tasks.memory_utils import cleanup_cuda_memory, cleanup_onnx_session, handle_onnx_memory_error
+from tasks.onnx_providers import select_providers
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +66,18 @@ def _load_mulan_models(load_text_models=False):
         # logger.info(f"MuLan: Using {num_threads} threads ({logical_cores} logical cores - 2)")
         logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
-        # Select execution provider (CPU or CUDA)
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            logger.info("CUDA available - using GPU acceleration")
-        else:
-            logger.info("Using CPU execution")
-        
+        # Select execution providers (ROCm > CUDA > CPU) — see tasks.onnx_providers
+        provider_specs = select_providers("mulan-audio")
+        providers = [p[0] for p in provider_specs]
+        provider_opts = [p[1] for p in provider_specs]
+
         # Load audio encoder (with external data file)
         logger.info(f"Loading audio encoder: {config.AUDIO_MODEL_PATH}")
         _audio_session = ort.InferenceSession(
             config.AUDIO_MODEL_PATH,
             sess_options=sess_options,
-            providers=providers
+            providers=providers,
+            provider_options=provider_opts,
         )
         
         # Load text encoder and tokenizer only if requested (Flask search mode)
@@ -87,12 +86,13 @@ def _load_mulan_models(load_text_models=False):
             if not os.path.exists(config.TEXT_MODEL_PATH):
                 raise FileNotFoundError(f"Text model not found: {config.TEXT_MODEL_PATH}")
             
-            # Load text encoder (with external data file)  
+            # Load text encoder (with external data file)
             logger.info(f"Loading text encoder: {config.TEXT_MODEL_PATH}")
             _text_session = ort.InferenceSession(
                 config.TEXT_MODEL_PATH,
                 sess_options=sess_options,
-                providers=providers
+                providers=providers,
+                provider_options=provider_opts,
             )
             
             # Load tokenizer from extracted directory (uses transformers for compatibility)
@@ -172,15 +172,16 @@ def initialize_mulan_text_models():
         # sess_options.intra_op_num_threads = num_threads
         # sess_options.inter_op_num_threads = num_threads
         
-        providers = ['CPUExecutionProvider']
-        if ort.get_available_providers() and 'CUDAExecutionProvider' in ort.get_available_providers():
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
+        provider_specs = select_providers("mulan-text")
+        providers = [p[0] for p in provider_specs]
+        provider_opts = [p[1] for p in provider_specs]
+
         # Load text encoder
         _text_session = ort.InferenceSession(
             config.TEXT_MODEL_PATH,
             sess_options=sess_options,
-            providers=providers
+            providers=providers,
+            provider_options=provider_opts,
         )
         
         # Load tokenizer

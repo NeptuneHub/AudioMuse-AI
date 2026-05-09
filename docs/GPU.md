@@ -37,3 +37,48 @@ We suggest **8GB VRAM** on GPU, with less you can experience the NON BLOCKING Ou
 - GaussianMixture and SpectralClustering use CPU (no GPU implementation available)
 - GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
 - GPU is already used for audio analysis models (ONNX inference)
+
+## AMD GPU (ROCm)
+
+AMD ROCm support is available for the ONNX-based audio analysis models
+(MusiCNN, CLAP, MuLan). Lyrics transcription (PyTorch / Whisper) and GPU clustering (RAPIDS cuML) remain NVIDIA-only on the ROCm image — they fall back to CPU and scikit-learn respectively.
+
+**Verified hardware:**
+- Steam Deck (gfx1033 / Van Gogh APU) with `HSA_OVERRIDE_GFX_VERSION=10.3.0`
+
+**Build the image (no CI tag yet — local build required):**
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=rocm/dev-ubuntu-24.04:6.4.2 \
+  -t ghcr.io/neptunehub/audiomuse-ai:latest-amd .
+```
+
+The `BASE_IMAGE` regex in the Dockerfile auto-detects any `rocm/...` base and installs `requirements/rocm.txt` (`onnxruntime-rocm`) instead of the CUDA or CPU variants. If you target a different ROCm release, edit `requirements/rocm.txt` and pin both the index URL and `onnxruntime-rocm` version to a wheel published at [repo.radeon.com/rocm/manylinux/](https://repo.radeon.com/rocm/manylinux/).
+
+**Run with the AMD compose file:**
+
+```bash
+cd deployment
+docker compose -f docker-compose-amd.yaml up -d
+```
+
+The compose file mounts `/dev/kfd` and `/dev/dri/renderD128`, adds the
+`video` and `render` groups, and sets the HSA env vars Steam Deck needs. For non-Deck AMD GPUs override `HSA_OVERRIDE_GFX_VERSION` (e.g. `11.0.0` for RDNA3) in your `.env`.
+
+**Verify the worker actually picked ROCm:**
+
+```bash
+docker exec audiomuse-ai-worker-instance python3 -c "
+import onnxruntime as ort
+print(ort.get_available_providers())
+"
+# Expect: ['ROCMExecutionProvider', 'CPUExecutionProvider', ...]
+
+docker logs audiomuse-ai-worker-instance | grep -i provider
+# Expect: "ONNX Runtime providers available: [...]; preferred: ROCMExecutionProvider"
+```
+
+**Limitations on AMD:**
+- Clustering uses scikit-learn (cuML is CUDA-only). Leave `USE_GPU_CLUSTERING=false`.
+- Lyrics (Whisper / Qwen) run on CPU — PyTorch ROCm wheels are not bundled in this image.

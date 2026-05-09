@@ -31,6 +31,7 @@ try:
 except Exception:
     AUDIO_LOAD_TIMEOUT = None
 from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
+from tasks.onnx_providers import select_providers
 
 logger = logging.getLogger(__name__)
 
@@ -84,28 +85,11 @@ def _load_audio_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU support: ONNX Runtime handles CUDA availability internally
+    # GPU/CPU provider selection (ROCm > CUDA > CPU) — see tasks.onnx_providers
     session = None
-    
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+    provider_options = select_providers("clap-audio")
+
+
     # Create session — pass file path so ORT resolves external data natively
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -185,27 +169,11 @@ def _load_text_model():
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
     
-    # Text model typically runs on CPU in Flask containers
+    # GPU/CPU provider selection (ROCm > CUDA > CPU) — see tasks.onnx_providers
     session = None
-    available_providers = ort.get_available_providers()
-    
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+    provider_options = select_providers("clap-text")
+
+
     # Create session
     try:
         session = ort.InferenceSession(

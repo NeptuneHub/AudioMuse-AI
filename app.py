@@ -72,6 +72,14 @@ logger = logging.getLogger(__name__)
 from app_logging import configure_logging
 configure_logging()
 
+# One-line summary of ONNX execution providers — visible in both Flask and
+# RQ worker startup logs since rq_worker.py also imports this module.
+try:
+    from tasks.onnx_providers import log_provider_summary
+    log_provider_summary()
+except Exception as _ort_log_err:  # pragma: no cover - defensive
+    logger.warning(f"Could not log ONNX provider summary: {_ort_log_err}")
+
 if ENABLE_PROXY_FIX:
   app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 

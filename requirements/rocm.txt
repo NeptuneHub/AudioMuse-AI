@@ -1,0 +1,16 @@
+# AMD ROCm wheels for ONNX Runtime.
+#
+# IMPORTANT: onnxruntime-rocm shares the `onnxruntime` Python module name with
+# both `onnxruntime` (CPU) and `onnxruntime-gpu` (CUDA). Only ONE may be
+# installed; the Dockerfile branches accordingly.
+#
+# Wheels are published by AMD at repo.radeon.com. Available builds depend on
+# ROCm version + Python version of the base image. Verified combinations:
+#   ROCm 6.4.x + Python 3.10/3.12 -> onnxruntime-rocm 1.21.x
+#   ROCm 6.2.x + Python 3.10      -> onnxruntime-rocm 1.18.x
+#
+# Pinned to 1.21.0 to match the recommended base image
+# rocm/dev-ubuntu-24.04:6.4.2 (Python 3.12). If you build against a different
+# ROCm/Python combo, override the pin and the index URL accordingly.
+--extra-index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.2/
+onnxruntime-rocm==1.21.0

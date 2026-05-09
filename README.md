@@ -145,6 +145,10 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
 
+* **`-amd`** variants
+  Images using `onnxruntime-rocm` for AMD GPU analysis (verified on Steam Deck).
+  See [docs/GPU.md](docs/GPU.md) for the AMD section.
+
 ## **How To Contribute**
 
 Contributions, issues, and feature requests are welcome\!  

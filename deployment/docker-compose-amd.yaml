@@ -1,0 +1,103 @@
+version: '3.8'
+# AudioMuse-AI compose file for AMD ROCm GPUs (Steam Deck, RDNA, etc.).
+#
+# This file mounts /dev/kfd and the render node so the container can talk to
+# the AMD GPU via ROCm. The HSA_OVERRIDE_GFX_VERSION env var defaults to
+# "10.3.0" which is what Steam Deck (gfx1033, Van Gogh APU) needs to be
+# recognized by ROCm. Override it for other AMD GPUs (e.g. RDNA3 = "11.0.0").
+#
+# Image: there is no published `latest-amd` tag yet. Build locally first:
+#   docker build --build-arg BASE_IMAGE=rocm/dev-ubuntu-24.04:6.4.2 \
+#       -t ghcr.io/neptunehub/audiomuse-ai:latest-amd .
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: audiomuse-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: audiomuse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  audiomuse-ai-flask:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-amd
+    container_name: audiomuse-ai-flask-app
+    ports:
+      - "${FRONTEND_PORT:-8000}:8000"
+    environment:
+      SERVICE_TYPE: "flask"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      TEMP_DIR: "/app/temp_audio"
+      # ROCm runtime tuning. Override HSA_OVERRIDE_GFX_VERSION for non-Deck AMD GPUs.
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-10.3.0}"
+      HSA_ENABLE_SDMA: "${HSA_ENABLE_SDMA:-0}"
+      ROCR_VISIBLE_DEVICES: "${ROCR_VISIBLE_DEVICES:-0}"
+    devices:
+      - /dev/kfd
+      - /dev/dri/renderD128
+    group_add:
+      - video
+      - render
+    volumes:
+      - temp-audio-flask:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  audiomuse-ai-worker:
+    image: ghcr.io/neptunehub/audiomuse-ai:latest-amd
+    container_name: audiomuse-ai-worker-instance
+    environment:
+      SERVICE_TYPE: "worker"
+      TZ: "${TZ:-UTC}"
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
+      POSTGRES_DB: "audiomusedb"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      REDIS_URL: "redis://redis:6379/0"
+      TEMP_DIR: "/app/temp_audio"
+      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-10.3.0}"
+      HSA_ENABLE_SDMA: "${HSA_ENABLE_SDMA:-0}"
+      ROCR_VISIBLE_DEVICES: "${ROCR_VISIBLE_DEVICES:-0}"
+      # cuML/cupy are NVIDIA-only; clustering will fall back to scikit-learn on AMD.
+      USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
+    devices:
+      - /dev/kfd
+      - /dev/dri/renderD128
+    group_add:
+      - video
+      - render
+    volumes:
+      - temp-audio-worker:/app/temp_audio
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
+  temp-audio-flask:
+  temp-audio-worker:

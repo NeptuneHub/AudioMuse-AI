@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # AudioMuse-AI Dockerfile
-# Supports both CPU (ubuntu:24.04) and GPU (nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04) builds
+# Supports CPU (ubuntu:24.04), NVIDIA CUDA, and AMD ROCm builds.
 #
 # Build examples:
-#   CPU:  docker build -t audiomuse-ai .
-#   GPU:  docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#   CPU:    docker build -t audiomuse-ai .
+#   NVIDIA: docker build --build-arg BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 -t audiomuse-ai-gpu .
+#   AMD:    docker build --build-arg BASE_IMAGE=rocm/dev-ubuntu-24.04:6.4.2 -t audiomuse-ai-amd .
 
 ARG BASE_IMAGE=ubuntu:24.04
 
@@ -150,12 +151,16 @@ WORKDIR /app
 COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# NVIDIA builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# AMD ROCm builds: onnxruntime-rocm, torch (CPU); cupy/cuml are NVIDIA-only
 # CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+    elif [[ "$BASE_IMAGE" =~ ^rocm/ ]]; then \
+        echo "ROCm base image detected: installing AMD packages (onnxruntime-rocm, torch CPU)"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/rocm.txt -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \

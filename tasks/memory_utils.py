@@ -231,11 +231,14 @@ def reset_onnx_memory_pool() -> bool:
         # Force garbage collection first
         gc.collect()
         
-        # Determine available providers
+        # Determine available providers (ROCm > CUDA > CPU)
         providers = ort.get_available_providers()
         preferred_provider = None
-        
-        if 'CUDAExecutionProvider' in providers:
+
+        if 'ROCMExecutionProvider' in providers:
+            preferred_provider = 'ROCMExecutionProvider'
+            logger.debug("Using ROCm provider for ONNX memory pool reset")
+        elif 'CUDAExecutionProvider' in providers:
             preferred_provider = 'CUDAExecutionProvider'
             logger.debug("Using CUDA provider for ONNX memory pool reset")
         elif 'CPUExecutionProvider' in providers:

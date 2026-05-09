@@ -10,6 +10,7 @@ import librosa
 import onnxruntime as ort
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
+from .onnx_providers import select_providers
 
 # `app_helper` and `app_helper_artist` are safe at module top: they have no
 # import cycle back into this module. Optional ML modules
@@ -73,18 +74,8 @@ def sigmoid(x):
 
 
 def get_provider_options():
-    """Return [(provider_name, options), ...] preferring CUDA when available."""
-    if 'CUDAExecutionProvider' in ort.get_available_providers():
-        cuda = {
-            'device_id': 0,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }
-        logger.info("CUDA provider available - attempting to use GPU for analysis")
-        return [('CUDAExecutionProvider', cuda), ('CPUExecutionProvider', {})]
-    logger.info("CUDA provider not available - using CPU only")
-    return [('CPUExecutionProvider', {})]
+    """Return [(provider_name, options), ...] preferring ROCm > CUDA > CPU."""
+    return select_providers("musicnn")
 
 
 def create_onnx_session(model_path, provider_options=None, label=""):
