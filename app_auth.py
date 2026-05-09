@@ -33,6 +33,8 @@ from flask import (
 import jwt as pyjwt
 from psycopg2.extras import DictCursor
 
+from tz_helper import UTC_NOW_SQL, to_local
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,7 +103,7 @@ def list_additional_users(username=None):
         rows = cur.fetchall()
     out = []
     for row in rows:
-        created = row['created_at']
+        created = to_local(row['created_at'])
         out.append({
             'id': row['id'],
             'username': row['username'],
@@ -168,8 +170,9 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     db = _get_db()
     with db.cursor() as cur:
         cur.execute(
-            "INSERT INTO audiomuse_users (username, password_hash, role) VALUES (%s, %s, %s) "
-            "ON CONFLICT (username) DO NOTHING RETURNING id",
+            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
+            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
+            f"ON CONFLICT (username) DO NOTHING RETURNING id",
             (username, password_hash, normalized_role),
         )
         row = cur.fetchone()
@@ -328,8 +331,9 @@ def upsert_admin_user(username, password):
     db = _get_db()
     with db.cursor() as cur:
         cur.execute(
-            "INSERT INTO audiomuse_users (username, password_hash, role) VALUES (%s, %s, %s) "
-            "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'",
+            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
+            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
+            f"ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'",
             (username, password_hash, USER_ROLE_ADMIN),
         )
     db.commit()
@@ -386,8 +390,9 @@ def seed_admin_from_env():
     try:
         with db.cursor() as cur:
             cur.execute(
-                "INSERT INTO audiomuse_users (username, password_hash, role) VALUES (%s, %s, %s) "
-                "ON CONFLICT (username) DO NOTHING",
+                f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
+                f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
+                f"ON CONFLICT (username) DO NOTHING",
                 (user.strip(), password_hash, USER_ROLE_ADMIN),
             )
         db.commit()

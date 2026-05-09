@@ -49,14 +49,9 @@
     }
 
     function formatDate(iso) {
-        if (!iso) return '';
-        try {
-            const d = new Date(iso);
-            if (isNaN(d.getTime())) return iso;
-            return d.toLocaleString();
-        } catch (e) {
-            return iso;
-        }
+        // Backend already converts to the container's local TZ (issue #499);
+        // render raw, mirroring fmtTime() in templates/dashboard.html.
+        return iso ? iso.replace('T', ' ').substring(0, 19) : '';
     }
 
     function roleLabel(role) {
