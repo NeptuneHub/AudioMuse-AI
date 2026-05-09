@@ -82,3 +82,17 @@ docker logs audiomuse-ai-worker-instance | grep -i provider
 **Limitations on AMD:**
 - Clustering uses scikit-learn (cuML is CUDA-only). Leave `USE_GPU_CLUSTERING=false`.
 - Lyrics (Whisper / Qwen) run on CPU — PyTorch ROCm wheels are not bundled in this image.
+
+## Vulkan execution provider
+
+AudioMuse now also recognizes ONNX Runtime's `VulkanExecutionProvider` and will
+automatically select it when ROCm/CUDA are unavailable.
+
+Current priority order is:
+
+`ROCMExecutionProvider` -> `CUDAExecutionProvider` -> `VulkanExecutionProvider` -> `CPUExecutionProvider`
+
+Notes:
+- The official wheels used by this repo (`onnxruntime`, `onnxruntime-gpu`, `onnxruntime-rocm`) may not expose Vulkan on all platforms.
+- If you build ONNX Runtime yourself with Vulkan enabled, AudioMuse will pick it automatically with no app code changes.
+- CPU is always appended as fallback so model loading can still recover if Vulkan session creation fails.

@@ -74,7 +74,7 @@ def sigmoid(x):
 
 
 def get_provider_options():
-    """Return [(provider_name, options), ...] preferring ROCm > CUDA > CPU."""
+    """Return [(provider_name, options), ...] preferring ROCm > CUDA > Vulkan > CPU."""
     return select_providers("musicnn")
 
 

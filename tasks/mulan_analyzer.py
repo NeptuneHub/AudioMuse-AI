@@ -66,7 +66,7 @@ def _load_mulan_models(load_text_models=False):
         # logger.info(f"MuLan: Using {num_threads} threads ({logical_cores} logical cores - 2)")
         logger.info("MuLan: Using ONNX Runtime automatic thread management")
         
-        # Select execution providers (ROCm > CUDA > CPU) — see tasks.onnx_providers
+        # Select execution providers (ROCm > CUDA > Vulkan > CPU) — see tasks.onnx_providers
         provider_specs = select_providers("mulan-audio")
         providers = [p[0] for p in provider_specs]
         provider_opts = [p[1] for p in provider_specs]

@@ -231,7 +231,7 @@ def reset_onnx_memory_pool() -> bool:
         # Force garbage collection first
         gc.collect()
         
-        # Determine available providers (ROCm > CUDA > CPU)
+        # Determine available providers (ROCm > CUDA > Vulkan > CPU)
         providers = ort.get_available_providers()
         preferred_provider = None
 
@@ -241,6 +241,9 @@ def reset_onnx_memory_pool() -> bool:
         elif 'CUDAExecutionProvider' in providers:
             preferred_provider = 'CUDAExecutionProvider'
             logger.debug("Using CUDA provider for ONNX memory pool reset")
+        elif 'VulkanExecutionProvider' in providers:
+            preferred_provider = 'VulkanExecutionProvider'
+            logger.debug("Using Vulkan provider for ONNX memory pool reset")
         elif 'CPUExecutionProvider' in providers:
             preferred_provider = 'CPUExecutionProvider'
             logger.debug("Using CPU provider for ONNX memory pool reset")

@@ -1,7 +1,7 @@
 """Centralized ONNX Runtime execution-provider selection.
 
 All MusiCNN / CLAP / MuLan / memory-pool callers go through this helper so
-provider preference (ROCm > CUDA > CPU) is defined in exactly one place.
+provider preference (ROCm > CUDA > Vulkan > CPU) is defined in exactly one place.
 
 The CUDA provider options dict matches the values previously hard-coded in
 ``tasks.analysis_helper.get_provider_options`` so NVIDIA behavior is
@@ -31,11 +31,13 @@ _ROCM_OPTIONS: Dict = {
     'device_id': 0,
 }
 
+_VULKAN_OPTIONS: Dict = {}
+
 
 def select_providers(model_label: str = "") -> List[ProviderSpec]:
     """Return ordered ``[(provider_name, options), ...]`` for InferenceSession.
 
-    Order: ROCm > CUDA > CPU. CPU is always appended as a fallback when a
+    Order: ROCm > CUDA > Vulkan > CPU. CPU is always appended as a fallback when a
     GPU provider is selected.
     """
     available = ort.get_available_providers()
@@ -48,6 +50,10 @@ def select_providers(model_label: str = "") -> List[ProviderSpec]:
     if 'CUDAExecutionProvider' in available:
         logger.info(f"CUDA provider available - using NVIDIA GPU{label}")
         return [('CUDAExecutionProvider', _CUDA_OPTIONS), ('CPUExecutionProvider', {})]
+
+    if 'VulkanExecutionProvider' in available:
+        logger.info(f"Vulkan provider available - using Vulkan GPU backend{label}")
+        return [('VulkanExecutionProvider', _VULKAN_OPTIONS), ('CPUExecutionProvider', {})]
 
     logger.info(f"No GPU provider available - using CPU{label}")
     return [('CPUExecutionProvider', {})]

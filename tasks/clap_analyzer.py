@@ -85,7 +85,7 @@ def _load_audio_model():
         sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
         logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
-    # GPU/CPU provider selection (ROCm > CUDA > CPU) — see tasks.onnx_providers
+    # GPU/CPU provider selection (ROCm > CUDA > Vulkan > CPU) — see tasks.onnx_providers
     session = None
     provider_options = select_providers("clap-audio")
 
@@ -169,7 +169,7 @@ def _load_text_model():
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
     
-    # GPU/CPU provider selection (ROCm > CUDA > CPU) — see tasks.onnx_providers
+    # GPU/CPU provider selection (ROCm > CUDA > Vulkan > CPU) — see tasks.onnx_providers
     session = None
     provider_options = select_providers("clap-text")
 
