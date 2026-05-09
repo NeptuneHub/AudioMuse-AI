@@ -3,7 +3,7 @@ import os
 import tempfile
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby, plex
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -54,11 +54,19 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
 
+# --- Plex Constants ---
+# These are used only if MEDIASERVER_TYPE is "plex".
+# PLEX_TOKEN is the admin X-Plex-Token; see
+# https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+PLEX_URL = os.environ.get("PLEX_URL", "")
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "")
+
 MEDIASERVER_FIELDS_BY_TYPE = {
     'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+    'plex': ['PLEX_URL', 'PLEX_TOKEN'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {

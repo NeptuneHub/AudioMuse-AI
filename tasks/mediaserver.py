@@ -93,6 +93,24 @@ from tasks.mediaserver_emby import (
     get_last_played_time as emby_get_last_played_time,
     list_libraries as _emby_list_libraries,
 )
+from tasks.mediaserver_plex import (
+    get_all_playlists as plex_get_all_playlists,
+    get_lyrics as plex_get_lyrics,
+    delete_playlist as plex_delete_playlist,
+    get_recent_albums as plex_get_recent_albums,
+    get_tracks_from_album as plex_get_tracks_from_album,
+    search_albums as plex_search_albums,
+    test_connection as plex_test_connection,
+    download_track as plex_download_track,
+    get_all_songs as plex_get_all_songs,
+    get_playlist_by_name as plex_get_playlist_by_name,
+    create_playlist as plex_create_playlist,
+    create_instant_playlist as plex_create_instant_playlist,
+    create_or_replace_playlist as plex_create_or_replace_playlist,
+    get_top_played_songs as plex_get_top_played_songs,
+    get_last_played_time as plex_get_last_played_time,
+    list_libraries as _plex_list_libraries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +149,9 @@ def delete_automatic_playlists():
     elif config.MEDIASERVER_TYPE == 'emby':
         playlists_to_check = emby_get_all_playlists()
         delete_function = emby_delete_playlist
+    elif config.MEDIASERVER_TYPE == 'plex':
+        playlists_to_check = plex_get_all_playlists()
+        delete_function = plex_delete_playlist
 
     if delete_function:
         for p in playlists_to_check:
@@ -148,6 +169,7 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
+    if config.MEDIASERVER_TYPE == 'plex': return plex_get_recent_albums(limit)
     return []
 
 def get_recent_music_items(limit):
@@ -177,6 +199,7 @@ def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
     if provider_type == 'lyrion': return lyrion_get_tracks_from_album(album_id, user_creds=user_creds)
     if provider_type == 'mpd': return mpd_get_tracks_from_album(album_id)
     if provider_type == 'emby': return emby_get_tracks_from_album(album_id, user_creds=user_creds)
+    if provider_type == 'plex': return plex_get_tracks_from_album(album_id, user_creds=user_creds)
     return []
 
 def download_track(temp_dir, item):
@@ -188,6 +211,7 @@ def download_track(temp_dir, item):
     elif config.MEDIASERVER_TYPE == 'lyrion': downloaded_path = lyrion_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'mpd': downloaded_path = mpd_download_track(temp_dir, item)
     elif config.MEDIASERVER_TYPE == 'emby': downloaded_path = emby_download_track(temp_dir, item)
+    elif config.MEDIASERVER_TYPE == 'plex': downloaded_path = plex_download_track(temp_dir, item)
     
     # If download failed or returned None, return as is
     if not downloaded_path:
@@ -272,6 +296,7 @@ def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
     if provider_type == 'lyrion': return lyrion_get_all_songs(user_creds=user_creds)
     if provider_type == 'mpd': return mpd_get_all_songs()
     if provider_type == 'emby': return emby_get_all_songs(user_creds=user_creds)
+    if provider_type == 'plex': return plex_get_all_songs(user_creds=user_creds)
     return []
 
 def list_libraries(user_creds=None, provider_type=None):
@@ -287,6 +312,7 @@ def list_libraries(user_creds=None, provider_type=None):
     if provider_type == 'navidrome': return {'libraries': _navidrome_list_libraries(user_creds=user_creds), 'unsupported': False}
     if provider_type == 'lyrion':    return {'libraries': _lyrion_list_libraries(user_creds=user_creds), 'unsupported': False}
     if provider_type == 'emby':      return {'libraries': _emby_list_libraries(user_creds=user_creds), 'unsupported': False}
+    if provider_type == 'plex':      return {'libraries': _plex_list_libraries(user_creds=user_creds), 'unsupported': False}
     return {'libraries': [], 'unsupported': True}
 
 def search_albums(query, user_creds=None, provider_type=None):
@@ -297,6 +323,7 @@ def search_albums(query, user_creds=None, provider_type=None):
     if provider_type == 'lyrion': return lyrion_search_albums(query, user_creds=user_creds)
     if provider_type == 'mpd': raise NotImplementedError('MPD album search is not supported')
     if provider_type == 'emby': return emby_search_albums(query, user_creds=user_creds)
+    if provider_type == 'plex': return plex_search_albums(query, user_creds=user_creds)
     return []
 
 def test_connection(user_creds=None, provider_type=None):
@@ -308,6 +335,7 @@ def test_connection(user_creds=None, provider_type=None):
     if provider_type == 'mpd':
         return {'ok': False, 'error': 'MPD migration probe is not supported', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
     if provider_type == 'emby': return emby_test_connection(user_creds=user_creds)
+    if provider_type == 'plex': return plex_test_connection(user_creds=user_creds)
     return {'ok': False, 'error': f"Provider '{provider_type}' not supported", 'sample_count': 0, 'path_format': 'none', 'warnings': []}
 
 def get_playlist_by_name(playlist_name):
@@ -318,6 +346,7 @@ def get_playlist_by_name(playlist_name):
     if config.MEDIASERVER_TYPE == 'lyrion': return lyrion_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_playlist_by_name(playlist_name)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_playlist_by_name(playlist_name)
+    if config.MEDIASERVER_TYPE == 'plex': return plex_get_playlist_by_name(playlist_name)
     return None
 
 def create_playlist(base_name, item_ids):
@@ -329,6 +358,7 @@ def create_playlist(base_name, item_ids):
     elif config.MEDIASERVER_TYPE == 'lyrion': lyrion_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'mpd': mpd_create_playlist(base_name, item_ids)
     elif config.MEDIASERVER_TYPE == 'emby': emby_create_playlist(base_name, item_ids)
+    elif config.MEDIASERVER_TYPE == 'plex': plex_create_playlist(base_name, item_ids)
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
@@ -345,6 +375,8 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return mpd_create_instant_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_create_instant_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'plex':
+        return plex_create_instant_playlist(playlist_name, item_ids, user_creds)
     return None
 
 
@@ -369,6 +401,8 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return emby_create_or_replace_playlist(playlist_name, item_ids, user_creds)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_create_or_replace_playlist(playlist_name, item_ids, user_creds)
+    if config.MEDIASERVER_TYPE == 'plex':
+        return plex_create_or_replace_playlist(playlist_name, item_ids, user_creds)
     raise NotImplementedError(
         f"create_or_replace_playlist not supported for MEDIASERVER_TYPE={config.MEDIASERVER_TYPE!r}"
     )
@@ -385,6 +419,8 @@ def get_top_played_songs(limit, user_creds=None):
         return mpd_get_top_played_songs(limit, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_top_played_songs(limit, user_creds)
+    if config.MEDIASERVER_TYPE == 'plex':
+        return plex_get_top_played_songs(limit, user_creds)
     return []
 
 def get_last_played_time(item_id, user_creds=None):
@@ -399,6 +435,8 @@ def get_last_played_time(item_id, user_creds=None):
         return mpd_get_last_played_time(item_id, user_creds)
     if config.MEDIASERVER_TYPE == 'emby':
         return emby_get_last_played_time(item_id, user_creds)
+    if config.MEDIASERVER_TYPE == 'plex':
+        return plex_get_last_played_time(item_id, user_creds)
     return None
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
@@ -416,5 +454,7 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
         return navidrome_get_lyrics(track_id, timeout=timeout)
     if config.MEDIASERVER_TYPE == 'lyrion':
         return lyrion_get_lyrics(track_id, timeout=timeout)
+    if config.MEDIASERVER_TYPE == 'plex':
+        return plex_get_lyrics(track_id, timeout=timeout)
     return None
 

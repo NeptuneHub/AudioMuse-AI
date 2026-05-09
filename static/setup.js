@@ -16,6 +16,10 @@ var serverFields = {
         {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096', tooltip: 'Base URL of your Emby server, including http:// or https:// and the port.'},
         {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id', tooltip: 'The Emby user whose library AudioMuse-AI will read. Find the ID in Emby under Dashboard \u2192 Users \u2192 (your user).'},
         {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token', tooltip: 'API key for that Emby user. Create one in Emby under Dashboard \u2192 API Keys.'}
+    ],
+    plex: [
+        {name: 'PLEX_URL', label: 'Plex URL', placeholder: 'http://your-plex-server:32400', tooltip: 'Base URL of your Plex Media Server, including http:// or https:// and the port (default 32400). Must be reachable from the AudioMuse-AI container.'},
+        {name: 'PLEX_TOKEN', label: 'Plex token', placeholder: 'your-x-plex-token', tooltip: 'Your X-Plex-Token. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ for how to find it. The owner account token has Allow Downloads enabled by default.'}
     ]
 };
 
@@ -266,7 +270,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -440,7 +444,7 @@ function loadSetupData() {
 
 function saveCurrentServerValues() {
     var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
-    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'];
+    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
     keys.forEach(function(key) {
         var input = document.getElementById(key);
         if (input) {

@@ -329,7 +329,19 @@ class TestIsValidServerConfig:
         assert self.mgr._is_valid_server_config(cfg) is True
 
     def test_unknown_server_type(self):
-        assert self.mgr._is_valid_server_config(_cfg(MEDIASERVER_TYPE="plex")) is False
+        assert self.mgr._is_valid_server_config(_cfg(MEDIASERVER_TYPE="bogus")) is False
+
+    def test_valid_plex(self):
+        cfg = _cfg(
+            MEDIASERVER_TYPE="plex",
+            PLEX_URL="http://localhost:32400",
+            PLEX_TOKEN="abc123",
+        )
+        assert self.mgr._is_valid_server_config(cfg) is True
+
+    def test_invalid_plex_missing_token(self):
+        cfg = _cfg(MEDIASERVER_TYPE="plex", PLEX_URL="http://localhost:32400", PLEX_TOKEN="")
+        assert self.mgr._is_valid_server_config(cfg) is False
 
     def test_empty_server_type(self):
         assert self.mgr._is_valid_server_config(_cfg(MEDIASERVER_TYPE="")) is False
@@ -481,7 +493,7 @@ class TestIsValidEnvConfig:
 
     def test_both_invalid(self):
         cfg = _cfg(
-            MEDIASERVER_TYPE="plex",
+            MEDIASERVER_TYPE="bogus",
             AUTH_ENABLED=True,
             AUDIOMUSE_USER="",
             AUDIOMUSE_PASSWORD="",

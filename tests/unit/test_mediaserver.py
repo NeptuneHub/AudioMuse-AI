@@ -2606,3 +2606,298 @@ class TestDispatcherCreateOrReplacePlaylist:
         create_or_replace_playlist('SF', ['s1'])
 
         mock_provider.assert_called_once()
+
+
+# =============================================================================
+# PLEX TESTS
+# =============================================================================
+
+class TestPlexSelectBestArtist:
+    """Plex track artist resolution."""
+
+    def test_prefers_original_title_over_grandparent(self):
+        from tasks.mediaserver_plex import _select_best_artist
+        item = {
+            'originalTitle': 'Track Artist',
+            'grandparentTitle': 'Various Artists',
+            'grandparentRatingKey': 999,
+        }
+        artist_name, artist_id = _select_best_artist(item)
+        assert artist_name == 'Track Artist'
+        assert artist_id == 999
+
+    def test_falls_back_to_grandparent_title(self):
+        from tasks.mediaserver_plex import _select_best_artist
+        item = {'grandparentTitle': 'Album Artist'}
+        artist_name, _ = _select_best_artist(item)
+        assert artist_name == 'Album Artist'
+
+    def test_returns_unknown_when_missing(self):
+        from tasks.mediaserver_plex import _select_best_artist
+        artist_name, _ = _select_best_artist({})
+        assert artist_name == 'Unknown Artist'
+
+    def test_blank_original_title_falls_back(self):
+        from tasks.mediaserver_plex import _select_best_artist
+        item = {'originalTitle': '   ', 'grandparentTitle': 'Album Artist'}
+        artist_name, _ = _select_best_artist(item)
+        assert artist_name == 'Album Artist'
+
+
+class TestPlexNormalizeTrack:
+    """Plex track Metadata -> AudioMuse track dict."""
+
+    def test_full_track(self):
+        from tasks.mediaserver_plex import _normalize_track
+        item = {
+            'ratingKey': 12345,
+            'title': 'Some Song',
+            'grandparentTitle': 'Some Artist',
+            'parentTitle': 'Some Album',
+            'parentYear': 2024,
+            'userRating': 8.0,
+            'viewCount': 7,
+            'lastViewedAt': 1700000000,
+            'Media': [{'Part': [{
+                'key': '/library/parts/123/file.flac',
+                'file': '/data/music/song.flac',
+                'container': 'flac',
+            }]}],
+        }
+        out = _normalize_track(item)
+        assert out['Id'] == '12345'
+        assert out['Name'] == 'Some Song'
+        assert out['AlbumArtist'] == 'Some Artist'
+        assert out['Album'] == 'Some Album'
+        assert out['Year'] == 2024
+        assert out['Path'] == '/data/music/song.flac'
+        assert out['FilePath'] == '/data/music/song.flac'
+        assert out['Container'] == 'flac'
+        assert out['PartKey'] == '/library/parts/123/file.flac'
+        assert out['Rating'] == 4   # 8.0 // 2 = 4
+        assert out['PlayCount'] == 7
+        assert out['LastPlayedDate'] == 1700000000
+
+    def test_compilation_uses_track_artist(self):
+        from tasks.mediaserver_plex import _normalize_track
+        item = {
+            'ratingKey': 1,
+            'title': 'X',
+            'originalTitle': 'Track Artist',
+            'grandparentTitle': 'Various Artists',
+        }
+        assert _normalize_track(item)['AlbumArtist'] == 'Track Artist'
+        # OriginalAlbumArtist preserves the album-level artist for forensic use.
+        assert _normalize_track(item)['OriginalAlbumArtist'] == 'Various Artists'
+
+    def test_rating_truncates_half_stars(self):
+        from tasks.mediaserver_plex import _normalize_track
+        # Plex 0..10 at half-star precision -> AudioMuse 0..5 int (truncate, matching LMS)
+        for plex_val, expected in [(0.0, 0), (1.0, 0), (2.0, 1), (5.0, 2), (9.0, 4), (10.0, 5), (None, None)]:
+            item = {'ratingKey': 1, 'title': 'X', 'userRating': plex_val}
+            assert _normalize_track(item)['Rating'] == expected, f'failed for {plex_val}'
+
+    def test_no_media_returns_none_path(self):
+        from tasks.mediaserver_plex import _normalize_track
+        out = _normalize_track({'ratingKey': 1, 'title': 'X'})
+        assert out['Path'] is None
+        assert out['FilePath'] is None
+        assert out['Container'] is None
+        assert out['PartKey'] is None
+
+
+class TestPlexNormalizeAlbum:
+
+    def test_basic(self):
+        from tasks.mediaserver_plex import _normalize_album
+        out = _normalize_album({
+            'ratingKey': 999,
+            'title': 'Album Name',
+            'parentTitle': 'Album Artist',
+            'year': 2023,
+            'addedAt': 1700000000,
+        })
+        assert out == {
+            'Id': '999',
+            'Name': 'Album Name',
+            'AlbumArtist': 'Album Artist',
+            'Year': 2023,
+            'ProductionYear': 2023,
+            'DateCreated': 1700000000,
+        }
+
+
+class TestPlexListLibraries:
+    """list_libraries hits /library/sections and filters to type=artist."""
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_returns_only_music_sections(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import list_libraries
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_resp = Mock()
+        mock_resp.raise_for_status = Mock()
+        mock_resp.json.return_value = {'MediaContainer': {'Directory': [
+            {'key': '1', 'title': 'Music',  'type': 'artist'},
+            {'key': '2', 'title': 'Movies', 'type': 'movie'},
+            {'key': '3', 'title': 'Other Music', 'type': 'artist'},
+        ]}}
+        mock_get.return_value = mock_resp
+
+        out = list_libraries()
+        assert out == [
+            {'id': '1', 'name': 'Music'},
+            {'id': '3', 'name': 'Other Music'},
+        ]
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_returns_empty_on_error(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import list_libraries
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_get.side_effect = requests.RequestException('boom')
+
+        assert list_libraries() == []
+
+
+class TestPlexGetTargetSectionIds:
+    """_get_target_section_ids reads MUSIC_LIBRARIES and filters by name."""
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_no_filter_returns_none(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import _get_target_section_ids
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_config.MUSIC_LIBRARIES = ''
+        assert _get_target_section_ids() is None
+        mock_get.assert_not_called()
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_filter_with_match(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import _get_target_section_ids
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_config.MUSIC_LIBRARIES = 'main music'
+        mock_resp = Mock()
+        mock_resp.raise_for_status = Mock()
+        mock_resp.json.return_value = {'MediaContainer': {'Directory': [
+            {'key': '1', 'title': 'Main Music', 'type': 'artist'},
+            {'key': '2', 'title': 'Backup Music', 'type': 'artist'},
+        ]}}
+        mock_get.return_value = mock_resp
+
+        result = _get_target_section_ids()
+        assert result == {'1'}
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_filter_no_match_returns_empty_set(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import _get_target_section_ids
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_config.MUSIC_LIBRARIES = 'nonexistent'
+        mock_resp = Mock()
+        mock_resp.raise_for_status = Mock()
+        mock_resp.json.return_value = {'MediaContainer': {'Directory': [
+            {'key': '1', 'title': 'Main Music', 'type': 'artist'},
+        ]}}
+        mock_get.return_value = mock_resp
+
+        result = _get_target_section_ids()
+        assert result == set()
+
+
+class TestPlexDeletePlaylist:
+
+    @patch('tasks.mediaserver_plex.requests.delete')
+    @patch('tasks.mediaserver_plex.config')
+    def test_delete_success(self, mock_config, mock_delete):
+        from tasks.mediaserver_plex import delete_playlist
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_resp = Mock()
+        mock_resp.raise_for_status = Mock()
+        mock_delete.return_value = mock_resp
+
+        assert delete_playlist('77') is True
+        # Verify URL + token are correct
+        called_url = mock_delete.call_args.args[0]
+        assert called_url == 'http://plex:32400/playlists/77'
+        called_headers = mock_delete.call_args.kwargs['headers']
+        assert called_headers.get('X-Plex-Token') == 'tok'
+        assert called_headers.get('Accept') == 'application/json'
+
+    @patch('tasks.mediaserver_plex.requests.delete')
+    @patch('tasks.mediaserver_plex.config')
+    def test_delete_returns_false_on_error(self, mock_config, mock_delete):
+        from tasks.mediaserver_plex import delete_playlist
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_delete.side_effect = requests.RequestException('boom')
+        assert delete_playlist('77') is False
+
+
+class TestPlexGetAllPlaylists:
+
+    @patch('tasks.mediaserver_plex.requests.get')
+    @patch('tasks.mediaserver_plex.config')
+    def test_normalizes_playlist_dicts(self, mock_config, mock_get):
+        from tasks.mediaserver_plex import get_all_playlists
+        mock_config.PLEX_URL = 'http://plex:32400'
+        mock_config.PLEX_TOKEN = 'tok'
+        mock_resp = Mock()
+        mock_resp.raise_for_status = Mock()
+        mock_resp.json.return_value = {'MediaContainer': {'Metadata': [
+            {'ratingKey': 11, 'title': 'My PL', 'playlistType': 'audio'},
+            {'ratingKey': 12, 'title': 'Other', 'playlistType': 'audio'},
+        ]}}
+        mock_get.return_value = mock_resp
+
+        out = get_all_playlists()
+        assert out == [
+            {'Id': '11', 'Name': 'My PL', 'PlaylistType': 'audio'},
+            {'Id': '12', 'Name': 'Other', 'PlaylistType': 'audio'},
+        ]
+
+
+class TestPlexDispatcher:
+    """Verify mediaserver.py dispatcher routes plex correctly."""
+
+    @patch('tasks.mediaserver.plex_get_all_playlists')
+    @patch('tasks.mediaserver.plex_delete_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_delete_automatic_routes_to_plex(self, mock_config, mock_delete, mock_list):
+        from tasks.mediaserver import delete_automatic_playlists
+        mock_config.MEDIASERVER_TYPE = 'plex'
+        mock_list.return_value = [{'Id': '1', 'Name': 'cron_automatic'}]
+        mock_delete.return_value = True
+
+        delete_automatic_playlists()
+
+        mock_list.assert_called_once()
+        mock_delete.assert_called_once_with('1')
+
+    @patch('tasks.mediaserver.plex_create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_create_or_replace_routes_to_plex(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+        mock_config.MEDIASERVER_TYPE = 'plex'
+        mock_provider.return_value = {'Id': '5'}
+
+        create_or_replace_playlist('SF', ['t1', 't2'])
+
+        mock_provider.assert_called_once_with('SF', ['t1', 't2'], None)
+
+    @patch('tasks.mediaserver._plex_list_libraries')
+    @patch('tasks.mediaserver.config')
+    def test_list_libraries_routes_to_plex(self, mock_config, mock_provider):
+        from tasks.mediaserver import list_libraries
+        mock_config.MEDIASERVER_TYPE = 'plex'
+        mock_provider.return_value = [{'id': '1', 'name': 'Music'}]
+
+        result = list_libraries()
+        assert result == {'libraries': [{'id': '1', 'name': 'Music'}], 'unsupported': False}

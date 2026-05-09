@@ -600,6 +600,7 @@ _CREDS_TO_CONFIG = {
     'lyrion':    {'url': 'LYRION_URL'},
     'mpd':       {'host': 'MPD_HOST', 'port': 'MPD_PORT', 'password': 'MPD_PASSWORD',
                   'music_directory': 'MPD_MUSIC_DIRECTORY'},
+    'plex':      {'url': 'PLEX_URL', 'token': 'PLEX_TOKEN'},
 }
 
 
