@@ -15,7 +15,7 @@ from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
 from app_helper import get_db, redis_conn
-from tz_helper import UTC_NOW_SQL, to_local
+from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
@@ -138,14 +138,13 @@ def _collect_task_metrics(cur):
                 LIMIT 10
             """)
             for r in cur.fetchall():
-                recorded = to_local(r['recorded_at'])
                 recent.append({
                     'task_id': r['task_id'],
                     'task_type': r['task_type'],
                     'status': r['status'],
                     'duration_seconds': float(r['duration_seconds']) if r['duration_seconds'] is not None else None,
                     'note': r['note'] or '',
-                    'timestamp': recorded.strftime('%Y-%m-%d %H:%M:%S') if recorded is not None else None,
+                    'timestamp': to_local_str(r['recorded_at']),
                 })
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
@@ -293,7 +292,7 @@ def _collect_cron(cur):
             last_run_iso = None
             try:
                 if r['last_run']:
-                    last_run_iso = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(r['last_run'])))
+                    last_run_iso = time.strftime(LOCAL_TZ_FMT, time.localtime(float(r['last_run'])))
             except Exception:
                 pass
             rows.append({
@@ -330,7 +329,7 @@ def dashboard_summary():
     workers = _collect_workers()
 
     return jsonify({
-        'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'generated_at': time.strftime(LOCAL_TZ_FMT),
         'stats_updated_at': stats_updated_at,
         'workers': workers,
         'recent_tasks': recent,
@@ -346,13 +345,8 @@ def _load_dashboard_stats(cur):
         row = cur.fetchone()
         if not row:
             return {}, None
-        updated_at = to_local(row['updated_at'])
-        updated_iso = (
-            updated_at.strftime('%Y-%m-%d %H:%M:%S')
-            if hasattr(updated_at, 'strftime') else (str(updated_at) if updated_at else None)
-        )
         content = row['content'] or {}
-        return content, updated_iso
+        return content, to_local_str(row['updated_at'])
     except Exception as e:
         logger.debug(f"dashboard: load_dashboard_stats failed: {e}")
         _safe_rollback(cur)

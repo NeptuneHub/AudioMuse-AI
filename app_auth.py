@@ -33,7 +33,7 @@ from flask import (
 import jwt as pyjwt
 from psycopg2.extras import DictCursor
 
-from tz_helper import UTC_NOW_SQL, to_local
+from tz_helper import UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +103,11 @@ def list_additional_users(username=None):
         rows = cur.fetchall()
     out = []
     for row in rows:
-        created = to_local(row['created_at'])
         out.append({
             'id': row['id'],
             'username': row['username'],
             'role': row['role'] or USER_ROLE_USER,
-            'created_at': created.isoformat() if created is not None else None,
+            'created_at': to_local_str(row['created_at']),
         })
     return out
 

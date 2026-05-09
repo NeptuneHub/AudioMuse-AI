@@ -21,6 +21,11 @@ import datetime
 #: render later via :func:`to_local`.
 UTC_NOW_SQL = "NOW() AT TIME ZONE 'UTC'"
 
+#: ``strftime`` format used for every user-visible timestamp the API
+#: returns. Centralised so the wire format stays identical across every
+#: endpoint and every frontend renderer can stay dumb (raw concat).
+LOCAL_TZ_FMT = '%Y-%m-%d %H:%M:%S'
+
 
 def to_local(dt):
     """Return ``dt`` converted to the local timezone.
@@ -35,3 +40,17 @@ def to_local(dt):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return dt.astimezone()
+
+
+def to_local_str(dt):
+    """Convert ``dt`` to local time and format with ``LOCAL_TZ_FMT``.
+
+    Returns ``None`` for ``None``. Non-datetime values are coerced via
+    ``str()`` to preserve the prior defensive behavior of callers.
+    """
+    dt = to_local(dt)
+    if dt is None:
+        return None
+    if hasattr(dt, 'strftime'):
+        return dt.strftime(LOCAL_TZ_FMT)
+    return str(dt)
