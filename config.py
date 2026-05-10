@@ -348,7 +348,15 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 # at load time; "true" forces GPU; "false" forces CPU. Note: GPU Qwen also requires
 # a CUDA-enabled llama-cpp-python wheel (default PyPI wheel is CPU only).
 LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
-LYRICS_WHISPER_MODEL = os.environ.get("LYRICS_WHISPER_MODEL", "small")
+# Directory containing the Qwen3-ASR-0.6B ONNX CPU build (encoder/decoder
+# ONNX files inside onnx_models/ + embed_tokens.bin + tokenizer.json at the
+# root). Pre-bundled in the official Docker image; download manually with:
+#   huggingface-cli download Daumee/Qwen3-ASR-0.6B-ONNX-CPU \
+#       --local-dir /app/model/Qwen3-ASR-0.6B-ONNX-CPU
+LYRICS_QWEN_ASR_MODEL_DIR = os.environ.get(
+    "LYRICS_QWEN_ASR_MODEL_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "Qwen3-ASR-0.6B-ONNX-CPU"),
+)
 LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Writable directory for on-demand Marian translator downloads. Kept separate

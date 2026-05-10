@@ -337,6 +337,28 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
+# Download Qwen3-ASR-0.6B ONNX CPU build (~2.5 GB) for the lyrics pipeline.
+# Replaces the previous openai-whisper integration. Pure ONNX Runtime — no
+# PyTorch needed at inference. Layout: ONNX files inside onnx_models/,
+# tokenizer.json at the repo root.
+RUN set -eux; \
+    qwen_dir="/app/model/Qwen3-ASR-0.6B-ONNX-CPU"; \
+    echo "Downloading Qwen3-ASR-0.6B ONNX CPU build (~2.5 GB)..."; \
+    huggingface-cli download Daumee/Qwen3-ASR-0.6B-ONNX-CPU \
+        --local-dir "$qwen_dir" \
+        --local-dir-use-symlinks False; \
+    for f in onnx_models/encoder_conv.onnx onnx_models/encoder_transformer.onnx \
+             onnx_models/decoder_init.int8.onnx onnx_models/decoder_step.int8.onnx \
+             onnx_models/embed_tokens.bin tokenizer.json; do \
+        if [ ! -f "$qwen_dir/$f" ]; then \
+            echo "ERROR: Qwen3-ASR file missing: $f"; exit 1; \
+        fi; \
+    done; \
+    # Drop the LibriSpeech demo audio bundled in the repo — not used at runtime. \
+    rm -rf "$qwen_dir/test_audio"; \
+    echo "✓ Qwen3-ASR ONNX model ready in $qwen_dir"; \
+    du -sh "$qwen_dir"
+
 # Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
 # MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
 # Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz

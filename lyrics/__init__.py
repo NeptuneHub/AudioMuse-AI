@@ -1,8 +1,9 @@
 """Lyrics package entry point.
 
-The heavy ML imports inside ``lyrics_transcriber`` (whisper, torch, silero-vad,
-llama-cpp, transformers) are gated behind ``LYRICS_ENABLED`` so the no-AVX2
-image — which intentionally does not ship those wheels — can boot cleanly.
+The heavy ML imports inside ``lyrics_transcriber`` (Qwen3-ASR ONNX, torch,
+silero-vad, llama-cpp, transformers) are gated behind ``LYRICS_ENABLED`` so
+the no-AVX2 image — which intentionally does not ship those wheels — can
+boot cleanly.
 """
 
 import logging as _logging
@@ -31,7 +32,7 @@ if _LYRICS_ENABLED:
             embed_query_text,
             load_llama_model,
             load_topic_embedding_model,
-            load_whisper_model,
+            load_asr_model,
         )
     except Exception as _exc:  # pragma: no cover - defensive
         _logger.warning(
@@ -44,7 +45,7 @@ if _LYRICS_ENABLED:
         embed_query_text = _disabled
         load_llama_model = _disabled
         load_topic_embedding_model = _disabled
-        load_whisper_model = _disabled
+        load_asr_model = _disabled
 else:
     _logger.info("Lyrics features are disabled (LYRICS_ENABLED=false).")
     MUSIC_ANALYSIS_AXES = {}
@@ -53,7 +54,7 @@ else:
     embed_query_text = _disabled
     load_llama_model = _disabled
     load_topic_embedding_model = _disabled
-    load_whisper_model = _disabled
+    load_asr_model = _disabled
 
 
 __all__ = [
@@ -63,5 +64,5 @@ __all__ = [
     'embed_query_text',
     'load_llama_model',
     'load_topic_embedding_model',
-    'load_whisper_model',
+    'load_asr_model',
 ]
