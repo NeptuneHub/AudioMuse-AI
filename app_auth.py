@@ -637,7 +637,18 @@ def resolve_jwt_secret(setup_manager):
 # and match the names used by existing templates via ``url_for``.
 
 def login_page():
-    """Serve the login page. Redirects to the dashboard when already authenticated."""
+    """
+    Login page.
+    ---
+    tags:
+      - Auth
+    summary: HTML login form. Redirects to the dashboard when already authenticated.
+    responses:
+      200:
+        description: Login HTML rendered.
+      302:
+        description: Already authenticated or auth disabled — redirect to dashboard.
+    """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return redirect(url_for('dashboard_bp.dashboard_page'))
@@ -652,11 +663,47 @@ def login_page():
 
 
 def auth_endpoint():
-    """Validate credentials and issue a JWT session cookie.
-
-    Body: ``{"user": "...", "password": "..."}``
-    Success: sets HttpOnly JWT cookie, returns 200.
-    Failure: returns 401. The API_TOKEN is never returned in the body.
+    """
+    Authenticate and issue a JWT session cookie.
+    ---
+    tags:
+      - Auth
+    summary: Validate credentials and set the `audiomuse_jwt` HttpOnly cookie (8h TTL).
+    description: |
+      Accepts JSON or form-urlencoded body. The `API_TOKEN` is never returned
+      in the body. AJAX callers (with `X-Requested-With: XMLHttpRequest`) get
+      a JSON response; browser form posts get a 302 redirect to the dashboard.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [user, password]
+            properties:
+              user:
+                type: string
+              password:
+                type: string
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            properties:
+              user:
+                type: string
+              password:
+                type: string
+    responses:
+      200:
+        description: AJAX login succeeded; cookie set.
+      302:
+        description: Browser login succeeded; redirect to dashboard.
+      401:
+        description: Invalid credentials.
+      404:
+        description: Auth not configured (disabled or no admin user).
+      500:
+        description: Database error while validating.
     """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
@@ -727,7 +774,18 @@ def auth_endpoint():
 
 
 def logout_endpoint():
-    """Clear the JWT session cookie and redirect to /login."""
+    """
+    Log out.
+    ---
+    tags:
+      - Auth
+    summary: Clear the JWT session cookie. AJAX gets 200, browser gets 302 to /login.
+    responses:
+      200:
+        description: AJAX logout acknowledged.
+      302:
+        description: Browser logout — redirect to /login.
+    """
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     if is_ajax:
         resp = make_response(jsonify({"status": "logged_out"}), 200)
@@ -742,7 +800,33 @@ def logout_endpoint():
 # modify their own row; the handlers below enforce that explicitly.
 
 def list_users_endpoint():
-    """List user accounts. Admins see everyone, non-admins see only themselves."""
+    """
+    List user accounts.
+    ---
+    tags:
+      - Users
+    summary: Return user accounts (admin sees all; non-admin sees only their own row).
+    responses:
+      200:
+        description: User list with caller metadata.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                users:
+                  type: array
+                  items:
+                    type: object
+                current_user:
+                  type: string
+                is_admin:
+                  type: boolean
+      404:
+        description: Auth disabled.
+      500:
+        description: Database error.
+    """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
@@ -766,7 +850,38 @@ def list_users_endpoint():
 
 
 def create_user_endpoint():
-    """Create a new user (role 'user' or 'admin'). Admin-only."""
+    """
+    Create a user account.
+    ---
+    tags:
+      - Users
+    summary: Admin-only. Create a new user with role `user` or `admin`.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [username, password]
+            properties:
+              username:
+                type: string
+              password:
+                type: string
+              role:
+                type: string
+                enum: [user, admin]
+                default: user
+    responses:
+      201:
+        description: User created.
+      400:
+        description: Invalid role / missing fields / username conflict.
+      403:
+        description: Caller is not an admin.
+      404:
+        description: Auth disabled.
+    """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
@@ -787,10 +902,28 @@ def create_user_endpoint():
 
 
 def delete_user_endpoint(user_id):
-    """Delete a user by id, with safety checks:
-    - admin-only
-    - an admin cannot delete themselves
-    - deleting the last admin is refused
+    """
+    Delete a user account.
+    ---
+    tags:
+      - Users
+    summary: Admin-only. Refuses self-deletion and refuses to remove the last admin.
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: User deleted.
+      400:
+        description: Invalid id, or attempt to delete self / the last admin.
+      403:
+        description: Caller is not an admin.
+      404:
+        description: Auth disabled or user not found.
+      500:
+        description: Database error.
     """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:
@@ -817,9 +950,39 @@ def delete_user_endpoint(user_id):
 
 
 def update_user_password_endpoint(user_id):
-    """Change a user's password.
-    - admin can change anyone's password
-    - a non-admin can only change their own password
+    """
+    Change a user's password.
+    ---
+    tags:
+      - Users
+    summary: Admin can change anyone's password; non-admin can only change their own.
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: integer }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [password]
+            properties:
+              password:
+                type: string
+              current_password:
+                type: string
+                description: Required when a non-admin updates their own password.
+    responses:
+      200:
+        description: Password updated.
+      400:
+        description: Validation error (weak password, wrong current_password, etc.).
+      403:
+        description: Forbidden (non-admin updating someone else).
+      404:
+        description: Auth disabled or user not found.
     """
     import config as _cfg
     if not _cfg.AUTH_ENABLED:

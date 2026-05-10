@@ -118,6 +118,24 @@ def log_api_request():
 
 @app.route('/api/health')
 def health_check():
+    """
+    Liveness probe.
+    ---
+    tags:
+      - Health
+    summary: Lightweight health check.
+    responses:
+      200:
+        description: Service is up.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: ok
+    """
     return jsonify({
         'status': 'ok',
     })
@@ -403,7 +421,38 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
 @app.route('/api/last_task', methods=['GET'])
 def get_last_overall_task_status_endpoint():
     """
-    Get the status of the most recent overall main task (analysis, clustering, or cleaning).
+    Get the most recent overall main task.
+    ---
+    tags:
+      - Tasks
+    summary: Status of the latest top-level main task (analysis, clustering, cleaning, etc.).
+    description: |
+      Returns the most recent row in `task_status` whose `parent_task_id` is
+      NULL. Long log lists are truncated to the last 10 entries with a
+      "... earlier entries truncated" placeholder.
+    responses:
+      200:
+        description: Task summary or a sentinel object when no main task has ever run.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  nullable: true
+                task_type:
+                  type: string
+                  nullable: true
+                status:
+                  type: string
+                progress:
+                  type: number
+                details:
+                  type: object
+                running_time_seconds:
+                  type: number
+                  format: float
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -453,7 +502,22 @@ def get_last_overall_task_status_endpoint():
 @app.route('/api/active_tasks', methods=['GET'])
 def get_active_tasks_endpoint():
     """
-    Get the status of the currently active main task, if any.
+    Get the currently active main task.
+    ---
+    tags:
+      - Tasks
+    summary: Return the in-flight top-level main task (PENDING/STARTED/PROGRESS), if any.
+    description: |
+      Returns `{}` when no main task is active. Strips heavyweight internal
+      keys (`clustering_run_job_ids`, `checked_album_ids`, initial centroids)
+      from the response payload.
+    responses:
+      200:
+        description: Active task or empty object.
+        content:
+          application/json:
+            schema:
+              type: object
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -507,14 +571,23 @@ def get_active_tasks_endpoint():
 @app.route('/api/config', methods=['GET'])
 def get_config_endpoint():
     """
-    Get the current server configuration values.
-
-    Reads attributes from the ``config`` module at request time rather than
-    using the names imported at app.py module load. ``config.refresh_config()``
-    reloads the module on save, but ``from config import X`` bindings here
-    would otherwise stay frozen to the values that existed when this file
-    was first imported (so a wizard change to e.g. CLUSTER_ALGORITHM would
-    not be visible until a real Flask process restart).
+    Public configuration snapshot.
+    ---
+    tags:
+      - Config
+    summary: Return the user-relevant subset of `config.*` (clustering ranges, AI provider, alchemy defaults, etc.).
+    description: |
+      Reads attributes from the `config` module at request time rather than
+      using names imported at app.py module load, so wizard changes are
+      visible without a Flask restart.
+    responses:
+      200:
+        description: Configuration values currently in effect.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
     """
     return jsonify({
         "num_recent_albums": config.NUM_RECENT_ALBUMS, "max_distance": config.MAX_DISTANCE,
@@ -553,7 +626,29 @@ def get_config_endpoint():
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists_endpoint():
     """
-    Get all generated playlists and their tracks from the database.
+    All generated playlists.
+    ---
+    tags:
+      - Playlists
+    summary: Return every saved playlist with its tracks, grouped by playlist name.
+    responses:
+      200:
+        description: Playlist map (playlist_name → list of tracks).
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    item_id:
+                      type: string
+                    title:
+                      type: string
+                    author:
+                      type: string
     """
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()

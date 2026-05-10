@@ -94,7 +94,10 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
    ```
 
 3. **Access the application:**
-   Open your browser at `http://localhost:8000`
+   - Web UI: `http://localhost:8000`
+   - Interactive API documentation (Swagger UI): `http://localhost:8000/apidocs/`
+     (when authentication is enabled, log in via the Web UI first — `/apidocs/`
+     is gated by the same JWT cookie as the rest of the app.)
 
 4. **Run your first analysis:**
    - Navigate to "Analysis and Clustering" page

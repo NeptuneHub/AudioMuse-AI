@@ -280,12 +280,55 @@ def _has_admin_user():
 
 @app.route('/setup')
 def setup_page():
+    """
+    Setup wizard UI page.
+    ---
+    tags:
+      - Setup
+    summary: HTML setup wizard for first-time configuration (server, lyrics, AI provider, etc.).
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     from config import LYRICS_ENABLED
     return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
                            lyrics_enabled=LYRICS_ENABLED)
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
+    """
+    Setup wizard API.
+    ---
+    tags:
+      - Setup
+    summary: GET returns the configurable field catalog; POST persists wizard values to the DB.
+    description: |
+      The GET response separates fields into `basic` and `advanced` lists,
+      hides values for inactive media-server types, and masks any field whose
+      name is in SECRET_FIELDS or ends with `_API_KEY`.
+
+      The POST body should contain `{key: value}` pairs for the keys returned
+      by GET. Empty strings on secret fields keep the previously stored value;
+      a literal `********` placeholder also preserves the stored value.
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      200:
+        description: Field catalog (GET) or save acknowledgement (POST).
+        content:
+          application/json:
+            schema:
+              type: object
+      400:
+        description: Validation error in submitted values.
+      500:
+        description: Database error while loading or saving config.
+    """
     if request.method == 'GET':
         all_fields = setup_manager.get_all_fields(config)
         # Determine which media server fields belong to non-active types
@@ -511,12 +554,46 @@ def setup_api():
 
 @app.route('/api/setup/providers/libraries', methods=['POST'])
 def setup_provider_libraries_api():
-    """List the music libraries the configured provider exposes.
-
-    Uses the in-flight form values (same shape the test-connection endpoint
-    accepts) so the wizard can populate the checkbox list as soon as a user
-    has typed their credentials. Secret placeholders (``********``) fall back
-    to the currently stored value via ``_merge_test_config``.
+    """
+    List a media-server provider's libraries.
+    ---
+    tags:
+      - Setup
+    summary: Probe the configured media server with the in-flight form values and list its libraries.
+    description: |
+      Uses the in-flight form values (same shape as the test-connection
+      endpoint) so the wizard can populate the library checkbox list as soon
+      as the user has typed credentials. Secret placeholders (`********`)
+      fall back to the currently stored value.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              config:
+                type: object
+                additionalProperties: true
+                description: Subset of UPPERCASE setup keys (server URL, token, etc.).
+    responses:
+      200:
+        description: Library list (or `unsupported=true` for media servers that don't expose libraries).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                libraries:
+                  type: array
+                  items:
+                    type: object
+                unsupported:
+                  type: boolean
+      400:
+        description: Missing config payload.
+      500:
+        description: Provider probe failed.
     """
     data = request.get_json(silent=True) or {}
     config_values = data.get('config') or {}
@@ -544,10 +621,59 @@ def setup_provider_libraries_api():
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
 def setup_lyrics_api_analyze():
-    """Analyze a real example lyrics API URL: call it, detect query params, return JSON response.
-
-    Accepts JSON body: { "example_url": "https://api.example.com/lyrics?artist=RHCP&track=By+the+Way" }
-    Returns { params, guesses, json_obj, raw_json, error }
+    """
+    Probe a third-party lyrics API URL.
+    ---
+    tags:
+      - Setup
+    summary: Call a sample lyrics-API URL, detect its query params, and return the JSON response so the wizard can map fields.
+    description: |
+      SSRF-guarded: only `http`/`https` URLs targeting public hosts are
+      allowed. The endpoint returns auto-detected guesses for the artist,
+      title, and api-key parameter names plus the parsed response body so
+      the user can pick the lyrics field.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [example_url]
+            properties:
+              example_url:
+                type: string
+                example: "https://api.example.com/lyrics?artist=RHCP&track=By+the+Way"
+    responses:
+      200:
+        description: Parsed sample response and detected parameter roles.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                guesses:
+                  type: object
+                  properties:
+                    artist_param:
+                      type: string
+                    title_param:
+                      type: string
+                    apikey_param:
+                      type: string
+                    lyrics_field:
+                      type: string
+                json_obj:
+                  type: object
+                raw_json:
+                  type: string
+                error:
+                  type: string
+      400:
+        description: Missing/invalid URL or SSRF guard rejected the destination.
+      500:
+        description: Network error or non-JSON response.
     """
     import urllib.parse
     import urllib.request

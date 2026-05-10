@@ -19,7 +19,16 @@ lyrics_search_bp = Blueprint('lyrics_search_bp', __name__, template_folder='../t
 
 @lyrics_search_bp.route('/lyrics_search', methods=['GET'])
 def lyrics_search_page():
-    """Render the lyrics search page."""
+    """
+    Lyrics search UI page.
+    ---
+    tags:
+      - Lyrics Search
+    summary: HTML page for axis-based and free-text search over song lyrics embeddings.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     from config import APP_VERSION, LYRICS_ENABLED
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
     from tasks.sem_grove_manager import get_sem_grove_stats
@@ -42,14 +51,55 @@ def lyrics_search_page():
 
 @lyrics_search_bp.route('/api/lyrics/search/axes', methods=['POST'])
 def lyrics_search_axes_api():
-    """Search by axis selections (one label per axis at most).
-
-    POST JSON:
-    {
-        "targets": {"AXIS_1_SETTING": "URBAN", "AXIS_3_EMOTIONAL_VALENCE": "MELANCHOLIC"},
-        "limit": 50
-    }
-    Each axis may be omitted (no preference) or set to one of its label keys.
+    """
+    Lyrics search by axis selections.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Match lyrics against one chosen label per MUSIC_ANALYSIS_AXES axis.
+    description: |
+      Each axis may be omitted (no preference) or set to one of its label
+      keys. Use `/api/lyrics/axes` to fetch the available axis/label catalog.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [targets]
+            properties:
+              targets:
+                type: object
+                additionalProperties:
+                  type: string
+                example:
+                  AXIS_1_SETTING: URBAN
+                  AXIS_3_EMOTIONAL_VALENCE: MELANCHOLIC
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 500
+                default: 50
+    responses:
+      200:
+        description: Matching tracks.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                results:
+                  type: array
+                  items:
+                    type: object
+                count:
+                  type: integer
+      400:
+        description: Lyrics disabled, missing/invalid targets, or invalid limit.
+      404:
+        description: No matching lyrics.
+      500:
+        description: Internal error.
     """
     from config import LYRICS_ENABLED
     from tasks.lyrics_manager import search_by_axes
@@ -88,13 +138,51 @@ def lyrics_search_axes_api():
 
 @lyrics_search_bp.route('/api/lyrics/search/text', methods=['POST'])
 def lyrics_search_text_api():
-    """Search by free-form text.
-
-    POST JSON:
-    {
-        "query": "songs about heartbreak in the rain",
-        "limit": 50
-    }
+    """
+    Lyrics search by free-form text.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Embed the query with e5-base-v2 and find nearest neighbors in the lyrics voyager index.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [query]
+            properties:
+              query:
+                type: string
+                minLength: 3
+                example: "songs about heartbreak in the rain"
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 500
+                default: 50
+    responses:
+      200:
+        description: Matching tracks.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                results:
+                  type: array
+                  items:
+                    type: object
+                count:
+                  type: integer
+      400:
+        description: Lyrics disabled, missing query, or query too short.
+      404:
+        description: No matching lyrics.
+      500:
+        description: Internal error.
     """
     from config import LYRICS_ENABLED
     from tasks.lyrics_manager import search_by_text
@@ -127,6 +215,29 @@ def lyrics_search_text_api():
 
 @lyrics_search_bp.route('/api/lyrics/cache/refresh', methods=['POST'])
 def lyrics_refresh_cache_api():
+    """
+    Refresh the lyrics voyager index.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Rebuild the lyrics cache and index from the database.
+    responses:
+      200:
+        description: Refresh attempted; updated stats returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                stats:
+                  type: object
+      400:
+        description: Lyrics disabled.
+      500:
+        description: Internal error.
+    """
     from config import LYRICS_ENABLED
     from tasks.lyrics_manager import get_cache_stats, refresh_lyrics_cache
 
@@ -143,6 +254,27 @@ def lyrics_refresh_cache_api():
 
 @lyrics_search_bp.route('/api/lyrics/stats', methods=['GET'])
 def lyrics_stats_api():
+    """
+    Lyrics cache stats.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Return cache size, freshness, and the LYRICS_ENABLED flag.
+    responses:
+      200:
+        description: Cache statistics.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lyrics_enabled:
+                  type: boolean
+                num_embeddings:
+                  type: integer
+                last_refresh:
+                  type: string
+    """
     from config import LYRICS_ENABLED
     from tasks.lyrics_manager import get_cache_stats
 
@@ -153,7 +285,27 @@ def lyrics_stats_api():
 
 @lyrics_search_bp.route('/api/lyrics/axes', methods=['GET'])
 def lyrics_axes_api():
-    """Return MUSIC_ANALYSIS_AXES so the UI can build sliders dynamically."""
+    """
+    Lyrics axis catalog.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Return MUSIC_ANALYSIS_AXES so the UI can build sliders dynamically.
+    responses:
+      200:
+        description: Axis catalog (empty when lyrics features are disabled).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                axes:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
+    """
     from config import LYRICS_ENABLED
     from tasks.lyrics_manager import get_axes_definition
 

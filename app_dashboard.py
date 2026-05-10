@@ -23,6 +23,16 @@ dashboard_bp = Blueprint('dashboard_bp', __name__)
 
 @dashboard_bp.route('/')
 def dashboard_page():
+    """
+    Dashboard home page.
+    ---
+    tags:
+      - Dashboard
+    summary: HTML landing page rendering the AudioMuse-AI dashboard.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard')
 
 
@@ -311,11 +321,41 @@ def _collect_cron(cur):
 
 @dashboard_bp.route('/api/dashboard/summary', methods=['GET'])
 def dashboard_summary():
-    """Return the payload rendered by templates/dashboard.html.
-
-    Heavy library aggregates (``content``) are read from the precomputed
-    ``dashboard_stats`` singleton row and NOT recomputed on each request.
-    Everything else (workers, recent tasks, cron) is cheap and stays live.
+    """
+    Dashboard summary payload.
+    ---
+    tags:
+      - Dashboard
+    summary: Aggregated dashboard data — library stats, worker status, recent tasks, cron entries.
+    description: |
+      Heavy library aggregates (the `content` block) are read from the
+      precomputed `dashboard_stats` singleton row and NOT recomputed on each
+      request. Everything else (workers, recent tasks, cron) is cheap and
+      stays live.
+    responses:
+      200:
+        description: Dashboard payload.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                generated_at:
+                  type: string
+                stats_updated_at:
+                  type: string
+                workers:
+                  type: array
+                  items:
+                    type: object
+                content:
+                  type: object
+                recent:
+                  type: object
+                cron:
+                  type: array
+                  items:
+                    type: object
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
