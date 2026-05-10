@@ -195,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const chunkSize = 1024 * 1024 * 1024; // 1GB chunks
         const totalChunks = Math.ceil(fileSize / chunkSize);
 
-        const LOCK_NOTICE = 'In case of not successfully restore, restart Redis service to remove the lock or wait 1 hour.';
+        const LOCK_NOTICE = 'In case of not successfully restore, restart AudioMuse-AI and all the related services to remove the backup lock or wait 1 hour.';
         restoreStatus.textContent =
             LOCK_NOTICE + `\nUploading ${fileSizeMB} MB in ${totalChunks} chunk(s)... Chunk 1/${totalChunks}`;
         restoreStatus.style.color = 'var(--text-sub)';

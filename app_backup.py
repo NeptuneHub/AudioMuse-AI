@@ -42,6 +42,20 @@ def _release_restore_lock():
         logger.exception("Redis unavailable while releasing restore lock; relying on TTL.")
 
 
+def _restore_lock_held():
+    """Returns True if a restore lock is currently set in Redis.
+
+    On Redis errors, returns True to fail closed — better to refuse a chunk
+    than to let it write into a possibly-orphaned chunks_dir.
+    """
+    try:
+        client = Redis.from_url(config.REDIS_URL, socket_timeout=5, decode_responses=True)
+        return bool(client.exists(RESTORE_LOCK_KEY))
+    except RedisError:
+        logger.exception("Redis unavailable while checking restore lock; failing closed.")
+        return True
+
+
 def _pg_env():
     """Return a copy of os.environ with PGPASSWORD set."""
     env = os.environ.copy()
@@ -245,14 +259,23 @@ def restore_backup():
             chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
             os.makedirs(chunks_dir, exist_ok=True)
 
-            # Acquire the cross-container restore lock on the first chunk only.
-            # Subsequent chunks belong to the already-locked session.
-            if chunk_num == 1 and not _acquire_restore_lock():
-                logger.warning("Refusing chunk 1: restore lock already held.")
-                return jsonify({
-                    'error': 'A database restore is already in progress. '
-                             'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                }), 409
+            # Cross-container restore lock: chunk 1 acquires it, later chunks
+            # verify it is still held — protects against the lock auto-expiring
+            # mid-upload and a different session taking over.
+            if chunk_num == 1:
+                if not _acquire_restore_lock():
+                    logger.warning("Refusing chunk 1: restore lock already held.")
+                    return jsonify({
+                        'error': 'A database restore is already in progress. '
+                                 'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
+                    }), 409
+            else:
+                if not _restore_lock_held():
+                    logger.warning("Refusing chunk %s: restore lock no longer held.", chunk_num)
+                    return jsonify({
+                        'error': 'Restore session expired or was overtaken. '
+                                 'Restart the upload from chunk 1.'
+                    }), 409
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 
@@ -337,6 +360,14 @@ def restore_backup():
                             pass
                     if restore_file and os.path.exists(restore_file):
                         os.unlink(restore_file)
+                    # Free disk immediately — chunks are 1GB each.
+                    for i in range(1, total_chunks + 1):
+                        chunk_path = os.path.join(chunks_dir, f'backup_{i}_of_{total_chunks}.sql')
+                        try:
+                            if os.path.exists(chunk_path):
+                                os.unlink(chunk_path)
+                        except OSError as exc:
+                            logger.warning("Could not delete chunk %s after reassembly failure: %s", i, exc)
                     _release_restore_lock()
                     return jsonify({'error': 'Failed to reassemble chunks due to an internal error.'}), 500
             else:
