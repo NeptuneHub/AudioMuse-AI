@@ -786,8 +786,9 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         return audio
     if not ts:
         return np.zeros(0, dtype=audio.dtype)  # VAD found no voice -> instrumental
+    from config import VAD_VOICE_RECOGNITION
     voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
-    if len(voiced) < sr * 25:  # less than 25s of voice -> treat as instrumental
+    if len(voiced) < sr * VAD_VOICE_RECOGNITION:  # below threshold -> instrumental
         return np.zeros(0, dtype=audio.dtype)
     return voiced
 

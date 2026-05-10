@@ -360,6 +360,12 @@ LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
 }
+# Minimum seconds of voiced audio Silero VAD must detect for a track to be
+# sent to Whisper. Below this, the song is treated as instrumental and the
+# instrumental embedding sentinel is used instead. Setting this very high
+# effectively disables Whisper transcription for most tracks.
+VAD_VOICE_RECOGNITION = int(os.environ.get("VAD_VOICE_RECOGNITION", "25"))
+
 LYRICS_DEFAULT_SAMPLE_RATE = 16000
 LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
 LYRICS_DEFAULT_ROBERTA_MIN_WORDS = 50
