@@ -1228,7 +1228,6 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     # ---- STEP 3: language detection ----
     logger.info('STEP 3 start: language detection')
-    detected_lang = 'en'
     if raw_text:
         guess_lang, confidence = _detect_language(raw_text)
         if confidence >= 0.7:
