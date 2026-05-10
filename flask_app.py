@@ -14,4 +14,4 @@ from flask import Flask
 
 app = Flask(__name__)
 # Allow large file uploads (up to 20GB) for database backups
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024 * 1024  # 20GB limit
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024 * 1024  # 20GB

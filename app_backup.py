@@ -180,7 +180,9 @@ def create_backup():
 def restore_backup():
     """Restore the database from an uploaded .sql dump file via psql.
 
-    Streams large files to disk in chunks to handle multi-GB backups efficiently.
+    Supports both:
+    - Full file upload (chunk_num=None)
+    - Chunked upload (chunk_num=X, total_chunks=Y) - each chunk saved, reassembled when all received
     """
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"
@@ -191,73 +193,168 @@ def restore_backup():
     if not uploaded or not uploaded.filename:
         return jsonify({'error': 'No file uploaded.'}), 400
 
+    # Check if this is a chunked upload
+    chunk_num = request.form.get('chunk_num')
+    total_chunks = request.form.get('total_chunks')
+
     restore_file = None
     restore_log = None
     restore_pid = None
+
     try:
-        # Create temporary file for the backup
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
-        restore_file = tmp.name
+        if chunk_num and total_chunks:
+            # Chunked upload mode
+            try:
+                chunk_num = int(chunk_num)
+                total_chunks = int(total_chunks)
+            except ValueError:
+                return jsonify({'error': 'chunk_num and total_chunks must be integers.'}), 400
 
-        # Stream the uploaded file to disk in 8MB chunks to avoid memory issues with large files
-        chunk_size = 8 * 1024 * 1024  # 8 MB chunks
-        bytes_written = 0
-        logger.info(f"Starting to stream upload to {restore_file}")
+            if chunk_num < 1 or chunk_num > total_chunks or total_chunks < 1:
+                return jsonify({'error': f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}'}), 400
 
-        try:
-            while True:
-                chunk = uploaded.stream.read(chunk_size)
-                if not chunk:
-                    break
-                tmp.write(chunk)
-                bytes_written += len(chunk)
-                # Log progress every 100MB
-                if bytes_written % (100 * 1024 * 1024) == 0 or bytes_written < chunk_size:
-                    logger.info(f"Streamed {bytes_written / (1024**3):.2f} GB to {restore_file}")
-        finally:
+            chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
+            os.makedirs(chunks_dir, exist_ok=True)
+
+            chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
+
+            # Check for orphaned chunks from different upload sessions
+            orphaned_chunks = set()
+            received_chunks = set()
+            for f in os.listdir(chunks_dir):
+                if f.startswith('backup_') and f.endswith('.sql'):
+                    try:
+                        parts = f.replace('backup_', '').replace('.sql', '').split('_of_')
+                        if len(parts) == 2:
+                            file_chunk_num = int(parts[0])
+                            file_total_chunks = int(parts[1])
+                            if file_total_chunks != total_chunks:
+                                orphaned_chunks.add(f)
+                            else:
+                                received_chunks.add(file_chunk_num)
+                    except (ValueError, IndexError):
+                        pass
+
+            # Warn about orphaned chunks from previous incomplete upload
+            if orphaned_chunks:
+                logger.warning(f"Found orphaned chunks from previous upload. Cleaning up: {orphaned_chunks}")
+                for orphan in orphaned_chunks:
+                    try:
+                        os.unlink(os.path.join(chunks_dir, orphan))
+                    except Exception as e:
+                        logger.warning(f"Could not delete orphan chunk {orphan}: {e}")
+
+            # Save the current chunk
+            try:
+                uploaded.save(chunk_file)
+                logger.info(f"Saved chunk {chunk_num}/{total_chunks}")
+                received_chunks.add(chunk_num)
+            except Exception as e:
+                return jsonify({'error': f'Failed to save chunk {chunk_num}: {str(e)}'}), 500
+
+            logger.info(f"Received chunks: {sorted(received_chunks)}/{total_chunks}")
+
+            # If all chunks received, reassemble
+            if len(received_chunks) == total_chunks and all(i in received_chunks for i in range(1, total_chunks + 1)):
+                logger.info(f"All {total_chunks} chunks received. Reassembling...")
+
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+                restore_file = tmp.name
+
+                try:
+                    for i in range(1, total_chunks + 1):
+                        chunk_path = os.path.join(chunks_dir, f'backup_{i}_of_{total_chunks}.sql')
+                        if not os.path.exists(chunk_path):
+                            raise Exception(f"Chunk {i} is missing during reassembly!")
+                        try:
+                            with open(chunk_path, 'rb') as chunk_f:
+                                data = chunk_f.read()
+                                if not data:
+                                    raise Exception(f"Chunk {i} is empty!")
+                                tmp.write(data)
+                        except IOError as e:
+                            raise Exception(f"Error reading chunk {i}: {str(e)}")
+
+                    tmp.close()
+                    file_size = os.path.getsize(restore_file)
+                    logger.info(f"Reassembly complete: {restore_file} ({file_size} bytes)")
+
+                    # Clean up chunk files
+                    for i in range(1, total_chunks + 1):
+                        try:
+                            os.unlink(os.path.join(chunks_dir, f'backup_{i}_of_{total_chunks}.sql'))
+                        except Exception as e:
+                            logger.warning(f"Could not delete chunk {i}: {e}")
+
+                    # Start restore with reassembled file
+                    all_chunks_received = True
+                except Exception as e:
+                    if tmp:
+                        try:
+                            tmp.close()
+                        except:
+                            pass
+                    if restore_file and os.path.exists(restore_file):
+                        os.unlink(restore_file)
+                    return jsonify({'error': f'Failed to reassemble chunks: {str(e)}'}), 500
+            else:
+                # Still waiting for more chunks
+                missing_chunks = [i for i in range(1, total_chunks + 1) if i not in received_chunks]
+                return jsonify({
+                    'success': True,
+                    'message': f'Chunk {chunk_num}/{total_chunks} received. Waiting for chunks: {missing_chunks}',
+                    'chunk_num': chunk_num,
+                    'total_chunks': total_chunks,
+                    'received_chunks': sorted(received_chunks),
+                    'missing_chunks': missing_chunks,
+                    'all_chunks_received': False,
+                })
+        else:
+            # Single file upload (non-chunked)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+            uploaded.save(tmp)
             tmp.close()
+            restore_file = tmp.name
+            all_chunks_received = True
 
-        logger.info(f"Upload complete: {bytes_written / (1024**3):.2f} GB written to {restore_file}")
+        # Start restore only if all chunks received or single file upload
+        if restore_file and all_chunks_received:
+            stop_requested = restart_manager.publish_stop_request()
+            logger.info('Published worker stop request: %s', stop_requested)
 
-        # Publish worker stop as soon as the upload has been persisted and before
-        # starting the detached restore runner. This reduces the window between
-        # upload completion and the stop request being sent.
-        stop_requested = restart_manager.publish_stop_request()
-        logger.info('Published worker stop request before restore runner start: %s', stop_requested)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")
+            os.makedirs(RESTORE_LOG_DIR, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")
-        os.makedirs(RESTORE_LOG_DIR, exist_ok=True)
+            restore_cmd = [sys.executable, os.path.abspath(__file__), '--run-restore', restore_file, restore_log]
+            proc = subprocess.Popen(
+                restore_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            restore_pid = proc.pid
+            logger.info("Restore started in detached process %s", restore_pid)
 
-        restore_cmd = [sys.executable, os.path.abspath(__file__), '--run-restore', restore_file, restore_log]
-        proc = subprocess.Popen(
-            restore_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-        restore_pid = proc.pid
-        logger.info("Restore started in detached process %s, log=%s", restore_pid, restore_log)
+            return jsonify({
+                'success': True,
+                'message': 'Database restore started.',
+                'restore_pid': restore_pid,
+                'restore_log': restore_log,
+                'all_chunks_received': True,
+            })
 
-        return jsonify({
-            'success': True,
-            'message': 'Database restore started.',
-            'restore_pid': restore_pid,
-            'restore_log': restore_log,
-        })
     except FileNotFoundError:
         logger.error("Python executable not found for restore runner")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         return jsonify({'error': 'Python executable not found for restore runner.'}), 500
     except Exception:
-        logger.exception("Restore launch failed")
+        logger.exception("Restore failed")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
-        if restore_log and os.path.exists(restore_log):
-            os.unlink(restore_log)
-        return jsonify({'error': 'Restore launch failed. Check server logs.'}), 500
+        return jsonify({'error': 'Restore failed. Check server logs.'}), 500
 
 
 if __name__ == '__main__':

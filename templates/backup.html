@@ -184,61 +184,68 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Restore backup via file upload
+    // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {
         if (!fileInput.files.length || confirmInput.value !== EXPECTED_PHRASE) return;
         restoreBtn.disabled = true;
 
-        const fileSize = fileInput.files[0].size;
+        const file = fileInput.files[0];
+        const fileSize = file.size;
         const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-        restoreStatus.textContent = `Uploading ${fileSizeMB} MB backup file… this may take several minutes depending on your connection speed.`;
+        const chunkSize = 1024 * 1024 * 1024; // 1GB chunks
+        const totalChunks = Math.ceil(fileSize / chunkSize);
+
+        restoreStatus.textContent = `Uploading ${fileSizeMB} MB in ${totalChunks} chunk(s)... Chunk 1/${totalChunks}`;
         restoreStatus.style.color = 'var(--text-sub)';
 
         try {
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('confirmation', confirmInput.value);
+            // Upload each chunk sequentially
+            for (let chunkNum = 1; chunkNum <= totalChunks; chunkNum++) {
+                const start = (chunkNum - 1) * chunkSize;
+                const end = Math.min(start + chunkSize, fileSize);
+                const chunkBlob = file.slice(start, end);
 
-            const fetchPromise = fetch("{{ url_for('backup_bp.restore_backup') }}", {
-                method: 'POST',
-                body: formData
-            });
+                const formData = new FormData();
+                formData.append('file', chunkBlob, `backup_${chunkNum}_of_${totalChunks}.sql`);
+                formData.append('chunk_num', chunkNum);
+                formData.append('total_chunks', totalChunks);
+                formData.append('confirmation', confirmInput.value);
 
-            // Add a longer timeout for large files (90 minutes max)
-            const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Upload took too long (>90 minutes). Please check your connection.')), 90 * 60 * 1000)
-            );
+                const chunkMB = ((end - start) / (1024 * 1024)).toFixed(2);
+                restoreStatus.textContent = `Uploading ${fileSizeMB} MB... Chunk ${chunkNum}/${totalChunks} (${chunkMB} MB)`;
 
-            const res = await Promise.race([fetchPromise, timeoutPromise]);
-            let data;
-            try {
-                data = await res.json();
-            } catch (parseErr) {
-                throw new Error('Server error or connection lost. Large files may require a stable connection. Please check the server logs.');
-            }
-            if (!res.ok) throw new Error(data.error || 'Restore failed');
+                const res = await fetch("{{ url_for('backup_bp.restore_backup') }}", {
+                    method: 'POST',
+                    body: formData
+                });
 
-            restoreStatus.style.color = 'var(--color-success, green)';
-            // Same UX as the setup save: 30s countdown, then redirect to /
-            // while Flask restarts in the background.
-            let countdown = 30;
-            restoreStatus.textContent =
-                'Database restored successfully. Restarting the application — '
-                + 'redirecting in ' + countdown + ' seconds…';
-            const countdownInterval = setInterval(() => {
-                countdown -= 1;
-                if (countdown > 0) {
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `Chunk ${chunkNum} upload failed`);
+
+                if (data.all_chunks_received) {
+                    // All chunks received, restore starting
+                    restoreStatus.style.color = 'var(--color-success, green)';
+                    let countdown = 30;
                     restoreStatus.textContent =
-                        'Database restored successfully. Restarting the application — '
+                        'All chunks uploaded. Database restore started. Restarting application — '
                         + 'redirecting in ' + countdown + ' seconds…';
+                    const countdownInterval = setInterval(() => {
+                        countdown -= 1;
+                        if (countdown > 0) {
+                            restoreStatus.textContent =
+                                'All chunks uploaded. Database restore started. Restarting application — '
+                                + 'redirecting in ' + countdown + ' seconds…';
+                        } else {
+                            clearInterval(countdownInterval);
+                            window.location.href = '/';
+                        }
+                    }, 1000);
+                    return;
                 } else {
-                    clearInterval(countdownInterval);
-                    window.location.href = '/';
+                    // Chunk received, waiting for more
+                    restoreStatus.textContent = `Uploaded ${chunkNum}/${totalChunks}. Uploading chunk ${chunkNum + 1}/${totalChunks}...`;
                 }
-            }, 1000);
-            // Keep the restore button disabled during countdown so users
-            // can't kick off a second restore while Flask is coming back.
-            return;
+            }
         } catch (e) {
             restoreStatus.textContent = 'Error: ' + e.message;
             restoreStatus.style.color = 'var(--color-danger, red)';
