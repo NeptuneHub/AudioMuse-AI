@@ -176,12 +176,50 @@ def _run_restore_runner(dump_file, log_file):
 
 @backup_bp.route('/backup')
 def backup_page():
+    """
+    Backup & restore admin page.
+    ---
+    tags:
+      - Backup
+    summary: HTML page for creating and restoring database backups.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('backup.html', title='AudioMuse-AI - Backup & Restore', active='backup')
 
 
 @backup_bp.route('/api/backup/create', methods=['POST'])
 def create_backup():
-    """Full pg_dump of the application database and return the .sql file."""
+    """
+    Create a database backup.
+    ---
+    tags:
+      - Backup
+    summary: Run pg_dump on the application database and download the resulting .sql file.
+    description: |
+      Removes any prior `audiomuse_backup_*.sql` files in BACKUP_DIR, then runs
+      `pg_dump --clean --if-exists` and streams the dump back to the client as
+      an attachment named `audiomuse_backup_<TIMESTAMP>.sql`. pg_dump is bounded
+      by a 600 second timeout.
+    responses:
+      200:
+        description: pg_dump succeeded; the .sql file is returned as an attachment.
+        content:
+          application/sql:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: pg_dump failed, was not installed, or timed out.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                error:
+                  type: string
+    """
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
     # Remove old backup files
@@ -221,11 +259,87 @@ def create_backup():
 
 @backup_bp.route('/api/backup/restore', methods=['POST'])
 def restore_backup():
-    """Restore the database from an uploaded .sql dump file via psql.
+    """
+    Restore the database from an uploaded .sql dump.
+    ---
+    tags:
+      - Backup
+    summary: Upload a .sql dump (single file or chunked) and replay it via psql.
+    description: |
+      Acquires a 1-hour Redis lock (`audiomuse:restore_lock`) to prevent
+      concurrent restores. The endpoint accepts either:
 
-    Supports both:
-    - Full file upload (chunk_num=None)
-    - Chunked upload (chunk_num=X, total_chunks=Y) - each chunk saved, reassembled when all received
+      - A single full upload (no `chunk_num`/`total_chunks` form fields).
+      - A chunked upload where each request carries one 1 GB chunk plus the
+        chunk index. Chunks are saved into `BACKUP_DIR/chunks/` and reassembled
+        when the last chunk arrives. The first chunk wipes any leftover chunks
+        from a previous attempt.
+
+      When all data has been received, a detached subprocess runs psql with
+      `--single-transaction` and `ON_ERROR_STOP=1` against the configured
+      Postgres database, then restarts the local Flask service.
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required: [confirmation, file]
+            properties:
+              confirmation:
+                type: string
+                description: Must equal "I want to restore the database from the backup. This action is not reversible".
+              file:
+                type: string
+                format: binary
+                description: The .sql dump (or one chunk of it).
+              chunk_num:
+                type: integer
+                description: 1-indexed chunk number; omit for single-file upload.
+              total_chunks:
+                type: integer
+                description: Total number of chunks; omit for single-file upload.
+    responses:
+      200:
+        description: |
+          Either an intermediate "chunk received" acknowledgement or, on the
+          last chunk / single upload, confirmation that the detached restore
+          subprocess started.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                message:
+                  type: string
+                all_chunks_received:
+                  type: boolean
+                chunk_num:
+                  type: integer
+                total_chunks:
+                  type: integer
+                received_chunks:
+                  type: array
+                  items:
+                    type: integer
+                missing_chunks:
+                  type: array
+                  items:
+                    type: integer
+                restore_pid:
+                  type: integer
+                restore_log:
+                  type: string
+      400:
+        description: Confirmation phrase missing or chunk numbers invalid.
+      409:
+        description: A restore is already in progress (Redis lock held), or the chunked-upload session was overtaken / expired mid-upload.
+      500:
+        description: Server-side failure during chunk save, reassembly, or runner spawn.
+      503:
+        description: Lock service (Redis) unreachable.
     """
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"

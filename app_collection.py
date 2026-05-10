@@ -16,7 +16,16 @@ collection_bp = Blueprint('collection_bp', __name__)
 
 @collection_bp.route('/collection')
 def collection_page():
-    """Serves the HTML page for the Collection Sync feature."""
+    """
+    Collection Sync admin page.
+    ---
+    tags:
+      - Collection
+    summary: HTML page for synchronizing local song data with a remote PocketBase collection.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('collection.html', title = 'AudioMuse-AI - Collection Sync', active='collection')
 
 def collection_task_failure_handler(job, connection, type, value, tb):
@@ -47,8 +56,50 @@ def collection_task_failure_handler(job, connection, type, value, tb):
 @collection_bp.route('/api/collection/start', methods=['POST'])
 def start_collection_sync():
     """
-    Starts the process of synchronizing local song data with a remote PocketBase collection.
-    This enqueues the main parent task for the synchronization using an auth token.
+    Start a collection synchronization task.
+    ---
+    tags:
+      - Collection
+    summary: Synchronize local song metadata with a remote PocketBase collection.
+    description: |
+      Cleans up previously successful or stale main collection sync tasks,
+      then enqueues a new `tasks.collection_manager.sync_collections_task`
+      job on the high-priority RQ queue. The job is bounded by a 2-hour
+      timeout and retried up to twice on failure.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [url, token, num_albums]
+            properties:
+              url:
+                type: string
+                description: PocketBase base URL.
+              token:
+                type: string
+                description: PocketBase authentication token.
+              num_albums:
+                type: integer
+                description: Number of most recent albums to sync.
+    responses:
+      202:
+        description: Sync task enqueued.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                task_type:
+                  type: string
+                  example: main_collection_sync
+                status:
+                  type: string
+      400:
+        description: Missing required parameters.
     """
     # Local import to avoid circular dependency
     from app_helper import rq_queue_high
@@ -97,7 +148,34 @@ def start_collection_sync():
 @collection_bp.route('/api/collection/last_task', methods=['GET'])
 def get_last_collection_task():
     """
-    Get the status of the most recent collection sync task.
+    Status of the most recent collection sync task.
+    ---
+    tags:
+      - Collection
+    summary: Return the most recently started main_collection_sync task and its progress.
+    responses:
+      200:
+        description: |
+          Either the most recent task row or `{"status": "NO_PREVIOUS_TASK"}`
+          when no sync has ever been run.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                task_type:
+                  type: string
+                status:
+                  type: string
+                progress:
+                  type: number
+                details:
+                  type: object
+                running_time_seconds:
+                  type: number
+                  format: float
     """
     from app_helper import get_db # Local import to use the app context's db connection
     db = get_db()

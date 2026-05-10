@@ -219,7 +219,16 @@ def init_map_cache():
 
 @map_bp.route('/map')
 def map_ui():
-    """Serve the map UI page."""
+    """
+    Music map UI page.
+    ---
+    tags:
+      - Map
+    summary: HTML page for the 2D music map (UMAP/projection of song embeddings).
+    responses:
+      200:
+        description: HTML page rendered with no-cache headers.
+    """
     resp = render_template('map.html', title = 'AudioMuse-AI - Music Map', active='map')
     # Ensure the rendered page is not cached by browsers or intermediary caches.
     # We return a Response object below so Flask will set the appropriate headers.
@@ -274,9 +283,36 @@ def _rows_to_items(rows):
 
 @map_bp.route('/api/map', methods=['GET'])
 def map_api():
-    """Return up to 2000 embeddings sampled across configured genres, projected to 2D.
-
-    Response: JSON list of items with title, artist, embedding_2d, mood_vector, other_feature
+    """
+    Music map data.
+    ---
+    tags:
+      - Map
+    summary: Return embeddings projected to 2D, sampled across configured genres, for the music-map UI.
+    description: |
+      Served exclusively from the in-memory `MAP_JSON_CACHE` built at startup
+      (or rebuilt via `/api/rebuild_map_cache`). Supports four sampling
+      buckets — 25/50/75/100 percent of the cached set — plus a legacy `n`
+      parameter that maps the closest bucket. Honors `Accept-Encoding: gzip`
+      when the cache contains a precompressed payload.
+    parameters:
+      - name: percent
+        in: query
+        schema:
+          type: string
+          enum: ["25", "50", "75", "100"]
+        description: Percentage bucket of cached items to return. Default 25.
+      - name: p
+        in: query
+        schema: { type: string }
+        description: Alias for `percent`.
+      - name: n
+        in: query
+        schema: { type: integer }
+        description: Legacy parameter — mapped to the nearest available bucket.
+    responses:
+      200:
+        description: JSON payload with `items` (each having `embedding_2d`, `title`, `author`, `mood_vector`, `other_features`) and `projection` name.
     """
     # Serve exclusively from the in-memory MAP_JSON_CACHE built at startup.
     # Accept either explicit percent param (?percent=25|50|75|100) or legacy ?n=<count>.
@@ -348,7 +384,39 @@ def map_api():
 
 @map_bp.route('/api/map_cache_status', methods=['GET'])
 def map_cache_status():
-    """Return diagnostic information about the in-memory map JSON cache."""
+    """
+    Diagnostic info for the map cache.
+    ---
+    tags:
+      - Map
+    summary: Return per-bucket stats (count, payload size, projection algorithm) for the in-memory map cache.
+    responses:
+      200:
+        description: Cache summary.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                buckets:
+                  type: object
+                  additionalProperties:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      json_bytes:
+                        type: integer
+                      projection:
+                        type: string
+                reason:
+                  type: string
+                  description: Set to `empty_cache` when no buckets exist.
+      500:
+        description: Internal error.
+    """
     try:
         if not MAP_JSON_CACHE:
             return jsonify({'ok': False, 'reason': 'empty_cache', 'buckets': {}})
@@ -365,8 +433,28 @@ def map_cache_status():
 
 @map_bp.route('/api/rebuild_map_cache', methods=['POST'])
 def rebuild_map_cache():
-    """Trigger a synchronous rebuild of the in-memory cache. Useful for debugging.
-    Note: this reads the DB and may take time."""
+    """
+    Synchronously rebuild the map cache.
+    ---
+    tags:
+      - Map
+    summary: Re-read embeddings from the DB and rebuild every percent bucket.
+    description: Synchronous; can take a while on large libraries. Useful for debugging.
+    responses:
+      200:
+        description: Cache rebuilt successfully.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                message:
+                  type: string
+      500:
+        description: Internal error during rebuild.
+    """
     try:
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200

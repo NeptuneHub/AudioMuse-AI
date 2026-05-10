@@ -23,11 +23,55 @@ cron_bp = Blueprint('cron_bp', __name__)
 
 @cron_bp.route('/cron')
 def cron_page():
+    """
+    Scheduled tasks admin page.
+    ---
+    tags:
+      - Cron
+    summary: HTML page for managing cron-scheduled tasks (analysis, clustering, sonic fingerprint).
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('cron.html', title = 'AudioMuse-AI - Scheduled Tasks', active='cron')
 
 
 @cron_bp.route('/api/cron', methods=['GET'])
 def get_cron_entries():
+    """
+    List all cron entries.
+    ---
+    tags:
+      - Cron
+    summary: Return every row from the `cron` table with its current state.
+    responses:
+      200:
+        description: List of cron entries.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  task_type:
+                    type: string
+                    enum: [analysis, clustering, sonic_fingerprint]
+                  cron_expr:
+                    type: string
+                    description: 5-field cron expression "min hour day month dow".
+                  enabled:
+                    type: boolean
+                  last_run:
+                    type: number
+                    description: Unix timestamp of the most recent enqueue, or null.
+                  created_at:
+                    type: string
+    """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT id, name, task_type, cron_expr, enabled, last_run, created_at FROM cron ORDER BY id")
@@ -45,6 +89,44 @@ def get_cron_entries():
 
 @cron_bp.route('/api/cron', methods=['POST'])
 def save_cron_entry():
+    """
+    Create or update a cron entry.
+    ---
+    tags:
+      - Cron
+    summary: Insert a new cron row or update an existing one (when `id` is supplied).
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id:
+                type: integer
+                description: Omit to create a new row; include to update an existing one.
+              name:
+                type: string
+              task_type:
+                type: string
+                enum: [analysis, clustering, sonic_fingerprint]
+              cron_expr:
+                type: string
+                description: 5-field cron expression "min hour day month dow".
+              enabled:
+                type: boolean
+    responses:
+      200:
+        description: Saved.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  example: saved
+    """
     data = request.json or {}
     # Expected fields: id (optional), name, task_type, cron_expr, enabled
     db = get_db()

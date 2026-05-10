@@ -16,15 +16,60 @@ sem_grove_bp = Blueprint("sem_grove_bp", __name__, template_folder="../templates
 
 @sem_grove_bp.route("/api/sem_grove/search", methods=["POST"])
 def sem_grove_search_api():
-    """Find songs similar to a seed song using the merged lyrics+audio index.
-
-    POST JSON:
-    {
-        "item_id": "<media_server_item_id>",
-        "limit": 50
-    }
-    Returns a list of {item_id, title, author, similarity} sorted by
-    descending merged-cosine similarity.
+    """
+    SemGrove similarity search by seed song.
+    ---
+    tags:
+      - SemGrove
+    summary: Find songs similar to a seed song using the merged lyrics+audio Voyager index.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item_id]
+            properties:
+              item_id:
+                type: string
+                description: Media server item id of the seed song.
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 500
+                default: 50
+    responses:
+      200:
+        description: Sorted similar tracks (seed song included with `is_seed=true`).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      title:
+                        type: string
+                      author:
+                        type: string
+                      similarity:
+                        type: number
+                        format: float
+                      is_seed:
+                        type: boolean
+                count:
+                  type: integer
+      400:
+        description: Missing or invalid request fields.
+      404:
+        description: Seed song not in the SemGrove index (requires both lyrics and audio analysis).
+      500:
+        description: Internal error.
     """
     from tasks.sem_grove_manager import search_by_song
 
@@ -60,7 +105,27 @@ def sem_grove_search_api():
 
 @sem_grove_bp.route("/api/sem_grove/cache/refresh", methods=["POST"])
 def sem_grove_refresh_api():
-    """Reload the SemGrove index from the database (hot-reload)."""
+    """
+    Refresh the SemGrove merged index.
+    ---
+    tags:
+      - SemGrove
+    summary: Reload the merged lyrics+audio Voyager index from the database.
+    responses:
+      200:
+        description: Refresh attempted; updated stats returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                stats:
+                  type: object
+      500:
+        description: Internal error.
+    """
     from tasks.sem_grove_manager import get_sem_grove_stats, refresh_sem_grove_cache
 
     try:
@@ -73,7 +138,20 @@ def sem_grove_refresh_api():
 
 @sem_grove_bp.route("/api/sem_grove/stats", methods=["GET"])
 def sem_grove_stats_api():
-    """Return SemGrove index stats."""
+    """
+    SemGrove index stats.
+    ---
+    tags:
+      - SemGrove
+    summary: Return size and freshness metadata for the merged SemGrove index.
+    responses:
+      200:
+        description: Index statistics.
+        content:
+          application/json:
+            schema:
+              type: object
+    """
     from tasks.sem_grove_manager import get_sem_grove_stats
 
     return jsonify(get_sem_grove_stats())

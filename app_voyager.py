@@ -444,9 +444,36 @@ def get_similar_tracks_endpoint():
 @voyager_bp.route('/api/max_distance', methods=['GET'])
 def get_max_distance_endpoint():
   """
-  Returns the exact maximum distance from the provided item_id to any other item in the index.
-  Query param: item_id (required)
-  Response: { "max_distance": float, "farthest_item_id": str | null }
+  Maximum distance from a track to any other.
+  ---
+  tags:
+    - Similarity
+  summary: Return the largest cosine/euclidean distance between the given item and any other item in the Voyager index.
+  parameters:
+    - name: item_id
+      in: query
+      required: true
+      schema: { type: string }
+  responses:
+    200:
+      description: Distance and farthest item.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              max_distance:
+                type: number
+                format: float
+              farthest_item_id:
+                type: string
+                nullable: true
+    400:
+      description: Missing item_id.
+    404:
+      description: Item not found in the index.
+    503:
+      description: Voyager index unavailable.
   """
   item_id = request.args.get('item_id')
   if not item_id:
@@ -468,9 +495,38 @@ def get_max_distance_endpoint():
 @voyager_bp.route('/api/track', methods=['GET'])
 def get_track_endpoint():
   """
-  Fetch basic track metadata (title, author) for a given item_id.
-  Query param: item_id (required)
-  Response: { "item_id": str, "title": str, "author": str, "album": str } or 404
+  Basic track metadata.
+  ---
+  tags:
+    - Similarity
+  summary: Return title, author, album, and album_artist for a given item_id.
+  parameters:
+    - name: item_id
+      in: query
+      required: true
+      schema: { type: string }
+  responses:
+    200:
+      description: Track metadata.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              item_id:
+                type: string
+              title:
+                type: string
+              author:
+                type: string
+              album:
+                type: string
+              album_artist:
+                type: string
+    400:
+      description: Missing item_id.
+    404:
+      description: Item not found.
   """
   item_id = request.args.get('item_id')
   if not item_id:
