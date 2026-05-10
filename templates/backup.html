@@ -109,7 +109,7 @@
                 <p style="font-style:italic; margin-bottom:0.5rem; color:var(--text-main);">I want to restore the database from the backup. This action is not reversible</p>
                 <input type="text" id="restore-confirm-input" placeholder="Type the phrase above..." autocomplete="off">
                 <button id="restore-btn" class="btn danger-button" disabled>Restore</button>
-                <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem;"></div>
+                <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem; white-space:pre-line;"></div>
             </div>
         </div>
     </section>
@@ -195,7 +195,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const chunkSize = 1024 * 1024 * 1024; // 1GB chunks
         const totalChunks = Math.ceil(fileSize / chunkSize);
 
-        restoreStatus.textContent = `Uploading ${fileSizeMB} MB in ${totalChunks} chunk(s)... Chunk 1/${totalChunks}`;
+        const LOCK_NOTICE = 'In case of not successfully restore, restart Redis service to remove the lock or wait 1 hour.';
+        restoreStatus.textContent =
+            LOCK_NOTICE + `\nUploading ${fileSizeMB} MB in ${totalChunks} chunk(s)... Chunk 1/${totalChunks}`;
         restoreStatus.style.color = 'var(--text-sub)';
 
         try {
@@ -212,7 +214,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('confirmation', confirmInput.value);
 
                 const chunkMB = ((end - start) / (1024 * 1024)).toFixed(2);
-                restoreStatus.textContent = `Uploading ${fileSizeMB} MB... Chunk ${chunkNum}/${totalChunks} (${chunkMB} MB)`;
+                restoreStatus.textContent =
+                    LOCK_NOTICE + `\nUploading ${fileSizeMB} MB... Chunk ${chunkNum}/${totalChunks} (${chunkMB} MB)`;
 
                 const res = await fetch("{{ url_for('backup_bp.restore_backup') }}", {
                     method: 'POST',
@@ -243,7 +246,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 } else {
                     // Chunk received, waiting for more
-                    restoreStatus.textContent = `Uploaded ${chunkNum}/${totalChunks}. Uploading chunk ${chunkNum + 1}/${totalChunks}...`;
+                    restoreStatus.textContent =
+                        LOCK_NOTICE + `\nUploaded ${chunkNum}/${totalChunks}. Uploading chunk ${chunkNum + 1}/${totalChunks}...`;
                 }
             }
         } catch (e) {

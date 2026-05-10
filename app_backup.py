@@ -6,6 +6,9 @@ import logging
 import tempfile
 from datetime import datetime
 from flask import Blueprint, render_template, jsonify, request, send_file, after_this_request
+from redis import Redis
+from redis.exceptions import RedisError
+import config
 from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 import restart_manager
 
@@ -15,6 +18,28 @@ backup_bp = Blueprint('backup_bp', __name__)
 
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/backup")
 RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
+
+# Cross-container restore lock. Only one restore may run at a time.
+# TTL self-releases on crash; runner releases explicitly on clean exit.
+RESTORE_LOCK_KEY = 'audiomuse:restore_lock'
+RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
+
+
+def _acquire_restore_lock():
+    """SET NX EX. Returns True if we got the lock, False if held or Redis is down."""
+    try:
+        client = Redis.from_url(config.REDIS_URL, socket_timeout=5, decode_responses=True)
+        return bool(client.set(RESTORE_LOCK_KEY, '1', nx=True, ex=RESTORE_LOCK_TTL_SECONDS))
+    except RedisError:
+        logger.exception("Redis unavailable while acquiring restore lock; failing closed.")
+        return False
+
+
+def _release_restore_lock():
+    try:
+        Redis.from_url(config.REDIS_URL, socket_timeout=5).delete(RESTORE_LOCK_KEY)
+    except RedisError:
+        logger.exception("Redis unavailable while releasing restore lock; relying on TTL.")
 
 
 def _pg_env():
@@ -125,6 +150,10 @@ def _run_restore_runner(dump_file, log_file):
             log.write(f"Could not delete temporary dump file {dump_file}: {exc}\n")
             log.flush()
 
+        _release_restore_lock()
+        log.write("Released restore lock.\n")
+        log.flush()
+
         log.write(f"Restore runner finished at {datetime.now().isoformat()}\n")
         log.flush()
 
@@ -216,6 +245,15 @@ def restore_backup():
             chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
             os.makedirs(chunks_dir, exist_ok=True)
 
+            # Acquire the cross-container restore lock on the first chunk only.
+            # Subsequent chunks belong to the already-locked session.
+            if chunk_num == 1 and not _acquire_restore_lock():
+                logger.warning("Refusing chunk 1: restore lock already held.")
+                return jsonify({
+                    'error': 'A database restore is already in progress. '
+                             'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
+                }), 409
+
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 
             # The first chunk marks the start of a new upload session: wipe any
@@ -299,6 +337,7 @@ def restore_backup():
                             pass
                     if restore_file and os.path.exists(restore_file):
                         os.unlink(restore_file)
+                    _release_restore_lock()
                     return jsonify({'error': 'Failed to reassemble chunks due to an internal error.'}), 500
             else:
                 # Still waiting for more chunks
@@ -314,6 +353,12 @@ def restore_backup():
                 })
         else:
             # Single file upload (non-chunked)
+            if not _acquire_restore_lock():
+                logger.warning("Refusing non-chunked restore: lock already held.")
+                return jsonify({
+                    'error': 'A database restore is already in progress. '
+                             'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
+                }), 409
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
             uploaded.save(tmp)
             tmp.close()
@@ -352,11 +397,13 @@ def restore_backup():
         logger.error("Python executable not found for restore runner")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
+        _release_restore_lock()
         return jsonify({'error': 'Python executable not found for restore runner.'}), 500
     except Exception:
         logger.exception("Restore failed")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
+        _release_restore_lock()
         return jsonify({'error': 'Restore failed. Check server logs.'}), 500
 
 
