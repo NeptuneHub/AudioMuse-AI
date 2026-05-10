@@ -198,7 +198,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 body: formData
             });
-            const data = await res.json();
+            let data;
+            try {
+                data = await res.json();
+            } catch (parseErr) {
+                throw new Error('Server error or connection lost. Please check the server logs.');
+            }
             if (!res.ok) throw new Error(data.error || 'Restore failed');
             restoreStatus.style.color = 'var(--color-success, green)';
             // Same UX as the setup save: 30s countdown, then redirect to /
