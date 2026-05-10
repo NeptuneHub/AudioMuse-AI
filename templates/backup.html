@@ -225,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data.all_chunks_received) {
                     // All chunks received, restore starting
                     restoreStatus.style.color = 'var(--color-success, green)';
-                    let countdown = 30;
+                    let countdown = 60;
                     restoreStatus.textContent =
                         'All chunks uploaded. Database restore started. Restarting application — '
                         + 'redirecting in ' + countdown + ' seconds…';
