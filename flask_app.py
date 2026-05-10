@@ -13,3 +13,6 @@ attach blueprints, hooks, and middleware without creating a cycle.
 from flask import Flask
 
 app = Flask(__name__)
+# Cap upload size at 5GB; chunked backup uploads (see templates/backup.html)
+# stay well under this, but allow some headroom for larger single requests.
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB
