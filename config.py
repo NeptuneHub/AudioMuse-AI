@@ -86,6 +86,11 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
     'AUDIOMUSE_PASSWORD',
+    # Computed numpy/precomputed constants — persisting them through
+    # setup_manager would stringify the ndarray ("[1. 0. 0. ...]") and
+    # corrupt the value on reload (cast_value can't reverse str(ndarray)).
+    'LYRICS_INSTRUMENTAL_EMBEDDING',
+    'LYRICS_INSTRUMENTAL_AXIS_FILL',
 }
 
 # --- MPD (Music Player Daemon) Constants ---

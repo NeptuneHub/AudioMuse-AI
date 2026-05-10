@@ -780,7 +780,7 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         return audio
     try:
         tensor = torch.from_numpy(audio.astype(np.float32))
-        ts = get_speech_timestamps(tensor, model, sampling_rate=sr)
+        ts = get_speech_timestamps(tensor, model, sampling_rate=sr, threshold=0.3)
     except Exception as exc:
         logger.warning('VAD failed: %s; using raw audio', exc)
         return audio
