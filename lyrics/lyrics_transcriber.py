@@ -785,7 +785,7 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         logger.warning('VAD failed: %s; using raw audio', exc)
         return audio
     if not ts:
-        return np.zeros(0, dtype=audio.dtype)  # VAD found no voice -> instrumental
+        return audio  # VAD whiffed (common on music) -> trust original audio
     from config import VAD_VOICE_RECOGNITION
     voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
     if len(voiced) < sr * VAD_VOICE_RECOGNITION:  # below threshold -> instrumental
