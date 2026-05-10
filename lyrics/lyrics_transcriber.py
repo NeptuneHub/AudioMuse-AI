@@ -780,15 +780,21 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         return audio
     try:
         tensor = torch.from_numpy(audio.astype(np.float32))
-        ts = get_speech_timestamps(tensor, model, sampling_rate=sr)
+        ts = get_speech_timestamps(tensor, model, sampling_rate=sr, threshold=0.3)
     except Exception as exc:
         logger.warning('VAD failed: %s; using raw audio', exc)
         return audio
     if not ts:
+        logger.info('VAD: no timestamps detected (Silero whiffed) — falling back to full audio')
         return audio
+    from config import VAD_VOICE_RECOGNITION
     voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
-    if len(voiced) < sr * 5:  # less than 5s of voice -> trust the original
-        return audio
+    voiced_seconds = len(voiced) / sr
+    if len(voiced) < sr * VAD_VOICE_RECOGNITION:
+        logger.info('VAD: only %.2fs voiced (<%ss threshold) — treating as instrumental',
+                    voiced_seconds, VAD_VOICE_RECOGNITION)
+        return np.zeros(0, dtype=audio.dtype)
+    logger.info('VAD: %.2fs voiced — keeping voiced segments', voiced_seconds)
     return voiced
 
 
@@ -1231,9 +1237,9 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         guess_lang, confidence = _detect_language(raw_text)
         if confidence >= 0.7:
             detected_lang = guess_lang
-    else:
-        detected_lang = 'en'
-    logger.info('STEP 3 end: language=%s', detected_lang)
+        else:
+            raw_text = ''  # low-confidence → fall through to instrumental
+    logger.info('STEP 3 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     # ---- STEP 4: translation ----
     logger.info('STEP 4 start: translation (source=%s)', detected_lang)
