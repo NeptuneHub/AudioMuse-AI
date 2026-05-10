@@ -785,11 +785,16 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         logger.warning('VAD failed: %s; using raw audio', exc)
         return audio
     if not ts:
-        return audio  # VAD whiffed (common on music) -> trust original audio
+        logger.info('VAD: no timestamps detected (Silero whiffed) — falling back to full audio')
+        return audio
     from config import VAD_VOICE_RECOGNITION
     voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
-    if len(voiced) < sr * VAD_VOICE_RECOGNITION:  # below threshold -> instrumental
+    voiced_seconds = len(voiced) / sr
+    if len(voiced) < sr * VAD_VOICE_RECOGNITION:
+        logger.info('VAD: only %.2fs voiced (<%ss threshold) — treating as instrumental',
+                    voiced_seconds, VAD_VOICE_RECOGNITION)
         return np.zeros(0, dtype=audio.dtype)
+    logger.info('VAD: %.2fs voiced — keeping voiced segments', voiced_seconds)
     return voiced
 
 
