@@ -178,7 +178,10 @@ def create_backup():
 
 @backup_bp.route('/api/backup/restore', methods=['POST'])
 def restore_backup():
-    """Restore the database from an uploaded .sql dump file via psql."""
+    """Restore the database from an uploaded .sql dump file via psql.
+
+    Streams large files to disk in chunks to handle multi-GB backups efficiently.
+    """
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"
     if confirmation != expected:
@@ -189,13 +192,32 @@ def restore_backup():
         return jsonify({'error': 'No file uploaded.'}), 400
 
     restore_file = None
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
     restore_log = None
     restore_pid = None
     try:
-        uploaded.save(tmp)
-        tmp.close()
+        # Create temporary file for the backup
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
         restore_file = tmp.name
+
+        # Stream the uploaded file to disk in 8MB chunks to avoid memory issues with large files
+        chunk_size = 8 * 1024 * 1024  # 8 MB chunks
+        bytes_written = 0
+        logger.info(f"Starting to stream upload to {restore_file}")
+
+        try:
+            while True:
+                chunk = uploaded.stream.read(chunk_size)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+                bytes_written += len(chunk)
+                # Log progress every 100MB
+                if bytes_written % (100 * 1024 * 1024) == 0 or bytes_written < chunk_size:
+                    logger.info(f"Streamed {bytes_written / (1024**3):.2f} GB to {restore_file}")
+        finally:
+            tmp.close()
+
+        logger.info(f"Upload complete: {bytes_written / (1024**3):.2f} GB written to {restore_file}")
 
         # Publish worker stop as soon as the upload has been persisted and before
         # starting the detached restore runner. This reduces the window between
