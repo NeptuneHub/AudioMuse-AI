@@ -289,6 +289,7 @@ def restore_backup():
                     # Start restore with reassembled file
                     all_chunks_received = True
                 except Exception as e:
+                    logger.exception("Failed to reassemble uploaded backup chunks")
                     if tmp:
                         try:
                             tmp.close()
@@ -296,7 +297,7 @@ def restore_backup():
                             pass
                     if restore_file and os.path.exists(restore_file):
                         os.unlink(restore_file)
-                    return jsonify({'error': f'Failed to reassemble chunks: {str(e)}'}), 500
+                    return jsonify({'error': 'Failed to reassemble chunks due to an internal error.'}), 500
             else:
                 # Still waiting for more chunks
                 missing_chunks = [i for i in range(1, total_chunks + 1) if i not in received_chunks]
