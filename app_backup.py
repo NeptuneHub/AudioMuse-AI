@@ -218,39 +218,36 @@ def restore_backup():
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 
-            # Check for orphaned chunks from different upload sessions
-            orphaned_chunks = set()
-            received_chunks = set()
-            for f in os.listdir(chunks_dir):
-                if f.startswith('backup_') and f.endswith('.sql'):
-                    try:
-                        parts = f.replace('backup_', '').replace('.sql', '').split('_of_')
-                        if len(parts) == 2:
-                            file_chunk_num = int(parts[0])
-                            file_total_chunks = int(parts[1])
-                            if file_total_chunks != total_chunks:
-                                orphaned_chunks.add(f)
-                            else:
-                                received_chunks.add(file_chunk_num)
-                    except (ValueError, IndexError):
-                        pass
-
-            # Warn about orphaned chunks from previous incomplete upload
-            if orphaned_chunks:
-                logger.warning(f"Found orphaned chunks from previous upload. Cleaning up: {orphaned_chunks}")
-                for orphan in orphaned_chunks:
-                    try:
-                        os.unlink(os.path.join(chunks_dir, orphan))
-                    except Exception as e:
-                        logger.warning(f"Could not delete orphan chunk {orphan}: {e}")
+            # The first chunk marks the start of a new upload session: wipe any
+            # leftovers so a previous failed run cannot leak stale data into the
+            # reassembled file (chunks may match total_chunks but have different
+            # contents).
+            if chunk_num == 1:
+                for f in os.listdir(chunks_dir):
+                    if f.startswith('backup_') and f.endswith('.sql'):
+                        try:
+                            os.unlink(os.path.join(chunks_dir, f))
+                        except Exception as exc:
+                            logger.warning(f"Could not delete leftover chunk {f}: {exc}")
 
             # Save the current chunk
             try:
                 uploaded.save(chunk_file)
                 logger.info(f"Saved chunk {chunk_num}/{total_chunks}")
-                received_chunks.add(chunk_num)
-            except Exception as e:
-                return jsonify({'error': f'Failed to save chunk {chunk_num}: {str(e)}'}), 500
+            except Exception:
+                logger.exception("Failed to save chunk %s", chunk_num)
+                return jsonify({'error': f'Failed to save chunk {chunk_num}.'}), 500
+
+            # Rebuild the received set from disk (only chunks belonging to this session)
+            received_chunks = set()
+            for f in os.listdir(chunks_dir):
+                if f.startswith('backup_') and f.endswith(f'_of_{total_chunks}.sql'):
+                    try:
+                        parts = f.replace('backup_', '').replace('.sql', '').split('_of_')
+                        if len(parts) == 2:
+                            received_chunks.add(int(parts[0]))
+                    except (ValueError, IndexError):
+                        pass
 
             logger.info(f"Received chunks: {sorted(received_chunks)}/{total_chunks}")
 
@@ -267,11 +264,16 @@ def restore_backup():
                         if not os.path.exists(chunk_path):
                             raise Exception(f"Chunk {i} is missing during reassembly!")
                         try:
+                            bytes_read = 0
                             with open(chunk_path, 'rb') as chunk_f:
-                                data = chunk_f.read()
-                                if not data:
-                                    raise Exception(f"Chunk {i} is empty!")
-                                tmp.write(data)
+                                while True:
+                                    buf = chunk_f.read(1024 * 1024)  # 1MB stream buffer
+                                    if not buf:
+                                        break
+                                    tmp.write(buf)
+                                    bytes_read += len(buf)
+                            if bytes_read == 0:
+                                raise Exception(f"Chunk {i} is empty!")
                         except IOError as e:
                             raise Exception(f"Error reading chunk {i}: {str(e)}")
 
