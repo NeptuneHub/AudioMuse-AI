@@ -137,9 +137,11 @@ def unload_lyrics_models() -> bool:
             _logger.warning("Lyrics silero_onnx release failed: %s", exc)
     finally:
         # Always run the GC + ONNX memory-pool reset, even if every
-        # per-submodule release above raised. ``force_cuda=False`` because
-        # the lyrics ONNX sessions are all CPUExecutionProvider — CUDA
-        # cleanup is a no-op for them and would just slow shutdown.
+        # per-submodule release above raised. ``force_cuda=False`` here
+        # because each submodule that may have run on CUDA — currently
+        # only ``qwen_asr`` — already does its own CUDA cache reset in
+        # its unload path. Re-forcing it at this level would just slow
+        # shutdown on CPU-only deployments.
         try:
             import gc
             gc.collect()

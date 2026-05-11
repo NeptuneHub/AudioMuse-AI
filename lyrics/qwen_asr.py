@@ -16,9 +16,9 @@ Whisper uses by default we layer in:
   hypotheses each with their own KV cache; length-normalized log-prob
   picks the winner. Default 2 catches most music-ASR hallucinations
   caused by locally-greedy-but-globally-wrong token picks at ~2×
-  decoder cost. Set to 1 for pure greedy (fastest), 4 for Whisper-
-  style maximum quality (~4× slower). Beams run sequentially — the
-  community ONNX export bakes batch=1 into internal ScatterElements
+  decoder cost vs greedy. Set to 3 for a middle ground, 5 for Whisper-
+  parity max quality, or 1 for pure greedy. Beams run sequentially —
+  the community ONNX export bakes batch=1 into internal ScatterElements
   ops and rejects any batched run, so we don't try.
 * **Repetition penalty** (``LYRICS_ASR_REPETITION_PENALTY``, default
   1.15) — HF-style penalty on raw logits for any token already
@@ -46,12 +46,12 @@ keep memory pressure manageable when many workers come online at once:
    you run 3 concurrent Qwen workers and need to leave headroom).
    ``inter_op_num_threads = 1`` and ``ExecutionMode.ORT_SEQUENTIAL``
    are always set; the four sessions still run sequentially.
-2. **ONNX arena + memory-pattern disabled** — ``enable_cpu_mem_arena
-   = False`` and ``enable_mem_pattern = False`` so the runtime doesn't
-   accumulate transient buffers between calls. With multiple concurrent
-   workers the arena was creeping idle RSS upward and compounding with
-   the lower RAM gate, eventually pushing the node into swap. Predictable
-   memory ceiling > marginal per-call speedup.
+2. **ONNX arena + memory-pattern enabled (ORT defaults)** — runtime
+   caches transient buffers + shape-derived allocation plans between
+   calls. Earlier audits attributed a crash to arena growth, but the
+   real culprit was thread oversubscription; arena RSS plateaus rather
+   than runs away on single-worker deployments. The load-time RAM gate
+   is the actual memory-pressure defense.
 3. **Memory-mapped embedding matrix** — ``np.memmap`` instead of
    ``np.fromfile`` saves ~600 MB of RSS per process; the kernel pages it
    in on demand.
@@ -104,12 +104,14 @@ LYRICS_ASR_MIN_FREE_RAM_GB = float(os.environ.get("LYRICS_ASR_MIN_FREE_RAM_GB", 
 # gate — the same set of defenses Whisper uses against music
 # hallucinations.
 
-# Beam search width. 1 = pure greedy (fastest but most error-prone),
-# 4 = Whisper's default (highest quality, ~4x slower). Default 2 is the
-# practical sweet spot: catches most of the locally-optimal-but-globally-
-# wrong choices that produce music-ASR hallucinations, at ~2x decoder
-# cost vs greedy. Each extra beam costs one extra decoder_step.run per
-# generated token plus ~30-60 MB of KV cache at a full 30s chunk.
+# Beam search width. 1 = pure greedy (fastest, most error-prone),
+# 5 = Whisper-small's default (highest quality, ~5× decode cost).
+# Default 2 is the practical sweet spot: catches most music-ASR
+# hallucinations caused by locally-greedy-but-globally-wrong token
+# picks at ~2× decoder cost vs greedy. Each extra beam costs one extra
+# decoder_step.run per generated token plus ~30-60 MB of KV cache at a
+# full 30s chunk. (Sequential per-beam decode; the community ONNX
+# export rejects batched runs.)
 BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "2"))
 
 # HF-style repetition penalty applied to raw logits before softmax.
@@ -398,6 +400,19 @@ class _OnnxAsrPipeline:
         nested = onnx_path / "onnx_models"
         models_dir = nested if nested.is_dir() else onnx_path
 
+        # Provider selection: prefer CUDA when onnxruntime-gpu detects a
+        # device, else CPU. Uses the shared helper so we stay consistent
+        # with CLAP / MusiCNN / analysis. Lazy-imported because
+        # ``tasks.analysis_helper`` pulls in DB / psycopg2 transitively —
+        # fine inside the worker but unwanted at lyrics-module import time.
+        try:
+            from tasks.analysis_helper import get_provider_options
+            provider_opts = get_provider_options()
+        except Exception as exc:
+            logger.warning("Qwen3-ASR: provider helper unavailable (%s) — CPU only", exc)
+            provider_opts = [('CPUExecutionProvider', {})]
+        use_cuda = provider_opts[0][0] == 'CUDAExecutionProvider'
+
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         # Sequential execution mode + tight thread caps so 4 sessions don't
@@ -405,20 +420,22 @@ class _OnnxAsrPipeline:
         sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         # When num_threads == 0, leave ORT to auto-detect (uses all
         # cores — same default as CLAP's CLAP_PYTHON_MULTITHREADS=False
-        # path). When > 0, pin to that exact value.
+        # path). When > 0, pin to that exact value. Thread caps still
+        # matter on CUDA because mel/STFT preprocessing and the Python-
+        # side embedding lookup all run on CPU.
         if int(num_threads) > 0:
             sess_opts.intra_op_num_threads = int(num_threads)
         sess_opts.inter_op_num_threads = 1
         sess_opts.log_severity_level = 3
-        # Disable the ONNX runtime's CPU arena + shape-derived memory
-        # pattern. With multiple concurrent workers the arena was
-        # creeping idle RSS upward over time and compounding with the
-        # lower per-worker RAM gate — eventually pushing the node into
-        # swap. Per-call allocation is slightly slower but the memory
-        # ceiling is predictable, which matters more than peak speed
-        # when the alternative is the whole server going unresponsive.
-        sess_opts.enable_cpu_mem_arena = False
-        sess_opts.enable_mem_pattern = False
+        # Keep ORT's default CPU arena + memory-pattern caching ON. The
+        # earlier ``Qwen crashes the node'' incident that prompted
+        # disabling these was almost certainly thread oversubscription
+        # (cpu_count // 2 × multiple workers), not arena growth — RSS
+        # plateaus rather than runs away on single-worker deployments.
+        # Re-enabled to recover a small (~5-10%) per-call speedup in the
+        # decoder hot loop. If RSS creep ever becomes a real problem,
+        # toggle these back to False via a code change — but the load-
+        # time RAM gate is the real protection against memory pressure.
 
         # Belt-and-suspenders: also pin BLAS / OpenMP thread pools that some
         # numpy/librosa code paths use during mel/STFT preprocessing — but
@@ -430,9 +447,20 @@ class _OnnxAsrPipeline:
                             'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
                 os.environ.setdefault(env_key, str(int(num_threads)))
 
-        # Prefer INT8 quantized decoders when available — same accuracy, much
-        # less RAM during decode.
-        if (models_dir / "decoder_init.int8.onnx").exists():
+        # Decoder build selection:
+        # - CPU: prefer INT8 quantized decoders when available — same
+        #   accuracy, much less RAM during decode.
+        # - CUDA: prefer FP32. The CUDA EP rarely accelerates QDQ INT8
+        #   ops; unsupported ops fall back per-node to CPU, forcing
+        #   tensors to shuttle between devices every step and wiping out
+        #   the GPU win. FP32 keeps the whole decoder on-device.
+        fp32_available = (models_dir / "decoder_init.onnx").exists()
+        int8_available = (models_dir / "decoder_init.int8.onnx").exists()
+        if use_cuda and fp32_available:
+            decoder_init = "decoder_init.onnx"
+            decoder_step = "decoder_step.onnx"
+            decoder_kind = "FP32"
+        elif int8_available:
             decoder_init = "decoder_init.int8.onnx"
             decoder_step = "decoder_step.int8.onnx"
             decoder_kind = "INT8"
@@ -447,23 +475,59 @@ class _OnnxAsrPipeline:
         )
         logger.info(
             "Qwen3-ASR: loading ONNX sessions from %s "
-            "(decoder=%s, intra_op_threads=%s, inter_op_threads=1, mode=SEQUENTIAL)",
-            models_dir, decoder_kind, intra_op_label,
+            "(decoder=%s, ep=%s, intra_op_threads=%s, inter_op_threads=1, mode=SEQUENTIAL)",
+            models_dir, decoder_kind, provider_opts[0][0], intra_op_label,
         )
 
-        # Load all four sessions with the same SessionOptions.
-        self.encoder_conv = ort.InferenceSession(
-            str(models_dir / "encoder_conv.onnx"), sess_opts,
-            providers=["CPUExecutionProvider"])
-        self.encoder_transformer = ort.InferenceSession(
-            str(models_dir / "encoder_transformer.onnx"), sess_opts,
-            providers=["CPUExecutionProvider"])
-        self.decoder_init = ort.InferenceSession(
-            str(models_dir / decoder_init), sess_opts,
-            providers=["CPUExecutionProvider"])
-        self.decoder_step = ort.InferenceSession(
-            str(models_dir / decoder_step), sess_opts,
-            providers=["CPUExecutionProvider"])
+        # Load all four sessions with the same SessionOptions. KV-cache
+        # numpy buffers flow between decoder_init and decoder_step, so all
+        # four must live on the same EP — a mixed CUDA/CPU split would
+        # shuttle the cache between devices every token. If CUDA is the
+        # preferred EP but session construction fails (broken driver,
+        # missing op, VRAM pressure at load time), drop all four back to
+        # CPU together.
+        def _make_session(rel_path: str, providers, prov_opts):
+            return ort.InferenceSession(
+                str(models_dir / rel_path), sess_opts,
+                providers=providers, provider_options=prov_opts,
+            )
+
+        providers = [p[0] for p in provider_opts]
+        provider_options = [p[1] for p in provider_opts]
+        try:
+            self.encoder_conv = _make_session("encoder_conv.onnx", providers, provider_options)
+            self.encoder_transformer = _make_session("encoder_transformer.onnx", providers, provider_options)
+            self.decoder_init = _make_session(decoder_init, providers, provider_options)
+            self.decoder_step = _make_session(decoder_step, providers, provider_options)
+        except Exception as exc:
+            if not use_cuda:
+                raise
+            logger.warning(
+                "Qwen3-ASR: CUDA session load failed (%s) — retrying on CPU", exc,
+            )
+            use_cuda = False
+            # CPU-only fallback also re-enables the arena/mem-pattern
+            # guards we skipped above (we're back in the regime where
+            # they matter).
+            sess_opts.enable_cpu_mem_arena = False
+            sess_opts.enable_mem_pattern = False
+            # Re-pick decoder build for the CPU regime: prefer INT8 if
+            # it's on disk.
+            if int8_available:
+                decoder_init = "decoder_init.int8.onnx"
+                decoder_step = "decoder_step.int8.onnx"
+                decoder_kind = "INT8"
+            providers = ['CPUExecutionProvider']
+            provider_options = [{}]
+            logger.info("Qwen3-ASR: CPU fallback (decoder=%s)", decoder_kind)
+            self.encoder_conv = _make_session("encoder_conv.onnx", providers, provider_options)
+            self.encoder_transformer = _make_session("encoder_transformer.onnx", providers, provider_options)
+            self.decoder_init = _make_session(decoder_init, providers, provider_options)
+            self.decoder_step = _make_session(decoder_step, providers, provider_options)
+
+        # Track final EP so unload() knows whether to force a CUDA cache
+        # reset when releasing the pipeline.
+        self._use_cuda = use_cuda
 
         embed_path = models_dir / "embed_tokens.bin"
         logger.info("Qwen3-ASR: memory-mapping embedding matrix (%.0f MB)",
@@ -841,6 +905,9 @@ def unload() -> bool:
     pipeline = _pipeline
     if pipeline is None and _pipeline_dir is None:
         return False
+    # Capture EP before detaching — if Qwen ran on CUDA we need to force a
+    # CUDA cache reset to actually free the VRAM.
+    used_cuda = bool(getattr(pipeline, '_use_cuda', False))
     # Detach from module-level singletons first so concurrent callers can't
     # reuse a half-torn-down pipeline if cleanup raises mid-way.
     _pipeline = None
@@ -864,7 +931,7 @@ def unload() -> bool:
             logger.exception("Error during Qwen3-ASR pipeline GC")
         try:
             from tasks.memory_utils import comprehensive_memory_cleanup
-            comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
+            comprehensive_memory_cleanup(force_cuda=used_cuda, reset_onnx_pool=True)
         except Exception:
             logger.exception("Error during ONNX memory pool reset on Qwen3-ASR unload")
     logger.info("Qwen3-ASR: pipeline unloaded (~3 GB freed)")

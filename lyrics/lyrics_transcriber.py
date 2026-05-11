@@ -62,11 +62,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_SAMPLE_RATE = 16000
-# Max audio length fed to the ASR. Most lyrical content lives in the first
-# 3 minutes — outros / instrumental bridges past that rarely add coherent
-# new lyric content but cost real decode time. Tunable via env so chunk
-# durations can be raised (e.g. live recordings, podcasts) when needed.
-MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '180'))
+# Max audio length fed to the ASR. 4 minutes covers most songs end-to-end;
+# longer tracks get clipped here so a single outlier doesn't dominate
+# decode time. Tunable via env when needed (e.g. live recordings).
+MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '240'))
 
 # Minimum CHARACTERS (not words) a transcript must have for the embedding
 # step to run. Char-based so CJK / Thai / Lao lyrics — which have no
