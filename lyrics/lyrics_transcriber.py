@@ -792,6 +792,16 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     used_seconds = 0.0
     raw_text = ''
     detected_lang = 'en'
+    # Qwen-only signals. These are overwritten inside the STEP 2 block
+    # when ASR actually runs. For STEP -1 / STEP 0 paths (media server,
+    # external lyrics API) the text is upstream-trusted and the Qwen
+    # confidence gates in STEP 3 must be no-ops — these defaults make
+    # that happen without a separate origin flag:
+    #   - asr_lang='en' → not in null-langs (skips Gate 3 drop) and
+    #     marked English (skips Gate 2 non-English strict floor)
+    #   - asr_avg_logprob=0.0 → above any confidence floor (skips Gate 1)
+    asr_lang = 'en'
+    asr_avg_logprob = 0.0
 
     # ---- STEP -1: media server embedded lyrics ----
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
