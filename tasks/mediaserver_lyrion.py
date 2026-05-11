@@ -26,19 +26,38 @@ def _decode_lyrion_url(url):
 
 
 _LYRION_REMOTE_SERVICES = ('spotify', 'qobuz', 'tidal', 'wimp', 'youtube', 'deezer')
-_LYRION_REMOTE_URL_PREFIXES = tuple(f'{name}:' for name in _LYRION_REMOTE_SERVICES)
 
 
 def _lyrion_is_remote(item):
-    """Detect remote/stream-only tracks in Lyrion sample data
-    (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer)."""
+    """Detect remote/stream-only tracks in Lyrion data.
+
+    Catches Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer (and similar
+    streaming services). Uses a substring match across every field a
+    Lyrion plugin might tag a track with — `url` / `path` / `Path`
+    (custom-protocol URLs like ``spotify:track:...`` or HTTPS API URLs
+    like ``https://api.spotify.com/...``) plus the metadata fields
+    ``genre`` / ``type`` / ``service`` / ``source`` (case-insensitive).
+    """
     if not isinstance(item, dict):
         return False
-    url = item.get('url') or item.get('path') or ''
-    if isinstance(url, str) and url.startswith(_LYRION_REMOTE_URL_PREFIXES):
-        return True
-    genre = item.get('genre') or item.get('type') or ''
-    return isinstance(genre, str) and genre.lower() in _LYRION_REMOTE_SERVICES
+    # URL / path: catches both ``spotify:track:...`` style scheme URIs and
+    # ``https://api.spotify.com/...`` HTTPS URLs that some plugins emit.
+    for key in ('url', 'path', 'Path'):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            lower = val.lower()
+            for svc in _LYRION_REMOTE_SERVICES:
+                if svc in lower:
+                    return True
+    # Plain metadata tags some plugins set instead of a scheme URI.
+    for key in ('genre', 'type', 'service', 'source'):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            lower = val.lower()
+            for svc in _LYRION_REMOTE_SERVICES:
+                if svc in lower:
+                    return True
+    return False
 
 
 def _lyrion_track(item):
@@ -1188,42 +1207,33 @@ def get_tracks_from_album(album_id, user_creds=None):
         logger.warning(f"Lyrion API response for tracks of album {album_id} did not contain any song entries.")
         return []
 
-    # Robust Spotify detection: check several possible fields and make it case-insensitive.
-    def is_spotify_track(item: dict) -> bool:
-        for key in ("genre", "service", "source"):
-            val = item.get(key)
-            if isinstance(val, str) and "spotify" in val.lower():
-                return True
-        # Also check the URL/path for spotify links
-        url = (item.get("url") or item.get("Path") or item.get("path") or "")
-        if isinstance(url, str) and "spotify" in url.lower():
-            return True
-        return False
-
+    # Filter remote/streaming-service tracks (Spotify, Qobuz, Tidal, Wimp,
+    # YouTube, Deezer, ...) — same detector used by the bootstrap sample
+    # scanner so behavior stays consistent across the codebase.
     local_songs = []
     skipped_tracks = []
     for s in songs:
-        if is_spotify_track(s):
+        if _lyrion_is_remote(s):
             skipped_tracks.append(s)
         else:
             local_songs.append(s)
 
     if skipped_tracks:
         skipped_count = len(skipped_tracks)
-        logger.info(f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from Spotify or are non-downloadable.")
+        logger.info(f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from a remote streaming service (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or are non-downloadable.")
         # Log concise identifying information for each skipped track so operators can verify.
         for st in skipped_tracks:
             sk_id = st.get('id') or st.get('Id') or st.get('track_id')
             sk_title = st.get('title') or st.get('name') or st.get('Name')
             # Use track artist prioritization for logging too
-            sk_artist = (st.get('trackartist') or st.get('contributor') or 
-                        st.get('artist') or st.get('albumartist') or 
+            sk_artist = (st.get('trackartist') or st.get('contributor') or
+                        st.get('artist') or st.get('albumartist') or
                         st.get('band') or 'Unknown Artist')
             sk_url = st.get('url') or st.get('Path') or st.get('path')
             logger.info(f"Skipped track - id: {sk_id!r}, title: {sk_title!r}, artist: {sk_artist!r}, url/path: {sk_url!r}")
 
     if not local_songs and songs:
-        logger.info(f"Album {album_id} contains only Spotify or non-downloadable tracks and will be skipped.")
+        logger.info(f"Album {album_id} contains only remote streaming-service tracks (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or non-downloadable tracks and will be skipped.")
 
     # Map Lyrion API keys to our standard format with safe fallbacks.
     mapped = []

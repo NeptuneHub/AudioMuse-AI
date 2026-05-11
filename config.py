@@ -319,8 +319,7 @@ EMBEDDING_DIMENSION = 200
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
-LYRICS_LLM_ENABLED = os.environ.get("LYRICS_LLM_ENABLED", "false").lower() == "true"
-# When true, look up lyrics from user-configured external APIs before falling back to Whisper.
+# When true, look up lyrics from user-configured external APIs before falling back to Qwen3-ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
@@ -344,20 +343,14 @@ LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyric
 LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
 LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
 LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
-# Run Whisper + Qwen on CUDA when available. "auto" probes torch.cuda.is_available()
-# at load time; "true" forces GPU; "false" forces CPU. Note: GPU Qwen also requires
-# a CUDA-enabled llama-cpp-python wheel (default PyPI wheel is CPU only).
-LYRICS_USE_GPU = os.environ.get("LYRICS_USE_GPU", "auto").lower()
 # Directory containing the Qwen3-ASR-0.6B ONNX CPU build (encoder/decoder
 # ONNX files inside onnx_models/ + embed_tokens.bin + tokenizer.json at the
-# root). Pre-bundled in the official Docker image; download manually with:
-#   huggingface-cli download Daumee/Qwen3-ASR-0.6B-ONNX-CPU \
-#       --local-dir /app/model/Qwen3-ASR-0.6B-ONNX-CPU
+# root). Pre-bundled in the official Docker image from the project release
+# tarball lyrics_model_qwen3_asr.tar.gz.
 LYRICS_QWEN_ASR_MODEL_DIR = os.environ.get(
     "LYRICS_QWEN_ASR_MODEL_DIR",
     os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "Qwen3-ASR-0.6B-ONNX-CPU"),
 )
-LYRICS_LLM_MODEL_PATH = os.environ.get("LYRICS_LLM_MODEL_PATH", "/app/model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Writable directory for on-demand Marian translator downloads. Kept separate
 # from the bundled HF cache so stale locks / restrictive perms there cannot
@@ -367,8 +360,6 @@ LYRICS_MARIAN_CACHE_DIR = os.environ.get(
     "LYRICS_MARIAN_CACHE_DIR",
     os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
 )
-LYRICS_LLM_MODEL_FILENAME = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
-LYRICS_LLM_MODEL_URL = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf'
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
@@ -381,13 +372,27 @@ VAD_VOICE_RECOGNITION = int(os.environ.get("VAD_VOICE_RECOGNITION", "25"))
 
 LYRICS_DEFAULT_SAMPLE_RATE = 16000
 LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
-LYRICS_DEFAULT_ROBERTA_MIN_WORDS = 50
 LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
 LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2')
 LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
 # Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
 # and used to build the lyrics voyager index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
+
+# Minimum number of CHARACTERS (not words) a transcript must have for the
+# lyrics pipeline to compute an embedding. Below this, the song is treated
+# as having no usable lyrics and gets the instrumental sentinel. Char-based
+# instead of word-based so CJK / Thai / Lao scripts — which have no spaces
+# between words — aren't all collapsed to "1 word" by str.split() and
+# spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
+# or ~150 CJK chars (roughly equivalent lyrical content).
+LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
+# Maximum chars per chunk fed to the Marian translator. Stays well below
+# the model's 512-token context window even after tokenizer expansion on
+# rare scripts. The translator splitter applies this as a hard cap when
+# line-break and sentence-punctuation splits have both failed to produce
+# a small-enough fragment (the layer-3 safety net for spaceless scripts).
+LYRICS_TRANSLATOR_CHUNK_CHARS = int(os.environ.get("LYRICS_TRANSLATOR_CHUNK_CHARS", "200"))
 
 # --- SemGrove (Semantic + Groove) merged index weights ---
 # Controls how much each signal contributes to the merged cosine similarity.
@@ -476,33 +481,6 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Duration (in seconds) to keep CLAP model loaded for text search after last use
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
-
-# --- MuLan (MuQ) Model Constants (for text search with ONNX Runtime) ---
-MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "false").lower() == "true"
-# MuLan ONNX model directory and file paths
-MULAN_MODEL_DIR = os.environ.get("MULAN_MODEL_DIR", "/app/model/mulan")
-AUDIO_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_audio_encoder.onnx")
-TEXT_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_text_encoder.onnx")
-TOKENIZER_PATH = os.path.join(MULAN_MODEL_DIR, "tokenizer.json")
-# Note: .onnx.data files (external weights) are auto-loaded by ONNX Runtime from same directory
-MULAN_EMBEDDING_DIMENSION = int(os.environ.get("MULAN_EMBEDDING_DIMENSION", "512"))
-
-# Category weights for MuLan query generation (affects random query sampling probabilities)
-MULAN_CATEGORY_WEIGHTS_DEFAULT = {
-    "Genre_Style": 1.0,
-    "Instrumentation_Vocal": 1.0,
-    "Emotion_Mood": 1.0,
-    "Voice_Type": 1.0
-}
-MULAN_CATEGORY_WEIGHTS = json.loads(
-    os.environ.get("MULAN_CATEGORY_WEIGHTS", json.dumps(MULAN_CATEGORY_WEIGHTS_DEFAULT))
-)
-
-# Number of random queries to generate for top query recommendations
-MULAN_TOP_QUERIES_COUNT = int(os.environ.get("MULAN_TOP_QUERIES_COUNT", "1000"))
-
-# Duration (in seconds) to keep MuLan models loaded for text search after last use
-MULAN_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("MULAN_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB

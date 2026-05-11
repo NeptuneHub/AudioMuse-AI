@@ -10,8 +10,7 @@ Pipeline (each step emits a ``STEP X start`` and ``STEP X end`` log line):
     STEP 2  Qwen3-ASR transcription (ONNX CPU)
     STEP 3  language detection
     STEP 4  optional translation to English (MarianMT)
-    STEP 5  qwen cleanup over 50-word chunks
-    STEP 6  e5 embedding + axis scoring
+    STEP 5  e5 embedding + axis scoring
 """
 
 from __future__ import annotations
@@ -19,9 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import signal
-import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -46,26 +43,15 @@ except ImportError:  # pragma: no cover
     librosa = None
 
 try:
-    from llama_cpp import Llama
-except ImportError:  # pragma: no cover
-    Llama = None
-
-try:
-    from transformers import AutoModel, AutoModelForSeq2SeqLM, AutoTokenizer
-except ImportError:  # pragma: no cover
-    AutoModel = None
-    AutoModelForSeq2SeqLM = None
-    AutoTokenizer = None
-
-try:
     import torch
 except Exception:  # pragma: no cover - CUDA-build torch can raise OSError on dlopen
     torch = None
 
 try:
-    from silero_vad import load_silero_vad, get_speech_timestamps
-except Exception:  # pragma: no cover - silero pulls torchaudio which can fail to dlopen libcudart
-    load_silero_vad = None
+    # Torch-free silero VAD via raw onnxruntime; replaces the silero-vad
+    # PyPI package (which transitively pulls torch + torchaudio).
+    from .silero_onnx import get_speech_timestamps
+except Exception:  # pragma: no cover - onnxruntime missing or model not yet downloaded
     get_speech_timestamps = None
 
 logger = logging.getLogger(__name__)
@@ -76,10 +62,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_SAMPLE_RATE = 16000
-MAX_AUDIO_SECONDS = 240.0          # never feed the ASR more than 4 minutes
-MAX_WORDS_PER_CHUNK = 50           # llm cleanup chunk size
-MIN_WORDS_FOR_CLEANUP = 50         # below this, skip cleanup (matches stand-alone behavior)
-MIN_WORDS_FOR_EMBEDDING = 50       # below this, treat song as having no usable lyrics
+# Max audio length fed to the ASR. Most lyrical content lives in the first
+# 3 minutes — outros / instrumental bridges past that rarely add coherent
+# new lyric content but cost real decode time. Tunable via env so chunk
+# durations can be raised (e.g. live recordings, podcasts) when needed.
+MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '180'))
+
+# Minimum CHARACTERS (not words) a transcript must have for the embedding
+# step to run. Char-based so CJK / Thai / Lao lyrics — which have no
+# whitespace between words — aren't all collapsed to "1 word" by
+# str.split() and silently dropped as instrumental. Resolved through
+# config.py so deployments can tune it via the LYRICS_MIN_CHARS_FOR_EMBEDDING
+# env var.
+try:
+    from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as _CFG_MIN_CHARS
+    MIN_CHARS_FOR_EMBEDDING = int(_CFG_MIN_CHARS)
+except Exception:
+    MIN_CHARS_FOR_EMBEDDING = int(os.environ.get('LYRICS_MIN_CHARS_FOR_EMBEDDING', '250'))
 
 MUSIC_ANALYSIS_AXES = {
     "AXIS_1_SETTING": {
@@ -142,7 +141,7 @@ MUSIC_ANALYSIS_AXES = {
 # ---------------------------------------------------------------------------
 
 def get_lyrics_threads() -> int:
-    """Number of CPU threads for Qwen3-ASR / MarianMT / Qwen-LLM inside this process.
+    """Number of CPU threads for Qwen3-ASR / MarianMT inside this process.
 
     Uses ``os.cpu_count() // 2`` with a floor of two.
     """
@@ -165,14 +164,11 @@ def _apply_thread_env(num_threads: int) -> None:
 # Cached model loaders
 # ---------------------------------------------------------------------------
 
-_llama_model = None
-_llama_model_path: Optional[str] = None
 _embedding_tokenizer = None
 _embedding_model = None
 _embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
-_marian_cache: Dict[str, Tuple[object, object]] = {}
 # Serialize model loads so concurrent callers (e.g. axis warm-up + a user
 # search request hitting the API at the same time) cannot observe a
 # half-initialized BERT model whose parameters are still on the ``meta``
@@ -193,97 +189,26 @@ def load_asr_model(num_threads: Optional[int] = None):
     return _load(num_threads=threads)
 
 
-def load_llama_model(model_path: Optional[str] = None,
-                     num_threads: Optional[int] = None):
-    global _llama_model, _llama_model_path
-    if Llama is None:
-        raise RuntimeError('llama-cpp-python is not installed.')
-
-    if model_path is None:
-        try:
-            from config import LYRICS_LLM_MODEL_PATH
-            model_path = LYRICS_LLM_MODEL_PATH
-        except Exception as exc:
-            raise RuntimeError('LYRICS_LLM_MODEL_PATH is not configured.') from exc
-
-    if not os.path.exists(model_path):
-        raise RuntimeError(f'LLaMA model file not found: {model_path}')
-
-    threads = num_threads or get_lyrics_threads()
-    _apply_thread_env(threads)
-
-    if _llama_model is not None and _llama_model_path == model_path:
-        return _llama_model
-
-    # Qwen / llama-cpp is intentionally pinned to CPU to avoid regressions on
-    # images that ship the default CPU-only llama-cpp-python wheel.
-    logger.info('Loading LLaMA model %s (threads=%s, n_gpu_layers=0)',
-                model_path, threads)
-    _llama_model = Llama(model_path=model_path, n_threads=threads,
-                         n_gpu_layers=0, verbose=False)
-    _llama_model_path = model_path
-    logger.info('LLaMA model ready')
-    return _llama_model
-
-
 def load_topic_embedding_model(model_name: Optional[str] = None):
-    """Load the e5 embedding tokenizer + model from the local container cache."""
+    """Load the e5 embedding tokenizer + ONNX session.
+
+    Returns ``(tokenizer, ort_session)`` — same return shape as the previous
+    PyTorch-backed loader, so callers that destructure
+    ``tokenizer, model = load_topic_embedding_model()`` keep working. The
+    second element is now an ``onnxruntime.InferenceSession`` consumed by
+    ``_embed_text`` below.
+
+    The actual loading is delegated to :mod:`lyrics.e5_onnx`, which holds
+    its own thread-safe singleton; the local globals here are kept only as
+    defensive re-caches for callers that inspect the module state directly.
+    """
     global _embedding_tokenizer, _embedding_model, _embedding_model_name
-    if AutoTokenizer is None or AutoModel is None:
-        raise RuntimeError('transformers is required for embeddings.')
-
-    if model_name is None:
-        try:
-            from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL
-            model_name = LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL
-        except Exception:
-            model_name = 'intfloat/e5-base-v2'
-
-    # Fast path: already loaded.
-    if (_embedding_tokenizer is not None
-            and _embedding_model is not None
-            and _embedding_model_name == model_name):
-        return _embedding_tokenizer, _embedding_model
-
-    with _embedding_load_lock:
-        # Re-check after acquiring the lock: another thread may have finished
-        # the load while we were waiting.
-        if (_embedding_tokenizer is not None
-                and _embedding_model is not None
-                and _embedding_model_name == model_name):
-            return _embedding_tokenizer, _embedding_model
-
-        try:
-            from config import LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
-            cache_dir = LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR
-        except Exception:
-            cache_dir = '/app/model/e5-base-v2'
-
-        target = cache_dir if os.path.isdir(cache_dir) else model_name
-        logger.info('Loading embedding model %s (offline)', target)
-        # e5 is bundled inside /app/model/e5-base-v2; force offline so a
-        # misconfigured network can never trigger a download for this required model.
-        # ``low_cpu_mem_usage=False`` disables ``accelerate``'s meta-device
-        # lazy init that previously caused ``Tensor on device cpu is not on
-        # the expected device meta!`` errors when the search endpoint was
-        # called before the model was fully materialized.
-        tokenizer = AutoTokenizer.from_pretrained(str(target), local_files_only=True)
-        model = AutoModel.from_pretrained(
-            str(target), local_files_only=True, low_cpu_mem_usage=False)
-        # Defensive: explicitly move to CPU and eval mode. ``to('cpu')`` is a
-        # no-op when weights are already there, but it materializes any
-        # parameter still on ``meta`` (older transformers fallback).
-        try:
-            if torch is not None:
-                model = model.to('cpu')
-            model.eval()
-        except Exception as exc:
-            logger.warning('Could not finalize embedding model state: %s', exc)
-        _embedding_tokenizer = tokenizer
-        _embedding_model = model
-        _embedding_model_name = model_name
-        logger.info('Embedding model ready')
-        return _embedding_tokenizer, _embedding_model
+    from .e5_onnx import load_e5_model
+    tokenizer, session = load_e5_model()
+    _embedding_tokenizer = tokenizer
+    _embedding_model = session
+    _embedding_model_name = model_name or 'intfloat/e5-base-v2'
+    return tokenizer, session
 
 
 def _get_axis_embeddings():
@@ -371,25 +296,6 @@ def _clip_audio(audio: np.ndarray, sr: int,
 # ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
-
-def _normalize_text(text: str) -> str:
-    cleaned = text.strip()
-    cleaned = re.sub(r'\s+([?.!,;:])', r'\1', cleaned)
-    cleaned = re.sub(r'\s*\n\s*', '\n', cleaned)
-    cleaned = re.sub(r'(^|[.!?]\s+)(i)\b', lambda m: m.group(1) + 'I', cleaned)
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
-    return cleaned
-
-
-def _split_into_word_chunks(text: str, max_words: int = MAX_WORDS_PER_CHUNK) -> List[str]:
-    text = text.strip()
-    if not text:
-        return []
-    words = text.split()
-    if len(words) <= max_words:
-        return [text]
-    return [' '.join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
-
 
 # ---------------------------------------------------------------------------
 # External lyrics APIs (LRCLIB, Vagalume)
@@ -655,63 +561,28 @@ def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
                 logger.warning('Lyrics API slot %s returned content but sanitizer dropped it for %r/%r',
                                slot, artist, track)
                 continue
-            logger.info('Lyrics API slot %s returned %s words for %r/%r',
-                        slot, len(sanitized.split()), artist, track)
+            logger.info('Lyrics API slot %s returned %s chars for %r/%r',
+                        slot, len(sanitized), artist, track)
             return sanitized
     return None
 
 
 # ---------------------------------------------------------------------------
-# Voice activity detection (silero) — keep only voiced regions before ASR
+# Voice activity detection (silero, ONNX) — keep only voiced regions before ASR
 # ---------------------------------------------------------------------------
-
-_vad_model = None
-_VAD_CACHE_DIR = os.path.join(tempfile.gettempdir(), 'audiomuse-vad-cache')
-
-
-def _get_vad_model():
-    global _vad_model
-    if _vad_model is None and load_silero_vad is not None:
-        # Ensure our private /tmp cache dir exists
-        try:
-            os.makedirs(_VAD_CACHE_DIR, exist_ok=True)
-        except Exception as exc:
-            logger.warning('VAD: could not create cache dir %s: %s', _VAD_CACHE_DIR, exc)
-        # Disable XetHub CDN (same fix as Marian translator) before any download
-        os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
-        os.environ.setdefault('HF_XET_DISABLE', '1')
-        # Point torch.hub to our writable /tmp dir
-        _prev_hub_dir = torch.hub.get_dir() if torch is not None else None
-        if torch is not None:
-            torch.hub.set_dir(_VAD_CACHE_DIR)
-        logger.info('VAD: loading silero from %s', _VAD_CACHE_DIR)
-        try:
-            _vad_model = load_silero_vad()
-        except Exception as exc:
-            logger.warning('VAD model load failed (%s); cleaning up %s', exc, _VAD_CACHE_DIR)
-            try:
-                shutil.rmtree(_VAD_CACHE_DIR, ignore_errors=True)  # shutil imported at module level
-                logger.info('VAD: deleted stale cache dir %s', _VAD_CACHE_DIR)
-            except Exception as cleanup_exc:
-                logger.warning('VAD cache cleanup failed: %s', cleanup_exc)
-            logger.warning('VAD disabled for this process — cache cleaned, will retry on next worker start')
-        finally:
-            # Restore the original torch.hub dir
-            if torch is not None and _prev_hub_dir is not None:
-                torch.hub.set_dir(_prev_hub_dir)
-    return _vad_model
 
 
 def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
-    """Return a concatenation of voiced regions; fall back to ``audio`` on any issue."""
-    if sr != 16000 or torch is None or get_speech_timestamps is None:
-        return audio
-    model = _get_vad_model()
-    if model is None:
+    """Return a concatenation of voiced regions; fall back to ``audio`` on any issue.
+
+    Uses the torch-free silero ONNX shim in ``lyrics.silero_onnx``. The
+    ONNX session is loaded lazily on first call and cached in that module.
+    """
+    if sr != 16000 or get_speech_timestamps is None:
         return audio
     try:
-        tensor = torch.from_numpy(audio.astype(np.float32))
-        ts = get_speech_timestamps(tensor, model, sampling_rate=sr, threshold=0.3)
+        # silero_onnx accepts the raw numpy array directly — no torch tensor wrap.
+        ts = get_speech_timestamps(audio, sample_rate=sr, threshold=0.3)
     except Exception as exc:
         logger.warning('VAD failed: %s; using raw audio', exc)
         return audio
@@ -750,187 +621,25 @@ def _transcribe(audio: np.ndarray, sr: int,
 # Language detection + translation
 # ---------------------------------------------------------------------------
 
-_MARIAN_CACHE_DIR: Optional[str] = None
-
-
-def _get_marian_cache_dir() -> str:
-    """Return a process-private writable directory for Marian downloads.
-
-    We deliberately do NOT use the shared ``HF_HOME`` cache (where the bundled
-    e5 / RoBERTa / MuLan / BERT / BART models live read-only) so a stale lock
-    file or restrictive perms there cannot block the translator. The path is
-    configured via ``LYRICS_MARIAN_CACHE_DIR`` (config.py / env var).
-    """
-    global _MARIAN_CACHE_DIR
-    if _MARIAN_CACHE_DIR is not None:
-        return _MARIAN_CACHE_DIR
-    try:
-        from config import LYRICS_MARIAN_CACHE_DIR
-        base = LYRICS_MARIAN_CACHE_DIR
-    except Exception:
-        base = os.environ.get('LYRICS_MARIAN_CACHE_DIR') \
-            or os.path.join(tempfile.gettempdir(), 'audiomuse-marian-cache')
-    try:
-        os.makedirs(base, exist_ok=True)
-    except Exception as exc:
-        logger.warning('Could not create Marian cache dir %s: %s', base, exc)
-        base = tempfile.mkdtemp(prefix='audiomuse-marian-')
-    _MARIAN_CACHE_DIR = base
-    # Redirect HF Xet client logs to a writable subdir of the same cache.
-    # Default ($HF_HOME/xet/logs == /app/.cache/huggingface/xet/logs) is
-    # read-only in our container and triggers "Permission denied" errors.
-    xet_log_dir = os.path.join(_MARIAN_CACHE_DIR, 'xet-logs')
-    try:
-        os.makedirs(xet_log_dir, exist_ok=True)
-        os.environ.setdefault('HF_XET_LOG_DIR', xet_log_dir)
-    except Exception as exc:
-        logger.warning('Could not create xet log dir %s: %s', xet_log_dir, exc)
-    # The Hugging Face Hub xet client (Rust) has been observed to fail with
-    # `HTTP 416 Range Not Satisfiable` against cas-server.xethub.hf.co when
-    # downloading Marian translation models, and to crash with `Permission
-    # denied` while writing logs to a read-only $HF_HOME/xet/logs. Disable the
-    # xet transport so transformers falls back to plain HTTPS downloads.
-    os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
-    os.environ.setdefault('HF_XET_DISABLE', '1')
-    logger.info('Marian translator cache dir: %s', _MARIAN_CACHE_DIR)
-    return _MARIAN_CACHE_DIR
-
-
-def _get_marian(source_lang: str):
-    source_lang = source_lang.lower()
-    if source_lang == 'en':
-        return None, None
-    if AutoModelForSeq2SeqLM is None or AutoTokenizer is None:
-        return None, None
-    cached = _marian_cache.get(source_lang)
-    if cached is not None:
-        return cached
-
-    try:
-        from config import LYRICS_DEFAULT_MARIAN_PREFIX
-    except Exception:
-        LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
-
-    model_name = LYRICS_DEFAULT_MARIAN_PREFIX.format(source_lang)
-
-    # Marian language pairs are downloaded on demand the first time a new source
-    # language is seen. They land in a process-private temp dir so they cannot
-    # collide with the read-only bundled HF cache. The bundled models (e5,
-    # RoBERTa, MuLan, ...) use explicit local_files_only=True elsewhere so they
-    # cannot accidentally hit the network.
-    cache_dir = _get_marian_cache_dir()
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_name, cache_dir=cache_dir)
-    except Exception as exc:
-        logger.warning('Could not load Marian model %s: %s; cleaning up cache dir %s', model_name, exc, cache_dir)
-        try:
-            shutil.rmtree(cache_dir, ignore_errors=True)
-            logger.info('Marian: deleted stale cache dir %s', cache_dir)
-        except Exception as cleanup_exc:
-            logger.warning('Marian cache cleanup failed: %s', cleanup_exc)
-        return None, None
-    _marian_cache[source_lang] = (tokenizer, model)
-    return tokenizer, model
-
-
 def _translate_to_english(text: str, source_lang: str) -> str:
-    """Translate ``text`` to English. Return ``''`` on any failure.
+    """Translate ``text`` to English using the multilingual ONNX translator.
 
-    We never fall back to the original (non-English) text: downstream we
-    embed with an English-tuned model and score English axis descriptions,
-    so leaking a foreign-language transcription would poison the vector
-    space. An empty string makes the caller treat the track as having no
-    usable lyrics, which then triggers the instrumental sentinel fallback.
+    Returns ``''`` on any failure. We never fall back to the original
+    (non-English) text: downstream we embed with an English-tuned model
+    and score English axis descriptions, so leaking a foreign-language
+    transcription would poison the vector space. An empty string makes
+    the caller treat the track as having no usable lyrics, which then
+    triggers the instrumental sentinel fallback.
+
+    Backed by a single ``Helsinki-NLP/opus-mt-mul-en`` ONNX bundle (loaded
+    once per worker via :mod:`lyrics.translation_onnx`) instead of a
+    per-language ``opus-mt-{src}-en`` model, so worker memory no longer
+    grows linearly with the number of source languages encountered.
     """
     if not text or source_lang.lower() == 'en':
         return text
-    try:
-        tokenizer, model = _get_marian(source_lang)
-    except Exception as exc:
-        logger.warning('Marian load failed for %s: %s; dropping lyrics',
-                       source_lang, exc)
-        return ''
-    if tokenizer is None or model is None:
-        logger.warning('No Marian model available for %s; dropping lyrics',
-                       source_lang)
-        return ''
-    pieces: List[str] = []
-    for chunk in _split_into_word_chunks(text):
-        try:
-            inputs = tokenizer(chunk, truncation=True, padding=True,
-                               return_tensors='pt', max_length=512)
-            outputs = model.generate(**inputs, max_length=512)
-            translated = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-            piece = translated[0].strip() if translated else ''
-            if not piece:
-                logger.warning('Marian returned empty translation for chunk; '
-                               'dropping lyrics')
-                return ''
-            pieces.append(piece)
-        except Exception as exc:
-            logger.warning('Marian translation chunk failed (%s); dropping lyrics',
-                           exc)
-            return ''
-    return ' '.join(pieces)
-
-
-# ---------------------------------------------------------------------------
-# Cleanup with Qwen
-# ---------------------------------------------------------------------------
-
-def _llama_clean_chunk(model, chunk: str, max_tokens: int, temperature: float) -> str:
-    prompt = (
-        "You are a song transcription cleanup assistant.\n"
-        "This text is an automatic speech recognition transcription output.\n"
-        "Your job is to fix only obvious transcription mistakes and minor formatting issues.\n"
-        "Do not invent new lyrics, do not add new content, and do not change the meaning.\n"
-        "Preserve the original phrasing and sentence structure unless an obvious error must be fixed.\n"
-        "Output only the cleaned lyrics text with no extra labels.\n\n"
-        "Raw transcription:\n"
-        f"{chunk}\n\n"
-        "Cleaned lyrics text:\n"
-    )
-    response = model.create_completion(
-        prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=0.75,
-        presence_penalty=0.5,
-        repeat_penalty=1.15,
-        echo=False,
-        stop=["\n\n", "\nOutput only", "\nDo not include any metadata"],
-    )
-    text_out = ''
-    if isinstance(response, dict):
-        choices = response.get('choices') or []
-        if choices:
-            text_out = choices[0].get('text', '')
-    return text_out or chunk
-
-
-def _clean_with_llama(text: str, model, max_tokens: int = 256,
-                      temperature: float = 0.2) -> str:
-    if not text or not text.strip():
-        return ''
-    chunks = _split_into_word_chunks(text)
-    cleaned: List[str] = []
-    for index, chunk in enumerate(chunks, start=1):
-        try:
-            text_out = _llama_clean_chunk(model, chunk, max_tokens, temperature)
-            cleaned.append(_normalize_text(text_out))
-            continue
-        except Exception as exc:
-            logger.warning('LLaMA cleanup chunk %s/%s failed: %s; retrying with smaller chunks',
-                           index, len(chunks), exc)
-        # Retry: split the failing chunk into 30-word sub-chunks with a tighter token cap.
-        for sub in _split_into_word_chunks(chunk, 30):
-            try:
-                cleaned.append(_normalize_text(_llama_clean_chunk(model, sub, 128, temperature)))
-            except Exception as exc2:
-                logger.warning('LLaMA cleanup retry failed: %s; using raw sub-chunk', exc2)
-                cleaned.append(_normalize_text(sub))
-    return '\n\n'.join(cleaned).strip()
+    from .translation_onnx import translate_to_english as _onnx_translate
+    return _onnx_translate(text, source_lang=source_lang)
 
 
 # ---------------------------------------------------------------------------
@@ -938,24 +647,15 @@ def _clean_with_llama(text: str, model, max_tokens: int = 256,
 # ---------------------------------------------------------------------------
 
 def _embed_text(text: str, tokenizer, model) -> Optional[np.ndarray]:
-    if torch is None:
-        raise RuntimeError('torch is required to compute embeddings.')
-    if not text or not text.strip():
-        return None
-    encoded = tokenizer(text, truncation=True, padding='max_length',
-                        max_length=128, return_tensors='pt')
-    with torch.no_grad():
-        outputs = model(**encoded)
-    last_hidden = outputs.last_hidden_state
-    mask = encoded['attention_mask'].unsqueeze(-1).expand(last_hidden.size()).float()
-    summed = (last_hidden * mask).sum(1)
-    counts = mask.sum(1).clamp(min=1e-9)
-    pooled = (summed / counts).squeeze(0)
-    vector = pooled.cpu().numpy()
-    norm = float(np.linalg.norm(vector))
-    if norm > 0:
-        vector = vector / norm
-    return vector
+    """Embed ``text`` with the e5 ONNX session.
+
+    Kept as a thin wrapper so call sites that still pass ``(tokenizer,
+    model)`` from :func:`load_topic_embedding_model` keep working. ``model``
+    is now an ``onnxruntime.InferenceSession``; the heavy lifting lives in
+    :func:`lyrics.e5_onnx.embed_text`.
+    """
+    from .e5_onnx import embed_text as _onnx_embed
+    return _onnx_embed(text, tokenizer=tokenizer, session=model)
 
 
 def _softmax(values: np.ndarray, temperature: float) -> np.ndarray:
@@ -979,6 +679,26 @@ def axis_columns() -> List[Tuple[str, str]]:
         for label in axis_meta.get('labels', {}).keys():
             columns.append((axis_name, label))
     return columns
+
+
+def _make_instrumental_sentinel() -> Tuple[np.ndarray, np.ndarray]:
+    """Build the deterministic instrumental ``(embedding, axis_vector)`` pair.
+
+    Both vectors are unit-length so cosine similarity is well-defined,
+    and both occupy regions of their respective spaces that real songs
+    cannot reach (e5 sentinel sits on a basis axis the model almost
+    never uses; axis sentinel is uniformly negative, which a softmax-
+    derived axis_vector can never produce). See ``LYRICS_INSTRUMENTAL_*``
+    in config.py for the full rationale.
+    """
+    from config import (
+        LYRICS_INSTRUMENTAL_EMBEDDING,
+        LYRICS_INSTRUMENTAL_AXIS_FILL,
+    )
+    embedding = np.array(LYRICS_INSTRUMENTAL_EMBEDDING, dtype=np.float32, copy=True)
+    axis_dim = len(axis_columns())
+    axis_vector = np.full(axis_dim, LYRICS_INSTRUMENTAL_AXIS_FILL, dtype=np.float32)
+    return embedding, axis_vector
 
 
 def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
@@ -1012,14 +732,15 @@ def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
 def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    sr: Optional[int] = None,
                    source_path: Optional[Union[str, Path]] = None,
-                   use_llm_cleanup: bool = True,
                    artist: Optional[str] = None,
                    track: Optional[str] = None,
-                   track_id: Optional[str] = None) -> Dict[str, object]:
+                   track_id: Optional[str] = None,
+                   top_moods: Optional[Dict[str, float]] = None) -> Dict[str, object]:
     """Run the full lyrics pipeline.
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
     Pipeline order:
+      STEP -2  musicnn instrumental short-circuit (when ``top_moods`` includes 'instrumental')
       STEP -1  media server embedded lyrics (Jellyfin/Emby/Navidrome/Lyrion, MUSICSERVER_LYRICS_TIMEOUT seconds)
       STEP  0  user-configured external APIs (slot 1 then slot 2)
       STEP  1  load / clip audio
@@ -1027,12 +748,45 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
       STEP  2  Qwen3-ASR transcription (ONNX CPU)
       STEP  3  language detection
       STEP  4  MarianMT translation to English
-      STEP  5  Qwen LLM cleanup
-      STEP  6  e5 embedding + axis scoring
-    Returns a dict with ``text``, ``cleaned_text``, ``language``, ``embedding``
-    and ``axis_vector`` (float32 numpy array in canonical axis_columns() order).
-    Raises if a required model/source is missing.
+      STEP  5  e5 embedding + axis scoring
+
+    ``top_moods`` is the MusicNN top-N moods dict (label → score) computed
+    earlier in the audio pipeline. When provided and ``'instrumental'`` is
+    one of the labels (case-insensitive), STEP -2 short-circuits the entire
+    rest of the pipeline and writes the instrumental sentinel directly —
+    saving the ~10-30s of Qwen3-ASR + MarianMT compute on tracks the audio
+    classifier already flagged as having no lyrics.
+
+    Returns a dict with ``text``, ``language``, ``embedding`` and
+    ``axis_vector`` (float32 numpy array in canonical axis_columns()
+    order). Raises if a required model/source is missing.
     """
+    # ---- STEP -2: musicnn instrumental short-circuit ----
+    # When the audio classifier already tagged this track as instrumental
+    # in its top-N moods, skip every downstream model (Qwen3-ASR,
+    # MarianMT, e5) and apply the sentinel directly. The DB row gets the
+    # same vectors STEP 5b would produce, so future analysis runs see the
+    # track as "already analyzed" and skip it.
+    if top_moods:
+        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
+        if 'instrumental' in normalized_moods:
+            embedding, axis_vector = _make_instrumental_sentinel()
+            logger.info(
+                "STEP -2: musicnn flagged track as instrumental "
+                "(top_moods=%r) — skipping STEPS -1 through 5, applying "
+                "sentinel directly (embedding_dim=%s, axis_dim=%s)",
+                list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
+            )
+            return {
+                'text': '',
+                'translated_text': '',
+                'final_text': '',
+                'language': '',
+                'used_seconds': 0.0,
+                'embedding': embedding,
+                'axis_vector': axis_vector,
+            }
+
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
 
@@ -1052,8 +806,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 sanitized = _sanitize_api_lyrics(ms_text)
                 if sanitized:
                     raw_text = sanitized
-                    logger.info('STEP -1 end: media server HIT (%s words) - skipping STEPS 0, 1, 1b, 2',
-                                len(raw_text.split()))
+                    logger.info('STEP -1 end: media server HIT (%s chars) - skipping STEPS 0, 1, 1b, 2',
+                                len(raw_text))
                 else:
                     logger.info('STEP -1 end: media server returned content but sanitizer dropped it')
             else:
@@ -1075,8 +829,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             api_text = fetch_remote_lyrics(artist, track)
             if api_text:
                 raw_text = api_text
-                logger.info('STEP 0 end: API HIT (%s chars / %s words) - skipping STEPS 1, 1b, 2',
-                            len(raw_text), len(raw_text.split()))
+                logger.info('STEP 0 end: API HIT (%s chars) - skipping STEPS 1, 1b, 2',
+                            len(raw_text))
                 logger.info('STEP 0 raw API output: %s', raw_text)
             else:
                 logger.info('STEP 0 end: API MISS - falling back to Qwen3-ASR')
@@ -1136,44 +890,97 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         asr_lang = (transcription.get('language') or '').strip().lower()
         asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
         detected_lang = asr_lang or 'en'
-        logger.info('STEP 2 end: transcript length=%s chars / %s words / '
+        logger.info('STEP 2 end: transcript length=%s chars / '
                     'asr_lang=%r / avg_logprob=%.2f',
-                    len(raw_text), len(raw_text.split()), asr_lang, asr_avg_logprob)
+                    len(raw_text), asr_lang, asr_avg_logprob)
         logger.info('STEP 2 raw ASR output: %s', raw_text or '<empty>')
-        if len(raw_text.split()) < MIN_WORDS_FOR_CLEANUP:
-            logger.info('STEP 2 word count below %s — skipping STEPS 3-5', MIN_WORDS_FOR_CLEANUP)
+        if len(raw_text) < MIN_CHARS_FOR_EMBEDDING:
+            logger.info('STEP 2 char count below %s (%s chars) — skipping STEPS 3-5',
+                        MIN_CHARS_FOR_EMBEDDING, len(raw_text))
             raw_text = ''
 
     # ---- STEP 3: language decision + confidence gate ----
-    # Trust Qwen3-ASR's audio-based detection (no langdetect — text-based
-    # detection routinely misclassifies clean English lyric snippets as
-    # id/ms/tl). Drop the transcription when Qwen's own avg_logprob is
-    # below ASR_MIN_AVG_LOGPROB (default -1.0) — this is the same signal
-    # Whisper uses internally to flag hallucinated/uncertain output.
-    ASR_MIN_AVG_LOGPROB = -1.0
+    # Trust Qwen3-ASR's audio-based detection. The language head is also
+    # our proxy for transcription quality: when Qwen can confidently name
+    # a language, the transcript itself is likely real; when it bails to
+    # a null sentinel, the transcript is suspect and we drop. Drop the
+    # transcription when Qwen's own avg_logprob is below
+    # ASR_MIN_AVG_LOGPROB (default -1.0) — same signal Whisper uses
+    # internally to flag hallucinated/uncertain output.
+    ASR_MIN_AVG_LOGPROB = float(os.environ.get('LYRICS_ASR_MIN_AVG_LOGPROB', '-1.0'))
+    # Stricter confidence floor when Qwen claims the audio is in a
+    # specific non-English language: that's the failure mode where the
+    # model confidently emits Chinese (or Spanish, or whatever) for a
+    # song that's actually in Irish + Arabic. avg_logprob ≈ -0.7 looks
+    # ``OK'' against the absolute floor above, but it's well below what
+    # genuine confident output looks like (-0.3 to -0.5). The cost of
+    # being wrong on non-English is doubled — we then spend translator
+    # compute on the hallucination and persist garbage as the song's
+    # "lyrics" — so we hold non-English to a higher bar.
+    ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get(
+        'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB', '-0.5'))
+    # Sentinel languages Qwen emits when it can't confidently identify a
+    # language. By themselves they don't mean "no speech" — they mean
+    # "no usable language label". Combined with a confidence gate, we
+    # only drop when BOTH signals point at garbage.
+    _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
+    # Qwen3-ASR sometimes emits the spelled-out English name instead of the
+    # ISO 639-1 code (e.g. ``language english<asr_text>...``). Treat anything
+    # in here as English so STEP 4 skips the translator.
+    _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
     if raw_text and asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
         logger.info('STEP 3: ASR avg_logprob %.2f < %.2f — dropping likely '
                     'hallucinated transcription, treating as instrumental',
                     asr_avg_logprob, ASR_MIN_AVG_LOGPROB)
         raw_text = ''
+    if (raw_text and asr_lang
+            and asr_lang not in _ASR_NULL_LANGS
+            and asr_lang not in _ASR_ENGLISH_LANGS
+            and asr_avg_logprob < ASR_NON_ENGLISH_MIN_LOGPROB):
+        logger.info('STEP 3: ASR reported non-English language %r with '
+                    'avg_logprob %.2f < %.2f — dropping likely hallucinated '
+                    'transcription (translator would only amplify the '
+                    'garbage), treating as instrumental',
+                    asr_lang, asr_avg_logprob, ASR_NON_ENGLISH_MIN_LOGPROB)
+        raw_text = ''
+    if raw_text and asr_lang in _ASR_NULL_LANGS:
+        # Qwen couldn't identify the language. We treat the language
+        # head as a proxy for transcription quality: if Qwen can't
+        # decide between ~95 languages it was trained on, whatever
+        # text it produced is suspect at best. Drop and treat as
+        # instrumental rather than guessing with a text-based
+        # detector that's known to misclassify lyric snippets.
+        logger.info('STEP 3: ASR reported no usable language (%r) — '
+                    'treating as instrumental (Qwen language uncertainty '
+                    'is a proxy for transcript uncertainty)',
+                    asr_lang)
+        raw_text = ''
     if raw_text:
-        if asr_lang:
+        if asr_lang in _ASR_ENGLISH_LANGS:
+            # Qwen sometimes returns the full word "english" instead of "en";
+            # normalize so STEP 4 sees `detected_lang == 'en'` and skips the
+            # translator entirely.
+            detected_lang = 'en'
+            logger.info('STEP 3: ASR-reported language %r → normalized to en '
+                        '(translation skipped)', asr_lang)
+        else:
+            # Non-null, non-English — already passed the strict
+            # confidence gate above, safe to use as-is.
             detected_lang = asr_lang
             logger.info('STEP 3: using ASR-reported language: %s', detected_lang)
-        else:
-            detected_lang = 'en'
-            logger.info('STEP 3: ASR returned no language prefix; defaulting to en')
     logger.info('STEP 3 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     # ---- STEP 4: translation (only when source is not English) ----
     text_for_cleanup = raw_text
     if raw_text and detected_lang != 'en':
-        logger.info('STEP 4 start: translation %s -> en (%s words)',
-                    detected_lang, len(raw_text.split()))
+        logger.info('STEP 4 start: translation %s -> en (%s chars)',
+                    detected_lang, len(raw_text))
         try:
             text_for_cleanup = _translate_to_english(raw_text, detected_lang)
-            logger.info('STEP 4 end: translated to %s words',
-                        len(text_for_cleanup.split()))
+            logger.info('STEP 4 end: translated to %s chars',
+                        len(text_for_cleanup))
+            if text_for_cleanup:
+                logger.info('Translated to en: %s', text_for_cleanup)
         except Exception as exc:
             # Translation must never crash the worker. If the Marian model
             # download or generation blows up (HF Hub 416/xet failures, OOM,
@@ -1182,35 +989,16 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.warning('STEP 4 translation failed (%s); dropping lyrics', exc)
             text_for_cleanup = ''
     else:
-        logger.info('STEP 4 skip: source already %s, no translation needed (%s words)',
-                    detected_lang, len(text_for_cleanup.split()))
+        logger.info('STEP 4 skip: source already %s, no translation needed (%s chars)',
+                    detected_lang, len(text_for_cleanup))
 
-    # ---- STEP 5: cleanup ----
-    cleaned_text = ''
-    word_count = len(text_for_cleanup.split())
-    try:
-        from config import LYRICS_LLM_ENABLED
-    except Exception:
-        LYRICS_LLM_ENABLED = True
-    do_cleanup = (use_llm_cleanup and LYRICS_LLM_ENABLED
-                  and word_count >= MIN_WORDS_FOR_CLEANUP)
-    logger.info('STEP 5 start: qwen cleanup (enabled=%s, words=%s)',
-                do_cleanup, word_count)
-    if do_cleanup:
-        try:
-            llama = load_llama_model(num_threads=threads)
-            cleaned_text = _clean_with_llama(text_for_cleanup, llama)
-        except Exception as exc:
-            logger.warning('LLaMA cleanup skipped: %s', exc)
-            cleaned_text = ''
-    final_text = cleaned_text or text_for_cleanup
-    logger.info('STEP 5 end: final text length=%s words', len(final_text.split()))
-
-    # ---- STEP 6: embedding + axes ----
-    logger.info('STEP 6 start: embedding + axis scoring')
+    # ---- STEP 5: embedding + axes ----
+    final_text = text_for_cleanup
+    logger.info('STEP 5 start: embedding + axis scoring (chars=%s)',
+                len(final_text))
     embedding = None
     axis_vector: np.ndarray = np.zeros(0, dtype=np.float32)
-    if len(final_text.split()) >= MIN_WORDS_FOR_EMBEDDING:
+    if len(final_text) >= MIN_CHARS_FOR_EMBEDDING:
         tokenizer, model = load_topic_embedding_model()
         embedding = _embed_text(final_text, tokenizer, model)
         if embedding is not None:
@@ -1220,12 +1008,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         # fields are blanked so callers never persist or display partial garbage.
         raw_text = ''
         text_for_cleanup = ''
-        cleaned_text = ''
         final_text = ''
 
-    # ---- STEP 6b: instrumental fallback ----
+    # ---- STEP 5b: instrumental fallback ----
     # If no usable embedding was produced (no lyrics in the audio AND no API
-    # hit, or fewer than MIN_WORDS_FOR_EMBEDDING words after cleanup), fall
+    # hit, or fewer than MIN_CHARS_FOR_EMBEDDING chars after the pipeline), fall
     # back to deterministic sentinel vectors. This lets us:
     #   * persist a row so future analysis runs skip the track,
     #   * cluster all instrumental tracks together in vector search,
@@ -1233,27 +1020,20 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     #     is uniformly negative, which a softmax axis_vector can never be).
     if embedding is None or getattr(embedding, 'size', 0) == 0:
         try:
-            from config import (
-                LYRICS_INSTRUMENTAL_EMBEDDING,
-                LYRICS_INSTRUMENTAL_AXIS_FILL,
-            )
-            embedding = np.array(LYRICS_INSTRUMENTAL_EMBEDDING, dtype=np.float32, copy=True)
-            axis_dim = len(axis_columns())
-            axis_vector = np.full(axis_dim, LYRICS_INSTRUMENTAL_AXIS_FILL, dtype=np.float32)
-            logger.info('STEP 6b: applied instrumental sentinel '
+            embedding, axis_vector = _make_instrumental_sentinel()
+            logger.info('STEP 5b: applied instrumental sentinel '
                         '(embedding_dim=%s, axis_dim=%s)',
                         embedding.shape[0], axis_vector.shape[0])
         except Exception as exc:
             logger.warning('Could not apply instrumental sentinel: %s', exc)
 
-    logger.info('STEP 6 end: embedding=%s axis_vector_dim=%s',
+    logger.info('STEP 5 end: embedding=%s axis_vector_dim=%s',
                 None if embedding is None else embedding.shape,
                 int(axis_vector.shape[0]) if axis_vector is not None else 0)
 
     return {
         'text': raw_text,
         'translated_text': text_for_cleanup,
-        'cleaned_text': cleaned_text,
         'final_text': final_text,
         'language': detected_lang,
         'used_seconds': used_seconds,

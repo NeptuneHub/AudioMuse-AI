@@ -8,8 +8,7 @@ change to all processes without a manual container restart.
 
 The transaction is atomic:
     - orphan tracks deleted first (cascades through embedding FKs),
-    - FKs on embedding/clap_embedding/mulan_embedding dropped (they lack
-      ON UPDATE CASCADE),
+    - FKs on embedding/clap_embedding dropped (they lack ON UPDATE CASCADE),
     - ``score.item_id`` / ``playlist.item_id`` / all embedding tables rewritten
       via ``UPDATE ... FROM item_id_migration_map`` (O(N), one round trip),
     - FKs re-added with original (reflected) names,
@@ -229,9 +228,6 @@ def execute_provider_migration(session_id):
         cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
         lyrics_exists = bool(cur.fetchone()[0])
         fk_lyrics_embedding = find_fk(cur, 'lyrics_embedding', 'item_id') if lyrics_exists else None
-        cur.execute("SELECT to_regclass('public.mulan_embedding') IS NOT NULL")
-        mulan_exists = bool(cur.fetchone()[0])
-        fk_mulan_embedding = find_fk(cur, 'mulan_embedding', 'item_id') if mulan_exists else None
 
         # 5. Run the transaction
         try:
@@ -243,8 +239,6 @@ def execute_provider_migration(session_id):
                 fk_clap_embedding=fk_clap_embedding,
                 fk_lyrics_embedding=fk_lyrics_embedding,
                 lyrics_exists=lyrics_exists,
-                fk_mulan_embedding=fk_mulan_embedding,
-                mulan_exists=mulan_exists,
                 target_type=target_type,
                 target_creds=target_creds,
                 session_id=session_id,
@@ -387,7 +381,6 @@ def _merge_mapping(state):
 def _run_migration_transaction(cur, mapping, new_meta,
                                fk_embedding, fk_clap_embedding,
                                fk_lyrics_embedding, lyrics_exists,
-                               fk_mulan_embedding, mulan_exists,
                                target_type, target_creds, session_id,
                                selected_libraries=None):
     """Execute every SQL statement for the migration transaction.
@@ -430,8 +423,6 @@ def _run_migration_transaction(cur, mapping, new_meta,
         cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
     if lyrics_exists and fk_lyrics_embedding:
         cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
-    if mulan_exists and fk_mulan_embedding:
-        cur.execute(f"ALTER TABLE mulan_embedding DROP CONSTRAINT {fk_mulan_embedding}")
 
     # 5. Rewrite item_id on every item-id-keyed table.
     #    We do this in TWO passes per table because Postgres enforces PRIMARY
@@ -477,18 +468,6 @@ def _run_migration_transaction(cur, mapping, new_meta,
             "WHERE e.item_id = %s || m.new_id",
             (prefix,),
         )
-    if mulan_exists:
-        cur.execute(
-            "UPDATE mulan_embedding e SET item_id = %s || m.new_id "
-            "FROM item_id_migration_map m WHERE e.item_id = m.old_id",
-            (prefix,),
-        )
-        cur.execute(
-            "UPDATE mulan_embedding e SET item_id = m.new_id "
-            "FROM item_id_migration_map m "
-            "WHERE e.item_id = %s || m.new_id",
-            (prefix,),
-        )
 
     # 6. Re-add the FKs with the original (reflected) names
     if fk_embedding:
@@ -504,11 +483,6 @@ def _run_migration_transaction(cur, mapping, new_meta,
     if lyrics_exists and fk_lyrics_embedding:
         cur.execute(
             f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if mulan_exists and fk_mulan_embedding:
-        cur.execute(
-            f"ALTER TABLE mulan_embedding ADD CONSTRAINT {fk_mulan_embedding} "
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
 

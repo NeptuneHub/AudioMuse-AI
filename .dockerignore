@@ -55,6 +55,5 @@ model/
 *.pb
 CLAMP3/weights_*.pth
 CLAMP3/*.npy
-mulan_model_export/
 .cache/
 *.tar.gz

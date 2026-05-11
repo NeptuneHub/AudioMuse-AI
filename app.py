@@ -91,7 +91,7 @@ def _get_jwt_secret():
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
-    from config import CLAP_ENABLED, MULAN_ENABLED, LYRICS_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
@@ -100,7 +100,6 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED,
         lyrics_enabled=LYRICS_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
@@ -709,11 +708,6 @@ def listen_for_index_reloads():
             logger.info("Reloading CLAP embedding cache...")
             from tasks.clap_text_search import refresh_clap_cache
             clap_success = refresh_clap_cache()
-            
-            # Reload MuLan cache (with logging)
-            logger.info("Reloading MuLan embedding cache...")
-            from tasks.mulan_text_search import refresh_mulan_cache
-            mulan_success = refresh_mulan_cache()
 
             # Reload Lyrics cache (voyager index + axis matrix)
             try:
@@ -737,7 +731,7 @@ def listen_for_index_reloads():
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -778,7 +772,6 @@ from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
-from app_mulan_search import mulan_search_bp
 from app_lyrics import lyrics_search_bp
 from app_sem_grove import sem_grove_bp
 from app_backup import backup_bp
@@ -799,7 +792,6 @@ app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
-app.register_blueprint(mulan_search_bp)
 app.register_blueprint(lyrics_search_bp)
 app.register_blueprint(sem_grove_bp)
 app.register_blueprint(backup_bp)
@@ -859,25 +851,6 @@ if not _is_worker:
           logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load MuLan embeddings cache (model will lazy-load on first use)
-    try:
-      from config import MULAN_ENABLED
-      if MULAN_ENABLED:
-        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
-        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
-        if load_mulan_cache_from_db():
-          logger.info("MuLan text search cache loaded at startup (embeddings only).")
-          logger.info("MuLan models will lazy-load on first text search.")
-        
-        # Load top queries from database
-        # This must run even if no MuLan embeddings exist yet (first startup)
-        has_existing = load_mulan_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded MuLan top queries from database (defaults).")
-        else:
-          logger.info("No MuLan queries found in database (defaults inserted)")
-    except Exception as e:
-      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
     # Load Lyrics search cache (voyager index over per-song e5 embeddings + axis-score matrix)
     try:
       from config import LYRICS_ENABLED

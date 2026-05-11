@@ -18,7 +18,6 @@ sqlglot==30.6.0
 google-genai==1.57.0
 mistralai==1.12.4
 umap-learn==0.5.12
-# Use pozalabs fork to avoid Python 3.12 SyntaxWarning until upstream releases a proper fix (see: https://github.com/jiaaro/pydub/issues/801)
 pozalabs-pydub==0.37.0
 python-mpd2==3.1.1
 psutil==7.2.2
@@ -36,11 +35,6 @@ transformers==4.57.6
 huggingface-hub==0.36.2
 sentencepiece==0.2.1
 tokenizers>=0.20.0
-silero-vad==5.1.2
-llama-cpp-python==0.3.21
-torch==2.6.0
-torchaudio==2.6.0
-qwen-asr==0.0.6
 stopwords==1.0.2
 PyJWT==2.12.1
 argon2-cffi==25.1.0

@@ -13,9 +13,9 @@
 # vs the recorded reference).
 #
 # The e5 model is loaded the same way the production code and Dockerfile do:
-# from the *flat* directory ``${LYRICS_MODEL_DIR}/e5-base-v2`` extracted from
-# the ``lyrics_model.tar.gz`` GitHub release artifact, NOT from a HuggingFace
-# Hub cache.
+# ONNX weights at ``<models>/e5-base-v2.onnx`` and tokenizer files under
+# ``<models>/e5-base-v2/`` — the layout of the ``lyrics_model_e5.tar.gz``
+# GitHub release artifact, NOT a HuggingFace Hub cache.
 #
 # First-run behaviour: if ``test/lyrics_expected.json`` is missing, the test
 # enters RECORD mode automatically, writes the file and passes. The CI
@@ -136,27 +136,30 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     models_dir = project_root / 'test' / 'models'
     expected_path = project_root / 'test' / 'lyrics_expected.json'
 
-    # Heavy deps required by the e5 path. Skip cleanly if missing.
+    # Heavy deps required by the e5 ONNX path. Skip cleanly if missing.
     try:
-        import torch  # noqa: F401
+        import onnxruntime  # noqa: F401
     except Exception as exc:  # pragma: no cover
-        pytest.skip(f'torch not importable: {exc}')
+        pytest.skip(f'onnxruntime not importable: {exc}')
     try:
-        from transformers import AutoTokenizer  # noqa: F401
+        from tokenizers import Tokenizer  # noqa: F401
     except Exception as exc:  # pragma: no cover
-        pytest.skip(f'transformers not importable: {exc}')
+        pytest.skip(f'tokenizers not importable: {exc}')
 
-    # The flat e5 directory must exist (extracted from lyrics_model.tar.gz).
-    e5_dir = models_dir / 'e5-base-v2'
-    if not (e5_dir / 'config.json').exists():
+    # New e5 bundle layout (lyrics_model_e5.tar.gz):
+    #   <models>/e5-base-v2.onnx          - ONNX weights
+    #   <models>/e5-base-v2/tokenizer.json - tokenizer + config files
+    e5_onnx_path = models_dir / 'e5-base-v2.onnx'
+    e5_tokenizer_dir = models_dir / 'e5-base-v2'
+    if not e5_onnx_path.is_file() or not (e5_tokenizer_dir / 'tokenizer.json').is_file():
         pytest.skip(
-            f'e5-base-v2 model directory not found at {e5_dir}. '
-            f'In CI the workflow extracts lyrics_model.tar.gz from release '
+            f'e5-base-v2 ONNX bundle not found at {models_dir}. '
+            f'In CI the workflow extracts lyrics_model_e5.tar.gz from release '
             f'v4.0.0-model into test/models/. For a local run download and '
             f'extract it manually.'
         )
 
-    # ---- Force offline / CPU / no LLM / no real HTTP API ------------------
+    # ---- Force offline / CPU / no real HTTP API ---------------------------
     os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_OFFLINE', '1')
     os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
@@ -164,21 +167,17 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     os.environ.setdefault('HF_XET_DISABLE', '1')
 
     os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
-    os.environ['LYRICS_LLM_ENABLED'] = 'false'  # no Qwen cleanup
-    os.environ['LYRICS_USE_GPU'] = 'false'
 
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
-    os.environ['LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR'] = str(e5_dir)
+    os.environ['LYRICS_E5_ONNX_PATH'] = str(e5_onnx_path)
+    os.environ['LYRICS_E5_TOKENIZER_DIR'] = str(e5_tokenizer_dir)
 
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
     import config
     config.LYRICS_API_ENABLE = True
-    config.LYRICS_LLM_ENABLED = False
-    config.LYRICS_USE_GPU = 'false'
     config.LYRICS_MODEL_DIR = str(models_dir)
-    config.LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = str(e5_dir)
 
     from lyrics import lyrics_transcriber
     from lyrics.lyrics_transcriber import analyze_lyrics, axis_columns
@@ -224,7 +223,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
             audio=None,
             sr=None,
             source_path=None,
-            use_llm_cleanup=False,
             artist='AudioMuseTest',
             track=track_name,
         )
@@ -240,7 +238,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
         print(f'  language          : {result.get("language")}')
         print(f'  embedding shape   : {emb.shape}')
         print(f'  axis_vector shape : {axv.shape} (expected {expected_axis_dim})')
-        text_preview = (result.get('cleaned_text') or result.get('text') or '')[:80]
+        text_preview = (result.get('final_text') or result.get('text') or '')[:80]
         print(f'  text preview      : {text_preview!r}')
 
         assert axv.shape[0] == expected_axis_dim, (
