@@ -328,7 +328,7 @@ LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true
 MUSICSERVER_LYRICS_TIMEOUT = float(os.environ.get("MUSICSERVER_LYRICS_TIMEOUT", "2.5"))
 # User-configurable lyrics API slots (up to 2).
 # Each slot stores: url_template, lyrics_field, artist_param, title_param, api_key_param, api_key_value
-# e.g. LYRICS_API_1_URL_TEMPLATE = "https://lrclib.net/api/get?{artist_param}={artist}&{title_param}={title}"
+# e.g. LYRICS_API_1_URL_TEMPLATE = "https://example.com/api/get?{artist_param}={artist}&{title_param}={title}"
 LYRICS_API_1_URL_TEMPLATE  = os.environ.get("LYRICS_API_1_URL_TEMPLATE",  "")
 LYRICS_API_1_ARTIST_PARAM  = os.environ.get("LYRICS_API_1_ARTIST_PARAM",  "artist_name")
 LYRICS_API_1_TITLE_PARAM   = os.environ.get("LYRICS_API_1_TITLE_PARAM",   "track_name")

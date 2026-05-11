@@ -297,7 +297,7 @@ def _clip_audio(audio: np.ndarray, sr: int,
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# External lyrics APIs (LRCLIB, Vagalume)
+# External lyrics APIs (configured via LYRICS_API_*_URL_TEMPLATE env vars)
 # ---------------------------------------------------------------------------
 
 _LRC_METADATA_RE = re.compile(r'^\s*\[(?:ar|ti|al|au|by|la|length|offset|re|ve):[^\]]*\]\s*$', re.IGNORECASE)
@@ -739,9 +739,9 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     Either ``audio`` (mono float32 + ``sr``) or ``source_path`` must be supplied.
     Pipeline order:
-      STEP -2  musicnn instrumental short-circuit (when ``top_moods`` includes 'instrumental')
       STEP -1  media server embedded lyrics (Jellyfin/Emby/Navidrome/Lyrion, MUSICSERVER_LYRICS_TIMEOUT seconds)
       STEP  0  user-configured external APIs (slot 1 then slot 2)
+      STEP  0b musicnn instrumental short-circuit (only if -1 and 0 missed)
       STEP  1  load / clip audio
       STEP  1b VAD pre-filter
       STEP  2  Qwen3-ASR transcription (ONNX CPU)
@@ -751,41 +751,17 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     ``top_moods`` is the MusicNN top-N moods dict (label → score) computed
     earlier in the audio pipeline. When provided and ``'instrumental'`` is
-    one of the labels (case-insensitive), STEP -2 short-circuits the entire
-    rest of the pipeline and writes the instrumental sentinel directly —
-    saving the ~10-30s of Qwen3-ASR + MarianMT compute on tracks the audio
-    classifier already flagged as having no lyrics.
+    one of the labels (case-insensitive), STEP 0b short-circuits the rest
+    of the pipeline AND no upstream lyrics source (-1 or 0) returned text.
+    Upstream lyrics always win over the audio classifier's instrumental
+    tag because external-API / media-server lyrics are human-curated
+    and authoritative — a heavily-instrumented song can be misclassified
+    as "instrumental" by musicnn even when it has vocals.
 
     Returns a dict with ``text``, ``language``, ``embedding`` and
     ``axis_vector`` (float32 numpy array in canonical axis_columns()
     order). Raises if a required model/source is missing.
     """
-    # ---- STEP -2: musicnn instrumental short-circuit ----
-    # When the audio classifier already tagged this track as instrumental
-    # in its top-N moods, skip every downstream model (Qwen3-ASR,
-    # MarianMT, e5) and apply the sentinel directly. The DB row gets the
-    # same vectors STEP 5b would produce, so future analysis runs see the
-    # track as "already analyzed" and skip it.
-    if top_moods:
-        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
-        if 'instrumental' in normalized_moods:
-            embedding, axis_vector = _make_instrumental_sentinel()
-            logger.info(
-                "STEP -2: musicnn flagged track as instrumental "
-                "(top_moods=%r) — skipping STEPS -1 through 5, applying "
-                "sentinel directly (embedding_dim=%s, axis_dim=%s)",
-                list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
-            )
-            return {
-                'text': '',
-                'translated_text': '',
-                'final_text': '',
-                'language': '',
-                'used_seconds': 0.0,
-                'embedding': embedding,
-                'axis_vector': axis_vector,
-            }
-
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
 
@@ -847,6 +823,39 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
     else:
         logger.info('STEP 0 skipped: already have lyrics from media server')
+
+    # ---- STEP 0b: musicnn instrumental short-circuit ----
+    # When NO upstream lyrics source (media server, external API) found
+    # text AND the audio classifier tagged this track as instrumental in
+    # its top-N moods, skip every remaining model (Qwen3-ASR, MarianMT,
+    # e5) and apply the sentinel directly. We deliberately run this
+    # *after* STEP -1 / STEP 0 because the configured upstream sources
+    # provide human-curated synced lyrics — if any of them returned text,
+    # trust the upstream over musicnn's audio-based classification (a
+    # song with heavy instrumentation can get tagged "instrumental"
+    # even though it has vocals). The DB row gets the same vectors
+    # STEP 5b would produce, so future analysis runs see the track as
+    # "already analyzed" and skip it.
+    if not raw_text and top_moods:
+        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
+        if 'instrumental' in normalized_moods:
+            embedding, axis_vector = _make_instrumental_sentinel()
+            logger.info(
+                "STEP 0b: musicnn flagged track as instrumental "
+                "(top_moods=%r) and no upstream lyrics source returned "
+                "text — skipping STEPS 1 through 5, applying sentinel "
+                "directly (embedding_dim=%s, axis_dim=%s)",
+                list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
+            )
+            return {
+                'text': '',
+                'translated_text': '',
+                'final_text': '',
+                'language': '',
+                'used_seconds': 0.0,
+                'embedding': embedding,
+                'axis_vector': axis_vector,
+            }
 
     if not raw_text:
         # ---- STEP 1: audio ----
