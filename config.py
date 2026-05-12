@@ -351,6 +351,31 @@ LYRICS_QWEN_ASR_MODEL_DIR = os.environ.get(
     "LYRICS_QWEN_ASR_MODEL_DIR",
     os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "Qwen3-ASR-0.6B-ONNX-CPU"),
 )
+# Which ASR engine to use for the lyrics pipeline. Both bundles ship in
+# the Docker image; the choice is user-tunable via the setup wizard /
+# env so deployments can switch without re-building.
+#   * 'whisper_small'   — openai/whisper-small ONNX (HF optimum export).
+#                          Built-in language detection (Whisper emits a
+#                          per-language softmax in its decoder's first
+#                          step; we apply a >=0.7 confidence gate). ~570
+#                          MB on disk, ~1.5 GB peak RSS.
+#   * 'qwen_asr_0.6'    — Qwen3-ASR-0.6B INT8 ONNX. Newer, larger model;
+#                          ~2.4 GB on disk, ~3 GB peak RSS.
+LYRICS_ASR_SELECT = os.environ.get("LYRICS_ASR_SELECT", "whisper_small").strip().lower()
+# Beam search width — **shared by both ASR engines** (Whisper-small and
+# Qwen3-ASR) so a single operator knob controls decoder quality. 1 = pure
+# greedy (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
+# attractors at ~2× greedy cost), 5 = Whisper-upstream default (max
+# quality, ~5× cost). Each extra beam adds one decoder.run per generated
+# token plus its own KV cache (~30-80 MB at a full 30 s chunk).
+LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
+# Where the Whisper-small ONNX bundle (encoder + merged decoder +
+# tokenizer files) is extracted. Pre-bundled in the official Docker
+# image from lyrics_model_whisper.tar.gz (project release).
+LYRICS_WHISPER_MODEL_DIR = os.environ.get(
+    "LYRICS_WHISPER_MODEL_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "whisper-small-onnx"),
+)
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 # Writable directory for on-demand Marian translator downloads. Kept separate
 # from the bundled HF cache so stale locks / restrictive perms there cannot

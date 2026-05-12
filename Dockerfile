@@ -389,6 +389,48 @@ RUN set -eux; \
     echo "✓ Qwen3-ASR ONNX model ready in $qwen_dir"; \
     du -sh "$qwen_dir"
 
+# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
+# of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
+# tokenizer files + preprocessor config). Re-hosted on the project's GitHub
+# release for mirror independence. Bundle ships `whisper-small-onnx/` as
+# its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
+# raw onnxruntime. Selectable via LYRICS_ASR_SELECT=whisper_small (default).
+RUN set -eux; \
+    whisper_dir="/app/model/whisper-small-onnx"; \
+    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \
+    whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
+    echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$whisper_dest" "$whisper_url"; then \
+            echo "✓ whisper bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download whisper bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$whisper_dest" -C /app/model; \
+    rm -f "$whisper_dest"; \
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             tokenizer.json tokenizer_config.json \
+             special_tokens_map.json preprocessor_config.json \
+             config.json generation_config.json vocab.json merges.txt; do \
+        if [ ! -f "$whisper_dir/$f" ]; then \
+            echo "ERROR: Whisper file missing: $whisper_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
+    du -sh "$whisper_dir"
+
 # Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
 # for mirror independence (original source: snakers4/silero-vad). Bundle ships
 # silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw

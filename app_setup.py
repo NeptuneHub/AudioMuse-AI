@@ -81,6 +81,9 @@ ENUM_FIELD_OPTIONS = {
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
     'VOYAGER_METRIC': ['angular', 'euclidean', 'dot'],
+    # ASR engine used by the lyrics pipeline. Both bundles ship in the
+    # Docker image — selection is runtime-only, no re-build needed.
+    'LYRICS_ASR_SELECT': ['whisper_small', 'qwen_asr_0.6'],
 }
 
 HIDDEN_ADVANCED_FIELDS = {

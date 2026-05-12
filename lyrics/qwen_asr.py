@@ -1,74 +1,3 @@
-"""Qwen3-ASR-0.6B (ONNX CPU build) inference for the lyrics pipeline.
-
-Replaces the previous openai-whisper integration. Uses ONNX Runtime only —
-no PyTorch dependency for ASR. The ONNX model files are expected in the
-directory pointed to by ``config.LYRICS_QWEN_ASR_MODEL_DIR`` (default
-``/app/model/Qwen3-ASR-0.6B-ONNX-CPU``).
-
-Decoder quality
----------------
-The community ONNX builds we consume don't ship with a tuned generation
-config, and a pure-greedy decoder hallucinates badly on music (locking
-into "rock 'n' roll, fun." style attractors). To match the defenses
-Whisper uses by default we layer in:
-
-* **Beam search** (``LYRICS_ASR_BEAM_SIZE``, default 2) — k parallel
-  hypotheses each with their own KV cache; length-normalized log-prob
-  picks the winner. Default 2 catches most music-ASR hallucinations
-  caused by locally-greedy-but-globally-wrong token picks at ~2×
-  decoder cost vs greedy. Set to 3 for a middle ground, 5 for Whisper-
-  parity max quality, or 1 for pure greedy. Beams run sequentially —
-  the community ONNX export bakes batch=1 into internal ScatterElements
-  ops and rejects any batched run, so we don't try.
-* **Repetition penalty** (``LYRICS_ASR_REPETITION_PENALTY``, default
-  1.15) — HF-style penalty on raw logits for any token already
-  generated.
-* **No-repeat n-gram** (``LYRICS_ASR_NO_REPEAT_NGRAM``, default 3) —
-  hard ban on tokens that would re-create a 3-gram already present.
-  Single most effective fix for stuck loops.
-* **Compression-ratio gate** (``LYRICS_ASR_COMPRESSION_RATIO``, default
-  2.4) — post-decode zlib check: if the chunk's text compresses below
-  this ratio it's a runaway loop, so we drop it and let the lyrics
-  pipeline treat the song as instrumental (Whisper retries with higher
-  temperature; we don't have temperature sampling, so we drop instead).
-
-Per-worker isolation, not cluster-wide locking
-----------------------------------------------
-Each RQ worker process loads its own copy of the model and keeps it in
-memory across jobs (singleton). Concurrent workers all load independently —
-that's intentional, since each worker has its own k8s memory budget. To
-keep memory pressure manageable when many workers come online at once:
-
-1. **Thread cap from env** — ``intra_op_num_threads`` controlled by
-   ``LYRICS_ASR_INTRA_OP_THREADS`` (default ``0`` = ORT auto-detect,
-   matching CLAP's behavior — uses all cores when one Qwen worker is
-   active). Set to a positive int to pin (e.g. ``cpu_count // 3`` if
-   you run 3 concurrent Qwen workers and need to leave headroom).
-   ``inter_op_num_threads = 1`` and ``ExecutionMode.ORT_SEQUENTIAL``
-   are always set; the four sessions still run sequentially.
-2. **ONNX arena + memory-pattern enabled (ORT defaults)** — runtime
-   caches transient buffers + shape-derived allocation plans between
-   calls. Earlier audits attributed a crash to arena growth, but the
-   real culprit was thread oversubscription; arena RSS plateaus rather
-   than runs away on single-worker deployments. The load-time RAM gate
-   is the actual memory-pressure defense.
-3. **Memory-mapped embedding matrix** — ``np.memmap`` instead of
-   ``np.fromfile`` saves ~600 MB of RSS per process; the kernel pages it
-   in on demand.
-4. **Per-worker free-RAM check** — refuses to load when ``psutil`` reports
-   less than ``LYRICS_ASR_MIN_FREE_RAM_GB`` (default 5 GB) available.
-   Sized above the model's measured ~3 GB peak RSS with real headroom
-   for activation memory and the transient doubling that happens while
-   a fresh load maps in. The job logs a warning and returns an empty
-   transcription so the downstream pipeline applies the instrumental
-   sentinel. With multiple workers spinning up simultaneously, the late
-   ones see less free RAM and naturally throttle — no explicit cluster
-   lock required.
-
-Adapted from the community ONNX inference script:
-    https://huggingface.co/Daumee/Qwen3-ASR-0.6B-ONNX-CPU
-"""
-
 from __future__ import annotations
 
 import logging
@@ -82,124 +11,53 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-
-# ── Bulletproofing knobs (env-tunable) ──────────────────────────────────
-
-# Refuse to load when free RAM is below this threshold. Default 5 GB:
-# the INT8 decoder build has ~3 GB peak RSS (encoder_transformer ~700 MB,
-# two decoder INT8 sessions ~600 MB each, mmap'd embed_tokens ~600 MB
-# paged on demand) plus ~500 MB-1 GB of activation / Python / numpy
-# overhead during decode. 5 GB leaves real headroom — important when
-# 2-3 workers race the gate concurrently, because each fresh load
-# transiently doubles RSS while the model is being mapped in.
-# Lowering toward 3.5-4 risks the original ``crash the entire k3s
-# node'' compound-pressure scenario.
 LYRICS_ASR_MIN_FREE_RAM_GB = float(os.environ.get("LYRICS_ASR_MIN_FREE_RAM_GB", "5"))
 
-# ── Decoder quality knobs (env-tunable) ─────────────────────────────────
-# These mirror the standard HuggingFace `generate()` knobs (and Whisper's
-# defaults) that the upstream community ONNX builds don't ship with a
-# tuned config for. They turn the previous pure-greedy decoder into a
-# beam search with repetition controls and a compression-ratio sanity
-# gate — the same set of defenses Whisper uses against music
-# hallucinations.
+from config import LYRICS_ASR_BEAM_SIZE as BEAM_SIZE
 
-# Beam search width. 1 = pure greedy (fastest, most error-prone),
-# 5 = Whisper-small's default (highest quality, ~5× decode cost).
-# Default 2 is the practical sweet spot: catches most music-ASR
-# hallucinations caused by locally-greedy-but-globally-wrong token
-# picks at ~2× decoder cost vs greedy. Each extra beam costs one extra
-# decoder_step.run per generated token plus ~30-60 MB of KV cache at a
-# full 30s chunk. (Sequential per-beam decode; the community ONNX
-# export rejects batched runs.)
-BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "2"))
-
-# HF-style repetition penalty applied to raw logits before softmax.
-# Values >1 push down recently-seen tokens. 1.15 is the value Qwen-LLM
-# repos commonly recommend for ASR-like transcription tasks (1.0 = off).
 REPETITION_PENALTY = float(os.environ.get("LYRICS_ASR_REPETITION_PENALTY", "1.15"))
 
-# Hard ban on any token that would re-create an n-gram already present
-# in the decoded sequence. The single most effective fix for stuck
-# loops like "rock 'n' roll, fun. rock 'n' roll, fun." (0 = off).
 NO_REPEAT_NGRAM_SIZE = int(os.environ.get("LYRICS_ASR_NO_REPEAT_NGRAM", "3"))
 
-# zlib-compression-ratio sanity check. If the decoded text compresses
-# below this ratio it's suspiciously repetitive — the failure mode where
-# the model collapses into "the the the the". Whisper uses 2.4 as the
-# threshold; we treat the chunk as instrumental and skip it instead of
-# persisting a hallucinated transcript. (Set <= 0 to disable.)
 COMPRESSION_RATIO_THRESHOLD = float(os.environ.get("LYRICS_ASR_COMPRESSION_RATIO", "2.4"))
 
-# Hard cap on tokens generated per 30s chunk. 128 covers ~25-50 lyric
-# lines per chunk (most chunks emit < 80 tokens before EOS). Lower
-# value bounds the worst case when the decoder fails to find an EOS
-# (which happens more with the n-gram ban active, since common stop-
-# token patterns can get banned). Raising past ~200 burns time without
-# improving quality — real lyrics rarely exceed it.
 MAX_NEW_TOKENS_DEFAULT = int(os.environ.get("LYRICS_ASR_MAX_NEW_TOKENS", "128"))
 
-
-# ── Constants (Qwen3-ASR-0.6B internals) ────────────────────────────────
+CHUNK_SEC_DEFAULT = int(os.environ.get("LYRICS_ASR_CHUNK_SEC", "30"))
 
 SAMPLE_RATE = 16000
 N_FFT = 400
 HOP_LENGTH = 160
 N_MELS = 128
-CHUNK_SIZE = 100  # encoder-conv chunk window (frames)
+CHUNK_SIZE = 100
 
-# Special token IDs (from the Qwen3-ASR tokenizer)
 AUDIO_START_ID = 151669
 AUDIO_END_ID = 151670
 AUDIO_PAD_ID = 151676
 IM_START_ID = 151644
-IM_END_ID = 151645      # EOS
-ENDOFTEXT_ID = 151643   # EOS alt
-NEWLINE_ID = 198        # '\n'
+IM_END_ID = 151645
+ENDOFTEXT_ID = 151643
+NEWLINE_ID = 198
 
 VOCAB_SIZE = 151936
 HIDDEN_SIZE = 1024
 
-
 def _resolve_thread_cap(num_threads: Optional[int]) -> int:
-    """Resolve the intra-op thread cap (``0`` = let ORT auto-detect).
-
-    Default behavior matches ``tasks/clap_analyzer.py`` (also CPU-only
-    ONNX): we don't set ``intra_op_num_threads`` at all and let ONNX
-    Runtime auto-detect, which lights up every available core. CLAP has
-    been running this way without crashing — Qwen behaves the same when
-    only one Qwen worker is active at a time.
-
-    Override via ``LYRICS_ASR_INTRA_OP_THREADS`` env var:
-
-      * ``0`` (default) — ORT auto-detect, uses all cores
-      * any positive int — explicit cap (e.g. ``cpu_count // 3`` to
-        leave room for 3 concurrent workers without oversubscribing,
-        or a fixed ``8`` to bound RAM-per-worker on huge boxes)
-
-    The ``num_threads`` argument is accepted for backward compatibility
-    but ignored — config comes from env.
-    """
-    raw = os.environ.get('LYRICS_ASR_INTRA_OP_THREADS', '0').strip()
+    raw = os.environ.get('LYRICS_ASR_INTRA_OP_THREADS', '').strip()
+    if raw == '':
+        cpu_count = os.cpu_count() or 1
+        return max(1, cpu_count // 3)
     try:
         value = int(raw)
     except ValueError:
-        value = 0
+        cpu_count = os.cpu_count() or 1
+        return max(1, cpu_count // 3)
     return max(0, value)
 
-
-# ── Pre-load defenses ───────────────────────────────────────────────────
-
 def _check_free_ram_or_raise() -> None:
-    """Refuse to load when free RAM is below the configured threshold.
-
-    Raises ``RuntimeError`` so the caller can convert the failure into an
-    empty transcription (which the lyrics pipeline treats as instrumental).
-    """
     try:
         import psutil
     except Exception:
-        # psutil unavailable — skip the check rather than spuriously refusing.
         return
     available_gb = psutil.virtual_memory().available / (1024 ** 3)
     if available_gb < LYRICS_ASR_MIN_FREE_RAM_GB:
@@ -208,11 +66,6 @@ def _check_free_ram_or_raise() -> None:
             f"need at least {LYRICS_ASR_MIN_FREE_RAM_GB:.1f} GB. "
             "Tune via LYRICS_ASR_MIN_FREE_RAM_GB."
         )
-
-
-
-
-# ── Mel spectrogram (Whisper-compatible, librosa-only) ──────────────────
 
 def _compute_mel_spectrogram(wav: np.ndarray, mel_filters: np.ndarray) -> np.ndarray:
     import librosa
@@ -227,7 +80,6 @@ def _compute_mel_spectrogram(wav: np.ndarray, mel_filters: np.ndarray) -> np.nda
     log_spec = (log_spec + 4.0) / 4.0
     return log_spec.astype(np.float32)
 
-
 def _get_mel_filters() -> np.ndarray:
     import librosa
     return librosa.filters.mel(
@@ -235,36 +87,21 @@ def _get_mel_filters() -> np.ndarray:
         fmin=0, fmax=SAMPLE_RATE // 2, norm="slaney", htk=False,
     ).astype(np.float32)
 
-
 def _conv_output_lengths(input_lengths: np.ndarray) -> np.ndarray:
-    """Output lengths after the encoder's three stride-2 convolutions."""
     lengths = input_lengths
     for _ in range(3):
         lengths = (lengths - 1) // 2 + 1
     return lengths
 
-
-# ── Decoder helpers (logits processors + sanity checks) ─────────────────
-
 def _log_softmax_row(logits_row: np.ndarray) -> np.ndarray:
-    """Numerically stable log-softmax on a 1-D logit row → float32."""
     x = logits_row.astype(np.float64, copy=False)
     x = x - x.max()
     log_norm = np.log(np.exp(x).sum())
     return (x - log_norm).astype(np.float32, copy=False)
 
-
 def _apply_repetition_penalty(logits_row: np.ndarray,
                               tokens: List[int],
                               penalty: float) -> np.ndarray:
-    """HF-style repetition penalty applied to RAW logits (pre-softmax).
-
-    For each token already generated:
-      * positive logit → divide by penalty (push down)
-      * negative logit → multiply by penalty (push further down)
-
-    Returns a fresh array; caller's logits are untouched.
-    """
     if penalty == 1.0 or not tokens:
         return logits_row
     out = logits_row.copy()
@@ -277,17 +114,10 @@ def _apply_repetition_penalty(logits_row: np.ndarray,
             out[tok] = v * penalty
     return out
 
-
 def _no_repeat_banned_tokens(tokens: List[int], n: int) -> Set[int]:
-    """Return token IDs that would create a duplicate n-gram if appended.
-
-    Equivalent to HF's NoRepeatNGramLogitsProcessor. Cheap O(len(tokens))
-    scan — fine for sequences up to a few thousand tokens.
-    """
     if n <= 0 or len(tokens) < n - 1:
         return set()
     if n == 1:
-        # Degenerate: ban every token already seen.
         return set(tokens)
     prefix = tuple(tokens[-(n - 1):])
     banned: Set[int] = set()
@@ -297,15 +127,7 @@ def _no_repeat_banned_tokens(tokens: List[int], n: int) -> Set[int]:
             banned.add(tokens[i + n - 1])
     return banned
 
-
 def _compression_ratio(text: str) -> float:
-    """zlib compression ratio of ``text`` (utf-8). Whisper uses this as a
-    repetition sanity check: well-formed prose lands around 1.5–2.0,
-    runaway loops collapse the ratio upward (3.0+).
-
-    Returns 0.0 for empty input so the caller's threshold check never
-    fires on legitimately empty transcripts.
-    """
     if not text:
         return 0.0
     encoded = text.encode('utf-8')
@@ -314,12 +136,8 @@ def _compression_ratio(text: str) -> float:
     compressed = zlib.compress(encoded)
     return len(encoded) / max(1, len(compressed))
 
-
-# ── Silence-based chunking for long audio ───────────────────────────────
-
 SILENCE_THRESHOLD_DB = -40
 SILENCE_HOP_SEC = 0.1
-
 
 def _find_silence_split_points(wav: np.ndarray, target_sec: int = 30) -> List[int]:
     import librosa
@@ -359,9 +177,6 @@ def _find_silence_split_points(wav: np.ndarray, target_sec: int = 30) -> List[in
         cursor = split_sample
     return split_points
 
-
-# ── Tokenizer wrapper ───────────────────────────────────────────────────
-
 class _Tokenizer:
     def __init__(self, tokenizer_path: Optional[str]):
         if not tokenizer_path or not Path(tokenizer_path).exists():
@@ -378,12 +193,7 @@ class _Tokenizer:
     def decode(self, ids: List[int]) -> str:
         return self._tok.decode(ids, skip_special_tokens=True)
 
-
-# ── ONNX inference pipeline ─────────────────────────────────────────────
-
 class _OnnxAsrPipeline:
-    """Long-lived singleton holding the ONNX sessions + embedding matrix."""
-
     def __init__(self, onnx_dir: str, num_threads: int):
         import onnxruntime as ort
         onnx_path = Path(onnx_dir)
@@ -395,16 +205,10 @@ class _OnnxAsrPipeline:
                 "into /app/model (the bundle ships Qwen3-ASR-0.6B-ONNX-CPU/ at the archive root)."
             )
 
-        # Repo layout: ONNX files in onnx_models/, tokenizer.json at root.
-        # Older flat layout: everything at the root. Support both.
+        self.intra_op_threads = int(num_threads)
         nested = onnx_path / "onnx_models"
         models_dir = nested if nested.is_dir() else onnx_path
 
-        # Provider selection: prefer CUDA when onnxruntime-gpu detects a
-        # device, else CPU. Uses the shared helper so we stay consistent
-        # with CLAP / MusiCNN / analysis. Lazy-imported because
-        # ``tasks.analysis_helper`` pulls in DB / psycopg2 transitively —
-        # fine inside the worker but unwanted at lyrics-module import time.
         try:
             from tasks.analysis_helper import get_provider_options
             provider_opts = get_provider_options()
@@ -415,45 +219,20 @@ class _OnnxAsrPipeline:
 
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        # Sequential execution mode + tight thread caps so 4 sessions don't
-        # collectively oversubscribe the CPU and crash the worker.
         sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        # When num_threads == 0, leave ORT to auto-detect (uses all
-        # cores — same default as CLAP's CLAP_PYTHON_MULTITHREADS=False
-        # path). When > 0, pin to that exact value. Thread caps still
-        # matter on CUDA because mel/STFT preprocessing and the Python-
-        # side embedding lookup all run on CPU.
         if int(num_threads) > 0:
             sess_opts.intra_op_num_threads = int(num_threads)
         sess_opts.inter_op_num_threads = 1
         sess_opts.log_severity_level = 3
-        # Keep ORT's default CPU arena + memory-pattern caching ON. The
-        # earlier ``Qwen crashes the node'' incident that prompted
-        # disabling these was almost certainly thread oversubscription
-        # (cpu_count // 2 × multiple workers), not arena growth — RSS
-        # plateaus rather than runs away on single-worker deployments.
-        # Re-enabled to recover a small (~5-10%) per-call speedup in the
-        # decoder hot loop. If RSS creep ever becomes a real problem,
-        # toggle these back to False via a code change — but the load-
-        # time RAM gate is the real protection against memory pressure.
+        if not use_cuda:
+            sess_opts.enable_cpu_mem_arena = False
+            sess_opts.enable_mem_pattern = False
 
-        # Belt-and-suspenders: also pin BLAS / OpenMP thread pools that some
-        # numpy/librosa code paths use during mel/STFT preprocessing — but
-        # only when num_threads > 0 (explicit cap). When 0 (ORT auto), let
-        # BLAS auto-detect too so it matches the unbounded CLAP-style
-        # behavior we want.
         if int(num_threads) > 0:
             for env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
                             'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
                 os.environ.setdefault(env_key, str(int(num_threads)))
 
-        # Decoder build selection:
-        # - CPU: prefer INT8 quantized decoders when available — same
-        #   accuracy, much less RAM during decode.
-        # - CUDA: prefer FP32. The CUDA EP rarely accelerates QDQ INT8
-        #   ops; unsupported ops fall back per-node to CPU, forcing
-        #   tensors to shuttle between devices every step and wiping out
-        #   the GPU win. FP32 keeps the whole decoder on-device.
         fp32_available = (models_dir / "decoder_init.onnx").exists()
         int8_available = (models_dir / "decoder_init.int8.onnx").exists()
         if use_cuda and fp32_available:
@@ -479,13 +258,6 @@ class _OnnxAsrPipeline:
             models_dir, decoder_kind, provider_opts[0][0], intra_op_label,
         )
 
-        # Load all four sessions with the same SessionOptions. KV-cache
-        # numpy buffers flow between decoder_init and decoder_step, so all
-        # four must live on the same EP — a mixed CUDA/CPU split would
-        # shuttle the cache between devices every token. If CUDA is the
-        # preferred EP but session construction fails (broken driver,
-        # missing op, VRAM pressure at load time), drop all four back to
-        # CPU together.
         def _make_session(rel_path: str, providers, prov_opts):
             return ort.InferenceSession(
                 str(models_dir / rel_path), sess_opts,
@@ -506,13 +278,8 @@ class _OnnxAsrPipeline:
                 "Qwen3-ASR: CUDA session load failed (%s) — retrying on CPU", exc,
             )
             use_cuda = False
-            # CPU-only fallback also re-enables the arena/mem-pattern
-            # guards we skipped above (we're back in the regime where
-            # they matter).
             sess_opts.enable_cpu_mem_arena = False
             sess_opts.enable_mem_pattern = False
-            # Re-pick decoder build for the CPU regime: prefer INT8 if
-            # it's on disk.
             if int8_available:
                 decoder_init = "decoder_init.int8.onnx"
                 decoder_step = "decoder_step.int8.onnx"
@@ -525,16 +292,11 @@ class _OnnxAsrPipeline:
             self.decoder_init = _make_session(decoder_init, providers, provider_options)
             self.decoder_step = _make_session(decoder_step, providers, provider_options)
 
-        # Track final EP so unload() knows whether to force a CUDA cache
-        # reset when releasing the pipeline.
         self._use_cuda = use_cuda
 
         embed_path = models_dir / "embed_tokens.bin"
         logger.info("Qwen3-ASR: memory-mapping embedding matrix (%.0f MB)",
                     embed_path.stat().st_size / 1e6)
-        # np.memmap instead of np.fromfile — saves ~600 MB of RSS per process;
-        # the kernel pages rows in on demand. Lookups (self.embed_tokens[ids])
-        # still produce a regular ndarray view.
         self.embed_tokens = np.memmap(
             str(embed_path), dtype=np.float32, mode='r',
             shape=(VOCAB_SIZE, HIDDEN_SIZE),
@@ -542,8 +304,6 @@ class _OnnxAsrPipeline:
 
         self.mel_filters = _get_mel_filters()
 
-        # Tokenizer can live next to the ONNX files (flat layout) or at the
-        # repo root (nested layout). Check both.
         tokenizer_candidates = [models_dir / "tokenizer.json", onnx_path / "tokenizer.json"]
         tokenizer_path = next((p for p in tokenizer_candidates if p.exists()), None)
         self.tokenizer = _Tokenizer(str(tokenizer_path) if tokenizer_path else None)
@@ -578,7 +338,7 @@ class _OnnxAsrPipeline:
             "hidden_states": hidden_states,
             "attention_mask": attn_mask,
         })[0]
-        return encoder_output  # [N, HIDDEN_SIZE]
+        return encoder_output
 
     def _build_prompt_ids(self, num_audio_tokens: int, language: Optional[str]) -> List[int]:
         ids: List[int] = []
@@ -612,24 +372,8 @@ class _OnnxAsrPipeline:
                      beam_size: int,
                      repetition_penalty: float,
                      no_repeat_ngram_size: int) -> Tuple[List[int], float]:
-        """Beam-search decode starting from decoder_init outputs.
-
-        Maintains ``beam_size`` candidate sequences in parallel, each with
-        its own KV cache. Each step makes one ``decoder_step.run`` call
-        per active beam (sequential — the community ONNX export of
-        Qwen3-ASR-0.6B-CPU bakes batch=1 into internal ScatterElements
-        ops and rejects any batch>1 input, so we don't try to batch).
-
-        Per-beam decode at k=2 is RTF ~0.1 on the test corpus, which
-        is plenty fast. Length-normalized log-prob picks the winner at
-        the end (mirrors HF's default beam scorer).
-        """
-        # Apply logits processors to the prefill row before picking the
-        # initial expansions. (Repetition penalty / no-repeat-ngram are
-        # no-ops at step 0 because no tokens have been generated yet.)
         first_log_probs = _log_softmax_row(init_logits[0, -1, :])
 
-        # Top-`beam_size` initial candidates.
         k = max(1, beam_size)
         if k == 1:
             top_init = np.array([int(np.argmax(first_log_probs))])
@@ -643,15 +387,12 @@ class _OnnxAsrPipeline:
             beams.append({
                 'tokens': [tok_id],
                 'log_prob_sum': float(first_log_probs[tok_id]),
-                # init_keys/init_values are (1, ...) arrays — every beam
-                # starts pointing at the same prefill cache and will
-                # diverge after the first decoder_step.
                 'past_keys': init_keys,
                 'past_values': init_values,
                 'finished': tok_id in (IM_END_ID, ENDOFTEXT_ID),
             })
 
-        cur_pos = prefill_len  # next position id to feed
+        cur_pos = prefill_len
 
         for _ in range(max_new_tokens - 1):
             if all(b['finished'] for b in beams):
@@ -660,15 +401,12 @@ class _OnnxAsrPipeline:
             candidates: List[Tuple[float, int, Optional[int],
                                    Optional[np.ndarray], Optional[np.ndarray]]] = []
 
-            # Carry forward finished beams as candidates with no extension.
             for parent_idx, beam in enumerate(beams):
                 if beam['finished']:
                     candidates.append((beam['log_prob_sum'], parent_idx,
                                        None, None, None))
                     continue
 
-                # One decoder_step.run per active beam. Sequential —
-                # see method docstring for why we don't batch.
                 token_embed = self.embed_tokens[beam['tokens'][-1]][
                     np.newaxis, np.newaxis, :].astype(np.float32, copy=False)
                 pos_one = np.array([[cur_pos]], dtype=np.int64)
@@ -679,9 +417,6 @@ class _OnnxAsrPipeline:
                     "past_values": beam['past_values'],
                 })
 
-                # Own a private copy before mutating — repetition penalty
-                # only copies when active, and the no-repeat-ngram ban
-                # writes in place.
                 raw = step_logits[0, -1, :].copy()
                 raw = _apply_repetition_penalty(raw, beam['tokens'], repetition_penalty)
                 banned = _no_repeat_banned_tokens(beam['tokens'], no_repeat_ngram_size)
@@ -689,7 +424,6 @@ class _OnnxAsrPipeline:
                     raw[tok] = -1e30
                 log_probs = _log_softmax_row(raw)
 
-                # Top-`k` continuations from this beam.
                 if k == 1:
                     top_idx = np.array([int(np.argmax(log_probs))])
                 else:
@@ -700,7 +434,6 @@ class _OnnxAsrPipeline:
                     candidates.append((new_log_prob, parent_idx, tok_id,
                                        new_keys, new_values))
 
-            # Keep the global top ``k`` candidates.
             candidates.sort(key=lambda c: c[0], reverse=True)
             new_beams: List[Dict[str, object]] = []
             for log_prob_sum, parent_idx, tok_id, new_keys, new_values in candidates[:k]:
@@ -718,8 +451,6 @@ class _OnnxAsrPipeline:
             beams = new_beams
             cur_pos += 1
 
-        # Length-normalized score: prefers longer beams when their per-token
-        # confidence is comparable, mirroring HF's default beam scorer.
         def _score(b: Dict[str, object]) -> float:
             n = max(1, len(b['tokens']))
             return float(b['log_prob_sum']) / n
@@ -760,12 +491,9 @@ class _OnnxAsrPipeline:
         )
 
         raw_text = self.tokenizer.decode(generated)
-        # Debug log so we can see exactly what Qwen emitted (including the
-        # language prefix when present). Truncated to keep logs readable.
         logger.debug("Qwen3-ASR raw decode (avg_logprob=%.2f): %r",
                      avg_logprob, raw_text[:200])
 
-        # Parse "language <lang><asr_text>...." prefix that the model emits.
         parsed_lang = ""
         parsed_text = raw_text
         if "language " in raw_text and "<asr_text>" in raw_text:
@@ -776,13 +504,6 @@ class _OnnxAsrPipeline:
         elif language:
             parsed_lang = language
 
-        # Compression-ratio sanity check: catches the failure mode where
-        # the decoder collapses into a tight repetition loop ("rock 'n'
-        # roll, fun. rock 'n' roll, fun.") that beam search + ngram bans
-        # didn't fully prevent. Mirrors Whisper's own defense — but
-        # instead of retrying with higher temperature (we don't have
-        # temperature sampling), we drop the chunk and let the lyrics
-        # pipeline treat the song as instrumental.
         cleaned_text = parsed_text.strip()
         if (cleaned_text and COMPRESSION_RATIO_THRESHOLD > 0
                 and _compression_ratio(cleaned_text) > COMPRESSION_RATIO_THRESHOLD):
@@ -803,19 +524,7 @@ class _OnnxAsrPipeline:
 
     def transcribe(self, wav: np.ndarray, language: Optional[str] = None,
                    max_new_tokens: Optional[int] = None,
-                   chunk_sec: int = 30) -> Dict[str, object]:
-        """Transcribe a 16kHz mono float32 numpy array.
-
-        ``max_new_tokens`` caps the generated length per chunk. Default
-        comes from ``LYRICS_ASR_MAX_NEW_TOKENS`` env var (128). Tighter
-        cap bounds the worst case when the decoder fails to find an EOS
-        (which happens more with the n-gram ban active, since common
-        stop-token patterns can themselves get banned).
-
-        Returns dict with ``text``, ``language``, ``duration``, and
-        ``avg_logprob`` (mean log-probability of generated tokens; close to
-        0 = confident, very negative = uncertain / hallucinated).
-        """
+                   chunk_sec: Optional[int] = None) -> Dict[str, object]:
         if wav is None or wav.size == 0:
             return {"text": "", "language": language or "", "duration": 0.0,
                     "avg_logprob": float('-inf')}
@@ -824,8 +533,22 @@ class _OnnxAsrPipeline:
 
         if max_new_tokens is None:
             max_new_tokens = MAX_NEW_TOKENS_DEFAULT
+        if chunk_sec is None:
+            chunk_sec = CHUNK_SEC_DEFAULT
 
         audio_duration = len(wav) / SAMPLE_RATE
+        intra_op_label = ('auto' if self.intra_op_threads <= 0
+                          else str(self.intra_op_threads))
+        logger.info(
+            "Qwen3-ASR: starting transcription "
+            "(beam_size=%d, max_new_tokens=%d, repetition_penalty=%.2f, "
+            "no_repeat_ngram=%d, compression_ratio_threshold=%.2f, "
+            "intra_op_threads=%s, chunk_sec=%d, language_hint=%r, "
+            "audio_duration=%.2fs)",
+            BEAM_SIZE, max_new_tokens, REPETITION_PENALTY,
+            NO_REPEAT_NGRAM_SIZE, COMPRESSION_RATIO_THRESHOLD,
+            intra_op_label, chunk_sec, language, audio_duration,
+        )
         split_points = _find_silence_split_points(wav, target_sec=chunk_sec)
 
         if not split_points:
@@ -841,8 +564,8 @@ class _OnnxAsrPipeline:
 
         boundaries = [0] + split_points + [len(wav)]
         num_chunks = len(boundaries) - 1
-        logger.info("Qwen3-ASR: %.1fs audio split into %d sub-chunks",
-                    audio_duration, num_chunks)
+        logger.info("Qwen3-ASR: %.1fs audio split into %d sub-chunks (chunk_sec=%d)",
+                    audio_duration, num_chunks, chunk_sec)
 
         texts: List[str] = []
         detected_lang = language or ""
@@ -872,44 +595,21 @@ class _OnnxAsrPipeline:
             "avg_logprob": avg_logprob,
         }
 
-
-# ── Module-level singleton accessor ─────────────────────────────────────
-
 _pipeline: Optional[_OnnxAsrPipeline] = None
 _pipeline_dir: Optional[str] = None
 
-
 class AsrLoadRefused(RuntimeError):
-    """Raised when load is refused due to memory pressure.
-
-    The lyrics pipeline catches this and treats the song as instrumental
-    instead of crashing the worker (or, worse, the node).
-    """
-
+    pass
 
 def is_loaded() -> bool:
-    """True when the Qwen3-ASR pipeline is currently held in memory."""
     return _pipeline is not None
 
-
 def unload() -> bool:
-    """Drop the cached pipeline and free the four ONNX sessions + memmap.
-
-    Mirrors the per-album release pattern used by CLAP — see
-    ``tasks.clap_analyzer.unload_clap_model``. Safe to call when nothing is
-    loaded. Each release step runs under its own try/except so a partial
-    failure cannot leak the rest. Returns True if anything was actually
-    released.
-    """
     global _pipeline, _pipeline_dir
     pipeline = _pipeline
     if pipeline is None and _pipeline_dir is None:
         return False
-    # Capture EP before detaching — if Qwen ran on CUDA we need to force a
-    # CUDA cache reset to actually free the VRAM.
     used_cuda = bool(getattr(pipeline, '_use_cuda', False))
-    # Detach from module-level singletons first so concurrent callers can't
-    # reuse a half-torn-down pipeline if cleanup raises mid-way.
     _pipeline = None
     _pipeline_dir = None
     try:
@@ -921,8 +621,6 @@ def unload() -> bool:
             except Exception:
                 logger.exception("Error dropping Qwen3-ASR pipeline.%s", attr)
     finally:
-        # Always run GC + memory-pool reset even if some attribute drop above
-        # raised — the partially-dropped pipeline still needs to be reclaimed.
         try:
             import gc
             del pipeline
@@ -937,31 +635,7 @@ def unload() -> bool:
     logger.info("Qwen3-ASR: pipeline unloaded (~3 GB freed)")
     return True
 
-
 def load_asr_model(num_threads: Optional[int] = None) -> _OnnxAsrPipeline:
-    """Return the cached pipeline, building it on first call.
-
-    Load sequence:
-
-    1. Reuse the cached pipeline if this worker process already loaded it
-       (singleton — once loaded, every subsequent job in this worker reuses
-       the same in-memory model).
-    2. Refuse if free RAM is below ``LYRICS_ASR_MIN_FREE_RAM_GB``. Each
-       worker checks independently; concurrent workers that arrive when
-       memory is already tight back off and treat their songs as
-       instrumental rather than pushing the node into OOM.
-    3. Only then construct the heavy pipeline.
-
-    ``num_threads`` is accepted for backward compatibility but ignored —
-    the per-split intra-op cap is always ``os.cpu_count() // 3``. See
-    :func:`_resolve_thread_cap` for the rationale (sessions and splits
-    are all sequential, so we only need to leave headroom for *other*
-    workers on the box).
-
-    Raises ``AsrLoadRefused`` when the RAM gate trips. Lower-level errors
-    during actual model construction (missing files, etc.) propagate as
-    ``RuntimeError``.
-    """
     global _pipeline, _pipeline_dir
     try:
         from config import LYRICS_QWEN_ASR_MODEL_DIR
@@ -971,7 +645,6 @@ def load_asr_model(num_threads: Optional[int] = None) -> _OnnxAsrPipeline:
     if _pipeline is not None and _pipeline_dir == LYRICS_QWEN_ASR_MODEL_DIR:
         return _pipeline
 
-    # Defense layer: pre-load free-RAM check.
     try:
         _check_free_ram_or_raise()
     except RuntimeError as exc:
@@ -983,18 +656,9 @@ def load_asr_model(num_threads: Optional[int] = None) -> _OnnxAsrPipeline:
     _pipeline_dir = LYRICS_QWEN_ASR_MODEL_DIR
     return _pipeline
 
-
 def transcribe(wav: np.ndarray, sr: int, language: Optional[str] = None,
                num_threads: Optional[int] = None) -> Dict[str, object]:
-    """Transcribe a numpy audio buffer with the cached pipeline.
-
-    Returns a dict shaped like the previous Whisper integration:
-    ``{'text': str, 'language': str, 'duration': float}``. On
-    ``AsrLoadRefused`` (RAM pressure), returns an empty transcription so
-    the caller treats the song as instrumental.
-    """
     if sr != SAMPLE_RATE:
-        # The pipeline is fixed at 16kHz. Resample if a different sr arrives.
         import librosa
         wav = librosa.resample(wav.astype(np.float32), orig_sr=sr, target_sr=SAMPLE_RATE)
         sr = SAMPLE_RATE
