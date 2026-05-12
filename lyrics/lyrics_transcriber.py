@@ -421,7 +421,8 @@ def fetch_remote_lyrics(artist: Optional[str], track: Optional[str],
             return sanitized
     return None
 
-def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
+def _apply_vad(audio: np.ndarray, sr: int,
+               vocal_prior: bool = False) -> np.ndarray:
     if sr != 16000 or get_speech_timestamps is None:
         return audio
 
@@ -485,6 +486,15 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
     voiced = np.concatenate([audio[t['start']:t['end']] for t in ts])
     voiced_seconds = len(voiced) / sr
     if len(voiced) < sr * VAD_VOICE_RECOGNITION:
+        if vocal_prior:
+            logger.info(
+                'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) but '
+                'musicnn flagged vocalist mood — bypassing gate, sending full '
+                '%.2fs clip to Whisper',
+                voiced_seconds, VAD_VOICE_RECOGNITION, max_prob,
+                len(audio) / sr,
+            )
+            return audio
         logger.info(
             'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) — '
             'treating as instrumental',
@@ -620,8 +630,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     else:
         logger.info('STEP 0 skipped: already have lyrics from media server')
 
-    if not raw_text and top_moods:
+    normalized_moods: set = set()
+    if top_moods:
         normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
+    vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists'})
+
+    if not raw_text and top_moods:
         if 'instrumental' in normalized_moods:
             embedding, axis_vector = _make_instrumental_sentinel()
             logger.info(
@@ -654,7 +668,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                     used_seconds, len(audio_clip), sr)
 
         pre_vad_samples = len(audio_clip)
-        audio_clip = _apply_vad(audio_clip, sr)
+        audio_clip = _apply_vad(audio_clip, sr, vocal_prior=vocal_prior)
         if len(audio_clip) != pre_vad_samples:
             logger.info('VAD: %.2fs -> %.2fs voiced',
                         pre_vad_samples / sr, len(audio_clip) / sr)
