@@ -348,6 +348,8 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 # quality, ~5× cost). Each extra beam adds one decoder.run per generated
 # token plus its own KV cache (~30-80 MB at a full 30 s chunk).
 LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
+LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
+LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get("LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB", "-0.85"))
 # Where the Whisper-small ONNX bundle (encoder + merged decoder +
 # tokenizer files) is extracted. Pre-bundled in the official Docker
 # image from lyrics_model_whisper.tar.gz (project release).

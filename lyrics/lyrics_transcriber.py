@@ -44,6 +44,9 @@ try:
 except Exception:
     MIN_CHARS_FOR_EMBEDDING = int(os.environ.get('LYRICS_MIN_CHARS_FOR_EMBEDDING', '250'))
 
+from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
+from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
+
 MUSIC_ANALYSIS_AXES = {
     "AXIS_1_SETTING": {
         "description": "The primary physical or environmental container of the song.",
@@ -710,9 +713,6 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         MIN_CHARS_FOR_EMBEDDING, len(raw_text))
             raw_text = ''
 
-    ASR_MIN_AVG_LOGPROB = float(os.environ.get('LYRICS_ASR_MIN_AVG_LOGPROB', '-1.0'))
-    ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get(
-        'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB', '-0.5'))
     _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
     _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
     if raw_text and asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
