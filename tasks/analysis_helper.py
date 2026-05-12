@@ -94,19 +94,20 @@ def create_onnx_session(model_path, provider_options=None, label="", sess_option
     caps, mem arena, etc.) survives the fallback.
     """
     opts = provider_options or get_provider_options()
+    extra = {'sess_options': sess_options} if sess_options is not None else {}
     try:
         return ort.InferenceSession(
             model_path,
-            sess_options=sess_options,
             providers=[p[0] for p in opts],
             provider_options=[p[1] for p in opts],
+            **extra,
         )
     except Exception:
         logger.warning(f"Failed to load {label or model_path} with GPU - falling back to CPU")
         return ort.InferenceSession(
             model_path,
-            sess_options=sess_options,
             providers=['CPUExecutionProvider'],
+            **extra,
         )
 
 

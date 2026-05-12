@@ -438,7 +438,7 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
     if sr != 16000 or get_speech_timestamps is None:
         return audio
 
-    primary_threshold = float(os.environ.get('LYRICS_VAD_THRESHOLD', '0.3'))
+    primary_threshold = float(os.environ.get('LYRICS_VAD_THRESHOLD', '0.2'))
     neg_threshold_env = os.environ.get('LYRICS_VAD_NEG_THRESHOLD')
     neg_threshold = (float(neg_threshold_env) if neg_threshold_env
                      else max(0.01, primary_threshold - 0.15))

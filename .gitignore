@@ -66,3 +66,6 @@ student_clap/models/FMA_SONGS_2247_LICENSE.md
 
 # Testing suite
 testing_suite/
+analysis.md
+.claude/settings.local.json
+.claude/settings.local.json

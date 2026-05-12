@@ -521,12 +521,15 @@ class _OnnxWhisperPipeline:
             mel = _log_mel_spectrogram(w, self.mel_filters)
             encoder_outputs.append(self._encode(mel))
 
-        for enc in encoder_outputs:
+        for chunk_idx, enc in enumerate(encoder_outputs):
+            chunk_samples = len(windows[chunk_idx])
+            chunk_seconds = chunk_samples / SAMPLE_RATE
             text, avg_lp = self._decode_chunk(
                 enc, lang_token_id, max_new_tokens,
                 beam_size=WHISPER_BEAM_SIZE,
             )
             cleaned = text.strip()
+            dropped_by_compression = False
             if (cleaned and WHISPER_COMPRESSION_RATIO_THRESHOLD > 0
                     and _compression_ratio(cleaned)
                     > WHISPER_COMPRESSION_RATIO_THRESHOLD):
@@ -538,6 +541,17 @@ class _OnnxWhisperPipeline:
                 )
                 cleaned = ''
                 avg_lp = float('-inf')
+                dropped_by_compression = True
+            preview = (cleaned[:80] + '…') if len(cleaned) > 80 else cleaned
+            logger.info(
+                "Whisper-small: chunk %d/%d (%.2fs, %d samples) → "
+                "%d chars, avg_logprob=%s%s | %r",
+                chunk_idx + 1, len(encoder_outputs), chunk_seconds, chunk_samples,
+                len(cleaned),
+                f"{avg_lp:.3f}" if avg_lp != float('-inf') else '-inf',
+                ' (DROPPED by compression)' if dropped_by_compression else '',
+                preview,
+            )
             if cleaned:
                 texts.append(cleaned)
             if avg_lp != float('-inf'):
