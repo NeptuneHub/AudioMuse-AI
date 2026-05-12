@@ -1,4 +1,3 @@
-# /home/guido/Music/AudioMuse-AI/rq_worker_high_priority.py
 import os
 import sys
 

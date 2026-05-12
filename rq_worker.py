@@ -1,4 +1,3 @@
-# /home/guido/Music/AudioMuse-AI/rq_worker.py
 import os
 import sys
 
