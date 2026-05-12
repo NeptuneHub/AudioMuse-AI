@@ -95,22 +95,21 @@ def _segments_from_probs(
     min_speech_samples: int,
     min_silence_samples: int,
     speech_pad: int,
+    neg_threshold: Optional[float] = None,
 ) -> List[Dict[str, int]]:
-    is_speech = probs >= threshold
+    if neg_threshold is None:
+        neg_threshold = max(0.01, threshold - 0.15)
     segments: List[Dict[str, int]] = []
     in_segment = False
     seg_start = 0
     silence_count = 0
 
-    for i, voiced in enumerate(is_speech):
+    for i, prob in enumerate(probs):
         sample_pos = i * window
-        if voiced:
-            if not in_segment:
-                in_segment = True
-                seg_start = sample_pos
-            silence_count = 0
-        else:
-            if in_segment:
+        if in_segment:
+            if prob >= neg_threshold:
+                silence_count = 0
+            else:
                 silence_count += window
                 if silence_count >= min_silence_samples:
                     seg_end = sample_pos - silence_count + window
@@ -121,6 +120,11 @@ def _segments_from_probs(
                         })
                     in_segment = False
                     silence_count = 0
+        else:
+            if prob >= threshold:
+                in_segment = True
+                seg_start = sample_pos
+                silence_count = 0
     if in_segment:
         seg_end = audio_len
         if seg_end - seg_start >= min_speech_samples:
@@ -133,7 +137,8 @@ def _segments_from_probs(
 def analyze_audio(
     audio: np.ndarray,
     sample_rate: int = 16000,
-    threshold: float = 0.3,
+    threshold: float = 0.5,
+    neg_threshold: Optional[float] = None,
     min_speech_duration_ms: int = 250,
     min_silence_duration_ms: int = 100,
     speech_pad_ms: int = 30,
@@ -157,6 +162,7 @@ def analyze_audio(
     segments = _segments_from_probs(
         probs, len(audio), sample_rate, window, threshold,
         min_speech_samples, min_silence_samples, speech_pad,
+        neg_threshold=neg_threshold,
     )
     return {
         'segments': segments,
@@ -170,7 +176,8 @@ def analyze_audio(
 def get_speech_timestamps(
     audio: np.ndarray,
     sample_rate: int = 16000,
-    threshold: float = 0.3,
+    threshold: float = 0.5,
+    neg_threshold: Optional[float] = None,
     min_speech_duration_ms: int = 250,
     min_silence_duration_ms: int = 100,
     speech_pad_ms: int = 30,
@@ -178,6 +185,7 @@ def get_speech_timestamps(
 ) -> List[Dict[str, int]]:
     result = analyze_audio(
         audio, sample_rate=sample_rate, threshold=threshold,
+        neg_threshold=neg_threshold,
         min_speech_duration_ms=min_speech_duration_ms,
         min_silence_duration_ms=min_silence_duration_ms,
         speech_pad_ms=speech_pad_ms, model_path=model_path,
@@ -186,7 +194,8 @@ def get_speech_timestamps(
 
 def threshold_segments(probs: np.ndarray, audio_len: int,
                        sample_rate: int = 16000,
-                       threshold: float = 0.3,
+                       threshold: float = 0.5,
+                       neg_threshold: Optional[float] = None,
                        min_speech_duration_ms: int = 250,
                        min_silence_duration_ms: int = 100,
                        speech_pad_ms: int = 30) -> List[Dict[str, int]]:
@@ -197,6 +206,7 @@ def threshold_segments(probs: np.ndarray, audio_len: int,
     return _segments_from_probs(
         probs, audio_len, sample_rate, window, threshold,
         min_speech_samples, min_silence_samples, speech_pad,
+        neg_threshold=neg_threshold,
     )
 
 def is_loaded() -> bool:

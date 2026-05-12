@@ -439,6 +439,9 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         return audio
 
     primary_threshold = float(os.environ.get('LYRICS_VAD_THRESHOLD', '0.3'))
+    neg_threshold_env = os.environ.get('LYRICS_VAD_NEG_THRESHOLD')
+    neg_threshold = (float(neg_threshold_env) if neg_threshold_env
+                     else max(0.01, primary_threshold - 0.15))
     retry_floor = float(os.environ.get('LYRICS_VAD_RETRY_FLOOR', '0.15'))
     min_silence_ms = int(os.environ.get('LYRICS_VAD_MIN_SILENCE_MS', '1000'))
     min_speech_ms = int(os.environ.get('LYRICS_VAD_MIN_SPEECH_MS', '250'))
@@ -448,6 +451,7 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
         from .silero_onnx import analyze_audio, threshold_segments
         result = analyze_audio(audio, sample_rate=sr,
                                threshold=primary_threshold,
+                               neg_threshold=neg_threshold,
                                min_speech_duration_ms=min_speech_ms,
                                min_silence_duration_ms=min_silence_ms,
                                speech_pad_ms=speech_pad_ms)
@@ -467,6 +471,7 @@ def _apply_vad(audio: np.ndarray, sr: int) -> np.ndarray:
                 ts = threshold_segments(probs, audio_len=len(audio),
                                         sample_rate=sr,
                                         threshold=retry_floor,
+                                        neg_threshold=max(0.01, retry_floor - 0.15),
                                         min_speech_duration_ms=min_speech_ms,
                                         min_silence_duration_ms=min_silence_ms,
                                         speech_pad_ms=speech_pad_ms)
