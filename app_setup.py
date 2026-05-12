@@ -81,9 +81,6 @@ ENUM_FIELD_OPTIONS = {
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
     'VOYAGER_METRIC': ['angular', 'euclidean', 'dot'],
-    # ASR engine used by the lyrics pipeline. Both bundles ship in the
-    # Docker image — selection is runtime-only, no re-build needed.
-    'LYRICS_ASR_SELECT': ['whisper_small', 'qwen_asr_0.6'],
 }
 
 HIDDEN_ADVANCED_FIELDS = {
@@ -141,7 +138,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'LYRICS_MAX_SONGS_TO_ANALYZE',
     'LYRICS_MODEL_DIR',
     'LYRICS_SUPPORTED_AUDIO_EXTENSIONS',
-    'LYRICS_QWEN_ASR_MODEL_DIR',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
     'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
     'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',

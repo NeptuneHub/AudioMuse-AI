@@ -457,7 +457,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
 
     ``top_moods`` is the MusicNN top-N moods dict from this same analysis
     pass (label → score). When it includes 'instrumental', analyze_lyrics
-    short-circuits the entire pipeline (skips Qwen3-ASR + Marian + e5)
+    short-circuits the entire pipeline (skips Whisper-small ASR + Marian + e5)
     and writes the instrumental sentinel directly. Pass None when MusicNN
     was skipped (already analyzed) — the optimization just doesn't apply
     in that case and the lyrics pipeline runs normally.

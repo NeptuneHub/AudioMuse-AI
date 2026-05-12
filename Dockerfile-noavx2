@@ -337,7 +337,7 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
 
-# Lyrics analysis requires the Qwen3-ASR / silero-vad / e5 / Marian ONNX
+# Lyrics analysis requires the Whisper / silero-vad / e5 / Marian ONNX
 # bundles plus onnxruntime, which are intentionally not shipped in the
 # no-AVX2 image. Force-disable the feature here so the rest of the app
 # starts cleanly.

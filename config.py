@@ -318,7 +318,7 @@ EMBEDDING_DIMENSION = 200
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
 # Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
 LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
-# When true, look up lyrics from user-configured external APIs before falling back to Qwen3-ASR.
+# When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
@@ -342,28 +342,8 @@ LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyric
 LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
 LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
 LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
-# Directory containing the Qwen3-ASR-0.6B ONNX CPU build (encoder/decoder
-# ONNX files inside onnx_models/ + embed_tokens.bin + tokenizer.json at the
-# root). Pre-bundled in the official Docker image from the project release
-# tarball lyrics_model_qwen3_asr.tar.gz.
-LYRICS_QWEN_ASR_MODEL_DIR = os.environ.get(
-    "LYRICS_QWEN_ASR_MODEL_DIR",
-    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "Qwen3-ASR-0.6B-ONNX-CPU"),
-)
-# Which ASR engine to use for the lyrics pipeline. Both bundles ship in
-# the Docker image; the choice is user-tunable via the setup wizard /
-# env so deployments can switch without re-building.
-#   * 'whisper_small'   — openai/whisper-small ONNX (HF optimum export).
-#                          Built-in language detection (Whisper emits a
-#                          per-language softmax in its decoder's first
-#                          step; we apply a >=0.7 confidence gate). ~570
-#                          MB on disk, ~1.5 GB peak RSS.
-#   * 'qwen_asr_0.6'    — Qwen3-ASR-0.6B INT8 ONNX. Newer, larger model;
-#                          ~2.4 GB on disk, ~3 GB peak RSS.
-LYRICS_ASR_SELECT = os.environ.get("LYRICS_ASR_SELECT", "whisper_small").strip().lower()
-# Beam search width — **shared by both ASR engines** (Whisper-small and
-# Qwen3-ASR) so a single operator knob controls decoder quality. 1 = pure
-# greedy (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
+# Beam search width for the Whisper-small ASR decoder. 1 = pure greedy
+# (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
 # attractors at ~2× greedy cost), 5 = Whisper-upstream default (max
 # quality, ~5× cost). Each extra beam adds one decoder.run per generated
 # token plus its own KV cache (~30-80 MB at a full 30 s chunk).
@@ -665,8 +645,6 @@ try:
         # Read the value from the db and override the variable
         if _key in globals():
             globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
-        else:
-            globals()[_key] = _value
 
     HEADERS = _compute_headers()
 

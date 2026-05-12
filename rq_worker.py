@@ -51,7 +51,7 @@ configure_logging()
 # The order is important! Workers will always check 'high' before 'default'.
 queues_to_listen = ['default']
 
-# NOTE: Do NOT preload Qwen3-ASR / e5 / Marian / silero ONNX sessions here in
+# NOTE: Do NOT preload Whisper / e5 / Marian / silero ONNX sessions here in
 # the parent process. RQ uses os.fork() to spawn each job's child process.
 # OpenMP (libgomp / libomp) and the onnxruntime thread pools are NOT fork-safe:
 # any thread pool initialized in the parent becomes corrupted in the child and

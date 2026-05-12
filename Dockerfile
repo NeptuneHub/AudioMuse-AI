@@ -31,7 +31,7 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download musicnn ONNX models with diagnostics and retry logic.
-# Lyrics models (Qwen3-ASR / e5 / MarianMT / silero-vad) are downloaded
+# Lyrics models (Whisper / e5 / MarianMT / silero-vad) are downloaded
 # in later stages from the project release tarballs.
 RUN set -eux; \
     mkdir -p /app/model; \
@@ -346,55 +346,12 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
-# Download Qwen3-ASR-0.6B ONNX CPU bundle (~1.4 GB compressed, ~2.5 GB
-# extracted) for the lyrics pipeline. Replaces the previous openai-whisper
-# integration. Pure ONNX Runtime — no PyTorch needed at inference.
-#
-# Bundle ships `Qwen3-ASR-0.6B-ONNX-CPU/` as its top-level directory
-# (onnx_models/<...>.onnx + embed_tokens.bin + tokenizer.json), produced
-# from Daumee/Qwen3-ASR-0.6B-ONNX-CPU on HuggingFace and re-hosted on the
-# project's GitHub release for reproducibility / mirror independence.
-RUN set -eux; \
-    qwen_dir="/app/model/Qwen3-ASR-0.6B-ONNX-CPU"; \
-    qwen_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_qwen3_asr.tar.gz"; \
-    qwen_dest="/tmp/lyrics_model_qwen3_asr.tar.gz"; \
-    echo "Downloading Qwen3-ASR-0.6B ONNX bundle (~1.4 GB)..."; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$qwen_dest" "$qwen_url"; then \
-            echo "✓ qwen bundle downloaded"; break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for qwen bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download qwen bundle"; exit 1; \
-    fi; \
-    mkdir -p /app/model; \
-    tar -xzf "$qwen_dest" -C /app/model; \
-    rm -f "$qwen_dest"; \
-    for f in onnx_models/encoder_conv.onnx onnx_models/encoder_transformer.onnx \
-             onnx_models/decoder_init.int8.onnx onnx_models/decoder_step.int8.onnx \
-             onnx_models/embed_tokens.bin tokenizer.json; do \
-        if [ ! -f "$qwen_dir/$f" ]; then \
-            echo "ERROR: Qwen3-ASR file missing: $qwen_dir/$f"; \
-            echo "Actual /app/model contents:"; \
-            ls -laR /app/model | head -50; \
-            exit 1; \
-        fi; \
-    done; \
-    echo "✓ Qwen3-ASR ONNX model ready in $qwen_dir"; \
-    du -sh "$qwen_dir"
-
 # Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
 # of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
 # tokenizer files + preprocessor config). Re-hosted on the project's GitHub
 # release for mirror independence. Bundle ships `whisper-small-onnx/` as
 # its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
-# raw onnxruntime. Selectable via LYRICS_ASR_SELECT=whisper_small (default).
+# raw onnxruntime.
 RUN set -eux; \
     whisper_dir="/app/model/whisper-small-onnx"; \
     whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \

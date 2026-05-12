@@ -120,22 +120,9 @@ _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 _embedding_load_lock = threading.Lock()
 
-def _resolve_asr_select() -> str:
-    try:
-        from config import LYRICS_ASR_SELECT
-        choice = str(LYRICS_ASR_SELECT).strip().lower()
-    except Exception:
-        choice = (os.environ.get('LYRICS_ASR_SELECT', 'whisper_small')
-                  .strip().lower())
-    return choice if choice in ('whisper_small', 'qwen_asr_0.6') else 'whisper_small'
-
 def load_asr_model(num_threads: Optional[int] = None):
     threads = num_threads or get_lyrics_threads()
     _apply_thread_env(threads)
-    engine = _resolve_asr_select()
-    if engine == 'qwen_asr_0.6':
-        from .qwen_asr import load_asr_model as _load
-        return _load(num_threads=threads)
     from .whisper_onnx import load_whisper_model as _load
     return _load()
 
@@ -514,11 +501,6 @@ def _transcribe(audio: np.ndarray, sr: int,
                 num_threads: Optional[int] = None) -> Dict[str, object]:
     if audio is None or len(audio) == 0:
         return {'text': '', 'language': language or '', 'duration': 0.0}
-    engine = _resolve_asr_select()
-    if engine == 'qwen_asr_0.6':
-        from .qwen_asr import transcribe as _qwen_transcribe
-        return _qwen_transcribe(audio, sr, language=language,
-                                num_threads=num_threads)
     from .whisper_onnx import transcribe as _whisper_transcribe
     return _whisper_transcribe(audio, sr, language=language,
                                num_threads=num_threads)
@@ -632,7 +614,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                             len(raw_text))
                 logger.info('STEP 0 raw API output: %s', raw_text)
             else:
-                logger.info('STEP 0 end: API MISS - falling back to Qwen3-ASR')
+                logger.info('STEP 0 end: API MISS - falling back to Whisper-small ASR')
         else:
             logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
     else:
@@ -678,9 +660,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         pre_vad_samples / sr, len(audio_clip) / sr)
 
         _ASR_TIMEOUT_S = 300
-        _asr_engine = _resolve_asr_select()
-        logger.info('STEP 2 start: %s transcription (threads=%s, timeout=%ss)',
-                    _asr_engine, threads, _ASR_TIMEOUT_S)
+        logger.info('STEP 2 start: whisper_small transcription (threads=%s, timeout=%ss)',
+                    threads, _ASR_TIMEOUT_S)
 
         class _AsrTimeout(Exception):
             pass
@@ -694,7 +675,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             transcription = _transcribe(audio_clip, sr, num_threads=threads)
         except _AsrTimeout:
             logger.warning(
-                'STEP 2 timeout: Qwen3-ASR exceeded %ss — returning empty transcript',
+                'STEP 2 timeout: Whisper-small ASR exceeded %ss — returning empty transcript',
                 _ASR_TIMEOUT_S,
             )
             transcription = {'text': '', 'language': '', 'duration': len(audio_clip) / sr}
@@ -737,7 +718,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         raw_text = ''
     if raw_text and asr_lang in _ASR_NULL_LANGS:
         logger.info('STEP 3: ASR reported no usable language (%r) — '
-                    'treating as instrumental (Qwen language uncertainty '
+                    'treating as instrumental (language uncertainty '
                     'is a proxy for transcript uncertainty)',
                     asr_lang)
         raw_text = ''

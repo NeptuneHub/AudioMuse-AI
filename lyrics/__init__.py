@@ -54,10 +54,10 @@ def is_lyrics_loaded() -> bool:
     if not _LYRICS_ENABLED:
         return False
     try:
-        from . import qwen_asr, whisper_onnx, e5_onnx, silero_onnx, translation_onnx
+        from . import whisper_onnx, e5_onnx, silero_onnx, translation_onnx
     except Exception:
         return False
-    for mod in (qwen_asr, whisper_onnx, e5_onnx, silero_onnx, translation_onnx):
+    for mod in (whisper_onnx, e5_onnx, silero_onnx, translation_onnx):
         try:
             if mod.is_loaded():
                 return True
@@ -70,13 +70,6 @@ def unload_lyrics_models() -> bool:
         return False
     released_any = False
     try:
-        try:
-            from . import qwen_asr
-            if qwen_asr.is_loaded():
-                released_any = bool(_safe_call('qwen_asr.unload', qwen_asr.unload))
-        except Exception as exc:
-            _logger.warning("Lyrics qwen_asr release failed: %s", exc)
-
         try:
             from . import whisper_onnx
             if whisper_onnx.is_loaded():
@@ -120,7 +113,7 @@ def unload_lyrics_models() -> bool:
         except Exception as exc:
             _logger.warning("Lyrics final memory cleanup failed: %s", exc)
     if released_any:
-        _logger.info("Lyrics models unloaded (~4 GB freed)")
+        _logger.info("Lyrics models unloaded (~2 GB freed)")
     return released_any
 
 __all__ = [
