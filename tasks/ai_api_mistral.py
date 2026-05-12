@@ -8,11 +8,10 @@ from typing import Dict, List
 logger = logging.getLogger(__name__)
 
 try:
-    from mistralai import Mistral as _Mistral
+    import mistralai as _mistralai_probe  # noqa: F401
     _MISTRAL_AVAILABLE = True
     _MISTRAL_IMPORT_ERROR = None
 except ImportError as _exc:
-    _Mistral = None
     _MISTRAL_AVAILABLE = False
     _MISTRAL_IMPORT_ERROR = str(_exc)
 
@@ -43,7 +42,7 @@ def generate_text(
         return "Error: Mistral API key is missing or empty. Please provide a valid API key."
 
     try:
-        Mistral = _Mistral
+        from mistralai import Mistral
 
         if not skip_delay:
             mistral_call_delay = int(os.environ.get("MISTRAL_API_CALL_DELAY_SECONDS", "7"))
@@ -90,7 +89,7 @@ def call_with_tools(
                      _MISTRAL_IMPORT_ERROR)
         return {"error": _MISTRAL_UNAVAILABLE_MSG}
     try:
-        Mistral = _Mistral
+        from mistralai import Mistral
 
         if not api_key or api_key == "YOUR-MISTRAL-API-KEY-HERE":
             return {"error": "Valid Mistral API key required"}
