@@ -69,9 +69,15 @@ def load_e5_model():
         sess_options.enable_mem_pattern = False
         sess_options.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         sess_options.inter_op_num_threads = 1
-        session = ort.InferenceSession(
-            onnx_path, sess_options=sess_options,
-            providers=['CPUExecutionProvider'])
+        try:
+            from tasks.analysis_helper import create_onnx_session
+            session = create_onnx_session(onnx_path, sess_options=sess_options, label='e5')
+        except Exception as exc:
+            logger.warning('e5: provider helper unavailable (%s) — CPU only', exc)
+            session = ort.InferenceSession(
+                onnx_path, sess_options=sess_options,
+                providers=['CPUExecutionProvider'])
+        logger.info('e5 active provider: %s', session.get_providers()[0])
 
         _tokenizer = tokenizer
         _session = session

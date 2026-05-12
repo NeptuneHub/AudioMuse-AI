@@ -86,18 +86,28 @@ def get_provider_options():
     return [('CPUExecutionProvider', {})]
 
 
-def create_onnx_session(model_path, provider_options=None, label=""):
-    """Create an InferenceSession; falls back to CPU if the preferred providers fail."""
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+    """Create an InferenceSession; falls back to CPU if the preferred providers fail.
+
+    sess_options is an optional ort.SessionOptions used for both the preferred
+    and the CPU-fallback session, so per-model tuning (graph opt level, thread
+    caps, mem arena, etc.) survives the fallback.
+    """
     opts = provider_options or get_provider_options()
     try:
         return ort.InferenceSession(
             model_path,
+            sess_options=sess_options,
             providers=[p[0] for p in opts],
             provider_options=[p[1] for p in opts],
         )
     except Exception:
         logger.warning(f"Failed to load {label or model_path} with GPU - falling back to CPU")
-        return ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        return ort.InferenceSession(
+            model_path,
+            sess_options=sess_options,
+            providers=['CPUExecutionProvider'],
+        )
 
 
 def load_musicnn_sessions(model_paths):

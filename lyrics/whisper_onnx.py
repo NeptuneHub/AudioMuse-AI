@@ -214,10 +214,21 @@ class _OnnxWhisperPipeline:
             path, intra_op_label,
         )
 
-        self.encoder_session = ort.InferenceSession(
-            str(encoder_path), sess_opts, providers=['CPUExecutionProvider'])
-        self.decoder_session = ort.InferenceSession(
-            str(decoder_path), sess_opts, providers=['CPUExecutionProvider'])
+        try:
+            from tasks.analysis_helper import create_onnx_session
+            self.encoder_session = create_onnx_session(
+                str(encoder_path), sess_options=sess_opts, label='whisper_encoder')
+            self.decoder_session = create_onnx_session(
+                str(decoder_path), sess_options=sess_opts, label='whisper_decoder')
+        except Exception as exc:
+            logger.warning('Whisper: provider helper unavailable (%s) — CPU only', exc)
+            self.encoder_session = ort.InferenceSession(
+                str(encoder_path), sess_opts, providers=['CPUExecutionProvider'])
+            self.decoder_session = ort.InferenceSession(
+                str(decoder_path), sess_opts, providers=['CPUExecutionProvider'])
+        logger.info('Whisper-small active providers: encoder=%s decoder=%s',
+                    self.encoder_session.get_providers()[0],
+                    self.decoder_session.get_providers()[0])
 
         self.decoder_input_names: Set[str] = {
             inp.name for inp in self.decoder_session.get_inputs()}

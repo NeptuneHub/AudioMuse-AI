@@ -38,10 +38,16 @@ def _load_session(model_path: Optional[str] = None):
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         opts.inter_op_num_threads = 1
-        _session = ort.InferenceSession(
-            path, sess_options=opts, providers=['CPUExecutionProvider'])
+        try:
+            from tasks.analysis_helper import create_onnx_session
+            _session = create_onnx_session(path, sess_options=opts, label='silero_vad')
+        except Exception as exc:
+            logger.warning('Silero VAD: provider helper unavailable (%s) — CPU only', exc)
+            _session = ort.InferenceSession(
+                path, sess_options=opts, providers=['CPUExecutionProvider'])
         _session_path = path
-        logger.info('Silero VAD ONNX session ready (path=%s)', path)
+        logger.info('Silero VAD ONNX session ready (path=%s, provider=%s)',
+                    path, _session.get_providers()[0])
         return _session
 
 def _voice_probabilities(audio: np.ndarray, sample_rate: int,
