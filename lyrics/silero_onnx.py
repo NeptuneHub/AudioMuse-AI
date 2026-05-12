@@ -40,7 +40,12 @@ def _load_session(model_path: Optional[str] = None):
         opts.inter_op_num_threads = 1
         try:
             from tasks.analysis_helper import create_onnx_session
-            _session = create_onnx_session(path, sess_options=opts, label='silero_vad')
+            _session = create_onnx_session(
+                path,
+                provider_options=[('CPUExecutionProvider', {})],
+                sess_options=opts,
+                label='silero_vad',
+            )
         except Exception as exc:
             logger.warning('Silero VAD: provider helper unavailable (%s) — CPU only', exc)
             _session = ort.InferenceSession(
