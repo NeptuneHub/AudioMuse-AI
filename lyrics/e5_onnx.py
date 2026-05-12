@@ -71,7 +71,12 @@ def load_e5_model():
         sess_options.inter_op_num_threads = 1
         try:
             from tasks.analysis_helper import create_onnx_session
-            session = create_onnx_session(onnx_path, sess_options=sess_options, label='e5')
+            session = create_onnx_session(
+                onnx_path,
+                provider_options=[('CPUExecutionProvider', {})],
+                sess_options=sess_options,
+                label='e5',
+            )
         except Exception as exc:
             logger.warning('e5: provider helper unavailable (%s) — CPU only', exc)
             session = ort.InferenceSession(
