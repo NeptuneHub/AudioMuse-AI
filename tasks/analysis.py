@@ -581,6 +581,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             except Exception as e:
                 logger.warning(f"Error during final comprehensive cleanup: {e}")
             cleanup_optional_models(context="finally")
+            _release_freed_ram_to_os()
 
 def run_analysis_task(num_recent_albums, top_n_moods):
     from .clap_analyzer import is_clap_available
