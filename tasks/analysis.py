@@ -13,6 +13,7 @@ import logging
 import uuid
 import traceback
 import gc
+import platform
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -99,6 +100,11 @@ def clean_temp(temp_dir):
 
 def _release_freed_ram_to_os():
     gc.collect()
+    
+    #malloc_trim is Linux/glibc specific
+    if platform.system() != "Linux":
+        return
+        
     try:
         import ctypes
         import ctypes.util
