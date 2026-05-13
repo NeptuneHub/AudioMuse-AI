@@ -67,21 +67,17 @@ def _load_audio_model():
     if has_external_data:
         logger.info(f"External data file detected: {data_file}")
 
-    # Configure ONNX Runtime session options
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_options.log_severity_level = 3  # 0=Verbose, 1=Info, 2=Warning, 3=Error, 4=Fatal
-    
-    # Threading configuration based on CLAP_PYTHON_MULTITHREADS:
-    # - False (default): Let ONNX Runtime decide thread counts automatically
-    # - True: Disable ONNX threading (set to 1), use Python ThreadPoolExecutor instead
+    sess_options.log_severity_level = 3
+    sess_options.enable_cpu_mem_arena = False
+    sess_options.enable_mem_pattern = False
+
     if not config.CLAP_PYTHON_MULTITHREADS:
-        # Let ONNX Runtime handle threading (default automatic behaviour)
         logger.info("CLAP Audio: Using ONNX Runtime automatic thread management")
     else:
-        # Python ThreadPoolExecutor will handle threading - disable ONNX threading
-        sess_options.intra_op_num_threads = 1  # Single-threaded ONNX operations
-        sess_options.inter_op_num_threads = 1  # Single-threaded ONNX operations
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
         logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
     
     # GPU support: ONNX Runtime handles CUDA availability internally
@@ -173,11 +169,12 @@ def _load_text_model():
     model_path = config.CLAP_TEXT_MODEL_PATH
     logger.info(f"Loading CLAP text model from {model_path}...")
     
-    # Configure ONNX Runtime session options
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     sess_options.log_severity_level = 3
-    
+    sess_options.enable_cpu_mem_arena = False
+    sess_options.enable_mem_pattern = False
+
     if not config.CLAP_PYTHON_MULTITHREADS:
         logger.info("CLAP Text: Using ONNX Runtime automatic thread management")
     else:

@@ -117,6 +117,8 @@ def _load_translator(model_dir: Optional[str] = None):
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 6)
         sess_opts.inter_op_num_threads = 1
+        sess_opts.enable_cpu_mem_arena = False
+        sess_opts.enable_mem_pattern = False
 
         encoder_path = os.path.join(target_dir, 'encoder_model.onnx')
         decoder_path = os.path.join(target_dir, 'decoder_model_merged.onnx')

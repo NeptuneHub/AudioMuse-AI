@@ -86,15 +86,26 @@ def get_provider_options():
     return [('CPUExecutionProvider', {})]
 
 
+def _default_sess_options():
+    opts = ort.SessionOptions()
+    opts.enable_cpu_mem_arena = False
+    opts.enable_mem_pattern = False
+    return opts
+
+
 def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
     """Create an InferenceSession; falls back to CPU if the preferred providers fail.
 
     sess_options is an optional ort.SessionOptions used for both the preferred
     and the CPU-fallback session, so per-model tuning (graph opt level, thread
-    caps, mem arena, etc.) survives the fallback.
+    caps, mem arena, etc.) survives the fallback. When omitted, a low-memory
+    default (no cpu_mem_arena, no mem_pattern, intra_op<=2, inter_op=1) is
+    applied so callers that don't tune get sensible caps automatically.
     """
     opts = provider_options or get_provider_options()
-    extra = {'sess_options': sess_options} if sess_options is not None else {}
+    if sess_options is None:
+        sess_options = _default_sess_options()
+    extra = {'sess_options': sess_options}
     try:
         return ort.InferenceSession(
             model_path,
