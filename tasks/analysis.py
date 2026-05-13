@@ -403,6 +403,22 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             missing_lyrics_ids_set = _ah.get_missing_ids_in_table('lyrics_embedding', track_ids_all) if LYRICS_ENABLED else set()
             total_tracks_in_album = len(tracks)
 
+            existing_top_moods_by_id = {}
+            if LYRICS_ENABLED and existing_track_ids_set and missing_lyrics_ids_set:
+                already_analyzed_needing_lyrics = [
+                    tid for tid in track_ids_all
+                    if tid in existing_track_ids_set and tid in missing_lyrics_ids_set
+                ]
+                if already_analyzed_needing_lyrics:
+                    existing_top_moods_by_id = _ah.fetch_existing_top_moods(
+                        already_analyzed_needing_lyrics, top_n_moods,
+                    )
+                    logger.info(
+                        f"Prefetched prior moods for {len(existing_top_moods_by_id)}/"
+                        f"{len(already_analyzed_needing_lyrics)} already-analyzed tracks "
+                        f"in '{album_name}' (used as lyrics-pipeline prior)"
+                    )
+
             for idx, item in enumerate(tracks, 1):
                 if current_job:
                     task_info = get_task_info_from_db(current_task_id)
@@ -468,8 +484,16 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         session_recycler.increment()
                         cleanup_cuda_memory(force=False)  # Prevent gradual VRAM accumulation.
                     else:
-                        musicnn_analysis = musicnn_embedding = top_moods = None
-                        logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
+                        musicnn_analysis = musicnn_embedding = None
+                        top_moods = existing_top_moods_by_id.get(track_id_str) or None
+                        if top_moods:
+                            logger.info(
+                                f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed); "
+                                f"using {len(top_moods)} prior top moods from DB as lyrics prior: "
+                                f"{list(top_moods.keys())}"
+                            )
+                        else:
+                            logger.info(f"SKIPPED MusiCNN for '{track_name_full}' (already analyzed)")
 
                     clap_embedding_for_track = _ah.run_clap_for_track(
                         path, track_name_full, needs_clap, is_clap_available(), PER_SONG_MODEL_RELOAD,
