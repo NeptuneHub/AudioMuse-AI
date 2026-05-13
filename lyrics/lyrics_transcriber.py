@@ -589,6 +589,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     detected_lang = 'en'
     asr_lang = 'en'
     asr_avg_logprob = 0.0
+    whisper_raw_len = 0
 
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
@@ -613,9 +614,10 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP -1 end: skipped (no track_id)')
 
     try:
-        from config import LYRICS_API_ENABLE
+        from config import LYRICS_API_ENABLE, LYRICS_ASR_ENABLE
     except Exception:
         LYRICS_API_ENABLE = True
+        LYRICS_ASR_ENABLE = True
     if not raw_text:
         logger.info('STEP 0 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
                     LYRICS_API_ENABLE, artist, track)
@@ -658,7 +660,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 'axis_vector': axis_vector,
             }
 
-    if not raw_text:
+    if not raw_text and not LYRICS_ASR_ENABLE:
+        logger.info('STEPS 1-2 skipped: LYRICS_ASR_ENABLE=false — no upstream '
+                    'lyrics found, deferring to instrumental sentinel (STEP 5b)')
+
+    if not raw_text and LYRICS_ASR_ENABLE:
         logger.info('STEP 1 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
         if audio is None or sr is None:
             if not source_path:
@@ -701,6 +707,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             signal.signal(signal.SIGALRM, _old_handler)
 
         raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
+        whisper_raw_len = len(raw_text)
         asr_lang = (transcription.get('language') or '').strip().lower()
         asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
         detected_lang = asr_lang or 'en'
@@ -760,8 +767,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.warning('STEP 4 translation failed (%s); dropping lyrics', exc)
             text_for_cleanup = ''
     else:
-        logger.info('STEP 4 skip: source already %s, no translation needed (%s chars)',
-                    detected_lang, len(text_for_cleanup))
+        logger.info('STEP 4 skip: lang=%s, kept_chars=%s, whisper_chars=%s (min=%s)',
+                    detected_lang, len(text_for_cleanup), whisper_raw_len, MIN_CHARS_FOR_EMBEDDING)
 
     final_text = text_for_cleanup
     logger.info('STEP 5 start: embedding + axis scoring (chars=%s)',
