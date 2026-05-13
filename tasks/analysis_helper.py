@@ -282,6 +282,46 @@ def get_existing_track_ids(track_ids):
         return {row[0] for row in cur.fetchall()}
 
 
+def fetch_existing_top_moods(track_ids, top_n_moods):
+    """Return {track_id: {label: score}} top-N moods for already-analyzed tracks.
+
+    Tight DB-side fetch of just ``item_id`` + ``mood_vector`` from ``score``.
+    DB errors are logged and an empty dict is returned; malformed rows are
+    silently skipped. Callers must treat a missing key as 'no prior available'
+    and degrade to running the lyrics pipeline without the prior.
+    """
+    if not track_ids or not top_n_moods or top_n_moods <= 0:
+        return {}
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT item_id, mood_vector FROM score "
+                "WHERE item_id IN %s AND mood_vector IS NOT NULL AND mood_vector <> ''",
+                (tuple(_str_ids(track_ids)),),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        logger.warning(f"Failed to fetch prior moods from score table: {exc}")
+        return {}
+
+    result = {}
+    for item_id, mv in rows:
+        pairs = []
+        for part in mv.split(','):
+            k, _, v = part.partition(':')
+            k = k.strip()
+            if not k:
+                continue
+            try:
+                pairs.append((k, float(v)))
+            except ValueError:
+                continue
+        if pairs:
+            pairs.sort(key=lambda kv: kv[1], reverse=True)
+            result[str(item_id)] = dict(pairs[:top_n_moods])
+    return result
+
+
 def get_missing_ids_in_table(table_name, track_ids):
     """Return the subset of track_ids (as strings) with no row in `table_name`."""
     if not track_ids:
@@ -455,12 +495,16 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                          top_moods=None):
     """Run lyrics analysis and persist embeddings. Returns True on save.
 
-    ``top_moods`` is the MusicNN top-N moods dict from this same analysis
-    pass (label → score). When it includes 'instrumental', analyze_lyrics
-    short-circuits the entire pipeline (skips Whisper-small ASR + Marian + e5)
-    and writes the instrumental sentinel directly. Pass None when MusicNN
-    was skipped (already analyzed) — the optimization just doesn't apply
-    in that case and the lyrics pipeline runs normally.
+    ``top_moods`` is the MusicNN top-N moods dict (label → score). When it
+    includes 'instrumental', analyze_lyrics short-circuits the entire pipeline
+    (skips Whisper-small ASR + Marian + e5) and writes the instrumental
+    sentinel directly. When it includes 'female vocalists' / 'male vocalists'
+    the VAD pre-pass is bypassed so quiet/low-voiced singers are not dropped.
+
+    Callers should pass the freshly computed top_moods on a full analysis
+    pass, or the moods reloaded from the ``score`` table on a MusicNN-skipped
+    pass (via fetch_existing_top_moods). Passing None is also valid and
+    simply runs the lyrics pipeline without these priors.
     """
     if not (needs_lyrics and lyrics_enabled):
         if lyrics_enabled:
