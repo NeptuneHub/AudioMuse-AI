@@ -38,6 +38,8 @@ def _load_session(model_path: Optional[str] = None):
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         opts.inter_op_num_threads = 1
+        opts.enable_cpu_mem_arena = False
+        opts.enable_mem_pattern = False
         try:
             from tasks.analysis_helper import create_onnx_session
             _session = create_onnx_session(

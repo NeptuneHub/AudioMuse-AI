@@ -27,6 +27,7 @@ so the weight split is determined by the squared scale factors baked at
 build time.  Default: 75 % lyrics / 25 % audio.
 """
 
+import gc
 import json
 import logging
 import math
@@ -185,7 +186,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 
     try:
         with db_conn.cursor() as cur:
-            # ---- Fetch lyrics embeddings ----
             logger.info("SemGrove: fetching lyrics embeddings…")
             cur.execute(
                 "SELECT item_id, embedding FROM lyrics_embedding "
@@ -203,7 +203,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 logger.warning("SemGrove: no lyrics embeddings found; aborting.")
                 return False
 
-            # ---- Fetch audio embeddings ----
             logger.info("SemGrove: fetching audio embeddings…")
             cur.execute(
                 "SELECT item_id, embedding FROM embedding "
@@ -221,7 +220,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 logger.warning("SemGrove: no audio embeddings found; aborting.")
                 return False
 
-            # ---- Intersection ----
             common_ids = sorted(set(lyrics_map.keys()) & set(audio_map.keys()))
             if not common_ids:
                 logger.warning(
@@ -233,7 +231,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 len(common_ids), len(lyrics_map), len(audio_map),
             )
 
-            # ---- Whitening statistics (computed on unit-normed vectors) ----
             logger.info("SemGrove: computing whitening statistics…")
             norm_lyrics = np.vstack([
                 lyrics_map[i] / (np.linalg.norm(lyrics_map[i]) + 1e-8)
@@ -246,7 +243,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             std_lyrics = np.std(norm_lyrics, axis=0).astype(np.float32)
             std_audio  = np.std(norm_audio,  axis=0).astype(np.float32)
 
-            # ---- Build merged vectors ----
             logger.info("SemGrove: building %d merged vectors (dim=%d)…", len(common_ids), merged_dim)
             id_map:  Dict[int, str]      = {}
             vectors: List[np.ndarray]    = []
@@ -267,7 +263,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 logger.warning("SemGrove: no valid merged vectors; aborting.")
                 return False
 
-            # ---- Build Voyager index ----
             logger.info("SemGrove: building Voyager index for %d items…", len(vectors))
             builder = voyager.Index(
                 space=voyager.Space.Cosine,
@@ -281,6 +276,8 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 temp_path = tmp.name
             try:
                 builder.save(temp_path)
+                del builder
+                gc.collect()
                 with open(temp_path, "rb") as f:
                     index_binary = f.read()
             finally:
@@ -353,7 +350,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 
         db_conn.commit()
         logger.info(
-            "SemGrove index build complete: %d songs, dim=%d.", len(vectors), merged_dim
+            "SemGrove index build complete: %d songs, dim=%d.", vid, merged_dim
         )
         return True
 

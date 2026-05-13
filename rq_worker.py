@@ -23,28 +23,17 @@ os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
 
-# Import Worker from rq
 from rq import Worker
 
-# Import the redis_conn, rq_queue (which is the 'default' queue),
-# and the Flask app instance from your main app.py.
-# This ensures the worker uses the same Redis connection, queue configuration,
-# and application context as your Flask app.
 try:
-    # Import the specific queues we defined
-    from app import app
     from app_helper import redis_conn
     from app_logging import configure_logging
     import config
     from config import APP_VERSION
 except ImportError as e:
-    print(f"Error importing from app.py: {e}")
-    print("Please ensure app.py is in the Python path and does not have top-level errors.")
+    print(f"Error importing worker dependencies: {e}")
     sys.exit(1)
 
-# Belt-and-suspenders: app.py already calls configure_logging() at import time,
-# but call it explicitly so this worker's logging setup doesn't depend on a
-# side effect of an unrelated import.
 configure_logging()
 
 # The queues the worker will listen on.

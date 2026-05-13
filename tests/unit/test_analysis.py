@@ -1073,7 +1073,7 @@ class TestOOMFallback:
         # Track created sessions
         sessions_created = []
         
-        def create_session(model_path, providers=None, provider_options=None):
+        def create_session(model_path, providers=None, provider_options=None, **kwargs):
             mock_session = Mock()
             mock_input = Mock()
             mock_input.name = 'input'
@@ -1081,7 +1081,7 @@ class TestOOMFallback:
             mock_output.name = 'output'
             mock_session.get_inputs.return_value = [mock_input]
             mock_session.get_outputs.return_value = [mock_output]
-            
+
             # Determine if this is a CPU or GPU session
             if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
                 # CPU-only session
@@ -1091,7 +1091,7 @@ class TestOOMFallback:
                 # GPU session
                 mock_session.run.side_effect = gpu_run
                 sessions_created.append('GPU')
-            
+
             return mock_session
         
         mock_onnx_session.side_effect = create_session
@@ -1159,7 +1159,7 @@ class TestOOMFallback:
         
         sessions_created = []
         
-        def create_session(model_path, providers=None, provider_options=None):
+        def create_session(model_path, providers=None, provider_options=None, **kwargs):
             mock_session = Mock()
             mock_input = Mock()
             mock_input.name = 'input'
@@ -1167,14 +1167,14 @@ class TestOOMFallback:
             mock_output.name = 'output'
             mock_session.get_inputs.return_value = [mock_input]
             mock_session.get_outputs.return_value = [mock_output]
-            
+
             if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
                 mock_session.run.side_effect = cpu_run
                 sessions_created.append('CPU')
             else:
                 mock_session.run.side_effect = gpu_run
                 sessions_created.append('GPU')
-            
+
             return mock_session
         
         mock_onnx_session.side_effect = create_session
@@ -1286,7 +1286,7 @@ class TestOOMFallback:
         
         cpu_fallback_used = [False]
         
-        def create_session(model_path, providers=None, provider_options=None):
+        def create_session(model_path, providers=None, provider_options=None, **kwargs):
             # Check if this is a CPU-only fallback session
             if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
                 cpu_fallback_used[0] = True

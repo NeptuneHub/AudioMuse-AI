@@ -3,6 +3,7 @@ CLAP Text Search Manager
 Provides in-memory caching and fast text-based music search using CLAP embeddings.
 """
 
+import gc
 import io
 import json
 import logging
@@ -267,6 +268,8 @@ def build_and_store_clap_index(db_conn=None):
                 temp_file_path = tmp.name
             try:
                 index_builder.save(temp_file_path)
+                del index_builder
+                gc.collect()
                 with open(temp_file_path, 'rb') as f:
                     index_binary_data = f.read()
             finally:

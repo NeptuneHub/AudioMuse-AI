@@ -13,6 +13,7 @@ import logging
 import uuid
 import traceback
 import gc
+import platform
 from pydub import AudioSegment
 from tempfile import NamedTemporaryFile
 
@@ -97,6 +98,25 @@ def clean_temp(temp_dir):
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
 
 
+def _release_freed_ram_to_os():
+    gc.collect()
+    
+    #malloc_trim is Linux/glibc specific
+    if platform.system() != "Linux":
+        return
+        
+    try:
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return
+        libc = ctypes.CDLL(libc_name)
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _run_all_index_builds(log_fn=None):
     """Run every index-rebuild step. log_fn(stage, progress) is optional."""
     def _step(label, fn, fatal=False):
@@ -107,6 +127,8 @@ def _run_all_index_builds(log_fn=None):
             logger.warning(f"Failed to build/store {label}: {e}")
             if fatal:
                 raise
+        finally:
+            gc.collect()
 
     if log_fn:
         log_fn("Performing final index rebuild...", 95)
@@ -127,6 +149,9 @@ def _run_all_index_builds(log_fn=None):
         logger.info('✓ Published reload message to Flask container')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
+
+    _release_freed_ram_to_os()
+    logger.info('✓ Released freed RAM back to OS after index rebuild')
 
 
 # --- Core Analysis Functions ---
@@ -354,19 +379,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
 
-        # CLAP text embeddings for OTHER_FEATURE_LABELS (cached in Redis).
         clap_label_embeddings = None
-        if is_clap_available():
-            try:
-                clap_label_embeddings = get_or_cache_other_feature_text_embeddings(redis_conn)
-                if clap_label_embeddings:
-                    logger.info(f"✓ CLAP other feature text embeddings ready ({len(clap_label_embeddings)} labels)")
-                else:
-                    logger.warning("Could not load CLAP text embeddings - other_features will be zeros")
-            except Exception as e:
-                logger.warning(f"Failed to load CLAP text embeddings: {e}")
-        else:
-            logger.info("CLAP not available - other_features will be zeros")
 
         onnx_sessions = None  # Lazy-loaded on first song that needs MusiCNN.
         # Recycle interval: 1 song if PER_SONG_MODEL_RELOAD else 20.
@@ -402,6 +415,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             missing_clap_ids_set = _ah.get_missing_ids_in_table('clap_embedding', track_ids_all) if is_clap_available() else set()
             missing_lyrics_ids_set = _ah.get_missing_ids_in_table('lyrics_embedding', track_ids_all) if LYRICS_ENABLED else set()
             total_tracks_in_album = len(tracks)
+
+            any_track_needs_musicnn = len(existing_track_ids_set) < total_tracks_in_album
+            if any_track_needs_musicnn and is_clap_available():
+                try:
+                    clap_label_embeddings = get_or_cache_other_feature_text_embeddings(redis_conn)
+                    if clap_label_embeddings:
+                        logger.info(f"✓ CLAP other feature text embeddings ready ({len(clap_label_embeddings)} labels)")
+                    else:
+                        logger.warning("Could not load CLAP text embeddings - other_features will be zeros")
+                except Exception as e:
+                    logger.warning(f"Failed to load CLAP text embeddings: {e}")
+            elif not any_track_needs_musicnn:
+                logger.info("No track in this album needs MusiCNN - skipping CLAP text embedding load")
+            else:
+                logger.info("CLAP not available - other_features will be zeros")
 
             existing_top_moods_by_id = {}
             if LYRICS_ENABLED and existing_track_ids_set and missing_lyrics_ids_set:
@@ -553,6 +581,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             except Exception as e:
                 logger.warning(f"Error during final comprehensive cleanup: {e}")
             cleanup_optional_models(context="finally")
+            _release_freed_ram_to_os()
 
 def run_analysis_task(num_recent_albums, top_n_moods):
     from .clap_analyzer import is_clap_available
@@ -587,6 +616,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             
             if task_state != TASK_STATUS_SUCCESS:
                 current_task_logs.append(log_entry)
+                if len(current_task_logs) > 200:
+                    del current_task_logs[:-200]
                 details["log"] = current_task_logs
             else:
                 details["log"] = [f"Task completed successfully. Final status: {message}"]
@@ -605,7 +636,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)
-            active_jobs, launched_jobs = {}, []
+            active_jobs = {}
             launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
 
@@ -712,7 +743,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3),
                 )
                 active_jobs[job.id] = job
-                launched_jobs.append(job)
                 launched_job_ids.add(job.id)
                 albums_launched += 1
                 checked_album_ids.add(album['Id'])

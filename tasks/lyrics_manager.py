@@ -14,6 +14,7 @@ Mirrors the architecture of tasks/clap_text_search.py:
     * search_by_text(query, limit) for the open free-form text tab
 """
 
+import gc
 import io
 import json
 import logging
@@ -164,6 +165,8 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
                 temp_path = tmp.name
             try:
                 builder.save(temp_path)
+                del builder
+                gc.collect()
                 with open(temp_path, 'rb') as f:
                     index_binary = f.read()
             finally:
@@ -295,6 +298,8 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
                 temp_path = tmp.name
             try:
                 builder.save(temp_path)
+                del builder
+                gc.collect()
                 with open(temp_path, 'rb') as f:
                     index_binary = f.read()
             finally:

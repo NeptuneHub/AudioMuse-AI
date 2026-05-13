@@ -86,15 +86,19 @@ def get_provider_options():
     return [('CPUExecutionProvider', {})]
 
 
-def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
-    """Create an InferenceSession; falls back to CPU if the preferred providers fail.
+def _default_sess_options():
+    opts = ort.SessionOptions()
+    opts.enable_cpu_mem_arena = False
+    opts.enable_mem_pattern = False
+    return opts
 
-    sess_options is an optional ort.SessionOptions used for both the preferred
-    and the CPU-fallback session, so per-model tuning (graph opt level, thread
-    caps, mem arena, etc.) survives the fallback.
-    """
+
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+    """Create an InferenceSession; falls back to CPU if the preferred providers fail."""
     opts = provider_options or get_provider_options()
-    extra = {'sess_options': sess_options} if sess_options is not None else {}
+    if sess_options is None:
+        sess_options = _default_sess_options()
+    extra = {'sess_options': sess_options}
     try:
         return ort.InferenceSession(
             model_path,

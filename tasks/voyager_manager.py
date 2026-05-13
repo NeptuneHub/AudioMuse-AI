@@ -1,3 +1,4 @@
+import gc
 import os
 import json
 import logging
@@ -5,7 +6,7 @@ import tempfile
 import numpy as np
 import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
-import io 
+import io
 
 # Attempt to import Voyager (may be missing on non-AVX systems)
 try:
@@ -382,6 +383,8 @@ def build_and_store_voyager_index(db_conn=None):
                 temp_file_path = tmp.name
 
             voyager_index_builder.save(temp_file_path)
+            del voyager_index_builder
+            gc.collect()
 
             with open(temp_file_path, 'rb') as f:
                 index_binary_data = f.read()
