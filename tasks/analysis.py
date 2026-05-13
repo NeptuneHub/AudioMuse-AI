@@ -97,6 +97,20 @@ def clean_temp(temp_dir):
             logger.warning(f"Could not remove {path} from {temp_dir}: {e}")
 
 
+def _release_freed_ram_to_os():
+    gc.collect()
+    try:
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return
+        libc = ctypes.CDLL(libc_name)
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _run_all_index_builds(log_fn=None):
     """Run every index-rebuild step. log_fn(stage, progress) is optional."""
     def _step(label, fn, fatal=False):
@@ -129,6 +143,9 @@ def _run_all_index_builds(log_fn=None):
         logger.info('✓ Published reload message to Flask container')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
+
+    _release_freed_ram_to_os()
+    logger.info('✓ Released freed RAM back to OS after index rebuild')
 
 
 # --- Core Analysis Functions ---
