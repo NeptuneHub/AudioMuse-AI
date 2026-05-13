@@ -589,6 +589,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     detected_lang = 'en'
     asr_lang = 'en'
     asr_avg_logprob = 0.0
+    whisper_raw_len = 0
 
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
@@ -701,6 +702,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             signal.signal(signal.SIGALRM, _old_handler)
 
         raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
+        whisper_raw_len = len(raw_text)
         asr_lang = (transcription.get('language') or '').strip().lower()
         asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
         detected_lang = asr_lang or 'en'
@@ -760,8 +762,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.warning('STEP 4 translation failed (%s); dropping lyrics', exc)
             text_for_cleanup = ''
     else:
-        logger.info('STEP 4 skip: source already %s, no translation needed (%s chars)',
-                    detected_lang, len(text_for_cleanup))
+        logger.info('STEP 4 skip: lang=%s, kept_chars=%s, whisper_chars=%s (min=%s)',
+                    detected_lang, len(text_for_cleanup), whisper_raw_len, MIN_CHARS_FOR_EMBEDDING)
 
     final_text = text_for_cleanup
     logger.info('STEP 5 start: embedding + axis scoring (chars=%s)',
