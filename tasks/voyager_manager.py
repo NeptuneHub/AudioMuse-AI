@@ -329,14 +329,15 @@ def build_and_store_voyager_index(db_conn=None):
 
     cur = db_conn.cursor()
     try:
-        cur.execute("SELECT COUNT(*) FROM embedding WHERE embedding IS NOT NULL")
-        total_count = cur.fetchone()[0]
+        logger.info("Fetching all embeddings from the database...")
+        cur.execute("SELECT item_id, embedding FROM embedding")
+        all_embeddings = cur.fetchall()
 
-        if total_count == 0:
+        if not all_embeddings:
             logger.warning("No embeddings found in DB. Voyager index will not be built.")
             return
 
-        logger.info(f"Streaming {total_count} embeddings to build Voyager index...")
+        logger.info(f"Found {len(all_embeddings)} embeddings to index.")
 
         voyager_index_builder = voyager.Index(
             space=space,
@@ -345,42 +346,36 @@ def build_and_store_voyager_index(db_conn=None):
             ef_construction=VOYAGER_EF_CONSTRUCTION
         )
 
-        vectors_buffer = np.empty((total_count, EMBEDDING_DIMENSION), dtype=np.float32)
-        ids_buffer = np.empty(total_count, dtype=np.int64)
         local_id_map = {}
-        write_idx = 0
+        voyager_item_index = 0
+        vectors_to_add = []
+        ids_to_add = []
 
-        stream_cur = db_conn.cursor(name='voyager_embed_stream')
-        stream_cur.itersize = 5000
-        try:
-            stream_cur.execute("SELECT item_id, embedding FROM embedding WHERE embedding IS NOT NULL")
-            for item_id, embedding_blob in stream_cur:
-                embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
-                if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
-                    logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
-                                   f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
-                    continue
-                vectors_buffer[write_idx] = embedding_vector
-                ids_buffer[write_idx] = write_idx
-                local_id_map[write_idx] = item_id
-                write_idx += 1
-        finally:
-            stream_cur.close()
+        for item_id, embedding_blob in all_embeddings:
+            if embedding_blob is None:
+                logger.warning(f"Skipping item_id {item_id}: embedding data is NULL.")
+                continue
 
-        if write_idx == 0:
+            embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
+
+            if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
+                logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
+                               f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
+                continue
+
+            vectors_to_add.append(embedding_vector)
+            ids_to_add.append(voyager_item_index)
+            local_id_map[voyager_item_index] = item_id
+            voyager_item_index += 1
+
+        if not vectors_to_add:
             logger.warning("No valid embeddings were found to add to the Voyager index. Aborting build process.")
             return
 
-        if write_idx < total_count:
-            vectors_buffer = vectors_buffer[:write_idx]
-            ids_buffer = ids_buffer[:write_idx]
+        logger.info(f"Adding {len(vectors_to_add)} items to the index...")
+        voyager_index_builder.add_items(np.array(vectors_to_add), ids=np.array(ids_to_add))
 
-        logger.info(f"Adding {write_idx} items to the index...")
-        voyager_index_builder.add_items(vectors_buffer, ids=ids_buffer)
-        del vectors_buffer, ids_buffer
-        gc.collect()
-
-        logger.info(f"Building index with {write_idx} items...")
+        logger.info(f"Building index with {len(vectors_to_add)} items...")
 
         temp_file_path = None
         try:

@@ -228,10 +228,10 @@ def build_and_store_clap_index(db_conn=None):
 
     try:
         with db_conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM clap_embedding WHERE embedding IS NOT NULL")
-            total_count = cur.fetchone()[0]
+            cur.execute("SELECT item_id, embedding FROM clap_embedding")
+            all_embeddings = cur.fetchall()
 
-            if total_count == 0:
+            if not all_embeddings:
                 logger.warning("No CLAP embeddings found in DB to build CLAP index.")
                 return False
 
@@ -240,41 +240,29 @@ def build_and_store_clap_index(db_conn=None):
                 'dot': voyager.Space.InnerProduct
             }.get(VOYAGER_METRIC, voyager.Space.Cosine)
 
-            logger.info(f"Streaming {total_count} CLAP embeddings to build voyager index...")
+            logger.info(f"Building CLAP voyager index for {len(all_embeddings)} items...")
             index_builder = voyager.Index(space=space, num_dimensions=CLAP_EMBEDDING_DIMENSION, M=VOYAGER_M, ef_construction=VOYAGER_EF_CONSTRUCTION)
 
-            vectors_buffer = np.empty((total_count, CLAP_EMBEDDING_DIMENSION), dtype=np.float32)
-            ids_buffer = np.empty(total_count, dtype=np.int64)
             id_map = {}
-            write_idx = 0
+            vectors = []
+            voyager_id = 0
+            for item_id, embedding_blob in all_embeddings:
+                if embedding_blob is None:
+                    logger.warning(f"Skipping CLAP item {item_id} because embedding is NULL.")
+                    continue
+                embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
+                if embedding_vector.shape[0] != CLAP_EMBEDDING_DIMENSION:
+                    logger.warning(f"Skipping CLAP item {item_id}: dimension {embedding_vector.shape[0]} != {CLAP_EMBEDDING_DIMENSION}")
+                    continue
+                vectors.append(embedding_vector)
+                id_map[voyager_id] = item_id
+                voyager_id += 1
 
-            stream_cur = db_conn.cursor(name='clap_embed_stream')
-            stream_cur.itersize = 5000
-            try:
-                stream_cur.execute("SELECT item_id, embedding FROM clap_embedding WHERE embedding IS NOT NULL")
-                for item_id, embedding_blob in stream_cur:
-                    embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
-                    if embedding_vector.shape[0] != CLAP_EMBEDDING_DIMENSION:
-                        logger.warning(f"Skipping CLAP item {item_id}: dimension {embedding_vector.shape[0]} != {CLAP_EMBEDDING_DIMENSION}")
-                        continue
-                    vectors_buffer[write_idx] = embedding_vector
-                    ids_buffer[write_idx] = write_idx
-                    id_map[write_idx] = item_id
-                    write_idx += 1
-            finally:
-                stream_cur.close()
-
-            if write_idx == 0:
+            if not vectors:
                 logger.warning("No valid CLAP embedding vectors found for CLAP index build.")
                 return False
 
-            if write_idx < total_count:
-                vectors_buffer = vectors_buffer[:write_idx]
-                ids_buffer = ids_buffer[:write_idx]
-
-            index_builder.add_items(vectors_buffer, ids=ids_buffer)
-            del vectors_buffer, ids_buffer
-            gc.collect()
+            index_builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
 
             with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
                 temp_file_path = tmp.name

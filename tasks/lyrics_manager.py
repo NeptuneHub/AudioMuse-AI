@@ -119,10 +119,10 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
 
     try:
         with db_conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM lyrics_embedding WHERE embedding IS NOT NULL")
-            total_count = cur.fetchone()[0]
+            cur.execute("SELECT item_id, embedding FROM lyrics_embedding WHERE embedding IS NOT NULL")
+            rows = cur.fetchall()
 
-            if total_count == 0:
+            if not rows:
                 logger.warning("No lyrics embeddings found in DB; skipping lyrics index build.")
                 return False
 
@@ -131,7 +131,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
                 'dot': voyager.Space.InnerProduct,
             }.get(VOYAGER_METRIC, voyager.Space.Cosine)
 
-            logger.info(f"Streaming {total_count} lyrics embeddings to build voyager index...")
+            logger.info(f"Building lyrics voyager index for {len(rows)} items...")
             builder = voyager.Index(
                 space=space,
                 num_dimensions=LYRICS_EMBEDDING_DIMENSION,
@@ -139,40 +139,27 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
                 ef_construction=VOYAGER_EF_CONSTRUCTION,
             )
 
-            vectors_buffer = np.empty((total_count, LYRICS_EMBEDDING_DIMENSION), dtype=np.float32)
-            ids_buffer = np.empty(total_count, dtype=np.int64)
             id_map: Dict[int, str] = {}
-            write_idx = 0
+            vectors: List[np.ndarray] = []
+            voyager_id = 0
+            for item_id, blob in rows:
+                if blob is None:
+                    continue
+                vec = np.frombuffer(blob, dtype=np.float32)
+                if vec.shape[0] != LYRICS_EMBEDDING_DIMENSION:
+                    logger.warning(
+                        f"Skipping lyrics item {item_id}: dim={vec.shape[0]} != {LYRICS_EMBEDDING_DIMENSION}"
+                    )
+                    continue
+                vectors.append(vec)
+                id_map[voyager_id] = item_id
+                voyager_id += 1
 
-            stream_cur = db_conn.cursor(name='lyrics_embed_stream')
-            stream_cur.itersize = 5000
-            try:
-                stream_cur.execute("SELECT item_id, embedding FROM lyrics_embedding WHERE embedding IS NOT NULL")
-                for item_id, blob in stream_cur:
-                    vec = np.frombuffer(blob, dtype=np.float32)
-                    if vec.shape[0] != LYRICS_EMBEDDING_DIMENSION:
-                        logger.warning(
-                            f"Skipping lyrics item {item_id}: dim={vec.shape[0]} != {LYRICS_EMBEDDING_DIMENSION}"
-                        )
-                        continue
-                    vectors_buffer[write_idx] = vec
-                    ids_buffer[write_idx] = write_idx
-                    id_map[write_idx] = item_id
-                    write_idx += 1
-            finally:
-                stream_cur.close()
-
-            if write_idx == 0:
+            if not vectors:
                 logger.warning("No valid lyrics embedding vectors for index build.")
                 return False
 
-            if write_idx < total_count:
-                vectors_buffer = vectors_buffer[:write_idx]
-                ids_buffer = ids_buffer[:write_idx]
-
-            builder.add_items(vectors_buffer, ids=ids_buffer)
-            del vectors_buffer, ids_buffer
-            gc.collect()
+            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
 
             with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
                 temp_path = tmp.name
@@ -270,14 +257,14 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
 
     try:
         with db_conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM lyrics_embedding WHERE axis_vector IS NOT NULL")
-            total_count = cur.fetchone()[0]
+            cur.execute("SELECT item_id, axis_vector FROM lyrics_embedding WHERE axis_vector IS NOT NULL")
+            rows = cur.fetchall()
 
-            if total_count == 0:
+            if not rows:
                 logger.warning("No lyrics axis_vector rows; skipping axes index build.")
                 return False
 
-            logger.info(f"Streaming {total_count} lyrics axes vectors to build voyager index (dim={dim})...")
+            logger.info(f"Building lyrics axes voyager index for {len(rows)} candidate items (dim={dim})...")
             builder = voyager.Index(
                 space=voyager.Space.Cosine,
                 num_dimensions=dim,
@@ -285,42 +272,27 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
                 ef_construction=VOYAGER_EF_CONSTRUCTION,
             )
 
-            vectors_buffer = np.empty((total_count, dim), dtype=np.float32)
-            ids_buffer = np.empty(total_count, dtype=np.int64)
             id_map: Dict[int, str] = {}
-            write_idx = 0
+            vectors: List[np.ndarray] = []
+            voyager_id = 0
+            for item_id, axis_blob in rows:
+                if not axis_blob:
+                    continue
+                vec = np.frombuffer(axis_blob, dtype=np.float32)
+                if vec.shape[0] != dim:
+                    logger.warning(
+                        f"Skipping lyrics axes item {item_id}: dim={vec.shape[0]} != {dim}"
+                    )
+                    continue
+                vectors.append(vec)
+                id_map[voyager_id] = item_id
+                voyager_id += 1
 
-            stream_cur = db_conn.cursor(name='lyrics_axes_stream')
-            stream_cur.itersize = 5000
-            try:
-                stream_cur.execute("SELECT item_id, axis_vector FROM lyrics_embedding WHERE axis_vector IS NOT NULL")
-                for item_id, axis_blob in stream_cur:
-                    if not axis_blob:
-                        continue
-                    vec = np.frombuffer(axis_blob, dtype=np.float32)
-                    if vec.shape[0] != dim:
-                        logger.warning(
-                            f"Skipping lyrics axes item {item_id}: dim={vec.shape[0]} != {dim}"
-                        )
-                        continue
-                    vectors_buffer[write_idx] = vec
-                    ids_buffer[write_idx] = write_idx
-                    id_map[write_idx] = item_id
-                    write_idx += 1
-            finally:
-                stream_cur.close()
-
-            if write_idx == 0:
+            if not vectors:
                 logger.warning("No usable axis_vector rows; aborting axes index build.")
                 return False
 
-            if write_idx < total_count:
-                vectors_buffer = vectors_buffer[:write_idx]
-                ids_buffer = ids_buffer[:write_idx]
-
-            builder.add_items(vectors_buffer, ids=ids_buffer)
-            del vectors_buffer, ids_buffer
-            gc.collect()
+            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
 
             with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
                 temp_path = tmp.name

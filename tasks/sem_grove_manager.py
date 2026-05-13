@@ -186,41 +186,35 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 
     try:
         with db_conn.cursor() as cur:
-            logger.info("SemGrove: streaming lyrics embeddings…")
+            logger.info("SemGrove: fetching lyrics embeddings…")
+            cur.execute(
+                "SELECT item_id, embedding FROM lyrics_embedding "
+                "WHERE embedding IS NOT NULL"
+            )
             lyrics_map: Dict[str, np.ndarray] = {}
-            stream_cur = db_conn.cursor(name='sem_grove_lyrics_stream')
-            stream_cur.itersize = 5000
-            try:
-                stream_cur.execute(
-                    "SELECT item_id, embedding FROM lyrics_embedding "
-                    "WHERE embedding IS NOT NULL"
-                )
-                for item_id, blob in stream_cur:
-                    v = np.frombuffer(blob, dtype=np.float32)
-                    if v.shape[0] == lyrics_dim:
-                        lyrics_map[item_id] = v
-            finally:
-                stream_cur.close()
+            for item_id, blob in cur.fetchall():
+                if blob is None:
+                    continue
+                v = np.frombuffer(blob, dtype=np.float32)
+                if v.shape[0] == lyrics_dim:
+                    lyrics_map[item_id] = v
 
             if not lyrics_map:
                 logger.warning("SemGrove: no lyrics embeddings found; aborting.")
                 return False
 
-            logger.info("SemGrove: streaming audio embeddings…")
+            logger.info("SemGrove: fetching audio embeddings…")
+            cur.execute(
+                "SELECT item_id, embedding FROM embedding "
+                "WHERE embedding IS NOT NULL"
+            )
             audio_map: Dict[str, np.ndarray] = {}
-            stream_cur = db_conn.cursor(name='sem_grove_audio_stream')
-            stream_cur.itersize = 5000
-            try:
-                stream_cur.execute(
-                    "SELECT item_id, embedding FROM embedding "
-                    "WHERE embedding IS NOT NULL"
-                )
-                for item_id, blob in stream_cur:
-                    v = np.frombuffer(blob, dtype=np.float32)
-                    if v.shape[0] == audio_dim:
-                        audio_map[item_id] = v
-            finally:
-                stream_cur.close()
+            for item_id, blob in cur.fetchall():
+                if blob is None:
+                    continue
+                v = np.frombuffer(blob, dtype=np.float32)
+                if v.shape[0] == audio_dim:
+                    audio_map[item_id] = v
 
             if not audio_map:
                 logger.warning("SemGrove: no audio embeddings found; aborting.")
@@ -238,23 +232,20 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             )
 
             logger.info("SemGrove: computing whitening statistics…")
-            n_common = len(common_ids)
-            norm_lyrics = np.empty((n_common, lyrics_dim), dtype=np.float32)
-            norm_audio = np.empty((n_common, audio_dim), dtype=np.float32)
-            for i, item_id in enumerate(common_ids):
-                lv = lyrics_map[item_id]
-                norm_lyrics[i] = lv / (np.linalg.norm(lv) + 1e-8)
-                av = audio_map[item_id]
-                norm_audio[i] = av / (np.linalg.norm(av) + 1e-8)
+            norm_lyrics = np.vstack([
+                lyrics_map[i] / (np.linalg.norm(lyrics_map[i]) + 1e-8)
+                for i in common_ids
+            ])
+            norm_audio = np.vstack([
+                audio_map[i] / (np.linalg.norm(audio_map[i]) + 1e-8)
+                for i in common_ids
+            ])
             std_lyrics = np.std(norm_lyrics, axis=0).astype(np.float32)
             std_audio  = np.std(norm_audio,  axis=0).astype(np.float32)
-            del norm_lyrics, norm_audio
-            gc.collect()
 
-            logger.info("SemGrove: building %d merged vectors (dim=%d)…", n_common, merged_dim)
-            vectors_buffer = np.empty((n_common, merged_dim), dtype=np.float32)
-            ids_buffer = np.empty(n_common, dtype=np.int64)
-            id_map: Dict[int, str] = {}
+            logger.info("SemGrove: building %d merged vectors (dim=%d)…", len(common_ids), merged_dim)
+            id_map:  Dict[int, str]      = {}
+            vectors: List[np.ndarray]    = []
             vid = 0
             for item_id in common_ids:
                 mv = _make_merged_vector(
@@ -264,32 +255,22 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 )
                 if mv is None:
                     continue
-                vectors_buffer[vid] = mv
-                ids_buffer[vid] = vid
+                vectors.append(mv)
                 id_map[vid] = item_id
                 vid += 1
 
-            del lyrics_map, audio_map
-            gc.collect()
-
-            if vid == 0:
+            if not vectors:
                 logger.warning("SemGrove: no valid merged vectors; aborting.")
                 return False
 
-            if vid < n_common:
-                vectors_buffer = vectors_buffer[:vid]
-                ids_buffer = ids_buffer[:vid]
-
-            logger.info("SemGrove: building Voyager index for %d items…", vid)
+            logger.info("SemGrove: building Voyager index for %d items…", len(vectors))
             builder = voyager.Index(
                 space=voyager.Space.Cosine,
                 num_dimensions=merged_dim,
                 M=VOYAGER_M,
                 ef_construction=VOYAGER_EF_CONSTRUCTION,
             )
-            builder.add_items(vectors_buffer, ids=ids_buffer)
-            del vectors_buffer, ids_buffer
-            gc.collect()
+            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
                 temp_path = tmp.name
