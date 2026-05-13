@@ -614,9 +614,10 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP -1 end: skipped (no track_id)')
 
     try:
-        from config import LYRICS_API_ENABLE
+        from config import LYRICS_API_ENABLE, LYRICS_ASR_ENABLE
     except Exception:
         LYRICS_API_ENABLE = True
+        LYRICS_ASR_ENABLE = True
     if not raw_text:
         logger.info('STEP 0 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
                     LYRICS_API_ENABLE, artist, track)
@@ -659,7 +660,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 'axis_vector': axis_vector,
             }
 
-    if not raw_text:
+    if not raw_text and not LYRICS_ASR_ENABLE:
+        logger.info('STEPS 1-2 skipped: LYRICS_ASR_ENABLE=false — no upstream '
+                    'lyrics found, deferring to instrumental sentinel (STEP 5b)')
+
+    if not raw_text and LYRICS_ASR_ENABLE:
         logger.info('STEP 1 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
         if audio is None or sr is None:
             if not source_path:
