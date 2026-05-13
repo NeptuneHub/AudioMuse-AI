@@ -177,7 +177,9 @@ def build_map_cache():
         except Exception as e:
             logger.exception('Failed to compute missing projections: %s', e)
 
-    # Build full list of lightweight items and drop heavy embedding vectors
+    for it in items:
+        it.pop('embedding', None)
+
     full_light = []
     for it in items:
         iid = str(it['item_id'])
@@ -190,8 +192,8 @@ def build_map_cache():
             'title': it.get('title') or ''
         }
         full_light.append(light)
+    del items
 
-    # create sampled versions
     n = len(full_light)
     frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
     new_cache = {}
@@ -201,9 +203,12 @@ def build_map_cache():
         js = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
         try:
             gz = gzip.compress(js)
+            entry = {'json_gzip_bytes': gz, 'projection': used_projection, 'count': len(sampled)}
         except Exception:
-            gz = None
-        new_cache[k] = {'json_bytes': js, 'json_gzip_bytes': gz, 'projection': used_projection, 'count': len(sampled)}
+            entry = {'json_bytes': js, 'projection': used_projection, 'count': len(sampled)}
+        else:
+            del js
+        new_cache[k] = entry
 
     MAP_JSON_CACHE = new_cache
     logger.info('Map JSON cache built: %d total items; cache sizes: %s', n, {k: v['count'] for k, v in MAP_JSON_CACHE.items()})
@@ -359,23 +364,23 @@ def map_api():
     if not entry:
         return jsonify({'items': [], 'projection': 'none'})
 
-    # Prefer serving gzip if the client accepts it and gzip bytes were built
     accept_enc = request.headers.get('Accept-Encoding', '')
     gz = entry.get('json_gzip_bytes')
     if gz and 'gzip' in accept_enc.lower():
         resp = Response(gz, mimetype='application/json; charset=utf-8')
         resp.headers['Content-Encoding'] = 'gzip'
         resp.headers['Content-Length'] = str(len(gz))
-        # Prevent browser from storing the map response beyond the page session.
-        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
-        resp.headers['Expires'] = '0'
-        return resp
+    elif gz:
+        raw = gzip.decompress(gz)
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    elif entry.get('json_bytes'):
+        raw = entry['json_bytes']
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    else:
+        return jsonify({'items': [], 'projection': 'none'})
 
-    # Fallback to plain JSON
-    resp = Response(entry['json_bytes'], mimetype='application/json; charset=utf-8')
-    resp.headers['Content-Length'] = str(len(entry['json_bytes']))
-    # Prevent browser from storing the map response beyond the page session.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
@@ -422,7 +427,8 @@ def map_cache_status():
             return jsonify({'ok': False, 'reason': 'empty_cache', 'buckets': {}})
         info = {}
         for k, v in MAP_JSON_CACHE.items():
-            info[k] = {'count': v.get('count', 0), 'json_bytes': len(v.get('json_bytes') or b''), 'projection': v.get('projection')}
+            payload = v.get('json_gzip_bytes') or v.get('json_bytes') or b''
+            info[k] = {'count': v.get('count', 0), 'json_bytes': len(payload), 'projection': v.get('projection')}
         return jsonify({'ok': True, 'buckets': info}), 200
     except Exception as e:
         # Log the full exception (including stack) for diagnostics, but do not expose
