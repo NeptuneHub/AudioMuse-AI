@@ -30,45 +30,15 @@ RUN set -ux; \
     done; \
     rm -rf /var/lib/apt/lists/*
 
-# Download the unified lyrics model bundle, then download ONNX models with diagnostics and retry logic.
+# Download musicnn ONNX models with diagnostics and retry logic.
+# Lyrics models (Whisper / e5 / MarianMT / silero-vad) are downloaded
+# in later stages from the project release tarballs.
 RUN set -eux; \
     mkdir -p /app/model; \
-    lyrics_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model.tar.gz"; \
-    lyrics_dest="/tmp/lyrics_model.tar.gz"; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$lyrics_dest" "$lyrics_url"; then \
-            echo "Downloaded lyrics model bundle -> $lyrics_dest"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for $lyrics_url failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download lyrics model bundle after 5 attempts"; \
-        ls -lah /app/model || true; \
-        exit 1; \
-    fi; \
-    echo "Extracting lyrics model bundle to /app/model..."; \
-    rm -rf /tmp/lyrics_unpack; \
-    mkdir -p /tmp/lyrics_unpack; \
-    tar -xzf "$lyrics_dest" -C /tmp/lyrics_unpack; \
-    if [ -d "/tmp/lyrics_unpack/lyrics_model" ]; then \
-        mv /tmp/lyrics_unpack/lyrics_model/* /app/model/; \
-        rm -rf /tmp/lyrics_unpack/lyrics_model; \
-    else \
-        mv /tmp/lyrics_unpack/* /app/model/; \
-    fi; \
-    rm -rf /tmp/lyrics_unpack; \
-    rm -f "$lyrics_dest"; \
     urls=( \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
         "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
     ); \
-    mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
         n=0; \
         fname="/app/model/$(basename "$u")"; \
@@ -94,36 +64,39 @@ RUN set -eux; \
 # NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
 
 # ============================================================================
-# Stage 2: Base - System dependencies and build tools
+# Stage 2a: runtime-base — RUNTIME-ONLY system libs (parent of `runner`)
 # ============================================================================
-FROM ${BASE_IMAGE} AS base
+# This stage holds only what the application needs at run time: shared
+# libraries (.so) that Python wheels load, plus the small set of CLI tools
+# the entrypoint / supervisord / debugging rely on. It deliberately omits
+# compilers and -dev headers — those live in the `base` stage below, which
+# is used solely to build Python wheels in the `libraries` stage and never
+# becomes a parent of `runner`.
+#
+# `cuda-compiler` is INTENTIONALLY kept here (not moved to build-only)
+# because cupy JIT-compiles CUDA kernels at runtime on GPU builds.
+FROM ${BASE_IMAGE} AS runtime-base
 
 ARG BASE_IMAGE
 
 SHELL ["/bin/bash", "-c"]
 
-# Copy uv for fast package management (10-100x faster than pip)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-
-# Install system dependencies with exponential backoff retry and version pinning
-# Version pinning ensures reproducible builds across different build times
-# cuda-compiler is conditionally installed for NVIDIA base images (needed for cupy JIT)
 RUN set -ux; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         # Use noninteractive frontend to avoid tzdata prompts when installing tzdata
         if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-dev \
-            libfftw3-double3=3.3.10-1ubuntu3 libfftw3-dev \
-            libyaml-0-2=0.2.5-1build1 libyaml-dev \
-            libsamplerate0=0.2.2-4build1 libsamplerate0-dev \
-            libsndfile1=1.2.2-1ubuntu5.24.04.1 libsndfile1-dev \
-            libopenblas-dev \
-            liblapack-dev=3.12.0-3build1.1 \
-            libpq-dev postgresql-client \
+            python3 python3-pip \
+            libfftw3-double3=3.3.10-1ubuntu3 \
+            libyaml-0-2=0.2.5-1build1 \
+            libsamplerate0=0.2.2-4build1 \
+            libsndfile1=1.2.2-1ubuntu5.24.04.1 \
+            libopenblas0 \
+            liblapack3=3.12.0-3build1.1 \
+            libgomp1 \
+            libpq5 postgresql-client \
             ffmpeg wget curl \
             supervisor procps \
-            gcc g++ \
             git vim redis-tools strace iputils-ping \
             "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
             break; \
@@ -136,6 +109,41 @@ RUN set -ux; \
     apt-get remove -y python3-numpy || true && \
     apt-get autoremove -y || true && \
     rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# ============================================================================
+# Stage 2b: base — runtime-base + compilers / -dev headers (BUILD-ONLY)
+# ============================================================================
+# Adds the toolchain needed to compile Python wheels (psycopg2, essentia,
+# numpy/scipy fallbacks, etc.). Parent of `libraries` only — `runner`
+# branches off `runtime-base`, so gcc/g++/python3-dev and the -dev headers
+# never reach the final published image.
+FROM runtime-base AS base
+
+ARG BASE_IMAGE
+
+# Copy uv for fast package management (10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+RUN set -ux; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3-dev \
+            libfftw3-dev \
+            libyaml-dev \
+            libsamplerate0-dev \
+            libsndfile1-dev \
+            libopenblas-dev \
+            liblapack-dev=3.12.0-3build1.1 \
+            libpq-dev \
+            gcc g++; then \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
 # Stage 3: Libraries - Python packages installation
@@ -167,7 +175,6 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
 
 # Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings
-# and T5 for MuLan text encoding
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
@@ -209,12 +216,14 @@ RUN set -eux; \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
 
-# NOTE: MuLan model download moved to runner stage (like CLAP) to avoid EOF errors with large file transfers
-
 # ============================================================================
 # Stage 4: Runner - Final production image
 # ============================================================================
-FROM base AS runner
+# IMPORTANT: extends `runtime-base` (NOT `base`). That keeps gcc/g++,
+# python3-dev and the *-dev headers out of the final image, saving
+# ~300-400 MB. Anything that needs compiling lives in the `libraries`
+# stage and gets COPY'd in as already-built artifacts below.
+FROM runtime-base AS runner
 
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
@@ -224,7 +233,7 @@ ENV LANG=C.UTF-8 \
     HF_HUB_DISABLE_XET=1 \
     HF_XET_DISABLE=1
 
-# Note: bundled HuggingFace models (e5, RoBERTa, MuLan, ...) load with
+# Note: bundled HuggingFace models (e5, RoBERTa, ...) load with
 # local_files_only=True per call. Marian translation models download on demand
 # at first use of a new source language; HF_HUB_OFFLINE is intentionally NOT set.
 
@@ -337,62 +346,164 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
-# Download MuQ-MuLan ONNX models directly in runner stage (DISABLED: change 'false' to 'true' to enable)
-# MuLan models (~2.5GB total) - pre-converted ONNX (no PyTorch dependency)
-# Files: mulan_audio_encoder.onnx + .data, mulan_text_encoder.onnx + .data, mulan_tokenizer.tar.gz
+# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
+# of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
+# tokenizer files + preprocessor config). Re-hosted on the project's GitHub
+# release for mirror independence. Bundle ships `whisper-small-onnx/` as
+# its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
+# raw onnxruntime.
 RUN set -eux; \
-    if false; then \
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model"; \
-        mulan_dir="/app/model/mulan"; \
-        mkdir -p "$mulan_dir"; \
-        \
-        # List of files to download (onnx models + data files + tokenizer)
-        files=( \
-            "mulan_audio_encoder.onnx" \
-            "mulan_audio_encoder.onnx.data" \
-            "mulan_text_encoder.onnx" \
-            "mulan_text_encoder.onnx.data" \
-            "mulan_tokenizer.tar.gz" \
-        ); \
-        \
-        echo "Downloading MuQ-MuLan ONNX models (~2.5GB total)..."; \
-        for f in "${files[@]}"; do \
-            n=0; \
-            until [ "$n" -ge 5 ]; do \
-                if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-                    --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-                    -O "$mulan_dir/$f" "$base_url/$f"; then \
-                    echo "✓ Downloaded: $f"; \
-                    break; \
-                fi; \
-                n=$((n+1)); \
-                echo "Download attempt $n for $f failed — retrying in $((n*n))s"; \
-                sleep $((n*n)); \
-            done; \
-            if [ "$n" -ge 5 ]; then \
-                echo "ERROR: Failed to download $f after 5 attempts"; \
-                exit 1; \
-            fi; \
-        done; \
-        \
-        # Extract tokenizer files
-        echo "Extracting MuLan tokenizer..."; \
-        tar -xzf "$mulan_dir/mulan_tokenizer.tar.gz" -C "$mulan_dir"; \
-        rm "$mulan_dir/mulan_tokenizer.tar.gz"; \
-        \
-        # Verify all files exist (tokenizer.json excluded - using slow tokenizer for compatibility)
-        for f in mulan_audio_encoder.onnx mulan_audio_encoder.onnx.data \
-                 mulan_text_encoder.onnx mulan_text_encoder.onnx.data \
-                 sentencepiece.bpe.model tokenizer_config.json special_tokens_map.json; do \
-            if [ ! -f "$mulan_dir/$f" ]; then \
-                echo "ERROR: Missing file: $f"; \
-                exit 1; \
-            fi; \
-        done; \
-        \
-        echo "✓ MuQ-MuLan ONNX models ready"; \
-        ls -lh "$mulan_dir"; \
-    fi
+    whisper_dir="/app/model/whisper-small-onnx"; \
+    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \
+    whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
+    echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$whisper_dest" "$whisper_url"; then \
+            echo "✓ whisper bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download whisper bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$whisper_dest" -C /app/model; \
+    rm -f "$whisper_dest"; \
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             tokenizer.json tokenizer_config.json \
+             special_tokens_map.json preprocessor_config.json \
+             config.json generation_config.json vocab.json merges.txt; do \
+        if [ ! -f "$whisper_dir/$f" ]; then \
+            echo "ERROR: Whisper file missing: $whisper_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
+    du -sh "$whisper_dir"
+
+# Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
+# for mirror independence (original source: snakers4/silero-vad). Bundle ships
+# silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw
+# onnxruntime.
+RUN set -eux; \
+    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_silero_vad.tar.gz"; \
+    silero_dest="/tmp/lyrics_model_silero_vad.tar.gz"; \
+    silero_path="/app/model/silero_vad.onnx"; \
+    echo "Downloading silero VAD ONNX bundle (~2 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$silero_dest" "$silero_url"; then \
+            echo "✓ silero bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download silero bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$silero_dest" -C /app/model; \
+    rm -f "$silero_dest"; \
+    if [ ! -f "$silero_path" ]; then \
+        echo "ERROR: silero_vad.onnx missing after extraction"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    ls -lh "$silero_path"
+
+# Download e5-base-v2 ONNX bundle (~440 MB) — re-hosted on the project's
+# GitHub release for mirror independence. Tarball ships the ONNX file flat
+# at the archive root (`e5-base-v2.onnx`) plus a sibling `e5-base-v2/`
+# directory with the tokenizer files. Loaded by lyrics/e5_onnx.py via raw
+# onnxruntime + the bare `tokenizers` package.
+RUN set -eux; \
+    e5_onnx_path="/app/model/e5-base-v2.onnx"; \
+    e5_tok_dir="/app/model/e5-base-v2"; \
+    e5_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_e5.tar.gz"; \
+    e5_dest="/tmp/lyrics_model_e5.tar.gz"; \
+    echo "Downloading e5-base-v2 ONNX bundle (~440 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$e5_dest" "$e5_url"; then \
+            echo "✓ e5 bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for e5 bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download e5 bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$e5_dest" -C /app/model; \
+    rm -f "$e5_dest"; \
+    if [ ! -f "$e5_onnx_path" ]; then \
+        echo "ERROR: e5 ONNX missing after extraction: $e5_onnx_path"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    for f in tokenizer.json tokenizer_config.json vocab.txt config.json special_tokens_map.json; do \
+        if [ ! -f "$e5_tok_dir/$f" ]; then \
+            echo "ERROR: e5 tokenizer file missing: $e5_tok_dir/$f"; exit 1; \
+        fi; \
+    done; \
+    echo "✓ e5-base-v2 ONNX ready ($e5_onnx_path + $e5_tok_dir)"; \
+    du -sh "$e5_onnx_path" "$e5_tok_dir"
+
+# Download opus-mt-mul-en ONNX bundle (~520 MB) — multilingual-to-English
+# Marian translator pre-exported by this project (no official ONNX export
+# exists upstream for opus-mt-mul-en). The tarball ships
+# `opus-mt-mul-en-onnx/` as its top-level directory, so we extract it
+# straight into /app/model and verify the resulting path.
+# Loaded at runtime by lyrics/translation_onnx.py (raw onnxruntime).
+RUN set -eux; \
+    marian_dir="/app/model/opus-mt-mul-en-onnx"; \
+    marian_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_marian.tar.gz"; \
+    marian_dest="/tmp/lyrics_model_marian.tar.gz"; \
+    echo "Downloading opus-mt-mul-en ONNX bundle (~520 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$marian_dest" "$marian_url"; then \
+            echo "✓ marian bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for marian bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download marian bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$marian_dest" -C /app/model; \
+    rm -f "$marian_dest"; \
+    # Bundle ships SentencePiece tokenization (source.spm / target.spm) — no
+    # tokenizer.json. Loaded at runtime via transformers.MarianTokenizer.
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             source.spm target.spm tokenizer_config.json \
+             vocab.json config.json; do \
+        if [ ! -f "$marian_dir/$f" ]; then \
+            echo "ERROR: marian file missing: $marian_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ opus-mt-mul-en ONNX ready in $marian_dir"; \
+    du -sh "$marian_dir"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

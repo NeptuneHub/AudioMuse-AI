@@ -13,16 +13,15 @@ from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
 # `app_helper` and `app_helper_artist` are safe at module top: they have no
 # import cycle back into this module. Optional ML modules
-# (.clap_analyzer / .mulan_analyzer / lyrics.lyrics_transcriber) stay inline
-# inside the per-feature helpers so workers without those models can still
-# import this module.
+# (.clap_analyzer / lyrics.lyrics_transcriber) stay inline inside the
+# per-feature helpers so workers without those models can still import this
+# module.
 from app_helper import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
     save_clap_embedding,
     save_lyrics_embedding,
-    save_mulan_embedding,
 )
 from app_helper_artist import upsert_artist_mapping
 from psycopg2 import sql as pgsql
@@ -87,18 +86,29 @@ def get_provider_options():
     return [('CPUExecutionProvider', {})]
 
 
-def create_onnx_session(model_path, provider_options=None, label=""):
-    """Create an InferenceSession; falls back to CPU if the preferred providers fail."""
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+    """Create an InferenceSession; falls back to CPU if the preferred providers fail.
+
+    sess_options is an optional ort.SessionOptions used for both the preferred
+    and the CPU-fallback session, so per-model tuning (graph opt level, thread
+    caps, mem arena, etc.) survives the fallback.
+    """
     opts = provider_options or get_provider_options()
+    extra = {'sess_options': sess_options} if sess_options is not None else {}
     try:
         return ort.InferenceSession(
             model_path,
             providers=[p[0] for p in opts],
             provider_options=[p[1] for p in opts],
+            **extra,
         )
     except Exception:
         logger.warning(f"Failed to load {label or model_path} with GPU - falling back to CPU")
-        return ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        return ort.InferenceSession(
+            model_path,
+            providers=['CPUExecutionProvider'],
+            **extra,
+        )
 
 
 def load_musicnn_sessions(model_paths):
@@ -127,15 +137,25 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
     gc.collect()
 
 
-# (loader, is_loaded, unloader, label) for each optional model.
+# (label, module_path, is_loaded_fn, unload_fn) for each optional model.
+# ``module_path`` is fed straight into ``importlib.import_module`` (relative
+# paths use ``__package__`` = ``tasks``; absolute paths like ``'lyrics'``
+# resolve from the project root).
 _OPTIONAL_MODELS = (
     ('clap', '.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
-    ('mulan', '.mulan_analyzer', 'is_mulan_model_loaded', 'unload_mulan_model'),
+    ('lyrics', 'lyrics', 'is_lyrics_loaded', 'unload_lyrics_models'),
 )
 
 
 def cleanup_optional_models(context=""):
-    """Unload CLAP / MuLan models if currently loaded."""
+    """Unload every optional model currently held by this worker.
+
+    Each entry is released inside its own try/except so a failure to
+    release one (e.g. import error, partial state) cannot prevent the
+    others from being freed. Called from ``analyze_album_task`` at album
+    end *and* in its surrounding ``finally`` clause — both call sites
+    expect this function to never raise.
+    """
     suffix = f" ({context})" if context else ""
     for label, mod, is_loaded_fn, unload_fn in _OPTIONAL_MODELS:
         try:
@@ -149,22 +169,62 @@ def cleanup_optional_models(context=""):
 
 def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
                                     model_path, label, owns_session, file_basename):
-    """Run inference; on GPU OOM, recreate the session on CPU and retry. Returns (result, session)."""
+    """Run inference; on GPU OOM, recreate the session on CPU and retry.
+
+    Returns ``(result, session)`` — the returned session is either the
+    original (no fallback) or a fresh CPU session (fallback occurred).
+
+    On OOM, the OOM'd GPU session's GPU buffers are freed BEFORE the CPU
+    session is allocated — this is critical when the caller passes a
+    shared session (``owns_session=False``), because creating the CPU
+    session itself allocates memory and can re-OOM if we don't reclaim
+    the GPU buffers first. The cleanup runs inside ``try/finally`` so
+    the OOM'd session is dropped even when CPU-session creation raises.
+
+    Note: dropping the local ``session`` reference here is necessary but
+    not sufficient — the caller must also drop *its* references (e.g. a
+    captured ``original_session`` local, or the shared session dict slot)
+    before GC can actually reclaim the GPU memory. See
+    ``tasks.analysis.analyze_track`` for the matching caller-side cleanup.
+    """
     try:
         return run_inference(session, feed_dict, output_tensor_name), session
     except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
         if "Failed to allocate memory" not in str(e):
             raise
         logger.warning(f"GPU OOM for {file_basename} during {label} inference - falling back to CPU")
-        if owns_session:
-            cleanup_onnx_session(session, label)
-        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-        cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        result = run_inference(cpu_session, feed_dict, output_tensor_name)
-        if result is None:
-            raise RuntimeError(f"CPU fallback inference returned None for {label} ({file_basename})")
-        logger.info(f"Successfully completed {label} inference on CPU after OOM")
-        return result, cpu_session
+        cpu_session = None
+        try:
+            # ALWAYS drop our local reference to the OOM'd session and reset the
+            # ONNX/CUDA memory pools before allocating the CPU session — even
+            # when ``owns_session=False``. The previous behavior skipped this
+            # cleanup for shared sessions, which (a) leaked the OOM'd GPU
+            # buffers for the rest of the album and (b) made the CPU session
+            # allocation more likely to re-OOM under memory pressure.
+            try:
+                cleanup_onnx_session(session, label)
+            except Exception:
+                logger.exception(
+                    "Error cleaning up OOM'd %s session before CPU fallback", label)
+            session = None  # break this frame's reference explicitly
+            try:
+                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+            except Exception:
+                logger.exception(
+                    "Error during memory cleanup before %s CPU fallback", label)
+
+            cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            result = run_inference(cpu_session, feed_dict, output_tensor_name)
+            if result is None:
+                raise RuntimeError(f"CPU fallback inference returned None for {label} ({file_basename})")
+            logger.info(f"Successfully completed {label} inference on CPU after OOM")
+            return result, cpu_session
+        finally:
+            # Belt-and-suspenders: if anything above raised between the
+            # cleanup_onnx_session() call and the return, make sure our local
+            # references are gone so the OOM'd buffers can be reclaimed when
+            # the exception unwinds the frame.
+            session = None
 
 
 # --- Audio features ---------------------------------------------------------
@@ -288,52 +348,40 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
 
 # --- Per-track decision / status --------------------------------------------
 
-def decide_track_needs(track_id, existing, missing_clap, missing_mulan, missing_lyrics, lyrics_enabled):
-    """Return (needs_musicnn, needs_clap, needs_mulan, needs_lyrics) for a single track."""
+def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
+    """Return (needs_musicnn, needs_clap, needs_lyrics) for a single track."""
     return (
         track_id not in existing,
         track_id in missing_clap,
-        track_id in missing_mulan,
         lyrics_enabled and track_id in missing_lyrics,
     )
 
 
-def compute_album_needs(tracks, clap_available, mulan_enabled, lyrics_enabled):
-    """Return (existing_count, needs_clap, needs_mulan, needs_lyrics) for an album."""
+def compute_album_needs(tracks, clap_available, lyrics_enabled):
+    """Return (existing_count, needs_clap, needs_lyrics) for an album."""
     ids = [str(t['Id']) for t in tracks]
     existing = len(get_existing_track_ids(ids))
     needs_in = lambda flag, table: flag and bool(get_missing_ids_in_table(table, ids))
     return (
         existing,
         needs_in(clap_available, 'clap_embedding'),
-        needs_in(mulan_enabled, 'mulan_embedding'),
         needs_in(lyrics_enabled, 'lyrics_embedding'),
     )
 
 
-def build_feature_status_parts(clap_available, mulan_enabled, lyrics_enabled, include_check_marks=False):
-    """Build the list of enabled-feature labels for skip log messages.
-
-    The two callers historically used different orderings: per-track skip logs
-    list Lyrics before MuLan; album skip logs list MuLan before Lyrics.
-    """
+def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
+    """Build the list of enabled-feature labels for skip log messages."""
     parts = ["MusiCNN"]
     if clap_available:
         parts.append("CLAP")
-    if include_check_marks:
-        if lyrics_enabled:
-            parts.append("Lyrics")
-        if mulan_enabled:
-            parts.append("MuLan")
-        return [f"{p}: ✓" for p in parts]
-    if mulan_enabled:
-        parts.append("MuLan")
     if lyrics_enabled:
         parts.append("Lyrics")
+    if include_check_marks:
+        return [f"{p}: ✓" for p in parts]
     return parts
 
 
-# --- CLAP / MuLan / Lyrics per-track sub-tasks ------------------------------
+# --- CLAP / Lyrics per-track sub-tasks --------------------------------------
 
 def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_song_reload):
     """Run CLAP audio analysis; returns the embedding or None."""
@@ -403,8 +451,17 @@ def persist_clap_embedding(item_id, embedding, needs_clap):
 
 
 def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
-                         needs_lyrics, lyrics_enabled, robust_load_fn):
-    """Run lyrics analysis and persist embeddings. Returns True on save."""
+                         needs_lyrics, lyrics_enabled, robust_load_fn,
+                         top_moods=None):
+    """Run lyrics analysis and persist embeddings. Returns True on save.
+
+    ``top_moods`` is the MusicNN top-N moods dict from this same analysis
+    pass (label → score). When it includes 'instrumental', analyze_lyrics
+    short-circuits the entire pipeline (skips Whisper-small ASR + Marian + e5)
+    and writes the instrumental sentinel directly. Pass None when MusicNN
+    was skipped (already analyzed) — the optimization just doesn't apply
+    in that case and the lyrics pipeline runs normally.
+    """
     if not (needs_lyrics and lyrics_enabled):
         if lyrics_enabled:
             logger.info("  - Lyrics analysis already exists or skipped")
@@ -421,6 +478,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
             audio=track_audio, sr=track_sr, source_path=str(path),
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'), track_id=item.get('Id') or item.get('id'),
+            top_moods=top_moods,
         )
         emb = result.get('embedding')
         if emb is None or getattr(emb, 'size', 0) == 0:
@@ -431,24 +489,4 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
         return True
     except Exception as e:
         logger.warning(f"  - Lyrics analysis failed: {e}", exc_info=True)
-        return False
-
-
-def run_mulan_for_track(path, item, track_name_full, needs_mulan, mulan_enabled):
-    """Run MuLan analysis and persist embedding. Returns True on save."""
-    if not (needs_mulan and mulan_enabled):
-        if mulan_enabled and not needs_mulan:
-            logger.info("  - MuLan embedding already exists, skipping")
-        return False
-    logger.info(f"  - Starting MuLan analysis for {track_name_full}...")
-    try:
-        from .mulan_analyzer import analyze_audio_file
-        emb, duration, _ = analyze_audio_file(path)
-        if emb is None:
-            return False
-        save_mulan_embedding(item['Id'], emb)
-        logger.info(f"  - MuLan embedding saved (512-dim, duration: {duration:.1f}s)")
-        return True
-    except Exception as e:
-        logger.warning(f"  - MuLan analysis failed: {e}")
         return False

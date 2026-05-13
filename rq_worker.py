@@ -1,4 +1,3 @@
-# /home/guido/Music/AudioMuse-AI/rq_worker.py
 import os
 import sys
 
@@ -52,13 +51,13 @@ configure_logging()
 # The order is important! Workers will always check 'high' before 'default'.
 queues_to_listen = ['default']
 
-# NOTE: Do NOT preload Whisper / transformers / llama_cpp here in the parent
-# process. RQ uses os.fork() to spawn each job's child process. PyTorch and
-# OpenMP (libgomp / libomp) are NOT fork-safe: any thread pool initialized in
-# the parent becomes corrupted in the child and the first call into the model
-# deadlocks at 0% CPU. Models are lazy-loaded inside the child on first use
-# via the module-level caches in lyrics.lyrics_transcriber (so jobs 2..N in
-# the same child are free).
+# NOTE: Do NOT preload Whisper / e5 / Marian / silero ONNX sessions here in
+# the parent process. RQ uses os.fork() to spawn each job's child process.
+# OpenMP (libgomp / libomp) and the onnxruntime thread pools are NOT fork-safe:
+# any thread pool initialized in the parent becomes corrupted in the child and
+# the first call into the model deadlocks at 0% CPU. Models are lazy-loaded
+# inside the child on first use via the module-level caches in
+# lyrics.lyrics_transcriber (so jobs 2..N in the same child are free).
 
 
 if __name__ == '__main__':

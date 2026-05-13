@@ -1,4 +1,3 @@
-# /home/guido/Music/AudioMuse-AI/rq_janitor.py
 import os
 import sys
 import time

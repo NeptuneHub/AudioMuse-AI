@@ -55,9 +55,6 @@ nul
 test/models/*.onnx
 test/models/*.onnx.data
 
-# Exported MuLan models
-mulan_model_export/
-
 # Student CLAP training artifacts
 student_clap/cache/
 student_clap/checkpoints/
@@ -69,3 +66,6 @@ student_clap/models/FMA_SONGS_2247_LICENSE.md
 
 # Testing suite
 testing_suite/
+analysis.md
+.claude/settings.local.json
+.claude/settings.local.json

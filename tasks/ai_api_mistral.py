@@ -7,6 +7,24 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
+try:
+    import mistralai as _mistralai_probe  # noqa: F401
+    _MISTRAL_AVAILABLE = True
+    _MISTRAL_IMPORT_ERROR = None
+except ImportError as _exc:
+    _MISTRAL_AVAILABLE = False
+    _MISTRAL_IMPORT_ERROR = str(_exc)
+
+_MISTRAL_UNAVAILABLE_MSG = (
+    "Error: mistralai SDK is not installed. The package is currently "
+    "quarantined on PyPI — pick a different AI provider (Gemini / OpenAI / "
+    "Ollama) until the SDK is reinstallable."
+)
+
+
+def is_available() -> bool:
+    return _MISTRAL_AVAILABLE
+
 
 def generate_text(
     api_key: str,
@@ -16,6 +34,10 @@ def generate_text(
     skip_delay: bool = False,
 ) -> str:
     """Single-prompt completion via Mistral chat.complete."""
+    if not _MISTRAL_AVAILABLE:
+        logger.error("Mistral provider selected but SDK is not installed: %s",
+                     _MISTRAL_IMPORT_ERROR)
+        return _MISTRAL_UNAVAILABLE_MSG
     if not api_key or api_key == "YOUR-MISTRAL-API-KEY-HERE":
         return "Error: Mistral API key is missing or empty. Please provide a valid API key."
 
@@ -62,6 +84,10 @@ def call_with_tools(
     log_messages: List[str],
 ) -> Dict:
     """Call Mistral with native function calling. Returns ``{"tool_calls": [...]}`` or ``{"error": ...}``."""
+    if not _MISTRAL_AVAILABLE:
+        logger.error("Mistral provider selected but SDK is not installed: %s",
+                     _MISTRAL_IMPORT_ERROR)
+        return {"error": _MISTRAL_UNAVAILABLE_MSG}
     try:
         from mistralai import Mistral
 

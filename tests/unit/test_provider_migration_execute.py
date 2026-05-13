@@ -151,7 +151,7 @@ def _make_session_row(session_id=1, target='navidrome',
 
 
 def _install_fake_psycopg2(mig, session_row, voyager_rows=None, mproj_rows=None,
-                           authors=None, mulan_exists=False, lyrics_exists=False):
+                           authors=None, lyrics_exists=False):
     """Install a fake psycopg2 connection on the module + mock out redis, probe, etc.
 
     Returns (mock_conn, mock_cursor, executed_sql) for assertions.
@@ -168,8 +168,6 @@ def _install_fake_psycopg2(mig, session_row, voyager_rows=None, mproj_rows=None,
             mock_cur.fetchone.return_value = ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
         elif 'TO_REGCLASS' in up and 'LYRICS_EMBEDDING' in up:
             mock_cur.fetchone.return_value = (lyrics_exists,)
-        elif 'TO_REGCLASS' in up and 'MULAN_EMBEDDING' in up:
-            mock_cur.fetchone.return_value = (mulan_exists,)
         elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
             mock_cur.fetchone.return_value = session_row
         elif 'FROM VOYAGER_INDEX_DATA' in up and 'SELECT' in up:

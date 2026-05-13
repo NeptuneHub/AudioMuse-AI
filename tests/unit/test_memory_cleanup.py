@@ -192,32 +192,28 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('app_helper.get_db')
     @patch('tasks.clap_analyzer.unload_clap_model')
     @patch('tasks.clap_analyzer.is_clap_model_loaded')
-    @patch('tasks.mulan_analyzer.unload_mulan_model')
-    @patch('tasks.mulan_analyzer.is_mulan_model_loaded')
     def test_cleanup_all_models_in_finally(
-        self, mock_mulan_loaded, mock_mulan_unload, mock_clap_loaded, 
-        mock_clap_unload, mock_get_db, mock_get_job, mock_get_task_info,
-        mock_save_task, mock_memory_cleanup, mock_get_tracks
+        self, mock_clap_loaded, mock_clap_unload, mock_get_db,
+        mock_get_job, mock_get_task_info, mock_save_task,
+        mock_memory_cleanup, mock_get_tracks
     ):
         """Test that all models are cleaned up in finally block."""
         from tasks.analysis import analyze_album_task
-        
+
         # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = []  # Empty track list
         mock_get_db.return_value = MagicMock()
-        
+
         # Simulate models being loaded
         mock_clap_loaded.return_value = True
-        mock_mulan_loaded.return_value = True
-        
+
         # Call function (should complete successfully)
         result = analyze_album_task("album_123", "Empty Album", 5, None)
-        
+
         # Verify all cleanup functions were called
         assert mock_memory_cleanup.called
         assert mock_clap_unload.called
-        assert mock_mulan_unload.called
     
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
@@ -281,8 +277,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         
         # Call function
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
-            with patch('config.MULAN_ENABLED', False):
-                result = analyze_album_task("album_123", "Test Album", 5, None)
+            result = analyze_album_task("album_123", "Test Album", 5, None)
         
         # Verify session cleanup was called for all loaded sessions
         # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)

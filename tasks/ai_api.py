@@ -130,6 +130,11 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
             return False, msg
 
     elif provider == "MISTRAL":
+        if not ai_api_mistral.is_available():
+            msg = ("Provider=MISTRAL but the mistralai SDK is not installed "
+                   "(currently quarantined on PyPI). Pick a different provider.")
+            logger.error("validate_ai_config: mistralai SDK missing")
+            return False, msg
         key = ai_config.get("mistral_key")
         if not key or key == "YOUR-MISTRAL-API-KEY-HERE":
             msg = "Provider=MISTRAL but no API key configured"

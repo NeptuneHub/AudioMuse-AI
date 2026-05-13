@@ -383,14 +383,13 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
                             failed_deletions.append({"track_id": track_id, "table": table_name, "error": str(e)})
 
                 # Delete from child tables first (foreign key constraint).
-                # All four are declared with ON DELETE CASCADE on score(item_id), so this
+                # All are declared with ON DELETE CASCADE on score(item_id), so this
                 # is technically redundant — but explicit cleanup gives us per-row error
                 # tracking via failed_deletions. Tables that don't exist on this
                 # deployment are skipped silently.
                 _delete_from_child_table("embedding")
                 _delete_from_child_table("lyrics_embedding")
                 _delete_from_child_table("clap_embedding")
-                _delete_from_child_table("mulan_embedding")
 
                 # Delete from score table
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
