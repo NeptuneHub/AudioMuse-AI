@@ -73,8 +73,10 @@ RUN set -eux; \
 # is used solely to build Python wheels in the `libraries` stage and never
 # becomes a parent of `runner`.
 #
-# `cuda-compiler` is INTENTIONALLY kept here (not moved to build-only)
-# because cupy JIT-compiles CUDA kernels at runtime on GPU builds.
+# `cuda-nvrtc` is INTENTIONALLY kept here (not moved to build-only)
+# because cupy uses libnvrtc.so to JIT-compile CUDA kernels at runtime on
+# GPU builds. We install the small NVRTC subpackage rather than the full
+# `cuda-compiler` meta-package (which pulls nvcc + multi-GB of dev tools).
 FROM ${BASE_IMAGE} AS runtime-base
 
 ARG BASE_IMAGE
@@ -97,8 +99,8 @@ RUN set -ux; \
             libpq5 postgresql-client \
             ffmpeg wget curl \
             supervisor procps \
-            git vim redis-tools strace iputils-ping \
-            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            redis-tools \
+            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-nvrtc-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
             break; \
         fi; \
         n=$((n+1)); \
