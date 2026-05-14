@@ -36,8 +36,9 @@ except ImportError as e:
 
 try:
     os.makedirs(TEMP_DIR, exist_ok=True)
-except OSError:
-    print(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
+except OSError as e:
+    print(f"Warning: Could not create TEMP_DIR '{TEMP_DIR}': {e}")
+    print("Note: This may be expected in some test/CI environments, but could lead to task failures in production.")
 
 configure_logging()
 
