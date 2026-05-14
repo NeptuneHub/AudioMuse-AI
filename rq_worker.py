@@ -29,10 +29,15 @@ try:
     from app_helper import redis_conn
     from app_logging import configure_logging
     import config
-    from config import APP_VERSION
+    from config import APP_VERSION, TEMP_DIR
 except ImportError as e:
     print(f"Error importing worker dependencies: {e}")
     sys.exit(1)
+
+try:
+    os.makedirs(TEMP_DIR, exist_ok=True)
+except OSError:
+    print(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
 configure_logging()
 
