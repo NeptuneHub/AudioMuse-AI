@@ -78,11 +78,17 @@ def get_provider_options():
     """
     available = ort.get_available_providers()
     if 'MIGraphXExecutionProvider' in available:
-        logger.info("MIGraphX provider available - using AMD GPU for analysis")
-        return [('MIGraphXExecutionProvider', {}), ('CPUExecutionProvider', {})]
+        logger.info("MIGraphX provider available - attempting to use AMD GPU for analysis")
+        return [('MIGraphXExecutionProvider', {'device_id': 0}), ('CPUExecutionProvider', {})]
     if 'ROCMExecutionProvider' in available:
-        logger.info("ROCm provider available - using AMD GPU for analysis")
-        return [('ROCMExecutionProvider', {'device_id': 0}), ('CPUExecutionProvider', {})]
+        rocm = {
+            'device_id': 0,
+            'arena_extend_strategy': 'kSameAsRequested',
+            'miopen_conv_algo_search': 'EXHAUSTIVE',
+            'do_copy_in_default_stream': True,
+        }
+        logger.info("ROCm provider available - attempting to use AMD GPU for analysis")
+        return [('ROCMExecutionProvider', rocm), ('CPUExecutionProvider', {})]
     if 'CUDAExecutionProvider' in available:
         cuda = {
             'device_id': 0,
