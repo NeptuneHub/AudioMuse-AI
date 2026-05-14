@@ -18,6 +18,10 @@
 #     -e HSA_OVERRIDE_GFX_VERSION=11.0.0 \
 #     audiomuse-ai:rocm
 
+# CPU_IMAGE must be based on Ubuntu 24.04 (noble) with Python 3.12.
+# The ROCm apt packages target Ubuntu 24.04 (noble) and the onnxruntime_migraphx
+# wheel is a cp312 / manylinux_2_34 build. Passing an Ubuntu 22.04 or Python 3.10
+# base will cause the build to fail.
 ARG CPU_IMAGE=ghcr.io/neptunehub/audiomuse-ai:latest
 FROM ${CPU_IMAGE}
 

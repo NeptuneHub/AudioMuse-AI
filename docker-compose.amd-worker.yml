@@ -17,8 +17,10 @@ services:
     restart: unless-stopped
     environment:
       SERVICE_TYPE: worker
-      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
-      POSTGRES_HOST: ${POSTGRES_HOST:-localhost}
+      # localhost resolves to the container itself, not the host.
+      # These MUST be set to the address of your AudioMuse server.
+      REDIS_URL: ${REDIS_URL}
+      POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       POSTGRES_DB: ${POSTGRES_DB:-audiomuse}
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
