@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+# AMD ROCm worker image for AudioMuse-AI
+#
+# Builds on top of the CPU base image and layers in ROCm 7.2.x runtime
+# packages from AMD's Ubuntu 24.04 (noble) repository, then replaces the
+# CPU-only onnxruntime wheel with the MIGraphX-accelerated build from
+# https://github.com/Looong01/onnxruntime-rocm-build.
+#
+# Tested on: RX 7900 XTX (gfx1100 / RDNA 3) with ROCm 7.2.3
+#
+# Build:
+#   docker build -f Dockerfile.rocm -t audiomuse-ai:rocm .
+#
+# Run (see docker-compose.amd-worker.yml for a full example):
+#   docker run --device /dev/kfd --device /dev/dri \
+#     --group-add video --group-add render \
+#     -e SERVICE_TYPE=worker \
+#     -e HSA_OVERRIDE_GFX_VERSION=11.0.0 \
+#     audiomuse-ai:rocm
+
+ARG CPU_IMAGE=ghcr.io/neptunehub/audiomuse-ai:latest
+FROM ${CPU_IMAGE}
+
+# Install ROCm 7.2.x runtime from AMD's Ubuntu 24.04 repository.
+# Only the packages needed for MIGraphX inference are pulled in;
+# full ROCm toolchains and development headers are excluded.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget gnupg2 ca-certificates \
+    && mkdir -p /etc/apt/keyrings \
+    && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
+         | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg \
+    && printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.3 noble main\n' \
+         > /etc/apt/sources.list.d/rocm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+         hip-runtime-amd \
+         migraphx \
+         miopen-hip \
+         hipblas \
+    && rm -rf /var/lib/apt/lists/*
+
+# Replace the CPU onnxruntime wheel with the MIGraphX-accelerated build.
+# Wheel source: https://github.com/Looong01/onnxruntime-rocm-build
+# Targets ROCm 7.x / glibc 2.34+ (Ubuntu 24.04 ships glibc 2.39).
+RUN pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-rocm 2>/dev/null || true \
+    && pip install --no-cache-dir \
+         https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.25.0/onnxruntime_migraphx-1.25.0-cp312-cp312-manylinux_2_34_x86_64.whl
+
+ENV LD_LIBRARY_PATH=/opt/rocm/lib
+
+# The CPU-pessimising ORT flags set in the base image are not appropriate
+# for GPU inference; unset them so MIGraphX can run without restrictions.
+ENV ORT_DISABLE_ALL_OPTIMIZATIONS="" \
+    ORT_DISABLE_AVX512="" \
+    ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION="" \
+    ORT_FORCE_SHARED_PROVIDER=""

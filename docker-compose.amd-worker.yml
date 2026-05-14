@@ -1,0 +1,37 @@
+# AMD GPU worker — docker compose example
+#
+# Runs AudioMuse-AI RQ workers using the ROCm/MIGraphX image.
+# Inference runs on the AMD GPU via MIGraphXExecutionProvider.
+#
+# Prerequisites:
+#   - ROCm driver installed on the host (ROCm 6.x or 7.x)
+#   - User in the `video` and `render` groups
+#   - audiomuse-ai:rocm image built: docker build -f Dockerfile.rocm -t audiomuse-ai:rocm .
+#
+# Usage:
+#   docker compose -f docker-compose.amd-worker.yml up -d --scale audiomuse-worker=3
+
+services:
+  audiomuse-worker:
+    image: audiomuse-ai:rocm
+    restart: unless-stopped
+    environment:
+      SERVICE_TYPE: worker
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
+      POSTGRES_HOST: ${POSTGRES_HOST:-localhost}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-audiomuse}
+      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      USE_GPU_CLUSTERING: "false"   # cuML GPU clustering is NVIDIA-only
+      # Override gfx version if your card is not auto-detected.
+      # RDNA 3 (RX 7000 series):  HSA_OVERRIDE_GFX_VERSION=11.0.0
+      # RDNA 2 (RX 6000 series):  HSA_OVERRIDE_GFX_VERSION=10.3.0
+      # HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    shm_size: "2gb"

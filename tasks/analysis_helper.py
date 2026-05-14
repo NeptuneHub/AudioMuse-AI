@@ -72,8 +72,18 @@ def sigmoid(x):
 
 
 def get_provider_options():
-    """Return [(provider_name, options), ...] preferring CUDA when available."""
-    if 'CUDAExecutionProvider' in ort.get_available_providers():
+    """Return [(provider_name, options), ...] preferring GPU when available.
+
+    Priority: MIGraphX (AMD ROCm 7.x) > ROCM > CUDA (NVIDIA) > CPU.
+    """
+    available = ort.get_available_providers()
+    if 'MIGraphXExecutionProvider' in available:
+        logger.info("MIGraphX provider available - using AMD GPU for analysis")
+        return [('MIGraphXExecutionProvider', {}), ('CPUExecutionProvider', {})]
+    if 'ROCMExecutionProvider' in available:
+        logger.info("ROCm provider available - using AMD GPU for analysis")
+        return [('ROCMExecutionProvider', {'device_id': 0}), ('CPUExecutionProvider', {})]
+    if 'CUDAExecutionProvider' in available:
         cuda = {
             'device_id': 0,
             'arena_extend_strategy': 'kSameAsRequested',
@@ -82,7 +92,7 @@ def get_provider_options():
         }
         logger.info("CUDA provider available - attempting to use GPU for analysis")
         return [('CUDAExecutionProvider', cuda), ('CPUExecutionProvider', {})]
-    logger.info("CUDA provider not available - using CPU only")
+    logger.info("No GPU provider available - using CPU only")
     return [('CPUExecutionProvider', {})]
 
 
