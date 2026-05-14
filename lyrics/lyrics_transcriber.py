@@ -594,7 +594,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     normalized_moods: set = set()
     if top_moods:
         normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
-    vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists'})
+    vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists', 'female vocalist'})
 
     if 'instrumental' in normalized_moods:
         embedding, axis_vector = _make_instrumental_sentinel()
