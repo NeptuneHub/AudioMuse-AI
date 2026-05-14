@@ -1,18 +1,6 @@
 # syntax=docker/dockerfile:1
 
 # ============================================================================
-# Stage 0: PostgreSQL 16 client binaries (Debian Bullseye, libc 2.31)
-# ============================================================================
-FROM postgres:16-bullseye AS pgclient
-RUN set -eux; \
-    mkdir -p /pg/bin /pg/lib; \
-    cp /usr/lib/postgresql/16/bin/pg_dump \
-       /usr/lib/postgresql/16/bin/pg_restore \
-       /usr/lib/postgresql/16/bin/psql \
-       /pg/bin/; \
-    cp -a /usr/lib/*-linux-gnu/libpq.so* /pg/lib/
-
-# ============================================================================
 # Stage 1: Download ML models (cached separately for faster rebuilds)
 # ============================================================================
 FROM ubuntu:22.04 AS models
@@ -68,6 +56,15 @@ SHELL ["/bin/bash", "-c"]
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gnupg curl ca-certificates; \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    rm -rf /var/lib/apt/lists/*
+
 RUN set -ux; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
@@ -79,7 +76,7 @@ RUN set -ux; \
             libsndfile1=1.0.31-2ubuntu0.2 libsndfile1-dev \
             libopenblas-dev=0.3.20+ds-1 \
             liblapack-dev=3.10.0-2ubuntu1 \
-            libpq-dev \
+            libpq-dev postgresql-client-16 \
             ffmpeg wget curl \
             supervisor procps \
             gcc g++ \
@@ -153,10 +150,6 @@ ENV LANG=C.UTF-8 \
     HF_XET_DISABLE=1
 
 WORKDIR /app
-
-COPY --from=pgclient /pg/bin/ /usr/local/bin/
-COPY --from=pgclient /pg/lib/ /usr/local/lib/
-RUN ldconfig
 
 COPY --from=libraries /usr/local/lib/python3.10/dist-packages/ /usr/local/lib/python3.10/dist-packages/
 COPY --from=libraries /usr/local/bin/ /usr/local/bin/
