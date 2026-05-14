@@ -188,9 +188,9 @@ ENV LANG=C.UTF-8 \
     HF_HUB_DISABLE_XET=1 \
     HF_XET_DISABLE=1
 
-# Note: bundled HuggingFace models (RoBERTa, ...) load with
-# local_files_only=True per call. Lyrics is force-disabled on this image
-# (see ENV LYRICS_ENABLED=false below), so Marian translator is never invoked.
+# Note: bundled HuggingFace models (e5, RoBERTa, ...) load with
+# local_files_only=True per call. Marian translation models download on demand
+# at first use of a new source language; HF_HUB_OFFLINE is intentionally NOT set.
 
 WORKDIR /app
 
@@ -298,6 +298,165 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
+# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
+# of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
+# tokenizer files + preprocessor config). Re-hosted on the project's GitHub
+# release for mirror independence. Bundle ships `whisper-small-onnx/` as
+# its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
+# raw onnxruntime.
+RUN set -eux; \
+    whisper_dir="/app/model/whisper-small-onnx"; \
+    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \
+    whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
+    echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$whisper_dest" "$whisper_url"; then \
+            echo "✓ whisper bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download whisper bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$whisper_dest" -C /app/model; \
+    rm -f "$whisper_dest"; \
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             tokenizer.json tokenizer_config.json \
+             special_tokens_map.json preprocessor_config.json \
+             config.json generation_config.json vocab.json merges.txt; do \
+        if [ ! -f "$whisper_dir/$f" ]; then \
+            echo "ERROR: Whisper file missing: $whisper_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
+    du -sh "$whisper_dir"
+
+# Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
+# for mirror independence (original source: snakers4/silero-vad). Bundle ships
+# silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw
+# onnxruntime.
+RUN set -eux; \
+    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_silero_vad.tar.gz"; \
+    silero_dest="/tmp/lyrics_model_silero_vad.tar.gz"; \
+    silero_path="/app/model/silero_vad.onnx"; \
+    echo "Downloading silero VAD ONNX bundle (~2 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$silero_dest" "$silero_url"; then \
+            echo "✓ silero bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download silero bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$silero_dest" -C /app/model; \
+    rm -f "$silero_dest"; \
+    if [ ! -f "$silero_path" ]; then \
+        echo "ERROR: silero_vad.onnx missing after extraction"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    ls -lh "$silero_path"
+
+# Download e5-base-v2 ONNX bundle (~440 MB) — re-hosted on the project's
+# GitHub release for mirror independence. Tarball ships the ONNX file flat
+# at the archive root (`e5-base-v2.onnx`) plus a sibling `e5-base-v2/`
+# directory with the tokenizer files. Loaded by lyrics/e5_onnx.py via raw
+# onnxruntime + the bare `tokenizers` package.
+RUN set -eux; \
+    e5_onnx_path="/app/model/e5-base-v2.onnx"; \
+    e5_tok_dir="/app/model/e5-base-v2"; \
+    e5_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_e5.tar.gz"; \
+    e5_dest="/tmp/lyrics_model_e5.tar.gz"; \
+    echo "Downloading e5-base-v2 ONNX bundle (~440 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$e5_dest" "$e5_url"; then \
+            echo "✓ e5 bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for e5 bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download e5 bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$e5_dest" -C /app/model; \
+    rm -f "$e5_dest"; \
+    if [ ! -f "$e5_onnx_path" ]; then \
+        echo "ERROR: e5 ONNX missing after extraction: $e5_onnx_path"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    for f in tokenizer.json tokenizer_config.json vocab.txt config.json special_tokens_map.json; do \
+        if [ ! -f "$e5_tok_dir/$f" ]; then \
+            echo "ERROR: e5 tokenizer file missing: $e5_tok_dir/$f"; exit 1; \
+        fi; \
+    done; \
+    echo "✓ e5-base-v2 ONNX ready ($e5_onnx_path + $e5_tok_dir)"; \
+    du -sh "$e5_onnx_path" "$e5_tok_dir"
+
+# Download opus-mt-mul-en ONNX bundle (~520 MB) — multilingual-to-English
+# Marian translator pre-exported by this project (no official ONNX export
+# exists upstream for opus-mt-mul-en). The tarball ships
+# `opus-mt-mul-en-onnx/` as its top-level directory, so we extract it
+# straight into /app/model and verify the resulting path.
+# Loaded at runtime by lyrics/translation_onnx.py (raw onnxruntime).
+RUN set -eux; \
+    marian_dir="/app/model/opus-mt-mul-en-onnx"; \
+    marian_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_marian.tar.gz"; \
+    marian_dest="/tmp/lyrics_model_marian.tar.gz"; \
+    echo "Downloading opus-mt-mul-en ONNX bundle (~520 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$marian_dest" "$marian_url"; then \
+            echo "✓ marian bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for marian bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download marian bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$marian_dest" -C /app/model; \
+    rm -f "$marian_dest"; \
+    # Bundle ships SentencePiece tokenization (source.spm / target.spm) — no
+    # tokenizer.json. Loaded at runtime via transformers.MarianTokenizer.
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             source.spm target.spm tokenizer_config.json \
+             vocab.json config.json; do \
+        if [ ! -f "$marian_dir/$f" ]; then \
+            echo "ERROR: marian file missing: $marian_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ opus-mt-mul-en ONNX ready in $marian_dir"; \
+    du -sh "$marian_dir"
+
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
 COPY deployment/docker-entrypoint.sh /app/docker-entrypoint.sh
@@ -336,12 +495,6 @@ ENV MKL_ENABLE_INSTRUCTIONS=AVX2 \
 
 # Prevent aggressive memory pre-allocation on newer CPUs
 ENV ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION=1
-
-# Lyrics analysis requires the Whisper / silero-vad / e5 / Marian ONNX
-# bundles plus onnxruntime, which are intentionally not shipped in the
-# no-AVX2 image. Force-disable the feature here so the rest of the app
-# starts cleanly.
-ENV LYRICS_ENABLED=false
 
 ENV PYTHONPATH=/usr/local/lib/python3/dist-packages:/app
 
