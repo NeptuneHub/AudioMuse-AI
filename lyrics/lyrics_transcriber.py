@@ -591,6 +591,30 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     asr_avg_logprob = 0.0
     whisper_raw_len = 0
 
+    normalized_moods: set = set()
+    if top_moods:
+        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
+    vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists'})
+
+    if 'instrumental' in normalized_moods:
+        embedding, axis_vector = _make_instrumental_sentinel()
+        logger.info(
+            "STEP 0b: musicnn flagged track as instrumental "
+            "(top_moods=%r) — skipping mediaserver, external API, and "
+            "STEPS 1 through 5, applying sentinel directly "
+            "(embedding_dim=%s, axis_dim=%s)",
+            list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
+        )
+        return {
+            'text': '',
+            'translated_text': '',
+            'final_text': '',
+            'language': '',
+            'used_seconds': 0.0,
+            'embedding': embedding,
+            'axis_vector': axis_vector,
+        }
+
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
         try:
@@ -634,31 +658,6 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.info('STEP 0 end: API skipped (disabled or missing artist/track)')
     else:
         logger.info('STEP 0 skipped: already have lyrics from media server')
-
-    normalized_moods: set = set()
-    if top_moods:
-        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
-    vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists'})
-
-    if not raw_text and top_moods:
-        if 'instrumental' in normalized_moods:
-            embedding, axis_vector = _make_instrumental_sentinel()
-            logger.info(
-                "STEP 0b: musicnn flagged track as instrumental "
-                "(top_moods=%r) and no upstream lyrics source returned "
-                "text — skipping STEPS 1 through 5, applying sentinel "
-                "directly (embedding_dim=%s, axis_dim=%s)",
-                list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
-            )
-            return {
-                'text': '',
-                'translated_text': '',
-                'final_text': '',
-                'language': '',
-                'used_seconds': 0.0,
-                'embedding': embedding,
-                'axis_vector': axis_vector,
-            }
 
     if not raw_text and not LYRICS_ASR_ENABLE:
         logger.info('STEPS 1-2 skipped: LYRICS_ASR_ENABLE=false — no upstream '
