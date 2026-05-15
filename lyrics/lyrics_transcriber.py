@@ -248,6 +248,7 @@ def _sanitize_lyrics_text(text: str, max_words: int = 300) -> str:
     text = re.sub(r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', '', text,
                   flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r'<[^<>]{1,200}>', '', text)
+    text = _strip_lrc_timestamps(text)
     out_lines: List[str] = []
     blank_run = 0
     for line in text.splitlines():
