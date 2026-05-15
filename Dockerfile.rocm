@@ -8,8 +8,16 @@
 #
 # Tested on: RX 7900 XTX (gfx1100 / RDNA 3) with ROCm 7.2.3
 #
-# Build:
+# Build (minimal):
 #   docker build -f Dockerfile.rocm -t audiomuse-ai:rocm .
+#
+# Build with optional faster-whisper lyrics backend:
+#   docker build -f Dockerfile.rocm --build-arg WITH_FASTER_WHISPER=1 \
+#     -t audiomuse-ai:rocm .
+#
+# Build with optional Essentia MTG-Jamendo mood classifiers:
+#   docker build -f Dockerfile.rocm --build-arg WITH_ESSENTIA_MOOD_MODELS=1 \
+#     -t audiomuse-ai:rocm .
 #
 # Run (see docker-compose.amd-worker.yml for a full example):
 #   docker run --device /dev/kfd --device /dev/dri \
@@ -29,7 +37,7 @@ FROM ${CPU_IMAGE}
 # Only the packages needed for MIGraphX inference are pulled in;
 # full ROCm toolchains and development headers are excluded.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget gnupg2 ca-certificates \
+    && apt-get install -y --no-install-recommends wget gnupg2 ca-certificates curl \
     && mkdir -p /etc/apt/keyrings \
     && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
          | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg \
@@ -58,3 +66,52 @@ ENV ORT_DISABLE_ALL_OPTIMIZATIONS="" \
     ORT_DISABLE_AVX512="" \
     ORT_DISABLE_MEMORY_PATTERN_OPTIMIZATION="" \
     ORT_FORCE_SHARED_PROVIDER=""
+
+# ---------------------------------------------------------------------------
+# Optional: faster-whisper lyrics transcription backend
+# ---------------------------------------------------------------------------
+# Build with: --build-arg WITH_FASTER_WHISPER=1
+# Then set LYRICS_WHISPER_MODEL_DIR=/app/model/faster-whisper-small at runtime.
+#
+# Install order is critical: faster-whisper must be installed FIRST (it pulls
+# in stock onnxruntime as a dependency), then the MIGraphX wheel is reinstalled
+# to reclaim the onnxruntime slot.
+ARG WITH_FASTER_WHISPER=0
+COPY lyrics/whisper_fw.py /app/lyrics/whisper_fw.py
+RUN if [ "$WITH_FASTER_WHISPER" = "1" ]; then \
+        pip install --no-cache-dir faster-whisper==1.1.1 \
+        && pip install --no-cache-dir --force-reinstall "numpy<2.0" \
+             https://github.com/Looong01/onnxruntime-rocm-build/releases/download/v1.25.0/onnxruntime_migraphx-1.25.0-cp312-cp312-manylinux_2_34_x86_64.whl \
+        && huggingface-cli download Systran/faster-whisper-small \
+             --local-dir /app/model/faster-whisper-small \
+             --local-dir-use-symlinks False \
+        && cp /app/lyrics/whisper_fw.py /app/lyrics/whisper_onnx.py; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Optional: Essentia MTG-Jamendo per-axis mood classifiers
+# ---------------------------------------------------------------------------
+# Build with: --build-arg WITH_ESSENTIA_MOOD_MODELS=1
+# Then set USE_ESSENTIA_MOOD_MODELS=1 and
+#      ESSENTIA_MOOD_MODEL_DIR=/app/model/essentia-mood/ at runtime.
+#
+# Models are downloaded from the AudioMuse-AI v3.0.0-model release.
+# The msd-musicnn backbone [N,187,96]->[N,200] feeds the per-axis classifiers
+# [N,200]->[N,2]; mood score = mean(softmax[:,0]) across patches (index 0 = P(mood present)).
+ARG WITH_ESSENTIA_MOOD_MODELS=0
+RUN if [ "$WITH_ESSENTIA_MOOD_MODELS" = "1" ]; then \
+        mkdir -p /app/model/essentia-mood \
+        && cd /app/model/essentia-mood \
+        && for m in \
+               msd-musicnn-1 \
+               danceability-msd-musicnn-1 \
+               mood_aggressive-msd-musicnn-1 \
+               mood_happy-msd-musicnn-1 \
+               mood_party-msd-musicnn-1 \
+               mood_relaxed-msd-musicnn-1 \
+               mood_sad-msd-musicnn-1; do \
+             curl --fail --location --retry 3 -O \
+               "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v3.0.0-model/${m}.onnx" \
+             || { echo "Failed to download ${m}.onnx"; exit 1; }; \
+           done; \
+    fi

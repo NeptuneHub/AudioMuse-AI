@@ -1,4 +1,4 @@
-# AMD GPU worker — docker compose example
+# AMD GPU worker -- docker compose example
 #
 # Runs AudioMuse-AI RQ workers using the ROCm/MIGraphX image.
 # Inference runs on the AMD GPU via MIGraphXExecutionProvider.
@@ -6,7 +6,12 @@
 # Prerequisites:
 #   - ROCm driver installed on the host (ROCm 6.x or 7.x)
 #   - User in the `video` and `render` groups
-#   - audiomuse-ai:rocm image built: docker build -f Dockerfile.rocm -t audiomuse-ai:rocm .
+#   - audiomuse-ai:rocm image built:
+#       docker build -f Dockerfile.rocm -t audiomuse-ai:rocm .
+#
+#   Optional extras (add build args to enable):
+#       --build-arg WITH_FASTER_WHISPER=1       # faster-whisper lyrics backend
+#       --build-arg WITH_ESSENTIA_MOOD_MODELS=1 # Essentia mood classifiers
 #
 # Usage:
 #   docker compose -f docker-compose.amd-worker.yml up -d --scale audiomuse-worker=3
@@ -30,6 +35,15 @@ services:
       # RDNA 3 (RX 7000 series):  HSA_OVERRIDE_GFX_VERSION=11.0.0
       # RDNA 2 (RX 6000 series):  HSA_OVERRIDE_GFX_VERSION=10.3.0
       # HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+      #
+      # --- Optional: faster-whisper lyrics transcription backend ---
+      # Requires: image built with --build-arg WITH_FASTER_WHISPER=1
+      # LYRICS_WHISPER_MODEL_DIR: "/app/model/faster-whisper-small"
+      #
+      # --- Optional: Essentia MTG-Jamendo mood classifiers ---
+      # Requires: image built with --build-arg WITH_ESSENTIA_MOOD_MODELS=1
+      # USE_ESSENTIA_MOOD_MODELS: "1"
+      # ESSENTIA_MOOD_MODEL_DIR: "/app/model/essentia-mood"
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

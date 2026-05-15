@@ -745,10 +745,19 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
     
-    # Compute text embeddings for each label
-    logger.info(f"Computing CLAP text embeddings for OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
+    # Compute text embeddings for each label.
+    # Use descriptive prompt sentences from OTHER_FEATURE_PROMPTS when available;
+    # fall back to the bare label string so new labels are always handled safely.
+    prompts = [
+        config.OTHER_FEATURE_PROMPTS.get(label, label)
+        for label in config.OTHER_FEATURE_LABELS
+    ]
+    logger.info(
+        f"Computing CLAP text embeddings for OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS} "
+        f"(using descriptive prompts: {any(p != l for p, l in zip(prompts, config.OTHER_FEATURE_LABELS))})"
+    )
     try:
-        embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
+        embeddings = get_text_embeddings_batch(prompts)
         if embeddings is None:
             logger.error("Failed to compute CLAP text embeddings")
             return None

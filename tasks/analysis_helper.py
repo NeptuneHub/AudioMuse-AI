@@ -4,11 +4,13 @@
 import gc
 import importlib
 import logging
+import os
 
 import numpy as np
 import librosa
 import onnxruntime as ort
 
+import config as _config
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
 # `app_helper` and `app_helper_artist` are safe at module top: they have no
@@ -463,8 +465,16 @@ def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_so
         return None
 
 
-def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, item_id, labels):
-    """Return a 'label:0.42,label2:0.55' string from CLAP. Falls back to all-zero."""
+def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, item_id, labels,
+                                essentia_mood=None):
+    """Return a 'label:0.42,label2:0.55' string.
+
+    When *essentia_mood* is provided (dict from :func:`compute_essentia_mood`)
+    it is used directly and the CLAP path is skipped entirely.  Falls back to
+    all-zero when neither source is available.
+    """
+    if essentia_mood is not None:
+        return ",".join(f"{k}:{essentia_mood.get(k, 0.0):.2f}" for k in labels)
     zero = ",".join(f"{k}:0.00" for k in labels)
     if label_embeddings is None:
         return zero
@@ -480,6 +490,121 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
     except Exception as e:
         logger.warning(f"  - Failed to compute other_features from CLAP: {e}")
         return zero
+
+
+# ---------------------------------------------------------------------------
+# Essentia MTG-Jamendo mood classifiers (optional)
+# ---------------------------------------------------------------------------
+# Model filename for each mood label (label -> filename in ESSENTIA_MOOD_MODEL_DIR).
+_ESSENTIA_MODEL_FILE: dict = {
+    'aggressive': 'mood_aggressive-msd-musicnn-1.onnx',
+    'happy':      'mood_happy-msd-musicnn-1.onnx',
+    'party':      'mood_party-msd-musicnn-1.onnx',
+    'relaxed':    'mood_relaxed-msd-musicnn-1.onnx',
+    'sad':        'mood_sad-msd-musicnn-1.onnx',
+    'danceable':  'danceability-msd-musicnn-1.onnx',
+}
+
+
+def load_essentia_mood_sessions():
+    """Load msd-musicnn backbone + per-axis mood classifiers.
+
+    Models run on CPU only to avoid MIGraphX compilation overhead for the
+    small 81 KB classifier weights.  Returns a dict with keys ``'msd'`` and
+    ``'mood'`` (a per-label dict of sessions), or *None* when disabled or
+    models are missing.
+    """
+    if not _config.USE_ESSENTIA_MOOD_MODELS:
+        return None
+    model_dir = _config.ESSENTIA_MOOD_MODEL_DIR
+    if not os.path.isdir(model_dir):
+        logger.warning(
+            f"USE_ESSENTIA_MOOD_MODELS=1 but ESSENTIA_MOOD_MODEL_DIR not found: {model_dir}"
+        )
+        return None
+    cpu = ['CPUExecutionProvider']
+    try:
+        msd_path = os.path.join(model_dir, 'msd-musicnn-1.onnx')
+        if not os.path.exists(msd_path):
+            logger.warning(f"msd-musicnn-1.onnx not found in {model_dir}")
+            return None
+        msd_sess = ort.InferenceSession(msd_path, providers=cpu)
+        mood_sessions: dict = {}
+        for label in _config.ESSENTIA_MOOD_LABELS:
+            filename = _ESSENTIA_MODEL_FILE.get(label)
+            if not filename:
+                logger.warning(f"No Essentia model filename mapped for label '{label}'")
+                continue
+            path = os.path.join(model_dir, filename)
+            if not os.path.exists(path):
+                logger.warning(f"Essentia mood model not found: {path}")
+                continue
+            mood_sessions[label] = ort.InferenceSession(path, providers=cpu)
+        if not mood_sessions:
+            logger.warning("No Essentia mood classifier models loaded -- check ESSENTIA_MOOD_MODEL_DIR")
+            return None
+        logger.info(f"Loaded Essentia mood sessions: {list(mood_sessions.keys())}")
+        return {'msd': msd_sess, 'mood': mood_sessions}
+    except Exception as e:
+        logger.warning(f"Failed to load Essentia mood models: {e}")
+        return None
+
+
+def cleanup_essentia_mood_sessions(sessions, context=""):
+    """Release Essentia ONNX sessions and run GC."""
+    if not sessions:
+        return
+    suffix = f" ({context})" if context else ""
+    logger.info(f"Cleaning up Essentia mood sessions{suffix}")
+    for name, sess in [('msd', sessions.get('msd'))] + list(sessions.get('mood', {}).items()):
+        if sess is not None:
+            try:
+                cleanup_onnx_session(sess, name)
+            except Exception as e:
+                logger.warning(f"Error cleaning up Essentia session '{name}': {e}")
+    gc.collect()
+
+
+def compute_essentia_mood(patches, essentia_sessions):
+    """Run mel patches through the Essentia msd-musicnn pipeline.
+
+    Pipeline: patches [N,187,96] -> msd-musicnn -> [N,200] embeddings ->
+    each mood classifier -> [N,2] softmax -> mean([:,0]) per label.
+
+    All classifiers output ["<mood>", "not_<mood>"] so index 0 is P(mood present).
+
+    Returns a dict ``{label: float}`` or *None* on failure.
+    """
+    if essentia_sessions is None:
+        return None
+    try:
+        msd_sess = essentia_sessions['msd']
+        mood_sessions = essentia_sessions['mood']
+
+        # Stage 1: patches -> per-patch MSD embeddings
+        msd_input_name = msd_sess.get_inputs()[0].name
+        msd_output_name = msd_sess.get_outputs()[0].name
+        emb_per_patch = run_inference(
+            msd_sess, {msd_input_name: patches}, msd_output_name
+        )
+        if emb_per_patch is None:
+            logger.warning("Essentia msd-musicnn inference returned None")
+            return None
+        emb_per_patch = emb_per_patch.astype(np.float32)
+
+        # Stage 2: per-patch embeddings -> mood probabilities, then average
+        result: dict = {}
+        for label, sess in mood_sessions.items():
+            inp_name = sess.get_inputs()[0].name
+            out_name = sess.get_outputs()[0].name
+            probs = run_inference(sess, {inp_name: emb_per_patch}, out_name)
+            if probs is not None:
+                # probs shape [N, 2]; index 0 = P(mood present), average over patches
+                result[label] = float(np.mean(probs[:, 0]))
+        return result if result else None
+    except Exception as e:
+        logger.warning(f"Essentia mood inference failed: {e}")
+        return None
 
 
 def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):

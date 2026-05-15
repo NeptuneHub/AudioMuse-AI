@@ -546,8 +546,66 @@ TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
 OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
 
-# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS
-CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
+# Descriptive CLAP text prompts for each OTHER_FEATURE label.
+# Using full sentences rather than single words significantly widens cosine
+# similarity spread, improving per-track mood discrimination.
+# Map is label -> prompt; labels absent from this map fall back to the bare
+# label string so new labels added to OTHER_FEATURE_LABELS are handled safely.
+OTHER_FEATURE_PROMPTS: dict = {
+    'danceable': 'a rhythmic, danceable song with a strong steady beat that makes you want to move',
+    'aggressive': 'an aggressive, intense, hard-hitting track with raw energy and power',
+    'happy': 'a joyful, upbeat, cheerful song with a positive feel-good mood',
+    'party': 'a lively party anthem with high energy, made for celebrating and dancing',
+    'relaxed': 'a calm, mellow, relaxing song with a laid-back, soothing atmosphere',
+    'sad': 'a melancholic, sorrowful, emotionally heavy song with a sad and somber tone',
+}
+
+# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS.
+# When OTHER_FEATURE_PROMPTS changes the cached embeddings are stale; flush
+# the key (or let it auto-expire) to force recomputation.
+# The default key embeds a short hash of the prompt texts so that code-level
+# prompt edits invalidate the cache automatically without requiring manual
+# Redis surgery.
+def _clap_prompts_hash() -> str:
+    import hashlib
+    content = "|".join(
+        f"{l}:{OTHER_FEATURE_PROMPTS.get(l, l)}" for l in sorted(OTHER_FEATURE_LABELS)
+    )
+    return hashlib.sha1(content.encode()).hexdigest()[:8]
+
+CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get(
+    "CLAP_OTHER_FEATURES_REDIS_KEY",
+    f"audiomuse:clap_other_feature_text_embeddings:{_clap_prompts_hash()}",
+)
+
+# --- Essentia MTG-Jamendo mood classifiers (optional) -----------------------
+# When USE_ESSENTIA_MOOD_MODELS=1, per-axis mood scores are derived from
+# dedicated Essentia msd-musicnn classifiers rather than CLAP text similarity.
+# This avoids the single-word prompt clustering problem and produces
+# calibrated probability outputs for each mood axis.
+#
+# Requires models downloaded into ESSENTIA_MOOD_MODEL_DIR:
+#   msd-musicnn-1.onnx  (embedding backbone, input [N,187,96] -> [N,200])
+#   mood_aggressive-msd-musicnn-1.onnx  (input [N,200] -> [N,2] softmax)
+#   mood_happy-msd-musicnn-1.onnx
+#   mood_party-msd-musicnn-1.onnx
+#   mood_relaxed-msd-musicnn-1.onnx
+#   mood_sad-msd-musicnn-1.onnx
+#   danceability-msd-musicnn-1.onnx
+#
+# All classifiers output ["<mood>", "not_<mood>"]; mood score = mean([:,0])
+# across patches (index 0 = P(mood present)).
+#
+# Download from:
+#   https://github.com/NeptuneHub/AudioMuse-AI/releases/tag/v3.0.0-model
+USE_ESSENTIA_MOOD_MODELS: bool = os.environ.get("USE_ESSENTIA_MOOD_MODELS", "0") == "1"
+ESSENTIA_MOOD_MODEL_DIR: str = os.environ.get(
+    "ESSENTIA_MOOD_MODEL_DIR", "/app/model/essentia-mood/"
+)
+# Labels produced by the Essentia classifiers.
+# 'danceable' maps to danceability-msd-musicnn-1.onnx to stay compatible
+# with the existing other_features column format.
+ESSENTIA_MOOD_LABELS: list = ['aggressive', 'happy', 'party', 'relaxed', 'sad', 'danceable']
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))

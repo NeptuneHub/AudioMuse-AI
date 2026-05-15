@@ -31,6 +31,7 @@ from config import (
     OTHER_FEATURE_LABELS,
     REBUILD_INDEX_BATCH_SIZE, MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
     AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED,
+    USE_ESSENTIA_MOOD_MODELS, ESSENTIA_MOOD_LABELS,
 )
 
 
@@ -79,6 +80,9 @@ from .analysis_helper import (
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     run_inference_with_oom_fallback,
+    load_essentia_mood_sessions,
+    cleanup_essentia_mood_sessions,
+    compute_essentia_mood,
 )
 
 
@@ -210,16 +214,20 @@ def rebuild_all_indexes_task():
             logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
             return {"status": "FAILURE", "message": str(e)}
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None,
+                  return_audio=False, essentia_sessions=None):
     """
     Analyzes a single track using ONNX Runtime for inference.
-    
+
     Args:
         file_path: Path to audio file
         mood_labels_list: List of mood labels
         model_paths: Dict of model paths
         onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
         return_audio: If True, return the loaded audio array and sample rate as part of the result.
+        essentia_sessions: Optional dict from :func:`load_essentia_mood_sessions`.
+            When provided, per-axis mood scores are computed from the Essentia
+            msd-musicnn classifiers and stored in analysis_result['essentia_mood'].
     """
     logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
 
@@ -351,6 +359,15 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         "energy": average_energy,
     }
 
+    # Optional: Essentia per-axis mood scores from msd-musicnn classifiers.
+    # Runs on CPU using the same mel patches; results stored separately from
+    # MusiCNN genre moods so callers can choose which to persist.
+    if essentia_sessions is not None:
+        emood = compute_essentia_mood(final_patches, essentia_sessions)
+        if emood:
+            analysis_result['essentia_mood'] = emood
+            logger.debug(f"  Essentia mood: {emood}")
+
     return_values = (analysis_result, processed_embeddings, audio, sr) if return_audio else (analysis_result, processed_embeddings)
     try:
         if not return_audio:
@@ -417,7 +434,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             total_tracks_in_album = len(tracks)
 
             any_track_needs_musicnn = len(existing_track_ids_set) < total_tracks_in_album
-            if any_track_needs_musicnn and is_clap_available():
+
+            # Load Essentia mood sessions once per album when enabled.
+            # Falls back gracefully to CLAP-based scoring when models are missing.
+            essentia_sessions = load_essentia_mood_sessions() if USE_ESSENTIA_MOOD_MODELS else None
+            if essentia_sessions:
+                logger.info(f"✓ Essentia mood sessions ready: {list(essentia_sessions['mood'].keys())}")
+
+            if any_track_needs_musicnn and is_clap_available() and not essentia_sessions:
                 try:
                     clap_label_embeddings = get_or_cache_other_feature_text_embeddings(redis_conn)
                     if clap_label_embeddings:
@@ -498,9 +522,17 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             session_recycler.mark_recycled()
 
                         if needs_lyrics and LYRICS_ENABLED:
-                            analysis, embedding, track_audio, track_sr = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions, return_audio=True)
+                            analysis, embedding, track_audio, track_sr = analyze_track(
+                                path, MOOD_LABELS, model_paths,
+                                onnx_sessions=onnx_sessions, return_audio=True,
+                                essentia_sessions=essentia_sessions,
+                            )
                         else:
-                            analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
+                            analysis, embedding = analyze_track(
+                                path, MOOD_LABELS, model_paths,
+                                onnx_sessions=onnx_sessions,
+                                essentia_sessions=essentia_sessions,
+                            )
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
                             tracks_skipped_count += 1
@@ -532,13 +564,21 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info("  - CLAP embedding already exists, skipping")
 
                     if needs_musicnn and musicnn_analysis is not None:
-                        other_features = _ah.compute_other_features_str(
-                            clap_embedding_for_track, needs_clap, clap_label_embeddings, item['Id'], OTHER_FEATURE_LABELS,
+                        # Use Essentia mood when available; fall back to CLAP scoring.
+                        essentia_mood = musicnn_analysis.get('essentia_mood')
+                        mood_labels_for_features = (
+                            ESSENTIA_MOOD_LABELS if essentia_mood else OTHER_FEATURE_LABELS
                         )
+                        other_features = _ah.compute_other_features_str(
+                            clap_embedding_for_track, needs_clap, clap_label_embeddings,
+                            item['Id'], mood_labels_for_features,
+                            essentia_mood=essentia_mood,
+                        )
+                        mood_source = "Essentia" if essentia_mood else "CLAP"
                         logger.info(f"SUCCESSFULLY ANALYZED '{track_name_full}' (ID: {item['Id']}):")
                         logger.info(f"  - Tempo: {musicnn_analysis['tempo']:.2f}, Energy: {musicnn_analysis['energy']:.4f}, Key: {musicnn_analysis['key']} {musicnn_analysis['scale']}")
                         logger.info(f"  - Top Moods: {top_moods}")
-                        logger.info(f"  - Other Features: {other_features}")
+                        logger.info(f"  - Other Features ({mood_source}): {other_features}")
                         _ah.persist_musicnn_results(item, musicnn_analysis, top_moods, musicnn_embedding, other_features)
 
                     # CLAP must be saved AFTER score (FK: clap_embedding.item_id → score.item_id).
@@ -557,6 +597,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
             cleanup_musicnn_sessions(onnx_sessions, context="album end")
             onnx_sessions = None
+            cleanup_essentia_mood_sessions(essentia_sessions, context="album end")
+            essentia_sessions = None
             cleanup_optional_models(context="album end")
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
@@ -576,6 +618,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         finally:
             cleanup_musicnn_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
+            cleanup_essentia_mood_sessions(essentia_sessions, context="finally")
+            essentia_sessions = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
             except Exception as e:
