@@ -505,6 +505,23 @@ _ESSENTIA_MODEL_FILE: dict = {
     'danceable':  'danceability-msd-musicnn-1.onnx',
 }
 
+# The MTG-Jamendo classifiers are documented as ["<mood>", "not_<mood>"] (index 0
+# = P(mood present)), but empirical testing of the msd-musicnn ONNX exports shows
+# that three models have the class order reversed in the converted weights:
+#   party, relaxed, sad -> index 1 = P(mood present)
+#   aggressive, happy, danceable -> index 0 = P(mood present)
+# These constants are derived by testing each model against anchor tracks whose
+# ground-truth label direction is unambiguous (e.g., Super Eurobeat for party,
+# Metallica for aggressive, Radiohead acoustic ballads for relaxed).
+_ESSENTIA_MOOD_CLASS_INDEX: dict = {
+    'aggressive': 0,
+    'happy':      0,
+    'party':      1,
+    'relaxed':    1,
+    'sad':        1,
+    'danceable':  0,
+}
+
 
 def load_essentia_mood_sessions():
     """Load msd-musicnn backbone + per-axis mood classifiers.
@@ -569,9 +586,13 @@ def compute_essentia_mood(patches, essentia_sessions):
     """Run mel patches through the Essentia msd-musicnn pipeline.
 
     Pipeline: patches [N,187,96] -> msd-musicnn -> [N,200] embeddings ->
-    each mood classifier -> [N,2] softmax -> mean([:,0]) per label.
+    each mood classifier -> [N,2] softmax -> mean([:,idx]) per label,
+    where idx comes from _ESSENTIA_MOOD_CLASS_INDEX (0 or 1 depending on
+    the class ordering of each ONNX export).
 
-    All classifiers output ["<mood>", "not_<mood>"] so index 0 is P(mood present).
+    All classifiers nominally output ["<mood>", "not_<mood>"], but empirical
+    testing shows party/relaxed/sad have the order reversed in the converted
+    weights (index 1 = P(mood present) for those three labels).
 
     Returns a dict ``{label: float}`` or *None* on failure.
     """
@@ -599,8 +620,9 @@ def compute_essentia_mood(patches, essentia_sessions):
             out_name = sess.get_outputs()[0].name
             probs = run_inference(sess, {inp_name: emb_per_patch}, out_name)
             if probs is not None:
-                # probs shape [N, 2]; index 0 = P(mood present), average over patches
-                result[label] = float(np.mean(probs[:, 0]))
+                # Use per-label class index: some ONNX exports have reversed ordering
+                idx = _ESSENTIA_MOOD_CLASS_INDEX.get(label, 0)
+                result[label] = float(np.mean(probs[:, idx]))
         return result if result else None
     except Exception as e:
         logger.warning(f"Essentia mood inference failed: {e}")

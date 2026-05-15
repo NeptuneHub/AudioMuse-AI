@@ -593,8 +593,12 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get(
 #   mood_sad-msd-musicnn-1.onnx
 #   danceability-msd-musicnn-1.onnx
 #
-# All classifiers output ["<mood>", "not_<mood>"]; mood score = mean([:,0])
-# across patches (index 0 = P(mood present)).
+# Class index notes (per-label, see _ESSENTIA_MOOD_CLASS_INDEX in analysis_helper.py):
+#   aggressive, happy, danceable: index 0 = P(mood present)
+#   party, relaxed, sad:          index 1 = P(mood present)
+# Despite the "["<mood>","not_<mood>"]" documentation, empirical testing of
+# the msd-musicnn ONNX exports shows the three latter labels have reversed
+# class ordering in their converted weights.
 #
 # Download from:
 #   https://github.com/NeptuneHub/AudioMuse-AI/releases/tag/v3.0.0-model
