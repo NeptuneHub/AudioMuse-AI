@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import signal
-import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -121,7 +120,6 @@ _embedding_model = None
 _embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
-_embedding_load_lock = threading.Lock()
 
 def load_asr_model(num_threads: Optional[int] = None):
     threads = num_threads or get_lyrics_threads()
