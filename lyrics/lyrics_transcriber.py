@@ -719,6 +719,17 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         MIN_CHARS_FOR_EMBEDDING, len(raw_text))
             raw_text = ''
 
+    if raw_text and whisper_raw_len == 0:
+        try:
+            from langdetect import detect, DetectorFactory
+            DetectorFactory.seed = 0
+            asr_lang = (detect(raw_text) or '').strip().lower()
+            logger.info('STEP 2.5: langdetect on non-ASR lyrics (%s chars) → %r',
+                        len(raw_text), asr_lang)
+        except Exception as exc:
+            logger.warning('STEP 2.5: langdetect failed (%s) — assuming en', exc)
+            asr_lang = 'en'
+
     _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
     _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
     if raw_text and asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
