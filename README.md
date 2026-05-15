@@ -101,10 +101,11 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
    - Click "Start Analysis" to scan your library
    - Wait for completion, then explore features like clustering and music map
 
-**Stopping the services:**
+5. **Stopping the services:**
 ```bash
 docker compose -f deployment/docker-compose.yaml down
 ```
+> **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
 ## **Hardware Requirements**
 
