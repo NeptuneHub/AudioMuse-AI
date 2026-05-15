@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import signal
-import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -121,7 +120,6 @@ _embedding_model = None
 _embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
-_embedding_load_lock = threading.Lock()
 
 def load_asr_model(num_threads: Optional[int] = None):
     threads = num_threads or get_lyrics_threads()
@@ -250,6 +248,7 @@ def _sanitize_lyrics_text(text: str, max_words: int = 300) -> str:
     text = re.sub(r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', '', text,
                   flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r'<[^<>]{1,200}>', '', text)
+    text = _strip_lrc_timestamps(text)
     out_lines: List[str] = []
     blank_run = 0
     for line in text.splitlines():
@@ -574,6 +573,21 @@ def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(parts).astype(np.float32, copy=False)
 
+_ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
+_ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
+
+def _asr_should_drop(raw_text: str, whisper_raw_len: int,
+                     asr_lang: str, asr_avg_logprob: float) -> bool:
+    if not raw_text or whisper_raw_len <= 0:
+        return False
+    if asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
+        return True
+    if asr_lang in _ASR_NULL_LANGS:
+        return True
+    if asr_lang not in _ASR_ENGLISH_LANGS and asr_avg_logprob < ASR_NON_ENGLISH_MIN_LOGPROB:
+        return True
+    return False
+
 def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    sr: Optional[int] = None,
                    source_path: Optional[Union[str, Path]] = None,
@@ -588,6 +602,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     raw_text = ''
     detected_lang = 'en'
     asr_lang = 'en'
+    text_lang = 'en'
     asr_avg_logprob = 0.0
     whisper_raw_len = 0
 
@@ -710,6 +725,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         asr_lang = (transcription.get('language') or '').strip().lower()
         asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
         detected_lang = asr_lang or 'en'
+        text_lang = detected_lang
         logger.info('STEP 2 end: transcript length=%s chars / '
                     'asr_lang=%r / avg_logprob=%.2f',
                     len(raw_text), asr_lang, asr_avg_logprob)
@@ -719,37 +735,29 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         MIN_CHARS_FOR_EMBEDDING, len(raw_text))
             raw_text = ''
 
-    _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
-    _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
-    if raw_text and asr_avg_logprob < ASR_MIN_AVG_LOGPROB:
-        logger.info('STEP 3: ASR avg_logprob %.2f < %.2f — dropping likely '
-                    'hallucinated transcription, treating as instrumental',
-                    asr_avg_logprob, ASR_MIN_AVG_LOGPROB)
-        raw_text = ''
-    if (raw_text and asr_lang
-            and asr_lang not in _ASR_NULL_LANGS
-            and asr_lang not in _ASR_ENGLISH_LANGS
-            and asr_avg_logprob < ASR_NON_ENGLISH_MIN_LOGPROB):
-        logger.info('STEP 3: ASR reported non-English language %r with '
-                    'avg_logprob %.2f < %.2f — dropping likely hallucinated '
-                    'transcription (translator would only amplify the '
-                    'garbage), treating as instrumental',
-                    asr_lang, asr_avg_logprob, ASR_NON_ENGLISH_MIN_LOGPROB)
-        raw_text = ''
-    if raw_text and asr_lang in _ASR_NULL_LANGS:
-        logger.info('STEP 3: ASR reported no usable language (%r) — '
-                    'treating as instrumental (language uncertainty '
-                    'is a proxy for transcript uncertainty)',
-                    asr_lang)
+    if raw_text and whisper_raw_len == 0:
+        try:
+            from langdetect import detect, DetectorFactory
+            DetectorFactory.seed = 0
+            text_lang = (detect(raw_text) or '').strip().lower()
+            logger.info('STEP 2.5: langdetect on non-ASR lyrics (%s chars) → %r',
+                        len(raw_text), text_lang)
+        except Exception as exc:
+            logger.warning('STEP 2.5: langdetect failed (%s) — assuming en', exc)
+            text_lang = 'en'
+
+    if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
+        logger.info('STEP 3: dropping ASR transcript (lang=%r, logprob=%.2f)',
+                    asr_lang, asr_avg_logprob)
         raw_text = ''
     if raw_text:
-        if asr_lang in _ASR_ENGLISH_LANGS:
+        if text_lang in _ASR_ENGLISH_LANGS:
             detected_lang = 'en'
-            logger.info('STEP 3: ASR-reported language %r → normalized to en '
-                        '(translation skipped)', asr_lang)
+            logger.info('STEP 3: detected language %r → normalized to en '
+                        '(translation skipped)', text_lang)
         else:
-            detected_lang = asr_lang
-            logger.info('STEP 3: using ASR-reported language: %s', detected_lang)
+            detected_lang = text_lang
+            logger.info('STEP 3: using detected language: %s', detected_lang)
     logger.info('STEP 3 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     text_for_cleanup = raw_text

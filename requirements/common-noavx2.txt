@@ -20,6 +20,7 @@ umap-learn
 pydub
 python-mpd2
 psutil
+PyJWT==2.12.1
 argon2-cffi==25.1.0
 onnx==1.14.1
 resampy
@@ -32,7 +33,11 @@ sympy
 mcp
 httpx
 voyager==2.1.0
-transformers==4.35.2
-sentencepiece
+transformers==4.57.6
+huggingface-hub==0.36.2
+sentencepiece==0.2.1
+tokenizers>=0.20.0
+stopwords==1.0.2
+langdetect==1.0.9
 gunicorn
 zstandard
