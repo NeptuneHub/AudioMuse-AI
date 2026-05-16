@@ -69,3 +69,4 @@ testing_suite/
 analysis.md
 .claude/settings.local.json
 .claude/settings.local.json
+mulan_model_export/mulan_tokenizer.tar.gz
