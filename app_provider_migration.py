@@ -819,14 +819,15 @@ def dry_run():
         'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     # Also snapshot new track metadata keyed by new_id for the post-execute
-    # score refresh (file_path, title, artist, album, year).
+    # score refresh (file_path, title, artist, album, album_artist, year).
     new_meta = {
         n['id']: {
-            'path':   n.get('path'),
-            'title':  n.get('title'),
-            'artist': n.get('album_artist') or n.get('artist'),
-            'album':  n.get('album'),
-            'year':   n.get('year'),
+            'path':         n.get('path'),
+            'title':        n.get('title'),
+            'artist':       n.get('artist'),
+            'album':        n.get('album'),
+            'album_artist': n.get('album_artist'),
+            'year':         n.get('year'),
         }
         for n in new_tracks if n.get('id')
     }
