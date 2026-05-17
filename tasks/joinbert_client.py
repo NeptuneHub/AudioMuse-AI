@@ -74,54 +74,40 @@ def get_router() -> Optional[Router]:
     return _router
 
 
-def _normalize_mood(mood: str, label_set: list) -> str:
-    """Fuzzy match mood to closest label in label_set."""
+def _normalize_mood(mood: str, label_set: list) -> tuple[str | None, float]:
+    """Fuzzy match mood to closest label in label_set. Returns (best_match, score) or (None, 0) if score < 0.5."""
     mood_lower = mood.lower()
 
-    best_match = max(
-        label_set,
-        key=lambda label: SequenceMatcher(None, mood_lower, label.lower()).ratio()
+    best_match, best_score = max(
+        ((label, SequenceMatcher(None, mood_lower, label.lower()).ratio()) for label in label_set),
+        key=lambda x: x[1]
     )
-    return best_match
+    if best_score < 0.5:
+        return None, best_score
+    return best_match, best_score
 
 
 def _dispatch_production(text: str, intents: list, entities: list) -> list:
     """
-    Production dispatch with intelligent entity reclassification.
-    - Moods must normalize to OTHER_FEATURE_LABELS (danceable, aggressive, happy, party, relaxed, sad)
-    - Genres must normalize to MOOD_LABELS (rock, pop, female vocalists, etc.)
-    - If a "mood" entity is actually in MOOD_LABELS, reclassify it as a genre
+    Production dispatch with smart mood/genre matching.
+    - Matches each entity against both MOOD_LABELS (genres+voice) and OTHER_FEATURE_LABELS (moods)
+    - Uses the better match (higher score), ignoring poor matches (score < 0.5)
     """
     from config import MOOD_LABELS, OTHER_FEATURE_LABELS
-
-    mood_set = {m.lower() for m in OTHER_FEATURE_LABELS}
-    genre_set = {g.lower() for g in MOOD_LABELS}
 
     ents: dict[str, list[str]] = {}
     for e in entities:
         e_type = e["type"]
         e_value = e["value"]
 
-        if e_type == "mood":
-            e_value_lower = e_value.lower()
-            if e_value_lower in mood_set:
-                ents.setdefault(e_type, []).append(e_value)
-            elif e_value_lower in genre_set:
-                best_genre = _normalize_mood(e_value, MOOD_LABELS)
-                ents.setdefault("genre", []).append(best_genre)
-            else:
-                best_mood = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
-                ents.setdefault(e_type, []).append(best_mood)
-        elif e_type == "genre":
-            e_value_lower = e_value.lower()
-            if e_value_lower in genre_set:
-                ents.setdefault(e_type, []).append(e_value)
-            elif e_value_lower in mood_set:
-                best_mood = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
-                ents.setdefault("mood", []).append(best_mood)
-            else:
-                best_genre = _normalize_mood(e_value, MOOD_LABELS)
-                ents.setdefault(e_type, []).append(best_genre)
+        if e_type == "mood" or e_type == "genre":
+            mood_match, mood_score = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
+            genre_match, genre_score = _normalize_mood(e_value, MOOD_LABELS)
+
+            if mood_score > genre_score and mood_match:
+                ents.setdefault("mood", []).append(mood_match)
+            elif genre_match:
+                ents.setdefault("genre", []).append(genre_match)
         else:
             ents.setdefault(e_type, []).append(e_value)
 
