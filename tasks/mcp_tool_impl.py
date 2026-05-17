@@ -640,6 +640,7 @@ def _database_genre_query_sync(
             executed_query = None
 
             if genres or moods:
+                logger.info(f"[SEARCH_DB] Starting search with genres={genres}, moods={moods}")
                 thresholds = [
                     (0.50, 0.50),
                     (0.40, 0.40),
@@ -648,7 +649,7 @@ def _database_genre_query_sync(
                     (0.10, 0.10),
                 ]
 
-                for genre_thresh, mood_thresh in thresholds:
+                for iteration, (genre_thresh, mood_thresh) in enumerate(thresholds, 1):
                     genre_mood_conds, genre_mood_params, has_genre, has_mood = _build_genre_mood_conditions(
                         genres, moods, genre_thresh, mood_thresh
                     )
@@ -657,6 +658,8 @@ def _database_genre_query_sync(
                     all_params = base_params + genre_mood_params
                     where_clause = " AND ".join(all_conditions) if all_conditions else "1=1"
                     all_params.append(get_songs)
+
+                    logger.info(f"[SEARCH_DB] Iteration {iteration}: genre_thresh={genre_thresh}, mood_thresh={mood_thresh}")
 
                     if has_genre or has_mood:
                         score_parts = []
@@ -707,9 +710,13 @@ def _database_genre_query_sync(
                         except (AttributeError, UnicodeDecodeError):
                             executed_query = f"[Query with {len(results)} results using thresholds {genre_thresh}/{mood_thresh}]"
 
+                        logger.info(f"[SEARCH_DB] SQL Query (first 500 chars): {executed_query[:500]}")
+                        logger.info(f"[SEARCH_DB] Iteration {iteration}: found {len(results)} results")
+
                         used_thresholds = (genre_thresh, mood_thresh)
 
                         if len(results) >= get_songs:
+                            logger.info(f"[SEARCH_DB] Target reached ({len(results)} >= {get_songs}), stopping iterations")
                             break
 
                 if used_thresholds and len(results) < get_songs:
