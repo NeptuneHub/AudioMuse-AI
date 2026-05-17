@@ -938,6 +938,15 @@ def _lyrics_search_sync(description: str, get_songs: int = 200) -> dict:
 
     try:
         results = search_by_text(description, limit=get_songs)
-        return {"songs": results, "message": f"Lyrics search: '{description}' → {len(results)} songs"}
+        songs = [
+            {
+                "item_id": r['item_id'],
+                "title": r.get('title', ''),
+                "artist": r.get('author', ''),
+                "album": r.get('album', ''),
+            }
+            for r in results
+        ]
+        return {"songs": songs, "message": f"Lyrics search: '{description}' → {len(songs)} songs"}
     except Exception as e:
         return {"error": f"Lyrics search failed: {str(e)}"}
