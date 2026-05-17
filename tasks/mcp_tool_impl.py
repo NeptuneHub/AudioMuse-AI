@@ -629,11 +629,11 @@ def _database_genre_query_sync(
 
             if genres or moods:
                 thresholds = [
-                    (0.55, 0.60),
-                    (0.45, 0.50),
-                    (0.35, 0.40),
-                    (0.25, 0.30),
-                    (0.15, 0.20),
+                    (0.50, 0.50),
+                    (0.40, 0.40),
+                    (0.30, 0.30),
+                    (0.20, 0.20),
+                    (0.10, 0.10),
                 ]
 
                 for genre_thresh, mood_thresh in thresholds:

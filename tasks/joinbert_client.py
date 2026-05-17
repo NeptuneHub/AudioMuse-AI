@@ -95,19 +95,28 @@ def _dispatch_production(text: str, intents: list, entities: list) -> list:
     """
     from config import MOOD_LABELS, OTHER_FEATURE_LABELS
 
+    mood_set_lower = {m.lower() for m in OTHER_FEATURE_LABELS}
+    genre_set_lower = {g.lower() for g in MOOD_LABELS}
+
     ents: dict[str, list[str]] = {}
     for e in entities:
         e_type = e["type"]
         e_value = e["value"]
+        e_value_lower = e_value.lower()
 
         if e_type == "mood" or e_type == "genre":
-            mood_match, mood_score = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
-            genre_match, genre_score = _normalize_mood(e_value, MOOD_LABELS)
+            if e_value_lower in mood_set_lower:
+                ents.setdefault("mood", []).append(e_value)
+            elif e_value_lower in genre_set_lower:
+                ents.setdefault("genre", []).append(e_value)
+            else:
+                mood_match, mood_score = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
+                genre_match, genre_score = _normalize_mood(e_value, MOOD_LABELS)
 
-            if mood_score >= genre_score and mood_match:
-                ents.setdefault("mood", []).append(mood_match)
-            elif genre_match:
-                ents.setdefault("genre", []).append(genre_match)
+                if mood_score >= genre_score and mood_match:
+                    ents.setdefault("mood", []).append(mood_match)
+                elif genre_match:
+                    ents.setdefault("genre", []).append(genre_match)
         else:
             ents.setdefault(e_type, []).append(e_value)
 
