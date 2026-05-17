@@ -524,10 +524,16 @@ def _build_genre_mood_conditions(genres, moods, genre_threshold, mood_threshold)
     if genres:
         genre_conditions = []
         for genre in genres:
-            genre_conditions.append(
-                "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-            )
-            params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+            genre_conditions.append(f"""
+                COALESCE(
+                    (SELECT CAST(TRIM(SPLIT_PART(tag, ':', 2)) AS NUMERIC)
+                     FROM UNNEST(STRING_TO_ARRAY(mood_vector, ',')) AS tags(tag)
+                     WHERE LOWER(TRIM(SPLIT_PART(tag, ':', 1))) LIKE LOWER(%s)
+                     LIMIT 1),
+                    0
+                ) >= %s
+            """)
+            params.append(f"{genre}%")
             params.append(genre_threshold)
         conditions.append("(" + " OR ".join(genre_conditions) + ")")
         has_genre_filter = True
@@ -535,10 +541,16 @@ def _build_genre_mood_conditions(genres, moods, genre_threshold, mood_threshold)
     if moods:
         mood_conditions = []
         for mood in moods:
-            mood_conditions.append(
-                "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
-            )
-            params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+            mood_conditions.append(f"""
+                COALESCE(
+                    (SELECT CAST(TRIM(SPLIT_PART(tag, ':', 2)) AS NUMERIC)
+                     FROM UNNEST(STRING_TO_ARRAY(other_features, ',')) AS tags(tag)
+                     WHERE LOWER(TRIM(SPLIT_PART(tag, ':', 1))) LIKE LOWER(%s)
+                     LIMIT 1),
+                    0
+                ) >= %s
+            """)
+            params.append(f"{mood}%")
             params.append(mood_threshold)
         if len(mood_conditions) == 1:
             conditions.append(mood_conditions[0])
@@ -651,32 +663,28 @@ def _database_genre_query_sync(
                         score_params = []
                         if has_genre:
                             for genre in genres:
-                                score_parts.append("""
+                                score_parts.append(f"""
                                     COALESCE(
-                                        CAST(
-                                            NULLIF(
-                                                SUBSTRING(mood_vector FROM %s),
-                                                ''
-                                            ) AS NUMERIC
-                                        ),
+                                        (SELECT CAST(TRIM(SPLIT_PART(tag, ':', 2)) AS NUMERIC)
+                                         FROM UNNEST(STRING_TO_ARRAY(mood_vector, ',')) AS tags(tag)
+                                         WHERE LOWER(TRIM(SPLIT_PART(tag, ':', 1))) LIKE LOWER(%s)
+                                         LIMIT 1),
                                         0
                                     )
                                 """)
-                                score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                                score_params.append(f"{genre}%")
                         if has_mood:
                             for mood in moods:
-                                score_parts.append("""
+                                score_parts.append(f"""
                                     COALESCE(
-                                        CAST(
-                                            NULLIF(
-                                                SUBSTRING(other_features FROM %s),
-                                                ''
-                                            ) AS NUMERIC
-                                        ),
+                                        (SELECT CAST(TRIM(SPLIT_PART(tag, ':', 2)) AS NUMERIC)
+                                         FROM UNNEST(STRING_TO_ARRAY(other_features, ',')) AS tags(tag)
+                                         WHERE LOWER(TRIM(SPLIT_PART(tag, ':', 1))) LIKE LOWER(%s)
+                                         LIMIT 1),
                                         0
                                     )
                                 """)
-                                score_params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+                                score_params.append(f"{mood}%")
 
                         relevance_expr = " + ".join(score_parts)
                         final_params = score_params + all_params
@@ -698,6 +706,7 @@ def _database_genre_query_sync(
                             executed_query = cur.query.decode('utf-8') if isinstance(cur.query, bytes) else str(cur.query)
                         except (AttributeError, UnicodeDecodeError):
                             executed_query = f"[Query with {len(results)} results using thresholds {genre_thresh}/{mood_thresh}]"
+
                         used_thresholds = (genre_thresh, mood_thresh)
 
                         if len(results) >= get_songs:
