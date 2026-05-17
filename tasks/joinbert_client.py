@@ -87,10 +87,15 @@ def _normalize_mood(mood: str, label_set: list) -> str:
 
 def _dispatch_production(text: str, intents: list, entities: list) -> list:
     """
-    Production dispatch with mood normalization against both MOOD_LABELS and OTHER_FEATURE_LABELS.
-    Replaces inference.py:dispatch() for runtime safety.
+    Production dispatch with intelligent entity reclassification.
+    - Moods must normalize to OTHER_FEATURE_LABELS (danceable, aggressive, happy, party, relaxed, sad)
+    - Genres must normalize to MOOD_LABELS (rock, pop, female vocalists, etc.)
+    - If a "mood" entity is actually in MOOD_LABELS, reclassify it as a genre
     """
     from config import MOOD_LABELS, OTHER_FEATURE_LABELS
+
+    mood_set = {m.lower() for m in OTHER_FEATURE_LABELS}
+    genre_set = {g.lower() for g in MOOD_LABELS}
 
     ents: dict[str, list[str]] = {}
     for e in entities:
@@ -98,11 +103,25 @@ def _dispatch_production(text: str, intents: list, entities: list) -> list:
         e_value = e["value"]
 
         if e_type == "mood":
-            mood_normalized = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
-            ents.setdefault(e_type, []).append(mood_normalized)
+            e_value_lower = e_value.lower()
+            if e_value_lower in mood_set:
+                ents.setdefault(e_type, []).append(e_value)
+            elif e_value_lower in genre_set:
+                best_genre = _normalize_mood(e_value, MOOD_LABELS)
+                ents.setdefault("genre", []).append(best_genre)
+            else:
+                best_mood = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
+                ents.setdefault(e_type, []).append(best_mood)
         elif e_type == "genre":
-            genre_normalized = _normalize_mood(e_value, MOOD_LABELS)
-            ents.setdefault(e_type, []).append(genre_normalized)
+            e_value_lower = e_value.lower()
+            if e_value_lower in genre_set:
+                ents.setdefault(e_type, []).append(e_value)
+            elif e_value_lower in mood_set:
+                best_mood = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
+                ents.setdefault("mood", []).append(best_mood)
+            else:
+                best_genre = _normalize_mood(e_value, MOOD_LABELS)
+                ents.setdefault(e_type, []).append(best_genre)
         else:
             ents.setdefault(e_type, []).append(e_value)
 
