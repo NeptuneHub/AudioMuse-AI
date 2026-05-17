@@ -64,9 +64,19 @@ student_clap/config.local.yaml
 student_clap/models/FMA_SONGS_LICENSE.md
 student_clap/models/FMA_SONGS_2247_LICENSE.md
 
+# JoinBERT model artifacts
+/joinbert/model
+/joinbert/*.onnx
+/joinbert/*.pt
+/joinbert/**/*.onnx
+/joinbert/**/*.pt
+/joinbert/.venv/
+/joinbert/venv/
+
 # Testing suite
 testing_suite/
 analysis.md
 .claude/settings.local.json
 .claude/settings.local.json
 mulan_model_export/mulan_tokenizer.tar.gz
+joinbert/back1/labels.json

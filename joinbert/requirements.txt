@@ -1,0 +1,19 @@
+# Pinned to match AudioMuse-AI's main requirements/ exactly so this venv can
+# coexist with the project venv without dependency conflicts.
+#
+# Source of truth:
+#   numpy, transformers, onnx, huggingface-hub, tokenizers, sentencepiece
+#     -> requirements/common.txt
+#   onnxruntime
+#     -> requirements/cpu.txt  (gpu.txt pins onnxruntime-gpu to the same version)
+#   torch
+#     -> test/requirements.txt
+
+numpy==1.26.4
+transformers==4.57.6
+huggingface-hub==0.36.2
+tokenizers>=0.20.0
+sentencepiece==0.2.1
+onnx==1.20.0
+onnxruntime==1.19.2
+torch==2.6.0

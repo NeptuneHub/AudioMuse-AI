@@ -47,6 +47,9 @@ htmlcov/
 
 # Large model files and caches (these are downloaded inside the container)
 model/
+joinbert/model
+joinbert/.venv/
+joinbert/venv/
 *.onnx
 *.pt
 *.pth

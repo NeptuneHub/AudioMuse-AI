@@ -1,0 +1,5330 @@
+{
+  "_format_doc": "Same inline-annotation format as training_data.json: '[value](type)'. Held out from training; only used to measure generalization (val_loss, intent_F1, slot_token_accuracy) per epoch.",
+  "_provenance_notes": [
+    "(a) ~25 entries are adapted from SNIPS NLU benchmark (PlayMusic intent) — real crowdsourced human queries collected by Snips/Sonos, Apache-2.0 licensed: https://github.com/sonos/nlu-benchmark/tree/master/2017-06-custom-intent-engines/PlayMusic . Slot mapping: SNIPS 'track'→our 'song'; SNIPS 'sort=best/top'→our 'rating'; SNIPS 'service' dropped (not a tool we expose); SNIPS 'music_item' dropped (we don't distinguish song/symphony/melody).",
+    "(b) ~55 entries are hand-written, deliberately using artists/songs/lyric topics/descriptions that DO NOT appear in generate_data.py's vocabulary. Purpose: detect memorization. If validation F1 stays high here, the model is genuinely generalizing rather than pattern-matching the generator's vocab.",
+    "(c) A few entries use casual phrasings (lowercase, 'plz', abbreviations, sentence fragments) that real users type but the templates don't cover.",
+    "Imported SNIPS NLU benchmark / PlayMusic intent (Apache-2.0). Slot map: track->song, sort->rating, artist/album/genre/year preserved; service/music_item/playlist dropped. (351 examples added to validation set, seed=2026).",
+    "Imported CPCD (Google Research, CC-BY 4.0) joined with Doh et al. ISMIR'24 intent annotations (seungheondoh/cpcd-intent). Intent labels from Doh; artist/song spans matched against CPCD's per-dialog track metadata; genre/mood/tempo/energy/year/time_range tagged via domain vocabulary substring match. (181 examples added to validation set, seed=2026).",
+    "Imported user_curated_v1: real-user-style queries covering gaps in synthetic+SNIPS+CPCD — dash song-similarity, multi-artist, top-songs-of-X, numeric BPM tempo, hyphenated tempo descriptors, vocal-style words, short multi-attribute descriptions. (16 examples added to validation set, seed=4242).",
+    "Augmented from existing training data with carrier-phrase, synonym, word-order, and casing/punctuation paraphrases. (223 examples added to validation set, seed=7777)."
+  ],
+  "examples": [
+    {
+      "text": "can you put on [Mrs Robinson](song) by [Simon and Garfunkel](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play [Tom's Diner](song) by [Suzanne Vega](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "find me songs like [Free Bird](song) by [Lynyrd Skynyrd](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "stuff that sounds like [American Pie](song) by [Don McLean](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I'd love more like [Bridge Over Troubled Water](song) by [Simon and Garfunkel](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "queue up tracks similar to [Dreams](song) by [Fleetwood Mac](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "more in the vein of [Old Town Road](song) by [Lil Nas X](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "anything like [Stay](song) by [Rihanna](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "songs reminiscent of [Wuthering Heights](song) by [Kate Bush](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "tracks like [Hounds of Love](song) by [Kate Bush](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear [Aretha Franklin](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play me some [Frank Zappa](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "throw on [Wilco](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "let me hear songs from [PJ Harvey](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "music from [Caetano Veloso](artist) please",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "give me [Talking Heads](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "anything by [Cat Stevens](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "fans of [Sade](artist) would love this",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "queue [Whitney Houston](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "i'm in the mood for [Otis Redding](artist) today",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "build me a [Steely Dan](artist) playlist",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "plz play more [Charli XCX](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[hypnotic motorik krautrock with steady drums](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "find me [warm tape-saturated 70s pop](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I need [glitchy IDM with broken beats](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "play [bittersweet horns over a slow waltz](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "give me [shoegaze with shimmering walls of guitar](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[stomping garage rock with handclaps](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "music with [crackling vinyl and dusty samples](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I'm looking for [whirring synth arpeggios and gated reverb](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "let me hear [bouncy ska brass and offbeat upstrokes](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "tracks featuring [bowed double bass and brushed drums](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "mix of [Talking Heads](add_artist) and [Devo](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "blend [Caetano Veloso](add_artist) with [João Gilberto](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[Wilco](add_artist) meets [Big Star](add_artist) meets [Teenage Fanclub](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[PJ Harvey](add_artist) plus [Cat Power](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "blend [Otis Redding](add_artist) and [Sam Cooke](add_artist) but no [ballads](subtract_genre)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[Aretha Franklin](add_artist) crossed with [Whitney Houston](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[Steely Dan](add_artist) combined with [Donald Fagen](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "play like [Wu-Tang](add_artist) + [Mobb Deep](add_artist) but skip [Cappadonna](subtract_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[songs that made the year-end Spotify Wrapped](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "the [definitive shoegaze canon](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "give me [tracks that defined the early 2000s indie scene](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "[songs every dad sings in the car](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "[hits people slow-dance to at proms](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "best of [the Berlin techno scene](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "[songs that went platinum in the 80s](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "[tracks that always show up in coming-of-age movies](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "[soul](genre) tracks from the [60s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[bossa nova](genre) songs in [F](key) [minor](scale)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[melancholic](mood) [folk](genre) from [1971](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[grunge](genre) songs in [drop D](key)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[high](energy) energy [hardcore punk](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "music from album [Bringing It All Back Home](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me [trip-hop](genre) from [1995](year) to [2001](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[slow](tempo) [acoustic](genre) songs for falling asleep",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[uplifting](mood) [synthwave](genre) from [recent](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "my [top rated](rating) [reggae](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[soft rock](genre) from the [70s](time_range) rated [4 stars](rating)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "anything [psychedelic](genre) from [1968](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs about [the open road](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "tracks with lyrics about [growing apart from a friend](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "find lyrics that mention [Sunday afternoons](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "music about [outlaws and runaways](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "songs whose lyrics talk about [city lights](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "what songs are about [questioning everything](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "lyrics about [drifting through life](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "tracks about [small wins and tiny victories](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "songs about [broken families](lyrics_query) and [moving on](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "[Aretha Franklin](artist) but more [stripped-back and acoustic](description)",
+      "intents": [
+        "artist_similarity",
+        "text_search"
+      ]
+    },
+    {
+      "text": "[Frank Zappa](artist) tracks rated [4 stars](rating)",
+      "intents": [
+        "artist_similarity",
+        "search_database"
+      ]
+    },
+    {
+      "text": "[soul](genre) songs like [Aretha Franklin](artist)",
+      "intents": [
+        "artist_similarity",
+        "search_database"
+      ]
+    },
+    {
+      "text": "[Wilco](artist) songs about [growing apart from a friend](lyrics_query)",
+      "intents": [
+        "lyrics_search",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[70s](time_range) songs about [the open road](lyrics_query)",
+      "intents": [
+        "lyrics_search",
+        "search_database"
+      ]
+    },
+    {
+      "text": "[Otis Redding](artist) from the [60s](time_range)",
+      "intents": [
+        "artist_similarity",
+        "search_database"
+      ]
+    },
+    {
+      "text": "the [definitive shoegaze canon](event) but more like [Slowdive](artist)",
+      "intents": [
+        "ai_brainstorm",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[soft jazz with brushed drums](description) like [Bill Evans](artist)",
+      "intents": [
+        "artist_similarity",
+        "text_search"
+      ]
+    },
+    {
+      "text": "[indie folk](genre) tracks about [outlaws and runaways](lyrics_query)",
+      "intents": [
+        "lyrics_search",
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs like [Mrs Robinson](song) by [Simon and Garfunkel](artist) but more [upbeat](description)",
+      "intents": [
+        "song_similarity",
+        "text_search"
+      ]
+    },
+    {
+      "text": "[Cat Stevens](artist) songs whose lyrics are about [questioning everything](lyrics_query)",
+      "intents": [
+        "lyrics_search",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[blues](genre) tracks about [drifting through life](lyrics_query)",
+      "intents": [
+        "lyrics_search",
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear some [Bill Black](artist) chant music",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear a soundtrack by [dj ozma](artist) from the [sixties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [latin](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [newest](rating) [Robert Palmer](artist) sound track",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a [nineties](time_range) sound track",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Wow](song) by [Jon Theodore](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Can you play a song by [Ken](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [It Could Only Happen With You](album) album by [Lawrence](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Don Cherry](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [1993](year) theme music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a music theme by [Anna Nikolajewna Jessipowa](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some music from [1962](year) from [Adeyto](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [2013](year) song on Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [1958](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [1962](year) music on Netflix",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [symphonic rock](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some [Prabha Atre](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music year [2016](year) by artist [Michiru Yamane](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Fill Yourself With Music](album) by [Ray Manzarek](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [fifties](time_range) music by [Chris Brown](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play  music from the [thirties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a melody from [Elmer Bernstein](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play a movement from [top-20](rating) [1983](year) by [Baruch Chait](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [nineties](time_range) ep",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [newest](rating) [Phil Stacey](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a sound track from [1952](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [ExpresiÃ³n](album) from [Mickey Finn](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [1974](year) tune on Slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Raheem Devaughn](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear some [Bill Black](artist) chant music",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear a soundtrack by [dj ozma](artist) from the [sixties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [latin](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [newest](rating) [Robert Palmer](artist) sound track",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a [nineties](time_range) sound track",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Wow](song) by [Jon Theodore](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Can you play a song by [Ken](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [It Could Only Happen With You](album) album by [Lawrence](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Don Cherry](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [1993](year) theme music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a music theme by [Anna Nikolajewna Jessipowa](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some music from [1962](year) from [Adeyto](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [2013](year) song on Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [1958](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [1962](year) music on Netflix",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [symphonic rock](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some [Prabha Atre](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music year [2016](year) by artist [Michiru Yamane](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Fill Yourself With Music](album) by [Ray Manzarek](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [fifties](time_range) music by [Chris Brown](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play  music from the [thirties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a melody from [Elmer Bernstein](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play a movement from [top-20](rating) [1983](year) by [Baruch Chait](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [nineties](time_range) ep",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [newest](rating) [Phil Stacey](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a sound track from [1952](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [ExpresiÃ³n](album) from [Mickey Finn](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [1974](year) tune on Slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Raheem Devaughn](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [1976](year) on Deezer",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear a symphony from [Kano](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Kaori Mochida](artist)'s [most popular](rating) music on Google Music.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Let me listen to [Rouhollah Khaleghi](artist) on deezer.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [thrash metal](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play any [chanson](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [twenties](time_range) theme music on Google Music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a ballad by [Dres](artist) on groove shark",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Skin & Bone](album) by [Jess Stacy](artist) on Deezer",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Use Spotify to play [Who Was In My Room Last Night](song)?",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play [Rap Album One](album) by [Gene Vincent](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Antony Harding](artist) songs from the [eighties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [By The Sleepy Lagoon](song) by [Greg Kurstin](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play some [1991](year) [Dave Barker](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "open Deezer and search for [Scott Miller](artist) and play some of his [new](rating) songs",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Please play a movement by [Rupam Islam](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the [most popular](rating) song by [espen lind](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a concerto by [Jethro Burns](artist) from Zvooq",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Let me hear the [top](rating) album by the artist, [Skin](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [fourties](time_range) music on Zvooq",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some music from the [thirties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [1964](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can you play music from [2003](year) on Netflix",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Addicted To You](song) by [Hank Ballard](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Plkay some [sixties](time_range) movement songs from Itunes",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [top](rating) track by [Janamanchi Seshadri Sarma](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a [Cinder Block](artist) movement",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [25 To Life](album) by [Paul Riley](artist) on Deezer.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [most popular](rating) stuff by [Tina Dico](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Open Vimeo and paly [every](song) song released in [1986](year)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "open [Fadl Shaker](artist) on Spotify and play a melody starting with the [newest](rating)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the [top-5](rating) sort of ballad music from [2012](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [top-twenty](rating) from [Alexander Braginsky](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [jazz](genre) music by Zvooq",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play them by [Guy-manuel De Homem-christo](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to listen to Lastfm, play [A Drop Of The Hard Stuff](album) by [Joi Chua](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a song from [2008](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Sha Money Xl](artist) sort by [good](rating).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Can you play some music by [andrew diamond](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [MÃºsica Da SÃ©rie De Filmes O Hobbit](album) album by [Alex Otaola](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Please play [Jim Martin](artist) on Vimeo.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the album [Killer Instinkt](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Tenerife Sea](song) by [Daniel Salomon](artist) on Lastfm",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play [Robin Hood Rescuing Three Squires](song) by [Bhupinder Singh](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "listen to [Westbam](artist) alumb [Allergic](album) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Joeri Basjmet](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Do you have something like [Impossible Is Nothing](song) by [Abderrahmane Abdelli](artist)?",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) [Sebastian Karlsson](artist) melody on Youtube",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [1968](year) on Vimeo.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [2009](year) concerto on Deezer.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Goldie Hill](artist)'s record on Google Music.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [seventies](time_range) music on netflix.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Barbra Streisand](artist) music from [1997](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [1966](year) theme music on Slacker.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear a track by [Ryohei Yamamoto](artist) on Vimeo",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "use Deezer to play [top five](rating) [Moya Brennan](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [Clark Kent](artist) in the year [1987](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [classic rock](genre) on Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [newest](rating) [twenties](time_range) melody.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the track [Goodbye Alexander, Goodbye Honey Boy](song) from [Ehsaan Noorani](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play the [top](rating) melody from artist [Maakii](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Plya a tune by [Kancherla Gopanna](artist) from [1951](year) on Zvooq",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play an album from the [fourties](time_range), [new](rating) first.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [new](rating) melody by [Kenji Ito](artist) on Itunes.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [That Would Be Something](song) by [Eden Ahbez](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "open Spotify and play a couple of [celtic](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [twenties](time_range) soundtrack on Youtube",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me the [best](rating) [Charles Neidich](artist) song",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Can you play a [sonata](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Fight On, State](song).",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Please play [Kabhi Jo Baadal Barse](song) by [Ruth Lorenzo](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play some [Rockwell](artist) from around [1996](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [popular](rating) ballad by [Amanda](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the song [Le Renouveau](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) song by [Henry Rollins](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [fifties](time_range) track music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Fidel Nadal](artist) sorted by [newest](rating).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Sense Tu](song) from [Ebi Hamedi](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [2012](year) on Netflix.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play the [Gary Chaw](artist) album",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear the [new](rating) movement from [Richard Harvey](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play theme by [Yanni](artist) on Vimeo",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear [Ready](album) by [Frankenstein Drag Queens From Planet 13](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a tune by [Syreeta Wright](artist) from [twenties](time_range) from the [top](rating)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Lets hear some [Dawood Sarkhosh](artist) from their [The Power Of Your Love](album) album from Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [The Insoc Ep](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "use Iheart to listen to [retro](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear [Song For Adam](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play me a song from [1968](year) on Spotify",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some music by [Jody Williams](artist) from [2001](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a song by [Linn Berggren](artist) from Spotify",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me the [greatest](rating) chant by [Laurel Aitken](artist) on lastfm",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [2012](year) symphony music by [Nardwuar The Human Serviette](artist) on Netflix.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [new](rating) track from the [fifties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [last](rating) theme by [Behzad Mirkhani](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [bass](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [1993](year) concerto off of Slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some [rap](genre) on Pandora",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [top-twenty](rating) song from [2015](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [1991](year) soundtrack from [Ian Mcdonald](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can I hear a tune from [Vladimir Vysotski](artist)?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play me music by [Whip](artist) with Zvooq",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [1999](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I need some [ambient](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play something by [Louisiana Blues](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Elastic Love](song) by [Junior Marvin](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [1977](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me an ep from [2005](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [shining down](song) by [Tsukiko Amano](artist) on pandora.",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play some music from [1958](year) on Deezer.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [fourties](time_range) tunes by [Bryan Webb](artist) on Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Rumba Africana](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a tune from [Space Mandino](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Techno](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a song by [Carol Arnauld](artist) from [2003](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some [Kansas Joe Mccoy](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Moustapha Amar](artist) [Make It Rain](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear that track from [1991](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to listen to a [popular](rating) melody by [David Bazan](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [ivy anderson](artist) from around [1967](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [seventies](time_range) music by [Janne Puurtinen](artist) on Youtube.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [The View From The Afternoon](song) by [Malese Jow](artist) on Last Fm",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play [Angelo Amorevoli](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [1989](year) by [Maya](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play symphony by [Josh Gracin](artist) on Slacker.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to listen to [Roger Daltrey](artist) from the [sixties](time_range) on slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [1964](year) track from [Shahram Nazeri](artist) on Pandora.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [top-twenty](rating) from [Tony Calder](artist) off Slacker.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [That Stubborn Kinda Fellow](album) by [Michael Amott](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear some [twenties](time_range) music from [Billy Sheehan](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear the [Jody Williams](artist) sound track",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a concerto by [Thekra](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Kk](artist) on Zvooq.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Dave Mason](artist)'s soundtrack on Last Fm.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the [Ricky Wilson](artist) album [Spectral Dusk](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear [eighties](time_range) music by [Noko](artist) on deezer.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play symphony music from [1991](year) by [Irvin Mayfield](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Paul Landers](artist), [O Rio, A Cidade, A Ãrvore](album) on slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [1990](year) sound track",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Talking To The Universe](song) on Itunes",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Can you play a [1967](year) soundtrack on Slacker",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a concerto [top ten](rating) sort by [Lloyd](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music by [mina caputo](artist) on Lastfm",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play something by [Chris Knight](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I'd like to listen to [Tom Cochrane](artist)'s [1990](year) ep on Zvooq.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play music by [Bonobo](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to listen to an album sorted by [last](rating), open Google Music and play [Paulinho Da Viola](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "On Itunes play the [latest](rating) [Anna Yesipova](artist) ep",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [salsa](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Ray Williams](artist) music from the [nineties](time_range) on spotify",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Calico Skies](song) by [John Feinstein](artist) with Netflix",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play some music from the [thirties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me some [Hank Shermann](artist) from [1975](year) on Lastfm",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some Deezer [oldies](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear [Major Harris](artist)'s songs from the [fifties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [1954](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play music by [Odd Nosdam](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Use Groove Shark to play music from the [eighties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a tune from [2000](year) by [Bronislau Kaper](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Please play music off the soundtrack by [Beau Jocque](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [Hong Junyang](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [Rui Da Silva](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [How Does It Work](album) by [Helen Carter](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can you play me some [britpop](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Let's play the album [Handover](album) on Deezer",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [Mister Music Man](song) by [Gene De Paul](artist).",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play any track by [Flame](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Socialism Is Good](song) by [terje bakken](artist) on Spotify.",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) [Vanessa Peters](artist) songs",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Hardcore](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a [twenties](time_range) song",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Use Deezer to play music by [Kimberley Walsh](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear [Choice](artist) on Last Fm from the [twenties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a track from the [thirties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Glenn Yarbrough](artist) tunes",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Rocket Queen](song) on Itunes",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play [Martha My Dear](song) by [shannon](artist).",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I'd like to hear one of [Eric Clapton](artist)'s [most popular](rating) melody on Pandora.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a [top](rating) song by [Carson Parks](artist) on Groove Shark",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a tune by [Mc Hawking](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear some [Boris Grebenchtchikov](artist) on Zvooq",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Make and play a [new](rating) playlis with the theme songs released in [1968](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me the [new](rating) [King Curtis](artist) music on Google Music.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a [top](rating) symphony sort form [1959](year) by [Stuart Garrard](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [Mother Lode](album) by [Tamio Okuda](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [most popular](rating) [Coti](artist) songs on Pandora",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [eighties](time_range) music by [Kaira Kwong](artist) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Please play me something by [New Wave Of American Heavy Metal](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play concerto from [1951](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) [1981](year) sound track from [Ric Fierabracci](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "in Google Music play the [top](rating) singles released in [1972](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Jungle](genre) music on iheart",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) songs of [2016](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [2004](year) [Guy Sebastian](artist) on Itunes",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some movement by [Dj Spinna](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [All Of Your Toys](song) by [Chris Ledoux](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play music from artist [Ashley](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [sixties](time_range) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play pandora tracks by [Akhtar Sadmani](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [fifties](time_range) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Open Youtube and play [Renaldo Lapuz](artist) record from the [eighties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [All The Way My Savior Leads Me](song) on Spotify",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play me an [eighties](time_range) song by [Wes Dakus](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [top-ten](rating) chant [Doda](artist) songs from the [twenties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play the [top](rating) jazz record from [1951](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Use service Vimeo the genre [slow rock](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play something from the [twenties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me [Benjamin Kowalewicz](artist)'s [top](rating) hits",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a song by [Michael Diamond](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a ballad form [2014](year) by [Double](artist) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me something from the [thirties](time_range) by [Candi Staton](artist) on Vimeo",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play music by [Helen Ward](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music by [Antonella Barba](artist) from the album [Bath](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Realization](album) by [Randy Jackson](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) chant of [1975](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [gothic](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [new](rating) music from [Liang Wern Fook](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Can you play me some [Pop-folk](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Put on Vimeo and play [Kacapi Suling](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a concerto that was [most popular](rating) in [1958](year) by [mickey hart](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Party Ben](artist) on Slacker",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a [2003](year) song by [Charles Neidich](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Open Netflix and play [David Frizzell](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play songs by [Cheryl Wheeler](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play some [Kyle Ward](artist) from the [seventies](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a [popular](rating) sort of [fifties](time_range) tune music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Richard Thompson](artist) from the [thirties](time_range) song book",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play chant from [Freddy Fender](artist) on iheart",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play music by [Francis Healy](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play movement by [Duane Allman](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Vic Ruggiero](artist) music from [2007](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play artist [Vlada Divljan](artist) from something he did that is [good](rating)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the album [alas y raÃ­ces](album) by [Dave Pybus](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play music by [Vybz Kartel](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [chanson](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to hear music from [1993](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Darude](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [latest](rating) [Thelma Aoyama](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the song [vodka](song) by [Kunal Ganjawala](artist) on Itunes",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play Vimeo [2009](year) by [Desmond Dekker](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I need to hear some [r&b](genre) music off of iheart",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Moondog](artist)'s [Chupacabra](album).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a song by [Busta Rhymes](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [Mf Doom](artist) from the [sixties](time_range) on pandora.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a song by [Juanes](artist) on Last Fm",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Open Pandora and play music from the [fifties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [fourties](time_range) music on Pandora.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music on Deezer by [Imogen Heap](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [top](rating) song by [Amon Amarth](artist) on Groove Shark",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [most popular](rating) from [Nil Burak](artist) on Slacker",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me music from the [twenties](time_range) on Itunes.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play an ep by [Uncle Jimmy Thompson](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Can you play something from the [fourties](time_range), preferably a symphony?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Revival](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [Carina Round](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a record from [2015](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [most popular](rating) [Grace Slick](artist) song that has a symphony sound",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play music by [Christian Bautista](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play symphony music from [Joe Dolce](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a [top fifty](rating) track from the [twenties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play the [newest](rating) sound track from the [thirties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play music by [Bryan Maclean](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [dhafer youssef](artist) [top-twenty](rating) on netflix",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play an [Masaki Aiba](artist) tune",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Elitsa Todorova](artist) music",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear [secrets on parade](album) from [Tommy Walter](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Please play some [fourties](time_range) music on Spotify",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Please start playing some [thirties](time_range) theme music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play something by [Brian Chase](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me a symphony by [Ricky Bell](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Khujo](artist) [eighties](time_range) track song",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [Paul Landers](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [Oleg Anofriyev](artist) from [1960](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a theme from [1985](year) by [Patrick Cowley](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can I hear the [latest](rating) music from [Bahar Kizil](artist)?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play a tune by [Layne Staley](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [Crucifixion](song) on Deezer.",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play [Hasan Saltik](artist) from [2004](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the song [gangsta](song)? by [Siavash Ghomayshi](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play some chant from [1974](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play track [Cabbage](song) by [Keiji Haino](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play a [top 5](rating) song from [Wally Bastian](artist) on Google Music",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play record from the [seventies](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me songs from [1955](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me the [last](rating) [1980](year) record by [Brenda Kahn](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from [Alison Sudol](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [twenties](time_range) tunes",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [top twenty](rating) sort by [Akinyele](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [The Tyranny Of Distance](album) by [Willy Mason](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [tango](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music by [Janet Paschal](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [ray davies](artist) on Iheart by only [Hit It Again](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play some [chanson](genre) style music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [P. J. Proby](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play some [amber kuo](artist) from the [eighties](time_range) on Spotify.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Going Down To The River](album) on Pandora",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Lil Hardin Armstrong](artist) from Itunes.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[Plays](album) some akb48 on Youtube",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Julie Driscoll](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear some songs from the [twenties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Carmen Mcrae](album) from [Ed Robertson](artist) off of Itunes",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Geddy Lee](artist) music on Spotify sort by [top](rating)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music by artist [mark ashley](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from the [twenties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play music from the [top-5](rating) from artist [Kenia Arias](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the artist [Tei](artist) [last](rating) concert on Netflix",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Listen to music from [1975](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [new](rating) ballad by [Valy](artist) on Iheart",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play me the [greatest](rating) [Doctor Fink](artist) song on zvooq",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Say A Word](song) by [La India](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Let me hear an ep from the [thirties](time_range) era of music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play me a [Jill Scott](artist) sound track on deezer",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play music from [2015](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a melody from the [nineties](time_range) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play the [top five](rating) songs by [Isaac Hayes](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play [slow rock](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play any album from the [twenties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a [1977](year) record by [Bitty Mclean](artist) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the [best](rating) songs by [Jes Brieden](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Innovations](album) by [Kokia](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Paulinho Da Viola](artist) from [1965](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can you play a song off an album by [Shirley Horn](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "can you add some 80 '[reggae](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Ok nice, how about something [groovy](mood)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "great! Could be get some late [90s](time_range) [alternative](genre) [rock](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I need music to listen to that is electronic and [hip hop](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can I hear more [smooth](mood) AFrobeats too?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "HANA-BI was very mysterious and [slow](tempo). More tracks like this would be good on the list.",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Can you also add more [indie](genre) [pop](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "ok is there anything else like alanis - you oughta know? something with an angry type energy? girl [rock](genre) anthem type stuff?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "The Porcupine songs were good but Harriden was way too heavy for me. sounded like [death metal](genre). Nothing like pink floyd. I love god speed you black emporer.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Hello, I would like to make a playlist with mostly classic [country](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I like the sound of [punk](genre) music. Are there any good [90s](time_range) [punk](genre) tunes?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a [2022](year) riding list",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "well we could spice it up with some [reggae](genre) just for some more energy lol, any ideas?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "can i have some [R&B](genre) songs to [calm](mood) my nerves please",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear some [90s](time_range) [R&B](genre) as I cook",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hi, i want to create a [gospel](genre) playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hmmm...I've been listening to a lot of [RnB](genre) these days, can you add some Chris brown and Bryson Tiller songs?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Yes. I will like more upbeat [blues](genre) from Teddy Morgan.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "How about some upbeat [pop](genre) music to clean around the [house](genre) to?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a [slow](tempo) jams playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "how about [2000s](time_range) [pop](genre) [rock](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello, getting ready for a road trip! could you create a playlist that includes [80s](time_range) new wave?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can we add more artists with [smooth](mood) voices like Toni Braxton",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I am looking at [Pop](genre), [Rock](genre) and New Wave from early decade",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like a [pop](genre) playlist centered around Lady Gaga music similar to her",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "A cool [hip hop](genre)/[rap](genre) playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love the [salsa](genre) vibe! Waka Waka brings some old memories too.. Love them! Can we add a couple songs from Bad Bunny?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Hello! I'd love to create a playlist for [Gospel](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi I want to make a playlist with modern [country](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I think I would like to hear some heavy [metal](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create an old [rap](genre) songs playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, I'd love to create a playlist for [Gospel](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Something [relaxing](mood), artist like Cocteau twin. Music in the [Alternative](genre)/[Indie](genre) genre would be nice.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a playlist of [Gospel](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[90s](time_range) [hip hop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm trying to get into [lo-fi](genre) music, I would like to create a [lo-fi](genre) playlist. I have no specific artists in mind.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I enjoy working out to [Hip Hop](genre) music. Some of my favorite artists are JayZ and Eminem",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[R&B](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Some old [pop](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[hip hop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "SURE DID BONFIRE WAS A SMASH HIT! Put me on new [Rock](genre)",
+      "intents": [
+        "search_database",
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "The playlist sounds pretty good, maybe if there are a couple more [lofi](genre) songs of other movies that would be good to finish it off",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, I want to create a banging [Hip Hop](genre) playlist to vibe to",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Good Morning! Let's start this morning off with some [90s](time_range) [pop](genre) music like Britney and Backstreet Boys!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Yea...I'd love something from the [90s](time_range) to early [2000s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[blues](genre) would b lovely",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello, could you help me finding some [relaxing](mood) [slow](tempo) music while going to bad?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello, please can i get a song for when i am [sad](mood)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "yes, [country](genre) or music from [50s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a [chill](mood) playlist to cheer me up when I am feeling down.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, Can i get some [pop](genre) music for a hangout later today",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I like these ones. I want to create a workout playlist with hip [pop](genre) and [country](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I'd like some very [relaxing](mood) music for days when I'm very stressed after a long day. I like [ambient](genre) [soothing](mood) music with no vocals, please.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "classic [rock](genre) - [70s](time_range) and [80s](time_range)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, can i have some [jazz](genre) music for a get together later",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm loving the [ambient](genre) songs from Robin Spielberg.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Add more [energetic](mood) music to get me going till the end of my exercise too.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Let's start the day with some [Pop](genre) Holiday favorites!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to add songs from the group silk now from the [90s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hey there! Can you build me up a playlist that includes [smooth](mood) [jazz](genre) to listen to while doing chores?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "okay BACK TO [ROCK](genre)! system of a down please!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I haven't heard of them, I mostly listen to [90s](time_range)/early [2000s](time_range). BUT I would love it hear new music!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play lots of [hip hop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Good thanks, let me check this out, you can help me some nice [pop](genre) songs from other artist that I can listen to while I work.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "JUST ANY [INDIE](genre) MUSIC?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, can we try some [reggae](genre) jams",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Some of the Pink Floyd is too [slow](tempo). Can we add some Pearl Jam to the list?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "A 70's [soul](genre) playlist I'm familiar with the music not so much artist names so if you can list some names that would help jog my memory",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm feeling [nostalgic](mood), can you play some [1990s](time_range) [rock](genre)/[alternative](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i want [sad](mood) songs to wallow in depression :)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm thinking something more [classical](genre) and subdued.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Howdy, I want to make a [pop](genre) playlist to hype me up",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi there, I'd love to create a playlist for [Rap](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I did not care for Our [House](genre) but enjoyed the Bon Jovi. How about more like them? Goo Goo Dolls, The Fray, or Lifehouse are good too.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "No, This is a subgenre of [EDM](genre). Add songs like Flashback by Calvin Harris, Legacy by Nicky romeo, I want you to know by zedd and other similar songs",
+      "intents": [
+        "search_database",
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Let's throw that in there! Maybe some more recent music as well. I love some of the christm as songs from the [90s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "the songs are good, you could some other [rap](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, I'd love to create a playlist of [hip hop](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Actually from [1990](year)'s until [2014](year)/[2015](year) would be good",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to create a [mellow](energy) playlist to listen to while [relaxing](mood)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm thinking [80s](time_range) [rock](genre). Van Halen, Guns N Roses, Def Leppard, U2 to start with.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "those are great, thanks but can we get some more from the [80s](time_range) and [90s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "These are awesome! Can you include more male artists, similar to H-Town and [Soul](genre) for Real from the [90s](time_range)?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I like these ones. I want to make a playlist of [Gospel](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Great. I want more [chill](mood) or [ambient](genre) music to help me relax and concentrate when reading.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to hear some [RnB](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Okay. Please add some songs from Moana and [High](energy) School Musical",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Perfect. How about more [pop](genre) music to dance to?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "okay so I want to plan for a cool down as well, so maybe add some [chill](mood) stuff in there to take it down a notch. Ya feel?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi Wizard, I would like to create a [pop](genre) playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "thank you, can you add a bit of [hip hop](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "2 live crew dmx [pop](genre) smoke 50 cent young dolph gucci mane",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Umm, some [country](genre) music and soft [rock](genre) would be perfect",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a jamming playlist to [rock](genre) out to on a road trip with lots of various artists.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Loving this selection. Please more of some recent [jazz](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Create a [sad](mood) break up song playlist for rainy days",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "80's 90's [reggae](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Some [pop](genre) music and electronic would be nice for starters",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Perfect! Do you have more female [disco](genre) music from the [70s](time_range)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Much better! Some of those are my favorites. How about some [80s](time_range) hair [metal](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm looking at some R$B, with some [classical](genre) genre too.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Love the Neil Young but not a Johnny Cash fan - how about some [pop](genre) songs?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to hear [Pop](genre), Electronic, and [Hip-Hop](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to create an electrifying [EDM](genre) playlist that will make me want to dance",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like to hear some [country](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hey there! I'd love to create a playlist for [Hip Hop](genre) songs.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I want to create a playlist to listen to on the plane. Some [smooth](mood) [R&B](genre) would be nice for starts",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "can i get an old school [pop](genre) playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Show some songs from silk [90s](time_range) group",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I would like music to listen to at home but not necessarily [house](genre) music. Maybe some Jack Johnson?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello, i will like to create a playlist with [jazz](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "These are so inspirational!! :) All I need left are some more songs by for King and [Country](genre) to be awesome!",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I'd like to make a playlist for long drive's on the highway. Upbeat, [hip hop](genre), [pop](genre). Mix up the era's please.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "since I am with friends, we could do some [country](genre) music and [pop](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I want to create a [hip hop](genre) music playlist to listen to while working out at the gym?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm looking for some [blues](genre) music to [mellow](energy) out on. Can you help me?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hip [pop](genre), [rock](genre), [metal](genre) and [classical](genre) music will do.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Beautiful, can we wrap up with some british [rap](genre)? maybe something from stormzy and Skepta?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Some 90's [pop](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Let's add more [pop](genre). I want to add Ariana Grande, Britney Spears, and Doja Cat.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to have some more [dubstep](genre) in this like Skrillex",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[pop](genre) I guess. What the young folks are litenning too",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hi buddy i would like a classic [country](genre) playlist for when i am feeling blue including such hits as hank williams move it on over and buck owens",
+      "intents": [
+        "search_database",
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "can you add some [pop](genre) to it.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hi, i will like to create a [hip hop](genre) playlist to listen to while driving",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want [sad](mood) songs only, hiphop genre",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Awesome; I like them, how about some [classical](genre) Music?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love Daft [Punk](genre), these songs work great you can send along more like this!",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want a playlist to pump me up while working out. I like music that has a [salsa](genre) type beat.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I would like to create a playlist that conveys [1980s](time_range) nostalgia with some of the top hits of the [1980s](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i like hiphop and [pop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "great, can you add some [trap](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi I would love to [rock](genre) out today. Let's play some music that get's my energy up to slay the day!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I don't like these. Im looking for music more in the [jazz](genre) genre.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "lets flow with some [country](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "These are fire selections. Can we throw in some [pop](genre) music too",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "thank you, can you add more hip-[pop](genre) and more songs from SEVENTEEN?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love the [indie](genre) [pop](genre) genre.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hi, i will like to create a soft playlist for when i am down, something from the genres of [R&B](genre) and [pop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I don't like these songs because its [pop](genre) music. Adding more [alternative](genre) [rock](genre) from the late [2000](year) would make the playlist better.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "can i build a [classical](genre) music playlist for when I need to study and concentrate on a project?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[rock](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Good start! How about some [alternative](genre) bands? The Smiths, The Cure - anything British New Wave would be great.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Yes I do. Can you add [high](energy) tempo [jazz](genre) to the playlist?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I think the [R&B](genre) genre would be best suited for romance.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hii, can i have some [trap](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i would love too listen to [pop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "just combine some [hip hop](genre) and [rnb](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a [mellow](energy) playlist to have on while getting work done on the computer include songs by Vitamin String Quartet.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Those are great, I want to get more [rock](genre) music. Can you add some AC DC?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love old school [rap](genre)...Maybe something from 2pac and Ice Cube",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Something [uplifting](mood) like songs from Kelly Clarkson and Pink would be nice",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "You got me dancing real good to this music, These music are great. Can I have some [Rock](genre) music?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "A mix of genre. We've been listening to a lot of [Afrobeat](genre) lately",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "ok please play some couple of [blues](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Amazing, lets have some more old [country](genre) songs say early [2000s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Some were too [aggressive](mood) in tone. How about female American classic [rock](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "modern [R&B](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I'd love to create a [jazz](genre) playlist to help me unwind at the end of the day",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Great selection. A [pop](genre) playlist wont be complete without song by The Weeknd, right?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can I hear some upbeat workout music from the [80s](time_range)? no [rap](genre) no heavy [metal](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "that's good. do you have more [disco](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "90's [reggae](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I would like to make a [rock](genre) playlist for when I am craving a cigarette and grumpy",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "They are great. Suggest recent [chill](mood) songs in [2022](year) that I will love.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "how about the 60's and 70's [rock](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i want to listen to [pop](genre), please.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Definitely no Led Zeppelin or Bestie Boys. I liked the [Romantic](mood) Saxophone one, could you add more like that",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I want to create a [high energy](energy) playlist to listen to while writing on a deadline",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create a [happy](mood) playlist include some 80's [pop](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Late [2000](year) [alternative](genre) [rock](genre) is the best music to pump me for a workout.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I was looking for pulsing [rock](genre) tunes, like Smithereens and the Cult, things like them",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Hi I would like to create a playlist for cooking Thanksgiving dinner. I am looking for [2000](year)'s R & B.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi I would like some suggestion about [country](genre) song. I would like some song from brett young",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Yes. I will like [jazz](genre) song with mixture of [rock](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i want to listen to [rock](genre) please",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear some new [rock](genre) music. My playlists are full of old stuff",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love modern [pop](genre) and [R&B](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "trendy and something to dance to and also [romantic](mood)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I don't like any. I would like to listen to afro [alternative](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I don't think any of those really fit what I'm looking for. They seem a little too upbeat for me. Could I get songs that are a little softer, and more [sad](mood)? Possibly songs from artists similar to Tate Mcrae, Lauren Spencer Smith, Lexi Jayde, and Taylor Swift?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[female vocal romantic trap](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[dreamy rhodes metal](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[high-pitched fast-paced soul](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[breathy aggressive house](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "the [greatest hits](rating) of [Michael Jackson](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "give me songs like [The Beatles](artist) - [Hey Jude](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[metal choir dreamy](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[belting electronica energetic](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[deep voice orchestra reggae](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[autotuned pop mid-tempo](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[belting funk groovy](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[congas aggressive soul](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[orchestra whispered romantic](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "tracks in the style of [Daft Punk](artist) - [Get Lucky](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "songs from [Tame Impala](artist) and [MGMT](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "stuff like [Phoebe Bridgers](artist) and [Mitski](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play some [new age](genre) music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me a [sixties](time_range) song by [George Sanger](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Yes, we are definitely building a great playlist! Include some music that is [high energy](energy) like Black Sabbath plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "these are good choices even if they're not necessarily [dubstep](genre). how about more agressive [dubstep](genre)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "\"Sky Kisses\" and \"Dakini\" were great fits for the [mellow](energy) [relaxing](mood) mood for the play list but the others are either way too [fast-paced](tempo) paced and \"Shiva Moon\" is a club style dance remix and does not go at all. I have not seen any suggestions by anyone outside of the artists that I mentioned. Relax the year time frame and see if that will help discover some other artists.",
+      "intents": [
+        "search_database",
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "i want to listen to [Born On The Bayou](song) on iheart",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "famous [number one hits](event) plz",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "Awesome! Let's get some [pop](genre) [punk](genre) with more breakdowns too plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[belting mid-tempo progressive rock](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Play the [greatest](rating) [Maynard James Keenan](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[best rated](rating) [David Bowie](artist) songs",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play Lastfm [pop music](genre) tunes plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me a [Herbie Fields](artist) record from the [sixties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [latest](rating) [George Ducas](artist) music plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to create an upbeat playlist to listen to while cleaning the [house](genre) include songs by Meredith Brooks",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs by [Tchaikovsky](artist), [Pink Floyd](artist) and [Iggy Pop](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play Solange [2016](year) album plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play some [Katiejane Garside](artist) on vimeo.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "create a [pop music](genre) playlist for me to cook to plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[r&b male vocal romantic](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "can you play me the [latest](rating) theme song by [Warren Vache](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "queue up some [seventies](time_range) music on Netflix.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "lyrics about [summer love](lyrics_query) and [fighting back](lyrics_query) plz",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "I want to create an upbeat playlist to listen to while cleaning the [house](genre) include songs by Meredith Brooks plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Awesome! Let's get some [pop music](genre) [punk](genre) with more breakdowns too.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Eddie Meduza](artist) from the [thirties](time_range) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me [Regulateâ¦g Funk Era](album) by artist [Iouri Bachmet](artist) on groove shark plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear [sia furler](artist)'s [popular](rating) songs on Last Fm plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "This was a great selection to build the foundation of the playlist! I like ballads and [Hip-Hop](genre) but maybe more ballads for this specific playlist plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love [country](genre) music and [classical](genre) [rock](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[funk falsetto energetic](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Play the [most popular](rating) sort by ep by [Brooke Fraser](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "mix [Tool](add_artist) with [Lady Gaga](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "Can I hear [Anna Vissi](artist)'s [new](rating) music on Pandora",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "want to play [Christina Schollin](artist) lastfm",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play like [Run DMC](add_artist) + [Nirvana](add_artist) plz",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "Very good! I think the playlist needs a little bit more [pop music](genre) though. How about some [pop](genre) recommendations",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want [primus](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hello, I'd like to create a playlist that I can listen to when I'm [melancholic](mood).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs similar to [Pink Floyd](artist) - [Wish You Were Here](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "find more like [Purple Rain](song) by [Prince](artist) and stuff from [New Order](artist) plz",
+      "intents": [
+        "song_similarity",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "i have a lot of respect for artist like biggie but my [rap](genre) taste starts with the [2000](year)'s, add more popular mainstream artists beginning from the [2000](year)'s",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play the [top-5](rating) songs from [Paddy Reilly](artist) on zvooq",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "use Iheart radio to play [eighties](time_range) music from [Hugh Masekela](artist) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs like [Crazy in Love](song) by [Beyoncé](artist) but [smooth](description) plz",
+      "intents": [
+        "song_similarity",
+        "text_search"
+      ]
+    },
+    {
+      "text": "[amorous](mood) ballads around [70 BPM](tempo)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "tracks like [Layla](song) by [Eric Clapton](artist), [Comfortably Numb](song) by [Pink Floyd](artist) and [Blowin' in the Wind](song) by [Bob Dylan](artist) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play the [seventies](time_range) album on last fm plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[slow](tempo) [R'n'B](genre) tracks plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me [Me Against The World](album) from [Glukoza](artist) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[lively](mood) tracks at [140 BPM](tempo)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me the [best](rating) songs of [Madonna](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "find more like [Like a Prayer](song) by [Madonna](artist) and stuff from [Charlie Parker](artist) plz",
+      "intents": [
+        "song_similarity",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[greatest](rating) tracks by [The Beatles](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[Danceable](mood) [happy](mood) songs with [120 BPM](tempo) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[whispered machine drum disco](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I want to hear a [nineties](time_range) track by [stat quo](artist) on Deezer plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[Arctic Monkeys](add_artist) plus [The Prodigy](add_artist) plz",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "can you play [The Change Is Made](song) on netflix",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Hi, I'd love to create a playlist for [soul](genre) songs plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs like [Pink Floyd](artist) - [Wish You Were Here](song) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play some [fifties](time_range) music by [Origa](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Peja](artist) tunes plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want a [Herbie Fields](artist) record from the [sixties](time_range) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "He likes some of the old hard [rock music](genre) titles, but also Lorde plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "nice... can we add some [gospel](genre) [hip-hop](genre), maybe some songs from Lecrae",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [The Fool On The Hill](song) by [Khwaja Ghulam Farid](artist)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Play [Greg Raposo](artist) songs from the [thirties](time_range) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me me some [wistful guitar folk](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "i love them. can you add more [soul](genre) songs to the playlist to make me feel positive about the day.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find lyrics that talk about [summer love](lyrics_query) and [fighting back](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "Play a chant by [Mj Cole](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want to hear [De Eerste Keer](song) from [Paul Caiafa](artist)  off of Google Music plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[breathy hard aggressive rock](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "hi there, could create a playlist for a birthday party that includes [R'n'B](genre) music from the [80s](time_range) and [90s](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i want to hear music from the [sixties](time_range).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play the music of [Aphex Twin](artist)'s [good](rating) Album plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "i'd like to hear [Cry Baby Cry](song) by [Ally Kerr](artist).",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "i want some music from [1985](year) by [Rolf Harris](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I love [country](genre) music and [classical](genre) [rock music](genre).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello there! i'd love to create a playlist for [R&B](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me tracks similar to [Queen](artist) - [Bohemian Rhapsody](song) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "I wish to listen to [eighties](time_range) music by [Mike Dean](artist) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I'm looking for songs like [Rocket Man](song) by [Elton John](artist) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "anything by [Toto](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[afrobeat mid-tempo autotuned](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Can you add the song named [country](genre) road?",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "queue up some [folklore](genre) music plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs from [Dave Brubeck](artist), [Janis Joplin](artist) and [Arctic Monkeys](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want music from [2012](year) by [Yossif Kobzon](artist) on last fm.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to create an [R'n'B](genre)/[Soul](genre) playlist",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want [Gary Chapman](artist) music from the [fifties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[top](rating) of [Queen](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [My Back Pages](song) by [Paul Young](artist) on vimeo plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "combine of [Bruce Springsteen](add_artist) [Hozier](add_artist) and [The Smiths](add_artist) plz",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "give me [Maroon 5](artist) and [Alice in Chains](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I need [reverb whispery female with vocals](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I am not really digging the female [rock](genre) music, it's a bit too mainstream for me, deftones is pretty good though, something more hardcore [rock](genre) would be awesome",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "what songs are about [growing up](lyrics_query) plz",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "Play a [seventies](time_range) [Tom Thacker](artist) ballad plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [top-five](rating) concerto music from [1992](year) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I need more [rap](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[atmospheric vocal-driven indie](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "thank you, can i get a bit of [hip hop](genre) in there",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[country acoustic chant guitar](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "queue up some [dance](genre) on Groove Shark",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i love the bleachers, [1975](year), and vampire weekend",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "i want to hear the [top](rating) [Tim Madison](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[hard rock raspy romantic](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Play [The Monkeys Have No Tails In Zamboanga](song) on Google Music",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play like [Alice in Chains](add_artist) + [Donna Summer](add_artist) plz",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "[autotuned hip-hop energetic](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "play a song by [Electric Tones](artist) from their [Kurutta TaiyÅ](album) album on last fm",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "the greatest [Oscar winning songs](event)",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "queue up [thirties](time_range) music by [Flex](artist) on Google Music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[breathy alternative angry](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "find lyrics that talk about [war](lyrics_query) and [growing up](lyrics_query)",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "queue up any song from [2001](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play some [Sam Moore](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [thirties](time_range) concerto music on google music",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play slacker tunes by [Smog](artist) from movement in [2015](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me some music from [2011](year) on lastfm plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me any chant from [1973](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Can you play me the [latest](rating) theme song by [Warren Vache](artist)?",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play Lastfm [pop music](genre) tunes",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hello! lets create a playlist for a sexy date night alone with my husband. we like [90s](time_range) alt [rock music](genre), modern alt [rock](genre), and love ballads",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play me tracks like [Pink Floyd](artist) - [Wish You Were Here](song)",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[slow-paced rock cello](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[folk mid-tempo smooth](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "thank you, can i get a bit of [rap](genre) in there?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "please play a song from the [thirties](time_range) by [Peter Murphy](artist) on last fm",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [Shoo](artist) on iheart from [greatest](rating) record plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[mellow](mood) songs around [80 BPM](tempo)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want songs like [Iron Man](song) by [Black Sabbath](artist) and [Time](song) by [Pink Floyd](artist) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "give me a [twenties](time_range) tune by [Jodie Aysha](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me some [2011](year) chant music, [new](rating) first, by [Shaggy](artist).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [thirties](time_range) concerto music on Google Music plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me lyrics about [freedom](lyrics_query) plz",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "give me music from the [eighties](time_range) on Slacker.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[pumped](mood) tracks at [140 BPM](tempo)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[voice dark r&b deep](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I want [Morning Song](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play a track by [Titiyo](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play music by [Don Reno](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I would like to listen to [r&b](genre)/[soul](genre) music plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up a [top-10](rating) ballad from [1995](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "yes please, K-[pop](genre) and [rap](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me [top-five](rating) concerto music from [1992](year) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[gospel](genre) tracks similar to [Thelonious Monk](artist) plz",
+      "intents": [
+        "artist_similarity",
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Furusato](song) on google music.",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[fast-paced synth progressive rock](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "I want [Carlos Santana](artist) and [Kendrick Lamar](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "make me a [Glastonbury headliner classics](event) playlist plz",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "I want the [most popular](rating) chant song by [Hossein Alizadeh](artist) from around [2009](year) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "hi, i'd love to create a playlist of [Jazz](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up [Leonid Soybelman](artist) on Vimeo.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "I want [and bass funky lines beats groovy](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Can you pull up a track on Zvooq by [Graham Mcpherson](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[slow](tempo) [rnb](genre) tracks",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play chant music by [Ira Losco](artist) on iheart.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[angry alternative breathy](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Can you add some [relaxed](mood) tracks from Bob Marley to the playlist",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[post-rock](genre) songs from [50s](time_range) rated [favourites](rating)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want music from the album [Evolution Of A Man](album) by [Joey Ramone](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "create a [pop](genre) playlist for me to cook to plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[sax blues smooth](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Want to play [Christina Schollin](artist) Lastfm plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the [top](rating) chant music from [2014](year).",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[downtempo](tempo) [funk](genre) tracks",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me [Henrie Mutuku](artist) album from [1957](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[rock vocal hard male sad](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "find songs about [love](lyrics_query) plz",
+      "intents": [
+        "lyrics_search"
+      ]
+    },
+    {
+      "text": "Hi, I'd love to create a playlist for [rock music](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play something by [Daisy Voisin](artist) on google music plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[folk relaxed viola](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "[A Perfect Circle](artist) songs about [friendship](lyrics_query) plz",
+      "intents": [
+        "lyrics_search",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play the album [Will Rap Over Hard Rock For Food](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me the album [Will Rap Over Hard Rock For Food](album)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[pop synthesizer energetic](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "queue up [1960](year) chant music by [Hermann Baumann](artist)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "mix of of [Ella Fitzgerald](add_artist) and [Lamb of God](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    },
+    {
+      "text": "let me hear [Carlos Santana](artist) and [Kendrick Lamar](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "can you add some upbeat [blues](genre) from simon swerwer.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue [Hey Jude](song) by [The Beatles](artist) and anything by [LCD Soundsystem](artist)",
+      "intents": [
+        "song_similarity",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[harmonized aggressive vocals synth](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "play the [top-20 best](rating) [Chicane](artist) songs on deezer",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Hey! I'm trying to put together the perfect playlist mix of 80's soft [rock music](genre) and 90's [R&B](genre) for my getting ready in the morning shower playlist!",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "give me [Hey Jude](song) by [The Beatles](artist) and anything by [LCD Soundsystem](artist) plz",
+      "intents": [
+        "song_similarity",
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "play [Gary Chapman](artist) music from the [fifties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[pop whispered indie aggressive](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Can you play [The Change Is Made](song) on Netflix?",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "play me a [good](rating) album from [Toni Cottura](artist).",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "give me music from [negerpunk](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up a [Maia Hirasawa](artist) soundtrack from [1951](year)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Soft [rock](genre)! I love 3 Doors Down plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "find me [Acid Punk](genre) music.",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play [Morning Song](album) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Hi, I'd love to create a playlist for [pop music](genre) songs",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[chant reggae trumpet](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "songs with [deep techno dark](description)",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "open pandora and play the [top five](rating) melody by [Hanna Sjedokowa](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Late [90s](time_range)! Tryna party like it's [1999](year) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play [El Cant Dels Ocells](song) by [vini lopez](artist) plz",
+      "intents": [
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "Give me the [top](rating) songs of [Madonna](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Can you play [fifties](time_range) theme music by [Mohsen Chavoshi](artist)?",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "play Pandora [Christian Gangsta Rap](genre) plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up a song by [Electric Tones](artist) from their [Kurutta TaiyÅ](album) album on Last Fm plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up [While We Were Waiting](album) by [Sippie Wallace](artist) on Vimeo",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Play a [new](rating) tune by [louis silvers](artist)",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "Play the [newest](rating) stuff by [blowfly](artist) plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[low](energy) energy music plz",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "[top rated](rating) [David Bowie](artist) songs plz",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "[post-rock](genre) songs from [50s](time_range) rated [faves](rating)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "i want [techno](genre) at [130 BPM](tempo)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "I want to hear music from the [sixties](time_range)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "queue up the [seventies](time_range) album on last fm",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "\"Sky Kisses\" and \"Dakini\" were great fits for the [mellow](energy) [relaxing](mood) mood for the play list but the others are either way too [uptempo](tempo) paced and \"Shiva Moon\" is a club style dance remix and does not go at all. I have not seen any suggestions by anyone outside of the artists that I mentioned. Relax the year time frame and see if that will help discover some other artists.",
+      "intents": [
+        "search_database",
+        "song_similarity"
+      ]
+    },
+    {
+      "text": "[happy whispered indie pop](description) plz",
+      "intents": [
+        "text_search"
+      ]
+    },
+    {
+      "text": "Great. I love these tracks. I want more [laid-back](mood) songs from Zero 7 and Ephemeral Mists.",
+      "intents": [
+        "artist_similarity"
+      ]
+    },
+    {
+      "text": "yes please, K-[pop music](genre) and [hip-hop](genre)",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "Soft [rock music](genre)! I love 3 Doors Down",
+      "intents": [
+        "search_database"
+      ]
+    },
+    {
+      "text": "songs from [MTV Music Awards](event) plz",
+      "intents": [
+        "ai_brainstorm"
+      ]
+    },
+    {
+      "text": "combine of [Bruce Springsteen](add_artist) [Hozier](add_artist) and [The Smiths](add_artist)",
+      "intents": [
+        "song_alchemy"
+      ]
+    }
+  ],
+  "_imported_sources": [
+    "snips_playmusic_v2017-06",
+    "cpcd_v1_with_doh_intent",
+    "user_curated_v1",
+    "augmented_v1"
+  ]
+}
