@@ -80,9 +80,9 @@ This document explains the complete integration of **JointBERT NLP routing** int
 
 ## 🔑 Key Components
 
-### 1. **tasks/joinbert_client.py** (86 lines)
+### 1. **tasks/joinbert_client.py** (~290 lines)
 
-**Purpose**: Singleton wrapper around JointBERT inference, responsible for model loading and query routing.
+**Purpose**: Production runtime wrapper for JointBERT inference. Handles model loading, input sanitization, intent/entity extraction, and production-safe dispatch with mood/genre normalization.
 
 **Public Functions**:
 
@@ -106,22 +106,42 @@ This document explains the complete integration of **JointBERT NLP routing** int
 - **Why**: Singleton avoids re-loading model (expensive), None return enables graceful degradation
 
 #### `route_query(text: str) -> tuple[list, float]`
-- **Purpose**: Predict tool calls and confidence for a query
+- **Purpose**: Predict tool calls and confidence for a query with production-safe dispatch
 - **Logic**:
   1. Sanitize input
   2. Get router (or return empty if None)
   3. Call `router.predict(text)` → returns (intents, entities, intent_probs)
   4. Extract max confidence from intent_probs
-  5. Call `router.dispatch(intents, entities)` → returns tool_calls list
+  5. Call `_dispatch_production(text, intents, entities)` → returns tool_calls list
   6. Return (tool_calls, max_confidence)
 - **Returns**: `([(tool_name, tool_args), ...], float)` where float is 0.0-1.0
-- **Why**: Confidence score drives fallback decision; tool_calls list enables direct execution
+- **Why**: Confidence score drives fallback decision; tool_calls list enables direct execution; dispatch is production-hardened
+
+#### `_dispatch_production(text: str, intents: list, entities: list) -> list`
+- **Purpose**: Production dispatch with mood/genre normalization and fuzzy matching
+- **Key Differences from inference.py:dispatch()**:
+  - Normalizes moods ONLY to OTHER_FEATURE_LABELS (danceable, aggressive, happy, party, relaxed, sad)
+  - Normalizes genres ONLY to MOOD_LABELS (rock, pop, alternative, etc.)
+  - Uses fuzzy matching to map extracted values to valid label sets
+  - Handles all 7 intent types (song_similarity, artist_similarity, text_search, song_alchemy, search_database, lyrics_search, ai_brainstorm)
+  - Returns list of (tool_name, tool_args) tuples ready for MCP execution
+- **Why**: inference.py is training code only; production needs label normalization to prevent database mismatches
+
+**Helper Functions**:
+- `_normalize_mood(mood: str, label_set: list) -> str`: Fuzzy-matches extracted mood/genre to closest valid label using SequenceMatcher
+- `_tempo_filter_token(value: str) -> str | None`: Converts tempo descriptions/BPM to filter tokens (slow/medium/fast)
+- `_energy_filter_token(value: str) -> str | None`: Converts energy descriptions to filter tokens (low/medium/high)
+- `_normalize_time_range(value: str) -> dict`: Converts time descriptions (80s, last year, recent) to year_min/year_max ranges
+- `_normalize_rating(value: str) -> dict`: Extracts rating thresholds from descriptions
+- `_normalize_tempo(value: str) -> dict`: Converts tempo descriptions to tempo_min/tempo_max ranges
+- `_normalize_energy(value: str) -> dict`: Converts energy descriptions to energy_min/energy_max ranges
 
 **Critical Design Decisions**:
 - **Singleton pattern**: Avoids re-loading expensive ONNX model
 - **Try/except at get_router()**: Missing model files don't crash system
 - **Sanitization before predict()**: Prevents injection attacks
-- **Confidence extraction**: `max(intent_probs)` gives highest single intent probability
+- **Separated mood/genre normalization**: Moods must come from OTHER_FEATURE_LABELS, genres from MOOD_LABELS (prevents "female" → "female vocalists" mismatches)
+- **Fuzzy matching for tolerance**: JointBERT sometimes extracts synonyms; SequenceMatcher finds closest valid match
 
 ---
 

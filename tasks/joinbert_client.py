@@ -98,8 +98,11 @@ def _dispatch_production(text: str, intents: list, entities: list) -> list:
         e_value = e["value"]
 
         if e_type == "mood":
-            mood_normalized = _normalize_mood(e_value, MOOD_LABELS + OTHER_FEATURE_LABELS)
+            mood_normalized = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
             ents.setdefault(e_type, []).append(mood_normalized)
+        elif e_type == "genre":
+            genre_normalized = _normalize_mood(e_value, MOOD_LABELS)
+            ents.setdefault(e_type, []).append(genre_normalized)
         else:
             ents.setdefault(e_type, []).append(e_value)
 

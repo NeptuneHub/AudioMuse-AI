@@ -514,6 +514,41 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
         return {"songs": [], "message": "\n".join(log_messages)}
 
 
+def _build_genre_mood_conditions(genres, moods, genre_threshold, mood_threshold):
+    """Build WHERE conditions and params for genre/mood filters with given thresholds."""
+    conditions = []
+    params = []
+    has_genre_filter = False
+    has_mood_filter = False
+
+    if genres:
+        genre_conditions = []
+        for genre in genres:
+            genre_conditions.append(
+                "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+            )
+            params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+            params.append(genre_threshold)
+        conditions.append("(" + " OR ".join(genre_conditions) + ")")
+        has_genre_filter = True
+
+    if moods:
+        mood_conditions = []
+        for mood in moods:
+            mood_conditions.append(
+                "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
+            )
+            params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+            params.append(mood_threshold)
+        if len(mood_conditions) == 1:
+            conditions.append(mood_conditions[0])
+        else:
+            conditions.append("(" + " OR ".join(mood_conditions) + ")")
+        has_mood_filter = True
+
+    return conditions, params, has_genre_filter, has_mood_filter
+
+
 def _database_genre_query_sync(
     genres: Optional[List[str]] = None,
     get_songs: int = 100,
@@ -530,150 +565,154 @@ def _database_genre_query_sync(
     album: Optional[str] = None,
     artist: Optional[str] = None
 ) -> Dict:
-    """Flexible database search across genres, moods, tempo/energy, year, rating, etc.
+    """Flexible database search with progressive threshold relaxation for mood/genre filters.
 
-    - Genre matching uses regex with confidence threshold to avoid substring false positives.
-    - Results are ordered by genre/mood confidence score sum (relevance) when filters apply.
+    When mood or genre filters yield fewer results than requested, progressively relaxes
+    thresholds to find more matching songs. Tries thresholds from 0.55\u21920.45\u21920.35\u21920.25\u21920.15
+    over up to 5 iterations until target count is reached.
     """
     get_songs = int(get_songs) if get_songs is not None else 100
 
     db_conn = get_db_connection()
     log_messages = []
 
-    # Reroute mood labels mistakenly passed as genres.
     genres, moods, reroute_msg = _reroute_mood_labels_from_genres(genres, moods)
     if reroute_msg:
         log_messages.append(reroute_msg)
 
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            conditions = []
-            params = []
-
-            has_genre_filter = False
-            genre_confidence_threshold = 0.55
-            if genres:
-                genre_conditions = []
-                for genre in genres:
-                    genre_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
-                    params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
-                    params.append(genre_confidence_threshold)
-                conditions.append("(" + " OR ".join(genre_conditions) + ")")
-                has_genre_filter = True
-
-            has_mood_filter = False
-            mood_confidence_threshold = 0.6
-            if moods:
-                mood_conditions = []
-                for mood in moods:
-                    mood_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(other_features FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
-                    params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
-                    params.append(mood_confidence_threshold)
-                if len(mood_conditions) == 1:
-                    conditions.append(mood_conditions[0])
-                else:
-                    conditions.append("(" + " OR ".join(mood_conditions) + ")")
-                has_mood_filter = True
+            base_conditions = []
+            base_params = []
 
             if tempo_min is not None:
-                conditions.append("tempo >= %s")
-                params.append(tempo_min)
+                base_conditions.append("tempo >= %s")
+                base_params.append(tempo_min)
             if tempo_max is not None:
-                conditions.append("tempo <= %s")
-                params.append(tempo_max)
+                base_conditions.append("tempo <= %s")
+                base_params.append(tempo_max)
             if energy_min is not None:
-                conditions.append("energy >= %s")
-                params.append(energy_min)
+                base_conditions.append("energy >= %s")
+                base_params.append(energy_min)
             if energy_max is not None:
-                conditions.append("energy <= %s")
-                params.append(energy_max)
-
+                base_conditions.append("energy <= %s")
+                base_params.append(energy_max)
             if key:
-                conditions.append("key = %s")
-                params.append(key.upper())
-
+                base_conditions.append("key = %s")
+                base_params.append(key.upper())
             if scale:
-                conditions.append("LOWER(scale) = LOWER(%s)")
-                params.append(scale)
-
+                base_conditions.append("LOWER(scale) = LOWER(%s)")
+                base_params.append(scale)
             if year_min is not None:
-                conditions.append("year >= %s")
-                params.append(int(year_min))
+                base_conditions.append("year >= %s")
+                base_params.append(int(year_min))
             if year_max is not None:
-                conditions.append("year <= %s")
-                params.append(int(year_max))
-
+                base_conditions.append("year <= %s")
+                base_params.append(int(year_max))
             if min_rating is not None:
-                conditions.append("rating >= %s")
-                params.append(int(min_rating))
-
+                base_conditions.append("rating >= %s")
+                base_params.append(int(min_rating))
             if album:
-                conditions.append("LOWER(album) LIKE LOWER(%s)")
-                params.append(f"%{album}%")
-
+                base_conditions.append("LOWER(album) LIKE LOWER(%s)")
+                base_params.append(f"%{album}%")
             if artist:
-                conditions.append("""
+                base_conditions.append("""
                     LOWER(REPLACE(REPLACE(REPLACE(REPLACE(author, '-', ''), '\u2010', ''), '/', ''), '''', ''))
                     =
                     LOWER(REPLACE(REPLACE(REPLACE(REPLACE(%s, '-', ''), '\u2010', ''), '/', ''), '''', ''))
                 """)
-                params.append(artist)
+                base_params.append(artist)
 
-            where_clause = " AND ".join(conditions) if conditions else "1=1"
-            params.append(get_songs)
+            results = []
+            used_thresholds = None
+            executed_query = None
 
-            if has_genre_filter or has_mood_filter:
-                score_parts = []
-                score_params = []
-                if has_genre_filter:
-                    for genre in genres:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
-                        score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
-                if has_mood_filter:
-                    for mood in moods:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(other_features FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
-                        score_params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+            if genres or moods:
+                thresholds = [
+                    (0.55, 0.60),
+                    (0.45, 0.50),
+                    (0.35, 0.40),
+                    (0.25, 0.30),
+                    (0.15, 0.20),
+                ]
 
-                relevance_expr = " + ".join(score_parts)
-                all_params = score_params + params
+                for genre_thresh, mood_thresh in thresholds:
+                    genre_mood_conds, genre_mood_params, has_genre, has_mood = _build_genre_mood_conditions(
+                        genres, moods, genre_thresh, mood_thresh
+                    )
 
-                query = f"""
-                    SELECT DISTINCT item_id, title, author, album
-                    FROM (
-                        SELECT item_id, title, author, album,
-                               ({relevance_expr}) AS relevance_score
-                        FROM public.score
-                        WHERE {where_clause}
-                        ORDER BY relevance_score DESC, RANDOM()
-                    ) AS ranked
-                    LIMIT %s
-                """
-                cur.execute(query, all_params)
+                    all_conditions = base_conditions + genre_mood_conds
+                    all_params = base_params + genre_mood_params
+                    where_clause = " AND ".join(all_conditions) if all_conditions else "1=1"
+                    all_params.append(get_songs)
+
+                    if has_genre or has_mood:
+                        score_parts = []
+                        score_params = []
+                        if has_genre:
+                            for genre in genres:
+                                score_parts.append("""
+                                    COALESCE(
+                                        CAST(
+                                            NULLIF(
+                                                SUBSTRING(mood_vector FROM %s),
+                                                ''
+                                            ) AS NUMERIC
+                                        ),
+                                        0
+                                    )
+                                """)
+                                score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
+                        if has_mood:
+                            for mood in moods:
+                                score_parts.append("""
+                                    COALESCE(
+                                        CAST(
+                                            NULLIF(
+                                                SUBSTRING(other_features FROM %s),
+                                                ''
+                                            ) AS NUMERIC
+                                        ),
+                                        0
+                                    )
+                                """)
+                                score_params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
+
+                        relevance_expr = " + ".join(score_parts)
+                        final_params = score_params + all_params
+
+                        query = f"""
+                            SELECT DISTINCT item_id, title, author, album
+                            FROM (
+                                SELECT item_id, title, author, album,
+                                       ({relevance_expr}) AS relevance_score
+                                FROM public.score
+                                WHERE {where_clause}
+                                ORDER BY relevance_score DESC, RANDOM()
+                            ) AS ranked
+                            LIMIT %s
+                        """
+                        cur.execute(query, final_params)
+                        results = cur.fetchall()
+                        try:
+                            executed_query = cur.query.decode('utf-8') if isinstance(cur.query, bytes) else str(cur.query)
+                        except (AttributeError, UnicodeDecodeError):
+                            executed_query = f"[Query with {len(results)} results using thresholds {genre_thresh}/{mood_thresh}]"
+                        used_thresholds = (genre_thresh, mood_thresh)
+
+                        if len(results) >= get_songs:
+                            break
+
+                if used_thresholds and len(results) < get_songs:
+                    log_messages.append(f"Relaxed thresholds to genres\u2265{used_thresholds[0]}, moods\u2265{used_thresholds[1]} (found {len(results)} songs)")
+                elif used_thresholds:
+                    log_messages.append(f"Used genre threshold {used_thresholds[0]}, mood threshold {used_thresholds[1]}")
             else:
+                all_conditions = base_conditions
+                all_params = base_params
+                where_clause = " AND ".join(all_conditions) if all_conditions else "1=1"
+                all_params.append(get_songs)
+
                 query = f"""
                     SELECT DISTINCT item_id, title, author, album
                     FROM (
@@ -684,9 +723,12 @@ def _database_genre_query_sync(
                     ) AS randomized
                     LIMIT %s
                 """
-                cur.execute(query, params)
-
-            results = cur.fetchall()
+                cur.execute(query, all_params)
+                results = cur.fetchall()
+                try:
+                    executed_query = cur.query.decode('utf-8') if isinstance(cur.query, bytes) else str(cur.query)
+                except (AttributeError, UnicodeDecodeError):
+                    executed_query = f"[Query without mood/genre filters returned {len(results)} results]"
 
         songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
 
@@ -714,7 +756,11 @@ def _database_genre_query_sync(
 
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
 
-        return {"songs": songs, "message": "\n".join(log_messages)}
+        return {
+            "songs": songs,
+            "message": "\n".join(log_messages),
+            "executed_query": executed_query
+        }
     finally:
         db_conn.close()
 
