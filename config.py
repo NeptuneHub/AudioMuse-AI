@@ -106,6 +106,7 @@ APP_VERSION = "v1.1.6"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
+FILTER_OVERFETCH_FACTOR = int(os.getenv("FILTER_OVERFETCH_FACTOR", "5")) # Overfetch multiplier when search_database filters primary tool results
 # New: Default behavior for eliminating duplicates in similarity search. If param not passed to API, this is the default.
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.

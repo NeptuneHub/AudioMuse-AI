@@ -575,7 +575,8 @@ def _database_genre_query_sync(
     year_max: Optional[int] = None,
     min_rating: Optional[int] = None,
     album: Optional[str] = None,
-    artist: Optional[str] = None
+    artist: Optional[str] = None,
+    item_ids: Optional[List[str]] = None
 ) -> Dict:
     """Flexible database search with progressive threshold relaxation for mood/genre filters.
 
@@ -634,6 +635,11 @@ def _database_genre_query_sync(
                     LOWER(REPLACE(REPLACE(REPLACE(REPLACE(%s, '-', ''), '\u2010', ''), '/', ''), '''', ''))
                 """)
                 base_params.append(artist)
+
+            if item_ids:
+                placeholders = ','.join(['%s'] * len(item_ids))
+                base_conditions.append(f"item_id IN ({placeholders})")
+                base_params.extend(item_ids)
 
             results = []
             used_thresholds = None

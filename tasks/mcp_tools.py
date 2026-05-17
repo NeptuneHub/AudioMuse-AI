@@ -111,6 +111,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 tool_args.get("min_rating"),
                 tool_args.get("album"),
                 tool_args.get("artist"),
+                tool_args.get("item_ids"),
             )
         elif tool_name == "ai_brainstorm":
             return _ai_brainstorm_sync(

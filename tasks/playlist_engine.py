@@ -8,6 +8,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config import (
+    FILTER_OVERFETCH_FACTOR,
     JOINBERT_CONFIDENCE_THRESHOLD,
     MAX_SONGS_PER_ARTIST_PLAYLIST,
     PLAYLIST_ENERGY_ARC,
@@ -70,6 +71,7 @@ def _build_tool_playlist(
 ) -> Dict[str, Any]:
     """
     Execute tool calls directly and aggregate results.
+    When search_database appears alongside other tools, it acts as a filter on their results.
     """
     all_songs: List[Dict] = []
     song_ids_seen: Set[str] = set()
@@ -78,9 +80,119 @@ def _build_tool_playlist(
     tools_used_history: List[Dict] = []
     tool_execution_summary: List[str] = []
 
+    PRIMARY_TOOLS = {"lyrics_search", "song_similarity", "artist_similarity", "text_search"}
+    has_db_filter = any(name == "search_database" for name, _ in tool_calls)
+    has_primary = any(name in PRIMARY_TOOLS for name, _ in tool_calls)
+    filter_mode = has_db_filter and has_primary
+
+    primary_candidate_ids = []
     tool_call_counter = 0
+
     for tool_name, tool_args in tool_calls:
-        # Ensure 200 songs per call
+        tool_args = dict(tool_args)
+
+        if filter_mode and tool_name in PRIMARY_TOOLS:
+            tool_args["get_songs"] = 200 * FILTER_OVERFETCH_FACTOR
+
+            log_messages.append(f"\n🔧 Tool {tool_call_counter + 1}: {tool_name} (over-fetch for filtering)")
+            try:
+                log_messages.append(f"   Arguments: {json.dumps(tool_args, indent=6)}")
+            except (TypeError, ValueError):
+                log_messages.append(f"   Arguments: {str(tool_args)}")
+
+            tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
+
+            if "error" in tool_result:
+                log_messages.append(f"   ❌ Error: {tool_result['error']}")
+                tools_used_history.append({
+                    "name": tool_name,
+                    "args": tool_args,
+                    "songs": 0,
+                    "error": True,
+                    "call_index": tool_call_counter,
+                })
+                tool_call_counter += 1
+                continue
+
+            songs = tool_result.get("songs", [])
+            log_messages.append(f"   ✅ Retrieved {len(songs)} songs")
+
+            if tool_result.get("message"):
+                for line in tool_result["message"].split("\n"):
+                    if line.strip():
+                        log_messages.append(f"   {line}")
+
+            primary_candidate_ids.extend(s["item_id"] for s in songs)
+            tools_used_history.append({
+                "name": tool_name,
+                "args": tool_args,
+                "songs": len(songs),
+                "call_index": tool_call_counter,
+            })
+            args_summary = _summarize_tool_args(tool_name, tool_args)
+            tool_summary = f"{tool_name}({args_summary}, +{len(songs)})" if args_summary else f"{tool_name}(+{len(songs)})"
+            tool_execution_summary.append(tool_summary)
+            tool_call_counter += 1
+            continue
+
+        if filter_mode and tool_name == "search_database":
+            tool_args["item_ids"] = primary_candidate_ids
+            tool_args["get_songs"] = 200
+
+            log_messages.append(f"\n🔧 Tool {tool_call_counter + 1}: {tool_name} (filter mode)")
+            log_messages.append(f"   🔍 Filter mode: filtering {len(primary_candidate_ids)} candidates")
+            try:
+                log_messages.append(f"   Arguments: {json.dumps({k: v for k, v in tool_args.items() if k != 'item_ids'}, indent=6)} (+ {len(primary_candidate_ids)} item_ids)")
+            except (TypeError, ValueError):
+                log_messages.append(f"   Arguments: {str(tool_args)}")
+
+            tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
+
+            if "error" in tool_result:
+                log_messages.append(f"   ❌ Error: {tool_result['error']}")
+                tools_used_history.append({
+                    "name": tool_name,
+                    "args": tool_args,
+                    "songs": 0,
+                    "error": True,
+                    "call_index": tool_call_counter,
+                })
+                tool_call_counter += 1
+                continue
+
+            songs = tool_result.get("songs", [])
+            log_messages.append(f"   ✅ Retrieved {len(songs)} songs")
+            log_messages.append(f"   ✅ Filter kept {len(songs)} / {len(primary_candidate_ids)} songs")
+
+            if tool_result.get("message"):
+                for line in tool_result["message"].split("\n"):
+                    if line.strip():
+                        log_messages.append(f"   {line}")
+
+            new_songs = 0
+            for song in songs:
+                song_key = (song.get("title", "").strip().lower(), song.get("artist", "").strip().lower())
+                if song["item_id"] not in song_ids_seen and song_key not in song_keys_seen:
+                    all_songs.append(song)
+                    song_ids_seen.add(song["item_id"])
+                    song_keys_seen.add(song_key)
+                    song_sources[song["item_id"]] = tool_call_counter
+                    new_songs += 1
+
+            log_messages.append(f"   📊 Added {new_songs} new unique songs")
+            tools_used_history.append({
+                "name": tool_name,
+                "args": tool_args,
+                "songs": new_songs,
+                "call_index": tool_call_counter,
+            })
+
+            args_summary = _summarize_tool_args(tool_name, tool_args)
+            tool_summary = f"{tool_name}({args_summary}, +{new_songs})" if args_summary else f"{tool_name}(+{new_songs})"
+            tool_execution_summary.append(tool_summary)
+            tool_call_counter += 1
+            continue
+
         tool_args["get_songs"] = 200
 
         log_messages.append(f"\n🔧 Tool {tool_call_counter + 1}: {tool_name}")
@@ -89,7 +201,6 @@ def _build_tool_playlist(
         except (TypeError, ValueError):
             log_messages.append(f"   Arguments: {str(tool_args)}")
 
-        # Execute
         tool_result = execute_mcp_tool(tool_name, tool_args, ai_config)
 
         if "error" in tool_result:
@@ -112,7 +223,6 @@ def _build_tool_playlist(
                 if line.strip():
                     log_messages.append(f"   {line}")
 
-        # Deduplicate
         new_songs = 0
         for song in songs:
             song_key = (song.get("title", "").strip().lower(), song.get("artist", "").strip().lower())
