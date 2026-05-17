@@ -104,7 +104,7 @@ def _dispatch_production(text: str, intents: list, entities: list) -> list:
             mood_match, mood_score = _normalize_mood(e_value, OTHER_FEATURE_LABELS)
             genre_match, genre_score = _normalize_mood(e_value, MOOD_LABELS)
 
-            if mood_score > genre_score and mood_match:
+            if mood_score >= genre_score and mood_match:
                 ents.setdefault("mood", []).append(mood_match)
             elif genre_match:
                 ents.setdefault("genre", []).append(genre_match)
