@@ -30,14 +30,14 @@ HERE = Path(__file__).resolve().parent
 OUT_PATH = HERE / "training_data.json"
 SEED = 1337
 
-# Target distribution: ~14% per single-tool intent, ~5% multi-tool.
-# 7 single-tool intents x 13% ≈ 91%, multi ≈ 9%.
+# Target distribution: more ai_brainstorm for improved brainstorming coverage
+# ai_brainstorm increased to 15% (more variety: events + artist-hits + radio keywords)
 SHARE = {
     "song_similarity":  0.125,
     "artist_similarity": 0.125,
-    "text_search":       0.125,
-    "song_alchemy":      0.125,
-    "ai_brainstorm":     0.125,
+    "text_search":       0.120,
+    "song_alchemy":      0.120,
+    "ai_brainstorm":     0.150,  # INCREASED: now 15% for better brainstorm coverage
     "search_database":   0.135,
     "lyrics_search":     0.125,
     "multi":             0.115,
@@ -203,6 +203,11 @@ MOODS: list[str] = [
     "happy", "sad", "danceable", "aggressive", "party", "relaxed",
     "melancholic", "uplifting", "dark", "dreamy", "romantic", "nostalgic",
     "epic", "playful", "intense", "soothing", "energetic", "moody",
+    # Vocal styles
+    "female vocalist", "male vocalist",
+    "female singer", "male singer",
+    "female vocal", "male vocal",
+    "female voice", "male voice",
 ]
 
 TEMPOS = ["slow", "fast", "medium"]
@@ -274,18 +279,40 @@ LYRIC_TOPICS = [
 ]
 
 EVENTS = [
-    "Grammy winners", "Billboard top 10", "viral TikTok hits",
-    "Coachella 2024", "Eurovision winners", "Super Bowl halftime",
-    "trending pop songs", "number one hits", "Oscar winning songs",
+    # Chart & Radio keywords
+    "Grammy winners", "Billboard top 10", "Billboard hot 100",
+    "radio hits", "top radio songs", "radio classics", "radio play",
+    "chart-toppers", "chart hits", "trending pop songs", "number one hits",
+    # Viral & Trending
+    "viral TikTok hits", "viral songs", "viral hits", "trending songs",
+    "songs trending on Spotify", "TikTok viral", "internet famous songs",
+    # Awards & Recognition
+    "Oscar winning songs", "Grammy award winners", "MTV Music Awards",
+    "Billboard Music Awards", "Brit Awards winners", "Grammys all-time greats",
+    # Awards/Prestige keywords
+    "award-winning songs", "platinum records", "gold records", "award-winning hits",
+    "bestselling songs of all time", "bestselling albums", "blockbuster hits",
+    # Curated Lists & Classics
     "Christmas classics", "summer anthems of 2024", "Halloween playlist",
-    "the Woodstock festival", "best wedding songs", "viral songs",
-    "songs of the summer", "MTV Music Awards", "songs trending on Spotify",
-    "karaoke classics", "iconic movie soundtracks", "funeral songs",
-    "Rolling Stone top 500", "Glastonbury headliner classics",
-    "songs you must hear before you die", "anthems of the 2000s",
-    "Pitchfork best new music", "Billboard year-end charts",
-    "MTV Unplugged classics", "Lollapalooza highlights",
+    "best wedding songs", "karaoke classics", "iconic movie soundtracks",
+    "funeral songs", "songs you must hear before you die",
+    # Festival & Industry
+    "Coachella 2024", "Eurovision winners", "Super Bowl halftime",
+    "the Woodstock festival", "Glastonbury headliner classics",
+    "Lollapalooza highlights", "MTV Unplugged classics",
+    # Magazine/Publication Top Lists
+    "Rolling Stone top 500", "Pitchfork best new music", "Billboard year-end charts",
     "best bossa nova ever recorded", "essential punk songs",
+    # Time-based top lists
+    "anthems of the 2000s", "greatest songs of the 80s", "best of the 90s",
+    "hits of the 2020s", "top songs of the decade", "timeless classics",
+    # Famous/Legendary
+    "legendary artists", "greatest musicians", "iconic bands",
+    "legendary performances", "all-time classics", "timeless hits",
+    # Radio-specific variants
+    "top 40 hits", "adult contemporary hits", "rock radio classics",
+    "country radio hits", "hip hop radio hits", "pop radio hits",
+    "urban radio hits", "oldies but goodies", "classic hits",
 ]
 
 # ======================================================================
@@ -309,6 +336,37 @@ SONG_SIM_MULTI_3_TEMPLATES = [
     "find more like [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist), and [{s3}](song) by [{a3}](artist)",
     "play stuff like [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist) and [{s3}](song) by [{a3}](artist)",
     "I want vibes of [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist) and [{s3}](song) by [{a3}](artist)",
+    "similar to [{s1}](song) by [{a1}](artist) and also [{s2}](song) by [{a2}](artist) and [{s3}](song) by [{a3}](artist)",
+    "music like [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist), or [{s3}](song) by [{a3}](artist)",
+    "give me more tracks like [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist), and [{s3}](song) by [{a3}](artist)",
+    "anything that sounds like [{s1}](song) by [{a1}](artist), [{s2}](song) by [{a2}](artist), or [{s3}](song) by [{a3}](artist)",
+]
+
+# NEW: Artist-dash format (artist before song, separated by dash)
+SONG_SIM_ARTIST_DASH_TEMPLATES = [
+    "similar songs to [{artist}](artist) - [{song}](song)",
+    "songs like [{artist}](artist) - [{song}](song)",
+    "more like [{artist}](artist) - [{song}](song)",
+    "find music similar to [{artist}](artist) - [{song}](song)",
+    "play stuff like [{artist}](artist) - [{song}](song)",
+    "tracks in the vibe of [{artist}](artist) - [{song}](song)",
+    "I love [{artist}](artist) - [{song}](song), more like that",
+    "give me [{artist}](artist) - [{song}](song) style music",
+]
+
+SONG_SIM_ARTIST_DASH_MULTI_2 = [
+    "songs like [{a1}](artist) - [{s1}](song) and [{a2}](artist) - [{s2}](song)",
+    "more like [{a1}](artist) - [{s1}](song) and [{a2}](artist) - [{s2}](song)",
+    "similar to [{a1}](artist) - [{s1}](song) and also [{a2}](artist) - [{s2}](song)",
+    "find me [{a1}](artist) - [{s1}](song) and [{a2}](artist) [{s2}](song) style",
+]
+
+# No-separator format (artist and song concatenated like "ed sheeran 2step")
+SONG_SIM_NO_SEP_TEMPLATES = [
+    "songs like [{artist}](artist) [{song}](song)",
+    "more [{artist}](artist) [{song}](song)",
+    "similar to [{artist}](artist) [{song}](song)",
+    "vibes of [{artist}](artist) [{song}](song)",
 ]
 
 SONG_SIM_TEMPLATES = [
@@ -406,6 +464,11 @@ ARTIST_SIM_MULTI_3_TEMPLATES = [
     "songs from [{a1}](artist), [{a2}](artist) and [{a3}](artist)",
     "stuff like [{a1}](artist), [{a2}](artist), [{a3}](artist)",
     "artists similar to [{a1}](artist), [{a2}](artist) and [{a3}](artist)",
+    "play me [{a1}](artist), [{a2}](artist), or [{a3}](artist)",
+    "I'm in the mood for [{a1}](artist), [{a2}](artist), and [{a3}](artist)",
+    "more music from [{a1}](artist), [{a2}](artist), and [{a3}](artist)",
+    "songs in the style of [{a1}](artist), [{a2}](artist), or [{a3}](artist)",
+    "anything from [{a1}](artist), [{a2}](artist), or [{a3}](artist)",
 ]
 
 TEXT_SEARCH_TEMPLATES = [
@@ -485,6 +548,46 @@ BRAINSTORM_TEMPLATES = [
     "make me a [{event}](event) playlist",
 ]
 
+# NEW: Artist-specific hits/top songs -> ai_brainstorm (NOT artist_similarity)
+# Distinguish from artist_similarity with keywords: top/best/greatest/iconic/essential/classic/famous/most-popular/radio/chart/blockbuster/platinum
+BRAINSTORM_ARTIST_HITS_TEMPLATES = [
+    # Top/Best variants
+    "top songs of [{artist}](artist)",
+    "best hits by [{artist}](artist)",
+    "greatest hits of [{artist}](artist)",
+    "most famous songs of [{artist}](artist)",
+    "iconic songs by [{artist}](artist)",
+    "essential [{artist}](artist) tracks",
+    "classic songs of [{artist}](artist)",
+    "most popular [{artist}](artist) songs",
+    # Radio-specific
+    "top radio songs of [{artist}](artist)",
+    "radio hits by [{artist}](artist)",
+    "radio classics of [{artist}](artist)",
+    "radio play favorites from [{artist}](artist)",
+    # Chart/Commercial keywords
+    "chart-topping songs of [{artist}](artist)",
+    "blockbuster hits by [{artist}](artist)",
+    "platinum records of [{artist}](artist)",
+    "bestselling songs of [{artist}](artist)",
+    # Award/Recognition
+    "award-winning songs of [{artist}](artist)",
+    "Grammy awarded tracks by [{artist}](artist)",
+    # Famous/Legendary
+    "legendary [{artist}](artist) songs",
+    "famous [{artist}](artist) tracks",
+    "timeless classics by [{artist}](artist)",
+    "all-time greatest [{artist}](artist) songs",
+    # Direct hit requests
+    "give me the hits of [{artist}](artist)",
+    "what are the best songs by [{artist}](artist)",
+    "[{artist}](artist) greatest tracks ever",
+    "best of [{artist}](artist) playlist",
+    "make me a [{artist}](artist) hits playlist",
+    "[{artist}](artist) top charting songs",
+    "most iconic [{artist}](artist) songs",
+]
+
 LYRICS_TEMPLATES = [
     "songs about [{topic}](lyrics_query)",
     "lyrics about [{topic}](lyrics_query)",
@@ -559,6 +662,9 @@ DB_TWO_SLOT_TEMPLATES = [
     "[{energy}](energy) energy [{genre}](genre) songs",
     "music from the [{decade}](time_range) rated [{rating}](rating)",
     "[{genre}](genre) [{mood}](mood) [{tempo}](tempo)",
+    "[{genre}](genre) with [{mood}](mood) from [{year}](year)",
+    "[{mood}](mood) [{genre}](genre) music",
+    "songs with [{mood}](mood) from the [{decade}](time_range)",
 ]
 DB_THREE_SLOT_TEMPLATES = [
     "[{tempo}](tempo) [{genre}](genre) from the [{decade}](time_range)",
@@ -666,21 +772,43 @@ def emit(text: str, intents: list[str], pool: set[str], out: list[dict]) -> None
 
 
 def gen_song_similarity(n: int, rng: random.Random, pool: set[str], out: list[dict]) -> None:
-    """Mix of single-pair (75%), two-pair (17%), three-pair (8%) templates."""
+    """Mix of single-pair (50%), two-pair (30%), three-pair (20%) with varied formats."""
     target = len(out) + n
     tries = 0
     while len(out) < target and tries < n * 5:
         tries += 1
-        mode = rng.choices(["single", "two", "three"], weights=[0.75, 0.17, 0.08])[0]
-        if mode == "single":
+        # Three-way choice: pair size, then format variant
+        # INCREASED multi-pair weight: single 50% → two 30% → three 20%
+        pair_mode = rng.choices(["single", "two", "three"], weights=[0.50, 0.30, 0.20])[0]
+        song, artist = None, None
+
+        if pair_mode == "single":
             song, artist = rng.choice(SONGS)
-            tpl = rng.choice(SONG_SIM_TEMPLATES)
-            text = tpl.format(song=song, artist=artist)
-        elif mode == "two":
+            # Choose format: standard (70%), dash (20%), no-sep (10%)
+            fmt = rng.choices(
+                ["standard", "dash", "no_sep"],
+                weights=[0.70, 0.20, 0.10]
+            )[0]
+            if fmt == "standard":
+                tpl = rng.choice(SONG_SIM_TEMPLATES)
+                text = tpl.format(song=song, artist=artist)
+            elif fmt == "dash":
+                tpl = rng.choice(SONG_SIM_ARTIST_DASH_TEMPLATES)
+                text = tpl.format(artist=artist, song=song)
+            else:  # no_sep
+                tpl = rng.choice(SONG_SIM_NO_SEP_TEMPLATES)
+                text = tpl.format(artist=artist, song=song)
+        elif pair_mode == "two":
             (s1, a1), (s2, a2) = rng.sample(SONGS, 2)
-            tpl = rng.choice(SONG_SIM_MULTI_2_TEMPLATES)
-            text = tpl.format(s1=s1, a1=a1, s2=s2, a2=a2)
-        else:
+            # Choose format: standard multi-2 (80%) or dash multi-2 (20%)
+            fmt = rng.choices(["standard", "dash"], weights=[0.80, 0.20])[0]
+            if fmt == "standard":
+                tpl = rng.choice(SONG_SIM_MULTI_2_TEMPLATES)
+                text = tpl.format(s1=s1, a1=a1, s2=s2, a2=a2)
+            else:  # dash
+                tpl = rng.choice(SONG_SIM_ARTIST_DASH_MULTI_2)
+                text = tpl.format(a1=a1, s1=s1, a2=a2, s2=s2)
+        else:  # three
             (s1, a1), (s2, a2), (s3, a3) = rng.sample(SONGS, 3)
             tpl = rng.choice(SONG_SIM_MULTI_3_TEMPLATES)
             text = tpl.format(s1=s1, a1=a1, s2=s2, a2=a2, s3=s3, a3=a3)
@@ -688,12 +816,13 @@ def gen_song_similarity(n: int, rng: random.Random, pool: set[str], out: list[di
 
 
 def gen_artist_similarity(n: int, rng: random.Random, pool: set[str], out: list[dict]) -> None:
-    """Mix of single (70%), two-artist (20%), three-artist (10%) templates."""
+    """Mix of single (55%), two-artist (30%), three-artist (15%) templates."""
     target = len(out) + n
     tries = 0
     while len(out) < target and tries < n * 5:
         tries += 1
-        mode = rng.choices(["single", "two", "three"], weights=[0.70, 0.20, 0.10])[0]
+        # INCREASED multi-artist weight: single 55% → two 30% → three 15%
+        mode = rng.choices(["single", "two", "three"], weights=[0.55, 0.30, 0.15])[0]
         if mode == "single":
             artist = rng.choice(ARTISTS)
             tpl = rng.choice(ARTIST_SIM_TEMPLATES)
@@ -756,9 +885,17 @@ def gen_brainstorm(n: int, rng: random.Random, pool: set[str], out: list[dict]) 
     tries = 0
     while len(out) < target and tries < n * 5:
         tries += 1
-        event = rng.choice(EVENTS)
-        tpl = rng.choice(BRAINSTORM_TEMPLATES)
-        text = tpl.format(event=event)
+        # Choose brainstorm type: event-based (60%) or artist-hits (40%)
+        # INCREASED artist-hits: now more examples for "top songs", "radio hits", "chart-toppers", etc.
+        btype = rng.choices(["event", "artist_hits"], weights=[0.60, 0.40])[0]
+        if btype == "event":
+            event = rng.choice(EVENTS)
+            tpl = rng.choice(BRAINSTORM_TEMPLATES)
+            text = tpl.format(event=event)
+        else:  # artist_hits
+            artist = rng.choice(ARTISTS)
+            tpl = rng.choice(BRAINSTORM_ARTIST_HITS_TEMPLATES)
+            text = tpl.format(artist=artist)
         emit(text, ["ai_brainstorm"], pool, out)
 
 

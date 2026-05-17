@@ -45,7 +45,7 @@ VAL_FRACTION = 0.20
 # pattern so the model sees the shape more than once.
 # ---------------------------------------------------------------------------
 
-# (1) song_similarity with "ARTIST - SONG" dash separator
+# (1) song_similarity with "ARTIST - SONG" dash separator (including multi-song examples)
 DASH_SONG_SIM = [
     "Similar song to [Red Hot Chili Peppers](artist) - [By The Way](song)",
     "songs like [Pink Floyd](artist) - [Wish You Were Here](song)",
@@ -54,6 +54,10 @@ DASH_SONG_SIM = [
     "give me songs like [The Beatles](artist) - [Hey Jude](song)",
     "[Nirvana](artist) - [Smells Like Teen Spirit](song) and similar",
     "tracks in the style of [Daft Punk](artist) - [Get Lucky](song)",
+    # Multi-song dash format
+    "similar to [Red Hot Chili Peppers](artist) - [By The Way](song) and [Ed Sheeran](artist) - [2step](song)",
+    "songs like [David Bowie](artist) - [Heroes](song) and [Queen](artist) - [Radio Ga Ga](song)",
+    "more like [Radiohead](artist) - [Creep](song) and [Nirvana](artist) [Smells Like Teen Spirit](song)",
 ]
 
 # (2) Multi-artist artist_similarity
@@ -155,7 +159,9 @@ def _build_examples() -> list[dict]:
     for text in MULTI_ARTIST_SIM:
         out.append({"text": text, "intents": ["artist_similarity"]})
     for text in TOP_OF_ARTIST:
-        out.append({"text": text, "intents": ["artist_similarity"]})
+        # Route "top songs/hits" to ai_brainstorm (LLM knows actual famous tracks)
+        # NOT artist_similarity (which returns similar artists' songs)
+        out.append({"text": text, "intents": ["ai_brainstorm"]})
     for text in BPM_SEARCH:
         out.append({"text": text, "intents": ["search_database"]})
     for text in SHORT_DESCRIPTIONS:

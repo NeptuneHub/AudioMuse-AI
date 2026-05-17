@@ -29,8 +29,8 @@ BEST_ONNX_PATH = HERE / "joint_bert_best.onnx"
 LAST_PT_PATH = HERE / "joint_bert_last.pt"
 LAST_ONNX_PATH = HERE / "joint_bert_last.onnx"
 
-# Other models tested: distilbert-base-uncased, sentence-transformers/all-MiniLM-L6-v2 (~80 MB, ~3 ms inference)
-MODEL_NAME = "answerdotai/ModernBERT-base"
+# Other models tested: answerdotai/ModernBERT-base, sentence-transformers/all-MiniLM-L6-v2 (~80 MB, ~3 ms inference)
+MODEL_NAME = "distilbert-base-uncased"
 MAX_LEN = 64
 BATCH_SIZE = 16
 EPOCHS = 100               # always run to completion; LR scheduler handles plateaus

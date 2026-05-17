@@ -6,10 +6,23 @@ import re
 import sys
 from pathlib import Path
 from typing import Optional
+import shutil
 
 HERE = Path(__file__).parent
 JOINBERT_DIR = (HERE.parent / "joinbert").resolve()
 sys.path.insert(0, str(JOINBERT_DIR))
+
+# Clean stale HuggingFace lock files on module import (app startup)
+# This prevents "PermissionError on .locks" when containers restart with persistent cache
+_hf_cache = Path("/app/.cache/huggingface")
+if _hf_cache.exists():
+    _locks_dir = _hf_cache / ".locks"
+    if _locks_dir.exists():
+        try:
+            shutil.rmtree(_locks_dir)
+            print("[joinbert_client] Cleaned stale HuggingFace lock files")
+        except Exception as e:
+            print(f"[joinbert_client] Warning: Could not clean HF locks: {e}")
 
 try:
     from inference import Router, dispatch
