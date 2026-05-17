@@ -1,11 +1,13 @@
 """
-Thin wrapper around joinbert/inference.py:Router for instant playlist routing.
-Sanitizes user input and provides singleton access to the trained JointBERT model.
+Production runtime wrapper for JointBERT inference with mood normalization.
+Sanitizes user input, provides singleton access to trained model, and normalizes
+moods against MOOD_LABELS and OTHER_FEATURE_LABELS from config.
 """
 import re
 import sys
 from pathlib import Path
 from typing import Optional
+from difflib import SequenceMatcher
 import shutil
 
 HERE = Path(__file__).parent
@@ -25,10 +27,9 @@ if _hf_cache.exists():
             print(f"[joinbert_client] Warning: Could not clean HF locks: {e}")
 
 try:
-    from inference import Router, dispatch
+    from inference import Router
 except ImportError:
     Router = None
-    dispatch = None
 
 
 _router: Optional[Router] = None
@@ -73,16 +74,199 @@ def get_router() -> Optional[Router]:
     return _router
 
 
+def _normalize_mood(mood: str, label_set: list) -> str:
+    """Fuzzy match mood to closest label in label_set."""
+    mood_lower = mood.lower()
+
+    best_match = max(
+        label_set,
+        key=lambda label: SequenceMatcher(None, mood_lower, label.lower()).ratio()
+    )
+    return best_match
+
+
+def _dispatch_production(text: str, intents: list, entities: list) -> list:
+    """
+    Production dispatch with mood normalization against both MOOD_LABELS and OTHER_FEATURE_LABELS.
+    Replaces inference.py:dispatch() for runtime safety.
+    """
+    from config import MOOD_LABELS, OTHER_FEATURE_LABELS
+
+    ents: dict[str, list[str]] = {}
+    for e in entities:
+        e_type = e["type"]
+        e_value = e["value"]
+
+        if e_type == "mood":
+            mood_normalized = _normalize_mood(e_value, MOOD_LABELS + OTHER_FEATURE_LABELS)
+            ents.setdefault(e_type, []).append(mood_normalized)
+        else:
+            ents.setdefault(e_type, []).append(e_value)
+
+    intent_names = {name for name, _ in intents}
+    calls: list[tuple[str, dict]] = []
+
+    n_song_artist_pairs = 0
+    if "song_similarity" in intent_names and "song" in ents and "artist" in ents:
+        n_song_artist_pairs = min(len(ents["song"]), len(ents["artist"]))
+        for i in range(n_song_artist_pairs):
+            calls.append(("song_similarity", {
+                "song_title": ents["song"][i],
+                "song_artist": ents["artist"][i],
+            }))
+
+    if "artist_similarity" in intent_names and "artist" in ents:
+        for a in ents["artist"][n_song_artist_pairs:]:
+            calls.append(("artist_similarity", {"artist": a}))
+
+    if "text_search" in intent_names:
+        desc = ents.get("description", [None])[0]
+        if desc is None:
+            desc = text
+        args = {"description": desc}
+        if "tempo" in ents:
+            t = _tempo_filter_token(ents["tempo"][0])
+            if t: args["tempo_filter"] = t
+        if "energy" in ents:
+            e = _energy_filter_token(ents["energy"][0])
+            if e: args["energy_filter"] = e
+        calls.append(("text_search", args))
+
+    if "song_alchemy" in intent_names:
+        add_items, sub_items = [], []
+        for a in ents.get("add_artist", []):
+            add_items.append({"type": "artist", "id": a})
+        if not add_items and len(ents.get("artist", [])) >= 2:
+            for a in ents["artist"]:
+                add_items.append({"type": "artist", "id": a})
+        for a in ents.get("subtract_artist", []):
+            sub_items.append({"type": "artist", "id": a})
+        for g in ents.get("subtract_genre", []):
+            sub_items.append({"type": "genre", "id": g})
+        if add_items:
+            args = {"add_items": add_items}
+            if sub_items: args["subtract_items"] = sub_items
+            calls.append(("song_alchemy", args))
+
+    if "ai_brainstorm" in intent_names:
+        calls.append(("ai_brainstorm", {"user_request": text}))
+
+    if "lyrics_search" in intent_names:
+        topics = ents.get("lyrics_query", [])
+        query = " and ".join(topics) if topics else text
+        calls.append(("lyrics_search", {"query": query}))
+
+    if "search_database" in intent_names:
+        args: dict = {}
+        if "genre" in ents: args["genres"] = [g.lower() for g in ents["genre"]]
+        if "mood" in ents: args["moods"] = [m.lower() for m in ents["mood"]]
+        if "key" in ents: args["key"] = ents["key"][0]
+        if "scale" in ents: args["scale"] = ents["scale"][0].lower()
+        if "album" in ents: args["album"] = ents["album"][0]
+        if "year" in ents:
+            years = []
+            for y in ents["year"]:
+                m = re.search(r"\d{4}", y)
+                if m: years.append(int(m.group()))
+            if years:
+                args["year_min"] = min(years)
+                args["year_max"] = max(years)
+        if "time_range" in ents:
+            args.update(_normalize_time_range(ents["time_range"][0]))
+        if "tempo" in ents: args.update(_normalize_tempo(ents["tempo"][0]))
+        if "energy" in ents: args.update(_normalize_energy(ents["energy"][0]))
+        if "rating" in ents: args.update(_normalize_rating(ents["rating"][0]))
+        if "artist" in ents and "artist_similarity" not in intent_names:
+            args["artist"] = ents["artist"][0]
+        if args:
+            calls.append(("search_database", args))
+
+    return calls
+
+
+def _tempo_filter_token(value: str) -> str | None:
+    v = value.lower()
+    bpm = re.search(r"(\d{2,3})", v)
+    if "bpm" in v and bpm:
+        n = int(bpm.group(1))
+        if n < 90:  return "slow"
+        if n < 130: return "medium"
+        return "fast"
+    if "slow" in v: return "slow"
+    if "fast" in v: return "fast"
+    if "medium" in v or "mid-tempo" in v: return "medium"
+    return None
+
+
+def _energy_filter_token(value: str) -> str | None:
+    v = value.lower()
+    if "low" in v or "calm" in v: return "low"
+    if "high" in v: return "high"
+    if "medium" in v: return "medium"
+    return None
+
+
+def _normalize_time_range(value: str) -> dict:
+    from datetime import datetime
+    v = value.lower()
+    now = datetime.now().year
+    m = re.search(r"last\s+(\d+)\s+year", v)
+    if m:
+        return {"year_min": now - int(m.group(1)), "year_max": now}
+    decade_map = {
+        "90s": (1990, 1999), "80s": (1980, 1989), "70s": (1970, 1979),
+        "60s": (1960, 1969), "50s": (1950, 1959), "2000s": (2000, 2009),
+        "2010s": (2010, 2019), "2020s": (2020, 2029),
+    }
+    for tag, (lo, hi) in decade_map.items():
+        if tag in v:
+            return {"year_min": lo, "year_max": hi}
+    if "last year" in v: return {"year_min": now - 1, "year_max": now - 1}
+    if "this year" in v: return {"year_min": now, "year_max": now}
+    if "recent" in v:    return {"year_min": now - 3, "year_max": now}
+    if "mozart era" in v: return {"year_min": 1750, "year_max": 1820}
+    return {}
+
+
+def _normalize_rating(value: str) -> dict:
+    digit = re.search(r"\d", value)
+    if digit:
+        return {"min_rating": int(digit.group())}
+    if "favorite" in value.lower() or "favourite" in value.lower():
+        return {"min_rating": 4}
+    return {}
+
+
+def _normalize_tempo(value: str) -> dict:
+    v = value.lower()
+    bpm = re.search(r"(\d{2,3})\s*bpm", v)
+    if bpm:
+        n = int(bpm.group(1))
+        return {"tempo_min": max(40, n - 10), "tempo_max": min(220, n + 10)}
+    if "slow" in v:                            return {"tempo_min": 40,  "tempo_max": 90}
+    if "medium" in v or "mid-tempo" in v:      return {"tempo_min": 90,  "tempo_max": 130}
+    if "fast" in v:                            return {"tempo_min": 130, "tempo_max": 200}
+    return {}
+
+
+def _normalize_energy(value: str) -> dict:
+    v = value.lower()
+    if "low" in v or "calm" in v: return {"energy_min": 0.0,  "energy_max": 0.35}
+    if "medium" in v:             return {"energy_min": 0.35, "energy_max": 0.7}
+    if "high" in v:               return {"energy_min": 0.7,  "energy_max": 1.0}
+    return {}
+
+
 def route_query(text: str) -> tuple[list, float]:
     """
-    Route a user query through JointBERT.
+    Route a user query through JointBERT with production mood normalization.
 
     Args:
         text: User query (will be sanitized)
 
     Returns:
         (tool_calls, max_confidence) where:
-        - tool_calls: list of (tool_name, tool_args) tuples from Router.dispatch()
+        - tool_calls: list of (tool_name, tool_args) tuples with normalized moods
         - max_confidence: max probability across all intents (0.0 if no intents)
     """
     router = get_router()
@@ -96,7 +280,7 @@ def route_query(text: str) -> tuple[list, float]:
     try:
         intents, entities, intent_probs = router.predict(clean_text)
         max_confidence = float(max(intent_probs)) if len(intent_probs) > 0 else 0.0
-        tool_calls = dispatch(clean_text, intents, entities)
+        tool_calls = _dispatch_production(clean_text, intents, entities)
         return tool_calls, max_confidence
     except Exception as e:
         print(f"[joinbert_client] JointBERT prediction failed: {e}")
