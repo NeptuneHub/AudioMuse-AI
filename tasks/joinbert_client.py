@@ -171,7 +171,7 @@ def _dispatch_production(text: str, intents: list, entities: list) -> list:
     if "lyrics_search" in intent_names:
         topics = ents.get("lyrics_query", [])
         query = " and ".join(topics) if topics else text
-        calls.append(("lyrics_search", {"query": query}))
+        calls.append(("lyrics_search", {"description": query}))
 
     if "search_database" in intent_names:
         args: dict = {}
