@@ -103,6 +103,15 @@ def _run_restore_runner(dump_file, log_file):
             log.write("Continuing restore despite local Flask stop failure.\n")
             log.flush()
 
+        try:
+            from tasks.mcp_helper import _ensure_ai_chat_db_user
+            _ensure_ai_chat_db_user()
+            log.write("Ensured AI chat DB role exists before restore.\n")
+            log.flush()
+        except Exception as exc:
+            log.write(f"Could not ensure AI chat DB role exists: {exc}; continuing anyway.\n")
+            log.flush()
+
         restore_cmd = _pg_cmd(
             'psql',
             '-d', POSTGRES_DB,
@@ -234,7 +243,7 @@ def create_backup():
     filename = f"audiomuse_backup_{timestamp}.sql"
     filepath = os.path.join(BACKUP_DIR, filename)
 
-    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '-d', POSTGRES_DB)
+    cmd = _pg_cmd('pg_dump', '--clean', '--if-exists', '--no-owner', '--no-acl', '-d', POSTGRES_DB)
 
     try:
         with open(filepath, 'w') as f:
