@@ -16,10 +16,6 @@ Public entry points:
         Returns ``(is_valid, error_message)``.
     generate_text(prompt, ai_config, *, skip_delay=False)
         Single-prompt freeform text completion.
-    call_with_tools(user_message, tools, ai_config, *, system_prompt=None,
-                    library_context=None, log_messages=None)
-        Provider-native (or prompt-based for Ollama) tool calling. Returns
-        ``{"tool_calls": [...]}`` or ``{"error": "..."}``.
     clean_playlist_name(name)
         Sanitize an AI-generated playlist name to standard ASCII.
     get_ai_playlist_name(prompt_template, song_list, other_feature_scores_dict, ai_config)
@@ -41,7 +37,6 @@ from tasks import (
     ai_api_ollama,
     ai_api_openai,
 )
-from tasks.ai_prompts import build_mcp_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -198,81 +193,6 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False) -> 
 
     # Unreachable: validate_ai_config already rejects unknown providers.
     return f"Error: Unsupported provider {provider!r}"
-
-
-def call_with_tools(
-    user_message: str,
-    tools: List[Dict],
-    ai_config: Dict,
-    *,
-    system_prompt: Optional[str] = None,
-    library_context: Optional[Dict] = None,
-    log_messages: Optional[List[str]] = None,
-) -> Dict:
-    """Call AI with tool definitions and return its tool calls.
-
-    If ``system_prompt`` is None, build the canonical MCP system prompt from
-    ``tasks.ai_prompts.build_mcp_system_prompt(tools, library_context)``.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on
-    failure.
-    """
-    if log_messages is None:
-        log_messages = []
-
-    valid, err = validate_ai_config(ai_config)
-    if not valid:
-        return {"error": err}
-
-    provider = (ai_config.get("provider") or "NONE").upper()
-
-    if provider == "NONE":
-        return {"error": "AI provider is NONE"}
-
-    if system_prompt is None:
-        system_prompt = build_mcp_system_prompt(tools, library_context)
-
-    if provider == "OLLAMA":
-        # Ollama builds its own JSON-output prompt internally; system_prompt is
-        # ignored because the Ollama prompt contains the system text already.
-        return ai_api_ollama.call_with_tools(
-            ai_config["ollama_url"],
-            ai_config["ollama_model"],
-            user_message,
-            tools,
-            log_messages,
-            library_context,
-        )
-    if provider == "OPENAI":
-        return ai_api_openai.call_with_tools(
-            ai_config["openai_url"],
-            ai_config["openai_model"],
-            ai_config["openai_key"],
-            system_prompt,
-            user_message,
-            tools,
-            log_messages,
-        )
-    if provider == "GEMINI":
-        return ai_api_gemini.call_with_tools(
-            ai_config["gemini_key"],
-            ai_config["gemini_model"],
-            system_prompt,
-            user_message,
-            tools,
-            log_messages,
-        )
-    if provider == "MISTRAL":
-        return ai_api_mistral.call_with_tools(
-            ai_config["mistral_key"],
-            ai_config["mistral_model"],
-            system_prompt,
-            user_message,
-            tools,
-            log_messages,
-        )
-
-    return {"error": f"Unsupported provider {provider!r}"}
 
 
 # ---------------------------------------------------------------------------

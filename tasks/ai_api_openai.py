@@ -1,8 +1,7 @@
 """OpenAI-compatible transport (OpenAI, OpenRouter, anything speaking /v1/chat/completions).
 
-Two public functions:
+Public function:
     generate_text(...)   -- single-prompt streaming completion (used for playlist naming, brainstorm, etc.)
-    call_with_tools(...) -- non-streaming chat with tool/function calling
 
 These transports only handle HTTP plumbing. All business prompts come from
 `tasks/ai_prompts.py`.
@@ -239,93 +238,3 @@ def generate_text(
             return "Error: AI service is currently unavailable."
 
     return "Error: Max retries exceeded."
-
-
-def call_with_tools(
-    server_url: str,
-    model_name: str,
-    api_key: str,
-    system_prompt: str,
-    user_message: str,
-    tools: List[Dict],
-    log_messages: List[str],
-) -> Dict:
-    """Call an OpenAI-compatible /chat/completions endpoint with native tool calling.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on failure.
-    """
-    try:
-        functions = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["inputSchema"],
-                },
-            }
-            for tool in tools
-        ]
-
-        headers = _build_openai_headers(api_key, server_url)
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "tools": functions,
-            "tool_choice": "required",
-        }
-
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        log_messages.append(f"Using timeout: {timeout} seconds for OpenAI request")
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(server_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-
-        tool_calls = []
-        if "choices" in result and result["choices"]:
-            message = result["choices"][0].get("message", {})
-            if "tool_calls" in message:
-                for tc in message["tool_calls"]:
-                    if tc["type"] == "function":
-                        tool_calls.append(
-                            {
-                                "name": tc["function"]["name"],
-                                "arguments": json.loads(tc["function"]["arguments"]),
-                            }
-                        )
-
-        if not tool_calls:
-            text_response = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            log_messages.append(
-                f"OpenAI did not call tools. Response: {text_response[:200]}"
-            )
-            return {"error": "AI did not call any tools", "ai_response": text_response}
-
-        log_messages.append(f"OpenAI called {len(tool_calls)} tools")
-        return {"tool_calls": tool_calls}
-
-    except httpx.ReadTimeout:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"OpenAI request timed out after {timeout} seconds")
-        log_messages.append(
-            f"\u23f1\ufe0f Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable."
-        )
-        return {
-            "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
-        }
-    except httpx.TimeoutException as e:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"OpenAI request timed out: {str(e)}")
-        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds: {str(e)}")
-        return {
-            "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
-        }
-    except Exception as e:
-        logger.exception("Error calling OpenAI with tools")
-        return {"error": f"OpenAI error: {str(e)}"}

@@ -274,6 +274,12 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 # For CPU-only Ollama instances or large models that take longer to generate responses, consider setting to 300-600 seconds.
 # Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
+
+# --- JointBERT Router Configuration ---
+# Confidence threshold for JointBERT intent classification. If below this, fallback to AI brainstorming.
+# Range: 0.0-1.0. Default 0.7 means queries with max intent confidence below 70% trigger AI fallback.
+JOINBERT_CONFIDENCE_THRESHOLD = float(os.environ.get("JOINBERT_CONFIDENCE_THRESHOLD", "0.7"))
+
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # Construct DATABASE_URL from individual components for better security in K8s

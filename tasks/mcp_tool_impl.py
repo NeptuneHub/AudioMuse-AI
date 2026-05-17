@@ -865,3 +865,17 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
         return {"songs": found_songs, "ai_suggestions": len(song_list), "message": "\n".join(log_messages)}
     finally:
         db_conn.close()
+
+
+def _lyrics_search_sync(description: str, get_songs: int = 200) -> dict:
+    """
+    Search songs by lyrics query using the E5 embedding + Voyager index.
+    This mirrors the frontend "search by text" lyrics feature.
+    """
+    from tasks.lyrics_manager import search_by_text
+
+    try:
+        results = search_by_text(description, limit=get_songs)
+        return {"songs": results, "message": f"Lyrics search: '{description}' → {len(results)} songs"}
+    except Exception as e:
+        return {"error": f"Lyrics search failed: {str(e)}"}

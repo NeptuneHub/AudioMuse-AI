@@ -462,6 +462,78 @@ RUN set -eux; \
     echo "✓ e5-base-v2 ONNX ready ($e5_onnx_path + $e5_tok_dir)"; \
     du -sh "$e5_onnx_path" "$e5_tok_dir"
 
+# Download JointBERT trained model and DistilBERT tokenizer cache
+# JointBERT is a task-specific NLP router (intent classification + entity extraction)
+# used by the instant playlist feature to route user queries directly to tools.
+# Tarball ships `joinbert/` directory with joint_bert_best.onnx + labels.json.
+# DistilBERT tokenizer cache is needed to avoid network downloads at runtime.
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    echo "Downloading JointBERT trained model..."; \
+    \
+    # Download JointBERT model \
+    joinbert_dest="/tmp/joinbert_trained_model.tar.gz"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$joinbert_dest" "$base_url/joinbert_trained_model.tar.gz"; then \
+            echo "✓ JointBERT model downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for JointBERT model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download JointBERT model"; exit 1; \
+    fi; \
+    \
+    # Extract to /app/joinbert (merges with existing Python code) \
+    mkdir -p /app/joinbert; \
+    tar -xzf "$joinbert_dest" -C /app; \
+    rm -f "$joinbert_dest"; \
+    \
+    # Verify JointBERT files \
+    if [ ! -f "/app/joinbert/joint_bert_best.onnx" ] || [ ! -f "/app/joinbert/labels.json" ]; then \
+        echo "ERROR: JointBERT files missing after extraction"; \
+        ls -laR /app/joinbert 2>/dev/null || echo "joinbert directory not found"; \
+        exit 1; \
+    fi; \
+    echo "✓ JointBERT model ready"; \
+    ls -lh /app/joinbert/*.{onnx,json} 2>/dev/null || true; \
+    \
+    # Download DistilBERT tokenizer cache \
+    distilbert_dest="/tmp/distilbert_cache.tar.gz"; \
+    echo "Downloading DistilBERT tokenizer cache..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$distilbert_dest" "$base_url/distilbert_cache.tar.gz"; then \
+            echo "✓ DistilBERT cache downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for DistilBERT cache failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download DistilBERT cache"; exit 1; \
+    fi; \
+    \
+    # Extract to HuggingFace cache directory \
+    mkdir -p /app/.cache/huggingface/hub; \
+    tar -xzf "$distilbert_dest" -C /app/.cache/huggingface/hub; \
+    rm -f "$distilbert_dest"; \
+    \
+    # Verify DistilBERT cache \
+    if [ ! -d "/app/.cache/huggingface/hub/models--distilbert-base-uncased" ]; then \
+        echo "ERROR: DistilBERT tokenizer cache missing after extraction"; \
+        ls -laR /app/.cache/huggingface 2>/dev/null | head -30; \
+        exit 1; \
+    fi; \
+    echo "✓ DistilBERT tokenizer cache ready"; \
+    du -sh /app/.cache/huggingface/hub/models--distilbert-base-uncased
+
 # Download opus-mt-mul-en ONNX bundle (~520 MB) — multilingual-to-English
 # Marian translator pre-exported by this project (no official ONNX export
 # exists upstream for opus-mt-mul-en). The tarball ships

@@ -338,6 +338,61 @@ RUN set -eux; \
     du -sh "$e5_onnx_path" "$e5_tok_dir"
 
 RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    echo "Downloading JointBERT trained model and DistilBERT tokenizer cache..."; \
+    \
+    # Download JointBERT model \
+    joinbert_dest="/tmp/joinbert_trained_model.tar.gz"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$joinbert_dest" "$base_url/joinbert_trained_model.tar.gz"; then \
+            echo "✓ JointBERT model downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for JointBERT model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download JointBERT model"; exit 1; \
+    fi; \
+    mkdir -p /app/joinbert; \
+    tar -xzf "$joinbert_dest" -C /app; \
+    rm -f "$joinbert_dest"; \
+    if [ ! -f "/app/joinbert/joint_bert_best.onnx" ] || [ ! -f "/app/joinbert/labels.json" ]; then \
+        echo "ERROR: JointBERT files missing after extraction"; \
+        exit 1; \
+    fi; \
+    echo "✓ JointBERT model ready"; \
+    \
+    # Download DistilBERT tokenizer cache \
+    distilbert_dest="/tmp/distilbert_cache.tar.gz"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$distilbert_dest" "$base_url/distilbert_cache.tar.gz"; then \
+            echo "✓ DistilBERT cache downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for DistilBERT cache failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download DistilBERT cache"; exit 1; \
+    fi; \
+    mkdir -p /app/.cache/huggingface/hub; \
+    tar -xzf "$distilbert_dest" -C /app/.cache/huggingface/hub; \
+    rm -f "$distilbert_dest"; \
+    if [ ! -d "/app/.cache/huggingface/hub/models--distilbert-base-uncased" ]; then \
+        echo "ERROR: DistilBERT tokenizer cache missing after extraction"; \
+        exit 1; \
+    fi; \
+    echo "✓ DistilBERT tokenizer cache ready"; \
+    du -sh /app/.cache/huggingface/hub/models--distilbert-base-uncased
+
+RUN set -eux; \
     marian_dir="/app/model/opus-mt-mul-en-onnx"; \
     marian_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_marian.tar.gz"; \
     marian_dest="/tmp/lyrics_model_marian.tar.gz"; \
