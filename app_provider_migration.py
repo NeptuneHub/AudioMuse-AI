@@ -1333,8 +1333,8 @@ def dry_run_report(session_id):
       - Provider Migration
     summary: CSV showing the planned old→new mapping for every score row (orphans have blank new-side cells).
     description: |
-      Columns: old_id, old_artist, old_album, old_track, old_path, new_id,
-      new_artist, new_album, new_track, new_path, match_source
+      Columns: old_id, old_artist, old_album, old_album_artist, old_track, old_path, new_id,
+      new_artist, new_album, new_album_artist, new_track, new_path, match_source
       (`auto`/`manual`/`orphan`).
     parameters:
       - name: session_id
@@ -1374,8 +1374,8 @@ def dry_run_report(session_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
-        'old_id', 'old_artist', 'old_album', 'old_track', 'old_path',
-        'new_id', 'new_artist', 'new_album', 'new_track', 'new_path',
+        'old_id', 'old_artist', 'old_album', 'old_album_artist', 'old_track', 'old_path',
+        'new_id', 'new_artist', 'new_album', 'new_album_artist', 'new_track', 'new_path',
         'match_source',
     ])
     for old in old_rows:
@@ -1390,13 +1390,15 @@ def dry_run_report(session_id):
             source = 'orphan'
         writer.writerow([
             old_id,
-            old.get('album_artist') or old.get('author') or '',
+            old.get('author') or '',
             old.get('album') or '',
+            old.get('album_artist') or '',
             old.get('title') or '',
             old.get('file_path') or '',
             new_id or '',
             (meta or {}).get('artist') or '',
             (meta or {}).get('album') or '',
+            (meta or {}).get('album_artist') or '',
             (meta or {}).get('title') or '',
             (meta or {}).get('path') or '',
             source,

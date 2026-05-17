@@ -502,7 +502,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
             cur.execute(
                 "INSERT INTO migration_new_meta "
                 "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     _sanitize_text(new_id),
                     _sanitize_text(meta.get('path')),
