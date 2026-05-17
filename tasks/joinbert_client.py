@@ -12,9 +12,10 @@ JOINBERT_DIR = (HERE.parent / "joinbert").resolve()
 sys.path.insert(0, str(JOINBERT_DIR))
 
 try:
-    from inference import Router
+    from inference import Router, dispatch
 except ImportError:
     Router = None
+    dispatch = None
 
 
 _router: Optional[Router] = None
@@ -82,7 +83,7 @@ def route_query(text: str) -> tuple[list, float]:
     try:
         intents, entities, intent_probs = router.predict(clean_text)
         max_confidence = float(max(intent_probs)) if len(intent_probs) > 0 else 0.0
-        tool_calls = router.dispatch(intents, entities)
+        tool_calls = dispatch(clean_text, intents, entities)
         return tool_calls, max_confidence
     except Exception as e:
         print(f"[joinbert_client] JointBERT prediction failed: {e}")
