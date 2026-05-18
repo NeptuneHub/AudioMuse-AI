@@ -1492,7 +1492,7 @@ def matched_albums(session_id):
         tally = {}  # (new_artist, new_album) -> count
         for new_id in g['new_ids']:
             meta = new_meta.get(new_id) or {}
-            tally_key = (meta.get('artist') or '', meta.get('album') or '')
+            tally_key = (meta.get('album_artist') or meta.get('artist') or '', meta.get('album') or '')
             tally[tally_key] = tally.get(tally_key, 0) + 1
         if tally:
             (new_artist, new_album), _ = max(tally.items(), key=lambda kv: kv[1])
