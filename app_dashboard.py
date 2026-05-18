@@ -15,6 +15,7 @@ from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
 from app_helper import get_db, redis_conn
+from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
@@ -22,6 +23,16 @@ dashboard_bp = Blueprint('dashboard_bp', __name__)
 
 @dashboard_bp.route('/')
 def dashboard_page():
+    """
+    Dashboard home page.
+    ---
+    tags:
+      - Dashboard
+    summary: HTML landing page rendering the AudioMuse-AI dashboard.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard')
 
 
@@ -143,7 +154,7 @@ def _collect_task_metrics(cur):
                     'status': r['status'],
                     'duration_seconds': float(r['duration_seconds']) if r['duration_seconds'] is not None else None,
                     'note': r['note'] or '',
-                    'timestamp': r['recorded_at'].isoformat() if r['recorded_at'] else None,
+                    'timestamp': to_local_str(r['recorded_at']),
                 })
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
@@ -291,7 +302,7 @@ def _collect_cron(cur):
             last_run_iso = None
             try:
                 if r['last_run']:
-                    last_run_iso = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(r['last_run'])))
+                    last_run_iso = time.strftime(LOCAL_TZ_FMT, time.localtime(float(r['last_run'])))
             except Exception:
                 pass
             rows.append({
@@ -310,11 +321,41 @@ def _collect_cron(cur):
 
 @dashboard_bp.route('/api/dashboard/summary', methods=['GET'])
 def dashboard_summary():
-    """Return the payload rendered by templates/dashboard.html.
-
-    Heavy library aggregates (``content``) are read from the precomputed
-    ``dashboard_stats`` singleton row and NOT recomputed on each request.
-    Everything else (workers, recent tasks, cron) is cheap and stays live.
+    """
+    Dashboard summary payload.
+    ---
+    tags:
+      - Dashboard
+    summary: Aggregated dashboard data — library stats, worker status, recent tasks, cron entries.
+    description: |
+      Heavy library aggregates (the `content` block) are read from the
+      precomputed `dashboard_stats` singleton row and NOT recomputed on each
+      request. Everything else (workers, recent tasks, cron) is cheap and
+      stays live.
+    responses:
+      200:
+        description: Dashboard payload.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                generated_at:
+                  type: string
+                stats_updated_at:
+                  type: string
+                workers:
+                  type: array
+                  items:
+                    type: object
+                content:
+                  type: object
+                recent:
+                  type: object
+                cron:
+                  type: array
+                  items:
+                    type: object
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -328,7 +369,7 @@ def dashboard_summary():
     workers = _collect_workers()
 
     return jsonify({
-        'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'generated_at': time.strftime(LOCAL_TZ_FMT),
         'stats_updated_at': stats_updated_at,
         'workers': workers,
         'recent_tasks': recent,
@@ -344,13 +385,8 @@ def _load_dashboard_stats(cur):
         row = cur.fetchone()
         if not row:
             return {}, None
-        updated_at = row['updated_at']
-        updated_iso = (
-            updated_at.strftime('%Y-%m-%d %H:%M:%S')
-            if hasattr(updated_at, 'strftime') else (str(updated_at) if updated_at else None)
-        )
         content = row['content'] or {}
-        return content, updated_iso
+        return content, to_local_str(row['updated_at'])
     except Exception as e:
         logger.debug(f"dashboard: load_dashboard_stats failed: {e}")
         _safe_rollback(cur)
@@ -379,11 +415,11 @@ def refresh_dashboard_stats(app):
             try:
                 try:
                     cur2.execute(
-                        "INSERT INTO dashboard_stats (id, updated_at, content) "
-                        "VALUES (1, NOW(), %s::jsonb) "
-                        "ON CONFLICT (id) DO UPDATE SET "
-                        "updated_at = EXCLUDED.updated_at, "
-                        "content = EXCLUDED.content",
+                        f"INSERT INTO dashboard_stats (id, updated_at, content) "
+                        f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb) "
+                        f"ON CONFLICT (id) DO UPDATE SET "
+                        f"updated_at = EXCLUDED.updated_at, "
+                        f"content = EXCLUDED.content",
                         (json.dumps(content),),
                     )
                 except psycopg2.Error as e:
@@ -392,8 +428,8 @@ def refresh_dashboard_stats(app):
                         _safe_rollback(cur2)
                         cur2.execute("DELETE FROM dashboard_stats WHERE id = 1")
                         cur2.execute(
-                            "INSERT INTO dashboard_stats (id, updated_at, content) "
-                            "VALUES (1, NOW(), %s::jsonb)",
+                            f"INSERT INTO dashboard_stats (id, updated_at, content) "
+                            f"VALUES (1, {UTC_NOW_SQL}, %s::jsonb)",
                             (json.dumps(content),),
                         )
                     else:

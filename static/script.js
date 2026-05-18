@@ -68,6 +68,21 @@ function formatRunningTime(totalSeconds) {
  * Switches between basic and advanced configuration views.
  * @param {('basic'|'advanced')} viewToShow The view to display.
  */
+const ALGORITHM_LABELS = {
+    kmeans: 'K-Means',
+    dbscan: 'DBSCAN',
+    gmm: 'GMM',
+    spectral: 'Spectral'
+};
+
+function updateBasicAlgorithmLabel() {
+    if (!basicAlgorithmDisplay || !clusterAlgorithmSelect) return;
+    const pElement = basicAlgorithmDisplay.querySelector('p');
+    if (!pElement) return;
+    const algo = String(clusterAlgorithmSelect.value || 'kmeans').toLowerCase();
+    pElement.textContent = ALGORITHM_LABELS[algo] || ALGORITHM_LABELS.kmeans;
+}
+
 function switchView(viewToShow) {
     if (viewToShow === 'basic') {
         basicViewBtn.classList.add('active');
@@ -82,11 +97,7 @@ function switchView(viewToShow) {
             }
         }
         if (clusterAlgorithmSelect) clusterAlgorithmSelect.classList.add('hidden'); // Hide algorithm dropdown in basic
-
-        // In basic view, we only support K-Means
-        if (clusterAlgorithmSelect) {
-            clusterAlgorithmSelect.value = 'kmeans';
-        }
+        updateBasicAlgorithmLabel();
 
     } else { // advanced view
         basicViewBtn.classList.remove('active');
@@ -123,7 +134,8 @@ function renderConfig(config) {
 
     // Clustering
     document.getElementById('config-top_n_playlists').value = config.top_n_playlists || 0;
-    clusterAlgorithmSelect.value = (config.cluster_algorithm === 'dbscan' || config.cluster_algorithm === 'gmm' || config.cluster_algorithm === 'spectral') ? config.cluster_algorithm : 'kmeans';
+    var rawAlgo = String(config.cluster_algorithm || '').trim().toLowerCase();
+    clusterAlgorithmSelect.value = (rawAlgo === 'dbscan' || rawAlgo === 'gmm' || rawAlgo === 'spectral') ? rawAlgo : 'kmeans';
     document.getElementById('config-max_distance').value = config.max_distance || 0;
     document.getElementById('config-max_songs_per_cluster').value = config.max_songs_per_cluster || 0;
     document.getElementById('config-pca_components_min').value = config.pca_components_min || 0;
@@ -166,6 +178,7 @@ function renderConfig(config) {
 
 function toggleClusteringParams() {
     const selectedAlgorithm = clusterAlgorithmSelect.value;
+    updateBasicAlgorithmLabel();
     dbscanParamsDiv.classList.add('hidden');
     gmmParamsDiv.classList.add('hidden');
     spectralParamsDiv.classList.add('hidden'); // Hide spectral params by default

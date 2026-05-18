@@ -1,6 +1,8 @@
 import json
 import re
 import types
+import ipaddress
+import socket
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from app import app, setup_manager
@@ -14,9 +16,72 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     for field in fields
 ]
 
+
+def _is_public_http_url(url):
+    """Return (True, None) if URL is safe for outbound HTTP(S), else (False, reason)."""
+    try:
+        parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
+    except Exception:
+        return False, "Invalid URL"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, "Only http and https URLs are supported"
+
+    host = parsed.hostname
+    if not host:
+        return False, "URL host is required"
+
+    # Block obvious local hostnames early.
+    host_l = host.strip().lower()
+    if host_l == "localhost" or host_l.endswith(".localhost") or host_l.endswith(".local"):
+        return False, "Local network hosts are not allowed"
+
+    try:
+        addrinfo = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except Exception:
+        return False, "Could not resolve host"
+
+    for entry in addrinfo:
+        ip_text = entry[4][0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False, "Resolved host to invalid IP"
+
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            return False, "Target host resolves to a non-public IP address"
+
+    return True, None
+
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
-SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD"}
+SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
+
+LYRICS_API_CONFIG_FIELDS = [
+    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_TIMEOUT',
+    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_TIMEOUT',
+]
+
+# Advanced fields whose value must be one of a fixed set. The wizard renders
+# these as <select> dropdowns and the save path normalizes the value to the
+# canonical casing so legacy free-text entries (e.g. "DBSCAN") are cleaned up.
+ENUM_FIELD_OPTIONS = {
+    'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
+    'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
+    'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
+    'VOYAGER_METRIC': ['angular', 'euclidean', 'dot'],
+}
 
 HIDDEN_ADVANCED_FIELDS = {
     'AI_CHAT_DB_USER_NAME',
@@ -41,28 +106,45 @@ HIDDEN_ADVANCED_FIELDS = {
     'CLAP_AUDIO_N_MELS',
     'CLAP_CATEGORY_WEIGHTS',
     'CLAP_CATEGORY_WEIGHTS_DEFAULT',
-    'CLAP_AUDIO_EMBEDDING_DIMENSION',
+    'CLAP_EMBEDDING_DIMENSION',
     'CLAP_OTHER_FEATURES_REDIS_KEY',
+    'EMBEDDING_DIMENSION',
     'INDEX_NAME',
+    'LYRICS_WHISPER_MODEL_DIR',
     'MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE',
+    'OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY',
+    'PROBE_TOP_PLAYED_LIMIT',
     'MOOD_CENTROIDS_FILE',
     'MPD_HOST',
     'MPD_MUSIC_DIRECTORY',
     'MPD_PASSWORD',
     'MPD_PORT',
-    'MULAN_CATEGORY_WEIGHTS',
-    'MULAN_CATEGORY_WEIGHTS_DEFAULT',
-    'MULAN_EMBEDDING_DIMENSION',
-    'MULAN_ENABLED',
-    'MULAN_MODEL_DIR',
-    'MULAN_TEXT_SEARCH_WARMUP_DURATION',
-    'MULAN_TOP_QUERIES_COUNT',
     'OTHER_FEATURE_LABELS',
     'STRATIFIED_GENRES',
     'TEMPO_MAX_BPM',
     'TEMPO_MIN_BPM',
     'USE_MINIBATCH_KMEANS',
     'JWT_SECRET',
+    'HEADERS',
+    'LYRICS_DEFAULT_MARIAN_PREFIX',
+    'LYRICS_DEFAULT_SAMPLE_RATE',
+    'LYRICS_DEFAULT_SEGMENT_DURATION',
+    'LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR',
+    'LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL',
+    'LYRICS_EMBEDDING_DIMENSION',
+    'LYRICS_INSTRUMENTAL_AXIS_FILL',
+    'LYRICS_INSTRUMENTAL_EMBEDDING',
+    'LYRICS_MARIAN_CACHE_DIR',
+    'LYRICS_MAX_SONGS_TO_ANALYZE',
+    'LYRICS_MODEL_DIR',
+    'LYRICS_SUPPORTED_AUDIO_EXTENSIONS',
+    # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
+    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_TIMEOUT',
+    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_TIMEOUT',
 }
 
 TEST_CONFIG_KEYS = set(BASIC_SERVER_FIELDS + ['MUSIC_LIBRARIES'])
@@ -77,6 +159,12 @@ def _normalize_config_value(key, value):
                 return True
             if normalized in ('0', 'false', 'no', 'off'):
                 return False
+        if key in ENUM_FIELD_OPTIONS:
+            stripped = value.strip()
+            for option in ENUM_FIELD_OPTIONS[key]:
+                if stripped.lower() == option.lower():
+                    return option
+            return stripped
     return value
 
 
@@ -129,6 +217,22 @@ def _test_media_server_connection(filtered_values):
         _restore_config(original_config)
 
 
+def _list_provider_libraries(filtered_values):
+    """List the music libraries a provider exposes, given in-flight wizard values.
+
+    Merges form values with the currently stored config (same fallback logic as
+    the test-connection flow, so secret placeholders use the saved value), then
+    calls ``mediaserver.list_libraries()``. Returns ``{libraries, unsupported}``.
+    """
+    test_config = _merge_test_config(filtered_values)
+    original_config = _patch_config_for_test(test_config)
+    try:
+        media_type = (test_config.get('MEDIASERVER_TYPE') or '').strip().lower() or 'jellyfin'
+        return mediaserver.list_libraries(provider_type=media_type)
+    finally:
+        _restore_config(original_config)
+
+
 def should_show_advanced(name):
     if name in HIDDEN_ADVANCED_FIELDS:
         return False
@@ -146,6 +250,9 @@ def _get_allowed_setup_keys():
     for f in setup_manager.get_all_fields(config):
         if f['name'] in BASIC_FIELDS or should_show_advanced(f['name']):
             allowed_keys.add(f['name'])
+    # Always allow the lyrics API config fields (hidden from advanced section
+    # but still user-editable via the dedicated Lyrics API section).
+    allowed_keys.update(LYRICS_API_CONFIG_FIELDS)
     return allowed_keys
 
 
@@ -164,10 +271,55 @@ def _has_admin_user():
 
 @app.route('/setup')
 def setup_page():
-    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup')
+    """
+    Setup wizard UI page.
+    ---
+    tags:
+      - Setup
+    summary: HTML setup wizard for first-time configuration (server, lyrics, AI provider, etc.).
+    responses:
+      200:
+        description: HTML page rendered.
+    """
+    from config import LYRICS_ENABLED
+    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
+                           lyrics_enabled=LYRICS_ENABLED)
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
+    """
+    Setup wizard API.
+    ---
+    tags:
+      - Setup
+    summary: GET returns the configurable field catalog; POST persists wizard values to the DB.
+    description: |
+      The GET response separates fields into `basic` and `advanced` lists,
+      hides values for inactive media-server types, and masks any field whose
+      name is in SECRET_FIELDS or ends with `_API_KEY`.
+
+      The POST body should contain `{key: value}` pairs for the keys returned
+      by GET. Empty strings on secret fields keep the previously stored value;
+      a literal `********` placeholder also preserves the stored value.
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    responses:
+      200:
+        description: Field catalog (GET) or save acknowledgement (POST).
+        content:
+          application/json:
+            schema:
+              type: object
+      400:
+        description: Validation error in submitted values.
+      500:
+        description: Database error while loading or saving config.
+    """
     if request.method == 'GET':
         all_fields = setup_manager.get_all_fields(config)
         # Determine which media server fields belong to non-active types
@@ -195,14 +347,36 @@ def setup_api():
                 f['has_value'] = False
                 f['overridden'] = False
 
+            if f['name'] in ENUM_FIELD_OPTIONS:
+                f['options'] = list(ENUM_FIELD_OPTIONS[f['name']])
+
             if f['name'] in BASIC_FIELDS:
                 basic_fields.append(f)
+            elif f['name'] == 'MUSIC_LIBRARIES':
+                # Rendered as a checkbox list next to the provider section,
+                # not as a free-text advanced field.
+                continue
             elif should_show_advanced(f['name']):
                 advanced_fields.append(f)
+
+        music_libraries_value = getattr(config, 'MUSIC_LIBRARIES', '') or ''
+
+        # Build lyrics API field dict: {name: {value, has_value, secret}}
+        lyrics_api_raw = setup_manager.get_raw_overrides(ensure_table=False)
+        lyrics_api_data = {}
+        for fname in LYRICS_API_CONFIG_FIELDS:
+            raw_val = lyrics_api_raw.get(fname) or str(getattr(config, fname, '') or '')
+            is_secret = fname in SECRET_FIELDS
+            if is_secret:
+                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': '', 'secret': True}
+            else:
+                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': raw_val, 'secret': False}
 
         return jsonify({
             'basic_fields': basic_fields,
             'advanced_fields': advanced_fields,
+            'music_libraries': music_libraries_value,
+            'lyrics_api_fields': lyrics_api_data,
             'setup_saved': not check_setup_needed(),
             'has_admin_user': _has_admin_user(),
         })
@@ -227,6 +401,16 @@ def setup_api():
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
                 return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+
+        # Validate any Lyrics API URL templates before persisting them.
+        for slot in (1, 2):
+            url_key = f'LYRICS_API_{slot}_URL_TEMPLATE'
+            if url_key in filtered_values:
+                url_val = str(filtered_values[url_key] or '').strip()
+                if url_val:
+                    is_safe, reason = _is_public_http_url(url_val)
+                    if not is_safe:
+                        return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
 
     try:
         if is_test_connection:
@@ -357,3 +541,256 @@ def setup_api():
     if config.AUTH_ENABLED:
         response.delete_cookie('audiomuse_jwt', samesite='Strict', path='/')
     return response
+
+
+@app.route('/api/setup/providers/libraries', methods=['POST'])
+def setup_provider_libraries_api():
+    """
+    List a media-server provider's libraries.
+    ---
+    tags:
+      - Setup
+    summary: Probe the configured media server with the in-flight form values and list its libraries.
+    description: |
+      Uses the in-flight form values (same shape as the test-connection
+      endpoint) so the wizard can populate the library checkbox list as soon
+      as the user has typed credentials. Secret placeholders (`********`)
+      fall back to the currently stored value.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              config:
+                type: object
+                additionalProperties: true
+                description: Subset of UPPERCASE setup keys (server URL, token, etc.).
+    responses:
+      200:
+        description: Library list (or `unsupported=true` for media servers that don't expose libraries).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                libraries:
+                  type: array
+                  items:
+                    type: object
+                unsupported:
+                  type: boolean
+      400:
+        description: Missing config payload.
+      500:
+        description: Provider probe failed.
+    """
+    data = request.get_json(silent=True) or {}
+    config_values = data.get('config') or {}
+    if not isinstance(config_values, dict):
+        return jsonify({'error': 'Missing config data'}), 400
+
+    allowed_setup_keys = _get_allowed_setup_keys()
+    filtered_values = {}
+    for key, value in config_values.items():
+        if not isinstance(key, str) or not key.isupper() or key not in allowed_setup_keys:
+            continue
+        filtered_values[key] = _normalize_config_value(key, value)
+
+    try:
+        result = _list_provider_libraries(filtered_values)
+    except Exception as exc:
+        app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
+        return jsonify({'error': 'Unable to list libraries. Check the server log for details.'}), 500
+
+    return jsonify({
+        'libraries': result.get('libraries', []),
+        'unsupported': bool(result.get('unsupported', False)),
+    }), 200
+
+
+@app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
+def setup_lyrics_api_analyze():
+    """
+    Probe a third-party lyrics API URL.
+    ---
+    tags:
+      - Setup
+    summary: Call a sample lyrics-API URL, detect its query params, and return the JSON response so the wizard can map fields.
+    description: |
+      SSRF-guarded: only `http`/`https` URLs targeting public hosts are
+      allowed. The endpoint returns auto-detected guesses for the artist,
+      title, and api-key parameter names plus the parsed response body so
+      the user can pick the lyrics field.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [example_url]
+            properties:
+              example_url:
+                type: string
+                example: "https://api.example.com/lyrics?artist=RHCP&track=By+the+Way"
+    responses:
+      200:
+        description: Parsed sample response and detected parameter roles.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                guesses:
+                  type: object
+                  properties:
+                    artist_param:
+                      type: string
+                    title_param:
+                      type: string
+                    apikey_param:
+                      type: string
+                    lyrics_field:
+                      type: string
+                json_obj:
+                  type: object
+                raw_json:
+                  type: string
+                error:
+                  type: string
+      400:
+        description: Missing/invalid URL or SSRF guard rejected the destination.
+      500:
+        description: Network error or non-JSON response.
+    """
+    import urllib.parse
+    import urllib.request
+    import json as _json
+    import ssl
+
+    data = request.get_json(silent=True) or {}
+    example_url = str(data.get('example_url') or '').strip()
+    if not example_url:
+        return jsonify({'error': 'example_url is required'}), 400
+
+    # Validate scheme and destination safety (SSRF guard)
+    try:
+        parsed_check = urllib.parse.urlparse(example_url)
+    except Exception:
+        return jsonify({'error': 'Invalid URL'}), 400
+    if parsed_check.scheme not in ('http', 'https'):
+        return jsonify({'error': 'Only http and https URLs are supported'}), 400
+    is_safe_url, unsafe_reason = _is_public_http_url(example_url)
+    if not is_safe_url:
+        return jsonify({'error': unsafe_reason}), 400
+
+    # Parse query params
+    try:
+        parsed = urllib.parse.urlparse(example_url)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        flat_params = {k: v[0] if len(v) == 1 else ','.join(v) for k, v in qs.items()}
+    except Exception:
+        return jsonify({'error': 'Invalid URL'}), 400
+
+    # Auto-detect likely roles for each query param
+    _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}
+    _TITLE  = {'track', 'track_name', 'trackname', 'title', 'song', 'song_name', 't', 'name', 's', 'q'}
+    _APIKEY = {'apikey', 'api_key', 'key', 'token', 'access_token', 'api_token', 'usertoken', 'user_token'}
+    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None,
+               'path_roles': {}}
+    for pname in flat_params:
+        plow = pname.lower().replace('-', '_')
+        if plow in _ARTIST and not guesses['artist_param']:
+            guesses['artist_param'] = pname
+        elif plow in _TITLE and not guesses['title_param']:
+            guesses['title_param'] = pname
+        elif plow in _APIKEY and not guesses['apikey_param']:
+            guesses['apikey_param'] = pname
+
+    # Detect dynamic path segments for path-based APIs. We surface every non-empty path segment
+    # except obvious API-prefix or verb tokens (e.g. ``api``, ``v1``, ``get``, ``search``,
+    # ``lyrics``) so short artist/title segments without spaces are still presented for role
+    # assignment in the wizard. If the query string already provides both artist and title, we
+    # don't need any path roles at all and drop the segments entirely to avoid confusing the
+    # user with stray dropdowns.
+    _PATH_PREFIX_RE = re.compile(r'^(?:api|v\d+|api[-_]?v\d+)$', re.IGNORECASE)
+    _PATH_VERBS = {
+        'get', 'search', 'lookup', 'find', 'fetch', 'query', 'lyrics', 'lyric', 'song', 'songs',
+        'track', 'tracks', 'artist', 'artists', 'album', 'albums', 'public', 'rest',
+    }
+    path_parts = [p for p in parsed.path.split('/') if p]
+    path_segments = []
+    if not (guesses['artist_param'] and guesses['title_param']):
+        for idx, part in enumerate(path_parts):
+            decoded = urllib.parse.unquote_plus(part)
+            if _PATH_PREFIX_RE.match(decoded):
+                continue
+            if decoded.lower() in _PATH_VERBS:
+                continue
+            path_segments.append({'index': idx, 'value': decoded})
+
+    # For path-based APIs without artist/title query params, the convention is
+    # ``/.../<artist>/<title>`` — guess the last two surfaced segments accordingly.
+    if not guesses['artist_param'] and not guesses['title_param'] and len(path_segments) >= 2:
+        guesses['path_roles'][path_segments[-2]['index']] = 'artist'
+        guesses['path_roles'][path_segments[-1]['index']] = 'title'
+    elif not guesses['title_param'] and not guesses['artist_param'] and len(path_segments) == 1:
+        guesses['path_roles'][path_segments[-1]['index']] = 'title'
+
+    # Call the URL
+    http_error = None
+    raw_text = None
+    json_obj = None
+    elapsed_ms = None
+    try:
+        req = urllib.request.Request(example_url, headers={'Accept': 'application/json'})
+        try:
+            ctx = ssl.create_default_context()
+        except Exception:
+            ctx = None
+        import time as _time
+        _t0 = _time.monotonic()
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            raw_bytes = resp.read(512 * 1024)
+        elapsed_ms = (_time.monotonic() - _t0) * 1000
+        raw_text = raw_bytes.decode('utf-8', errors='replace')
+    except Exception:
+        app.logger.exception("Lyrics API analyze request failed")
+        http_error = 'request_failed'
+
+    if raw_text:
+        try:
+            json_obj = _json.loads(raw_text)
+        except Exception:
+            pass
+
+    # Auto-detect lyrics field by common names + string length heuristic
+    _LYRICS_NAMES = {'lyrics', 'plainlyrics', 'syncedlyrics', 'lyric', 'lyricbody',
+                     'text', 'words', 'content', 'translation'}
+    if isinstance(json_obj, dict):
+        def _find_lyrics(obj, prefix=''):
+            if guesses['lyrics_field'] or not isinstance(obj, dict):
+                return
+            for k, v in obj.items():
+                path = (prefix + '.' + k) if prefix else k
+                if k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES \
+                        and isinstance(v, str) and len(v) > 20:
+                    guesses['lyrics_field'] = path
+                    return
+                elif isinstance(v, dict):
+                    _find_lyrics(v, path)
+        _find_lyrics(json_obj)
+
+    display_raw = (raw_text or '')[:16384] + ('…' if raw_text and len(raw_text) > 16384 else '')
+    return jsonify({
+        'params':        flat_params,
+        'path_segments': path_segments,
+        'guesses':       guesses,
+        'json_obj':      json_obj,
+        'raw_json':      display_raw,
+        'elapsed_ms':    round(elapsed_ms) if elapsed_ms is not None else None,
+        'error':         'Failed to fetch or parse the API response.' if http_error else None,
+    }), 200

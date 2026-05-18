@@ -1082,13 +1082,86 @@ class TestNavidromeGetRecentAlbums:
     def test_returns_empty_when_no_matching_folders(self, mock_request, mock_folders):
         """Returns empty list when folder filter matches nothing"""
         from tasks.mediaserver_navidrome import get_recent_albums
-        
+
         mock_folders.return_value = set()  # Empty set = no matches
-        
+
         albums = get_recent_albums(10)
-        
+
         assert albums == []
         mock_request.assert_not_called()
+
+
+class TestNavidromeGetAllSongsApplyFilter:
+    """Migration probe path: dry-run must NOT apply ``config.MUSIC_LIBRARIES``
+    to the target server.
+
+    Bug: ``config.MUSIC_LIBRARIES`` holds the *source* provider's folder
+    names; applying it to the *target* during a migration probe filters
+    target tracks against names that don't exist on the target, returning
+    an empty set and zeroing out the dry-run result.
+
+    Fix: an explicit ``apply_filter`` flag on ``get_all_songs``. The
+    migration probe (``provider_probe.fetch_all_tracks``) passes
+    ``apply_filter=False``; live-provider scans default to ``True`` so the
+    user's saved selection is still honored. The flag's intent is visible
+    in code rather than implied from the presence of ``user_creds``.
+    """
+
+    @patch('tasks.mediaserver_navidrome._get_target_music_folder_ids')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_apply_filter_false_skips_folder_lookup(self, mock_request, mock_filter):
+        """apply_filter=False must NOT call _get_target_music_folder_ids."""
+        from tasks.mediaserver_navidrome import get_all_songs
+
+        mock_request.return_value = {
+            'status': 'ok',
+            'searchResult3': {'song': []},
+        }
+
+        creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+        get_all_songs(user_creds=creds, apply_filter=False)
+
+        mock_filter.assert_not_called()
+        endpoints = [c.args[0] for c in mock_request.call_args_list]
+        assert 'getMusicFolders' not in endpoints
+        assert any(ep == 'search3' for ep in endpoints)
+        for c in mock_request.call_args_list:
+            assert c.kwargs.get('user_creds') == creds
+
+    @patch('tasks.mediaserver_navidrome._get_target_music_folder_ids')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_apply_filter_true_default_honors_filter(self, mock_request, mock_filter):
+        """apply_filter defaults to True, preserving live-provider semantics."""
+        from tasks.mediaserver_navidrome import get_all_songs
+
+        mock_filter.return_value = set()  # Filter active but no matches.
+        mock_request.return_value = {'status': 'ok'}
+
+        songs = get_all_songs(user_creds=None)
+
+        mock_filter.assert_called_once()
+        assert songs == []
+        mock_request.assert_not_called()
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_get_target_music_folder_ids_forwards_user_creds(self, mock_request):
+        """The folder-lookup helper must thread user_creds through to the API
+        request so callers (e.g. live-provider code paths receiving session
+        creds) hit ``getMusicFolders`` with valid auth instead of falling back
+        to empty config globals."""
+        from tasks.mediaserver_navidrome import _get_target_music_folder_ids
+
+        with patch('tasks.mediaserver_navidrome.config') as mock_config:
+            mock_config.MUSIC_LIBRARIES = 'Music'
+            mock_request.return_value = {
+                'musicFolders': {'musicFolder': [{'id': 1, 'name': 'Music'}]}
+            }
+
+            creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+            _get_target_music_folder_ids(user_creds=creds)
+
+        assert mock_request.call_args.args[0] == 'getMusicFolders'
+        assert mock_request.call_args.kwargs.get('user_creds') == creds
 
 
 # =============================================================================
@@ -1835,7 +1908,701 @@ class TestEmbyCreatePlaylist:
         mock_post.return_value = mock_response
         
         create_playlist('Rock & Roll Mix', ['track1'])
-        
+
         call_url = mock_post.call_args[0][0]
         # & should be encoded
         assert 'Rock%20%26%20Roll' in call_url or 'Rock+%26+Roll' in call_url or 'Rock%20&%20Roll' not in call_url
+
+
+# =============================================================================
+# list_libraries — provider-specific helpers used by the setup wizard and
+# migration assistant to populate the "music libraries" checkbox list.
+# Each test pins that (a) the function returns every music library the server
+# reports, without applying the MUSIC_LIBRARIES filter, and (b) user_creds is
+# forwarded so the migration assistant can probe a target without mutating
+# `config` globals (same discipline that commit b426682 established for
+# Navidrome's `get_all_songs`).
+# =============================================================================
+
+class TestJellyfinListLibraries:
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_returns_music_libraries_with_id_and_name(self, mock_config, mock_get):
+        from tasks.mediaserver_jellyfin import list_libraries
+
+        mock_config.JELLYFIN_URL = 'http://jelly:8096'
+        mock_config.JELLYFIN_TOKEN = 'admin-token'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'lib-1', 'CollectionType': 'music'},
+            {'Name': 'TV Shows', 'ItemId': 'lib-2', 'CollectionType': 'tvshows'},
+            {'Name': 'Podcasts', 'ItemId': 'lib-3', 'CollectionType': 'music'},
+        ]
+        mock_get.return_value = resp
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': 'lib-1', 'name': 'Music'},
+            {'id': 'lib-3', 'name': 'Podcasts'},
+        ]
+
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_forwards_user_creds_to_url_and_token(self, mock_config, mock_get):
+        """Migration target probe must use session creds, not config globals."""
+        from tasks.mediaserver_jellyfin import list_libraries
+
+        mock_config.JELLYFIN_URL = 'http://SHOULD-NOT-BE-USED:0000'
+        mock_config.JELLYFIN_TOKEN = 'SHOULD-NOT-BE-USED'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = []
+        mock_get.return_value = resp
+
+        list_libraries(user_creds={
+            'url':   'http://target-jelly:8096',
+            'token': 'target-token',
+        })
+
+        called_url = mock_get.call_args[0][0]
+        assert called_url == 'http://target-jelly:8096/Library/VirtualFolders'
+        headers = mock_get.call_args[1]['headers']
+        assert headers.get('X-Emby-Token') == 'target-token'
+
+
+class TestEmbyListLibraries:
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_returns_music_libraries_only(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import list_libraries
+
+        mock_config.EMBY_URL = 'http://emby:8096'
+        mock_config.EMBY_TOKEN = 'admin-token'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = [
+            {'Name': 'Music', 'ItemId': 'e1', 'CollectionType': 'music'},
+            {'Name': 'Movies', 'ItemId': 'e2', 'CollectionType': 'movies'},
+        ]
+        mock_get.return_value = resp
+
+        result = list_libraries()
+
+        assert result == [{'id': 'e1', 'name': 'Music'}]
+
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_forwards_user_creds(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import list_libraries
+
+        mock_config.EMBY_URL = 'http://SHOULD-NOT-BE-USED:0000'
+        mock_config.EMBY_TOKEN = 'SHOULD-NOT-BE-USED'
+        mock_config.HEADERS = {}
+
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = []
+        mock_get.return_value = resp
+
+        list_libraries(user_creds={
+            'url':   'http://target-emby:8096',
+            'token': 'target-token',
+        })
+
+        called_url = mock_get.call_args[0][0]
+        assert called_url == 'http://target-emby:8096/emby/Library/VirtualFolders'
+        headers = mock_get.call_args[1]['headers']
+        assert headers.get('X-Emby-Token') == 'target-token'
+
+
+class TestNavidromeListLibraries:
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_returns_every_folder_without_reading_music_libraries(self, mock_req):
+        """
+        Does NOT call _get_target_music_folder_ids (which would read
+        config.MUSIC_LIBRARIES and break when the filter is set for the source
+        provider but doesn't apply to the target). Returns every folder.
+        """
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {
+            'musicFolders': {
+                'musicFolder': [
+                    {'id': 1, 'name': 'Main'},
+                    {'id': 2, 'name': 'Podcasts'},
+                ]
+            }
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '1', 'name': 'Main'},
+            {'id': '2', 'name': 'Podcasts'},
+        ]
+        # Verify the single getMusicFolders call — no _get_target_music_folder_ids path
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        assert args[0] == 'getMusicFolders'
+        assert kwargs.get('user_creds') is None
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_handles_single_dict_response(self, mock_req):
+        """Some Subsonic-compatible servers return a single dict (not a list)
+        when only one folder exists. The function must coerce to a list."""
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {
+            'musicFolders': {
+                'musicFolder': {'id': 1, 'name': 'OnlyFolder'}
+            }
+        }
+
+        result = list_libraries()
+
+        assert result == [{'id': '1', 'name': 'OnlyFolder'}]
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    def test_forwards_user_creds_to_getmusicfolders(self, mock_req):
+        """
+        Migration-target path: user_creds must reach _navidrome_request so the
+        request uses the session's URL/username/password rather than
+        config.NAVIDROME_* (which are empty for a target that isn't live yet).
+        """
+        from tasks.mediaserver_navidrome import list_libraries
+
+        mock_req.return_value = {'musicFolders': {'musicFolder': []}}
+
+        creds = {'url': 'http://target-nav:4533', 'user': 'u', 'password': 'p'}
+        list_libraries(user_creds=creds)
+
+        args, kwargs = mock_req.call_args
+        assert args[0] == 'getMusicFolders'
+        assert kwargs.get('user_creds') == creds
+
+
+class TestLyrionListLibraries:
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_returns_every_folder(self, mock_rpc):
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 10, 'name': 'Music'},
+                {'id': 11, 'name': 'Audiobooks'},
+            ]
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '10', 'name': 'Music'},
+            {'id': '11', 'name': 'Audiobooks'},
+        ]
+        args, kwargs = mock_rpc.call_args
+        # The CLI command is the singular ``musicfolder``. The plural
+        # ``musicfolders`` variant drops the connection on Lyrion 9.0.x.
+        assert args[0] == 'musicfolder'
+        assert kwargs.get('user_creds') is None
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_handles_lyrion_9_x_filename_field(self, mock_rpc):
+        """Lyrion 9.0.x returns folder entries with ``filename`` (not ``name``).
+        Older versions used ``name`` / ``folder``. Accept all three."""
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 685, 'filename': 'Library_A', 'type': 'folder'},
+                {'id': 686, 'filename': 'Library_B', 'type': 'folder'},
+            ],
+            'count': 2,
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '685', 'name': 'Library_A'},
+            {'id': '686', 'name': 'Library_B'},
+        ]
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_prefers_path_over_name_when_available(self, mock_rpc):
+        """Lyrion's scan-time filter (_get_target_paths_for_filtering) does a
+        substring match against album file URLs, so when the server reports
+        a real path we persist it (more deterministic match). Otherwise we
+        fall back to the folder display name (which Lyrion treats as a path
+        substring at scan time on standard layouts)."""
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {
+            'folder_loop': [
+                {'id': 10, 'name': 'Music', 'path': '/srv/music'},
+                {'id': 11, 'name': 'Spoken', 'url': '/srv/audiobooks'},
+                {'id': 12, 'name': 'NoPath'},
+            ]
+        }
+
+        result = list_libraries()
+
+        assert result == [
+            {'id': '10', 'name': '/srv/music'},
+            {'id': '11', 'name': '/srv/audiobooks'},
+            {'id': '12', 'name': 'NoPath'},  # falls back when path absent
+        ]
+
+    @patch('tasks.mediaserver_lyrion._jsonrpc_request')
+    def test_forwards_user_creds(self, mock_rpc):
+        from tasks.mediaserver_lyrion import list_libraries
+
+        mock_rpc.return_value = {'folder_loop': []}
+
+        creds = {'url': 'http://target-lms:9000', 'user': 'u', 'password': 'p'}
+        list_libraries(user_creds=creds)
+
+        args, kwargs = mock_rpc.call_args
+        assert args[0] == 'musicfolder'
+        assert kwargs.get('user_creds') == creds
+
+
+# =============================================================================
+# create_or_replace_playlist (cron sonic_fingerprint upsert) — issue #336
+# =============================================================================
+
+class TestNavidromeCreateOrReplacePlaylist:
+    """Navidrome upsert: create when missing, clear+add when existing (preserve ID)."""
+
+    @patch('tasks.mediaserver_navidrome._create_playlist_batched')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_missing_playlist_creates_via_batched(self, mock_get, mock_create):
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        mock_get.return_value = None
+        mock_create.return_value = {'Id': 'new-pl-1', 'Name': 'SF', 'id': 'new-pl-1'}
+
+        result = create_or_replace_playlist('SF', ['s1', 's2'])
+
+        mock_create.assert_called_once_with('SF', ['s1', 's2'], user_creds=None)
+        assert result['Id'] == 'new-pl-1'
+
+    @patch('tasks.mediaserver_navidrome._add_to_playlist')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_existing_playlist_preserves_id(self, mock_get, mock_request, mock_add):
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        mock_get.return_value = {'id': 'pl-existing', 'name': 'SF'}
+        # 1st call: getPlaylist returns 3 songs. 2nd+: updatePlaylist returns ok.
+        mock_request.side_effect = [
+            {'playlist': {'id': 'pl-existing', 'songCount': 3}},
+            {'status': 'ok'},
+        ]
+        mock_add.return_value = True
+
+        result = create_or_replace_playlist('SF', ['new1', 'new2'])
+
+        # getPlaylist was called once
+        first = mock_request.call_args_list[0]
+        assert first[0][0] == 'getPlaylist'
+        assert first[0][1] == {'id': 'pl-existing'}
+
+        # updatePlaylist removed indices in DESCENDING order [2, 1, 0]
+        second = mock_request.call_args_list[1]
+        assert second[0][0] == 'updatePlaylist'
+        assert second[0][1]['playlistId'] == 'pl-existing'
+        assert second[0][1]['songIndexToRemove'] == [2, 1, 0]
+
+        # Adds happened on the same playlist id
+        mock_add.assert_called_once_with('pl-existing', ['new1', 'new2'], user_creds=None)
+
+        # Returned dict carries the existing ID
+        assert result['Id'] == 'pl-existing'
+
+    @patch('tasks.mediaserver_navidrome._add_to_playlist')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_clear_batches_above_40(self, mock_get, mock_request, mock_add):
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        mock_get.return_value = {'id': 'pl-100', 'name': 'SF'}
+        mock_request.side_effect = [
+            {'playlist': {'id': 'pl-100', 'songCount': 100}},
+            {'status': 'ok'}, {'status': 'ok'}, {'status': 'ok'},  # 3 update batches
+        ]
+        mock_add.return_value = True
+
+        create_or_replace_playlist('SF', ['x'])
+
+        # getPlaylist + 3 updatePlaylist batches (40+40+20)
+        assert len(mock_request.call_args_list) == 4
+        update_calls = mock_request.call_args_list[1:]
+        assert len(update_calls[0][0][1]['songIndexToRemove']) == 40
+        assert len(update_calls[1][0][1]['songIndexToRemove']) == 40
+        assert len(update_calls[2][0][1]['songIndexToRemove']) == 20
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_empty_item_ids_returns_none_without_calls(self, mock_get, mock_request):
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        result = create_or_replace_playlist('SF', [])
+
+        assert result is None
+        mock_get.assert_not_called()
+        mock_request.assert_not_called()
+
+    @patch('tasks.mediaserver_navidrome._add_to_playlist')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.get_playlist_by_name')
+    def test_returns_none_when_add_fails_after_clear(self, mock_get, mock_request, mock_add):
+        """If clear succeeds but add fails, return None so the cron handler doesn't log success."""
+        from tasks.mediaserver_navidrome import create_or_replace_playlist
+
+        mock_get.return_value = {'id': 'pl-1', 'name': 'SF'}
+        mock_request.side_effect = [
+            {'playlist': {'id': 'pl-1', 'songCount': 1}},
+            {'status': 'ok'},
+        ]
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['new1'])
+
+        assert result is None
+
+
+class TestJellyfinCreateOrReplacePlaylist:
+    """Jellyfin upsert via /Playlists/{Id}/Items POST/DELETE/GET."""
+
+    @patch('tasks.mediaserver_jellyfin.requests')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_missing_playlist_creates_and_returns_id(self, mock_config, mock_get, mock_requests):
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = None
+
+        post_resp = MagicMock()
+        post_resp.json.return_value = {'Id': 'new-jf-1', 'Name': 'SF'}
+        mock_requests.post.return_value = post_resp
+
+        result = create_or_replace_playlist('SF', ['s1', 's2'])
+
+        # Single POST to /Playlists with the create body
+        assert mock_requests.post.call_count == 1
+        post_call = mock_requests.post.call_args
+        assert post_call[0][0] == 'http://jf/Playlists'
+        assert post_call[1]['json'] == {'Name': 'SF', 'Ids': ['s1', 's2'], 'UserId': 'admin-user'}
+        assert result['Id'] == 'new-jf-1'
+
+    @patch('tasks.mediaserver_jellyfin.requests')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_existing_playlist_clears_and_adds_preserving_id(self, mock_config, mock_get, mock_requests):
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'pl-existing', 'Name': 'SF'}
+
+        # GET items returns two entries with PlaylistItemId
+        get_resp = MagicMock()
+        get_resp.json.return_value = {'Items': [
+            {'Id': 'song1', 'PlaylistItemId': 'entry-a'},
+            {'Id': 'song2', 'PlaylistItemId': 'entry-b'},
+        ]}
+        mock_requests.get.return_value = get_resp
+        mock_requests.delete.return_value = MagicMock()
+        mock_requests.post.return_value = MagicMock()
+
+        result = create_or_replace_playlist('SF', ['new1', 'new2'])
+
+        # GET on /Playlists/pl-existing/Items
+        assert mock_requests.get.call_args[0][0] == 'http://jf/Playlists/pl-existing/Items'
+        # DELETE with entryIds
+        assert mock_requests.delete.call_count == 1
+        del_call = mock_requests.delete.call_args
+        assert del_call[0][0] == 'http://jf/Playlists/pl-existing/Items'
+        assert del_call[1]['params']['entryIds'] == 'entry-a,entry-b'
+        # POST adds new ids
+        assert mock_requests.post.call_count == 1
+        post_call = mock_requests.post.call_args
+        assert post_call[0][0] == 'http://jf/Playlists/pl-existing/Items'
+        assert post_call[1]['params']['ids'] == 'new1,new2'
+        assert post_call[1]['params']['userId'] == 'admin-user'
+        # Same ID preserved
+        assert result['Id'] == 'pl-existing'
+
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    def test_empty_item_ids_returns_none(self, mock_get):
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        result = create_or_replace_playlist('SF', [])
+
+        assert result is None
+        mock_get.assert_not_called()
+
+    @patch('tasks.mediaserver_jellyfin._add_items_to_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_returns_none_when_add_fails_after_clear(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_add
+    ):
+        """If clear succeeds but add fails, return None instead of misreporting success."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'pl-1', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.return_value = True
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['new1'])
+
+        assert result is None
+
+    @patch('tasks.mediaserver_jellyfin._create_fresh_playlist')
+    @patch('tasks.mediaserver_jellyfin.delete_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_falls_back_to_recreate_when_remove_fails(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
+    ):
+        """Jellyfin <10.11 + API token rejects DELETE /Playlists/{Id}/Items (jellyfin#13476).
+        When that happens, delete the whole playlist and recreate. Id will change."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1', 'e2']
+        mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
+        mock_delete.return_value = True
+        mock_create.return_value = {'Id': 'new-pl', 'Name': 'SF'}
+
+        result = create_or_replace_playlist('SF', ['n1', 'n2'])
+
+        mock_delete.assert_called_once_with('old-pl')
+        mock_create.assert_called_once_with('SF', ['n1', 'n2'])
+        assert result['Id'] == 'new-pl'
+
+    @patch('tasks.mediaserver_jellyfin._create_fresh_playlist')
+    @patch('tasks.mediaserver_jellyfin.delete_playlist')
+    @patch('tasks.mediaserver_jellyfin._remove_playlist_entries')
+    @patch('tasks.mediaserver_jellyfin._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_jellyfin.get_playlist_by_name')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_fallback_returns_none_when_delete_playlist_fails(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
+    ):
+        """If the fallback delete itself fails, don't try to recreate — bail out."""
+        from tasks.mediaserver_jellyfin import create_or_replace_playlist
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
+        mock_delete.return_value = False
+
+        result = create_or_replace_playlist('SF', ['n1'])
+
+        assert result is None
+        mock_create.assert_not_called()
+
+
+class TestEmbyCreateOrReplacePlaylist:
+    """Emby upsert under /emby/ prefix with uppercase params."""
+
+    @patch('tasks.mediaserver_emby.requests')
+    @patch('tasks.mediaserver_emby.get_playlist_by_name')
+    @patch('tasks.mediaserver_emby.config')
+    def test_existing_playlist_clears_and_adds_preserving_id(self, mock_config, mock_get, mock_requests):
+        from tasks.mediaserver_emby import create_or_replace_playlist
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'admin-emby'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_get.return_value = {'Id': 'emby-pl', 'Name': 'SF'}
+
+        get_resp = MagicMock()
+        get_resp.json.return_value = {'Items': [
+            {'Id': 'song1', 'PlaylistItemId': 'e1'},
+        ]}
+        mock_requests.get.return_value = get_resp
+        mock_requests.delete.return_value = MagicMock()
+        mock_requests.post.return_value = MagicMock()
+        # quote helper used in create branch — make it a simple passthrough so
+        # other tests in this class remain compatible if they hit it
+        mock_requests.utils.quote.side_effect = lambda s: s
+
+        result = create_or_replace_playlist('SF', ['n1'])
+
+        assert mock_requests.delete.call_args[1]['params']['EntryIds'] == 'e1'
+        post_call = mock_requests.post.call_args
+        assert post_call[0][0] == 'http://emby/emby/Playlists/emby-pl/Items'
+        assert post_call[1]['params']['Ids'] == 'n1'
+        assert post_call[1]['params']['UserId'] == 'admin-emby'
+        assert result['Id'] == 'emby-pl'
+
+    @patch('tasks.mediaserver_emby._add_items_to_playlist')
+    @patch('tasks.mediaserver_emby._remove_playlist_entries')
+    @patch('tasks.mediaserver_emby._get_playlist_entry_ids')
+    @patch('tasks.mediaserver_emby.get_playlist_by_name')
+    @patch('tasks.mediaserver_emby.config')
+    def test_returns_none_when_add_fails_after_clear(
+        self, mock_config, mock_get, mock_get_entries, mock_remove, mock_add
+    ):
+        from tasks.mediaserver_emby import create_or_replace_playlist
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'admin-emby'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_get.return_value = {'Id': 'emby-pl', 'Name': 'SF'}
+        mock_get_entries.return_value = ['e1']
+        mock_remove.return_value = True
+        mock_add.return_value = False
+
+        result = create_or_replace_playlist('SF', ['n1'])
+
+        assert result is None
+
+
+class TestLyrionCreateOrReplacePlaylist:
+    """Lyrion upsert: deletes existing then creates fresh (ID may change — known limitation)."""
+
+    @patch('tasks.mediaserver_lyrion._create_playlist_batched')
+    @patch('tasks.mediaserver_lyrion.delete_playlist')
+    @patch('tasks.mediaserver_lyrion.get_playlist_by_name')
+    def test_existing_deletes_then_creates(self, mock_get, mock_delete, mock_create):
+        from tasks.mediaserver_lyrion import create_or_replace_playlist
+
+        mock_get.return_value = {'Id': 99, 'Name': 'SF'}
+        mock_delete.return_value = True
+        mock_create.return_value = {'Id': 100, 'Name': 'SF'}
+
+        result = create_or_replace_playlist('SF', ['t1'])
+
+        mock_delete.assert_called_once_with(99)
+        mock_create.assert_called_once_with('SF', ['t1'])
+        assert result['Name'] == 'SF'
+
+    @patch('tasks.mediaserver_lyrion._create_playlist_batched')
+    @patch('tasks.mediaserver_lyrion.delete_playlist')
+    @patch('tasks.mediaserver_lyrion.get_playlist_by_name')
+    def test_missing_creates_without_delete(self, mock_get, mock_delete, mock_create):
+        from tasks.mediaserver_lyrion import create_or_replace_playlist
+
+        mock_get.return_value = None
+        mock_create.return_value = {'Id': 50, 'Name': 'SF'}
+
+        create_or_replace_playlist('SF', ['t1'])
+
+        mock_delete.assert_not_called()
+        mock_create.assert_called_once_with('SF', ['t1'])
+
+    @patch('tasks.mediaserver_lyrion._create_playlist_batched')
+    @patch('tasks.mediaserver_lyrion.delete_playlist')
+    @patch('tasks.mediaserver_lyrion.get_playlist_by_name')
+    def test_aborts_when_delete_fails(self, mock_get, mock_delete, mock_create):
+        """If delete fails, return None instead of creating a duplicate playlist."""
+        from tasks.mediaserver_lyrion import create_or_replace_playlist
+
+        mock_get.return_value = {'Id': 99, 'Name': 'SF'}
+        mock_delete.return_value = False
+
+        result = create_or_replace_playlist('SF', ['t1'])
+
+        assert result is None
+        mock_create.assert_not_called()
+
+
+class TestDispatcherCreateOrReplacePlaylist:
+    """Validation + per-provider dispatching for create_or_replace_playlist."""
+
+    @patch('tasks.mediaserver.config')
+    def test_requires_name_and_ids(self, mock_config):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        with pytest.raises(ValueError, match="Playlist name is required"):
+            create_or_replace_playlist('', ['id1'])
+
+        with pytest.raises(ValueError, match="Track IDs are required"):
+            create_or_replace_playlist('Name', [])
+
+    @patch('tasks.mediaserver.config')
+    def test_mpd_raises_not_implemented(self, mock_config):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'mpd'
+
+        with pytest.raises(NotImplementedError):
+            create_or_replace_playlist('SF', ['s1'])
+
+    @patch('tasks.mediaserver.navidrome_create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_dispatches_to_navidrome(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'navidrome'
+        mock_provider.return_value = {'Id': 'pl-1'}
+
+        result = create_or_replace_playlist('SF', ['s1'])
+
+        mock_provider.assert_called_once_with('SF', ['s1'], None)
+        assert result['Id'] == 'pl-1'
+
+    @patch('tasks.mediaserver.jellyfin_create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_dispatches_to_jellyfin(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'jellyfin'
+        mock_provider.return_value = {'Id': 'pl-2'}
+
+        create_or_replace_playlist('SF', ['s1'])
+
+        mock_provider.assert_called_once()
+
+    @patch('tasks.mediaserver.emby_create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_dispatches_to_emby(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'emby'
+        mock_provider.return_value = {'Id': 'pl-3'}
+
+        create_or_replace_playlist('SF', ['s1'])
+
+        mock_provider.assert_called_once()
+
+    @patch('tasks.mediaserver.lyrion_create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_dispatches_to_lyrion(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'lyrion'
+        mock_provider.return_value = {'Id': 4}
+
+        create_or_replace_playlist('SF', ['s1'])
+
+        mock_provider.assert_called_once()

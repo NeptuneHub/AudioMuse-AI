@@ -1,4 +1,3 @@
-# /home/guido/Music/AudioMuse-AI/rq_worker.py
 import os
 import sys
 
@@ -12,26 +11,49 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
-# Import Worker from rq
+# Cap thread pools used by ML libraries (whisper / torch / marian / numpy / blas) BEFORE
+# any of them are imported, so libgomp/MKL/OpenBLAS pick up the limit at first init.
+_cpu_count = os.cpu_count() or 2
+_max_lyrics_threads = max(2, _cpu_count // 2)
+for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ[_env_key] = str(_max_lyrics_threads)
+# Prevent libgomp/OpenBLAS idle threads from spinning in busy-wait loops between
+# inference calls. Without this, threads spin at 100% CPU even when doing nothing.
+os.environ.setdefault('GOMP_SPINCOUNT', '0')
+os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
+print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
+
 from rq import Worker
 
-# Import the redis_conn, rq_queue (which is the 'default' queue),
-# and the Flask app instance from your main app.py.
-# This ensures the worker uses the same Redis connection, queue configuration,
-# and application context as your Flask app.
 try:
-    # Import the specific queues we defined
-    from app import app
     from app_helper import redis_conn
-    from config import APP_VERSION
+    from app_logging import configure_logging
+    import config
+    from config import APP_VERSION, TEMP_DIR
 except ImportError as e:
-    print(f"Error importing from app.py: {e}")
-    print("Please ensure app.py is in the Python path and does not have top-level errors.")
+    print(f"Error importing worker dependencies: {e}")
     sys.exit(1)
+
+try:
+    os.makedirs(TEMP_DIR, exist_ok=True)
+except OSError as e:
+    print(f"Warning: Could not create TEMP_DIR '{TEMP_DIR}': {e}")
+    print("Note: This may be expected in some test/CI environments, but could lead to task failures in production.")
+
+configure_logging()
 
 # The queues the worker will listen on.
 # The order is important! Workers will always check 'high' before 'default'.
 queues_to_listen = ['default']
+
+# NOTE: Do NOT preload Whisper / e5 / Marian / silero ONNX sessions here in
+# the parent process. RQ uses os.fork() to spawn each job's child process.
+# OpenMP (libgomp / libomp) and the onnxruntime thread pools are NOT fork-safe:
+# any thread pool initialized in the parent becomes corrupted in the child and
+# the first call into the model deadlocks at 0% CPU. Models are lazy-loaded
+# inside the child on first use via the module-level caches in
+# lyrics.lyrics_transcriber (so jobs 2..N in the same child are free).
+
 
 if __name__ == '__main__':
     # The redis_conn is already initialized when imported from app.py.
@@ -40,17 +62,6 @@ if __name__ == '__main__':
     # Use the list of names directly for the log message
     print(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
-
-    # Preload CLAP model to avoid loading delays on first text search
-    # NOTE: Disabled for GPU workers - CUDA context doesn't survive process fork()
-    # Model will lazy-load on first use in the forked worker process
-    # try:
-    #     print("Preloading CLAP model for this worker...")
-    #     from tasks.clap_analyzer import initialize_clap_model
-    #     initialize_clap_model()
-    #     print("✓ CLAP model preloaded successfully")
-    # except Exception as e:
-    #     print(f"⚠ CLAP model preload failed, will retry on first use: {e}")
 
     # Create a worker instance, explicitly passing the connection.
     # The 'app' object is passed to `with app.app_context():` within the tasks themselves
@@ -61,8 +72,8 @@ if __name__ == '__main__':
         queues_to_listen,
         connection=redis_conn,
         # --- Resilience Settings for Kubernetes ---
-        worker_ttl=30,  # Consider worker dead if no heartbeat for 30 seconds.
-        job_monitoring_interval=10 # Check for dead workers every 10 seconds.
+        worker_ttl=120,  # Consider worker dead if no heartbeat for 120 seconds.
+        job_monitoring_interval=30 # Check for dead workers every 30 seconds.
     )
 
     # Memory leak prevention: restart after N jobs

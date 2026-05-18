@@ -20,6 +20,7 @@ from rq.exceptions import NoSuchJobError
 
 # Import configuration
 from config import DATABASE_URL, REDIS_URL
+from tz_helper import UTC_NOW_SQL
 
 # Import RQ specifics
 from rq.command import send_stop_job_command
@@ -207,20 +208,27 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # Create 'lyrics_embedding' table for lyrics similarity and axis scores
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
+            # axis_vector: float32 BYTEA, fixed-order flattened over MUSIC_ANALYSIS_AXES.
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
             # Create 'clap_embedding' table for CLAP text search embeddings
             cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
-            # Create 'mulan_embedding' table only if MuLan is enabled
-            from config import MULAN_ENABLED
-            if MULAN_ENABLED:
-                cur.execute("CREATE TABLE IF NOT EXISTS mulan_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mulan_embedding' AND column_name = 'embedding')")
-                if not cur.fetchone()[0]: cur.execute("ALTER TABLE mulan_embedding ADD COLUMN embedding BYTEA")
             # Create 'voyager_index_data' table
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'clap_index_data' table for stored CLAP text search indexes
             cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'lyrics_index_data' table for stored Lyrics voyager indexes (mirrors clap_index_data; supports chunked storage).
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'lyrics_axes_index_data' table for the axis-vector voyager index (one binary-friendly vector per song over MUSIC_ANALYSIS_AXES labels).
+            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections
@@ -578,9 +586,9 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             if cur.fetchone():
                 return
             cur.execute(
-                """
-                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note)
-                VALUES (%s, %s, %s, %s, %s)
+                f"""
+                INSERT INTO task_history (task_id, task_type, status, duration_seconds, note, recorded_at)
+                VALUES (%s, %s, %s, %s, %s, {UTC_NOW_SQL})
                 """,
                 (task_id, task_type, status, duration_seconds, note),
             )
@@ -978,26 +986,61 @@ def get_clap_embedding(item_id):
         cur.close()
 
 
-def save_mulan_embedding(item_id, mulan_embedding_vector):
-    """Saves MuLan embedding for a track."""
-    if mulan_embedding_vector is None or (isinstance(mulan_embedding_vector, np.ndarray) and mulan_embedding_vector.size == 0):
+def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
+    """Saves the lyrics embedding (e5-base-v2) and the fixed-order axis vector.
+
+    ``axis_vector`` must be a numpy array (float32) already in canonical
+    MUSIC_ANALYSIS_AXES order (use ``_score_axes`` to produce it). May be None.
+    """
+    if lyrics_embedding_vector is None or (isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0):
         return
-    
+
     conn = get_db()
     cur = conn.cursor()
     try:
-        embedding_blob = mulan_embedding_vector.astype(np.float32).tobytes()
+        embedding_blob = lyrics_embedding_vector.astype(np.float32).tobytes() if isinstance(lyrics_embedding_vector, np.ndarray) else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        axis_blob = None
+        if axis_vector is not None:
+            arr = axis_vector if isinstance(axis_vector, np.ndarray) else np.asarray(axis_vector, dtype=np.float32)
+            if arr.size > 0:
+                axis_blob = arr.astype(np.float32, copy=False).tobytes()
         cur.execute("""
-            INSERT INTO mulan_embedding (item_id, embedding) VALUES (%s, %s)
-            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
+            INSERT INTO lyrics_embedding (item_id, embedding, axis_vector) VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding, axis_vector = EXCLUDED.axis_vector, updated_at = CURRENT_TIMESTAMP
+        """, (item_id, psycopg2.Binary(embedding_blob),
+              psycopg2.Binary(axis_blob) if axis_blob is not None else None))
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logger.error(f"Error saving MuLan embedding for {item_id}: {e}")
+        logger.error(f"Error saving lyrics embedding for {item_id}: {e}")
         raise
     finally:
         cur.close()
+
+
+def get_lyrics_embedding(item_id):
+    """Load the lyrics embedding and axis vector for a track.
+
+    Returns:
+        tuple(np.ndarray or None, np.ndarray or None)
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT embedding, axis_vector FROM lyrics_embedding WHERE item_id = %s", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            return None, None
+        embedding_blob, axis_blob = row
+        embedding = np.frombuffer(embedding_blob, dtype=np.float32) if embedding_blob is not None else None
+        axis_vec = np.frombuffer(axis_blob, dtype=np.float32) if axis_blob is not None else None
+        return embedding, axis_vec
+    except Exception as e:
+        logger.error(f"Error loading lyrics embedding for {item_id}: {e}")
+        return None, None
+    finally:
+        cur.close()
+
 
 def get_all_tracks():
     """Fetches all tracks and their embeddings from the database."""

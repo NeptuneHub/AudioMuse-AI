@@ -177,7 +177,9 @@ def build_map_cache():
         except Exception as e:
             logger.exception('Failed to compute missing projections: %s', e)
 
-    # Build full list of lightweight items and drop heavy embedding vectors
+    for it in items:
+        it.pop('embedding', None)
+
     full_light = []
     for it in items:
         iid = str(it['item_id'])
@@ -190,8 +192,8 @@ def build_map_cache():
             'title': it.get('title') or ''
         }
         full_light.append(light)
+    del items
 
-    # create sampled versions
     n = len(full_light)
     frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
     new_cache = {}
@@ -201,9 +203,12 @@ def build_map_cache():
         js = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
         try:
             gz = gzip.compress(js)
+            entry = {'json_gzip_bytes': gz, 'projection': used_projection, 'count': len(sampled)}
         except Exception:
-            gz = None
-        new_cache[k] = {'json_bytes': js, 'json_gzip_bytes': gz, 'projection': used_projection, 'count': len(sampled)}
+            entry = {'json_bytes': js, 'projection': used_projection, 'count': len(sampled)}
+        else:
+            del js
+        new_cache[k] = entry
 
     MAP_JSON_CACHE = new_cache
     logger.info('Map JSON cache built: %d total items; cache sizes: %s', n, {k: v['count'] for k, v in MAP_JSON_CACHE.items()})
@@ -219,7 +224,16 @@ def init_map_cache():
 
 @map_bp.route('/map')
 def map_ui():
-    """Serve the map UI page."""
+    """
+    Music map UI page.
+    ---
+    tags:
+      - Map
+    summary: HTML page for the 2D music map (UMAP/projection of song embeddings).
+    responses:
+      200:
+        description: HTML page rendered with no-cache headers.
+    """
     resp = render_template('map.html', title = 'AudioMuse-AI - Music Map', active='map')
     # Ensure the rendered page is not cached by browsers or intermediary caches.
     # We return a Response object below so Flask will set the appropriate headers.
@@ -274,9 +288,36 @@ def _rows_to_items(rows):
 
 @map_bp.route('/api/map', methods=['GET'])
 def map_api():
-    """Return up to 2000 embeddings sampled across configured genres, projected to 2D.
-
-    Response: JSON list of items with title, artist, embedding_2d, mood_vector, other_feature
+    """
+    Music map data.
+    ---
+    tags:
+      - Map
+    summary: Return embeddings projected to 2D, sampled across configured genres, for the music-map UI.
+    description: |
+      Served exclusively from the in-memory `MAP_JSON_CACHE` built at startup
+      (or rebuilt via `/api/rebuild_map_cache`). Supports four sampling
+      buckets — 25/50/75/100 percent of the cached set — plus a legacy `n`
+      parameter that maps the closest bucket. Honors `Accept-Encoding: gzip`
+      when the cache contains a precompressed payload.
+    parameters:
+      - name: percent
+        in: query
+        schema:
+          type: string
+          enum: ["25", "50", "75", "100"]
+        description: Percentage bucket of cached items to return. Default 25.
+      - name: p
+        in: query
+        schema: { type: string }
+        description: Alias for `percent`.
+      - name: n
+        in: query
+        schema: { type: integer }
+        description: Legacy parameter — mapped to the nearest available bucket.
+    responses:
+      200:
+        description: JSON payload with `items` (each having `embedding_2d`, `title`, `author`, `mood_vector`, `other_features`) and `projection` name.
     """
     # Serve exclusively from the in-memory MAP_JSON_CACHE built at startup.
     # Accept either explicit percent param (?percent=25|50|75|100) or legacy ?n=<count>.
@@ -323,23 +364,23 @@ def map_api():
     if not entry:
         return jsonify({'items': [], 'projection': 'none'})
 
-    # Prefer serving gzip if the client accepts it and gzip bytes were built
     accept_enc = request.headers.get('Accept-Encoding', '')
     gz = entry.get('json_gzip_bytes')
     if gz and 'gzip' in accept_enc.lower():
         resp = Response(gz, mimetype='application/json; charset=utf-8')
         resp.headers['Content-Encoding'] = 'gzip'
         resp.headers['Content-Length'] = str(len(gz))
-        # Prevent browser from storing the map response beyond the page session.
-        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
-        resp.headers['Expires'] = '0'
-        return resp
+    elif gz:
+        raw = gzip.decompress(gz)
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    elif entry.get('json_bytes'):
+        raw = entry['json_bytes']
+        resp = Response(raw, mimetype='application/json; charset=utf-8')
+        resp.headers['Content-Length'] = str(len(raw))
+    else:
+        return jsonify({'items': [], 'projection': 'none'})
 
-    # Fallback to plain JSON
-    resp = Response(entry['json_bytes'], mimetype='application/json; charset=utf-8')
-    resp.headers['Content-Length'] = str(len(entry['json_bytes']))
-    # Prevent browser from storing the map response beyond the page session.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
@@ -348,13 +389,46 @@ def map_api():
 
 @map_bp.route('/api/map_cache_status', methods=['GET'])
 def map_cache_status():
-    """Return diagnostic information about the in-memory map JSON cache."""
+    """
+    Diagnostic info for the map cache.
+    ---
+    tags:
+      - Map
+    summary: Return per-bucket stats (count, payload size, projection algorithm) for the in-memory map cache.
+    responses:
+      200:
+        description: Cache summary.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                buckets:
+                  type: object
+                  additionalProperties:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      json_bytes:
+                        type: integer
+                      projection:
+                        type: string
+                reason:
+                  type: string
+                  description: Set to `empty_cache` when no buckets exist.
+      500:
+        description: Internal error.
+    """
     try:
         if not MAP_JSON_CACHE:
             return jsonify({'ok': False, 'reason': 'empty_cache', 'buckets': {}})
         info = {}
         for k, v in MAP_JSON_CACHE.items():
-            info[k] = {'count': v.get('count', 0), 'json_bytes': len(v.get('json_bytes') or b''), 'projection': v.get('projection')}
+            payload = v.get('json_gzip_bytes') or v.get('json_bytes') or b''
+            info[k] = {'count': v.get('count', 0), 'json_bytes': len(payload), 'projection': v.get('projection')}
         return jsonify({'ok': True, 'buckets': info}), 200
     except Exception as e:
         # Log the full exception (including stack) for diagnostics, but do not expose
@@ -365,8 +439,28 @@ def map_cache_status():
 
 @map_bp.route('/api/rebuild_map_cache', methods=['POST'])
 def rebuild_map_cache():
-    """Trigger a synchronous rebuild of the in-memory cache. Useful for debugging.
-    Note: this reads the DB and may take time."""
+    """
+    Synchronously rebuild the map cache.
+    ---
+    tags:
+      - Map
+    summary: Re-read embeddings from the DB and rebuild every percent bucket.
+    description: Synchronous; can take a while on large libraries. Useful for debugging.
+    responses:
+      200:
+        description: Cache rebuilt successfully.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                message:
+                  type: string
+      500:
+        description: Internal error during rebuild.
+    """
     try:
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200

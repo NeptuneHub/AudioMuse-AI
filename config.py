@@ -1,5 +1,6 @@
 #AudioMuse-AI/config.py
 import os
+import tempfile
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
@@ -25,6 +26,12 @@ MUSIC_LIBRARIES = os.environ.get("MUSIC_LIBRARIES", "")
 # Maximum number of items to fetch during the connection probe.
 # Set to 0 to scan all top-played items, or a small positive integer to keep the probe fast.
 PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
+# Hard cap on the number of unmatched albums returned to the migration
+# wizard's step-4 review list. Real libraries can produce thousands of
+# unmatched groups (e.g. wrong path format) and the page becomes unusable
+# beyond a couple hundred entries. The full count is still surfaced as a
+# warning so the user knows the list is truncated.
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 
 
@@ -79,6 +86,11 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
     'AUDIOMUSE_PASSWORD',
+    # Computed numpy/precomputed constants — persisting them through
+    # setup_manager would stringify the ndarray ("[1. 0. 0. ...]") and
+    # corrupt the value on reload (cast_value can't reverse str(ndarray)).
+    'LYRICS_INSTRUMENTAL_EMBEDDING',
+    'LYRICS_INSTRUMENTAL_AXIS_FILL',
 }
 
 # --- MPD (Music Player Daemon) Constants ---
@@ -90,7 +102,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v1.0.4"
+APP_VERSION = "v1.1.6"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -298,13 +310,128 @@ MOOD_LABELS = [
 ]
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
-TOP_N_OTHER_FEATURES = int(os.environ.get("TOP_N_OTHER_FEATURES", "2")) # Number of top "other features" to consider for clustering vector
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
+# Lyrics analysis feature toggle. When false, the lyrics step is skipped entirely.
+LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
+# When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
+LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
+LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
+# Timeout (seconds) for fetching embedded lyrics from the configured media server
+# (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
+# on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
+# seconds to respond. Set 0 to disable the lookup.
+MUSICSERVER_LYRICS_TIMEOUT = float(os.environ.get("MUSICSERVER_LYRICS_TIMEOUT", "2.5"))
+# User-configurable lyrics API slots (up to 2).
+# Each slot stores: url_template, lyrics_field, artist_param, title_param, api_key_param, api_key_value
+# e.g. LYRICS_API_1_URL_TEMPLATE = "https://example.com/api/get?{artist_param}={artist}&{title_param}={title}"
+LYRICS_API_1_URL_TEMPLATE  = os.environ.get("LYRICS_API_1_URL_TEMPLATE",  "")
+LYRICS_API_1_ARTIST_PARAM  = os.environ.get("LYRICS_API_1_ARTIST_PARAM",  "artist_name")
+LYRICS_API_1_TITLE_PARAM   = os.environ.get("LYRICS_API_1_TITLE_PARAM",   "track_name")
+LYRICS_API_1_LYRICS_FIELD  = os.environ.get("LYRICS_API_1_LYRICS_FIELD",  "plainLyrics")
+LYRICS_API_1_APIKEY_PARAM  = os.environ.get("LYRICS_API_1_APIKEY_PARAM",  "")
+LYRICS_API_1_APIKEY_VALUE  = os.environ.get("LYRICS_API_1_APIKEY_VALUE",  "")
+LYRICS_API_1_TIMEOUT       = float(os.environ.get("LYRICS_API_1_TIMEOUT",   "5.0"))
+LYRICS_API_2_URL_TEMPLATE  = os.environ.get("LYRICS_API_2_URL_TEMPLATE",  "")
+LYRICS_API_2_ARTIST_PARAM  = os.environ.get("LYRICS_API_2_ARTIST_PARAM",  "artist")
+LYRICS_API_2_TITLE_PARAM   = os.environ.get("LYRICS_API_2_TITLE_PARAM",   "title")
+LYRICS_API_2_LYRICS_FIELD  = os.environ.get("LYRICS_API_2_LYRICS_FIELD",  "lyrics")
+LYRICS_API_2_APIKEY_PARAM  = os.environ.get("LYRICS_API_2_APIKEY_PARAM",  "")
+LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
+LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
+# Beam search width for the Whisper-small ASR decoder. 1 = pure greedy
+# (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
+# attractors at ~2× greedy cost), 5 = Whisper-upstream default (max
+# quality, ~5× cost). Each extra beam adds one decoder.run per generated
+# token plus its own KV cache (~30-80 MB at a full 30 s chunk).
+LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
+LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
+LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get("LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB", "-0.85"))
+# Where the Whisper-small ONNX bundle (encoder + merged decoder +
+# tokenizer files) is extracted. Pre-bundled in the official Docker
+# image from lyrics_model_whisper.tar.gz (project release).
+LYRICS_WHISPER_MODEL_DIR = os.environ.get(
+    "LYRICS_WHISPER_MODEL_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "whisper-small-onnx"),
+)
+LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
+# Writable directory for on-demand Marian translator downloads. Kept separate
+# from the bundled HF cache so stale locks / restrictive perms there cannot
+# block the translator. Default lives under /tmp; mount a persistent volume
+# here in production to avoid re-downloading language packs on each restart.
+LYRICS_MARIAN_CACHE_DIR = os.environ.get(
+    "LYRICS_MARIAN_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
+)
+LYRICS_MAX_SONGS_TO_ANALYZE = 1000
+LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
+    '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
+}
+# Minimum seconds of voiced audio Silero VAD must detect for a track to be
+# sent to Whisper. Below this, the song is treated as instrumental and the
+# instrumental embedding sentinel is used instead. Setting this very high
+# effectively disables Whisper transcription for most tracks.
+VAD_VOICE_RECOGNITION = int(os.environ.get("VAD_VOICE_RECOGNITION", "25"))
+
+LYRICS_DEFAULT_SAMPLE_RATE = 16000
+LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
+LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
+LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2')
+LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
+# Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
+# and used to build the lyrics voyager index.
+LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
+
+# Minimum number of CHARACTERS (not words) a transcript must have for the
+# lyrics pipeline to compute an embedding. Below this, the song is treated
+# as having no usable lyrics and gets the instrumental sentinel. Char-based
+# instead of word-based so CJK / Thai / Lao scripts — which have no spaces
+# between words — aren't all collapsed to "1 word" by str.split() and
+# spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
+# or ~150 CJK chars (roughly equivalent lyrical content).
+LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
+# Maximum chars per chunk fed to the Marian translator. Stays well below
+# the model's 512-token context window even after tokenizer expansion on
+# rare scripts. The translator splitter applies this as a hard cap when
+# line-break and sentence-punctuation splits have both failed to produce
+# a small-enough fragment (the layer-3 safety net for spaceless scripts).
+LYRICS_TRANSLATOR_CHUNK_CHARS = int(os.environ.get("LYRICS_TRANSLATOR_CHUNK_CHARS", "200"))
+
+# --- SemGrove (Semantic + Groove) merged index weights ---
+# Controls how much each signal contributes to the merged cosine similarity.
+# Values are the squared scale factors so that:
+#   merged cosine = WEIGHT_LYRICS * cos(lyrics) + WEIGHT_AUDIO * cos(audio)
+# Both values must be in [0.0, 1.0]. They are baked into the index at build
+# time; changing them requires rebuilding the SemGrove index.
+SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
+SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
+
+# --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
+# These give us three things at once:
+#   1. analyze_lyrics() can still write a row, so future runs skip the track
+#      instead of re-attempting transcription every time.
+#   2. The vectors are non-zero so cosine similarity is always well-defined.
+#   3. Querying the index with the same sentinel lists every instrumental at
+#      the top, while real songs cannot match them: the e5 sentinel sits on
+#      a single basis axis (cosine to typical e5 embeddings is ~0), and the
+#      axis sentinel is uniformly negative, which a softmax-derived axis_vector
+#      can never produce.
+import numpy as _np
+
+LYRICS_INSTRUMENTAL_EMBEDDING = _np.zeros(LYRICS_EMBEDDING_DIMENSION, dtype=_np.float32)
+LYRICS_INSTRUMENTAL_EMBEDDING[0] = 1.0
+LYRICS_INSTRUMENTAL_EMBEDDING.flags.writeable = False
+
+# Fill value used for every entry of the instrumental axis_vector. Any negative
+# constant works because real axis_vectors come from softmax (always >= 0), so
+# they cannot occupy the negative orthant. Hardcoded so we never compute
+# sqrt() at runtime.
+LYRICS_INSTRUMENTAL_AXIS_FILL = -0.19245009  # = -1 / sqrt(27), precomputed
+
 # Split CLAP models: audio model for analysis, text model for search
 # Default points to the distilled student model (EfficientAT, epoch 36).
 # The companion external-data file (model_epoch_36.onnx.data) must sit next to it.
@@ -362,33 +489,6 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
-# --- MuLan (MuQ) Model Constants (for text search with ONNX Runtime) ---
-MULAN_ENABLED = os.environ.get("MULAN_ENABLED", "false").lower() == "true"
-# MuLan ONNX model directory and file paths
-MULAN_MODEL_DIR = os.environ.get("MULAN_MODEL_DIR", "/app/model/mulan")
-AUDIO_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_audio_encoder.onnx")
-TEXT_MODEL_PATH = os.path.join(MULAN_MODEL_DIR, "mulan_text_encoder.onnx")
-TOKENIZER_PATH = os.path.join(MULAN_MODEL_DIR, "tokenizer.json")
-# Note: .onnx.data files (external weights) are auto-loaded by ONNX Runtime from same directory
-MULAN_EMBEDDING_DIMENSION = int(os.environ.get("MULAN_EMBEDDING_DIMENSION", "512"))
-
-# Category weights for MuLan query generation (affects random query sampling probabilities)
-MULAN_CATEGORY_WEIGHTS_DEFAULT = {
-    "Genre_Style": 1.0,
-    "Instrumentation_Vocal": 1.0,
-    "Emotion_Mood": 1.0,
-    "Voice_Type": 1.0
-}
-MULAN_CATEGORY_WEIGHTS = json.loads(
-    os.environ.get("MULAN_CATEGORY_WEIGHTS", json.dumps(MULAN_CATEGORY_WEIGHTS_DEFAULT))
-)
-
-# Number of random queries to generate for top query recommendations
-MULAN_TOP_QUERIES_COUNT = int(os.environ.get("MULAN_TOP_QUERIES_COUNT", "1000"))
-
-# Duration (in seconds) to keep MuLan models loaded for text search after last use
-MULAN_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("MULAN_TEXT_SEARCH_WARMUP_DURATION", "300"))
-
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
@@ -428,7 +528,6 @@ ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
 ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
 # Minimum distance from the subtract-centroid to keep a candidate (metric-dependent).
 # For angular (cosine-derived) distances this is in [0,1] where higher means more distant.
-ALCHEMY_SUBTRACT_DISTANCE = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE", "0.2"))
 ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_ANGULAR", "0.2"))
 ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
 
@@ -453,6 +552,10 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
 SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
+SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
+    "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
+    "Sonic Fingerprint by AudioMuse-AI",
+)
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums to delete in one run
@@ -545,8 +648,6 @@ try:
         # Read the value from the db and override the variable
         if _key in globals():
             globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
-        else:
-            globals()[_key] = _value
 
     HEADERS = _compute_headers()
 

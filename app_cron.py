@@ -23,11 +23,55 @@ cron_bp = Blueprint('cron_bp', __name__)
 
 @cron_bp.route('/cron')
 def cron_page():
+    """
+    Scheduled tasks admin page.
+    ---
+    tags:
+      - Cron
+    summary: HTML page for managing cron-scheduled tasks (analysis, clustering, sonic fingerprint).
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('cron.html', title = 'AudioMuse-AI - Scheduled Tasks', active='cron')
 
 
 @cron_bp.route('/api/cron', methods=['GET'])
 def get_cron_entries():
+    """
+    List all cron entries.
+    ---
+    tags:
+      - Cron
+    summary: Return every row from the `cron` table with its current state.
+    responses:
+      200:
+        description: List of cron entries.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  task_type:
+                    type: string
+                    enum: [analysis, clustering, sonic_fingerprint]
+                  cron_expr:
+                    type: string
+                    description: 5-field cron expression "min hour day month dow".
+                  enabled:
+                    type: boolean
+                  last_run:
+                    type: number
+                    description: Unix timestamp of the most recent enqueue, or null.
+                  created_at:
+                    type: string
+    """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT id, name, task_type, cron_expr, enabled, last_run, created_at FROM cron ORDER BY id")
@@ -45,6 +89,44 @@ def get_cron_entries():
 
 @cron_bp.route('/api/cron', methods=['POST'])
 def save_cron_entry():
+    """
+    Create or update a cron entry.
+    ---
+    tags:
+      - Cron
+    summary: Insert a new cron row or update an existing one (when `id` is supplied).
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id:
+                type: integer
+                description: Omit to create a new row; include to update an existing one.
+              name:
+                type: string
+              task_type:
+                type: string
+                enum: [analysis, clustering, sonic_fingerprint]
+              cron_expr:
+                type: string
+                description: 5-field cron expression "min hour day month dow".
+              enabled:
+                type: boolean
+    responses:
+      200:
+        description: Saved.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  example: saved
+    """
     data = request.json or {}
     # Expected fields: id (optional), name, task_type, cron_expr, enabled
     db = get_db()
@@ -184,21 +266,41 @@ def run_due_cron_jobs():
                     rq_queue_high.enqueue('tasks.clustering.run_clustering_task', kwargs=clustering_kwargs, job_id=job_id, description='Cron Clustering', job_timeout=-1)
                     logger.info(f"Cron: enqueued clustering job {job_id}")
                 elif task_type == 'sonic_fingerprint':
-                    # Run synchronously, not via queue, and create playlist on media server
+                    # Run synchronously, not via queue. Upsert a stably-named playlist on the
+                    # media server so client-side "online first" sync (e.g. Symfonium on Navidrome)
+                    # keeps tracking the same server playlist across runs (issue #336).
                     from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
+                    from tasks.mediaserver import create_or_replace_playlist
                     from tasks.voyager_manager import create_playlist_from_ids
+                    from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
                     try:
                         fingerprint_results = generate_sonic_fingerprint()
                         if not fingerprint_results:
-                            logger.warning(f"Cron: sonic fingerprint found no results (job_id={job_id})")
+                            logger.warning(
+                                f"Cron: sonic fingerprint found no results — preserving previous playlist (job_id={job_id})"
+                            )
                         else:
                             track_ids = [r['item_id'] for r in fingerprint_results if 'item_id' in r]
-                            playlist_name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
                             try:
-                                playlist_id = create_playlist_from_ids(playlist_name, track_ids)
-                                logger.info(f"Cron: created sonic fingerprint playlist '{playlist_name}' (playlist_id={playlist_id}, job_id={job_id})")
+                                try:
+                                    upserted = create_or_replace_playlist(
+                                        SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
+                                    )
+                                    playlist_id = upserted.get('Id') if upserted else None
+                                    logger.info(
+                                        f"Cron: upserted '{SONIC_FINGERPRINT_CRON_PLAYLIST_NAME}' "
+                                        f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
+                                    )
+                                except NotImplementedError:
+                                    # MPD or unsupported backend: keep the legacy date-suffixed behavior.
+                                    legacy_name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
+                                    playlist_id = create_playlist_from_ids(legacy_name, track_ids)
+                                    logger.info(
+                                        f"Cron: created sonic fingerprint playlist '{legacy_name}' "
+                                        f"(playlist_id={playlist_id}, job_id={job_id})"
+                                    )
                             except Exception as e:
-                                logger.error(f"Cron: error creating playlist for sonic fingerprint: {e}")
+                                logger.error(f"Cron: error creating/updating playlist for sonic fingerprint: {e}")
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception as e:
                         logger.error(f"Cron: error running sonic fingerprint: {e}")

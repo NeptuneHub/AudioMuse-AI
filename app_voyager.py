@@ -125,6 +125,20 @@ def search_tracks_endpoint():
     if len(search_query) < 3:
         return jsonify([])
 
+    # Optional index filter: 'musicnn' (default) or 'sem_grove'
+    index_param = request.args.get('index', 'musicnn', type=str).strip().lower()
+    item_id_filter = None
+    if index_param == 'sem_grove':
+        try:
+            from tasks.sem_grove_manager import get_sem_grove_item_ids
+            item_id_filter = get_sem_grove_item_ids()
+            if not item_id_filter:
+                # Index not loaded yet — don't fall back to showing all songs
+                return jsonify([])
+        except Exception as e:
+            logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
+            return jsonify([])
+
     # Pagination: start / end (0-based). Defaults to first 20 results.
     start = request.args.get('start', 0, type=int)
     end = request.args.get('end', None, type=int)
@@ -136,7 +150,8 @@ def search_tracks_endpoint():
     offset = start
 
     try:
-        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset)
+        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset,
+                                             item_id_filter=item_id_filter)
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries
@@ -429,9 +444,36 @@ def get_similar_tracks_endpoint():
 @voyager_bp.route('/api/max_distance', methods=['GET'])
 def get_max_distance_endpoint():
   """
-  Returns the exact maximum distance from the provided item_id to any other item in the index.
-  Query param: item_id (required)
-  Response: { "max_distance": float, "farthest_item_id": str | null }
+  Maximum distance from a track to any other.
+  ---
+  tags:
+    - Similarity
+  summary: Return the largest cosine/euclidean distance between the given item and any other item in the Voyager index.
+  parameters:
+    - name: item_id
+      in: query
+      required: true
+      schema: { type: string }
+  responses:
+    200:
+      description: Distance and farthest item.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              max_distance:
+                type: number
+                format: float
+              farthest_item_id:
+                type: string
+                nullable: true
+    400:
+      description: Missing item_id.
+    404:
+      description: Item not found in the index.
+    503:
+      description: Voyager index unavailable.
   """
   item_id = request.args.get('item_id')
   if not item_id:
@@ -453,9 +495,38 @@ def get_max_distance_endpoint():
 @voyager_bp.route('/api/track', methods=['GET'])
 def get_track_endpoint():
   """
-  Fetch basic track metadata (title, author) for a given item_id.
-  Query param: item_id (required)
-  Response: { "item_id": str, "title": str, "author": str, "album": str } or 404
+  Basic track metadata.
+  ---
+  tags:
+    - Similarity
+  summary: Return title, author, album, and album_artist for a given item_id.
+  parameters:
+    - name: item_id
+      in: query
+      required: true
+      schema: { type: string }
+  responses:
+    200:
+      description: Track metadata.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              item_id:
+                type: string
+              title:
+                type: string
+              author:
+                type: string
+              album:
+                type: string
+              album_artist:
+                type: string
+    400:
+      description: Missing item_id.
+    404:
+      description: Item not found.
   """
   item_id = request.args.get('item_id')
   if not item_id:

@@ -10,6 +10,7 @@ from tasks.mediaserver_helper import detect_path_format
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
+JELLYFIN_PLAYLIST_BATCH_SIZE = 100
 
 # ##############################################################################
 # JELLYFIN IMPLEMENTATION
@@ -71,6 +72,31 @@ def _get_target_library_ids():
     except Exception as e:
         logger.error(f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True)
         return set()
+
+
+def list_libraries(user_creds=None):
+    """List all music libraries exposed by a Jellyfin server.
+
+    Unlike `_get_target_library_ids()`, this does NOT read `config.MUSIC_LIBRARIES`
+    and does NOT filter — it returns every music library the server reports, so the
+    UI can render a checkbox list. Accepts optional `user_creds` so the setup
+    wizard test flow and the migration assistant can probe a target without
+    mutating global config.
+    """
+    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+    url = f"{base_url}/Library/VirtualFolders"
+    try:
+        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        all_libraries = r.json() or []
+        return [
+            {'id': lib.get('ItemId'), 'name': lib.get('Name')}
+            for lib in all_libraries
+            if isinstance(lib, dict) and lib.get('CollectionType') == 'music' and lib.get('ItemId') and lib.get('Name')
+        ]
+    except Exception as e:
+        logger.error(f"Jellyfin list_libraries failed at '{url}': {e}", exc_info=True)
+        return []
 
 
 def _jellyfin_base_url(user_creds=None):
@@ -386,14 +412,22 @@ def test_connection(user_creds=None):
 
 
 def get_playlist_by_name(playlist_name):
-    """Finds a Jellyfin playlist by its exact name using admin credentials."""
+    """Finds a Jellyfin playlist by its exact name using admin credentials.
+
+    Jellyfin's /Users/{userId}/Items endpoint silently ignores the Name query
+    parameter and returns every playlist regardless of value, so we have to
+    filter client-side by exact match (mirrors the Emby version).
+    """
     url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True, "Name": playlist_name}
+    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         playlists = r.json().get("Items", [])
-        return playlists[0] if playlists else None
+        for playlist in playlists:
+            if playlist.get("Name") == playlist_name:
+                return playlist
+        return None
     except Exception as e:
         logger.error(f"Jellyfin get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
         return None
@@ -478,6 +512,27 @@ def get_last_played_time(item_id, user_creds=None):
         logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
         return None
 
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Jellyfin for a given track ID.
+
+    Uses the Jellyfin Lyrics API (available since Jellyfin 10.8).
+    Returns plain text (newline-separated lines) or None.
+    """
+    try:
+        url = f"{config.JELLYFIN_URL}/Audio/{track_id}/Lyrics"
+        r = requests.get(url, headers=config.HEADERS, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        # Response: {"Lyrics": [{"Text": "line", "Start": 0}, ...]}
+        lyrics_lines = data.get('Lyrics') or []
+        if not lyrics_lines:
+            return None
+        text = '\n'.join(line.get('Text', '') for line in lyrics_lines if line.get('Text'))
+        return text.strip() or None
+    except Exception as exc:
+        logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
+        return None
+
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates a new instant playlist on Jellyfin for a specific user."""
     # Treat empty token ("") as not provided and fall back to admin token from config
@@ -508,4 +563,140 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     except Exception as e:
         logger.error("Exception creating Jellyfin instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
         return None
+
+
+def _get_playlist_entry_ids(playlist_id):
+    """Fetches every PlaylistItemId for an existing Jellyfin playlist (admin creds).
+
+    Each playlist *entry* has both the underlying audio item's ``Id`` and a separate
+    ``PlaylistItemId``. Removal via ``DELETE /Playlists/{Id}/Items?entryIds=…`` requires
+    the latter — passing the audio Id will silently no-op.
+    """
+    url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
+    params = {"UserId": config.JELLYFIN_USER_ID}
+    try:
+        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        items = r.json().get("Items", [])
+        entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
+        if len(entry_ids) != len(items):
+            logger.warning(
+                f"Jellyfin _get_playlist_entry_ids: playlist {playlist_id} had "
+                f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
+            )
+        return entry_ids
+    except Exception as e:
+        logger.error(f"Jellyfin _get_playlist_entry_ids failed for {playlist_id}: {e}", exc_info=True)
+        return None
+
+
+def _remove_playlist_entries(playlist_id, entry_ids):
+    """DELETEs entries from a Jellyfin playlist in batches. Raises on HTTP failure;
+    callers must wrap in try/except if they want to handle the failure (e.g. fall
+    back to delete-and-recreate on Jellyfin < 10.11)."""
+    if not entry_ids:
+        return
+    url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
+    for i in range(0, len(entry_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
+        batch = entry_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
+        params = {"entryIds": ",".join(batch)}
+        r = requests.delete(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+
+
+def _add_items_to_playlist(playlist_id, item_ids):
+    """POSTs items to a Jellyfin playlist in batches (admin creds). Returns True on full success."""
+    if not item_ids:
+        return True
+    url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
+    for i in range(0, len(item_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
+        batch = item_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
+        params = {"ids": ",".join(batch), "userId": config.JELLYFIN_USER_ID}
+        try:
+            r = requests.post(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+        except Exception as e:
+            logger.error(
+                f"Jellyfin _add_items_to_playlist: batch starting at {i} failed for playlist {playlist_id}: {e}",
+                exc_info=True,
+            )
+            return False
+    return True
+
+
+def _create_fresh_playlist(playlist_name, item_ids):
+    """POST a new Jellyfin playlist with ``item_ids``. Returns the playlist dict or None."""
+    url = f"{config.JELLYFIN_URL}/Playlists"
+    first_batch = item_ids[:JELLYFIN_PLAYLIST_BATCH_SIZE]
+    rest = item_ids[JELLYFIN_PLAYLIST_BATCH_SIZE:]
+    body = {"Name": playlist_name, "Ids": first_batch, "UserId": config.JELLYFIN_USER_ID}
+    try:
+        r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        created = r.json()
+    except Exception as e:
+        logger.error(f"Jellyfin _create_fresh_playlist: create failed for '{playlist_name}': {e}", exc_info=True)
+        return None
+
+    new_id = created.get("Id")
+    if not new_id:
+        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but response had no Id")
+        return None
+
+    if rest and not _add_items_to_playlist(new_id, rest):
+        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks")
+
+    logger.info(f"✅ Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+    return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert: create the playlist if missing, or replace its contents.
+
+    Tries to preserve the playlist Id by clearing then repopulating in place. Falls back
+    to deleting the whole playlist and recreating it when the in-place clear fails — this
+    is the case on Jellyfin < 10.11 with API-token auth (jellyfin/jellyfin#13476, server
+    fix shipped in 10.11.0). The fallback yields a new Id every cron tick; upgrade
+    Jellyfin to 10.11+ to keep stable Ids.
+
+    Uses admin credentials. ``user_creds`` is accepted for dispatcher signature parity but
+    not currently used (cron always runs as admin). Returns the playlist dict (with 'Id'/'Name')
+    or None on failure.
+    """
+    if not item_ids:
+        return None
+
+    existing = get_playlist_by_name(playlist_name)
+    if not existing:
+        return _create_fresh_playlist(playlist_name, item_ids)
+
+    playlist_id = existing.get("Id")
+    if not playlist_id:
+        logger.error(f"Jellyfin create_or_replace_playlist: existing playlist '{playlist_name}' has no Id")
+        return None
+
+    entry_ids = _get_playlist_entry_ids(playlist_id)
+    if entry_ids is None:
+        return None
+
+    try:
+        _remove_playlist_entries(playlist_id, entry_ids)
+    except Exception:
+        logger.info(
+            f"Reuse of existing playlist '{playlist_name}' not supported from the Music Server, going to create a new one."
+        )
+        if not delete_playlist(playlist_id):
+            logger.error(
+                f"Jellyfin: failed to delete playlist '{playlist_name}' (Id={playlist_id}) for fallback recreate"
+            )
+            return None
+        return _create_fresh_playlist(playlist_name, item_ids)
+
+    if not _add_items_to_playlist(playlist_id, item_ids):
+        # Items were already cleared above; signal failure so the cron handler doesn't log success.
+        logger.error(f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
+        return None
+
+    logger.info(f"✅ Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
+    return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
 

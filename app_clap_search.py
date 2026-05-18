@@ -13,7 +13,16 @@ clap_search_bp = Blueprint('clap_search_bp', __name__, template_folder='../templ
 
 @clap_search_bp.route('/clap_search', methods=['GET'])
 def clap_search_page():
-    """Render CLAP text search page."""
+    """
+    CLAP text search UI page.
+    ---
+    tags:
+      - CLAP Search
+    summary: HTML page for natural-language music search powered by CLAP audio↔text embeddings.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     from config import CLAP_ENABLED, APP_VERSION
     from tasks.clap_text_search import get_cache_stats
     
@@ -32,28 +41,60 @@ def clap_search_page():
 @clap_search_bp.route('/api/clap/search', methods=['POST'])
 def clap_search_api():
     """
-    API endpoint for CLAP text search.
-    
-    POST JSON:
-    {
-        "query": "upbeat summer songs",
-        "limit": 100
-    }
-    
-    Returns:
-    {
-        "query": "upbeat summer songs",
-        "results": [
-            {
-                "item_id": "123",
-                "title": "Song Title",
-                "author": "Artist Name",
-                "similarity": 0.85
-            },
-            ...
-        ],
-        "count": 100
-    }
+    Run a CLAP text-to-audio similarity search.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return the top-N tracks whose CLAP audio embedding best matches a free-text query.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [query]
+            properties:
+              query:
+                type: string
+                minLength: 3
+                example: "upbeat summer songs"
+              limit:
+                type: integer
+                minimum: 1
+                maximum: 500
+                default: 100
+    responses:
+      200:
+        description: Search results sorted by descending similarity.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                count:
+                  type: integer
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      title:
+                        type: string
+                      author:
+                        type: string
+                      similarity:
+                        type: number
+                        format: float
+      400:
+        description: CLAP disabled, missing query, or query too short.
+      500:
+        description: Internal error during search.
+      503:
+        description: CLAP cache not loaded yet (run analysis first).
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
@@ -111,14 +152,29 @@ def clap_search_api():
 @clap_search_bp.route('/api/clap/warmup', methods=['POST'])
 def warmup_model_api():
     """
-    API endpoint to preload DCLAP model and start/reset 10-minute timer.
-    Call this when the search page loads to ensure fast searches.
-    
-    Returns:
-    {
-        "loaded": true,
-        "expiry_seconds": 600
-    }
+    Warm up the CLAP text-search model.
+    ---
+    tags:
+      - CLAP Search
+    summary: Preload the DCLAP model and reset the 10-minute idle-eviction timer.
+    description: Call this when the search page loads to ensure subsequent queries are fast.
+    responses:
+      200:
+        description: Model loaded; cache timer reset.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                loaded:
+                  type: boolean
+                expiry_seconds:
+                  type: integer
+                  example: 600
+      400:
+        description: CLAP search is disabled.
+      500:
+        description: Warmup failed.
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import warmup_text_search_model
@@ -143,13 +199,23 @@ def warmup_model_api():
 @clap_search_bp.route('/api/clap/warmup/status', methods=['GET'])
 def warmup_status_api():
     """
-    Get current warm cache status.
-    
-    Returns:
-    {
-        "active": true,
-        "seconds_remaining": 423
-    }
+    CLAP warmup status.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return whether the warm cache is still active and how long until it expires.
+    responses:
+      200:
+        description: Warm cache state.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                seconds_remaining:
+                  type: integer
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_warm_cache_status
@@ -167,7 +233,31 @@ def warmup_status_api():
 
 @clap_search_bp.route('/api/clap/cache/refresh', methods=['POST'])
 def refresh_cache_api():
-    """Refresh CLAP cache from database."""
+    """
+    Refresh the CLAP audio-embedding cache.
+    ---
+    tags:
+      - CLAP Search
+    summary: Reload the CLAP cache from the database (call after analysis completes).
+    responses:
+      200:
+        description: Cache refreshed; updated stats returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                message:
+                  type: string
+                stats:
+                  type: object
+      400:
+        description: CLAP disabled.
+      500:
+        description: Refresh failed.
+    """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import refresh_clap_cache, get_cache_stats
     
@@ -201,7 +291,27 @@ def refresh_cache_api():
 
 @clap_search_bp.route('/api/clap/stats', methods=['GET'])
 def cache_stats_api():
-    """Get CLAP cache statistics."""
+    """
+    CLAP cache stats.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return cache size, freshness, and the CLAP_ENABLED flag.
+    responses:
+      200:
+        description: Cache statistics.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clap_enabled:
+                  type: boolean
+                num_embeddings:
+                  type: integer
+                last_refresh:
+                  type: string
+    """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cache_stats
     
@@ -214,8 +324,28 @@ def cache_stats_api():
 @clap_search_bp.route('/api/clap/top_queries', methods=['GET'])
 def top_queries_api():
     """
-    Return precomputed top 50 diverse queries.
-    Returns empty array if not ready yet (still computing in background).
+    Top diverse CLAP queries.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return the precomputed top-50 diverse search queries shown as suggestions.
+    description: |
+      Returns an empty list with `ready: false` if the background diversity
+      computation hasn't finished yet.
+    responses:
+      200:
+        description: Suggested queries.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                queries:
+                  type: array
+                  items:
+                    type: string
+                ready:
+                  type: boolean
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cached_top_queries

@@ -3,6 +3,7 @@ CLAP Text Search Manager
 Provides in-memory caching and fast text-based music search using CLAP embeddings.
 """
 
+import gc
 import io
 import json
 import logging
@@ -70,7 +71,8 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
             item_id = row['item_id']
             metadata_map[item_id] = {
                 'title': row.get('title', ''),
-                'author': row.get('author', '')
+                'author': row.get('author', ''),
+                'album': row.get('album', ''),
             }
     except Exception:
         pass
@@ -266,6 +268,8 @@ def build_and_store_clap_index(db_conn=None):
                 temp_file_path = tmp.name
             try:
                 index_builder.save(temp_file_path)
+                del index_builder
+                gc.collect()
                 with open(temp_file_path, 'rb') as f:
                     index_binary_data = f.read()
             finally:
@@ -505,7 +509,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                 if item_id is None:
                     continue
 
-                metadata = metadata_map.get(item_id, {'title': '', 'author': ''})
+                metadata = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
                 author = metadata.get('author', '')
 
                 if artist_cap and author:
@@ -519,6 +523,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                     'item_id': item_id,
                     'title': metadata.get('title', ''),
                     'author': metadata.get('author', ''),
+                    'album': metadata.get('album', ''),
                     'similarity': similarity
                 })
 

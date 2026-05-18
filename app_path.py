@@ -105,7 +105,14 @@ path_bp = Blueprint('path_bp', __name__, template_folder='../templates')
 @path_bp.route('/path', methods=['GET'])
 def path_page():
     """
-    Serves the frontend page for finding a path between songs.
+    Song-path UI page.
+    ---
+    tags:
+      - Path
+    summary: HTML page for building a sequence of similar songs between two endpoints.
+    responses:
+      200:
+        description: HTML page rendered.
     """
     # Pass the server default for path_fix_size so the UI checkbox reflects config/env
     return render_template('path.html', path_fix_size=PATH_FIX_SIZE, title = 'AudioMuse-AI - Song Path', active='path')
@@ -113,9 +120,75 @@ def path_page():
 @path_bp.route('/api/find_path', methods=['GET'])
 def find_path_endpoint():
     """
-    Finds a path of similar songs between a start and end track.
-    Supports mood endpoints: pass start_mood or end_mood instead of song IDs.
-    Only one endpoint can be a mood (not both).
+    Find a path of similar songs between two endpoints.
+    ---
+    tags:
+      - Path
+    summary: Build a smooth sequence between a start and end specified by song id, mood, or anchor.
+    description: |
+      Each endpoint can be a song id, a mood label, or an alchemy anchor.
+      Only one endpoint may be a mood/anchor at a time (the other must be a
+      song id). Mood / anchor endpoints are resolved to the nearest real song
+      by walking from the other endpoint toward the centroid by `mood_pct`.
+    parameters:
+      - name: start_song_id
+        in: query
+        schema: { type: string }
+        description: Song id for the start endpoint.
+      - name: end_song_id
+        in: query
+        schema: { type: string }
+        description: Song id for the end endpoint.
+      - name: start_mood
+        in: query
+        schema:
+          type: string
+          enum: [happy, sad, aggressive, relaxed, danceable]
+      - name: end_mood
+        in: query
+        schema:
+          type: string
+          enum: [happy, sad, aggressive, relaxed, danceable]
+      - name: start_anchor
+        in: query
+        schema: { type: integer }
+        description: Alchemy anchor id for the start endpoint.
+      - name: end_anchor
+        in: query
+        schema: { type: integer }
+      - name: mood_pct
+        in: query
+        schema: { type: integer, default: 100 }
+        description: 0-100. How far to interpolate from the other endpoint toward the mood/anchor centroid (100 = use the centroid directly).
+      - name: max_steps
+        in: query
+        schema: { type: integer }
+        description: Maximum number of intermediate songs. Defaults to PATH_DEFAULT_LENGTH from config.
+      - name: path_fix_size
+        in: query
+        schema: { type: boolean }
+        description: When true, force the path to exactly `max_steps` songs. Defaults to PATH_FIX_SIZE.
+    responses:
+      200:
+        description: Path found.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: array
+                  items:
+                    type: object
+                total_distance:
+                  type: number
+                  format: float
+      400:
+        description: Invalid combination of endpoints, unknown mood, or both endpoints identical.
+      404:
+        description: Mood/anchor could not be resolved or no path found within `max_steps`.
+      500:
+        description: Unexpected server error.
     """
     start_song_id = request.args.get('start_song_id')
     end_song_id = request.args.get('end_song_id')

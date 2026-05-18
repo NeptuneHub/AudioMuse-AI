@@ -2,11 +2,8 @@
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
-<p align="center">
-  <a href="https://docs.google.com/forms/d/e/1FAIpQLSfl9Qd5UW-0sI-pcUkFtHWFwwphhErw_4Btao34CPL8TQ93rQ/viewform">
-    Please vote for the AudioMuse-AI best functionality
-  </a>
-</p>
+> Tell the world how AudioMuse-AI changed your music experience in your own language.  
+> [Leave your quote on the Wall of Quotes](https://github.com/NeptuneHub/AudioMuse-AI/discussions/528)
 
 # **AudioMuse-AI - Where Music Takes Shape** 
 
@@ -82,7 +79,7 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
    cp deployment/.env.example deployment/.env
    ```
 
-   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database password, but you can also override other PostgreSQL and Redis connection parameters if you want to reuse already existent deployment:
+   You can customize the setup by editing `deployment/.env` before startup. As a minimum, it is suggested to change the default database user and password, but you can also override other PostgreSQL and Redis connection parameters if needed:
 
    ```env
    POSTGRES_PASSWORD=your-secure-password
@@ -94,17 +91,21 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
    ```
 
 3. **Access the application:**
-   Open your browser at `http://localhost:8000`
+   - Web UI: `http://localhost:8000`
+   - Interactive API documentation (Swagger UI): `http://localhost:8000/apidocs/`
+     (when authentication is enabled, log in via the Web UI first — `/apidocs/`
+     is gated by the same JWT cookie as the rest of the app.)
 
 4. **Run your first analysis:**
    - Navigate to "Analysis and Clustering" page
    - Click "Start Analysis" to scan your library
    - Wait for completion, then explore features like clustering and music map
 
-**Stopping the services:**
+5. **Stopping the services:**
 ```bash
 docker compose -f deployment/docker-compose.yaml down
 ```
+> **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
 ## **Hardware Requirements**
 
@@ -118,6 +119,8 @@ AudioMuse-AI has been tested on:
 * DISK: NVME SSD storage
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
+
+> **IMPORTANT**: If you use virtualization (e.g. Proxmox), make sure to pass through the host CPU. QEMU's virtual CPU lacks AVX2 support, which will prevent AudioMuse-AI from starting.
 
 ## **Docker Image Tagging Strategy**
 

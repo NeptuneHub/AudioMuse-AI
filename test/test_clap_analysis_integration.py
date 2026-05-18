@@ -14,6 +14,7 @@
 #       CLAP ONNX models:
 #         - DCLAP audio: model_epoch_36.onnx + model_epoch_36.onnx.data in test/models/
 #         - Text: clap_text_model.onnx in test/models/
+import os
 import sys
 import types
 from pathlib import Path
@@ -86,10 +87,19 @@ def test_clap_analysis_runs_and_shows_output():
     except Exception as e:
         pytest.skip(f"librosa not importable: {e}")
 
+    # Force Transformers into offline mode for this integration test.
+    os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
+    os.environ.setdefault('HF_HUB_OFFLINE', '1')
+    os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
+
     # Ensure the project is importable and provide stubs
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     _ensure_stubs()
+
+    # Validate that the required offline tokenizer exists. Failure here should fail the test.
+    from transformers import AutoTokenizer
+    AutoTokenizer.from_pretrained('roberta-base', local_files_only=True)
 
     # Override config before importing CLAP analyzer
     import config

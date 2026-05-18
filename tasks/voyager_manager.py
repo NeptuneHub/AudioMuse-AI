@@ -1,3 +1,4 @@
+import gc
 import os
 import json
 import logging
@@ -5,7 +6,7 @@ import tempfile
 import numpy as np
 import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
-import io 
+import io
 
 # Attempt to import Voyager (may be missing on non-AVX systems)
 try:
@@ -382,6 +383,8 @@ def build_and_store_voyager_index(db_conn=None):
                 temp_file_path = tmp.name
 
             voyager_index_builder.save(temp_file_path)
+            del voyager_index_builder
+            gc.collect()
 
             with open(temp_file_path, 'rb') as f:
                 index_binary_data = f.read()
@@ -1779,13 +1782,15 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
+def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
+                          item_id_filter: set = None):
     """
     Deterministic substring search over title, author and album.
 
     - Accent and case insensitive
     - Each token must match title, author or album
     - Ranking priority: title > author > album
+    - item_id_filter: optional set of item_ids to restrict results to
     """
 
     from app_helper import get_db
@@ -1826,10 +1831,23 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
         where_sql = " AND ".join(where_clauses)
         score_sql = " + ".join(score_clauses)
 
+        # Optionally restrict to a specific set of item_ids (e.g. SemGrove index)
+        # IMPORTANT: id_filter params must be inserted *after* the WHERE token params
+        # but *before* the score/ORDER BY params so they match the SQL position.
+        id_filter_sql = ""
+        id_filter_params: list = []
+        if item_id_filter:
+            id_placeholders = ",".join(["%s"] * len(item_id_filter))
+            id_filter_sql = f" AND item_id IN ({id_placeholders})"
+            id_filter_params = list(item_id_filter)
+
+        # Final param list order must mirror SQL: WHERE tokens → WHERE id filter → ORDER BY scores → LIMIT/OFFSET
+        all_params = params[:len(tokens)] + id_filter_params + params[len(tokens):]
+
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}
+            WHERE {where_sql}{id_filter_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,
@@ -1837,10 +1855,10 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0):
             LIMIT %s OFFSET %s
         """
 
-        params.append(limit)
-        params.append(offset)
+        all_params.append(limit)
+        all_params.append(offset)
 
-        cur.execute(query, tuple(params))
+        cur.execute(query, tuple(all_params))
         results = [dict(row) for row in cur.fetchall()]
 
     except Exception as e:

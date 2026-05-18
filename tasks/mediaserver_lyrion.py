@@ -25,15 +25,39 @@ def _decode_lyrion_url(url):
     return unquote(url)
 
 
-def _lyrion_is_spotify(item):
-    """Detect Spotify/stream-only tracks in Lyrion sample data."""
+_LYRION_REMOTE_SERVICES = ('spotify', 'qobuz', 'tidal', 'wimp', 'youtube', 'deezer')
+
+
+def _lyrion_is_remote(item):
+    """Detect remote/stream-only tracks in Lyrion data.
+
+    Catches Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer (and similar
+    streaming services). Uses a substring match across every field a
+    Lyrion plugin might tag a track with — `url` / `path` / `Path`
+    (custom-protocol URLs like ``spotify:track:...`` or HTTPS API URLs
+    like ``https://api.spotify.com/...``) plus the metadata fields
+    ``genre`` / ``type`` / ``service`` / ``source`` (case-insensitive).
+    """
     if not isinstance(item, dict):
         return False
-    url = item.get('url') or item.get('path') or ''
-    if isinstance(url, str) and url.startswith('spotify:'):
-        return True
-    genre = item.get('genre') or item.get('type') or ''
-    return isinstance(genre, str) and genre.lower() == 'spotify'
+    # URL / path: catches both ``spotify:track:...`` style scheme URIs and
+    # ``https://api.spotify.com/...`` HTTPS URLs that some plugins emit.
+    for key in ('url', 'path', 'Path'):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            lower = val.lower()
+            for svc in _LYRION_REMOTE_SERVICES:
+                if svc in lower:
+                    return True
+    # Plain metadata tags some plugins set instead of a scheme URI.
+    for key in ('genre', 'type', 'service', 'source'):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            lower = val.lower()
+            for svc in _LYRION_REMOTE_SERVICES:
+                if svc in lower:
+                    return True
+    return False
 
 
 def _lyrion_track(item):
@@ -308,6 +332,60 @@ def _get_target_music_folder_ids():
     logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
     return music_folder_ids
 
+def list_libraries(user_creds=None):
+    """List all music folders exposed by a Lyrion (LMS) server.
+
+    Unlike `_get_target_music_folder_ids()`, this does NOT read
+    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the ``musicfolder``
+    JSON-RPC command. ``_jsonrpc_request`` already forwards ``user_creds``.
+
+    The persisted ``name`` is the folder's filesystem **path** when the
+    server reports one, otherwise the folder's display name. Lyrion's
+    scan-time filter (``_get_target_paths_for_filtering``) treats
+    ``MUSIC_LIBRARIES`` as paths and substring-matches them against album
+    file URLs — so the UI must persist a value the filter can match
+    against. A bare folder name like ``Library_A`` works when the file
+    paths under that folder contain it (the typical Lyrion setup).
+
+    Notes on the Lyrion CLI:
+      * The command is ``musicfolder`` (singular). Some legacy docs and
+        wrappers use ``musicfolders`` (plural); on Lyrion 9.0.x that
+        variant drops the connection without responding.
+      * Folder entries report the display name under ``filename`` on
+        9.0.x (not ``name``/``folder``), so we accept all three.
+    """
+    response = _jsonrpc_request("musicfolder", [0, 999999], user_creds=user_creds)
+    if not response:
+        return []
+
+    all_folders = []
+    if isinstance(response, dict):
+        if "folder_loop" in response:
+            all_folders = response["folder_loop"]
+        elif "folders_loop" in response:
+            all_folders = response["folders_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    all_folders = v
+                    break
+    elif isinstance(response, list):
+        all_folders = response
+
+    libraries = []
+    for folder in all_folders or []:
+        if not isinstance(folder, dict):
+            continue
+        folder_id = folder.get('id') or folder.get('folder_id')
+        folder_name = folder.get('filename') or folder.get('name') or folder.get('folder')
+        folder_path = folder.get('path') or folder.get('url')
+        if folder_id is None or not folder_name:
+            continue
+        display_name = folder_path or folder_name
+        libraries.append({'id': str(folder_id), 'name': display_name})
+    return libraries
+
+
 def _get_first_player():
     """Gets the first available player from Lyrion for web interface operations."""
     try:
@@ -326,10 +404,11 @@ def _get_first_player():
         logger.error(f"Error getting Lyrion player: {e}")
         return "10.42.6.0"  # Use the player from your example as fallback
 
-def _jsonrpc_request(method, params, player_id="", user_creds=None):
+def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None):
     """
     Helper to make a JSON-RPC request to the Lyrion server, optionally using override creds.
     Returns the 'result' field on success, or None on failure.
+    ``timeout`` overrides the default REQUESTS_TIMEOUT for time-sensitive calls.
     """
     base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.LYRION_URL).rstrip('/')
     url = f"{base_url}/jsonrpc.js"
@@ -352,7 +431,7 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None):
             with requests.Session() as s:
                 s.headers.update({"Content-Type": "application/json"})
                 # Use configured timeout so slow servers can be handled
-                r = s.post(url, json=payload, timeout=REQUESTS_TIMEOUT, auth=auth)
+                r = s.post(url, json=payload, timeout=timeout or REQUESTS_TIMEOUT, auth=auth)
 
             r.raise_for_status()
             response_data = r.json()
@@ -897,7 +976,7 @@ def test_connection(user_creds=None):
 
     sample = []
     for r in raws:
-        if _lyrion_is_spotify(r):
+        if _lyrion_is_remote(r):
             continue
         sample.append(_lyrion_track(r))
 
@@ -1080,8 +1159,12 @@ def get_all_playlists():
 def delete_playlist(playlist_id):
     """Deletes a playlist on Lyrion using JSON-RPC."""
     # The correct command is 'playlists delete'.
+    # LMS returns an empty dict ({}) on success; `_jsonrpc_request` raises on
+    # transport/protocol errors. So the only way to reach here with `response`
+    # set is server success — including the empty-dict case, which `if response:`
+    # used to mis-treat as failure.
     response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
-    if response:
+    if response is not None:
         logger.info(f"🗑️ Deleted Lyrion playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Lyrion")
@@ -1124,42 +1207,33 @@ def get_tracks_from_album(album_id, user_creds=None):
         logger.warning(f"Lyrion API response for tracks of album {album_id} did not contain any song entries.")
         return []
 
-    # Robust Spotify detection: check several possible fields and make it case-insensitive.
-    def is_spotify_track(item: dict) -> bool:
-        for key in ("genre", "service", "source"):
-            val = item.get(key)
-            if isinstance(val, str) and "spotify" in val.lower():
-                return True
-        # Also check the URL/path for spotify links
-        url = (item.get("url") or item.get("Path") or item.get("path") or "")
-        if isinstance(url, str) and "spotify" in url.lower():
-            return True
-        return False
-
+    # Filter remote/streaming-service tracks (Spotify, Qobuz, Tidal, Wimp,
+    # YouTube, Deezer, ...) — same detector used by the bootstrap sample
+    # scanner so behavior stays consistent across the codebase.
     local_songs = []
     skipped_tracks = []
     for s in songs:
-        if is_spotify_track(s):
+        if _lyrion_is_remote(s):
             skipped_tracks.append(s)
         else:
             local_songs.append(s)
 
     if skipped_tracks:
         skipped_count = len(skipped_tracks)
-        logger.info(f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from Spotify or are non-downloadable.")
+        logger.info(f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from a remote streaming service (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or are non-downloadable.")
         # Log concise identifying information for each skipped track so operators can verify.
         for st in skipped_tracks:
             sk_id = st.get('id') or st.get('Id') or st.get('track_id')
             sk_title = st.get('title') or st.get('name') or st.get('Name')
             # Use track artist prioritization for logging too
-            sk_artist = (st.get('trackartist') or st.get('contributor') or 
-                        st.get('artist') or st.get('albumartist') or 
+            sk_artist = (st.get('trackartist') or st.get('contributor') or
+                        st.get('artist') or st.get('albumartist') or
                         st.get('band') or 'Unknown Artist')
             sk_url = st.get('url') or st.get('Path') or st.get('path')
             logger.info(f"Skipped track - id: {sk_id!r}, title: {sk_title!r}, artist: {sk_artist!r}, url/path: {sk_url!r}")
 
     if not local_songs and songs:
-        logger.info(f"Album {album_id} contains only Spotify or non-downloadable tracks and will be skipped.")
+        logger.info(f"Album {album_id} contains only remote streaming-service tracks (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or non-downloadable tracks and will be skipped.")
 
     # Map Lyrion API keys to our standard format with safe fallbacks.
     mapped = []
@@ -1259,7 +1333,55 @@ def get_last_played_time(item_id):
     logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
     return None
 
+def get_lyrics(track_id: str, timeout: float = 2.5):
+    """Fetch embedded lyrics from Lyrion (LMS) for a given track ID.
+
+    Uses the LMS JSON-RPC ``songinfo`` command with the ``l`` (lyrics) tag.
+    Returns plain text or None.
+    """
+    try:
+        result = _jsonrpc_request(
+            'songinfo', [0, 100, f'track_id:{track_id}', 'tags:l'],
+            timeout=timeout,
+        )
+        if not result:
+            return None
+        for entry in result.get('songinfo_loop', []):
+            lyrics = entry.get('lyrics') or entry.get('Lyrics')
+            if lyrics:
+                return str(lyrics).strip() or None
+        return None
+    except Exception as exc:
+        logger.debug('Lyrion get_lyrics failed for %s: %s', track_id, exc)
+        return None
+
 def create_instant_playlist(playlist_name, item_ids):
     """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids)
+
+
+def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    """Cron-only upsert for Lyrion.
+
+    Lyrion's `_add_to_playlist` is destructive — it deletes-and-resaves under the original
+    name and may assign a new numeric id. True ID preservation isn't possible with the
+    current primitives, so when the playlist exists we delete it and recreate with the
+    same name. Lyrion clients track playlists by name, so the unstable numeric id rarely
+    matters; the important invariant is that we don't end up with two playlists sharing
+    a name (which is why we bail when delete fails instead of forging ahead).
+    """
+    if not item_ids:
+        return None
+
+    existing = get_playlist_by_name(playlist_name)
+    if existing:
+        old_id = existing.get('Id')
+        if old_id and not delete_playlist(old_id):
+            logger.error(
+                f"Lyrion create_or_replace_playlist: failed to delete existing '{playlist_name}' "
+                f"(id={old_id}); aborting to avoid creating a duplicate"
+            )
+            return None
+
+    return _create_playlist_batched(playlist_name, item_ids)

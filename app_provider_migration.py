@@ -150,6 +150,17 @@ def _apply_source_path_overrides(old_rows, overrides):
 
 @migration_bp.route('/provider-migration')
 def provider_migration_page():
+    """
+    Provider migration wizard page.
+    ---
+    tags:
+      - Provider Migration
+    summary: HTML wizard for migrating analysis state between media-server providers (Jellyfin/Emby/Navidrome/Lyrion).
+    description: Resumes any in-flight session so a page refresh lands on the right step.
+    responses:
+      200:
+        description: Wizard HTML rendered with `active_session_id` if a non-terminal session exists.
+    """
     # Look up an in-flight migration so a page refresh can resume the wizard
     # at the right step instead of creating a brand new session.
     active_session_id = None
@@ -185,6 +196,39 @@ def provider_migration_page():
 
 @migration_bp.route('/api/migration/session/start', methods=['POST'])
 def session_start():
+    """
+    Start a new migration session.
+    ---
+    tags:
+      - Provider Migration
+    summary: Create a `migration_session` row and prune any already-terminal sessions.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [target_type, target_creds]
+            properties:
+              target_type:
+                type: string
+                enum: [jellyfin, emby, navidrome, lyrion]
+              target_creds:
+                type: object
+                additionalProperties: true
+    responses:
+      200:
+        description: Session id returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: integer
+      400:
+        description: Unsupported target_type.
+    """
     payload = request.get_json(silent=True) or {}
     target_type = (payload.get('target_type') or '').lower()
     target_creds = payload.get('target_creds') or {}
@@ -215,6 +259,39 @@ def session_start():
 
 @migration_bp.route('/api/migration/session/<int:session_id>', methods=['GET'])
 def session_get(session_id):
+    """
+    Inspect a migration session.
+    ---
+    tags:
+      - Provider Migration
+    summary: Return current status and JSON state for a session.
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: Session summary.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                source_type:
+                  type: string
+                target_type:
+                  type: string
+                status:
+                  type: string
+                  enum: [in_progress, dry_run_ready, completed, failed]
+                state:
+                  type: object
+      404:
+        description: Session not found.
+    """
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
@@ -246,11 +323,28 @@ def session_get(session_id):
 
 @migration_bp.route('/api/migration/session/<int:session_id>', methods=['DELETE'])
 def session_discard(session_id):
-    """Delete a migration_session row. Used by the wizard's Discard button
-    when the user wants to throw away a resumed session (e.g. creds went
-    stale) and start over from scratch. Refuses to touch sessions that are
-    already in a terminal state — those are pruned automatically on the
-    next session_start."""
+    """
+    Discard an in-flight migration session.
+    ---
+    tags:
+      - Provider Migration
+    summary: Delete a non-terminal session row (used by the wizard's Discard button).
+    description: |
+      Refuses to touch sessions in `completed` or `failed` status — those are
+      pruned automatically on the next `session_start`.
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: Session deleted.
+      400:
+        description: Session is already in a terminal state.
+      404:
+        description: Session not found.
+    """
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
@@ -269,6 +363,48 @@ def session_discard(session_id):
 
 @migration_bp.route('/api/migration/probe/test', methods=['POST'])
 def probe_test():
+    """
+    Test a target-provider connection.
+    ---
+    tags:
+      - Provider Migration
+    summary: Probe a media-server provider with given credentials and report path quality.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [type, creds]
+            properties:
+              type:
+                type: string
+                enum: [jellyfin, emby, navidrome, lyrion]
+              creds:
+                type: object
+                additionalProperties: true
+    responses:
+      200:
+        description: Probe result (always 200; check `ok` for success).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                error:
+                  type: string
+                path_format:
+                  type: string
+                  enum: [absolute, relative, virtual, none]
+                sample_count:
+                  type: integer
+                warnings:
+                  type: array
+                  items:
+                    type: string
+    """
     payload = request.get_json(silent=True) or {}
     t = (payload.get('type') or '').lower()
     creds = payload.get('creds') or {}
@@ -283,8 +419,183 @@ def probe_test():
     return jsonify(result)
 
 
+@migration_bp.route('/api/migration/libraries', methods=['POST'])
+def libraries_list():
+    """
+    List target-provider music libraries.
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 2 — return the target provider's libraries plus the user's prior checkbox selection.
+    description: Uses session-stored credentials, never `config`, so the live provider keeps working.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+    responses:
+      200:
+        description: Library list (always 200; check `error` for failures).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                libraries:
+                  type: array
+                  items:
+                    type: object
+                unsupported:
+                  type: boolean
+                selected_libraries:
+                  type: array
+                  items:
+                    type: string
+                error:
+                  type: string
+      400:
+        description: Missing session_id.
+      404:
+        description: Session not found.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    session = _fetch_session_creds(session_id)
+    if session is None:
+        return jsonify({'error': 'session not found'}), 404
+    target_type, creds = session
+    state = _load_state(session_id) or {}
+    selected = state.get('selected_libraries')
+    try:
+        result = provider_probe.list_libraries(target_type, creds)
+    except Exception as e:
+        logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
+        return jsonify({
+            'libraries': [],
+            'unsupported': False,
+            'selected_libraries': selected,
+            'error': str(e),
+        }), 200
+    return jsonify({
+        'libraries': result.get('libraries', []),
+        'unsupported': bool(result.get('unsupported', False)),
+        'selected_libraries': selected,
+    }), 200
+
+
+@migration_bp.route('/api/migration/libraries/select', methods=['POST'])
+def libraries_select():
+    """
+    Persist library selection into session state.
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 2 — save the user's library checkbox selection (null = no filter, [] = normalized to null).
+    description: |
+      Library names cannot contain commas because `MUSIC_LIBRARIES` is stored
+      as a comma-separated string and split at scan time.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+              libraries:
+                type: array
+                nullable: true
+                items:
+                  type: string
+    responses:
+      200:
+        description: Selection saved.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                selected_libraries:
+                  type: array
+                  nullable: true
+                  items:
+                    type: string
+      400:
+        description: Missing session_id, libraries not a list, or comma-containing library name.
+    """
+    payload = request.get_json(silent=True) or {}
+    session_id = payload.get('session_id')
+    if session_id is None:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    libraries = payload.get('libraries')
+    if libraries is not None and not isinstance(libraries, list):
+        return jsonify({'error': 'libraries must be a list of names or null'}), 400
+
+    if isinstance(libraries, list):
+        cleaned = [str(name).strip() for name in libraries if str(name).strip()]
+        # MUSIC_LIBRARIES is stored as a comma-separated string and split on
+        # ',' at scan time, so a name containing a comma would silently
+        # corrupt the round-trip into multiple bogus fragments.
+        if any(',' in name for name in cleaned):
+            return jsonify({'error': 'Library names cannot contain commas.'}), 400
+        selected = cleaned or None
+    else:
+        selected = None
+
+    _update_state(session_id, selected_libraries=selected)
+    return jsonify({'ok': True, 'selected_libraries': selected}), 200
+
+
 @migration_bp.route('/api/migration/search-albums', methods=['POST'])
 def search_albums():
+    """
+    Search target-provider albums.
+    ---
+    tags:
+      - Provider Migration
+    summary: Free-text album search against the target provider (used by step 4 manual matching).
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+              query:
+                type: string
+    responses:
+      200:
+        description: Album candidates.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                albums:
+                  type: array
+                  items:
+                    type: object
+      404:
+        description: Session not found.
+      500:
+        description: Provider error during search.
+    """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     query = payload.get('query') or ''
@@ -306,13 +617,51 @@ def search_albums():
 
 @migration_bp.route('/api/migration/source-paths/refresh', methods=['POST'])
 def source_paths_refresh():
-    """Re-probe the currently active provider and build a {item_id: real_path}
-    override map, stored in ``migration_session.state->'source_path_overrides'``.
-
-    Called when the UI detects that ``score.file_path`` values are unusable
-    (e.g. Navidrome was analyzed without "Report Real Path"). After refresh,
-    the dry-run can use the fresh paths for matcher tiers 1 (path) and
-    2 (path tail) without the user rebuilding their analysis from scratch.
+    """
+    Refresh source-provider real paths.
+    ---
+    tags:
+      - Provider Migration
+    summary: Re-probe the currently active provider to build a {item_id → real_path} override map.
+    description: |
+      Called when `score.file_path` is unusable (e.g. Navidrome analyzed
+      without "Report Real Path"). After refresh, the dry-run can use the
+      fresh paths for matcher tiers 1 and 2 without rebuilding analysis
+      from scratch.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+    responses:
+      200:
+        description: Refresh result with override count and any warnings.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
+                source_type:
+                  type: string
+                path_format:
+                  type: string
+                overrides_count:
+                  type: integer
+                warnings:
+                  type: array
+                  items:
+                    type: string
+      400:
+        description: Missing session_id, or current provider doesn't support path refresh.
+      500:
+        description: Provider probe failed.
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
@@ -359,16 +708,59 @@ def source_paths_refresh():
 
 @migration_bp.route('/api/migration/dry-run', methods=['POST'])
 def dry_run():
-    """Fetch all tracks from the target provider, match them against score,
-    persist the result in ``migration_session.state->'dry_run'``.
-
-    Before matching, the source ``score.file_path`` values are sanity-checked.
-    If they don't look like absolute filesystem paths (e.g. Navidrome library
-    analyzed without Report Real Path), the route returns 409 with
-    ``needs_source_refresh=True`` so the UI can prompt the user to enable
-    Real Path and hit ``/source-paths/refresh``. Pass
-    ``bypass_source_check=True`` to skip the gate and use metadata-only
-    matching."""
+    """
+    Run the migration matcher (dry-run).
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 3 — match score rows against the target provider's tracks and persist the result.
+    description: |
+      Source `score.file_path` values are sanity-checked first. If they don't
+      look like absolute filesystem paths, the endpoint returns **409** with
+      `needs_source_refresh=true` so the UI can prompt the user to enable
+      "Report Real Path" and call `/source-paths/refresh`. Pass
+      `bypass_source_check=true` to skip the gate and use metadata-only
+      matching.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+              bypass_source_check:
+                type: boolean
+                default: false
+              allow_title_artist_only:
+                type: boolean
+                default: false
+                description: Allow the matcher to fall back to title+artist when album metadata differs.
+    responses:
+      200:
+        description: Dry-run summary.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tier_counts:
+                  type: object
+                matched:
+                  type: integer
+                unmatched:
+                  type: integer
+                unmatched_albums_count:
+                  type: integer
+      404:
+        description: Session not found.
+      409:
+        description: Source paths look unusable; refresh required.
+      500:
+        description: Target provider error.
+    """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     bypass_source_check = bool(payload.get('bypass_source_check'))
@@ -422,6 +814,9 @@ def dry_run():
         'match_tiers':       result['match_tiers'],
         'tier_counts':       result['tier_counts'],
         'unmatched_albums':  _albums_payload(result['unmatched_by_album']),
+        # Persist the full count so the wizard can warn the user when the
+        # rendered list is only a truncated sample.
+        'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     # Also snapshot new track metadata keyed by new_id for the post-execute
     # score refresh (file_path, title, artist, album, year).
@@ -449,15 +844,57 @@ def dry_run():
 
 @migration_bp.route('/api/migration/match-album', methods=['POST'])
 def match_album():
-    """User picked a target album for one of the unmatched old albums. We
-    fetch the target album's tracks and auto-match inside it by title.
-
-    With ``rematch: true`` in the payload, the endpoint also reprocesses
-    rows that were already auto-matched for this album — any auto-match
-    for this album is discarded and replaced by the new target (with rows
-    that don't match in the new target becoming explicit orphans via
-    ``manual_unmatches``). This is how step 4 lets the user correct an
-    incorrect automatic match.
+    """
+    Manually match an album.
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 4 — user picked a target album; auto-match its tracks by title (or rematch existing auto-matches).
+    description: |
+      With `rematch=true`, the endpoint reprocesses rows that were already
+      auto-matched for this album: any auto-match for the album is discarded
+      and replaced by the new target. Rows that don't match in the new target
+      become explicit orphans via `manual_unmatches`.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id, old_album_key, new_album_id]
+            properties:
+              session_id:
+                type: integer
+              old_album_key:
+                type: array
+                items:
+                  type: string
+                description: "[album_artist, album]"
+              new_album_id:
+                type: string
+              rematch:
+                type: boolean
+                default: false
+    responses:
+      200:
+        description: Match result for the album.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                matched:
+                  type: integer
+                unmatched:
+                  type: integer
+                unmatched_item_ids:
+                  type: array
+                  items:
+                    type: string
+      404:
+        description: Session not found.
+      500:
+        description: Target provider error.
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
@@ -520,14 +957,43 @@ def match_album():
 
 @migration_bp.route('/api/migration/skip-album', methods=['POST'])
 def skip_album():
-    """Mark an album as explicitly orphaned — those rows will be deleted by
-    execute.
-
-    For first-time skips (unmatched albums), a ledger note is enough because
-    the merged mapping already doesn't contain these rows. For rematch skips
-    (album was already auto-matched), we also have to push every row in the
-    album into ``manual_unmatches`` so finalize overrides the existing
-    auto-match.
+    """
+    Skip an album (mark its rows as orphans).
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 4 — orphan an album so its score rows will be deleted by execute.
+    description: |
+      First-time skips (unmatched albums) just need a ledger note. Rematch
+      skips (`rematch=true`) push every row in the album into
+      `manual_unmatches` so finalize overrides the existing auto-match.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id, old_album_key]
+            properties:
+              session_id:
+                type: integer
+              old_album_key:
+                type: array
+                items:
+                  type: string
+              rematch:
+                type: boolean
+                default: false
+    responses:
+      200:
+        description: Album marked as skipped.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ok:
+                  type: boolean
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
@@ -546,13 +1012,50 @@ def skip_album():
 
 @migration_bp.route('/api/migration/finalize-dry-run', methods=['POST'])
 def finalize_dry_run():
-    """Compute final counts and transition session.status to 'dry_run_ready'.
-
-    Final counts expose the same one-to-one dedup logic as execute so the
-    user sees any collisions (multiple source rows fighting for the same
-    target track) before they type the confirmation phrase. Without this the
-    execute transaction would trip ``UNIQUE(new_id)`` on the temp rewrite
-    table and roll back with an opaque Postgres error.
+    """
+    Finalize the dry-run.
+    ---
+    tags:
+      - Provider Migration
+    summary: Compute final counts (with collision dedup) and flip status to `dry_run_ready`.
+    description: |
+      Runs the same one-to-one dedup logic as `execute` so the user sees any
+      collisions (multiple source rows fighting for the same target track)
+      before typing the confirmation phrase. Without this, execute would trip
+      `UNIQUE(new_id)` on the temp rewrite table and roll back with an opaque
+      Postgres error.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id]
+            properties:
+              session_id:
+                type: integer
+    responses:
+      200:
+        description: Final counts including collision details.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                matched:
+                  type: integer
+                orphans:
+                  type: integer
+                collisions:
+                  type: integer
+                collision_details:
+                  type: array
+                  items:
+                    type: object
+                tier_counts:
+                  type: object
+      404:
+        description: Session not found.
     """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
@@ -629,6 +1132,48 @@ def finalize_dry_run():
 
 @migration_bp.route('/api/migration/execute', methods=['POST'])
 def execute():
+    """
+    Execute the migration.
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 5 — gate on backup checkbox + confirmation phrase, then enqueue the execute job.
+    description: |
+      Requires the session to be in `dry_run_ready` status. The confirmation
+      phrase must equal exactly:
+      `I want to migrate to <target_type> and delete unmatched tracks`.
+      The job rewrites every score row's `item_id` and then deletes orphans.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [session_id, backup_confirmed, confirmation_text]
+            properties:
+              session_id:
+                type: integer
+              backup_confirmed:
+                type: boolean
+                description: Must be true.
+              confirmation_text:
+                type: string
+                description: Must equal the per-target confirmation phrase exactly.
+    responses:
+      200:
+        description: Execute task enqueued.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+      400:
+        description: Missing backup confirmation, wrong confirmation phrase, or session not in `dry_run_ready` state.
+      404:
+        description: Session not found.
+    """
     payload = request.get_json(silent=True) or {}
     session_id = payload.get('session_id')
     backup_confirmed = bool(payload.get('backup_confirmed'))
@@ -701,6 +1246,45 @@ _restart_scheduled_for_tasks = set()
 
 @migration_bp.route('/api/migration/status/<task_id>', methods=['GET'])
 def job_status(task_id):
+    """
+    Poll the migration execute task.
+    ---
+    tags:
+      - Provider Migration
+    summary: Return RQ job status; on completion, schedule a Flask restart so config reloads.
+    description: |
+      When the job finishes, this endpoint reloads `config` in this Flask
+      process and (once per task_id) schedules a graceful restart so any
+      module-level `from config import X` bindings are rebuilt against the
+      new provider settings.
+    parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      200:
+        description: Job status payload.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                status:
+                  type: string
+                  enum: [queued, started, finished, failed, deferred]
+                result:
+                  nullable: true
+                error:
+                  type: string
+                  nullable: true
+                restart_scheduled:
+                  type: boolean
+      404:
+        description: Job not found.
+    """
     try:
         from rq.job import Job
         job = Job.fetch(task_id, connection=redis_conn)
@@ -741,12 +1325,30 @@ def job_status(task_id):
 
 @migration_bp.route('/api/migration/dry-run-report/<int:session_id>', methods=['GET'])
 def dry_run_report(session_id):
-    """Download the dry-run result as a CSV with both-provider columns.
-
-    Row set = every ``score`` row at dry-run time. Matched rows get both
-    old-side and new-side columns populated; orphans (rows that will be
-    deleted on execute) have blank new-side columns so the user can see
-    exactly what is about to disappear.
+    """
+    Download the dry-run report as CSV.
+    ---
+    tags:
+      - Provider Migration
+    summary: CSV showing the planned old→new mapping for every score row (orphans have blank new-side cells).
+    description: |
+      Columns: old_id, old_artist, old_album, old_track, old_path, new_id,
+      new_artist, new_album, new_track, new_path, match_source
+      (`auto`/`manual`/`orphan`).
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: CSV attachment.
+        content:
+          text/csv:
+            schema:
+              type: string
+      404:
+        description: Session not found.
     """
     state = _load_state(session_id)
     if state is None:
@@ -812,13 +1414,36 @@ def dry_run_report(session_id):
 
 @migration_bp.route('/api/migration/matched-albums/<int:session_id>', methods=['GET'])
 def matched_albums(session_id):
-    """Return all currently-matched albums grouped by old (album_artist, album).
-
-    Powers the step-4 inspection/correction view: the wizard paginates this
-    list client-side and lets the user click any row to re-target an album
-    whose automatic match was wrong. New-side columns use the most common
-    target album across the matched tracks in the group (they're almost
-    always unanimous).
+    """
+    List currently-matched albums.
+    ---
+    tags:
+      - Provider Migration
+    summary: Step 4 review — return albums grouped by old (album_artist, album) with their target album, used for the wizard's correction view.
+    description: |
+      Auto-matched rows are skipped to keep the review list focused on
+      albums the user (or rematch flows) explicitly modified. New-side
+      columns use the most common target album across the matched tracks
+      in each group.
+    parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: Grouped matched-album list.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                albums:
+                  type: array
+                  items:
+                    type: object
+      404:
+        description: Session not found.
     """
     state = _load_state(session_id)
     if state is None:
@@ -847,15 +1472,17 @@ def matched_albums(session_id):
         new_id = merged.get(old_id)
         if new_id is None:
             continue
+        # Skip auto-matched rows entirely: the step-4 review list is meant
+        # for albums the user manually re-targeted. With huge libraries the
+        # auto-match list dominates and makes the UI unusable, but it has
+        # nothing to review.
+        if old_id not in manual_matches:
+            continue
         key = (r.get('album_artist') or r.get('author') or '', r.get('album') or '')
         g = groups.setdefault(key, {'count': 0, 'new_ids': [], 'tiers': []})
         g['count'] += 1
         g['new_ids'].append(new_id)
-        # Manual rematch wins over the original auto tier if the user changed it.
-        if old_id in manual_matches:
-            g['tiers'].append('manual')
-        else:
-            g['tiers'].append(match_tiers.get(old_id) or 'unknown')
+        g['tiers'].append('manual')
 
     albums = []
     for (old_artist, old_album), g in groups.items():
@@ -965,11 +1592,26 @@ def _load_rows_for_album(album_key):
     return out
 
 
+# Hard cap on the number of unmatched albums returned to the wizard. The
+# value is read from ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` so
+# operators can tune it via env var or the setup wizard's DB-backed
+# overrides without touching this module. Callers that need the true
+# count should use ``len(unmatched_by_album)`` separately.
+
+
 def _albums_payload(unmatched_by_album):
     """Serialize ``{(album_artist, album): [rows]}`` into a JSON-safe list
-    suitable for the wizard UI."""
+    suitable for the wizard UI.
+
+    Truncated to ``config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT`` entries
+    to keep the persisted state and the step-4 review page bounded.
+    """
+    import config
+    limit = int(getattr(config, 'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT', 200) or 200)
     out = []
     for key, rows in unmatched_by_album.items():
+        if len(out) >= limit:
+            break
         album_artist, album = key[0], key[1] if len(key) > 1 else None
         out.append({
             'album_artist': album_artist,

@@ -8,8 +8,7 @@ change to all processes without a manual container restart.
 
 The transaction is atomic:
     - orphan tracks deleted first (cascades through embedding FKs),
-    - FKs on embedding/clap_embedding/mulan_embedding dropped (they lack
-      ON UPDATE CASCADE),
+    - FKs on embedding/clap_embedding dropped (they lack ON UPDATE CASCADE),
     - ``score.item_id`` / ``playlist.item_id`` / all embedding tables rewritten
       via ``UPDATE ... FROM item_id_migration_map`` (O(N), one round trip),
     - FKs re-added with original (reflected) names,
@@ -220,14 +219,15 @@ def execute_provider_migration(session_id):
         # 3. Merge dry_run auto-matches with manual matches into a flat dict
         mapping = _merge_mapping(state)
         new_meta = state.get('new_meta') or {}
+        selected_libraries = state.get('selected_libraries')
         logger.info("provider migration: %d tracks will be rewritten", len(mapping))
 
         # 4. Reflect FK names and check for optional tables before opening tx
         fk_embedding      = find_fk(cur, 'embedding', 'item_id')
         fk_clap_embedding = find_fk(cur, 'clap_embedding', 'item_id')
-        cur.execute("SELECT to_regclass('public.mulan_embedding') IS NOT NULL")
-        mulan_exists = bool(cur.fetchone()[0])
-        fk_mulan_embedding = find_fk(cur, 'mulan_embedding', 'item_id') if mulan_exists else None
+        cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
+        lyrics_exists = bool(cur.fetchone()[0])
+        fk_lyrics_embedding = find_fk(cur, 'lyrics_embedding', 'item_id') if lyrics_exists else None
 
         # 5. Run the transaction
         try:
@@ -237,11 +237,12 @@ def execute_provider_migration(session_id):
                 new_meta=new_meta,
                 fk_embedding=fk_embedding,
                 fk_clap_embedding=fk_clap_embedding,
-                fk_mulan_embedding=fk_mulan_embedding,
-                mulan_exists=mulan_exists,
+                fk_lyrics_embedding=fk_lyrics_embedding,
+                lyrics_exists=lyrics_exists,
                 target_type=target_type,
                 target_creds=target_creds,
                 session_id=session_id,
+                selected_libraries=selected_libraries,
             )
             conn.commit()
         except Exception:
@@ -378,8 +379,10 @@ def _merge_mapping(state):
 
 
 def _run_migration_transaction(cur, mapping, new_meta,
-                               fk_embedding, fk_clap_embedding, fk_mulan_embedding,
-                               mulan_exists, target_type, target_creds, session_id):
+                               fk_embedding, fk_clap_embedding,
+                               fk_lyrics_embedding, lyrics_exists,
+                               target_type, target_creds, session_id,
+                               selected_libraries=None):
     """Execute every SQL statement for the migration transaction.
 
     Caller is responsible for commit/rollback. This function only issues
@@ -418,8 +421,8 @@ def _run_migration_transaction(cur, mapping, new_meta,
         cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
     if fk_clap_embedding:
         cur.execute(f"ALTER TABLE clap_embedding DROP CONSTRAINT {fk_clap_embedding}")
-    if mulan_exists and fk_mulan_embedding:
-        cur.execute(f"ALTER TABLE mulan_embedding DROP CONSTRAINT {fk_mulan_embedding}")
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
 
     # 5. Rewrite item_id on every item-id-keyed table.
     #    We do this in TWO passes per table because Postgres enforces PRIMARY
@@ -453,14 +456,14 @@ def _run_migration_transaction(cur, mapping, new_meta,
             f"WHERE {alias}.item_id = %s || m.new_id",
             (prefix,),
         )
-    if mulan_exists:
+    if lyrics_exists:
         cur.execute(
-            "UPDATE mulan_embedding e SET item_id = %s || m.new_id "
+            "UPDATE lyrics_embedding e SET item_id = %s || m.new_id "
             "FROM item_id_migration_map m WHERE e.item_id = m.old_id",
             (prefix,),
         )
         cur.execute(
-            "UPDATE mulan_embedding e SET item_id = m.new_id "
+            "UPDATE lyrics_embedding e SET item_id = m.new_id "
             "FROM item_id_migration_map m "
             "WHERE e.item_id = %s || m.new_id",
             (prefix,),
@@ -477,9 +480,9 @@ def _run_migration_transaction(cur, mapping, new_meta,
             f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
-    if mulan_exists and fk_mulan_embedding:
+    if lyrics_exists and fk_lyrics_embedding:
         cur.execute(
-            f"ALTER TABLE mulan_embedding ADD CONSTRAINT {fk_mulan_embedding} "
+            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
 
@@ -554,7 +557,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
     cur.execute("DELETE FROM artist_mapping")
 
     # 10. Persist the new provider in app_config (same table as setup wizard)
-    _write_provider_to_app_config(cur, target_type, target_creds)
+    _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=selected_libraries)
 
     # 11. Mark the session row completed
     cur.execute(
@@ -574,12 +577,18 @@ _CREDS_TO_CONFIG = {
 }
 
 
-def _write_provider_to_app_config(cur, target_type, target_creds):
+def _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=None):
     """Write MEDIASERVER_TYPE + provider credentials into ``app_config``.
 
     Runs inside the caller's transaction so a rollback undoes everything.
     Also deletes obsolete credential keys from the old provider (same
     pattern the setup wizard uses via ``MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE``).
+
+    ``selected_libraries`` — the checkbox selection from the migration wizard:
+      * ``None`` or empty → DELETE the ``MUSIC_LIBRARIES`` row (scan everything,
+        and implicitly wipes the source provider's old filter since the key is
+        shared across providers).
+      * non-empty list → UPSERT ``MUSIC_LIBRARIES`` with the comma-joined names.
     """
     import config as cfg
 
@@ -619,6 +628,25 @@ def _write_provider_to_app_config(cur, target_type, target_creds):
             "updated_at = CURRENT_TIMESTAMP",
             (_sanitize_text(key), _sanitize_text(value)),
         )
+
+    # MUSIC_LIBRARIES: write the checkbox selection, or clear the key to mean
+    # "scan everything". Always touching it here wipes the source provider's
+    # old filter (library names usually don't carry across providers). Names
+    # containing a comma would corrupt the comma-separated round-trip; the
+    # endpoint validates against this, so dropping them here is defense in
+    # depth (rather than letting a malformed value reach app_config).
+    cleaned = [str(name).strip() for name in (selected_libraries or []) if str(name).strip()]
+    cleaned = [name for name in cleaned if ',' not in name]
+    ml_value = ','.join(cleaned)
+    if ml_value:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES ('MUSIC_LIBRARIES', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (_sanitize_text(ml_value),),
+        )
+    else:
+        cur.execute("DELETE FROM app_config WHERE key = 'MUSIC_LIBRARIES'")
 
     # Remove credentials for providers we're switching away from
     obsolete = cfg.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(target_type, [])

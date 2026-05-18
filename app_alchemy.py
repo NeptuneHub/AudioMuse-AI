@@ -11,12 +11,50 @@ alchemy_bp = Blueprint('alchemy_bp', __name__, template_folder='../templates')
 
 @alchemy_bp.route('/alchemy', methods=['GET'])
 def alchemy_page():
+    """
+    Song Alchemy UI page.
+    ---
+    tags:
+      - Alchemy
+    summary: HTML page for blending songs/artists into a centroid-based recommendation set.
+    responses:
+      200:
+        description: HTML page rendered.
+    """
     return render_template('alchemy.html', title = 'AudioMuse-AI - Song Alchemy', active='alchemy')
 
 
 @alchemy_bp.route('/api/search_artists', methods=['GET'])
 def search_artists():
-    """Search for artists by name for autocomplete."""
+    """
+    Artist autocomplete.
+    ---
+    tags:
+      - Alchemy
+    summary: Search artists by partial name for autocomplete suggestions.
+    parameters:
+      - name: query
+        in: query
+        schema: { type: string }
+        description: Partial artist name.
+      - name: start
+        in: query
+        schema: { type: integer, default: 0 }
+        description: 0-based pagination start.
+      - name: end
+        in: query
+        schema: { type: integer }
+        description: Exclusive pagination end. Default returns 20 items.
+    responses:
+      200:
+        description: List of matching artists.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+    """
     from tasks.artist_gmm_manager import search_artists_by_name
     
     query = request.args.get('query', '')
@@ -41,8 +79,55 @@ def search_artists():
 
 @alchemy_bp.route('/api/alchemy', methods=['POST'])
 def alchemy_api():
-    """POST payload: {"items": [{"id":"...","op":"ADD","type":"song/artist"}, ...], "n":100}
-    Expect at least one ADD item (song or artist); SUBTRACT items are optional.
+    """
+    Run a Song Alchemy blend.
+    ---
+    tags:
+      - Alchemy
+    summary: Combine ADD/SUBTRACT items into a centroid and return the nearest songs.
+    description: |
+      At least one ADD item (song or artist) is required. SUBTRACT items are
+      optional and pull the centroid away from those songs/artists.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              items:
+                type: array
+                items:
+                  type: object
+                  required: [id, op]
+                  properties:
+                    id:
+                      type: string
+                    op:
+                      type: string
+                      enum: [ADD, SUBTRACT]
+                    type:
+                      type: string
+                      enum: [song, artist]
+                      default: song
+              n:
+                type: integer
+                description: Number of results to return. Defaults to ALCHEMY_DEFAULT_N_RESULTS.
+              temperature:
+                type: number
+                format: float
+                description: Softmax temperature for probabilistic sampling. Defaults to ALCHEMY_TEMPERATURE.
+              subtract_distance:
+                type: number
+                format: float
+                description: Optional override for the SUBTRACT exclusion radius.
+    responses:
+      200:
+        description: Recommendation results (each row contains the song and its centroid for save-as-anchor).
+      400:
+        description: Validation error (no ADD items, malformed payload).
+      500:
+        description: Internal error.
     """
     payload = request.get_json() or {}
     items = payload.get('items', [])
@@ -71,6 +156,32 @@ def alchemy_api():
 
 @alchemy_bp.route('/api/anchors', methods=['GET'])
 def list_anchors():
+    """
+    List saved alchemy anchors.
+    ---
+    tags:
+      - Alchemy
+    summary: Return id+name of every saved alchemy anchor (centroids omitted for size).
+    responses:
+      200:
+        description: Anchor list.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                anchors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      name:
+                        type: string
+      500:
+        description: Database error.
+    """
     from app_helper import get_alchemy_anchors
     try:
         anchors = get_alchemy_anchors()
@@ -83,6 +194,36 @@ def list_anchors():
 
 @alchemy_bp.route('/api/anchors', methods=['POST'])
 def create_anchor():
+    """
+    Save a new alchemy anchor.
+    ---
+    tags:
+      - Alchemy
+    summary: Persist an anchor (named centroid) for later reuse in path-finding or alchemy.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, centroid]
+            properties:
+              name:
+                type: string
+              centroid:
+                type: array
+                items:
+                  type: number
+                  format: float
+                description: Embedding vector representing the anchor.
+    responses:
+      200:
+        description: Anchor saved.
+      400:
+        description: Missing or invalid name/centroid.
+      500:
+        description: Database failure.
+    """
     from app_helper import save_alchemy_anchor
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
@@ -99,6 +240,23 @@ def create_anchor():
 
 @alchemy_bp.route('/api/anchors/<int:anchor_id>', methods=['DELETE'])
 def remove_anchor(anchor_id):
+    """
+    Delete an alchemy anchor.
+    ---
+    tags:
+      - Alchemy
+    summary: Remove a saved anchor by id.
+    parameters:
+      - name: anchor_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: Anchor deleted.
+      404:
+        description: Anchor not found.
+    """
     from app_helper import delete_alchemy_anchor
     ok = delete_alchemy_anchor(anchor_id)
     if not ok:
@@ -108,6 +266,35 @@ def remove_anchor(anchor_id):
 
 @alchemy_bp.route('/api/anchors/<int:anchor_id>', methods=['PUT'])
 def rename_anchor(anchor_id):
+    """
+    Rename an alchemy anchor.
+    ---
+    tags:
+      - Alchemy
+    summary: Update the display name of a saved anchor.
+    parameters:
+      - name: anchor_id
+        in: path
+        required: true
+        schema: { type: integer }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+    responses:
+      200:
+        description: Anchor renamed.
+      400:
+        description: Empty name.
+      404:
+        description: Anchor not found.
+    """
     from app_helper import update_alchemy_anchor_name
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
@@ -121,22 +308,44 @@ def rename_anchor(anchor_id):
 
 @alchemy_bp.route('/api/artist_projections', methods=['GET'])
 def artist_projections_api():
-    """Return precomputed artist component projections.
-    
-    Response: JSON with:
-    {
-        "components": [
-            {
-                "artist_id": "...",
-                "artist_name": "...",
-                "component_idx": 0,
-                "weight": 0.35,
-                "projection": [x, y]
-            },
-            ...
-        ],
-        "count": N
-    }
+    """
+    Precomputed artist component projections.
+    ---
+    tags:
+      - Alchemy
+    summary: Return cached 2D projections of artist GMM components for the artist map.
+    responses:
+      200:
+        description: Component list (empty if cache is cold).
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                components:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      artist_id:
+                        type: string
+                      artist_name:
+                        type: string
+                      component_idx:
+                        type: integer
+                      weight:
+                        type: number
+                        format: float
+                      projection:
+                        type: array
+                        items:
+                          type: number
+                          format: float
+                        description: 2D x/y projection.
+                count:
+                  type: integer
+      500:
+        description: Failure to read cache.
     """
     from app_helper import ARTIST_PROJECTION_CACHE
     
@@ -173,12 +382,32 @@ def artist_projections_api():
 
 @alchemy_bp.route('/api/build_artist_projection', methods=['POST'])
 def build_artist_projection_endpoint():
-    """Manually trigger artist component projection build.
-    
-    This is useful for rebuilding artist projections without running full analysis.
-    Requires that artist GMM parameters already exist in the database.
-    
-    Response: JSON with status ('success' or 'error') and message
+    """
+    Rebuild artist component projections.
+    ---
+    tags:
+      - Alchemy
+    summary: Manually compute and store artist projections (requires GMM params already in DB).
+    description: |
+      Useful for rebuilding the artist map without running a full analysis.
+      Returns 400 if no artist GMM parameters are present.
+    responses:
+      200:
+        description: Projection rebuilt and cached.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [success]
+                message:
+                  type: string
+      400:
+        description: No GMM parameters available.
+      500:
+        description: Build failed.
     """
     from app_helper import build_and_store_artist_projection
     

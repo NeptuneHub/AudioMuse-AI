@@ -140,7 +140,10 @@ class TestFetchAllTracks:
         ]
         with patch.object(probe.mediaserver, 'get_all_songs', return_value=fake_items) as m:
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
-        m.assert_called_once_with(user_creds=self.CREDS, provider_type='jellyfin')
+        # apply_filter=False: source provider's MUSIC_LIBRARIES filter must
+        # not be applied to the migration target during dry-run (it would
+        # zero out the target catalog whenever folder names differ).
+        m.assert_called_once_with(user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False)
         assert len(tracks) == 2
         assert tracks[0]['id'] == 'a'
         assert tracks[1]['id'] == 'b'

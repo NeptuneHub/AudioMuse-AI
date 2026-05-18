@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import DictCursor
-from flask import Flask, jsonify, request, render_template, g
+from flask import jsonify, request, render_template, g
 import json
 import logging
 import threading
@@ -30,7 +30,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
   SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
   PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
   AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
-  TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, ALCHEMY_SUBTRACT_DISTANCE, \
+  TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, \
   ENABLE_PROXY_FIX, \
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
   API_TOKEN, JWT_SECRET, AUTH_ENABLED
@@ -40,7 +40,9 @@ if ENABLE_PROXY_FIX:
   from werkzeug.middleware.proxy_fix import ProxyFix
 
 # --- Flask App Setup ---
-app = Flask(__name__)
+# The Flask instance lives in `flask_app` so RQ task modules can import it
+# without creating a circular import back into this file.
+from flask_app import app
 setup_manager = SetupManager()
 
 # Import helper functions
@@ -67,12 +69,8 @@ from app_provider_migration import migration_bp
 
 logger = logging.getLogger(__name__)
 
-# Configure basic logging for the entire application
-logging.basicConfig(
-    level=logging.INFO, # Set the default logging level (e.g., INFO, DEBUG, WARNING, ERROR, CRITICAL)
-    format='[%(levelname)s]-[%(asctime)s]-%(message)s', # Custom format string
-    datefmt='%d-%m-%Y %H-%M-%S' # Custom date/time format
-)
+from app_logging import configure_logging
+configure_logging()
 
 if ENABLE_PROXY_FIX:
   app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -93,7 +91,7 @@ def _get_jwt_secret():
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
-    from config import CLAP_ENABLED, MULAN_ENABLED
+    from config import CLAP_ENABLED, LYRICS_ENABLED
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
@@ -102,7 +100,7 @@ def inject_globals():
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        mulan_enabled=MULAN_ENABLED,
+        lyrics_enabled=LYRICS_ENABLED,
         auth_enabled=config.AUTH_ENABLED,
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
@@ -119,6 +117,24 @@ def log_api_request():
 
 @app.route('/api/health')
 def health_check():
+    """
+    Liveness probe.
+    ---
+    tags:
+      - Health
+    summary: Lightweight health check.
+    responses:
+      200:
+        description: Service is up.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: ok
+    """
     return jsonify({
         'status': 'ok',
     })
@@ -404,7 +420,38 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
 @app.route('/api/last_task', methods=['GET'])
 def get_last_overall_task_status_endpoint():
     """
-    Get the status of the most recent overall main task (analysis, clustering, or cleaning).
+    Get the most recent overall main task.
+    ---
+    tags:
+      - Tasks
+    summary: Status of the latest top-level main task (analysis, clustering, cleaning, etc.).
+    description: |
+      Returns the most recent row in `task_status` whose `parent_task_id` is
+      NULL. Long log lists are truncated to the last 10 entries with a
+      "... earlier entries truncated" placeholder.
+    responses:
+      200:
+        description: Task summary or a sentinel object when no main task has ever run.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_id:
+                  type: string
+                  nullable: true
+                task_type:
+                  type: string
+                  nullable: true
+                status:
+                  type: string
+                progress:
+                  type: number
+                details:
+                  type: object
+                running_time_seconds:
+                  type: number
+                  format: float
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -454,7 +501,22 @@ def get_last_overall_task_status_endpoint():
 @app.route('/api/active_tasks', methods=['GET'])
 def get_active_tasks_endpoint():
     """
-    Get the status of the currently active main task, if any.
+    Get the currently active main task.
+    ---
+    tags:
+      - Tasks
+    summary: Return the in-flight top-level main task (PENDING/STARTED/PROGRESS), if any.
+    description: |
+      Returns `{}` when no main task is active. Strips heavyweight internal
+      keys (`clustering_run_job_ids`, `checked_album_ids`, initial centroids)
+      from the response payload.
+    responses:
+      200:
+        description: Active task or empty object.
+        content:
+          application/json:
+            schema:
+              type: object
     """
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
@@ -508,46 +570,83 @@ def get_active_tasks_endpoint():
 @app.route('/api/config', methods=['GET'])
 def get_config_endpoint():
     """
-    Get the current server configuration values.
+    Public configuration snapshot.
+    ---
+    tags:
+      - Config
+    summary: Return the user-relevant subset of `config.*` (clustering ranges, AI provider, alchemy defaults, etc.).
+    description: |
+      Reads attributes from the `config` module at request time rather than
+      using names imported at app.py module load, so wizard changes are
+      visible without a Flask restart.
+    responses:
+      200:
+        description: Configuration values currently in effect.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
     """
     return jsonify({
-        "num_recent_albums": NUM_RECENT_ALBUMS, "max_distance": MAX_DISTANCE,
-        "max_songs_per_cluster": MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": MAX_SONGS_PER_ARTIST,
-        "cluster_algorithm": CLUSTER_ALGORITHM, "num_clusters_min": NUM_CLUSTERS_MIN, "num_clusters_max": NUM_CLUSTERS_MAX,
-        "dbscan_eps_min": DBSCAN_EPS_MIN, "dbscan_eps_max": DBSCAN_EPS_MAX, "gmm_covariance_type": GMM_COVARIANCE_TYPE,
-        "dbscan_min_samples_min": DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": DBSCAN_MIN_SAMPLES_MAX,
-        "gmm_n_components_min": GMM_N_COMPONENTS_MIN, "gmm_n_components_max": GMM_N_COMPONENTS_MAX,
-        "spectral_n_clusters_min": SPECTRAL_N_CLUSTERS_MIN, "spectral_n_clusters_max": SPECTRAL_N_CLUSTERS_MAX,
-        "pca_components_min": PCA_COMPONENTS_MIN, "pca_components_max": PCA_COMPONENTS_MAX,
-        "min_songs_per_genre_for_stratification": MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
-        "stratified_sampling_target_percentile": STRATIFIED_SAMPLING_TARGET_PERCENTILE,
-        "ai_model_provider": AI_MODEL_PROVIDER,
-        "ollama_server_url": OLLAMA_SERVER_URL, "ollama_model_name": OLLAMA_MODEL_NAME,
-        "openai_server_url": OPENAI_SERVER_URL, "openai_model_name": OPENAI_MODEL_NAME,
-        "gemini_model_name": GEMINI_MODEL_NAME,
-        "mistral_model_name": MISTRAL_MODEL_NAME,
-        "top_n_moods": TOP_N_MOODS, "mood_labels": MOOD_LABELS, "clustering_runs": CLUSTERING_RUNS,
-        "top_n_playlists": TOP_N_PLAYLISTS,
-        "enable_clustering_embeddings": ENABLE_CLUSTERING_EMBEDDINGS,
-        "score_weight_diversity": SCORE_WEIGHT_DIVERSITY,
-        "score_weight_silhouette": SCORE_WEIGHT_SILHOUETTE,
-        "score_weight_davies_bouldin": SCORE_WEIGHT_DAVIES_BOULDIN,
-        "score_weight_calinski_harabasz": SCORE_WEIGHT_CALINSKI_HARABASZ,
-        "score_weight_purity": SCORE_WEIGHT_PURITY,
-        "score_weight_other_feature_diversity": SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
-        "score_weight_other_feature_purity": SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-        "path_distance_metric": PATH_DISTANCE_METRIC
-      ,"alchemy_default_n_results": ALCHEMY_DEFAULT_N_RESULTS
-      ,"alchemy_max_n_results": ALCHEMY_MAX_N_RESULTS
-      ,"alchemy_subtract_distance": ALCHEMY_SUBTRACT_DISTANCE
-      ,"alchemy_subtract_distance_angular": ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-      ,"alchemy_subtract_distance_euclid": ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
+        "num_recent_albums": config.NUM_RECENT_ALBUMS, "max_distance": config.MAX_DISTANCE,
+        "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
+        "cluster_algorithm": config.CLUSTER_ALGORITHM, "num_clusters_min": config.NUM_CLUSTERS_MIN, "num_clusters_max": config.NUM_CLUSTERS_MAX,
+        "dbscan_eps_min": config.DBSCAN_EPS_MIN, "dbscan_eps_max": config.DBSCAN_EPS_MAX, "gmm_covariance_type": config.GMM_COVARIANCE_TYPE,
+        "dbscan_min_samples_min": config.DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": config.DBSCAN_MIN_SAMPLES_MAX,
+        "gmm_n_components_min": config.GMM_N_COMPONENTS_MIN, "gmm_n_components_max": config.GMM_N_COMPONENTS_MAX,
+        "spectral_n_clusters_min": config.SPECTRAL_N_CLUSTERS_MIN, "spectral_n_clusters_max": config.SPECTRAL_N_CLUSTERS_MAX,
+        "pca_components_min": config.PCA_COMPONENTS_MIN, "pca_components_max": config.PCA_COMPONENTS_MAX,
+        "min_songs_per_genre_for_stratification": config.MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
+        "stratified_sampling_target_percentile": config.STRATIFIED_SAMPLING_TARGET_PERCENTILE,
+        "ai_model_provider": config.AI_MODEL_PROVIDER,
+        "ollama_server_url": config.OLLAMA_SERVER_URL, "ollama_model_name": config.OLLAMA_MODEL_NAME,
+        "openai_server_url": config.OPENAI_SERVER_URL, "openai_model_name": config.OPENAI_MODEL_NAME,
+        "gemini_model_name": config.GEMINI_MODEL_NAME,
+        "mistral_model_name": config.MISTRAL_MODEL_NAME,
+        "top_n_moods": config.TOP_N_MOODS, "mood_labels": config.MOOD_LABELS, "clustering_runs": config.CLUSTERING_RUNS,
+        "top_n_playlists": config.TOP_N_PLAYLISTS,
+        "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
+        "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
+        "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,
+        "score_weight_davies_bouldin": config.SCORE_WEIGHT_DAVIES_BOULDIN,
+        "score_weight_calinski_harabasz": config.SCORE_WEIGHT_CALINSKI_HARABASZ,
+        "score_weight_purity": config.SCORE_WEIGHT_PURITY,
+        "score_weight_other_feature_diversity": config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
+        "score_weight_other_feature_purity": config.SCORE_WEIGHT_OTHER_FEATURE_PURITY,
+        "path_distance_metric": config.PATH_DISTANCE_METRIC
+      ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
+      ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
+      ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
+      ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
     })
 
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists_endpoint():
     """
-    Get all generated playlists and their tracks from the database.
+    All generated playlists.
+    ---
+    tags:
+      - Playlists
+    summary: Return every saved playlist with its tracks, grouped by playlist name.
+    responses:
+      200:
+        description: Playlist map (playlist_name → list of tracks).
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    item_id:
+                      type: string
+                    title:
+                      type: string
+                    author:
+                      type: string
     """
     from collections import defaultdict # Local import if not used elsewhere globally
     conn = get_db()
@@ -608,13 +707,30 @@ def listen_for_index_reloads():
             logger.info("Reloading CLAP embedding cache...")
             from tasks.clap_text_search import refresh_clap_cache
             clap_success = refresh_clap_cache()
-            
-            # Reload MuLan cache (with logging)
-            logger.info("Reloading MuLan embedding cache...")
-            from tasks.mulan_text_search import refresh_mulan_cache
-            mulan_success = refresh_mulan_cache()
-            
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, MuLan {'✓' if mulan_success else '✗'}")
+
+            # Reload Lyrics cache (voyager index + axis matrix)
+            try:
+              from config import LYRICS_ENABLED
+              if LYRICS_ENABLED:
+                logger.info("Reloading Lyrics search cache...")
+                from tasks.lyrics_manager import refresh_lyrics_cache
+                lyrics_success = refresh_lyrics_cache()
+              else:
+                lyrics_success = False
+            except Exception as e:
+              logger.warning(f"Lyrics cache reload failed: {e}")
+              lyrics_success = False
+
+            # Reload SemGrove merged lyrics+audio index
+            try:
+              logger.info("Reloading SemGrove merged index...")
+              from tasks.sem_grove_manager import refresh_sem_grove_cache
+              sg_success = refresh_sem_grove_cache()
+            except Exception as e:
+              logger.warning(f"SemGrove cache reload failed: {e}")
+              sg_success = False
+
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -655,7 +771,8 @@ from app_map import map_bp
 from app_waveform import waveform_bp
 from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
-from app_mulan_search import mulan_search_bp
+from app_lyrics import lyrics_search_bp
+from app_sem_grove import sem_grove_bp
 from app_backup import backup_bp
 from app_playlist_curator import playlist_curator_bp
 from app_dashboard import dashboard_bp
@@ -675,7 +792,8 @@ app.register_blueprint(map_bp)
 app.register_blueprint(waveform_bp)
 app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
-app.register_blueprint(mulan_search_bp)
+app.register_blueprint(lyrics_search_bp)
+app.register_blueprint(sem_grove_bp)
 app.register_blueprint(backup_bp)
 app.register_blueprint(playlist_curator_bp)
 app.register_blueprint(migration_bp)
@@ -734,25 +852,26 @@ if not _is_worker:
           logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load MuLan embeddings cache (model will lazy-load on first use)
+    # Load Lyrics search cache (voyager index over per-song e5 embeddings + axis-score matrix)
     try:
-      from config import MULAN_ENABLED
-      if MULAN_ENABLED:
-        # Load MuLan embeddings cache - models lazy-load on first search to save RAM
-        from tasks.mulan_text_search import load_mulan_cache_from_db, load_top_queries_from_db as load_mulan_top_queries_from_db
-        if load_mulan_cache_from_db():
-          logger.info("MuLan text search cache loaded at startup (embeddings only).")
-          logger.info("MuLan models will lazy-load on first text search.")
-        
-        # Load top queries from database
-        # This must run even if no MuLan embeddings exist yet (first startup)
-        has_existing = load_mulan_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded MuLan top queries from database (defaults).")
+      from config import LYRICS_ENABLED
+      if LYRICS_ENABLED:
+        from tasks.lyrics_manager import load_lyrics_cache_from_db
+        if load_lyrics_cache_from_db():
+          logger.info("Lyrics search cache loaded at startup (voyager index + axis matrix).")
         else:
-          logger.info("No MuLan queries found in database (defaults inserted)")
+          logger.info("Lyrics search cache empty at startup (run analysis to populate).")
     except Exception as e:
-      logger.debug(f"MuLan cache not loaded at startup (may be disabled or failed): {e}")
+      logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
+    # Load SemGrove merged lyrics+audio index
+    try:
+      from tasks.sem_grove_manager import load_sem_grove_cache_from_db
+      if load_sem_grove_cache_from_db():
+        logger.info("SemGrove merged index loaded at startup.")
+      else:
+        logger.info("SemGrove index not found at startup (build it after analysis completes).")
+    except Exception as e:
+      logger.debug(f"SemGrove cache not loaded at startup: {e}")
 
     def _start_map_init_background():
       try:
