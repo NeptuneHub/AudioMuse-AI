@@ -822,11 +822,11 @@ def dry_run():
     # score refresh (file_path, title, artist, album, album_artist, year).
     new_meta = {
         n['id']: {
-            'path':         n.get('path'),
-            'title':        n.get('title'),
-            'artist':       n.get('artist'),
-            'album':        n.get('album'),
-            'album_artist': n.get('album_artist'),
+            'path':         n.get('path') or None,
+            'title':        n.get('title') or None,
+            'artist':       n.get('artist') or None,
+            'album':        n.get('album') or None,
+            'album_artist': n.get('album_artist') or None,
             'year':         n.get('year'),
         }
         for n in new_tracks if n.get('id')
