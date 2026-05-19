@@ -222,14 +222,28 @@ INTENT CLASSES:
 - "seed":     user names specific song(s) or artist(s) to find similar music to / blend / subtract.
               Examples: "similar to By The Way by RHCP", "songs like Madonna", "Iron Maiden meets Metallica", "A but not Y".
 - "text":     user describes the SOUND ('calm piano') or LYRICAL THEME ('songs about heartbreak'). No specific song/artist seed.
-- "knowledge": user asks about cultural / historical facts the library can't answer from metadata alone.
-              Examples: "Grammy winners 2020", "#1 hits of 1985", "songs sampled by Daft Punk".
-- "metadata": user filters by year / genre / mood / vocal / tempo / energy / scale / rating / album / single-artist.
-              Examples: "sad jazz from the 90s", "energetic rock", "2024 songs", "songs in minor key".
+- "knowledge": user asks about POPULARITY / CULTURAL / HISTORICAL facts the library can't answer from metadata alone.
+              Trigger words: "top", "best", "popular", "famous", "classic", "radio", "radio hits", "trending",
+              "viral", "iconic", "#1", "chart", "charts", "Billboard", "Grammy", "Oscar", "soundtrack of",
+              "songs sampled by", "covers of", "anthems".
+              Examples: "top pop radio songs of 2025", "Grammy winners 2020", "#1 hits of 1985",
+              "biggest rock anthems of the 90s", "songs sampled by Daft Punk".
+- "metadata": user filters by year / genre / mood / vocal / tempo / energy / scale / rating / album / single-artist
+              WITHOUT any popularity or cultural-ranking superlative.
+              Examples: "sad jazz from the 90s", "energetic rock", "2024 songs", "songs in minor key",
+              "rock songs from 2020".
+
+CRITICAL DISCRIMINATOR — popularity-superlative beats raw filter:
+- "rock songs from 2020"           -> metadata    (descriptive filter, no ranking)
+- "top rock songs from 2020"       -> knowledge   ("top" = popularity ranking, library has none)
+- "best 90s pop"                   -> knowledge   ("best" = cultural ranking)
+- "pop songs from 2025"            -> metadata    (no superlative)
+- "top pop radio songs of 2025"    -> knowledge   ("top" + "radio" = chart/popularity)
+- "viral TikTok songs of 2024"     -> knowledge   ("viral" = cultural)
 
 needs_filter is TRUE when the user adds metadata constraints ON TOP of a seed / text / knowledge query
-(e.g. "similar to Pink Floyd WITH female voice" or "Grammy rock songs from 2020"). FALSE for a pure seed/text/knowledge query
-or when the intent itself is "metadata" (the filter IS the intent).
+(e.g. "similar to Pink Floyd WITH female voice" or "top rock songs from 2020"). FALSE for a pure
+seed/text/knowledge query or when the intent itself is "metadata" (the filter IS the intent).
 
 OUTPUT FORMAT (return ONLY this JSON, nothing else):
 {{"intent": "seed" | "text" | "knowledge" | "metadata", "needs_filter": true | false}}
@@ -239,9 +253,12 @@ EXAMPLES:
 "songs like Pink Floyd with female voice" -> {{"intent": "seed", "needs_filter": true}}
 "calm piano songs" -> {{"intent": "text", "needs_filter": false}}
 "songs about heartbreak in the rain" -> {{"intent": "text", "needs_filter": false}}
+"Top pop radio songs of 2025" -> {{"intent": "knowledge", "needs_filter": true}}
 "Grammy-winning rock songs from 2020" -> {{"intent": "knowledge", "needs_filter": true}}
+"best 90s pop" -> {{"intent": "knowledge", "needs_filter": true}}
 "sad jazz from the 90s in minor key" -> {{"intent": "metadata", "needs_filter": false}}
 "2024 songs" -> {{"intent": "metadata", "needs_filter": false}}
+"rock songs from 2020" -> {{"intent": "metadata", "needs_filter": false}}
 
 Request: "{user_message}"
 JSON:"""

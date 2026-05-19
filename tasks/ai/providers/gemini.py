@@ -68,40 +68,11 @@ def call_with_tools(
 
         client = genai.Client(api_key=api_key)
 
-        def convert_schema_for_gemini(schema):
-            """Convert JSON Schema to Gemini-compatible format (uppercase types)."""
-            if not isinstance(schema, dict):
-                return schema
-            result = {}
-            if "type" in schema:
-                schema_type = schema["type"]
-                type_map = {
-                    "string": "STRING",
-                    "number": "NUMBER",
-                    "integer": "INTEGER",
-                    "boolean": "BOOLEAN",
-                    "array": "ARRAY",
-                    "object": "OBJECT",
-                }
-                result["type"] = type_map.get(schema_type, schema_type.upper())
-            if "description" in schema:
-                result["description"] = schema["description"]
-            if "properties" in schema:
-                result["properties"] = {
-                    k: convert_schema_for_gemini(v) for k, v in schema["properties"].items()
-                }
-            if "items" in schema:
-                result["items"] = convert_schema_for_gemini(schema["items"])
-            for field in ("required", "enum"):
-                if field in schema:
-                    result[field] = schema[field]
-            return result
-
         function_declarations = [
             {
                 "name": tool["name"],
                 "description": tool["description"],
-                "parameters": convert_schema_for_gemini(tool["inputSchema"]),
+                "parameters": tool["inputSchema"],
             }
             for tool in tools
         ]

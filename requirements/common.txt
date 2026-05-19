@@ -16,6 +16,7 @@ ftfy==6.3.1
 flasgger==0.9.7.1
 sqlglot==30.6.0
 google-genai==1.57.0
+mistralai>=1.11.1,<2.0.0
 umap-learn==0.5.12
 pozalabs-pydub==0.37.0
 python-mpd2==3.1.1
