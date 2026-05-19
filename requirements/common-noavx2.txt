@@ -42,3 +42,4 @@ stopwords==1.0.2
 langdetect==1.0.9
 gunicorn
 zstandard
+wn==0.13.0

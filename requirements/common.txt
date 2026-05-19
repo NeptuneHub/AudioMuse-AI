@@ -41,3 +41,4 @@ PyJWT==2.12.1
 argon2-cffi==25.1.0
 gunicorn==25.3.0
 zstandard==0.25.0
+wn==0.13.0

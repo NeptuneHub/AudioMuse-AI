@@ -13,6 +13,8 @@ Some labels live in BOTH columns (``happy``, ``sad``, ``party``); the
 normalizer returns the column-classified hits so the SQL layer can query
 the right column(s).
 """
+import functools
+import re
 from typing import List, Optional, Tuple
 
 from rapidfuzz import fuzz, process
@@ -196,6 +198,114 @@ _FUZZY_REMAP_CUTOFF = 75
 _FUZZY_REMAP_MIN_LEN = 4
 
 
+_GENDER_FEMALE_RE = re.compile(r'\b(female|woman|women|girl|girls|lady|ladies)\b')
+_GENDER_MALE_RE = re.compile(r'\b(male|man|men|boy|boys|gentleman|gentlemen)\b')
+_VOCAL_HINT_RE = re.compile(r'\b(singer|singers|vocalist|vocalists|vocaliser|vocalizer|voice|voices|vocal|vocals)\b')
+
+
+def _wn_lemmas(synset) -> List[str]:
+    try:
+        lems = synset.lemmas() or []
+    except Exception:
+        return []
+    return [l for l in lems if isinstance(l, str)]
+
+
+def _wn_related(synset) -> List:
+    related: List = []
+    for method_name in ('hypernyms', 'similar', 'also'):
+        try:
+            fn = getattr(synset, method_name, None)
+            if fn is None or not callable(fn):
+                continue
+            related.extend(list(fn() or []))
+        except Exception:
+            continue
+    return related
+
+
+def _wn_definition(synset) -> str:
+    try:
+        d = synset.definition()
+    except Exception:
+        return ''
+    if isinstance(d, str):
+        return d.lower()
+    return ''
+
+
+@functools.lru_cache(maxsize=512)
+def _wordnet_synonyms(value: str) -> Tuple[str, ...]:
+    """Return WordNet-derived candidate phrases for `value`.
+
+    Combines four sources so we don't need to hand-list every synonym in
+    ALIAS_MOOD:
+      1. Direct synset lemmas (true synonyms in the same synset).
+      2. Hypernym lemmas -- broader categories. Essential for terms like
+         'soprano' whose IS-A chain reaches 'singer' / 'vocalist'.
+      3. 'similar' / 'also' lemmas -- adjective synonyms (joyful -> happy).
+      4. Gendered composite phrases synthesised from the synset definition:
+         when the gloss contains 'female'/'woman'/'girl' (or the male
+         equivalents) and any nearby lemma is a vocal term, we emit
+         'female singer', 'female vocalist', 'female voice' (or 'male ...').
+         These then match existing ALIAS_MOOD entries.
+
+    Lazy-imports `wn`; returns empty tuple on any error (missing install,
+    missing corpus, weird input). Caller never sees an exception.
+    """
+    if not value or not isinstance(value, str):
+        return ()
+    try:
+        import wn
+        synsets = wn.synsets(value.strip(), lang='en')
+    except Exception:
+        return ()
+
+    out: List[str] = []
+    seen = {value.strip().lower()}
+
+    def _add(name: str) -> None:
+        n = (name or '').replace('_', ' ').strip().lower()
+        if n and n not in seen:
+            out.append(n)
+            seen.add(n)
+
+    for syn in synsets:
+        for lemma in _wn_lemmas(syn):
+            _add(lemma)
+
+        related = _wn_related(syn)
+        for rel in related:
+            for lemma in _wn_lemmas(rel):
+                _add(lemma)
+
+        gloss = _wn_definition(syn)
+        if not gloss:
+            continue
+        if _GENDER_FEMALE_RE.search(gloss):
+            gender_prefix = 'female'
+        elif _GENDER_MALE_RE.search(gloss):
+            gender_prefix = 'male'
+        else:
+            continue
+
+        vocal_bases = set()
+        for source in [syn] + related:
+            for lem in _wn_lemmas(source):
+                base = (lem or '').replace('_', ' ').strip().lower()
+                if base and _VOCAL_HINT_RE.search(base):
+                    vocal_bases.add(base)
+        if _VOCAL_HINT_RE.search(gloss):
+            vocal_bases.update({'singer', 'vocalist', 'voice'})
+
+        for base in vocal_bases:
+            _add(f'{gender_prefix} {base}')
+            if not base.endswith('s'):
+                _add(f'{gender_prefix} {base}s')
+
+    return tuple(out)
+
+
 def normalize_mood(value: str, notes: Optional[List[str]] = None) -> Tuple[List[str], List[str]]:
     if not value or not isinstance(value, str):
         return [], []
@@ -226,6 +336,29 @@ def normalize_mood(value: str, notes: Optional[List[str]] = None) -> Tuple[List[
                 target = (mv2 or of2)
                 notes.append(f"vocab_normalizer remapped mood '{value}' -> {target} (fuzzy {int(hit[1])})")
             return mv2, of2
+
+    for syn in _wordnet_synonyms(key):
+        alias_hits = ALIAS_MOOD.get(syn)
+        if alias_hits:
+            mv3: List[str] = []
+            of3: List[str] = []
+            for label in alias_hits:
+                cmv3, cof3 = _classify_label(label)
+                mv3.extend(x for x in cmv3 if x not in mv3)
+                of3.extend(x for x in cof3 if x not in of3)
+            if mv3 or of3:
+                if notes is not None:
+                    notes.append(
+                        f"vocab_normalizer expanded mood '{value}' via wordnet synonym '{syn}' -> alias -> {(mv3 or of3)}"
+                    )
+                return mv3, of3
+        cmv3, cof3 = _classify_label(syn)
+        if cmv3 or cof3:
+            if notes is not None:
+                notes.append(
+                    f"vocab_normalizer expanded mood '{value}' via wordnet synonym '{syn}' -> {(cmv3 or cof3)}"
+                )
+            return cmv3, cof3
     return [], []
 
 
