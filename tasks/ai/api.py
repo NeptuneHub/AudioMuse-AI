@@ -35,13 +35,13 @@ from typing import Dict, List, Optional, Tuple
 import ftfy
 
 from config import MAX_SONGS_IN_AI_PROMPT
-from tasks import (
-    ai_api_gemini,
-    ai_api_mistral,
-    ai_api_ollama,
-    ai_api_openai,
+from tasks.ai.providers import (
+    gemini as ai_api_gemini,
+    mistral as ai_api_mistral,
+    ollama as ai_api_ollama,
+    openai as ai_api_openai,
 )
-from tasks.ai_prompts import build_mcp_system_prompt
+from tasks.ai.prompts import build_mcp_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ def call_with_tools(
     """Call AI with tool definitions and return its tool calls.
 
     If ``system_prompt`` is None, build the canonical MCP system prompt from
-    ``tasks.ai_prompts.build_mcp_system_prompt(tools, library_context)``.
+    ``tasks.ai.prompts.build_mcp_system_prompt(tools, library_context)``.
 
     Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on
     failure.

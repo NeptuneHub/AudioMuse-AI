@@ -8,9 +8,9 @@ This module owns the read-only helpers shared across the AI chat / MCP layer:
   SQL cannot write.
 * Library context aggregation (``get_library_context``) used to build prompts.
 
-Tool implementations (DB queries, AI calls) live in ``tasks.mcp_tool_impl``.
+Tool implementations (DB queries, AI calls) live in ``tasks.ai.tool_impl``.
 The MCP protocol surface (tool definitions, dispatcher) lives in
-``tasks.mcp_tools``. Prompts live in ``tasks.ai_prompts``.
+``tasks.ai.tools``. Prompts live in ``tasks.ai.prompts``.
 """
 import logging
 from typing import Dict

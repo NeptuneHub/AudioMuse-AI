@@ -144,14 +144,21 @@
                     </span>
                 </label>
                 <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
-                
-                <!-- Quick Suggestions - Compact single line -->
+                <p class="italic" style="margin-top: 0.5rem; font-size: 0.85em; color: #888;">
+                    Tip: name 1-3 specific songs or artists, then add filters (genre, year, voice, mood). Shorter is better.
+                </p>
+
                 <div class="suggestions-container">
-                    <button type="button" class="suggestion-btn" data-text="Similar song to Red Hot Chili Peppers - By The Way">🎵 Similar Song</button>
-                    <button type="button" class="suggestion-btn" data-text="Songs from Blink-182 and Green Day">🎸 From Artists</button>
-                    <button type="button" class="suggestion-btn" data-text="Songs that sound like Iron Maiden, Metallica and Deep Purple">🤘 Sounds Like</button>
-                    <button type="button" class="suggestion-btn" data-text="Give me the top songs of Madonna">👑 Artist's Own Hits</button>
-                    <button type="button" class="suggestion-btn" data-text="Danceable happy songs with 120 BPM">💃 Genre/Mood/Tempo</button>
+                    <button type="button" class="suggestion-btn" data-text="Similar to By The Way by Red Hot Chili Peppers">🎵 Similar Song</button>
+                    <button type="button" class="suggestion-btn" data-text="Similar to Red Hot Chili Peppers - By The Way and Iron Maiden - Run to the Hills">🎶 Multi-Song Mix</button>
+                    <button type="button" class="suggestion-btn" data-text="Songs like Madonna">👑 From Artist</button>
+                    <button type="button" class="suggestion-btn" data-text="Sounds like Iron Maiden and Metallica combined">🤘 Artists Blend</button>
+                    <button type="button" class="suggestion-btn" data-text="Calm piano songs">🎹 Sound / Vibe</button>
+                    {% if lyrics_enabled %}
+                    <button type="button" class="suggestion-btn" data-text="Songs about heartbreak in the rain">📝 Lyrics Theme</button>
+                    {% endif %}
+                    <button type="button" class="suggestion-btn" data-text="Top pop radio songs of 2025">🧠 AI Brainstorming</button>
+                    <button type="button" class="suggestion-btn" data-text="Sad jazz from the 90s in minor key">💃 Genre / Mood / Year</button>
                 </div>
             </div>
         </div>

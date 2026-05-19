@@ -1,7 +1,7 @@
 """Ollama transport.
 
 Ollama lacks native function calling, so `call_with_tools` builds a JSON-output
-prompt (via `tasks.ai_prompts.build_ollama_tool_calling_prompt`) and parses the
+prompt (via `tasks.ai.prompts.build_ollama_tool_calling_prompt`) and parses the
 model's JSON response. `generate_text` delegates to the OpenAI-compatible
 streaming code path (since Ollama also exposes /api/generate streaming SSE).
 """
@@ -13,8 +13,8 @@ from typing import Dict, List, Optional
 import httpx
 
 import config
-from tasks import ai_api_openai
-from tasks.ai_prompts import build_ollama_tool_calling_prompt
+from tasks.ai.providers import openai as ai_api_openai
+from tasks.ai.prompts import build_ollama_tool_calling_prompt, build_tool_calls_schema
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,14 @@ def call_with_tools(
     try:
         prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
 
+        schema = build_tool_calls_schema(tools)
         payload = {
             "model": model_name,
             "prompt": prompt,
             "stream": False,
-            "format": "json",
+            "format": schema,
             "think": False,
+            "options": {"temperature": 0},
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS

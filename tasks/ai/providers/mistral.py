@@ -116,6 +116,7 @@ def call_with_tools(
             ],
             tools=mistral_tools,
             tool_choice="any",
+            temperature=0,
         )
 
         tool_calls = []

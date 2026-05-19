@@ -108,16 +108,18 @@ def _ensure_mistralai_stub():
 
 
 _ensure_namespace_pkg('tasks', 'tasks')
+_ensure_namespace_pkg('tasks.ai', 'tasks/ai')
+_ensure_namespace_pkg('tasks.ai.providers', 'tasks/ai/providers')
 _ensure_httpx_stub()
 _ensure_google_genai_stub()
 _ensure_mistralai_stub()
 for _name, _relpath in (
-    ('tasks.ai_prompts',     'tasks/ai_prompts.py'),
-    ('tasks.ai_api_openai',  'tasks/ai_api_openai.py'),
-    ('tasks.ai_api_ollama',  'tasks/ai_api_ollama.py'),
-    ('tasks.ai_api_gemini',  'tasks/ai_api_gemini.py'),
-    ('tasks.ai_api_mistral', 'tasks/ai_api_mistral.py'),
-    ('tasks.ai_api',         'tasks/ai_api.py'),
+    ('tasks.ai.prompts',            'tasks/ai/prompts.py'),
+    ('tasks.ai.providers.openai',   'tasks/ai/providers/openai.py'),
+    ('tasks.ai.providers.ollama',   'tasks/ai/providers/ollama.py'),
+    ('tasks.ai.providers.gemini',   'tasks/ai/providers/gemini.py'),
+    ('tasks.ai.providers.mistral',  'tasks/ai/providers/mistral.py'),
+    ('tasks.ai.api',                'tasks/ai/api.py'),
 ):
     _load_submodule(_name, _relpath)
 
@@ -126,12 +128,12 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch, call
 import requests
 import json
-from tasks.ai_api import clean_playlist_name, get_ai_playlist_name
-from tasks.ai_api_openai import generate_text as get_openai_compatible_playlist_name
-from tasks.ai_api_ollama import generate_text as get_ollama_playlist_name
-from tasks.ai_api_gemini import generate_text as get_gemini_playlist_name
-from tasks.ai_api_mistral import generate_text as get_mistral_playlist_name
-from tasks.ai_prompts import creative_prompt_template
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
+from tasks.ai.providers.ollama import generate_text as get_ollama_playlist_name
+from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
+from tasks.ai.providers.mistral import generate_text as get_mistral_playlist_name
+from tasks.ai.prompts import creative_prompt_template
 
 
 class TestCleanPlaylistName:
@@ -197,8 +199,8 @@ class TestCleanPlaylistName:
 class TestGetOpenAICompatiblePlaylistName:
     """Tests for OpenAI-compatible API function"""
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
         """Test successful OpenAI format API call"""
         # Mock streaming response
@@ -225,7 +227,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Sunset Vibes"
         assert mock_sleep.called  # Should delay for rate limiting
 
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_ollama_format_success(self, mock_post):
         """Test successful Ollama format API call"""
         mock_response = Mock()
@@ -250,7 +252,7 @@ class TestGetOpenAICompatiblePlaylistName:
 
         assert result == "Morning Calm"
 
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_think_tags(self, mock_post):
         """Test extraction of text after think tags"""
         mock_response = Mock()
@@ -273,7 +275,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Final Name"
         assert "<think>" not in result
 
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_api_error(self, mock_post):
         """Test handling of API request errors"""
         mock_post.side_effect = requests.exceptions.RequestException("Connection failed")
@@ -288,7 +290,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "Error" in result
         assert "unavailable" in result
 
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_invalid_json(self, mock_post):
         """Test handling of malformed JSON responses"""
         mock_response = Mock()
@@ -312,7 +314,7 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should still extract the valid chunk
         assert result == "Valid"
 
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_openrouter_headers(self, mock_post):
         """Test OpenRouter-specific headers are added"""
         mock_response = Mock()
@@ -337,8 +339,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert "HTTP-Referer" in headers
         assert "X-Title" in headers
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_combined_content_and_finish_reason_chunk(self, mock_sleep, mock_post):
         """Regression test for issue #467.
 
@@ -371,8 +373,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # ensure no additional retry-backoff sleeps happened.
         assert mock_sleep.call_count == 1
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_content_split_across_chunks_with_final_combined_chunk(self, mock_sleep, mock_post):
         """Regression test for issue #467 (multi-chunk variant).
 
@@ -402,8 +404,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # Only the pre-call rate-limit delay (one sleep) is expected.
         assert mock_sleep.call_count == 1
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_authenticated_ollama_url_uses_ollama_format(self, mock_sleep, mock_post):
         """Detection must use the URL, not the api_key, so a real bearer token
         passed to an Ollama deployment (e.g. Ollama behind a reverse proxy or
@@ -433,8 +435,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'prompt' in sent_body
         assert 'messages' not in sent_body
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_openai_format_detected_from_url_when_global_is_ollama(self, mock_sleep, mock_post):
         """Regression test for issue #467 — provider-mismatch root cause.
 
@@ -474,8 +476,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'messages' in sent_body
         assert 'prompt' not in sent_body
 
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
         """Test that rate limit errors (429) retry with exponential backoff"""
         # First call: 429 rate limit
@@ -507,9 +509,9 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
         assert 5 in sleep_calls  # Exponential backoff for attempt 0
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_aggressive_fallback_on_unsupported_parameter(self, mock_sleep, mock_post, mock_env):
         """Test aggressive fallback removes temperature and switches to max_completion_tokens"""
         # Disable initial delay for cleaner testing
@@ -557,9 +559,9 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_ultra_minimal_fallback_after_aggressive_fails(self, mock_sleep, mock_post, mock_env):
         """Test ultra-minimal fallback removes max_completion_tokens if aggressive fails"""
         # Disable initial delay for cleaner testing
@@ -621,9 +623,9 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in third_call_data
         assert 'max_completion_tokens' not in third_call_data
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_rate_limit_then_parameter_error(self, mock_sleep, mock_post, mock_env):
         """Test rate limit retry followed by parameter error fallback"""
         # Disable initial delay for cleaner testing
@@ -674,9 +676,9 @@ class TestGetOpenAICompatiblePlaylistName:
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
         assert len(sleep_calls) >= 1  # At least one sleep for rate limit
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
-    @patch('tasks.ai_api_openai.time.sleep')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
     def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
         """Test that parameter fallbacks use continue and don't increment attempt counter"""
         # Disable initial delay for cleaner testing
@@ -735,8 +737,8 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should be exactly 3 calls total
         assert mock_post.call_count == 3
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
         """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
         # Disable initial delay for cleaner testing
@@ -780,8 +782,8 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
 
-    @patch('tasks.ai_api_openai.os.environ.get')
-    @patch('tasks.ai_api_openai.requests.post')
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
         """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
         # Disable initial delay for cleaner testing
@@ -834,7 +836,7 @@ class TestGetOpenAICompatiblePlaylistName:
 class TestGetOllamaPlaylistName:
     """Tests for Ollama-specific wrapper function"""
 
-    @patch('tasks.ai_api_openai.generate_text')
+    @patch('tasks.ai.providers.openai.generate_text')
     def test_calls_openai_compatible_with_correct_params(self, mock_func):
         """Test that Ollama wrapper calls underlying function correctly"""
         mock_func.return_value = "Test Playlist"
@@ -859,7 +861,7 @@ class TestGetGeminiPlaylistName:
     """Tests for Google Gemini API function"""
 
     @patch('google.genai.Client')
-    @patch('tasks.ai_api_gemini.time.sleep')
+    @patch('tasks.ai.providers.gemini.time.sleep')
     def test_successful_gemini_call(self, mock_sleep, mock_client_class):
         """Test successful Gemini API call"""
         # Mock response structure for new google-genai API
@@ -905,7 +907,7 @@ class TestGetGeminiPlaylistName:
         assert "Error" in result
 
     @patch('google.genai.Client')
-    @patch('tasks.ai_api_gemini.time.sleep')
+    @patch('tasks.ai.providers.gemini.time.sleep')
     def test_handles_gemini_api_error(self, mock_sleep, mock_client_class):
         """Test handling of Gemini API errors"""
         mock_models = Mock()
@@ -929,7 +931,7 @@ class TestGetMistralPlaylistName:
     """Tests for Mistral API function"""
 
     @patch('mistralai.Mistral')
-    @patch('tasks.ai_api_mistral.time.sleep')
+    @patch('tasks.ai.providers.mistral.time.sleep')
     def test_successful_mistral_call(self, mock_sleep, mock_mistral_class):
         """Test successful Mistral API call"""
         # Mock response structure
@@ -987,7 +989,7 @@ class TestGetAIPlaylistName:
         get_ai_playlist_name(prompt_template, song_list, other_feature_scores_dict, ai_config)
 
     Provider routing is driven by ``ai_config['provider']`` and dispatched
-    through ``tasks.ai_api.generate_text``. Tests here mock that single entry
+    through ``tasks.ai.api.generate_text``. Tests here mock that single entry
     point — provider-specific transports are covered by their own test classes.
     """
 
@@ -997,7 +999,7 @@ class TestGetAIPlaylistName:
         cfg.update(extra)
         return cfg
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_routes_to_ollama(self, mock_generate):
         mock_generate.return_value = "Test Playlist"
 
@@ -1013,7 +1015,7 @@ class TestGetAIPlaylistName:
         assert result == "Test Playlist"
         mock_generate.assert_called_once()
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_routes_to_gemini(self, mock_generate):
         mock_generate.return_value = "Gemini Playlist"
 
@@ -1027,7 +1029,7 @@ class TestGetAIPlaylistName:
         assert result == "Gemini Playlist"
         mock_generate.assert_called_once()
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_routes_to_mistral(self, mock_generate):
         mock_generate.return_value = "Mistral Playlist"
 
@@ -1041,7 +1043,7 @@ class TestGetAIPlaylistName:
         assert result == "Mistral Playlist"
         mock_generate.assert_called_once()
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_routes_to_openai(self, mock_generate):
         mock_generate.return_value = "OpenAI Playlist"
 
@@ -1058,7 +1060,7 @@ class TestGetAIPlaylistName:
         assert result == "OpenAI Playlist"
         mock_generate.assert_called_once()
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_handles_none_provider(self, mock_generate):
         """NONE provider is signalled by generate_text returning the skip sentinel."""
         mock_generate.return_value = "AI Naming Skipped"
@@ -1072,8 +1074,8 @@ class TestGetAIPlaylistName:
 
         assert result == "AI Naming Skipped"
 
-    @patch('tasks.ai_api.clean_playlist_name')
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.clean_playlist_name')
+    @patch('tasks.ai.api.generate_text')
     def test_applies_length_constraints(self, mock_generate, mock_clean):
         """Names shorter than MIN_LENGTH (5) cause an error after retries."""
         mock_generate.return_value = "Test"
@@ -1091,8 +1093,8 @@ class TestGetAIPlaylistName:
         assert "Error" in result
         assert "outside" in result
 
-    @patch('tasks.ai_api.clean_playlist_name')
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.clean_playlist_name')
+    @patch('tasks.ai.api.generate_text')
     def test_cleans_playlist_name(self, mock_generate, mock_clean):
         mock_generate.return_value = "Rock & Roll - Best Hits!"
         mock_clean.return_value = "Rock & Roll - Best Hits!"
@@ -1109,7 +1111,7 @@ class TestGetAIPlaylistName:
         mock_clean.assert_called_once()
         assert result == "Rock & Roll - Best Hits!"
 
-    @patch('tasks.ai_api.generate_text')
+    @patch('tasks.ai.api.generate_text')
     def test_formats_song_list_in_prompt(self, mock_generate):
         """The {song_list_sample} placeholder must contain title and author lines."""
         mock_generate.return_value = "Test Playlist Name"

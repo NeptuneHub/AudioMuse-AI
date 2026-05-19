@@ -276,6 +276,7 @@ def call_with_tools(
             ],
             "tools": functions,
             "tool_choice": "required",
+            "temperature": 0,
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS

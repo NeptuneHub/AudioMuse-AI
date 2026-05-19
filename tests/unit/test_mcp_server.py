@@ -8,7 +8,7 @@ Tests cover MCP helper + tool functions:
 - Energy normalization in execute_mcp_tool()
 - Pre-execution validation (filterless search_database rejection)
 
-NOTE: uses importlib to load tasks.mcp_helper / tasks.mcp_tool_impl directly,
+NOTE: uses importlib to load tasks.mcp_helper / tasks.ai.tool_impl directly,
 bypassing tasks/__init__.py which pulls in pydub (requires audioop removed in
 Python 3.14).
 """
@@ -45,14 +45,13 @@ def _import_mcp_server():
 
 
 def _import_ai_mcp_client():
-    """Load tasks.mcp_tools (was previously the ``ai_mcp_client`` module)."""
+    """Load tasks.ai.tools (the MCP tool definitions + dispatcher)."""
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tools.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'ai', 'tools.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'tasks.mcp_tools'
+    mod_name = 'tasks.ai.tools'
     if mod_name not in sys.modules:
-        # mcp_tools imports from mcp_tool_impl which imports from mcp_helper -- preload them
         _import_mcp_server()
         _import_mcp_impl()
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
@@ -63,14 +62,13 @@ def _import_ai_mcp_client():
 
 
 def _import_mcp_impl():
-    """Load tasks.mcp_tool_impl directly without triggering tasks/__init__.py."""
+    """Load tasks.ai.tool_impl directly without triggering tasks/__init__.py."""
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tool_impl.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'ai', 'tool_impl.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'tasks.mcp_tool_impl'
+    mod_name = 'tasks.ai.tool_impl'
     if mod_name not in sys.modules:
-        # mcp_tool_impl imports from mcp_helper, ai_api, ai_prompts, etc. -- preload mcp_helper
         _import_mcp_server()
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
         mod = importlib.util.module_from_spec(spec)
@@ -1024,7 +1022,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Error: API rate limit exceeded")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock classics", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1049,7 +1047,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("classic rock", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 2
@@ -1071,7 +1069,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("beatles hits", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1092,7 +1090,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("90s alternative", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1124,7 +1122,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("fun queen songs", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1164,7 +1162,7 @@ class TestAiBrainstormSync:
         cur.fetchall = Mock(return_value=[])
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 50.0)
 
         assert "songs" in result
@@ -1179,7 +1177,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Here are some great rock songs that you might enjoy!")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1205,7 +1203,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 10)
 
         assert len(result["songs"]) <= 10

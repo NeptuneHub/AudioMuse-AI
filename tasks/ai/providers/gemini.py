@@ -117,6 +117,7 @@ def call_with_tools(
                 tool_config=genai.types.ToolConfig(
                     function_calling_config=genai.types.FunctionCallingConfig(mode="ANY")
                 ),
+                temperature=0,
             ),
         )
 
