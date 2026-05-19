@@ -1390,7 +1390,7 @@ def dry_run_report(session_id):
             source = 'orphan'
         writer.writerow([
             old_id,
-            old.get('author') or '',
+            old.get('author') or old.get('album_artist') or '',
             old.get('album') or '',
             old.get('album_artist') or '',
             old.get('title') or '',
