@@ -6,84 +6,98 @@
        (e.g. setup wizard, provider migration). */
     scrollbar-gutter: stable;
     /* Light Mode (Default) */
-    --bg-body: #F9FAFB;
-    --bg-card: #FFFFFF;
-    --bg-input: #FFFFFF;
-    --text-main: #1F2937;
-    --text-title: #111827;
-    --text-muted: #4B5563;
-    --text-sub: #374151;
-    --border-color: #E5E7EB;
-    --border-color-darker: #D1D5DB;
-    --color-primary: #2563EB;
-    --color-primary-hover: #1D4ED8;
+    --bg-body: #F4F1EA;
+    --bg-card: #FFFDF8;
+    --bg-input: #FFFDF8;
+    --text-main: #2F3A2E;
+    --text-title: #1F2A20;
+    --text-muted: #6F6759;
+    --text-sub: #4D5A45;
+    --border-color: #DED6C8;
+    --border-color-darker: #C8BDA9;
+    --color-primary: #6F8F72;
+    --color-primary-hover: #5E7D61;
+    --accent-color: var(--color-primary);
     --color-danger: #DC2626;
     --color-danger-hover: #B91C1C;
-    --color-success: #16A34A;
-    --color-success-hover: #15803D;
+    --color-success: #5E8C61;
+    --color-success-hover: #4F7652;
+    --focus-ring: rgba(111, 143, 114, 0.28);
+    --button-disabled-bg: #C8D3BD;
+    --sidebar-bg: #2F3A2E;
+    --sidebar-text: #F7F1E6;
+    --sidebar-link: #D9D0BF;
+    --sidebar-hover-bg: #42513E;
     --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
     --shadow-input: 0 1px 2px 0 rgb(0 0 0 / 0.05);
 
     /* Status colors */
-    --status-idle-bg: #E5E7EB;
-    --status-idle-text: #374151;
+    --status-idle-bg: #E7E0D2;
+    --status-idle-text: #4D5A45;
     --status-pending-bg: #FEF0C7;
     --status-pending-text: #9A3412;
-    --status-success-bg: #D1FAE5;
-    --status-success-text: #166534;
+    --status-success-bg: #DCE8D2;
+    --status-success-text: #315A33;
     --status-failure-bg: #FEE2E2;
     --status-failure-text: #991B1B;
 
     /* Code/Pre blocks */
-    --bg-code: #F3F4F6;
+    --bg-code: #ECE6DA;
 
     /* Table */
-    --bg-table-header: #F3F4F6;
-    --bg-table-hover: #F3F4F6;
+    --bg-table-header: #ECE6DA;
+    --bg-table-hover: #EFE9DE;
 
     /* Alchemy specific */
-    --alchemy-border-default: #E5E7EB;
+    --alchemy-border-default: #DED6C8;
 }
 
 /* Dark mode - applied via body.dark-mode or html.dark-mode (for FOUC prevention) */
 body.dark-mode,
 html.dark-mode body {
     /* Dark Mode Overrides */
-    --bg-body: #111827; /* Gray 900 */
-    --bg-card: #1F2937; /* Gray 800 */
-    --bg-input: #374151; /* Gray 700 */
-    --text-main: #F3F4F6; /* Gray 100 */
-    --text-title: #F9FAFB; /* Gray 50 */
-    --text-muted: #9CA3AF; /* Gray 400 */
-    --text-sub: #D1D5DB; /* Gray 300 */
-    --border-color: #374151; /* Gray 700 */
-    --border-color-darker: #4B5563; /* Gray 600 */
-    --color-primary: #3B82F6; /* Blue 500 */
-    --color-primary-hover: #2563EB; /* Blue 600 */
+    --bg-body: #20251D;
+    --bg-card: #2B3028;
+    --bg-input: #373B31;
+    --text-main: #EEE8DD;
+    --text-title: #FFFDF8;
+    --text-muted: #B9B09F;
+    --text-sub: #D8D0C1;
+    --border-color: #454B3E;
+    --border-color-darker: #5A604E;
+    --color-primary: #9BB388;
+    --color-primary-hover: #AEC29E;
+    --accent-color: var(--color-primary);
     /* Danger/Success can often stay the same or slightly lighter */
     --color-danger: #EF4444; /* Red 500 */
     --color-danger-hover: #DC2626; /* Red 600 */
-    --color-success: #22C55E; /* Green 500 */
-    --color-success-hover: #16A34A; /* Green 600 */
+    --color-success: #8FBF75;
+    --color-success-hover: #79A863;
+    --focus-ring: rgba(155, 179, 136, 0.32);
+    --button-disabled-bg: #3F513A;
+    --sidebar-bg: #23291F;
+    --sidebar-text: #FFFDF8;
+    --sidebar-link: #D8D0C1;
+    --sidebar-hover-bg: #3B4534;
 
     --shadow-card: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
     --shadow-input: none;
 
-    --status-idle-bg: #374151;
-    --status-idle-text: #D1D5DB;
+    --status-idle-bg: #373B31;
+    --status-idle-text: #D8D0C1;
     --status-pending-bg: #78350F; /* Amber 900 */
     --status-pending-text: #FDE68A; /* Amber 200 */
-    --status-success-bg: #064E3B; /* Emerald 900 */
-    --status-success-text: #A7F3D0; /* Emerald 200 */
+    --status-success-bg: #263F28;
+    --status-success-text: #CDE8C4;
     --status-failure-bg: #7F1D1D; /* Red 900 */
     --status-failure-text: #FECACA; /* Red 200 */
 
-    --bg-code: #1a2332;
+    --bg-code: #24291F;
 
-    --bg-table-header: #374151;
-    --bg-table-hover: #374151;
+    --bg-table-header: #373B31;
+    --bg-table-hover: #373B31;
 
-    --alchemy-border-default: #374151;
+    --alchemy-border-default: #454B3E;
 }
 
 /* --- Base & Typography --- */
@@ -254,7 +268,7 @@ select:focus,
 textarea:focus {
     outline: none;
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 textarea {
@@ -421,14 +435,14 @@ textarea {
 button:disabled,
 #cancel-task-btn:disabled,
 #cancel-sync-btn:disabled {
-    background-color: #93C5FD !important; /* Light blue - maybe needs var too? */
+    background-color: var(--button-disabled-bg) !important;
     cursor: not-allowed !important;
     opacity: 0.7 !important; /* Changed from 1 to 0.7 for better visual indication */
 }
 body.dark-mode button:disabled,
 body.dark-mode #cancel-task-btn:disabled,
 body.dark-mode #cancel-sync-btn:disabled {
-    background-color: #1E3A8A !important; /* Darker blue for disabled in dark mode */
+    background-color: var(--button-disabled-bg) !important;
     color: #9CA3AF !important;
 }
 
@@ -1218,7 +1232,7 @@ tbody tr:hover {
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background-color: #3B82F6; /* Keep standard blue for icon */
+    background-color: var(--color-primary);
     color: white;
     font-size: 13px;
     font-weight: 600;
@@ -1245,8 +1259,8 @@ tbody tr:hover {
     visibility: hidden;
     opacity: 0;
     width: 280px;
-    background-color: #1F2937; /* Always dark for tooltips */
-    color: #F9FAFB;
+    background-color: var(--sidebar-bg);
+    color: var(--sidebar-text);
     text-align: left;
     border-radius: 6px;
     padding: 0.75rem;
@@ -1271,7 +1285,7 @@ tbody tr:hover {
     margin-left: -5px;
     border-width: 5px;
     border-style: solid;
-    border-color: #1F2937 transparent transparent transparent;
+    border-color: var(--sidebar-bg) transparent transparent transparent;
 }
 
 /* Show tooltip on hover/focus */
@@ -1294,7 +1308,7 @@ tbody tr:hover {
     .tooltip-text::after {
         top: auto;
         bottom: 100%;
-        border-color: transparent transparent #1F2937 transparent;
+        border-color: transparent transparent var(--sidebar-bg) transparent;
     }
 }
 

@@ -277,11 +277,11 @@
                 
                 // Create vibrant gradient for the waveform
                 const waveGradient = ctx.createLinearGradient(0, 0, 0, height);
-                waveGradient.addColorStop(0, 'rgba(96, 165, 250, 0.9)');      // Light blue
-                waveGradient.addColorStop(0.25, 'rgba(59, 130, 246, 0.95)');  // Blue
-                waveGradient.addColorStop(0.5, 'rgba(37, 99, 235, 1)');       // Dark blue
-                waveGradient.addColorStop(0.75, 'rgba(59, 130, 246, 0.95)');  // Blue
-                waveGradient.addColorStop(1, 'rgba(96, 165, 250, 0.9)');      // Light blue
+                waveGradient.addColorStop(0, 'rgba(194, 183, 157, 0.9)');
+                waveGradient.addColorStop(0.25, 'rgba(111, 143, 114, 0.95)');
+                waveGradient.addColorStop(0.5, 'rgba(94, 125, 97, 1)');
+                waveGradient.addColorStop(0.75, 'rgba(111, 143, 114, 0.95)');
+                waveGradient.addColorStop(1, 'rgba(194, 183, 157, 0.9)');
                 
                 // Draw filled waveform with smooth curves
                 ctx.fillStyle = waveGradient;
@@ -327,8 +327,8 @@
                 
                 // Add glowing outline effect
                 ctx.shadowBlur = 8;
-                ctx.shadowColor = 'rgba(59, 130, 246, 0.5)';
-                ctx.strokeStyle = 'rgba(96, 165, 250, 0.8)';
+                ctx.shadowColor = 'rgba(111, 143, 114, 0.5)';
+                ctx.strokeStyle = 'rgba(194, 183, 157, 0.8)';
                 ctx.lineWidth = 2;
                 
                 // Outline top wave

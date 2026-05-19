@@ -308,7 +308,7 @@ function disableTaskButtons(isDisabled) {
     buttons.forEach(button => {
         button.disabled = isDisabled;
         if (isDisabled) {
-            button.style.backgroundColor = '#93C5FD'; // Disabled color from CSS
+            button.style.backgroundColor = 'var(--button-disabled-bg)';
             button.style.cursor = 'not-allowed';
         } else {
             button.style.backgroundColor = '';

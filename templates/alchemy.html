@@ -18,7 +18,7 @@
     }
     
     .type-toggle-btn {
-        background: #3B82F6;
+        background: var(--color-primary);
         color: white;
         border: none;
         border-radius: 6px;
@@ -34,7 +34,7 @@
     }
     
     .type-toggle-btn:hover {
-        background: #2563EB;
+        background: var(--color-primary-hover);
     }
     .alchemy-tabs .tab-btn {
         border: 1px solid var(--border-color-darker);
@@ -398,7 +398,7 @@
 
                 if (type === 'song') {
                     typeCycleBtn.textContent = '🎵 Song';
-                    typeCycleBtn.style.background = '#3B82F6';
+                    typeCycleBtn.style.background = 'var(--color-primary)';
                     songFieldRow.classList.remove('hidden');
                 } else if (type === 'artist') {
                     typeCycleBtn.textContent = '🎤 Artist';
@@ -807,8 +807,8 @@
                             if (kept.length) datasets.push({
                                 label: 'Kept (results)',
                                 data: kept,
-                                backgroundColor: 'rgba(59, 130, 246, 0.7)',
-                                borderColor: 'rgba(37, 99, 235, 1)',
+                                backgroundColor: 'rgba(111, 143, 114, 0.72)',
+                                borderColor: 'rgba(94, 125, 97, 1)',
                                 borderWidth: 1,
                                 pointRadius: 6
                             });
@@ -984,8 +984,8 @@
                             if (kept.length) datasets.push({
                                 label: 'Kept (results)',
                                 data: kept,
-                                backgroundColor: 'rgba(59, 130, 246, 0.7)',
-                                borderColor: 'rgba(37, 99, 235, 1)',
+                                backgroundColor: 'rgba(111, 143, 114, 0.72)',
+                                borderColor: 'rgba(94, 125, 97, 1)',
                                 borderWidth: 1,
                                 pointRadius: 6
                             });

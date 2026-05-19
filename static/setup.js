@@ -1142,7 +1142,7 @@ function buildJsonTreeEl(obj, path, slot, depth) {
         var row = document.createElement('div');
         row.style.cssText = 'display:flex; align-items:flex-start; gap:0.4rem; margin-bottom:0.2rem; flex-wrap:wrap;';
         var keyEl = document.createElement('span');
-        keyEl.style.cssText = 'color:var(--accent-color,#3675f1); font-weight:600; white-space:nowrap;';
+        keyEl.style.cssText = 'color:var(--color-primary,#6F8F72); font-weight:600; white-space:nowrap;';
         keyEl.textContent = k + ': ';
         row.appendChild(keyEl);
         if (typeof v === 'object' && v !== null) {
@@ -1164,7 +1164,7 @@ function buildJsonTreeEl(obj, path, slot, depth) {
                 btn.textContent = 'Select';
                 btn.dataset.fieldPath = childPath;
                 btn.style.cssText = 'font-size:0.78rem; padding:0.15rem 0.55rem; white-space:nowrap; border-radius:5px; border:none; cursor:pointer; flex-shrink:0;' +
-                    (isLong ? 'background:var(--accent-color,#3675f1); color:#fff;' : 'background:var(--bg-card,#e0e0e0); color:var(--text-main,#333);');
+                    (isLong ? 'background:var(--color-primary,#6F8F72); color:#fff;' : 'background:var(--bg-card,#e0e0e0); color:var(--text-main,#333);');
                 (function(cp, s) {
                     btn.addEventListener('click', function() { selectLyricsField(s, cp); });
                 })(childPath, slot);

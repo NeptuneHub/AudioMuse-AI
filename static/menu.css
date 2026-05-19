@@ -5,8 +5,8 @@
 
 .sidebar {
     width: 250px;
-    background-color: #111827;
-    color: white;
+    background-color: var(--sidebar-bg);
+    color: var(--sidebar-text);
     padding: 1.5rem 1.5rem 0 1.5rem; /* bottom padding is added via ::after so
                                         it stays inside the scrollable area */
     box-sizing: border-box;
@@ -50,7 +50,7 @@ html.sidebar-open .sidebar {
     font-size: 1.5rem;
     font-weight: 600;
     white-space: nowrap;
-    color: white;
+    color: var(--sidebar-text);
 }
 
 .menu-toggle {
@@ -68,7 +68,7 @@ html.sidebar-open .sidebar {
 
 /* When the sidebar is open, make the button color match the sidebar text */
 .sidebar.open + .main-content .menu-toggle {
-    color: white;
+    color: var(--sidebar-text);
 }
 
 .sidebar-nav {
@@ -82,7 +82,7 @@ html.sidebar-open .sidebar {
 .sidebar-nav li button {
     display: block;
     width: 100%;
-    color: #d1d5db;
+    color: var(--sidebar-link);
     text-decoration: none;
     padding: 0.75rem 0;
     font-size: 1rem;
@@ -103,14 +103,14 @@ html.sidebar-open .sidebar {
 
 .sidebar-nav li a:hover,
 .sidebar-nav li button:hover {
-    color: #ffffff;
-    background-color: #374151;
+    color: var(--sidebar-text);
+    background-color: var(--sidebar-hover-bg);
 }
 
 .sidebar-nav li a.active {
-    color: #FFFFFF;
+    color: var(--sidebar-text);
     font-weight: 600;
-    background-color: #2563EB;
+    background-color: var(--color-primary);
 }
 
 /* Dark mode toggle button styling */
@@ -132,12 +132,12 @@ html.sidebar-open .sidebar {
 }
 
 #logout-btn {
-    color: #d1d5db;
+    color: var(--sidebar-link);
 }
 
 body.dark-mode #logout-btn,
 html.dark-mode #logout-btn {
-    color: #d1d5db;
+    color: var(--sidebar-link);
 }
 
 #logout-form {
@@ -191,7 +191,7 @@ html.dark-mode .sidebar-nav li button:hover {
 
 body.dark-mode .sidebar-nav li a.active,
 html.dark-mode .sidebar-nav li a.active {
-    color: #FFFFFF;
+    color: var(--sidebar-text);
     background-color: var(--color-primary);
 }
 
@@ -241,7 +241,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     box-sizing: border-box;
     width: 100%;
     max-width: 100%;
-    color: #d1d5db;
+    color: var(--sidebar-link);
     text-decoration: none;
     padding: 0.55rem 0.5rem 0.55rem 0.5rem;
     font-size: 1rem;
@@ -254,14 +254,14 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
 }
 
 .submenu li a:hover {
-    color: #ffffff;
-    background-color: #374151;
+    color: var(--sidebar-text);
+    background-color: var(--sidebar-hover-bg);
 }
 
 .submenu li a.active {
-    color: #FFFFFF;
+    color: var(--sidebar-text);
     font-weight: 600;
-    background-color: #2563EB;
+    background-color: var(--color-primary);
 }
 
 /* Submenu — dark mode */
@@ -278,6 +278,6 @@ html.dark-mode .submenu li a:hover {
 
 body.dark-mode .submenu li a.active,
 html.dark-mode .submenu li a.active {
-    color: #FFFFFF;
+    color: var(--sidebar-text);
     background-color: var(--color-primary);
 }

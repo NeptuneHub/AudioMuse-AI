@@ -147,7 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
         startSyncBtn.disabled = isDisabled;
         if(isDisabled) {
             startSyncBtn.style.cursor = 'not-allowed';
-            startSyncBtn.style.backgroundColor = '#9ca3af';
+            startSyncBtn.style.backgroundColor = 'var(--button-disabled-bg)';
         } else {
             startSyncBtn.style.cursor = '';
             startSyncBtn.style.backgroundColor = '';
@@ -262,8 +262,8 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById(boxId)?.remove();
         const messageBox = document.createElement('div');
         messageBox.id = boxId;
-        messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
-        messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+        messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: var(--bg-card); color: var(--text-main); padding: 20px; border-radius: 8px; box-shadow: var(--shadow-card); z-index: 1000; border: 1px solid var(--border-color); max-width: 400px; text-align: left;';
+        messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: var(--text-title);">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
         document.body.appendChild(messageBox);
         setTimeout(() => messageBox.remove(), 5000);
     }

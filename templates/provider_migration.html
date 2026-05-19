@@ -38,7 +38,7 @@
         color: white;
     }
     .mig-card.active .mig-step-num {
-        background-color: var(--color-primary, #3b82f6);
+        background-color: var(--color-primary, #6F8F72);
         color: white;
     }
     .mig-card p {
@@ -74,11 +74,11 @@
         color: var(--text-sub);
     }
     .mig-card a {
-        color: #60a5fa;
+        color: var(--color-primary);
         text-decoration: underline;
     }
     .mig-card a:hover {
-        color: #93c5fd;
+        color: var(--color-primary-hover);
     }
     .mig-warning {
         background-color: #fff7ed;
@@ -92,7 +92,7 @@
     .mig-info-box {
         background-color: var(--bg-card);
         border: 1px solid var(--border-color);
-        border-left: 4px solid var(--color-primary, #3b82f6);
+        border-left: 4px solid var(--color-primary, #6F8F72);
         border-radius: 6px;
         padding: 0.9rem 1.1rem;
         margin: 0.5rem 0 1.25rem;
@@ -101,7 +101,7 @@
         line-height: 1.45;
     }
     .mig-info-box em { font-style: italic; }
-    .mig-warning a { color: #1d4ed8; }
+    .mig-warning a { color: var(--color-primary-hover); }
     .mig-error {
         background-color: #fef2f2;
         border: 1px solid #ef4444;
@@ -162,11 +162,11 @@
         transition: border-color 0.15s, background 0.15s;
     }
     .mig-tier-cell.mig-tier-clickable:hover {
-        border-color: var(--color-primary, #3b82f6);
+        border-color: var(--color-primary, #6F8F72);
     }
     .mig-tier-cell.mig-tier-active {
-        border-color: var(--color-primary, #3b82f6);
-        box-shadow: 0 0 0 2px var(--color-primary, #3b82f6) inset;
+        border-color: var(--color-primary, #6F8F72);
+        box-shadow: 0 0 0 2px var(--color-primary, #6F8F72) inset;
     }
     .mig-tier-cell .mig-tier-num {
         display: block;
@@ -215,7 +215,7 @@
         background: var(--bg-card);
     }
     .mig-candidate:hover {
-        border-color: var(--color-primary, #3b82f6);
+        border-color: var(--color-primary, #6F8F72);
     }
     .mig-checkbox-row {
         display: flex;
@@ -230,7 +230,7 @@
         flex: 0 0 auto;
         margin-top: 0.15rem;
         transform: scale(1.1);
-        accent-color: var(--color-primary, #3b82f6);
+        accent-color: var(--color-primary, #6F8F72);
         cursor: pointer;
     }
     .mig-checkbox-row label {
