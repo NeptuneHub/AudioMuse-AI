@@ -827,7 +827,7 @@ def dry_run():
             'artist':       n.get('artist') or None,
             'album':        n.get('album') or None,
             'album_artist': n.get('album_artist') or None,
-            'year':         n.get('year'),
+            'year':         n.get('year') or None,
         }
         for n in new_tracks if n.get('id')
     }
