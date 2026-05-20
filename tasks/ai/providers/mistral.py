@@ -147,6 +147,6 @@ def call_with_tools(
         log_messages.append(f"Mistral called {len(tool_calls)} tools")
         return {"tool_calls": tool_calls}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Mistral with tools")
-        return {"error": f"Mistral error: {str(e)}"}
+        return {"error": "Mistral service is currently unavailable."}

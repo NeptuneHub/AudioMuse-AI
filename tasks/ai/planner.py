@@ -859,7 +859,7 @@ def classify(
         response = generate_text(prompt, ai_config, skip_delay=True, temperature=0.0)
     except Exception as e:
         logger.warning("intent_classifier transport error: %s", e)
-        log_messages.append(f"intent_classifier: transport error ({e}), falling back to full tools")
+        log_messages.append("intent_classifier: transport error, falling back to full tools")
         return None
 
     if not isinstance(response, str) or response.startswith("Error"):

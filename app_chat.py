@@ -288,9 +288,9 @@ def chat_playlist_stream_api():
                 chunk = _flush()
                 if chunk:
                     yield chunk
-        except Exception as exc:  # noqa: BLE001 - surfaced to the client as an error event
+        except Exception:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
             logger.exception("Streaming chat pipeline failed")
-            yield "data: " + json.dumps({"type": "error", "error": str(exc), "t": time.time()}) + "\n\n"
+            yield "data: " + json.dumps({"type": "error", "error": "An internal error has occurred.", "t": time.time()}) + "\n\n"
             return
 
         trailing = _flush()

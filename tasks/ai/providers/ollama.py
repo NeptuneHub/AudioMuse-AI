@@ -164,15 +164,17 @@ def call_with_tools(
             log_messages.append(f"\u2705 Ollama returned {len(valid_calls)} valid tool calls")
             return {"tool_calls": valid_calls}
 
-        except json.JSONDecodeError as e:
-            log_messages.append(f"\u274c JSON decode error: {str(e)}")
+        except json.JSONDecodeError:
+            logger.exception("JSON decode error while parsing Ollama tool response")
+            log_messages.append("\u274c Failed to parse Ollama JSON response.")
             log_messages.append(f"Attempted to parse: {cleaned[:300]}")
             return {
-                "error": f"Failed to parse Ollama JSON: {str(e)}",
+                "error": "Failed to parse Ollama JSON response.",
                 "raw_response": response_text[:200],
             }
-        except Exception as e:
-            log_messages.append(f"Failed to parse Ollama response: {str(e)}")
+        except Exception:
+            logger.exception("Failed to parse Ollama response")
+            log_messages.append("Failed to parse Ollama response.")
             log_messages.append(f"Response was: {response_text[:200]}")
             return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
 
@@ -188,16 +190,16 @@ def call_with_tools(
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"Ollama request timed out: {str(e)}")
-        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds: {str(e)}")
+        logger.warning("Ollama request timed out", exc_info=True)
+        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds.")
         log_messages.append(
             "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Ollama with tools")
-        return {"error": f"Ollama error: {str(e)}"}
+        return {"error": "Ollama service is currently unavailable."}

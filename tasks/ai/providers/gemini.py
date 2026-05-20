@@ -136,6 +136,6 @@ def call_with_tools(
         log_messages.append(f"Gemini called {len(tool_calls)} tools")
         return {"tool_calls": tool_calls}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Gemini with tools")
-        return {"error": f"Gemini error: {str(e)}"}
+        return {"error": "Gemini service is currently unavailable."}

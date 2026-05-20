@@ -361,13 +361,13 @@ def call_with_tools(
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"OpenAI request timed out: {str(e)}")
-        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds: {str(e)}")
+        logger.warning("OpenAI request timed out", exc_info=True)
+        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds.")
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling OpenAI with tools")
-        return {"error": f"OpenAI error: {str(e)}"}
+        return {"error": "OpenAI service is currently unavailable."}
