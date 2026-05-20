@@ -51,6 +51,108 @@
             grid-template-columns: repeat(2, 1fr) !important;
         }
     }
+
+    .pipeline-stepper {
+        margin-bottom: 1.25rem;
+    }
+
+    .pipeline-step {
+        display: flex;
+        gap: 0.75rem;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-left: 4px solid var(--color-primary);
+        border-radius: 0.375rem;
+        opacity: 0;
+        transform: translateY(6px);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+
+    .pipeline-step.step-visible {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    .pipeline-step.step-success { border-left-color: var(--color-success); }
+    .pipeline-step.step-warn { border-left-color: #d97706; }
+    .pipeline-step.step-error { border-left-color: var(--color-danger); }
+
+    .pipeline-step-icon {
+        font-size: 1.25rem;
+        line-height: 1.4;
+        flex-shrink: 0;
+    }
+
+    .pipeline-step-body {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .pipeline-step-title {
+        font-weight: 600;
+        color: var(--text-main);
+        margin: 0 0 0.15rem 0;
+    }
+
+    .pipeline-step-headline {
+        color: var(--text-sub);
+        font-size: 0.92rem;
+        margin: 0;
+    }
+
+    .pipeline-step-sub {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        margin: 0.3rem 0 0 0;
+    }
+
+    .pipeline-step.step-done { border-left-color: var(--color-success); }
+    .pipeline-step.step-active { border-left-color: var(--color-primary); }
+    .pipeline-step.step-pending {
+        border-left-color: var(--border-color-darker);
+    }
+    .pipeline-step.step-pending .pipeline-step-headline,
+    .pipeline-step.step-active .pipeline-step-headline {
+        font-style: italic;
+    }
+    .pipeline-step.step-active .pipeline-step-icon {
+        animation: stepPulse 1.1s ease-in-out infinite;
+    }
+
+    @keyframes stepPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+    }
+
+    .pipeline-step-time {
+        float: right;
+        font-size: 0.8rem;
+        font-weight: 400;
+        color: var(--text-muted);
+        margin-left: 0.5rem;
+    }
+
+    .tool-chain {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        align-items: center;
+    }
+
+    .tool-chain-node {
+        padding: 0.2rem 0.5rem;
+        background-color: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 0.25rem;
+        font-size: 0.85rem;
+        color: var(--text-sub);
+    }
+
+    .tool-chain-arrow {
+        color: var(--text-muted);
+    }
 </style>
 
 <section>
@@ -199,6 +301,10 @@
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
             let globalConfig = {};
+            let loadingTimer = null;
+            let liveState = null;
+            const CHAT_URL = "{{ url_for('chat_bp.chat_playlist_api') }}";
+            const CHAT_STREAM_URL = "{{ url_for('chat_bp.chat_playlist_stream_api') }}";
 
             // --- DOM Element References ---
             const aiProviderSelect = document.getElementById('aiProvider');
@@ -327,26 +433,88 @@
                     payload.ai_model = mistralModelSelect.value;
                 }
                 try {
-                    const response = await fetch("{{ url_for('chat_bp.chat_playlist_api') }}", {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload),
-                    });
-
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({ detail: "An unknown error occurred." }));
-                        throw new Error(`API Error: ${response.status} - ${errorData.detail || "Failed to get details"}`);
-                    }
-
-                    const data = await response.json();
-                    renderResponse(data.response); // Pass the whole response object
-
+                    await streamChat(payload);
                 } catch (error) {
                     console.error('Error submitting chat:', error);
                     showError(`Error: ${error.message}`);
                 } finally {
                     setLoadingState(false);
                 }
+            }
+
+            /**
+             * POST to the streaming endpoint and drive the live stepper from the
+             * Server-Sent-Events as the backend actually progresses. Falls back to
+             * the non-streaming endpoint if streaming isn't available.
+             */
+            async function streamChat(payload) {
+                initLiveStepper();
+
+                let res;
+                try {
+                    res = await fetch(CHAT_STREAM_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                } catch (e) {
+                    await fallbackChat(payload);
+                    return;
+                }
+
+                if (!res.ok || !res.body || !res.body.getReader) {
+                    await fallbackChat(payload);
+                    return;
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                const rawLines = [];
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    let idx;
+                    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                        const frame = buffer.slice(0, idx);
+                        buffer = buffer.slice(idx + 2);
+                        const dataStr = frame.replace(/^data:\s?/, '').trim();
+                        if (!dataStr) continue;
+                        let evt;
+                        try { evt = JSON.parse(dataStr); } catch (_) { continue; }
+                        if (evt.type === 'log') {
+                            rawLines.push(evt.line);
+                            updateLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                        } else if (evt.type === 'done') {
+                            finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                            renderFinalSections(evt.response);
+                            return;
+                        } else if (evt.type === 'error') {
+                            finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                            showErrorBelowStepper('Error: ' + evt.error);
+                            return;
+                        }
+                    }
+                }
+                // Stream ended without an explicit done event.
+                finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+            }
+
+            /** Non-streaming fallback: one request, then render the static view. */
+            async function fallbackChat(payload) {
+                const response = await fetch(CHAT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: "An unknown error occurred." }));
+                    throw new Error(`API Error: ${response.status} - ${errorData.detail || "Failed to get details"}`);
+                }
+                const data = await response.json();
+                renderResponse(data.response);
             }
             
             // --- UI Helper Functions ---
@@ -357,11 +525,214 @@
              */
             function setLoadingState(isLoading) {
                 submitButton.disabled = isLoading;
-                if (isLoading) {
-                    submitButtonText.textContent = 'Processing...';
+                submitButtonText.textContent = isLoading ? 'Processing...' : 'Get Playlist Idea';
+                if (!isLoading && loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+            }
+
+            // ---- Live stepper (real progress, driven by streamed log events) ----
+
+            const LIVE_TITLES = {
+                understand: 'Understood your request',
+                tools: 'Picked the tools',
+                found: 'Found candidate songs',
+                filter: 'Applied your filters',
+                assemble: 'Built the playlist'
+            };
+            const LIVE_ICONS = {
+                understand: '🧭', tools: '🛠️', found: '🔎', filter: '🎚️', assemble: '🎼'
+            };
+            const LIVE_PENDING = {
+                understand: 'Reading your request…',
+                tools: 'Choosing the right tools…',
+                found: 'Searching your library…',
+                filter: 'Applying your filters…',
+                assemble: 'Assembling the playlist…'
+            };
+
+            function understandHeadline(m) {
+                let h;
+                if (m.intent && INTENT_LABEL[m.intent]) {
+                    h = INTENT_LABEL[m.intent];
+                    if (m.needsFilter) h += ' — plus your extra filters';
+                } else if (m.intentFallback) {
+                    h = "Couldn't auto-classify — considered all options.";
                 } else {
-                    submitButtonText.textContent = 'Get Playlist Idea';
+                    h = 'Read your request.';
                 }
+                if (m.hints.length) h += ' · Also spotted: ' + m.hints.join('; ');
+                return h;
+            }
+            function toolsHeadline(m) {
+                let toolList = m.composition ? m.primaries.slice() : m.seqTools.slice();
+                if (m.composition && m.compositionHasFilter && toolList.indexOf('search_database') === -1) toolList.push('search_database');
+                if (!toolList.length && m.toolNames.length) toolList = m.toolNames.slice();
+                if (!toolList.length) return 'Selected the tools.';
+                return 'Using ' + toolList.map(n => TOOL_LABEL[n] || n).join(' + ') + '.';
+            }
+            function foundHeadline(m) {
+                if (m.composition && m.poolSize != null) return 'Gathered ' + m.poolSize + ' candidate songs.';
+                if (!m.composition && m.seqRetrieved > 0) return 'Retrieved ' + m.seqRetrieved + ' songs (' + m.seqAdded + ' new).';
+                return LIVE_PENDING.found;
+            }
+            function filterHeadline(m) {
+                if (m.categoricalPriority) {
+                    const sp = splitDims(m.filterDims);
+                    const catText = sp.cat.length ? sp.cat.join(' + ') : 'your filters';
+                    const contText = sp.cont.length ? sp.cont.join(' + ') : 'similarity';
+                    if (m.matched === 0) return 'No song has the requested ' + catText + ' — ordered by ' + contText + ' instead.';
+                    return 'Ranked ' + catText + ' first — ' + m.matched + ' of ' + m.total + ' match; rest ordered by ' + contText + '.';
+                }
+                const dims = humanDims(m.filterDims);
+                const dimText = dims.length ? dims.join(' + ') : 'your filters';
+                if (m.matched === 0) return 'Checked ' + dimText + ', no song matched — kept similarity order.';
+                if (m.moved === 0 && (m.matched != null || m.filterUnchanged)) return 'Checked ' + dimText + ' — ranking already optimal.';
+                if (m.moved != null) return 'Re-ranked by ' + dimText + ' — ' + (m.matched || 0) + ' of ' + (m.total || m.poolSize || '?') + ' matched and moved to the top.';
+                return LIVE_PENDING.filter;
+            }
+            function assembleHeadline(m) {
+                if (m.funnel) {
+                    let h = 'Trimmed ' + m.funnel.a + ' → ' + m.funnel.c + ' songs';
+                    const ex = [];
+                    if (m.diversityRemoved > 0) ex.push('artist variety');
+                    if (m.filterRankedOrder) ex.push('matched songs first');
+                    else if (m.ordered) ex.push('smooth tempo/energy flow');
+                    if (ex.length) h += ' with ' + ex.join(' and ');
+                    return h + '.';
+                }
+                if (m.planningFailed) return 'Planning failed — fell back to a genre search.';
+                if (m.noSongs) return 'No songs matched this request.';
+                return LIVE_PENDING.assemble;
+            }
+
+            /** Ordered live-step descriptors for the current parsed model. */
+            function liveStepDefs(m) {
+                const defs = [
+                    { id: 'understand', done: (m.intent != null || m.intentFallback), headline: understandHeadline },
+                    { id: 'tools', done: m.emitted != null, headline: toolsHeadline },
+                    { id: 'found', done: (m.composition && m.poolSize != null) || (!m.composition && m.seqRetrieved > 0), headline: foundHeadline }
+                ];
+                if (m.composition && m.compositionHasFilter) {
+                    defs.push({ id: 'filter', done: (m.moved != null || m.filterUnchanged || m.matched != null), headline: filterHeadline });
+                }
+                defs.push({ id: 'assemble', done: (m.funnel != null || m.success || m.noSongs || m.planningFailed), headline: assembleHeadline });
+                return defs;
+            }
+
+            function createLiveStepCard(def, status, timeText, model) {
+                const card = document.createElement('div');
+                card.className = 'pipeline-step step-visible step-' + status;
+                const icon = document.createElement('div');
+                icon.className = 'pipeline-step-icon';
+                icon.textContent = LIVE_ICONS[def.id];
+                card.appendChild(icon);
+                const body = document.createElement('div');
+                body.className = 'pipeline-step-body';
+                const title = document.createElement('p');
+                title.className = 'pipeline-step-title';
+                title.textContent = LIVE_TITLES[def.id];
+                if (timeText) {
+                    const time = document.createElement('span');
+                    time.className = 'pipeline-step-time';
+                    time.textContent = timeText;
+                    title.appendChild(time);
+                }
+                body.appendChild(title);
+                const headline = document.createElement('p');
+                headline.className = 'pipeline-step-headline';
+                headline.textContent = (status === 'done') ? def.headline(model) : LIVE_PENDING[def.id];
+                body.appendChild(headline);
+                card.appendChild(body);
+                return card;
+            }
+
+            function renderLiveStepperDom() {
+                if (!liveState) return;
+                const m = liveState.model;
+                const container = liveState.container;
+                container.innerHTML = '';
+
+                if (m.notesPlain) {
+                    container.appendChild(createStepCard({ icon: 'ℹ️', title: 'Heads up', headline: m.notesPlain, variant: 'warn' }));
+                    container.firstChild.classList.add('step-visible');
+                    return;
+                }
+
+                const defs = liveStepDefs(m);
+                let activeAssigned = false;
+                const statuses = defs.map(d => {
+                    if (d.done) return 'done';
+                    if (!activeAssigned && !liveState.finished) { activeAssigned = true; return 'active'; }
+                    return 'pending';
+                });
+
+                const now = performance.now();
+                let cursor = liveState.startTime;
+                defs.forEach((d, i) => {
+                    let timeText = '';
+                    if (statuses[i] === 'done') {
+                        const at = liveState.doneAt[d.id] != null ? liveState.doneAt[d.id] : now;
+                        timeText = ((at - cursor) / 1000).toFixed(1) + 's';
+                        cursor = at;
+                    } else if (statuses[i] === 'active') {
+                        timeText = ((now - cursor) / 1000).toFixed(1) + 's';
+                    }
+                    container.appendChild(createLiveStepCard(d, statuses[i], timeText, m));
+                });
+            }
+
+            function initLiveStepper() {
+                if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+                responseArea.innerHTML = '';
+                responseArea.classList.remove('text-red-600');
+                createPlaylistSection.classList.add('hidden');
+                mediaServerResponseArea.textContent = '';
+
+                const stepper = document.createElement('div');
+                stepper.className = 'pipeline-stepper';
+                responseArea.appendChild(stepper);
+
+                liveState = {
+                    startTime: performance.now(),
+                    doneAt: {},
+                    model: parsePipelineLog(''),
+                    container: stepper,
+                    finished: false
+                };
+                renderLiveStepperDom();
+                loadingTimer = setInterval(() => { if (liveState && !liveState.finished) renderLiveStepperDom(); }, 250);
+            }
+
+            function updateLiveStepper(model) {
+                if (!liveState) return;
+                liveState.model = model;
+                const now = performance.now();
+                liveStepDefs(model).forEach(d => {
+                    if (d.done && liveState.doneAt[d.id] === undefined) liveState.doneAt[d.id] = now;
+                });
+                renderLiveStepperDom();
+            }
+
+            function finalizeLiveStepper(model) {
+                if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+                if (!liveState) return;
+                if (model) {
+                    liveState.model = model;
+                    const now = performance.now();
+                    liveStepDefs(model).forEach(d => {
+                        if (d.done && liveState.doneAt[d.id] === undefined) liveState.doneAt[d.id] = now;
+                    });
+                }
+                liveState.finished = true;
+                renderLiveStepperDom();
+            }
+
+            function showErrorBelowStepper(message) {
+                const p = document.createElement('p');
+                p.className = 'italic';
+                p.style.marginTop = '1rem';
+                p.style.color = cv('--color-danger');
+                p.textContent = message;
+                responseArea.appendChild(p);
             }
 
             /**
@@ -374,217 +745,334 @@
                 return getComputedStyle(document.body).getPropertyValue(varName).trim();
             }
 
+            const INTENT_LABEL = {
+                seed: 'Find songs like the track or artist you named',
+                text: 'Match a sound or lyric description',
+                knowledge: 'Suggest well-known songs from world knowledge',
+                metadata: 'Filter your library directly'
+            };
+            const TOOL_LABEL = {
+                seed_search: 'Song/Artist Similarity',
+                text_match: 'Sound/Lyrics Match',
+                knowledge_lookup: 'AI Knowledge',
+                search_database: 'Library Filter'
+            };
+            const DIM_LABEL = {
+                genres: 'genre', voices: 'voice', moods: 'mood', other_features: 'mood',
+                energy: 'energy', tempo: 'tempo', year: 'era', min_rating: 'rating',
+                scale: 'scale', key: 'key', artist: 'artist', album: 'album'
+            };
+            // Mirrors CATEGORICAL_DIMS in planner.py — presence/identity dims that
+            // get priority-tier ranking over continuous gradient dims.
+            const CATEGORICAL_DIM_SET = ['genres', 'voices', 'scale', 'artist', 'album'];
+            function splitDims(dims) {
+                const cat = [], cont = [];
+                (dims || []).forEach(d => { (CATEGORICAL_DIM_SET.indexOf(d) >= 0 ? cat : cont).push(d); });
+                return { cat: humanDims(cat), cont: humanDims(cont) };
+            }
+
+            /** Parse the flat log_messages string into a structured pipeline model. */
+            function parsePipelineLog(text) {
+                const lines = (text || '').split('\n');
+                const model = {
+                    request: null, provider: null,
+                    intent: null, needsFilter: false, intentFallback: false, hints: [],
+                    toolNames: [], narrowed: false, emitted: null,
+                    composition: false, compositionHasFilter: false, primaries: [], seqTools: [], poolSize: null,
+                    seqRetrieved: 0, seqAdded: 0,
+                    filterRan: false, filterDims: [], relaxSteps: [],
+                    matched: null, total: null, moved: null, filterUnchanged: false, categoricalPriority: false,
+                    collected: null, diversityRemoved: 0, ratingRemoved: 0,
+                    funnel: null, ordered: false, filterRankedOrder: false,
+                    success: false, noSongs: false, planningFailed: false, notesPlain: null
+                };
+                for (const raw of lines) {
+                    const t = raw.trim();
+                    if (!t) continue;
+                    let m;
+                    if ((m = t.match(/^Request:\s*'(.*)'$/))) model.request = m[1];
+                    else if ((m = t.match(/^AI Provider:\s*(.+)$/))) model.provider = m[1];
+                    else if ((m = t.match(/intent_classifier:\s*intent=(\w+),\s*needs_filter=(\w+)/i))) {
+                        model.intent = m[1].toLowerCase();
+                        model.needsFilter = /true/i.test(m[2]);
+                    }
+                    else if (/classifier returned no intent|falling back to full tools|could not parse a valid JSON intent|provider returned error|transport error/i.test(t)) {
+                        model.intentFallback = true;
+                    }
+                    else if ((m = t.match(/stage-2 tools narrowed to:\s*(.+)$/))) {
+                        model.toolNames = m[1].split(',').map(s => s.trim()).filter(Boolean);
+                        model.narrowed = true;
+                    }
+                    else if ((m = t.match(/^pre-extract:\s*(.+)$/))) model.hints.push(m[1]);
+                    else if ((m = t.match(/AI emitted (\d+) tool call/i))) model.emitted = parseInt(m[1], 10);
+                    else if (/^---\s*Composition:/i.test(t)) { model.composition = true; if (/\+\s*1 filter/i.test(t)) model.compositionHasFilter = true; }
+                    else if ((m = t.match(/^PRIMARY:\s*(\w+)/))) model.primaries.push(m[1]);
+                    else if ((m = t.match(/^TOOL:\s*(\w+)/))) model.seqTools.push(m[1]);
+                    else if ((m = t.match(/pooled\s+\d+\/\d+\s+unique\s*\(pool=(\d+)\)/i))) model.poolSize = parseInt(m[1], 10);
+                    else if ((m = t.match(/FILTER \(priority re-rank\):\s*(\d+)\s*songs/i))) { model.filterRan = true; model.total = parseInt(m[1], 10); }
+                    else if ((m = t.match(/relax:\s*score_threshold=([\d.]+)\s*->\s*(\d+)\s*songs/i))) model.relaxSteps.push({ th: m[1], n: parseInt(m[2], 10) });
+                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*match the requested/i))) {
+                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.categoricalPriority = true;
+                        model.moved = (model.matched > 0) ? model.matched : 0;
+                    }
+                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*songs matched the filter\s*->\s*order UNCHANGED/i))) {
+                        model.filterUnchanged = true; model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
+                    }
+                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*songs changed position.*?\((\d+)\s*matched/i))) {
+                        model.moved = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.matched = parseInt(m[3], 10);
+                    }
+                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched but scores tied/i))) {
+                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
+                    }
+                    else if ((m = t.match(/^(genres|voices|moods|other_features|energy|tempo|year|min_rating|scale|key|artist|album)\s+.*->/))) {
+                        if (model.filterDims.indexOf(m[1]) === -1) model.filterDims.push(m[1]);
+                    }
+                    else if ((m = t.match(/retrieved\s+(\d+)\s+songs,\s*added\s+(\d+)/i))) { model.seqRetrieved += parseInt(m[1], 10); model.seqAdded += parseInt(m[2], 10); }
+                    else if ((m = t.match(/Rating filter \(min[^)]*\):\s*removed\s+(\d+)/i))) model.ratingRemoved = parseInt(m[1], 10);
+                    else if ((m = t.match(/Artist diversity:\s*removed\s+(\d+)/i))) model.diversityRemoved = parseInt(m[1], 10);
+                    else if ((m = t.match(/Pool:\s*(\d+)\s*collected.*?(\d+)\s*after diversity cap.*?(\d+)\s*in final/i))) {
+                        model.funnel = { a: parseInt(m[1], 10), b: parseInt(m[2], 10), c: parseInt(m[3], 10) };
+                    }
+                    else if ((m = t.match(/Collected\s+(\d+)\s+songs/i))) model.collected = parseInt(m[1], 10);
+                    else if (/Playlist ordered for smooth transitions/i.test(t)) model.ordered = true;
+                    else if (/kept in filter-ranked order/i.test(t)) model.filterRankedOrder = true;
+                    else if (/SUCCESS! Generated playlist/i.test(t)) model.success = true;
+                    else if (/No songs collected/i.test(t)) model.noSongs = true;
+                    else if (/AI planning failed/i.test(t)) model.planningFailed = true;
+                    else if (/No AI provider selected/i.test(t)) model.notesPlain = t;
+                    else if (/API key is missing/i.test(t)) model.notesPlain = t;
+                }
+                return model;
+            }
+
+            function humanDims(dims) {
+                const seen = [];
+                dims.forEach(d => {
+                    const lbl = DIM_LABEL[d] || d;
+                    if (seen.indexOf(lbl) === -1) seen.push(lbl);
+                });
+                return seen;
+            }
+
+            /** Turn the parsed model into ordered, plain-language step cards. */
+            function buildSteps(model) {
+                const steps = [];
+
+                if (model.notesPlain) {
+                    steps.push({ icon: 'ℹ️', title: 'Heads up', headline: model.notesPlain, variant: 'warn' });
+                    return steps;
+                }
+
+                // 1. Understood your request
+                let h1;
+                if (model.intent && INTENT_LABEL[model.intent]) {
+                    h1 = INTENT_LABEL[model.intent];
+                    if (model.needsFilter) h1 += ' — plus your extra filters';
+                } else if (model.intentFallback) {
+                    h1 = "Couldn't auto-classify your request, so I considered all options.";
+                } else {
+                    h1 = 'Read your request.';
+                }
+                const step1 = { icon: '🧭', title: 'Understood your request', headline: h1 };
+                if (model.hints.length) step1.sub = 'Also spotted: ' + model.hints.join('; ');
+                steps.push(step1);
+
+                // 2. Picked the tools
+                let toolList = model.composition ? model.primaries.slice() : model.seqTools.slice();
+                if (model.composition && model.filterRan && toolList.indexOf('search_database') === -1) toolList.push('search_database');
+                if (!toolList.length && model.toolNames.length) toolList = model.toolNames.slice();
+                if (toolList.length) {
+                    const friendly = toolList.map(n => TOOL_LABEL[n] || n);
+                    const step2 = { icon: '🛠️', title: 'Picked the tools', headline: 'Using ' + friendly.join(' + ') + '.' };
+                    if (model.narrowed) step2.sub = 'Narrowed from the full tool set to just what your request needs.';
+                    steps.push(step2);
+                }
+
+                // 3. Found candidate songs
+                if (model.composition && model.poolSize != null) {
+                    steps.push({ icon: '🔎', title: 'Found candidate songs', headline: 'Gathered ' + model.poolSize + ' candidate songs from your seeds.' });
+                } else if (!model.composition && model.seqRetrieved > 0) {
+                    const step3 = { icon: '🔎', title: 'Found candidate songs', headline: 'Retrieved ' + model.seqRetrieved + ' songs (' + model.seqAdded + ' new added to the pool).' };
+                    if (model.relaxSteps.length) {
+                        const last = model.relaxSteps[model.relaxSteps.length - 1];
+                        step3.sub = 'Loosened the match threshold to ' + last.th + ' to reach enough songs.';
+                    }
+                    steps.push(step3);
+                }
+
+                // 4. Applied your filters (composition re-rank only)
+                if (model.filterRan && model.composition) {
+                    const dims = humanDims(model.filterDims);
+                    const dimText = dims.length ? dims.join(' + ') : 'your filters';
+                    let h4, variant;
+                    if (model.categoricalPriority) {
+                        const sp = splitDims(model.filterDims);
+                        const catText = sp.cat.length ? sp.cat.join(' + ') : 'your filters';
+                        const contText = sp.cont.length ? sp.cont.join(' + ') : 'similarity';
+                        if (model.matched === 0) {
+                            h4 = 'No song has the requested ' + catText + ' — ordered by ' + contText + ' instead.';
+                            variant = 'warn';
+                        } else {
+                            h4 = 'Ranked ' + catText + ' first — ' + model.matched + ' of ' + (model.total || model.poolSize || '?') + ' match; rest ordered by ' + contText + '.';
+                        }
+                    } else if (model.filterUnchanged || model.moved === 0) {
+                        if (model.matched === 0) {
+                            h4 = 'Checked ' + dimText + ', but no song matched — kept the pure similarity order.';
+                        } else {
+                            h4 = 'Checked ' + dimText + ' (' + (model.matched || 0) + ' matched), ranking already optimal — no song moved.';
+                        }
+                        variant = 'warn';
+                    } else {
+                        h4 = 'Re-ranked by ' + dimText + ' — ' + (model.matched || 0) + ' of ' + (model.total || model.poolSize || '?') + ' matched and moved to the top.';
+                    }
+                    steps.push({ icon: '🎚️', title: 'Applied your filters', headline: h4, variant: variant });
+                }
+
+                // 5. Built the playlist
+                if (model.funnel) {
+                    let h5 = 'Trimmed ' + model.funnel.a + ' → ' + model.funnel.c + ' songs';
+                    const extras = [];
+                    if (model.diversityRemoved > 0) extras.push('artist variety');
+                    if (model.filterRankedOrder) extras.push('matched songs first');
+                    else if (model.ordered) extras.push('smooth tempo/energy flow');
+                    if (extras.length) h5 += ' with ' + extras.join(' and ');
+                    h5 += '.';
+                    const step5 = { icon: '🎼', title: 'Built the playlist', headline: h5, variant: 'success' };
+                    if (model.ratingRemoved > 0) step5.sub = 'Removed ' + model.ratingRemoved + ' songs below your rating threshold.';
+                    steps.push(step5);
+                } else if (model.planningFailed) {
+                    steps.push({ icon: '⚠️', title: 'Fell back', headline: 'AI planning hit a snag — fell back to a genre search.', variant: 'warn' });
+                } else if (model.noSongs) {
+                    steps.push({ icon: '😕', title: 'No songs found', headline: 'Nothing matched this request. Try naming a song/artist or loosening filters.', variant: 'warn' });
+                }
+
+                return steps;
+            }
+
+            function createStepCard(step) {
+                const card = document.createElement('div');
+                card.className = 'pipeline-step' + (step.variant ? ' step-' + step.variant : '');
+                const icon = document.createElement('div');
+                icon.className = 'pipeline-step-icon';
+                icon.textContent = step.icon;
+                card.appendChild(icon);
+                const body = document.createElement('div');
+                body.className = 'pipeline-step-body';
+                const title = document.createElement('p');
+                title.className = 'pipeline-step-title';
+                title.textContent = step.title;
+                body.appendChild(title);
+                const headline = document.createElement('p');
+                headline.className = 'pipeline-step-headline';
+                headline.textContent = step.headline;
+                body.appendChild(headline);
+                if (step.sub) {
+                    const sub = document.createElement('p');
+                    sub.className = 'pipeline-step-sub';
+                    sub.textContent = step.sub;
+                    body.appendChild(sub);
+                }
+                card.appendChild(body);
+                return card;
+            }
+
+            /** Parse the executed_query tool-chain string into friendly node labels. */
+            function parseToolChain(execStr) {
+                if (!execStr) return [];
+                const idx = execStr.indexOf(': ');
+                const tail = idx >= 0 ? execStr.slice(idx + 2) : execStr;
+                const segs = tail.split(' -> ').map(s => s.trim()).filter(Boolean);
+                return segs.map(s => {
+                    const mm = s.match(/^([a-z_]+)/i);
+                    const nm = mm ? mm[1] : s;
+                    return TOOL_LABEL[nm] || nm;
+                });
+            }
+
             function renderResponse(responseData) {
+                if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
                 responseArea.innerHTML = '';
                 responseArea.classList.remove('text-red-600');
                 createPlaylistSection.classList.add('hidden'); // Hide by default
                 mediaServerResponseArea.textContent = ''; // Clear previous responses
 
-                // --- Parse the log messages for better formatting ---
                 const logText = responseData.message || "No message from AI.";
-                const logLines = logText.split('\n');
-                
-                // Create structured sections
-                const sections = {
-                    main: [],
-                    attempts: []
-                };
-                
-                let currentSection = 'main';
-                let currentAttempt = null;
-                
-                for (const line of logLines) {
-                    if (line.includes('========== ATTEMPT')) {
-                        // Save previous attempt
-                        if (currentAttempt) {
-                            sections.attempts.push(currentAttempt);
-                        }
-                        // Start new attempt
-                        currentAttempt = {
-                            title: line.replace(/=/g, '').trim(),
-                            content: []
-                        };
-                        currentSection = 'attempt';
-                    } else if (line.trim()) {
-                        if (currentSection === 'main') {
-                            sections.main.push(line);
-                        } else if (currentSection === 'attempt' && currentAttempt) {
-                            currentAttempt.content.push(line);
-                        }
+                const model = parsePipelineLog(logText);
+                const steps = buildSteps(model);
+
+                // --- 1. Pipeline timeline (staggered reveal) ---
+                const stepper = document.createElement('div');
+                stepper.className = 'pipeline-stepper';
+                const cards = steps.map(createStepCard);
+                cards.forEach(c => stepper.appendChild(c));
+                responseArea.appendChild(stepper);
+                cards.forEach((c, i) => {
+                    setTimeout(() => c.classList.add('step-visible'), 60 + i * 120);
+                });
+
+                renderFinalSections(responseData);
+            }
+
+            /**
+             * Append the tool-chain, technical-details and playlist sections below
+             * whatever stepper is already in the response area (live or static).
+             */
+            function renderFinalSections(responseData) {
+                const logText = responseData.message || "No message from AI.";
+
+                // --- Tool chain (friendly node labels) ---
+                if (responseData.executed_query) {
+                    const chainNodes = parseToolChain(responseData.executed_query);
+                    if (chainNodes.length) {
+                        const chainWrap = document.createElement('div');
+                        chainWrap.style.margin = '0.25rem 0 1rem 0';
+                        const chain = document.createElement('div');
+                        chain.className = 'tool-chain';
+                        chainNodes.forEach((n, i) => {
+                            if (i > 0) {
+                                const arrow = document.createElement('span');
+                                arrow.className = 'tool-chain-arrow';
+                                arrow.textContent = '→';
+                                chain.appendChild(arrow);
+                            }
+                            const node = document.createElement('span');
+                            node.className = 'tool-chain-node';
+                            node.textContent = n;
+                            chain.appendChild(node);
+                        });
+                        chainWrap.appendChild(chain);
+                        responseArea.appendChild(chainWrap);
                     }
                 }
-                
-                // Add last attempt
-                if (currentAttempt) {
-                    sections.attempts.push(currentAttempt);
-                }
 
-                // --- 1. Main Summary (Collapsed by default) ---
-                const mainSummaryDetails = document.createElement('details');
-                mainSummaryDetails.style.marginBottom = '1rem';
-                mainSummaryDetails.open = false; // Explicitly collapsed
-                
-                const mainSummarySummary = document.createElement('summary');
-                mainSummarySummary.style.cursor = 'pointer';
-                mainSummarySummary.style.fontWeight = '600';
-                mainSummarySummary.style.padding = '0.75rem';
-                mainSummarySummary.style.backgroundColor = cv('--bg-code');
-                mainSummarySummary.style.borderRadius = '0.375rem';
-                mainSummarySummary.style.borderLeft = '4px solid ' + cv('--color-primary');
-                mainSummarySummary.textContent = 'Request Summary';
-                mainSummaryDetails.appendChild(mainSummarySummary);
-                
-                const mainSummaryContent = document.createElement('div');
-                mainSummaryContent.style.padding = '1rem';
-                mainSummaryContent.style.marginTop = '0.5rem';
-                mainSummaryContent.style.border = '1px solid ' + cv('--border-color');
-                mainSummaryContent.style.borderRadius = '0.375rem';
-                mainSummaryContent.style.backgroundColor = cv('--bg-body');
-                
-                sections.main.forEach(line => {
-                    const p = document.createElement('p');
-                    p.textContent = line;
-                    p.style.marginBottom = '0.25rem';
-                    mainSummaryContent.appendChild(p);
-                });
-                
-                mainSummaryDetails.appendChild(mainSummaryContent);
-                responseArea.appendChild(mainSummaryDetails);
-
-                // --- 2. Processing Details (Collapsible per Attempt) ---
-                if (sections.attempts.length > 0) {
-                const processingDetails = document.createElement('details');
-                processingDetails.style.marginTop = '1.5rem';
-                processingDetails.style.marginBottom = '1rem';
-                processingDetails.open = false; // Collapsed by default
-                
-                const processingSummary = document.createElement('summary');
-                processingSummary.style.cursor = 'pointer';
-                processingSummary.style.fontWeight = '600';
-                processingSummary.style.padding = '0.75rem';
-                processingSummary.style.backgroundColor = cv('--bg-code');
-                processingSummary.style.borderRadius = '0.375rem';
-                processingSummary.style.borderLeft = '4px solid ' + cv('--color-primary');
-                processingSummary.textContent = `AI Processing Details (${sections.attempts.length} iterations)`;
-                processingDetails.appendChild(processingSummary);
-                
-                const processingContent = document.createElement('div');
-                processingContent.style.padding = '1rem';
-                
-                sections.attempts.forEach((attempt, attemptIdx) => {
-                    const attemptDetails = document.createElement('details');
-                    attemptDetails.style.marginBottom = '1rem';
-                    attemptDetails.open = false; // All collapsed                        const attemptSummary = document.createElement('summary');
-                        attemptSummary.style.cursor = 'pointer';
-                        attemptSummary.style.fontWeight = '600';
-                        attemptSummary.style.padding = '0.75rem';
-                        attemptSummary.style.backgroundColor = attemptIdx === sections.attempts.length - 1 ? cv('--status-success-bg') : cv('--status-failure-bg');
-                        attemptSummary.style.borderRadius = '0.375rem';
-                        attemptSummary.style.borderLeft = attemptIdx === sections.attempts.length - 1 ? '4px solid ' + cv('--color-success') : '4px solid ' + cv('--color-danger');
-                        attemptSummary.textContent = attempt.title;
-                        attemptDetails.appendChild(attemptSummary);
-                        
-                        const attemptContent = document.createElement('div');
-                        attemptContent.style.padding = '1rem';
-                        attemptContent.style.marginTop = '0.5rem';
-                        attemptContent.style.border = '1px solid ' + (attemptIdx === sections.attempts.length - 1 ? cv('--status-success-text') : cv('--status-failure-text'));
-                        attemptContent.style.borderRadius = '0.375rem';
-                        attemptContent.style.backgroundColor = cv('--bg-body');
-                        attemptContent.style.maxHeight = '500px';
-                        attemptContent.style.overflowY = 'auto';
-                        
-                        // Add all content with intelligent formatting
-                        attempt.content.forEach(line => {
-                            const p = document.createElement('p');
-                            p.style.fontSize = '0.9rem';
-                            p.style.marginBottom = '0.5rem';
-                            p.style.lineHeight = '1.5';
-                            
-                            // Highlight important lines
-                            if (line.includes('📋 AI EXECUTION PLAN') || line.includes('🤖 EXECUTING')) {
-                                p.style.fontWeight = '700';
-                                p.style.color = cv('--text-main');
-                                p.style.backgroundColor = cv('--bg-code');
-                                p.style.padding = '0.5rem';
-                                p.style.borderRadius = '0.25rem';
-                                p.style.marginTop = '0.75rem';
-                            } else if (line.includes('✓') || line.includes('✅ SUCCESS')) {
-                                p.style.color = cv('--color-success');
-                                if (line.includes('✅ SUCCESS')) {
-                                    p.style.fontWeight = '700';
-                                    p.style.fontSize = '1rem';
-                                }
-                            } else if (line.includes('⚠️') || line.includes('Failed') || line.includes('Error')) {
-                                p.style.color = '#D97706';
-                            } else if (line.includes('❌') || line.includes('failed')) {
-                                p.style.color = cv('--color-danger');
-                                p.style.fontWeight = '600';
-                            } else if (line.includes('🔄 PROGRESSIVE REFINEMENT')) {
-                                p.style.fontWeight = '700';
-                                p.style.color = cv('--color-primary');
-                                p.style.backgroundColor = cv('--bg-code');
-                                p.style.padding = '0.5rem';
-                                p.style.borderRadius = '0.25rem';
-                                p.style.marginTop = '0.75rem';
-                            } else if (line.includes('Parameters:') || line.includes('Intent:') || line.includes('Strategy:')) {
-                                p.style.fontWeight = '600';
-                                p.style.color = cv('--text-muted');
-                            } else if (line.includes('📝 SQL:')) {
-                                p.style.fontFamily = 'monospace';
-                                p.style.fontSize = '0.85rem';
-                                p.style.backgroundColor = cv('--bg-code');
-                                p.style.padding = '0.5rem';
-                                p.style.borderRadius = '0.25rem';
-                                p.style.borderLeft = '3px solid #d97706';
-                                p.style.overflowX = 'auto';
-                            }
-                            
-                            p.textContent = line;
-                            attemptContent.appendChild(p);
-                        });
-                        
-                        attemptDetails.appendChild(attemptContent);
-                        processingContent.appendChild(attemptDetails);
-                    });
-                    
-                    processingDetails.appendChild(processingContent);
-                    responseArea.appendChild(processingDetails);
-                }
-
-                // --- 3. Executed Query (Collapsed by default) ---
-                if (responseData.executed_query) {
-                    const queryDetailsElement = document.createElement('details');
-                    queryDetailsElement.style.marginTop = '1.5rem';
-                    queryDetailsElement.style.marginBottom = '1rem';
-                    queryDetailsElement.open = false; // Explicitly collapsed
-
-                    const querySummaryElement = document.createElement('summary');
-                    querySummaryElement.style.cursor = 'pointer';
-                    querySummaryElement.style.fontWeight = '600';
-                    querySummaryElement.style.padding = '0.75rem';
-                    querySummaryElement.style.backgroundColor = cv('--bg-code');
-                    querySummaryElement.style.borderRadius = '0.375rem';
-                    querySummaryElement.textContent = 'Show/Hide Executed SQL Query';
-                    queryDetailsElement.appendChild(querySummaryElement);
-
-                    const queryContentDiv = document.createElement('div');
-                    queryContentDiv.style.padding = '1rem';
-                    queryContentDiv.style.marginTop = '0.5rem';
-                    queryContentDiv.style.border = '1px solid ' + cv('--border-color-darker');
-                    queryContentDiv.style.borderRadius = '0.375rem';
-                    queryContentDiv.style.backgroundColor = cv('--bg-code');
-                    queryContentDiv.style.whiteSpace = 'pre-wrap';
-                    queryContentDiv.style.wordBreak = 'break-all';
-                    queryContentDiv.style.fontFamily = 'monospace';
-                    queryContentDiv.style.fontSize = '0.875rem';
-                    
-                    const queryCodeElement = document.createElement('code');
-                    queryCodeElement.textContent = responseData.executed_query;
-                    queryContentDiv.appendChild(queryCodeElement);
-
-                    queryDetailsElement.appendChild(queryContentDiv);
-                    responseArea.appendChild(queryDetailsElement);
-                }
+                // --- Technical details (full raw log, collapsed) ---
+                const techDetails = document.createElement('details');
+                techDetails.style.marginBottom = '1rem';
+                techDetails.open = false;
+                const techSummary = document.createElement('summary');
+                techSummary.style.cursor = 'pointer';
+                techSummary.style.fontWeight = '600';
+                techSummary.style.padding = '0.75rem';
+                techSummary.style.backgroundColor = cv('--bg-code');
+                techSummary.style.borderRadius = '0.375rem';
+                techSummary.style.color = cv('--text-muted');
+                techSummary.textContent = 'Technical details (raw log)';
+                techDetails.appendChild(techSummary);
+                const techContent = document.createElement('pre');
+                techContent.style.padding = '1rem';
+                techContent.style.marginTop = '0.5rem';
+                techContent.style.border = '1px solid ' + cv('--border-color');
+                techContent.style.borderRadius = '0.375rem';
+                techContent.style.backgroundColor = cv('--bg-body');
+                techContent.style.whiteSpace = 'pre-wrap';
+                techContent.style.wordBreak = 'break-word';
+                techContent.style.fontFamily = 'monospace';
+                techContent.style.fontSize = '0.8rem';
+                techContent.style.maxHeight = '400px';
+                techContent.style.overflowY = 'auto';
+                techContent.textContent = logText;
+                techDetails.appendChild(techContent);
+                responseArea.appendChild(techDetails);
 
                 // --- 4. Playlist Results (Always Expanded) ---
                 if (responseData.query_results && responseData.query_results.length > 0) {
@@ -634,6 +1122,7 @@
              * @param {string} message - The error message to display.
              */
             function showError(message) {
+                if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
                 responseArea.innerHTML = '';
                 responseArea.classList.add('text-red-600');
                 responseArea.textContent = message;
