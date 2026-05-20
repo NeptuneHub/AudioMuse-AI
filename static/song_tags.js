@@ -79,12 +79,12 @@
             const m = options.metric ? options.metric(s) : null;
             rows += `
                 <div class="result-item">
-                    <div class="result-info">
+                    <div class="result-main">
                         <div class="result-title">${n}. ${escapeHtml(s.title || 'Unknown')}</div>
                         <div class="result-artist">${escapeHtml(artist)}</div>
                         ${album ? `<div class="result-album">Album: ${escapeHtml(album)}</div>` : ''}
-                        <div class="song-tags-scroll" style="margin-top:0.35rem;">${renderTrackTags(s)}</div>
                     </div>
+                    ${renderTrackTags(s)}
                     ${m ? `<div class="similarity-badge ${m.cls}">${escapeHtml(m.text)}</div>` : ''}
                 </div>`;
             n++;
