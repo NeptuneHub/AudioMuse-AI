@@ -1,11 +1,9 @@
 # app_chat.py
-from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context, current_app
+from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context
 from flasgger import swag_from # Import swag_from
 import json # For JSON serialization of tool arguments
 import logging
-import queue
 import re
-import threading
 import time
 
 
@@ -238,7 +236,7 @@ def chat_playlist_api():
     if not data or 'userInput' not in data:
         return jsonify({"error": "Missing userInput in request"}), 400
     log_messages = []
-    resp_obj, status = _run_chat_pipeline(data, log_messages)
+    resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
     return jsonify({"response": resp_obj}), status
 
 
@@ -251,66 +249,54 @@ def chat_playlist_stream_api():
     then a final ``done`` event with the full response payload, so the frontend can
     show real, live progress with real per-step timing.
 
-    The heavy pipeline (LLM calls, the re-rank over up to 10k songs, DB queries)
-    runs on a dedicated DAEMON thread with its own app context -- NOT on the
-    gunicorn request thread. The request thread's ``generate()`` only blocks on
-    ``event_queue.get()`` (which releases the GIL) and relays events. This keeps
-    the tiny gthread worker pool (1 worker / 4 threads) responsive: running the
-    pipeline inline on the request thread starves that pool and can trip the
-    worker --timeout, locking up the whole app.
+    Threadless: ``_run_chat_pipeline`` is a generator that ``yield``s a tick after
+    each blocking step (LLM calls, the re-rank, DB queries). ``generate()`` runs it
+    inline on the request thread and, after every tick, flushes any new
+    ``log_messages`` lines as SSE ``log`` events; the generator's final ``return``
+    value (the response object) is delivered as the ``done`` event.
     """
     data = request.get_json()
     if not data or 'userInput' not in data:
         return jsonify({"error": "Missing userInput in request"}), 400
 
-    def _sse(obj):
-        """Serialize one SSE event, degrading to an error event if the payload
-        can't be JSON-encoded -- so the client always gets a well-formed frame."""
-        try:
-            return "data: " + json.dumps(obj) + "\n\n"
-        except (TypeError, ValueError):
-            logger.exception("SSE payload not serializable; sending error frame instead")
-            return "data: " + json.dumps({
-                "type": "error",
-                "error": "Server could not serialize the response.",
-                "t": time.time(),
-            }) + "\n\n"
-
-    app_obj = current_app._get_current_object()
-    event_queue = queue.Queue()
-
-    class _StreamingLog(list):
-        """A log list whose appends are also pushed to the SSE queue live."""
-        def append(self, item):
-            super().append(item)
-            event_queue.put(('log', item))
-
-    def _worker():
-        with app_obj.app_context():
-            try:
-                resp_obj, _status = _run_chat_pipeline(data, _StreamingLog())
-                event_queue.put(('done', resp_obj))
-            except Exception as exc:  # noqa: BLE001 - surfaced to the client as an error event
-                logger.exception("Streaming chat pipeline failed")
-                event_queue.put(('error', str(exc)))
-
-    threading.Thread(target=_worker, daemon=True).start()
-
     @stream_with_context
     def generate():
+        log_messages: list = []
+        sent = 0
+
+        def _flush():
+            nonlocal sent
+            out = ""
+            while sent < len(log_messages):
+                out += "data: " + json.dumps({"type": "log", "line": log_messages[sent], "t": time.time()}) + "\n\n"
+                sent += 1
+            return out
+
         # Emit a byte immediately so proxies/the browser open the pipe and don't
         # buffer while the first (slow) stage runs.
         yield ": stream-open\n\n"
-        while True:
-            kind, payload = event_queue.get()
-            if kind == 'log':
-                yield _sse({"type": "log", "line": payload, "t": time.time()})
-            elif kind == 'done':
-                yield _sse({"type": "done", "response": payload, "t": time.time()})
-                return
-            else:
-                yield _sse({"type": "error", "error": payload, "t": time.time()})
-                return
+
+        pipeline = _run_chat_pipeline(data, log_messages)
+        resp_obj = None
+        try:
+            while True:
+                try:
+                    next(pipeline)
+                except StopIteration as stop:
+                    resp_obj = (stop.value or ({}, 200))[0]
+                    break
+                chunk = _flush()
+                if chunk:
+                    yield chunk
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client as an error event
+            logger.exception("Streaming chat pipeline failed")
+            yield "data: " + json.dumps({"type": "error", "error": str(exc), "t": time.time()}) + "\n\n"
+            return
+
+        trailing = _flush()
+        if trailing:
+            yield trailing
+        yield "data: " + json.dumps({"type": "done", "response": resp_obj, "t": time.time()}) + "\n\n"
 
     return Response(
         generate(),
@@ -319,11 +305,23 @@ def chat_playlist_stream_api():
     )
 
 
+def _drain_pipeline(pipeline):
+    """Run a ``_run_chat_pipeline`` generator to completion, discarding the
+    progress ticks, and return its final ``(response_obj, status)`` value."""
+    try:
+        while True:
+            next(pipeline)
+    except StopIteration as stop:
+        return stop.value or ({}, 200)
+
+
 def _run_chat_pipeline(data, log_messages):
-    """Core chat-to-playlist pipeline. Appends progress to ``log_messages`` (the
-    streaming endpoint passes a queue-backed list so each append streams live) and
-    returns ``(response_obj_dict, http_status)``. Plain function -- the streaming
-    endpoint runs it on a daemon thread, not via a generator.
+    """Core chat-to-playlist pipeline, a GENERATOR. Appends progress to
+    ``log_messages`` and ``yield``s a bare tick after each blocking step so the
+    streaming endpoint can flush new lines live. Its final ``return`` value is
+    ``(response_obj_dict, http_status)`` (read via ``StopIteration.value`` /
+    ``_drain_pipeline``). Early ``return``s before the first ``yield`` still work --
+    the function is a generator by virtue of the ``yield from`` below.
     """
     # Mask API key if present in the debug log
     data_for_log = dict(data) if data else {}
@@ -465,12 +463,14 @@ def _run_chat_pipeline(data, log_messages):
     library_context = get_library_context()
     if library_context.get('total_songs', 0) > 0:
         log_messages.append(f"Library: {library_context['total_songs']} songs, {library_context['unique_artists']} artists")
-    
+
+    yield
+
     target_song_count = 100
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
     collection_cap = 1000
 
-    plan_result = plan_and_execute_once(
+    plan_result = yield from plan_and_execute_once(
         user_message=f'Build a {target_song_count}-song playlist for: "{original_user_input}"',
         tools=mcp_tools,
         ai_config=ai_config_with_secrets,
@@ -507,6 +507,8 @@ def _run_chat_pipeline(data, log_messages):
     log_messages.append(
         f"\nCollected {len(all_songs)} songs (target {target_song_count}, cap {collection_cap})"
     )
+
+    yield
 
     # Prepare final results
     if all_songs:
@@ -613,9 +615,9 @@ def _run_chat_pipeline(data, log_messages):
                 id_to_song = {s['item_id']: s for s in final_query_results_list}
                 final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
                 log_messages.append(f"\n🎵 Playlist ordered for smooth transitions (tempo/energy/key)")
-            except Exception as e:
-                logger.warning(f"Playlist ordering failed (non-fatal): {e}")
-                log_messages.append(f"\n⚠️ Playlist ordering skipped: {str(e)[:100]}")
+            except Exception:
+                logger.warning("Playlist ordering failed (non-fatal)", exc_info=True)
+                log_messages.append("\n⚠️ Playlist ordering skipped due to an internal processing issue")
 
         final_executed_query_str = executed_query_str
 

@@ -430,7 +430,7 @@ _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 _DECADE_RE = re.compile(r"\b(60|70|80|90|00|10|20)s\b", re.IGNORECASE)
 _BPM_RE = re.compile(r"\b(\d{2,3})\s*bpm\b", re.IGNORECASE)
 _ENERGY_NUM_RE = re.compile(
-    r"\benergy\s*(?:above|>=?|over|min(?:imum)?)\s*([0-9]*\.?[0-9]+)\b", re.IGNORECASE
+    r"\benergy\s*(?:above|>=?|over|min(?:imum)?)\s*([0-9]*\.[0-9]+|[0-9]+)\b", re.IGNORECASE
 )
 
 
@@ -1001,14 +1001,15 @@ def plan_and_execute_once(
     user_wants_rating: bool = False,
     collection_cap: int = 1000,
     target_song_count: int = 100,
-) -> Dict:
+):
     """Two-stage orchestrator: classifier narrows tools -> single AI plan -> execute.
 
-    Returns ``{songs, song_sources, tools_used_history, tool_execution_summary,
+    This is a GENERATOR: it appends progress to ``log_messages`` and ``yield``s a
+    bare tick after each blocking step (classify, plan, each tool call, the
+    re-rank) so the caller can flush new lines live. Its final ``return`` value is
+    ``{songs, song_sources, tools_used_history, tool_execution_summary,
     detected_min_rating, plan_notes, executed_query_str, filter_applied}`` or
-    ``{"error": ...}``. Progress streams to the caller via ``log_messages.append``
-    (the streaming endpoint passes a queue-backed list that pushes each line to the
-    client as it is added).
+    ``{"error": ...}`` (delivered via ``StopIteration.value`` -- use ``yield from``).
     """
     from tasks.ai.tools import execute_mcp_tool
     from tasks.ai.tool_impl import _fetch_pool_features
@@ -1043,12 +1044,17 @@ def plan_and_execute_once(
         for n in hints.get('notes', []):
             log_messages.append(f"   pre-extract: {n}")
         user_message = f"{user_message}\n\n{hints_block}"
+
+    yield
+
     raw = call_ai_for_plan(user_message, tools, ai_config, log_messages, library_context)
     if 'error' in raw:
         return {"error": raw['error']}
 
     raw_calls = raw.get('tool_calls', []) or []
     log_messages.append(f"AI emitted {len(raw_calls)} tool call(s)")
+
+    yield
 
     raw_calls = validate_plan_args(
         raw_calls, user_wants_rating=user_wants_rating, log_messages=log_messages
@@ -1232,6 +1238,7 @@ def plan_and_execute_once(
                     added_to_pool += 1
             log_messages.append(f"   pooled {added_to_pool}/{len(songs)} unique (pool={len(pool_songs)})")
             primary_logs.append((tn, ta, added_to_pool, False, res.get('message', '')))
+            yield
 
         if not pool_songs:
             for (tn, ta, _added, errored, msg) in primary_logs:
@@ -1254,7 +1261,9 @@ def plan_and_execute_once(
 
         N = len(pool_songs)
         feats = _fetch_pool_features([s['item_id'] for s in pool_songs])
+        yield
         final, matched, moved = _rerank_pool(pool_songs, plan.filter, feats, log_messages)
+        yield
 
         for (tn, ta, pooled, errored, msg) in primary_logs:
             tools_used_history.append({
@@ -1317,6 +1326,7 @@ def plan_and_execute_once(
             })
             tool_execution_summary.append(_summary(tn, ta, added))
             tool_call_counter += 1
+            yield
             if len(all_songs) >= collection_cap:
                 log_messages.append(f"collection cap {collection_cap} reached, stopping")
                 break

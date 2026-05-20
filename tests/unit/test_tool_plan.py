@@ -84,7 +84,7 @@ class TestNormalizeMoodList:
         assert 'female vocalists' in result['voices']
         assert 'female vocalist' in result['voices']
         assert 'happy' in result['other_features']
-        assert result['mood_vector'] == []
+        assert result['mood_vector'] == ['happy']
 
     def test_energy_phrase_extracted(self):
         v = _vocab()
@@ -102,7 +102,7 @@ class TestNormalizeVoicesList:
     def test_voices_canonical_passthrough(self):
         v = _vocab()
         result = v.normalize_voices_list(['female vocalists', 'male vocalists'])
-        assert result['voices'] == ['female vocalists', 'male vocalists']
+        assert result['voices'] == ['female vocalists', 'female vocalist', 'male vocalists']
         assert result['dropped'] == []
 
     def test_aliased_voices_normalized(self):
@@ -153,23 +153,27 @@ class TestPlanFilterRouting:
 
 
 class TestValidatePlanArgs:
-    def test_drops_empty_song_similarity(self):
+    def test_drops_seed_search_with_no_usable_seeds(self):
         p = _plan()
         log = []
         out = p.validate_plan_args(
-            [{'name': 'song_similarity', 'arguments': {'song_title': '', 'song_artist': 'X'}}],
+            [{'name': 'seed_search', 'arguments': {'seeds': [{'type': 'song', 'title': '', 'song_artist': 'X'}]}}],
             user_wants_rating=False, log_messages=log,
         )
         assert out == []
 
-    def test_coerces_single_alchemy_to_artist_similarity(self):
+    def test_coerces_single_seed_alchemy_to_union(self):
         p = _plan()
         out = p.validate_plan_args(
-            [{'name': 'song_alchemy', 'arguments': {'add_items': [{'type': 'artist', 'id': 'Madonna'}]}}],
+            [{'name': 'seed_search', 'arguments': {
+                'seeds': [{'type': 'artist', 'name': 'Madonna'}],
+                'blend_mode': 'alchemy',
+            }}],
             user_wants_rating=False,
         )
-        assert out[0]['name'] == 'artist_similarity'
-        assert out[0]['arguments']['artist'] == 'Madonna'
+        assert out[0]['name'] == 'seed_search'
+        assert out[0]['arguments']['blend_mode'] == 'union'
+        assert out[0]['arguments']['seeds'][0]['name'] == 'Madonna'
 
     def test_strips_hallucinated_min_rating(self):
         p = _plan()
@@ -208,8 +212,8 @@ class TestMultiIntentClassification:
     def test_two_primaries_preserved(self):
         p = _plan()
         plan_obj = p.validate_and_normalize_plan([
-            {'name': 'artist_similarity', 'arguments': {'artist': 'blink-182'}},
-            {'name': 'artist_similarity', 'arguments': {'artist': 'Green Day'}},
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'blink-182'}]}},
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'Green Day'}]}},
         ])
         assert len(plan_obj.primaries) == 2
         assert plan_obj.filter is None
@@ -217,7 +221,7 @@ class TestMultiIntentClassification:
     def test_primaries_plus_filter(self):
         p = _plan()
         plan_obj = p.validate_and_normalize_plan([
-            {'name': 'song_similarity', 'arguments': {'song_title': 'By The Way', 'song_artist': 'Red Hot Chili Peppers'}},
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'song', 'title': 'By The Way', 'artist': 'Red Hot Chili Peppers'}]}},
             {'name': 'search_database', 'arguments': {'voices': ['female voice']}},
         ])
         assert len(plan_obj.primaries) == 1

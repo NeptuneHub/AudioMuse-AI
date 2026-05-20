@@ -852,7 +852,9 @@ class TestGetOllamaPlaylistName:
             "deepseek-r1:1.5b",
             "test prompt",
             api_key="no-key-needed",
-            skip_delay=False
+            skip_delay=False,
+            temperature=None,
+            max_tokens=None
         )
         assert result == "Test Playlist"
 

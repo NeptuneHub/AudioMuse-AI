@@ -1318,8 +1318,9 @@ class TestTextSearchSync:
         assert len(result["songs"]) == 2
         assert result["songs"][0]["item_id"] == "c1"
 
-    def test_tempo_filter_applied(self):
-        """Tempo filter 'slow' triggers DB filtering of CLAP results."""
+    def test_tempo_filter_ignored_pool_returned_as_is(self):
+        """tempo_filter is accepted for signature compatibility but ignored;
+        the tool returns the pure CLAP pool (tempo/energy re-rank is downstream)."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1328,10 +1329,6 @@ class TestTextSearchSync:
             {"item_id": "c2", "title": "Fast Song", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Slow Song", "author": "A1"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1345,11 +1342,11 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert len(result["songs"]) == 2
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2"]
 
-    def test_energy_filter_applied(self):
-        """Energy filter 'high' triggers DB filtering of CLAP results."""
+    def test_energy_filter_ignored_pool_returned_as_is(self):
+        """energy_filter is accepted but ignored; the pool comes back unfiltered."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1358,10 +1355,6 @@ class TestTextSearchSync:
             {"item_id": "c2", "title": "Low Energy", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "High Energy", "author": "A1"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1375,11 +1368,11 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert len(result["songs"]) == 2
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2"]
 
-    def test_combined_tempo_and_energy_filters(self):
-        """Both tempo and energy filters applied together."""
+    def test_combined_tempo_and_energy_filters_ignored(self):
+        """Both tempo and energy filters are ignored; full pool returned in order."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1389,11 +1382,6 @@ class TestTextSearchSync:
             {"item_id": "c3", "title": "Also Match", "author": "A3"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Perfect Match", "author": "A1"}),
-            _make_dict_row({"item_id": "c3", "title": "Also Match", "author": "A3"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1407,12 +1395,12 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 2
-        assert result["songs"][0]["item_id"] == "c1"
-        assert result["songs"][1]["item_id"] == "c3"
+        assert len(result["songs"]) == 3
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2", "c3"]
 
-    def test_results_limited_to_get_songs(self):
-        """CLAP returns 50 results, get_songs=10 -> only 10 returned."""
+    def test_get_songs_passed_as_clap_limit(self):
+        """get_songs is delegated to search_by_text as its limit; the tool itself
+        does not slice the returned pool."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
@@ -1420,7 +1408,7 @@ class TestTextSearchSync:
 
         clap_results = [
             {"item_id": f"c{i}", "title": f"Song {i}", "author": f"Artist {i}"}
-            for i in range(50)
+            for i in range(10)
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
@@ -1434,6 +1422,7 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
+        clap_mod.search_by_text.assert_called_once_with("anything", limit=10)
         assert len(result["songs"]) == 10
 
     def test_exception_returns_empty_with_message(self):
