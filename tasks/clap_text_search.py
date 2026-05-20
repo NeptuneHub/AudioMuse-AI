@@ -495,6 +495,12 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
         from config import MAX_SONGS_PER_ARTIST
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        # A large limit means the caller wants a big re-rank POOL (the chat
+        # pipeline). Skip the in-CLAP per-artist cap there -- it would inflate the
+        # voyager k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
+        # applied downstream anyway. Small limits (search page) keep the cap.
+        if limit >= 1000:
+            artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:

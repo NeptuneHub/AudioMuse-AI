@@ -510,32 +510,9 @@ def _run_chat_pipeline(data, log_messages):
 
     # Prepare final results
     if all_songs:
-        # --- Phase 0: Post-collection rating filter ---
-        # Only enforce rating filter if the USER explicitly asked for ratings
-        if detected_min_rating is not None and _user_wants_rating:
-            from app_helper import get_db
-            from psycopg2.extras import DictCursor
-            try:
-                song_ids = [s['item_id'] for s in all_songs]
-                db_conn = get_db()
-                cur = db_conn.cursor(cursor_factory=DictCursor)
-                # Fetch ratings for all collected songs
-                cur.execute(
-                    "SELECT item_id, rating FROM public.score WHERE item_id = ANY(%s)",
-                    (song_ids,)
-                )
-                rating_map = {row['item_id']: row['rating'] for row in cur.fetchall()}
-                cur.close()
-                db_conn.close()
-
-                before_count = len(all_songs)
-                all_songs = [s for s in all_songs if (rating_map.get(s['item_id']) or 0) >= detected_min_rating]
-                removed = before_count - len(all_songs)
-                if removed > 0:
-                    log_messages.append(f"\n⭐ Rating filter (min {detected_min_rating}): removed {removed} songs below threshold, {len(all_songs)} remain")
-            except Exception as e:
-                logger.warning(f"Post-collection rating filter failed (non-fatal): {e}")
-                log_messages.append(f"\n⚠️ Rating filter skipped: {str(e)[:100]}")
+        # NOTE: rating is NOT hard-filtered here. Like every other filter dim it
+        # is applied as a SOFT re-rank inside planner._rerank_pool (rating/5
+        # gradient), so high-rated songs float up but nothing is removed.
 
         # --- Phase 1: Artist Diversity Cap on full collected pool ---
         max_per_artist = MAX_SONGS_PER_ARTIST_PLAYLIST

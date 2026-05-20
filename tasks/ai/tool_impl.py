@@ -365,13 +365,17 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
 
 
 def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int) -> Dict:
-    """CLAP text search with optional hybrid tempo/energy filtering."""
+    """CLAP audio text search -- PURE similarity, returns a large pool.
+
+    No tempo/energy/genre filtering happens here: the chat planner routes any
+    such filter through the ONE shared soft re-rank (``planner._rerank_pool``),
+    so this tool just returns the CLAP-similarity-ranked pool. ``tempo_filter`` /
+    ``energy_filter`` are accepted for signature compatibility but ignored.
+    """
     from tasks.clap_text_search import search_by_text
     from config import CLAP_ENABLED
 
-    db_conn = get_db_connection()
     log_messages = []
-
     try:
         if not CLAP_ENABLED:
             log_messages.append("CLAP text search is disabled")
@@ -380,117 +384,27 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
         if not description:
             return {"songs": [], "message": "No description provided for text search"}
 
-        log_messages.append(f"CLAP text search: '{description}'")
+        limit = int(get_songs) if get_songs else 200
+        log_messages.append(f"CLAP text search: '{description}' (pool up to {limit})")
 
-        clap_results = search_by_text(description, limit=100)
-
+        clap_results = search_by_text(description, limit=limit)
         if not clap_results:
             log_messages.append("No results from CLAP text search")
             return {"songs": [], "message": "\n".join(log_messages)}
 
-        log_messages.append(f"CLAP returned {len(clap_results)} songs")
-
-        if tempo_filter or energy_filter:
-            log_messages.append(f"Applying hybrid filters (tempo: {tempo_filter}, energy: {energy_filter})")
-
-            item_ids = [r['item_id'] for r in clap_results]
-
-            tempo_ranges = {
-                'slow': (0, 90),
-                'medium': (90, 140),
-                'fast': (140, 300)
-            }
-            energy_ranges = {
-                'low': (0, 0.05),
-                'medium': (0.05, 0.10),
-                'high': (0.10, 1.0)
-            }
-
-            filter_conditions = []
-            query_params = []
-
-            if tempo_filter and tempo_filter in tempo_ranges:
-                tempo_min, tempo_max = tempo_ranges[tempo_filter]
-                filter_conditions.append("tempo >= %s AND tempo < %s")
-                query_params.extend([tempo_min, tempo_max])
-
-            if energy_filter and energy_filter in energy_ranges:
-                energy_min, energy_max = energy_ranges[energy_filter]
-                filter_conditions.append("energy >= %s AND energy < %s")
-                query_params.extend([energy_min, energy_max])
-
-            with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                placeholders = ','.join(['%s'] * len(item_ids))
-                where_clause = ' AND '.join(filter_conditions)
-
-                sql = f"""
-                    SELECT item_id, title, author, album
-                    FROM public.score
-                    WHERE item_id IN ({placeholders})
-                    AND {where_clause}
-                """
-
-                cur.execute(sql, item_ids + query_params)
-                filtered_results = cur.fetchall()
-
-            album_lookup = {r['item_id']: r.get('album', '') for r in filtered_results}
-            filtered_item_ids = {r['item_id'] for r in filtered_results}
-            songs = [
-                {"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": album_lookup.get(r['item_id'], '')}
-                for r in clap_results
-                if r['item_id'] in filtered_item_ids
-            ]
-
-            log_messages.append(f"Filtered to {len(songs)} songs matching tempo/energy criteria")
-        else:
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in clap_results]
-            log_messages.append(f"Retrieved {len(songs)} songs from CLAP")
-
-        # --- Genre keyword filter: remove off-genre CLAP results ---
-        try:
-            _GENRE_KEYWORDS = {
-                'rock', 'metal', 'pop', 'jazz', 'blues', 'country', 'folk', 'punk',
-                'hip-hop', 'rap', 'electronic', 'dance', 'reggae', 'soul', 'funk',
-                'r&b', 'classical', 'indie', 'alternative', 'hard rock', 'heavy metal',
-                'grunge', 'ska', 'latin', 'techno', 'house', 'ambient', 'new wave',
-                'post-punk', 'shoegaze',
-            }
-            desc_lower = description.lower()
-            matched_genres = [g for g in _GENRE_KEYWORDS if g in desc_lower]
-
-            if matched_genres and songs:
-                song_ids = [s['item_id'] for s in songs]
-                with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                    ph = ','.join(['%s'] * len(song_ids))
-                    genre_conditions = []
-                    genre_params = []
-                    for g in matched_genres:
-                        genre_conditions.append("mood_vector ~* %s")
-                        genre_params.append(f"(^|,)\\s*{re.escape(g)}:")
-                    genre_where = " OR ".join(genre_conditions)
-                    cur.execute(f"""
-                        SELECT item_id FROM public.score
-                        WHERE item_id IN ({ph})
-                        AND ({genre_where})
-                    """, song_ids + genre_params)
-                    matching_ids = {r['item_id'] for r in cur.fetchall()}
-
-                filtered = [s for s in songs if s['item_id'] in matching_ids]
-                if len(filtered) >= len(songs) * 0.4:
-                    removed = len(songs) - len(filtered)
-                    if removed > 0:
-                        log_messages.append(f"Genre keyword filter: removed {removed} off-genre songs (keywords: {', '.join(matched_genres[:3])})")
-                    songs = filtered
-        except Exception as e:
-            logger.warning(f"CLAP genre filter failed (non-fatal): {e}")
-
-        return {"songs": songs[:get_songs], "message": "\n".join(log_messages)}
+        songs = [
+            {"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')}
+            for r in clap_results
+        ]
+        log_messages.append(
+            f"CLAP returned {len(songs)} songs (similarity order; any tempo/energy/genre "
+            f"filter is applied downstream as a soft re-rank, not a cut)"
+        )
+        return {"songs": songs, "message": "\n".join(log_messages)}
     except Exception as e:
         log_messages.append(f"Error in text search: {str(e)}")
         log_messages.append(traceback.format_exc())
         return {"songs": [], "message": "\n".join(log_messages)}
-    finally:
-        db_conn.close()
 
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> Dict:

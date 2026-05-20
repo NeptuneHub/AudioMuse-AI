@@ -62,6 +62,12 @@ SCORED_FILTER_KEYS = ('genres', 'voices', 'moods', 'other_features')
 # requested (moods, energy, tempo, year, min_rating, key) is a gradient.
 CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album')
 
+# text_match carries coarse audio buckets; map them to the same filter dims the
+# soft re-rank scores, so a text_match's tempo/energy goes through the ONE
+# central re-rank (energy normalized 0..1; tempo in BPM).
+_ENERGY_BUCKET_RANGE = {'low': (0.0, 0.33), 'medium': (0.33, 0.66), 'high': (0.66, 1.0)}
+_TEMPO_BUCKET_RANGE = {'slow': (None, 90), 'medium': (90, 140), 'fast': (140, None)}
+
 COMPOSITION_POOL_TARGET = 10000
 
 YEAR_DECAY_SPAN = 30.0
@@ -301,6 +307,107 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
         lines.append(f"   album {filt['album']} -> identity substring")
         machine['album'] = filt['album']
     return lines, machine
+
+
+def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: List[str]):
+    """The ONE soft re-rank shared by every primary tool (seed_search, text_match).
+
+    Scores each pool song across ALL requested filter dimensions (genres, voices,
+    moods, energy, tempo, year, rating, scale, key, artist, album) via
+    ``_filter_dim_scores``, per-pool min-max normalizes each dim, then sorts:
+    songs matching a requested CATEGORICAL dim float to the top, continuous dims
+    order within. NEVER removes a song -- it only reorders. Returns
+    ``(ordered_songs, matched_count, moved_count)``.
+    """
+    N = len(pool_songs)
+    clean_filter = {k: v for k, v in filt.items() if k not in ('candidate_item_ids', 'get_songs')}
+
+    log_messages.append(f"\nFILTER (priority re-rank): {N} songs from pool")
+    log_messages.append(f"   filter applied: {clean_filter}")
+    dim_lines, _dim_machine = _filter_dimension_report(filt, feats, pool_songs)
+    for ln in dim_lines:
+        log_messages.append(ln)
+
+    raw_dims = [_filter_dim_scores(filt, feats.get(s['item_id'], {})) for s in pool_songs]
+
+    dim_keys = sorted({k for d in raw_dims for k in d})
+    dim_min = {k: min((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+    dim_max = {k: max((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+
+    def _norm(k, v):
+        lo, hi = dim_min[k], dim_max[k]
+        return (v - lo) / (hi - lo) if hi > lo else 0.0
+
+    cat_keys = [k for k in dim_keys if k in CATEGORICAL_DIMS]
+    cont_keys = [k for k in dim_keys if k not in CATEGORICAL_DIMS]
+
+    def _cont_score(d):
+        if not cont_keys:
+            return 0.0
+        return sum(_norm(k, d.get(k, 0.0)) for k in cont_keys) / len(cont_keys)
+
+    def _cat_count(d):
+        return sum(1 for k in cat_keys if d.get(k, 0.0) > 0)
+
+    def _cat_conf(d):
+        return sum(_norm(k, d.get(k, 0.0)) for k in cat_keys)
+
+    if dim_keys:
+        norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
+        log_messages.append(f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}")
+
+    if cat_keys:
+        # Tiered: songs matching the requested categorical(s) rank above those
+        # that don't; the continuous dims (and categorical confidence) only
+        # order songs WITHIN each tier. Soft -- non-matching songs backfill.
+        matched = sum(1 for d in raw_dims if _cat_count(d) > 0)
+        order = sorted(
+            range(N),
+            key=lambda i: (_cat_count(raw_dims[i]), _cont_score(raw_dims[i]), _cat_conf(raw_dims[i])),
+            reverse=True,
+        )
+        final = [pool_songs[i] for i in order]
+        moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+        cat_label = ", ".join(cat_keys)
+        cont_label = ", ".join(cont_keys) if cont_keys else "similarity"
+        if matched == 0:
+            log_messages.append(
+                f"   re-rank: 0/{N} match the requested {cat_label}; "
+                f"all ordered by {cont_label}"
+            )
+        else:
+            log_messages.append(
+                f"   re-rank: {matched}/{N} match the requested {cat_label} and rank first; "
+                f"remaining ordered by {cont_label} (categorical priority, then gradient)"
+            )
+    else:
+        # Continuous-only: blend the normalized gradient dims.
+        matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
+        fscores = [_cont_score(d) for d in raw_dims]
+        if matched == 0:
+            final = list(pool_songs)
+            order = list(range(N))
+            moved = 0
+            log_messages.append(f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)")
+        else:
+            order = sorted(range(N), key=lambda i: fscores[i], reverse=True)
+            final = [pool_songs[i] for i in order]
+            moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+            if moved == 0:
+                log_messages.append(f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position")
+            else:
+                log_messages.append(
+                    f"   re-rank: {matched}/{N} matched the filter and rose to the top; "
+                    f"{moved} songs shifted position vs pure similarity order "
+                    f"(per-dim normalized then averaged, higher score = higher rank)"
+                )
+
+    logger.info(
+        "soft re-rank: pool=%d matched=%d moved=%d filter=%s dim_range=%s",
+        N, matched, moved, clean_filter,
+        {k: (round(dim_min[k], 2), round(dim_max[k], 2)) for k in dim_keys},
+    )
+    return final, matched, moved
 
 
 FILTER_LIST_KEYS = ('genres', 'voices', 'moods', 'other_features')
@@ -970,6 +1077,32 @@ def plan_and_execute_once(
     if not plan.primaries and plan.filter is None:
         return {"error": "Plan was empty after normalization"}
 
+    # Route a primary's coarse audio buckets (text_match's tempo_filter /
+    # energy_filter) into plan.filter so they pass through the ONE central soft
+    # re-rank like every other filter -- the tool itself no longer filters.
+    for p in plan.primaries:
+        if not isinstance(p, dict) or p.get('name') != 'text_match':
+            continue
+        pargs = p.get('arguments') or {}
+        derived: Dict = {}
+        ef = pargs.pop('energy_filter', None)
+        if isinstance(ef, str) and ef.lower() in _ENERGY_BUCKET_RANGE:
+            lo, hi = _ENERGY_BUCKET_RANGE[ef.lower()]
+            if lo is not None:
+                derived['energy_min'] = lo
+            if hi is not None:
+                derived['energy_max'] = hi
+        tf = pargs.pop('tempo_filter', None)
+        if isinstance(tf, str) and tf.lower() in _TEMPO_BUCKET_RANGE:
+            lo, hi = _TEMPO_BUCKET_RANGE[tf.lower()]
+            if lo is not None:
+                derived['tempo_min'] = lo
+            if hi is not None:
+                derived['tempo_max'] = hi
+        if derived:
+            plan.filter = _merge_filter(plan.filter, derived)
+            log_messages.append(f"   text_match audio buckets -> filter {derived} (handled by the shared soft re-rank)")
+
     # HARD RULE: never apply a filter/re-rank to AI brainstorming. Brainstormed
     # (knowledge_lookup) songs are returned exactly as suggested.
     if plan.filter is not None and any(
@@ -1121,93 +1254,7 @@ def plan_and_execute_once(
 
         N = len(pool_songs)
         feats = _fetch_pool_features([s['item_id'] for s in pool_songs])
-        clean_filter = {k: v for k, v in plan.filter.items() if k not in ('candidate_item_ids', 'get_songs')}
-
-        log_messages.append(f"\nFILTER (priority re-rank): {N} songs from seed pool")
-        log_messages.append(f"   filter applied: {clean_filter}")
-        dim_lines, _dim_machine = _filter_dimension_report(plan.filter, feats, pool_songs)
-        for ln in dim_lines:
-            log_messages.append(ln)
-
-        raw_dims = [_filter_dim_scores(plan.filter, feats.get(s['item_id'], {})) for s in pool_songs]
-
-        dim_keys = sorted({k for d in raw_dims for k in d})
-        dim_min = {k: min((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
-        dim_max = {k: max((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
-
-        def _norm(k, v):
-            lo, hi = dim_min[k], dim_max[k]
-            return (v - lo) / (hi - lo) if hi > lo else 0.0
-
-        cat_keys = [k for k in dim_keys if k in CATEGORICAL_DIMS]
-        cont_keys = [k for k in dim_keys if k not in CATEGORICAL_DIMS]
-
-        def _cont_score(d):
-            if not cont_keys:
-                return 0.0
-            return sum(_norm(k, d.get(k, 0.0)) for k in cont_keys) / len(cont_keys)
-
-        def _cat_count(d):
-            return sum(1 for k in cat_keys if d.get(k, 0.0) > 0)
-
-        def _cat_conf(d):
-            return sum(_norm(k, d.get(k, 0.0)) for k in cat_keys)
-
-        if dim_keys:
-            norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
-            log_messages.append(f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}")
-
-        if cat_keys:
-            # Tiered: songs matching the requested categorical(s) rank above those
-            # that don't; the continuous dims (and categorical confidence) only
-            # order songs WITHIN each tier. Soft -- non-matching songs backfill.
-            matched = sum(1 for d in raw_dims if _cat_count(d) > 0)
-            order = sorted(
-                range(N),
-                key=lambda i: (_cat_count(raw_dims[i]), _cont_score(raw_dims[i]), _cat_conf(raw_dims[i])),
-                reverse=True,
-            )
-            final = [pool_songs[i] for i in order]
-            moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
-            cat_label = ", ".join(cat_keys)
-            cont_label = ", ".join(cont_keys) if cont_keys else "similarity"
-            if matched == 0:
-                log_messages.append(
-                    f"   re-rank: 0/{N} match the requested {cat_label}; "
-                    f"all ordered by {cont_label}"
-                )
-            else:
-                log_messages.append(
-                    f"   re-rank: {matched}/{N} match the requested {cat_label} and rank first; "
-                    f"remaining ordered by {cont_label} (categorical priority, then gradient)"
-                )
-        else:
-            # Continuous-only: blend the normalized gradient dims (unchanged).
-            matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
-            fscores = [_cont_score(d) for d in raw_dims]
-            if matched == 0:
-                final = list(pool_songs)
-                order = list(range(N))
-                moved = 0
-                log_messages.append(f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)")
-            else:
-                order = sorted(range(N), key=lambda i: fscores[i], reverse=True)
-                final = [pool_songs[i] for i in order]
-                moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
-                if moved == 0:
-                    log_messages.append(f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position")
-                else:
-                    log_messages.append(
-                        f"   re-rank: {matched}/{N} matched the filter and rose to the top; "
-                        f"{moved} songs shifted position vs pure similarity order "
-                        f"(per-dim normalized then averaged, higher score = higher rank)"
-                    )
-
-        logger.info(
-            "composition re-rank: pool=%d matched=%d moved=%d filter=%s dim_range=%s",
-            N, matched, moved, clean_filter,
-            {k: (round(dim_min[k], 2), round(dim_max[k], 2)) for k in dim_keys},
-        )
+        final, matched, moved = _rerank_pool(pool_songs, plan.filter, feats, log_messages)
 
         for (tn, ta, pooled, errored, msg) in primary_logs:
             tools_used_history.append({
