@@ -163,9 +163,14 @@ def build_ollama_tool_calling_prompt(
         '{{"name": "search_database", "arguments": {{"moods": ["danceable"]}}}}'
         ']}}'
     )
+    examples.append(
+        '"calm piano songs"\n'
+        '{{"tool_calls": [{{"name": "text_match", "arguments": {{"query": "calm piano", "mode": "audio"}}}}]}}'
+    )
     examples_text = "\n\n".join(examples)
 
-    return f"""{system_prompt}
+    return f"""/no_think
+{system_prompt}
 
 === OUTPUT FORMAT (CRITICAL) ===
 Return ONLY a valid JSON object with this EXACT format:
@@ -181,7 +186,9 @@ Return ONLY a valid JSON object with this EXACT format:
 === COMMON MISTAKES ===
 WRONG: only seed_search when a descriptor was added -> also emit search_database
 WRONG: putting a voice/genre in 'moods' -> moods is danceable/aggressive/happy/party/relaxed/sad ONLY
+WRONG: repeating the same tool -> emit each tool AT MOST once; usually ONE tool call is enough. Output the JSON and STOP.
 
+Do not reason or explain. Go straight to the JSON.
 Now analyze this request and return ONLY the JSON:
 Request: "{user_message}"
 """
@@ -245,6 +252,7 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
             "tool_calls": {
                 "type": "array",
                 "minItems": 1,
+                "maxItems": 4,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,

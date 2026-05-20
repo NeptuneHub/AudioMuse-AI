@@ -1,9 +1,12 @@
 # app_chat.py
-from flask import Blueprint, render_template, request, jsonify
+from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context, current_app
 from flasgger import swag_from # Import swag_from
 import json # For JSON serialization of tool arguments
 import logging
+import queue
 import re
+import threading
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -220,16 +223,108 @@ def chat_config_defaults_api():
 def chat_playlist_api():
     """
     Process user chat input to generate a playlist using AI with MCP tools.
-    
+
     MCP TOOLS (4 CORE):
     1. artist_similarity - Songs from similar artists
-    2. song_similarity - Songs similar to a specific song  
+    2. song_similarity - Songs similar to a specific song
     3. search_database - Search by genre, mood, tempo, energy, key (ALL filters in ONE call)
     4. ai_brainstorm - AI suggests famous songs (trending, top hits, radio classics, etc.)
-    
+
     AI analyzes request → calls tools → combines results → returns 100 songs
+
+    Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
     data = request.get_json()
+    if not data or 'userInput' not in data:
+        return jsonify({"error": "Missing userInput in request"}), 400
+    log_messages = []
+    resp_obj, status = _run_chat_pipeline(data, log_messages)
+    return jsonify({"response": resp_obj}), status
+
+
+@chat_bp.route('/api/chatPlaylistStream', methods=['POST'])
+def chat_playlist_stream_api():
+    """
+    Streaming variant of the playlist generator.
+
+    Emits a Server-Sent-Event for every progress line as the pipeline produces it,
+    then a final ``done`` event with the full response payload, so the frontend can
+    show real, live progress with real per-step timing.
+
+    The heavy pipeline (LLM calls, the re-rank over up to 10k songs, DB queries)
+    runs on a dedicated DAEMON thread with its own app context -- NOT on the
+    gunicorn request thread. The request thread's ``generate()`` only blocks on
+    ``event_queue.get()`` (which releases the GIL) and relays events. This keeps
+    the tiny gthread worker pool (1 worker / 4 threads) responsive: running the
+    pipeline inline on the request thread starves that pool and can trip the
+    worker --timeout, locking up the whole app.
+    """
+    data = request.get_json()
+    if not data or 'userInput' not in data:
+        return jsonify({"error": "Missing userInput in request"}), 400
+
+    def _sse(obj):
+        """Serialize one SSE event, degrading to an error event if the payload
+        can't be JSON-encoded -- so the client always gets a well-formed frame."""
+        try:
+            return "data: " + json.dumps(obj) + "\n\n"
+        except (TypeError, ValueError):
+            logger.exception("SSE payload not serializable; sending error frame instead")
+            return "data: " + json.dumps({
+                "type": "error",
+                "error": "Server could not serialize the response.",
+                "t": time.time(),
+            }) + "\n\n"
+
+    app_obj = current_app._get_current_object()
+    event_queue = queue.Queue()
+
+    class _StreamingLog(list):
+        """A log list whose appends are also pushed to the SSE queue live."""
+        def append(self, item):
+            super().append(item)
+            event_queue.put(('log', item))
+
+    def _worker():
+        with app_obj.app_context():
+            try:
+                resp_obj, _status = _run_chat_pipeline(data, _StreamingLog())
+                event_queue.put(('done', resp_obj))
+            except Exception as exc:  # noqa: BLE001 - surfaced to the client as an error event
+                logger.exception("Streaming chat pipeline failed")
+                event_queue.put(('error', str(exc)))
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    @stream_with_context
+    def generate():
+        # Emit a byte immediately so proxies/the browser open the pipe and don't
+        # buffer while the first (slow) stage runs.
+        yield ": stream-open\n\n"
+        while True:
+            kind, payload = event_queue.get()
+            if kind == 'log':
+                yield _sse({"type": "log", "line": payload, "t": time.time()})
+            elif kind == 'done':
+                yield _sse({"type": "done", "response": payload, "t": time.time()})
+                return
+            else:
+                yield _sse({"type": "error", "error": payload, "t": time.time()})
+                return
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
+def _run_chat_pipeline(data, log_messages):
+    """Core chat-to-playlist pipeline. Appends progress to ``log_messages`` (the
+    streaming endpoint passes a queue-backed list so each append streams live) and
+    returns ``(response_obj_dict, http_status)``. Plain function -- the streaming
+    endpoint runs it on a daemon thread, not via a generator.
+    """
     # Mask API key if present in the debug log
     data_for_log = dict(data) if data else {}
     if 'gemini_api_key' in data_for_log and data_for_log['gemini_api_key']:
@@ -243,9 +338,6 @@ def chat_playlist_api():
     from app_helper import get_db
     from tasks.ai.tools import get_mcp_tools
     from tasks.ai.planner import plan_and_execute_once
-    
-    if not data or 'userInput' not in data:
-        return jsonify({"error": "Missing userInput in request"}), 400
 
     original_user_input = data.get('userInput')
     # Detect if user's request mentions ratings (guard against AI hallucinating rating filters)
@@ -255,24 +347,21 @@ def chat_playlist_api():
     ))
     ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
-    
-    log_messages = []
+
     log_messages.append(f"🎵 NEW MCP-BASED PLAYLIST GENERATION")
     log_messages.append(f"Request: '{original_user_input}'")
     log_messages.append(f"AI Provider: {ai_provider}")
-    
+
     # Check if AI provider is NONE
     if ai_provider == "NONE":
-        return jsonify({
-            "response": {
-                "message": "No AI provider selected. Please configure an AI provider to use this feature.",
-                "original_request": original_user_input,
-                "ai_provider_used": ai_provider,
-                "ai_model_selected": None,
-                "executed_query": None,
-                "query_results": None
-            }
-        }), 200
+        return ({
+            "message": "No AI provider selected. Please configure an AI provider to use this feature.",
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": None,
+            "executed_query": None,
+            "query_results": None
+        }, 200)
     
     # Build AI configuration object.
     # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
@@ -327,39 +416,39 @@ def chat_playlist_api():
     if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
         error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return jsonify({"response": {
+        return ({
             "message": "\n".join(log_messages),
             "original_request": original_user_input,
             "ai_provider_used": ai_provider,
             "ai_model_selected": ai_config.get('openai_model'),
             "executed_query": None,
             "query_results": None
-        }}), 400
-    
+        }, 400)
+
     if ai_provider == "GEMINI" and (not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
         error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return jsonify({"response": {
+        return ({
             "message": "\n".join(log_messages),
             "original_request": original_user_input,
             "ai_provider_used": ai_provider,
             "ai_model_selected": ai_config.get('gemini_model'),
             "executed_query": None,
             "query_results": None
-        }}), 400
-    
+        }, 400)
+
     if ai_provider == "MISTRAL" and (not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
         error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return jsonify({"response": {
+        return ({
             "message": "\n".join(log_messages),
             "original_request": original_user_input,
             "ai_provider_used": ai_provider,
             "ai_model_selected": ai_config.get('mistral_model'),
             "executed_query": None,
             "query_results": None
-        }}), 400
-    
+        }, 400)
+
     # ====================
     # MCP AGENTIC WORKFLOW
     # ====================
@@ -393,47 +482,27 @@ def chat_playlist_api():
     )
 
     if 'error' in plan_result:
+        # No fallback: do NOT invent an unrelated genre playlist. Return no
+        # results so the user sees that the AI couldn't build a plan for this
+        # request, rather than a made-up playlist.
         log_messages.append(f"AI planning failed: {plan_result['error']}")
-        fallback_genres = (
-            library_context.get('top_genres', ['pop', 'rock'])[:2]
-            if library_context else ['pop', 'rock']
-        )
-        log_messages.append(f"Fallback: genre search with {fallback_genres}")
-        from tasks.ai.tools import execute_mcp_tool as _exec_fallback
-        fb = _exec_fallback(
-            'search_database',
-            {'genres': fallback_genres, 'get_songs': 200},
-            ai_config_with_secrets,
-        )
-        if 'songs' in fb:
-            all_songs = list(fb['songs'])
-            song_sources = {s['item_id']: 0 for s in all_songs if s.get('item_id')}
-            tools_used_history = [{
-                'name': 'search_database',
-                'args': {'genres': fallback_genres},
-                'songs': len(all_songs),
-                'call_index': 0,
-                'result_message': fb.get('message', ''),
-            }]
-            tool_execution_summary = [f"search_database(genres={fallback_genres}, +{len(all_songs)})"]
-        else:
-            all_songs = []
-            song_sources = {}
-            tools_used_history = []
-            tool_execution_summary = []
-        detected_min_rating = None
-        plan_notes: list = []
-        executed_query_str = (
-            f"MCP single-pass (fallback): {' -> '.join(tool_execution_summary)}"
-        )
-    else:
-        all_songs = plan_result['songs']
-        song_sources = plan_result['song_sources']
-        tools_used_history = plan_result['tools_used_history']
-        tool_execution_summary = plan_result['tool_execution_summary']
-        detected_min_rating = plan_result['detected_min_rating']
-        plan_notes = plan_result.get('plan_notes', [])
-        executed_query_str = plan_result['executed_query_str']
+        return ({
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get(f'{ai_provider.lower()}_model'),
+            "executed_query": None,
+            "query_results": None,
+        }, 200)
+
+    all_songs = plan_result['songs']
+    song_sources = plan_result['song_sources']
+    tools_used_history = plan_result['tools_used_history']
+    tool_execution_summary = plan_result['tool_execution_summary']
+    detected_min_rating = plan_result['detected_min_rating']
+    plan_notes = plan_result.get('plan_notes', [])
+    executed_query_str = plan_result['executed_query_str']
+    filter_applied = plan_result.get('filter_applied', False)
 
     log_messages.append(
         f"\nCollected {len(all_songs)} songs (target {target_song_count}, cap {collection_cap})"
@@ -548,20 +617,28 @@ def chat_playlist_api():
         log_messages.append(f"\n📊 Pool: {len(all_songs)} collected → {len(diversified_pool)} after diversity cap → {len(final_query_results_list)} in final playlist")
 
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
-        try:
-            from tasks.playlist_ordering import order_playlist
-            from config import PLAYLIST_ENERGY_ARC
+        # Only when NO filter drove the result. When a filter/score was applied
+        # (e.g. "female vocalist", a genre, year, etc.), the songs are already in
+        # the order the score produced -- matched songs on top, then the rest by
+        # similarity. Re-sorting by tempo/energy/key here would scramble that and
+        # bury the matched songs, so the scored order is preserved instead.
+        if filter_applied:
+            log_messages.append(f"\n🎵 Playlist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
+        else:
+            try:
+                from tasks.playlist_ordering import order_playlist
+                from config import PLAYLIST_ENERGY_ARC
 
-            song_id_list = [s['item_id'] for s in final_query_results_list]
-            ordered_ids = order_playlist(song_id_list, energy_arc=PLAYLIST_ENERGY_ARC)
+                song_id_list = [s['item_id'] for s in final_query_results_list]
+                ordered_ids = order_playlist(song_id_list, energy_arc=PLAYLIST_ENERGY_ARC)
 
-            # Rebuild list in new order
-            id_to_song = {s['item_id']: s for s in final_query_results_list}
-            final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
-            log_messages.append(f"\n🎵 Playlist ordered for smooth transitions (tempo/energy/key)")
-        except Exception as e:
-            logger.warning(f"Playlist ordering failed (non-fatal): {e}")
-            log_messages.append(f"\n⚠️ Playlist ordering skipped: {str(e)[:100]}")
+                # Rebuild list in new order
+                id_to_song = {s['item_id']: s for s in final_query_results_list}
+                final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
+                log_messages.append(f"\n🎵 Playlist ordered for smooth transitions (tempo/energy/key)")
+            except Exception as e:
+                logger.warning(f"Playlist ordering failed (non-fatal): {e}")
+                log_messages.append(f"\n⚠️ Playlist ordering skipped: {str(e)[:100]}")
 
         final_executed_query_str = executed_query_str
 
@@ -614,18 +691,16 @@ def chat_playlist_api():
         final_executed_query_str = executed_query_str or "MCP single-pass: No results"
     
     actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
-    
-    # Return final response
-    return jsonify({
-        "response": {
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": actual_model_used,
-            "executed_query": final_executed_query_str,
-            "query_results": final_query_results_list
-        }
-    }), 200
+
+    # Return final response object (caller wraps it for HTTP).
+    return ({
+        "message": "\n".join(log_messages),
+        "original_request": original_user_input,
+        "ai_provider_used": ai_provider,
+        "ai_model_selected": actual_model_used,
+        "executed_query": final_executed_query_str,
+        "query_results": final_query_results_list
+    }, 200)
 
 
 @chat_bp.route('/api/create_playlist', methods=['POST'])

@@ -746,6 +746,9 @@ def classify(
 
     try:
         from tasks.ai.api import generate_text
+        # NOTE: do NOT pass a low max_tokens here. A reasoning model (e.g. qwen3.5
+        # on OpenRouter) spends tokens thinking first; a tight cap truncates it
+        # before the JSON answer -> empty -> retry loop. Keep the generous default.
         response = generate_text(prompt, ai_config, skip_delay=True, temperature=0.0)
     except Exception as e:
         logger.warning("intent_classifier transport error: %s", e)
@@ -895,7 +898,10 @@ def plan_and_execute_once(
     """Two-stage orchestrator: classifier narrows tools -> single AI plan -> execute.
 
     Returns ``{songs, song_sources, tools_used_history, tool_execution_summary,
-    detected_min_rating, plan_notes, executed_query_str}`` or ``{"error": ...}``.
+    detected_min_rating, plan_notes, executed_query_str, filter_applied}`` or
+    ``{"error": ...}``. Progress streams to the caller via ``log_messages.append``
+    (the streaming endpoint passes a queue-backed list that pushes each line to the
+    client as it is added).
     """
     from tasks.ai.tools import execute_mcp_tool
     from tasks.ai.tool_impl import _fetch_pool_features

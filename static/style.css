@@ -1344,3 +1344,67 @@ tbody tr:hover {
 .message-box .close-btn:hover {
     color: var(--text-title);
 }
+
+/* Song Mood & Genre tag bar (shared across song-list views) */
+.song-tags-scroll {
+    overflow-x: auto;
+}
+.song-result-list {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.result-item {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.result-item:hover { background: var(--bg-body); }
+.result-info { flex: 1; }
+.result-title { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.3rem; }
+.result-artist { color: var(--text-muted); font-size: 0.9rem; }
+.result-album { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.15rem; }
+.similarity-badge {
+    color: white;
+    padding: 0.4rem 0.8rem;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+.similarity-badge.badge-high { background: var(--color-success); }
+.similarity-badge.badge-medium { background: #d97706; }
+.similarity-badge.badge-low { background: var(--text-muted); }
+.song-result-list .result-item:last-child {
+    border-bottom: none;
+}
+.similarity-badge.badge-neutral {
+    background: var(--text-muted);
+}
+.path-tags {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+.ptag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.6rem;
+    border: 1px solid currentColor;
+    border-radius: 9999px;
+    background-color: transparent;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+.ptag-happy      { color: #F59E0B; }
+.ptag-sad        { color: #3B82F6; }
+.ptag-aggressive { color: #EF4444; }
+.ptag-relaxed    { color: #22C55E; }
+.ptag-party      { color: #EC4899; }
+.ptag-danceable  { color: #06B6D4; }

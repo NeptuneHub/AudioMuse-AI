@@ -6,6 +6,7 @@ import numpy as np
 
 # Import the new config option
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
+from app_helper import top_stratified_genre
 from tasks.voyager_manager import (
     find_nearest_neighbors_by_id, 
     find_nearest_neighbors_by_vector,
@@ -339,7 +340,10 @@ def get_similar_tracks_endpoint():
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
                     "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id]
+                    "distance": distance_map[neighbor_id],
+                    "mood_vector": track_info.get('mood_vector'),
+                    "other_features": track_info.get('other_features'),
+                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
                 })
         return jsonify(final_results)
 
@@ -383,7 +387,10 @@ def get_similar_tracks_endpoint():
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
                     "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id]
+                    "distance": distance_map[neighbor_id],
+                    "mood_vector": track_info.get('mood_vector'),
+                    "other_features": track_info.get('other_features'),
+                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
                 })
         return jsonify(final_results)
 
@@ -429,7 +436,10 @@ def get_similar_tracks_endpoint():
                     "author": track_info['author'],
                     "album": (track_info.get('album') or 'unknown'),
                     "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id]
+                    "distance": distance_map[neighbor_id],
+                    "mood_vector": track_info.get('mood_vector'),
+                    "other_features": track_info.get('other_features'),
+                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
                 })
 
         return jsonify(final_results)

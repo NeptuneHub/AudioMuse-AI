@@ -153,7 +153,8 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
 # ---------------------------------------------------------------------------
 
 def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
-                  temperature: Optional[float] = None) -> str:
+                  temperature: Optional[float] = None,
+                  max_tokens: Optional[int] = None) -> str:
     """Single-prompt freeform text completion.
 
     Returns the model's text on success, or a string starting with ``"Error: "``
@@ -161,6 +162,8 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
 
     ``temperature=None`` keeps each provider's creative default; pass a value
     (e.g. 0.0 for deterministic tasks like intent classification) to override.
+    ``max_tokens=None`` keeps the generous default (8000, for naming/brainstorm);
+    pass a value (e.g. 1024 for the chat classifier) to bound the generation.
     """
     valid, err = validate_ai_config(ai_config)
     if not valid:
@@ -177,6 +180,7 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             prompt,
             skip_delay=skip_delay,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
     if provider == "OPENAI":
         return ai_api_openai.generate_text(
@@ -186,6 +190,7 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             ai_config["openai_key"],
             skip_delay=skip_delay,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
     if provider == "GEMINI":
         return ai_api_gemini.generate_text(
@@ -194,6 +199,7 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             prompt,
             skip_delay=skip_delay,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
     if provider == "MISTRAL":
         return ai_api_mistral.generate_text(
@@ -202,6 +208,7 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             prompt,
             skip_delay=skip_delay,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
 
     # Unreachable: validate_ai_config already rejects unknown providers.

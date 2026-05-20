@@ -450,19 +450,34 @@
             async function streamChat(payload) {
                 initLiveStepper();
 
+                // Idle-timeout: abort if no event arrives for a long stretch (a hung
+                // model/connection) so the UI never spins forever. Reset on each event.
+                const IDLE_MS = 10 * 60 * 1000;
+                const controller = new AbortController();
+                let idleTimer = null;
+                let timedOut = false;
+                const resetIdle = () => {
+                    if (idleTimer) clearTimeout(idleTimer);
+                    idleTimer = setTimeout(() => { timedOut = true; controller.abort(); }, IDLE_MS);
+                };
+
                 let res;
                 try {
+                    resetIdle();
                     res = await fetch(CHAT_STREAM_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
+                        signal: controller.signal,
                     });
                 } catch (e) {
+                    if (idleTimer) clearTimeout(idleTimer);
                     await fallbackChat(payload);
                     return;
                 }
 
                 if (!res.ok || !res.body || !res.body.getReader) {
+                    if (idleTimer) clearTimeout(idleTimer);
                     await fallbackChat(payload);
                     return;
                 }
@@ -471,35 +486,58 @@
                 const decoder = new TextDecoder();
                 let buffer = '';
                 const rawLines = [];
+                let gotDone = false;
+                let gotError = false;
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    let idx;
-                    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-                        const frame = buffer.slice(0, idx);
-                        buffer = buffer.slice(idx + 2);
-                        const dataStr = frame.replace(/^data:\s?/, '').trim();
-                        if (!dataStr) continue;
-                        let evt;
-                        try { evt = JSON.parse(dataStr); } catch (_) { continue; }
-                        if (evt.type === 'log') {
-                            rawLines.push(evt.line);
-                            updateLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                        } else if (evt.type === 'done') {
-                            finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                            renderFinalSections(evt.response);
-                            return;
-                        } else if (evt.type === 'error') {
-                            finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                            showErrorBelowStepper('Error: ' + evt.error);
-                            return;
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        resetIdle();
+                        buffer += decoder.decode(value, { stream: true });
+                        let idx;
+                        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                            const frame = buffer.slice(0, idx);
+                            buffer = buffer.slice(idx + 2);
+                            // Skip SSE comment frames (e.g. the initial ": stream-open").
+                            if (!frame || frame.startsWith(':')) continue;
+                            const dataStr = frame.replace(/^data:\s?/, '').trim();
+                            if (!dataStr) continue;
+                            let evt;
+                            try { evt = JSON.parse(dataStr); } catch (_) { continue; }
+                            if (evt.type === 'log') {
+                                rawLines.push(evt.line);
+                                updateLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                            } else if (evt.type === 'done') {
+                                gotDone = true;
+                                finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                                renderFinalSections(evt.response);
+                                return;
+                            } else if (evt.type === 'error') {
+                                gotError = true;
+                                finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                                showErrorBelowStepper('Error: ' + evt.error);
+                                return;
+                            }
                         }
                     }
+                } catch (e) {
+                    // Mid-stream read failure (network drop / abort): keep the partial
+                    // stepper instead of wiping it, and explain what happened.
+                    finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                    showErrorBelowStepper(timedOut
+                        ? 'Timed out waiting for the AI — please try again.'
+                        : 'Connection interrupted — please try again.');
+                    return;
+                } finally {
+                    if (idleTimer) clearTimeout(idleTimer);
                 }
-                // Stream ended without an explicit done event.
-                finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+
+                // Stream closed without a terminal done/error event.
+                if (!gotDone && !gotError) {
+                    finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
+                    showErrorBelowStepper('The connection ended before the playlist was ready — please try again.');
+                }
             }
 
             /** Non-streaming fallback: one request, then render the static view. */
@@ -599,7 +637,7 @@
                     if (ex.length) h += ' with ' + ex.join(' and ');
                     return h + '.';
                 }
-                if (m.planningFailed) return 'Planning failed — fell back to a genre search.';
+                if (m.planningFailed) return "The AI couldn't build a plan for this request — try rephrasing it.";
                 if (m.noSongs) return 'No songs matched this request.';
                 return LIVE_PENDING.assemble;
             }
@@ -941,7 +979,7 @@
                     if (model.ratingRemoved > 0) step5.sub = 'Removed ' + model.ratingRemoved + ' songs below your rating threshold.';
                     steps.push(step5);
                 } else if (model.planningFailed) {
-                    steps.push({ icon: '⚠️', title: 'Fell back', headline: 'AI planning hit a snag — fell back to a genre search.', variant: 'warn' });
+                    steps.push({ icon: '⚠️', title: 'Planning failed', headline: "The AI couldn't build a plan for this request — try rephrasing it.", variant: 'warn' });
                 } else if (model.noSongs) {
                     steps.push({ icon: '😕', title: 'No songs found', headline: 'Nothing matched this request. Try naming a song/artist or loosening filters.', variant: 'warn' });
                 }

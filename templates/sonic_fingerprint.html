@@ -210,19 +210,7 @@
 
                     currentTrackIds = data.map(track => track.item_id);
                     statusDiv.textContent = `Found ${data.length} recommended tracks.`;
-                    const tableHTML = `
-                        <table>
-                            <thead><tr><th>Title</th><th>Artist</th><th>Distance</th></tr></thead>
-                            <tbody>
-                                ${data.map(track => `
-                                    <tr>
-                                        <td>${track.title || 'N/A'}</td>
-                                        <td>${track.author || 'N/A'}</td>
-                                        <td>${track.distance.toFixed(4)}</td>
-                                    </tr>`).join('')}
-                            </tbody>
-                        </table>`;
-                    resultsTableWrapper.innerHTML = tableHTML;
+                    resultsTableWrapper.innerHTML = renderSongList(data, { metric: songDistanceBadge });
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
                     document.getElementById('playlist_name').value = 'My Sonic Fingerprint Mix';

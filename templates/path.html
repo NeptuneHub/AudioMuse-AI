@@ -85,6 +85,9 @@
             font-size: 1rem;
             margin-top: 0.25rem;
         }
+        #results-table-wrapper {
+            overflow-x: auto;
+        }
 </style>
 {% endblock %}
 
@@ -1057,23 +1060,7 @@
                     const summaryText = `Found a path with ${currentPathData.length} songs. Normalized Path Variance Score: ${totalVariance.toFixed(4)}`;
                     statusDiv.textContent = summaryText;
 
-                    const tableHTML = `
-                        <table>
-                            <thead>
-                                <tr><th>#</th><th>Title</th><th>Artist</th><th>Album</th></tr>
-                            </thead>
-                            <tbody>
-                                ${currentPathData.map((track, index) => `
-                                    <tr>
-                                        <td>${index + 1}</td>
-                                        <td>${track.title || 'N/A'}</td>
-                                        <td>${track.author || 'N/A'}</td>
-                                        <td>${track.album || ''}</td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>`;
-                    resultsTableWrapper.innerHTML = tableHTML;
+                    resultsTableWrapper.innerHTML = renderSongList(currentPathData, {});
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';

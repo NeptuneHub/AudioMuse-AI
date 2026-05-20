@@ -26,6 +26,7 @@ def generate_text(
     *,
     skip_delay: bool = False,
     temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Generate freeform text from an Ollama /api/generate endpoint.
 
@@ -34,7 +35,7 @@ def generate_text(
     """
     return ai_api_openai.generate_text(
         ollama_url, model_name, full_prompt, api_key="no-key-needed",
-        skip_delay=skip_delay, temperature=temperature,
+        skip_delay=skip_delay, temperature=temperature, max_tokens=max_tokens,
     )
 
 
@@ -60,11 +61,17 @@ def call_with_tools(
             "stream": False,
             "format": schema,
             "think": False,
-            "options": {"temperature": 0},
+            # Cap how much the model can think/generate so it can't run on
+            # forever. A tool call needs only a few hundred tokens.
+            "options": {"temperature": 0, "num_predict": 1024},
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
+        # Single bounded call: the httpx read timeout aborts it at `timeout`
+        # seconds so it can never run forever. NO retry -- if the model returns
+        # nothing usable, we error out and the chat pipeline falls back (the user
+        # still gets a playlist) rather than making a second multi-minute call.
         with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
@@ -74,20 +81,6 @@ def call_with_tools(
             return {"error": "Invalid Ollama response"}
 
         response_text = result["response"]
-
-        # Thinking models (e.g. Qwen 3.5) return empty response with format=json.
-        # Retry without format constraint -- their response field will have clean JSON
-        # and the thinking/reasoning stays in the separate 'thinking' field.
-        if not response_text and result.get("thinking"):
-            log_messages.append("\u2139\ufe0f Thinking model detected -- retrying without format=json")
-            payload.pop("format", None)
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(ollama_url, json=payload)
-                response.raise_for_status()
-                result = response.json()
-            response_text = result.get("response", "")
-            if response_text and "</think>" in response_text:
-                response_text = response_text.split("</think>", 1)[-1].strip()
 
         cleaned = ""
         try:
