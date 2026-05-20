@@ -116,24 +116,19 @@ def _parse_tag_scores(raw: str) -> Dict[str, float]:
     return out
 
 
-def _filter_score(filt: Dict, feats: Dict) -> float:
-    """Soft 0..1 match score of one song's features against the filter.
+def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
+    """Raw 0..1 per-dimension match scores for one song (only requested dims).
 
-    Mean over the dimensions the user actually specified. Every dimension is a
-    smooth gradient where a gradient is meaningful, so the re-rank always
-    differentiates. Three tiers:
-      - continuous value: genres/voices (mood_vector confidence),
-        moods/other_features (other_features confidence), energy, tempo.
-      - ordinal / relational gradient: year (distance-decay), rating
-        (magnitude /5), key (chromatic circular distance).
-      - identity (no continuous middle exists): scale (major/minor), artist,
-        album -> 1.0 match / 0.0 not. These still float matchers to the top.
-    Nothing gates -- a 0.0 dim just lowers the mean. Hard filtering only
-    happens in standalone search_database, not here.
+    Routing follows the data model: genres/voices -> mood_vector;
+    moods/other_features -> other_features; energy/tempo -> directional
+    gradient; year -> distance-decay; rating -> /5; key -> chromatic distance;
+    scale/artist/album -> identity. Keyed by dimension name so the caller can
+    min-max normalize each dimension across the pool before blending (otherwise
+    a wide-range dim like energy drowns a narrow one like a mood confidence).
     """
+    out: Dict[str, float] = {}
     if not filt or not feats:
-        return 0.0
-    dims: List[float] = []
+        return out
 
     mv = _parse_tag_scores(feats.get('mood_vector') or '')
     of = _parse_tag_scores(feats.get('other_features') or '')
@@ -147,78 +142,89 @@ def _filter_score(filt: Dict, feats: Dict) -> float:
         return best
 
     if filt.get('genres'):
-        dims.append(_max_conf(filt['genres'], mv))
+        out['genres'] = _max_conf(filt['genres'], mv)
     if filt.get('voices'):
-        dims.append(_max_conf(filt['voices'], mv))
+        out['voices'] = _max_conf(filt['voices'], mv)
     if filt.get('moods'):
-        dims.append(_max_conf(filt['moods'], of))
+        out['moods'] = _max_conf(filt['moods'], of)
     if filt.get('other_features'):
-        dims.append(_max_conf(filt['other_features'], of))
+        out['other_features'] = _max_conf(filt['other_features'], of)
 
     if filt.get('year_min') is not None or filt.get('year_max') is not None:
         year = feats.get('year')
         if year is None:
-            dims.append(0.0)
+            out['year'] = 0.0
         else:
             ymin = int(filt['year_min']) if filt.get('year_min') is not None else None
             ymax = int(filt['year_max']) if filt.get('year_max') is not None else None
             if (ymin is None or year >= ymin) and (ymax is None or year <= ymax):
-                dims.append(1.0)
+                out['year'] = 1.0
             else:
                 dist = (ymin - year) if (ymin is not None and year < ymin) else (year - ymax)
-                dims.append(max(0.0, 1.0 - dist / YEAR_DECAY_SPAN))
+                out['year'] = max(0.0, 1.0 - dist / YEAR_DECAY_SPAN)
 
     if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
         tempo = feats.get('tempo')
         if tempo is None:
-            dims.append(0.0)
+            out['tempo'] = 0.0
         else:
             t_lo, t_hi = config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM
             span = (t_hi - t_lo) or 1.0
             v_norm = (float(tempo) - t_lo) / span
             req_lo = ((float(filt['tempo_min']) - t_lo) / span) if filt.get('tempo_min') is not None else 0.0
             req_hi = ((float(filt['tempo_max']) - t_lo) / span) if filt.get('tempo_max') is not None else 1.0
-            dims.append(_range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))))
+            out['tempo'] = _range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi)))
 
     if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
         energy = feats.get('energy')
         if energy is None:
-            dims.append(0.0)
+            out['energy'] = 0.0
         else:
             span = (config.ENERGY_MAX - config.ENERGY_MIN) or 1.0
             v_norm = (float(energy) - config.ENERGY_MIN) / span
             req_lo = float(filt['energy_min']) if filt.get('energy_min') is not None else 0.0
             req_hi = float(filt['energy_max']) if filt.get('energy_max') is not None else 1.0
-            dims.append(_range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))))
+            out['energy'] = _range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi)))
 
     if filt.get('scale'):
         s = (feats.get('scale') or '').strip().lower()
-        dims.append(1.0 if s == str(filt['scale']).strip().lower() else 0.0)
+        out['scale'] = 1.0 if s == str(filt['scale']).strip().lower() else 0.0
 
     if filt.get('key'):
         sp = _key_pitch_class(feats.get('key'))
         rp = _key_pitch_class(filt.get('key'))
         if sp is None or rp is None:
             k = (feats.get('key') or '').strip().upper()
-            dims.append(1.0 if k == str(filt['key']).strip().upper() else 0.0)
+            out['key'] = 1.0 if k == str(filt['key']).strip().upper() else 0.0
         else:
             d = abs(sp - rp) % 12
             d = min(d, 12 - d)
-            dims.append(1.0 - d / 6.0)
+            out['key'] = 1.0 - d / 6.0
 
     if filt.get('min_rating') is not None:
         r = feats.get('rating')
-        dims.append(max(0.0, min(1.0, float(r) / 5.0)) if r is not None else 0.0)
+        out['min_rating'] = max(0.0, min(1.0, float(r) / 5.0)) if r is not None else 0.0
 
     if filt.get('artist'):
         a = (feats.get('author') or '').strip().lower()
-        dims.append(1.0 if a == str(filt['artist']).strip().lower() else 0.0)
+        out['artist'] = 1.0 if a == str(filt['artist']).strip().lower() else 0.0
 
     if filt.get('album'):
         alb = (feats.get('album') or '').strip().lower()
-        dims.append(1.0 if str(filt['album']).strip().lower() in alb else 0.0)
+        out['album'] = 1.0 if str(filt['album']).strip().lower() in alb else 0.0
 
-    return sum(dims) / len(dims) if dims else 0.0
+    return out
+
+
+def _filter_score(filt: Dict, feats: Dict) -> float:
+    """Unnormalized mean of the per-dimension scores for a single song.
+
+    Kept for callers without a pool to normalize against. The composition
+    re-rank uses ``_filter_dim_scores`` + per-pool min-max normalization
+    instead, so wide-range dims don't dominate narrow ones.
+    """
+    dim = _filter_dim_scores(filt, feats)
+    return sum(dim.values()) / len(dim) if dim else 0.0
 
 
 def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]):
@@ -1092,12 +1098,31 @@ def plan_and_execute_once(
 
         log_messages.append(f"\nFILTER (priority re-rank): {N} songs from seed pool")
         log_messages.append(f"   filter applied: {clean_filter}")
-        dim_lines, dim_machine = _filter_dimension_report(plan.filter, feats, pool_songs)
+        dim_lines, _dim_machine = _filter_dimension_report(plan.filter, feats, pool_songs)
         for ln in dim_lines:
             log_messages.append(ln)
 
-        fscores = [_filter_score(plan.filter, feats.get(s['item_id'], {})) for s in pool_songs]
-        matched = sum(1 for f in fscores if f > 0)
+        raw_dims = [_filter_dim_scores(plan.filter, feats.get(s['item_id'], {})) for s in pool_songs]
+        matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
+
+        dim_keys = sorted({k for d in raw_dims for k in d})
+        dim_min = {k: min((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+        dim_max = {k: max((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+
+        def _norm(k, v):
+            lo, hi = dim_min[k], dim_max[k]
+            return (v - lo) / (hi - lo) if hi > lo else 0.0
+
+        fscores = []
+        for d in raw_dims:
+            if dim_keys:
+                fscores.append(sum(_norm(k, d.get(k, 0.0)) for k in dim_keys) / len(dim_keys))
+            else:
+                fscores.append(0.0)
+
+        if dim_keys:
+            norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
+            log_messages.append(f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}")
 
         if matched == 0:
             final = list(pool_songs)
@@ -1112,12 +1137,13 @@ def plan_and_execute_once(
             else:
                 log_messages.append(
                     f"   re-rank: {moved}/{N} songs changed position vs similarity order "
-                    f"({matched} matched the filter, higher score = higher rank)"
+                    f"({matched} matched the filter, per-dim normalized then averaged, higher = higher rank)"
                 )
 
         logger.info(
-            "composition re-rank: pool=%d matched=%d moved=%d filter=%s per_dim=%s",
-            N, matched, moved, clean_filter, dim_machine,
+            "composition re-rank: pool=%d matched=%d moved=%d filter=%s dim_range=%s",
+            N, matched, moved, clean_filter,
+            {k: (round(dim_min[k], 2), round(dim_max[k], 2)) for k in dim_keys},
         )
 
         for (tn, ta, pooled, errored, msg) in primary_logs:
