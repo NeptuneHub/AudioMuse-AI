@@ -4,6 +4,7 @@
 <li><a href="{{ url_for('index') }}" {% if active == 'index' %}class="active"{% endif %}>Analysis and Clustering</a></li>
 {% endif %}
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
+<li><a href="{{ url_for('smart_sessions_bp.smart_sessions_page') }}" {% if active == 'smart_sessions' %}class="active"{% endif %}>Smart Listening Sessions</a></li>
 <li><a href="{{ url_for('voyager_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
 <li><a href="{{ url_for('artist_similarity_bp.artist_similarity_page') }}" {% if active == 'artist_similarity' %}class="active"{% endif %}>Artist Similarity</a></li>
 <li><a href="{{ url_for('path_bp.path_page') }}" {% if active == 'path' %}class="active"{% endif %}>Song Path</a></li>

@@ -1,0 +1,218 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .smart-session-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: start;
+    }
+
+    .smart-session-form,
+    .smart-session-preview {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        box-shadow: var(--shadow-card);
+        padding: 1rem;
+    }
+
+    .smart-field {
+        margin-bottom: 1rem;
+    }
+
+    .smart-field label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-weight: 600;
+        color: var(--text-title);
+    }
+
+    .smart-field textarea,
+    .smart-field input,
+    .smart-field select {
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .smart-inline-fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+    }
+
+    .smart-actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .smart-actions button {
+        border: none;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        font-weight: 700;
+    }
+
+    #smart-preview-button {
+        background: var(--color-primary);
+        color: #fff;
+    }
+
+    #smart-preview-button:hover {
+        background: var(--color-primary-hover);
+    }
+
+    #smart-export-button {
+        background: var(--color-success);
+        color: #fff;
+    }
+
+    #smart-export-button:disabled,
+    #smart-preview-button:disabled {
+        background: var(--button-disabled-bg);
+        cursor: not-allowed;
+    }
+
+    .smart-message {
+        border: 1px solid var(--border-color);
+        border-radius: 8px;
+        padding: 0.85rem;
+        background: var(--bg-body);
+        color: var(--text-main);
+        margin-bottom: 1rem;
+    }
+
+    .smart-message.error {
+        background: var(--status-failure-bg);
+        border-color: var(--status-failure-border);
+        color: var(--status-failure-text);
+    }
+
+    .smart-message.warning {
+        background: var(--status-warning-bg);
+        border-color: var(--status-warning-border);
+        color: var(--status-warning-text);
+    }
+
+    .smart-track-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .smart-track-item {
+        border-bottom: 1px solid var(--border-color);
+        display: grid;
+        grid-template-columns: 2rem minmax(0, 1fr) auto;
+        gap: 0.75rem;
+        padding: 0.75rem 0;
+        align-items: center;
+    }
+
+    .smart-track-title {
+        font-weight: 700;
+        color: var(--text-title);
+    }
+
+    .smart-track-meta,
+    .smart-track-reason {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+
+    .smart-remove-track {
+        background: var(--status-failure-bg);
+        color: var(--status-failure-text);
+        border: 1px solid var(--status-failure-border);
+        border-radius: 6px;
+        cursor: pointer;
+        padding: 0.35rem 0.55rem;
+    }
+
+    @media (max-width: 900px) {
+        .smart-session-grid,
+        .smart-inline-fields {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Smart Listening Sessions</h1>
+        <p>Create a playlist from a prompt, curve, and optional seed song.</p>
+    </header>
+</section>
+
+<section class="smart-session-grid">
+    <form id="smart-session-form" class="smart-session-form">
+        <div id="smart-capabilities" class="smart-message">Checking available music intelligence sources...</div>
+
+        <div class="smart-field">
+            <label for="smart-prompt">Prompt</label>
+            <textarea id="smart-prompt" name="prompt" rows="5" placeholder="slow-building evening playlist, warm and textured"></textarea>
+        </div>
+
+        <div class="smart-field">
+            <label for="smart-anchor-id">Seed song item ID</label>
+            <input id="smart-anchor-id" name="anchor_id" type="text" placeholder="optional item id">
+        </div>
+
+        <div class="smart-inline-fields">
+            <div class="smart-field">
+                <label for="smart-length">Length</label>
+                <input id="smart-length" name="length" type="number" min="5" max="{{ max_length }}" value="{{ default_length }}">
+            </div>
+
+            <div class="smart-field">
+                <label for="smart-max-per-artist">Max per artist</label>
+                <input id="smart-max-per-artist" name="max_per_artist" type="number" min="1" max="10" value="2">
+            </div>
+        </div>
+
+        <div class="smart-field">
+            <label for="smart-curve">Curve</label>
+            <select id="smart-curve" name="curve">
+                <option value="steady">Steady</option>
+                <option value="calm_to_intense">Calm to intense</option>
+                <option value="intense_to_calm">Intense to calm</option>
+                <option value="near_anchor_then_explore">Near anchor then explore</option>
+            </select>
+        </div>
+
+        <div class="smart-field">
+            <label for="smart-avoid-artists">Avoid artists</label>
+            <input id="smart-avoid-artists" name="avoid_artists" type="text" placeholder="comma-separated artists">
+        </div>
+
+        <div class="smart-field">
+            <label for="smart-avoid-terms">Avoid title terms</label>
+            <input id="smart-avoid-terms" name="avoid_terms" type="text" placeholder="live, remix">
+        </div>
+
+        <div class="smart-field">
+            <label for="smart-playlist-name">Playlist name</label>
+            <input id="smart-playlist-name" name="playlist_name" type="text" value="Smart Session">
+        </div>
+
+        <div class="smart-actions">
+            <button id="smart-preview-button" type="submit">Preview session</button>
+            <button id="smart-export-button" type="button" disabled>Export playlist</button>
+        </div>
+    </form>
+
+    <div class="smart-session-preview">
+        <div id="smart-status" class="smart-message">No session preview yet.</div>
+        <ol id="smart-track-list" class="smart-track-list"></ol>
+    </div>
+</section>
+{% endblock %}
+
+{% block postHTMLScripts %}
+<script src="{{ url_for('static', filename='smart_sessions.js') }}"></script>
+{% endblock %}

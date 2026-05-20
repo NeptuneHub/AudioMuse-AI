@@ -773,6 +773,7 @@ from app_artist_similarity import artist_similarity_bp
 from app_clap_search import clap_search_bp
 from app_lyrics import lyrics_search_bp
 from app_sem_grove import sem_grove_bp
+from app_smart_sessions import smart_sessions_bp
 from app_backup import backup_bp
 from app_dashboard import dashboard_bp
 from app_users import users_bp
@@ -793,6 +794,7 @@ app.register_blueprint(artist_similarity_bp)
 app.register_blueprint(clap_search_bp)
 app.register_blueprint(lyrics_search_bp)
 app.register_blueprint(sem_grove_bp)
+app.register_blueprint(smart_sessions_bp)
 app.register_blueprint(backup_bp)
 app.register_blueprint(migration_bp)
 app.register_blueprint(dashboard_bp)
