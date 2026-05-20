@@ -246,7 +246,7 @@
                     </span>
                 </label>
                 <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
-                <p class="italic" style="margin-top: 0.5rem; font-size: 0.85em; color: #888;">
+                <p class="italic" style="margin-top: 0.5rem; font-size: 0.85em; color: var(--text-muted);">
                     Tip: name 1-3 specific songs or artists, then add filters (genre, year, voice, mood). Shorter is better.
                 </p>
 
@@ -780,7 +780,7 @@
              */
             /** Read a CSS custom property from the body element. */
             function cv(varName) {
-                return getComputedStyle(document.body).getPropertyValue(varName).trim();
+                return `var(${varName})`;
             }
 
             const INTENT_LABEL = {

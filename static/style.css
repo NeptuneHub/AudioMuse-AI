@@ -1438,3 +1438,6 @@ html.dark-mode body .similarity-badge.badge-neutral { background: #4B5563; }
 .ptag-relaxed    { color: #22C55E; }
 .ptag-party      { color: #EC4899; }
 .ptag-danceable  { color: #06B6D4; }
+.ptag-genre      { color: hsl(var(--genre-hue, 220), 65%, 45%); }
+body.dark-mode .ptag-genre,
+html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }

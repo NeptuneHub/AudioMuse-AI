@@ -42,7 +42,7 @@
         const genre = track.top_genre;
         if (genre) {
             const hue = genreHue(genre);
-            pills.push(`<span class="ptag" style="color: hsl(${hue}, 65%, 45%);">${escapeHtml(genre)}</span>`);
+            pills.push(`<span class="ptag ptag-genre" style="--genre-hue: ${hue};">${escapeHtml(genre)}</span>`);
         }
 
         const moods = parseVector(track.other_features);
