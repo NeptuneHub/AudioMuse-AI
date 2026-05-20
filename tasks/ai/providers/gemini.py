@@ -13,6 +13,7 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
 ) -> str:
     """Single-prompt completion via Gemini's generate_content."""
     if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
@@ -33,10 +34,11 @@ def generate_text(
         client = genai.Client(api_key=api_key)
         logger.debug("Starting API call for model '%s'.", model_name)
 
+        temp = 0.9 if temperature is None else float(temperature)
         response = client.models.generate_content(
             model=model_name,
             contents=full_prompt,
-            config=genai.types.GenerateContentConfig(temperature=0.9),
+            config=genai.types.GenerateContentConfig(temperature=temp),
         )
 
         if response and hasattr(response, "text") and response.text:

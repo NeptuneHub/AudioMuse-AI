@@ -31,6 +31,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import config
+
 from tasks.ai.prompts import INTENT_CLASSES, build_intent_classifier_prompt
 from tasks.ai.vocab import (
     ALIAS_ENERGY,
@@ -53,6 +55,239 @@ FILTER_NAME = 'search_database'
 
 RELAX_THRESHOLD_STEPS = (0.5, 0.4, 0.3, 0.2)
 SCORED_FILTER_KEYS = ('genres', 'voices', 'moods', 'other_features')
+
+YEAR_DECAY_SPAN = 30.0
+
+_KEY_PC = {
+    'C': 0, 'B#': 0, 'C#': 1, 'DB': 1, 'D': 2, 'D#': 3, 'EB': 3,
+    'E': 4, 'FB': 4, 'F': 5, 'E#': 5, 'F#': 6, 'GB': 6, 'G': 7,
+    'G#': 8, 'AB': 8, 'A': 9, 'A#': 10, 'BB': 10, 'B': 11, 'CB': 11,
+}
+
+
+def _key_pitch_class(k) -> Optional[int]:
+    """Map a key label ('C', 'F# minor', 'Bb') to a 0..11 pitch class, or None."""
+    if not k:
+        return None
+    s = str(k).strip().upper().replace('♯', '#').replace('♭', 'B')
+    token = s.split()[0] if s.split() else s
+    for cand in (token[:2], token[:1]):
+        if cand in _KEY_PC:
+            return _KEY_PC[cand]
+    return None
+
+
+def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
+    """Continuous 0..1 fit of a normalized value against a requested [lo,hi] band.
+
+    All args are in [0,1]. Directional so that 'high X' (band open at the top)
+    rewards higher values, 'low X' (band open at the bottom) rewards lower
+    values, and a bounded band rewards proximity to its centre. Always
+    differentiates, so songs never tie on a continuous feature.
+    """
+    v = max(0.0, min(1.0, v_norm))
+    prefer_high = req_hi >= 0.99 and req_lo > 0.01
+    prefer_low = req_lo <= 0.01 and req_hi < 0.99
+    if prefer_high:
+        return v
+    if prefer_low:
+        return 1.0 - v
+    center = (req_lo + req_hi) / 2.0
+    half = max((req_hi - req_lo) / 2.0, 1e-6)
+    return max(0.0, 1.0 - abs(v - center) / half)
+
+
+def _parse_tag_scores(raw: str) -> Dict[str, float]:
+    """Parse a 'label:score,label:score' column into {label_lower: float}."""
+    out: Dict[str, float] = {}
+    if not raw or not isinstance(raw, str):
+        return out
+    for part in raw.split(','):
+        if ':' not in part:
+            continue
+        label, _, score = part.rpartition(':')
+        label = label.strip().lower()
+        if not label:
+            continue
+        try:
+            out[label] = float(score.strip())
+        except ValueError:
+            continue
+    return out
+
+
+def _filter_score(filt: Dict, feats: Dict) -> float:
+    """Soft 0..1 match score of one song's features against the filter.
+
+    Mean over the dimensions the user actually specified. Every dimension is a
+    smooth gradient where a gradient is meaningful, so the re-rank always
+    differentiates. Three tiers:
+      - continuous value: genres/voices (mood_vector confidence),
+        moods/other_features (other_features confidence), energy, tempo.
+      - ordinal / relational gradient: year (distance-decay), rating
+        (magnitude /5), key (chromatic circular distance).
+      - identity (no continuous middle exists): scale (major/minor), artist,
+        album -> 1.0 match / 0.0 not. These still float matchers to the top.
+    Nothing gates -- a 0.0 dim just lowers the mean. Hard filtering only
+    happens in standalone search_database, not here.
+    """
+    if not filt or not feats:
+        return 0.0
+    dims: List[float] = []
+
+    mv = _parse_tag_scores(feats.get('mood_vector') or '')
+    of = _parse_tag_scores(feats.get('other_features') or '')
+
+    def _max_conf(labels, table):
+        best = 0.0
+        for lab in labels or []:
+            c = table.get((lab or '').strip().lower(), 0.0)
+            if c > best:
+                best = c
+        return best
+
+    if filt.get('genres'):
+        dims.append(_max_conf(filt['genres'], mv))
+    if filt.get('voices'):
+        dims.append(_max_conf(filt['voices'], mv))
+    if filt.get('moods'):
+        dims.append(_max_conf(filt['moods'], of))
+    if filt.get('other_features'):
+        dims.append(_max_conf(filt['other_features'], of))
+
+    if filt.get('year_min') is not None or filt.get('year_max') is not None:
+        year = feats.get('year')
+        if year is None:
+            dims.append(0.0)
+        else:
+            ymin = int(filt['year_min']) if filt.get('year_min') is not None else None
+            ymax = int(filt['year_max']) if filt.get('year_max') is not None else None
+            if (ymin is None or year >= ymin) and (ymax is None or year <= ymax):
+                dims.append(1.0)
+            else:
+                dist = (ymin - year) if (ymin is not None and year < ymin) else (year - ymax)
+                dims.append(max(0.0, 1.0 - dist / YEAR_DECAY_SPAN))
+
+    if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
+        tempo = feats.get('tempo')
+        if tempo is None:
+            dims.append(0.0)
+        else:
+            t_lo, t_hi = config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM
+            span = (t_hi - t_lo) or 1.0
+            v_norm = (float(tempo) - t_lo) / span
+            req_lo = ((float(filt['tempo_min']) - t_lo) / span) if filt.get('tempo_min') is not None else 0.0
+            req_hi = ((float(filt['tempo_max']) - t_lo) / span) if filt.get('tempo_max') is not None else 1.0
+            dims.append(_range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))))
+
+    if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
+        energy = feats.get('energy')
+        if energy is None:
+            dims.append(0.0)
+        else:
+            span = (config.ENERGY_MAX - config.ENERGY_MIN) or 1.0
+            v_norm = (float(energy) - config.ENERGY_MIN) / span
+            req_lo = float(filt['energy_min']) if filt.get('energy_min') is not None else 0.0
+            req_hi = float(filt['energy_max']) if filt.get('energy_max') is not None else 1.0
+            dims.append(_range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))))
+
+    if filt.get('scale'):
+        s = (feats.get('scale') or '').strip().lower()
+        dims.append(1.0 if s == str(filt['scale']).strip().lower() else 0.0)
+
+    if filt.get('key'):
+        sp = _key_pitch_class(feats.get('key'))
+        rp = _key_pitch_class(filt.get('key'))
+        if sp is None or rp is None:
+            k = (feats.get('key') or '').strip().upper()
+            dims.append(1.0 if k == str(filt['key']).strip().upper() else 0.0)
+        else:
+            d = abs(sp - rp) % 12
+            d = min(d, 12 - d)
+            dims.append(1.0 - d / 6.0)
+
+    if filt.get('min_rating') is not None:
+        r = feats.get('rating')
+        dims.append(max(0.0, min(1.0, float(r) / 5.0)) if r is not None else 0.0)
+
+    if filt.get('artist'):
+        a = (feats.get('author') or '').strip().lower()
+        dims.append(1.0 if a == str(filt['artist']).strip().lower() else 0.0)
+
+    if filt.get('album'):
+        alb = (feats.get('album') or '').strip().lower()
+        dims.append(1.0 if str(filt['album']).strip().lower() in alb else 0.0)
+
+    return sum(dims) / len(dims) if dims else 0.0
+
+
+def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]):
+    """Per-dimension truthful stats for the composition re-rank log.
+
+    Returns (human_lines, machine_dict). Tag dims report how many pool songs
+    carry the requested label(s) and the score range, noting dense
+    (other_features, every song 0..1) vs sparse (mood_vector top-5, absence=0).
+    """
+    items = [feats_map.get(s.get('item_id'), {}) for s in pool_songs]
+    n = len(items) or 1
+    lines: List[str] = []
+    machine: Dict = {}
+
+    def _tag_stats(labels, column):
+        vals = []
+        for f in items:
+            tags = _parse_tag_scores(f.get(column) or '')
+            best = 0.0
+            for lab in labels or []:
+                c = tags.get((lab or '').strip().lower(), 0.0)
+                if c > best:
+                    best = c
+            vals.append(best)
+        nz = sum(1 for v in vals if v > 0)
+        return nz, (min(vals) if vals else 0.0), (max(vals) if vals else 0.0)
+
+    if filt.get('genres'):
+        nz, lo, hi = _tag_stats(filt['genres'], 'mood_vector')
+        lines.append(f"   genres {filt['genres']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})")
+        machine['genres'] = (nz, round(lo, 2), round(hi, 2))
+    if filt.get('voices'):
+        nz, lo, hi = _tag_stats(filt['voices'], 'mood_vector')
+        lines.append(f"   voices {filt['voices']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})")
+        machine['voices'] = (nz, round(lo, 2), round(hi, 2))
+    if filt.get('moods'):
+        nz, lo, hi = _tag_stats(filt['moods'], 'other_features')
+        lines.append(f"   moods {filt['moods']} -> other_features (dense, every song 0..1): range {lo:.2f}..{hi:.2f}")
+        machine['moods'] = (nz, round(lo, 2), round(hi, 2))
+    if filt.get('other_features'):
+        nz, lo, hi = _tag_stats(filt['other_features'], 'other_features')
+        lines.append(f"   other_features {filt['other_features']} -> other_features (dense): range {lo:.2f}..{hi:.2f}")
+        machine['other_features'] = (nz, round(lo, 2), round(hi, 2))
+    if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
+        lines.append(f"   energy {filt.get('energy_min', '?')}..{filt.get('energy_max', '?')} -> continuous gradient")
+        machine['energy'] = (filt.get('energy_min'), filt.get('energy_max'))
+    if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
+        lines.append(f"   tempo {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> continuous gradient")
+        machine['tempo'] = (filt.get('tempo_min'), filt.get('tempo_max'))
+    if filt.get('year_min') is not None or filt.get('year_max') is not None:
+        lines.append(f"   year {filt.get('year_min', '?')}..{filt.get('year_max', '?')} -> proximity gradient")
+        machine['year'] = (filt.get('year_min'), filt.get('year_max'))
+    if filt.get('min_rating') is not None:
+        lines.append(f"   min_rating {filt['min_rating']} -> rating/5 gradient")
+        machine['min_rating'] = filt['min_rating']
+    if filt.get('scale'):
+        lines.append(f"   scale {filt['scale']} -> identity match")
+        machine['scale'] = filt['scale']
+    if filt.get('key'):
+        lines.append(f"   key {filt['key']} -> chromatic-distance gradient")
+        machine['key'] = filt['key']
+    if filt.get('artist'):
+        lines.append(f"   artist {filt['artist']} -> identity match")
+        machine['artist'] = filt['artist']
+    if filt.get('album'):
+        lines.append(f"   album {filt['album']} -> identity substring")
+        machine['album'] = filt['album']
+    return lines, machine
+
 
 FILTER_LIST_KEYS = ('genres', 'voices', 'moods', 'other_features')
 FILTER_MIN_KEYS = ('tempo_min', 'energy_min', 'year_min', 'min_rating')
@@ -236,10 +471,13 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
                     existing_v.append(vv)
             filt['voices'] = existing_v
         if m['mood_vector']:
-            notes.append(
-                f"vocab_normalizer dropped non-mood mood_vector tags {m['mood_vector']} "
-                "(use 'genres', 'voices', or 'year_min'/'year_max' instead)"
-            )
+            ignored = [t for t in m['mood_vector'] if t not in m['other_features']]
+            if ignored:
+                notes.append(
+                    f"vocab_normalizer ignored unsupported mood tag(s) {ignored} "
+                    f"(moods must be one of: {', '.join(config.OTHER_FEATURE_LABELS)}; "
+                    "use 'genres', 'voices' or 'year' for the rest)"
+                )
         if m['other_features']:
             existing_of = list(filt.get('moods') or [])
             for o in m['other_features']:
@@ -494,7 +732,7 @@ def classify(
 
     try:
         from tasks.ai.api import generate_text
-        response = generate_text(prompt, ai_config, skip_delay=True)
+        response = generate_text(prompt, ai_config, skip_delay=True, temperature=0.0)
     except Exception as e:
         logger.warning("intent_classifier transport error: %s", e)
         log_messages.append(f"intent_classifier: transport error ({e}), falling back to full tools")
@@ -646,6 +884,7 @@ def plan_and_execute_once(
     detected_min_rating, plan_notes, executed_query_str}`` or ``{"error": ...}``.
     """
     from tasks.ai.tools import execute_mcp_tool
+    from tasks.ai.tool_impl import _fetch_pool_features
 
     log_messages.append("\n--- AI Decision (two-stage) ---")
 
@@ -847,51 +1086,57 @@ def plan_and_execute_once(
                 "executed_query_str": f"MCP single-pass ({len(tools_used_history)} tools): {' -> '.join(tool_execution_summary)}",
             }
 
-        filter_args = dict(plan.filter)
-        filter_args['candidate_item_ids'] = [s['item_id'] for s in pool_songs]
-        filter_args['get_songs'] = max(len(pool_songs), 200)
-        log_messages.append(
-            f"\nFILTER: search_database on pool of {len(pool_songs)} songs"
-        )
-        try:
-            log_messages.append(f"   Filter: {json.dumps(plan.filter, indent=2, default=str)}")
-        except TypeError:
-            log_messages.append(f"   Filter: {plan.filter}")
+        N = len(pool_songs)
+        feats = _fetch_pool_features([s['item_id'] for s in pool_songs])
+        clean_filter = {k: v for k, v in plan.filter.items() if k not in ('candidate_item_ids', 'get_songs')}
 
-        f_res = _run_search_database_with_relax(filter_args, ai_config, target_song_count, log_messages)
-        if 'error' in f_res:
-            log_messages.append(f"   filter error: {f_res['error']}")
-            for (tn, ta, _added, _errored, msg) in primary_logs:
-                tools_used_history.append({
-                    'name': tn, 'args': ta, 'songs': 0, 'error': True,
-                    'call_index': tool_call_counter, 'result_message': msg,
-                })
-                tool_execution_summary.append(_summary(tn, ta, 0))
-                tool_call_counter += 1
+        log_messages.append(f"\nFILTER (priority re-rank): {N} songs from seed pool")
+        log_messages.append(f"   filter applied: {clean_filter}")
+        dim_lines, dim_machine = _filter_dimension_report(plan.filter, feats, pool_songs)
+        for ln in dim_lines:
+            log_messages.append(ln)
+
+        fscores = [_filter_score(plan.filter, feats.get(s['item_id'], {})) for s in pool_songs]
+        matched = sum(1 for f in fscores if f > 0)
+
+        if matched == 0:
+            final = list(pool_songs)
+            moved = 0
+            log_messages.append(f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)")
         else:
-            filtered = f_res.get('songs', [])
-            if f_res.get('message'):
-                for line in f_res['message'].split('\n'):
-                    if line.strip():
-                        log_messages.append(f"   {line}")
-            primary_map = {s['item_id']: s for s in pool_songs}
-            filtered_full = [primary_map.get(fs['item_id'], fs) for fs in filtered]
-            added = _add_songs(filtered_full, tool_call_counter)
-            log_messages.append(f"   filter kept {len(filtered)}/{len(pool_songs)}, added {added} new")
-            for (tn, ta, _pooled, errored, msg) in primary_logs:
-                tools_used_history.append({
-                    'name': tn, 'args': ta, 'songs': 0, 'error': errored,
-                    'call_index': tool_call_counter, 'result_message': msg,
-                })
-                tool_execution_summary.append(_summary(tn, ta, 0))
-                tool_call_counter += 1
+            order = sorted(range(N), key=lambda i: fscores[i], reverse=True)
+            final = [pool_songs[i] for i in order]
+            moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+            if moved == 0:
+                log_messages.append(f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position")
+            else:
+                log_messages.append(
+                    f"   re-rank: {moved}/{N} songs changed position vs similarity order "
+                    f"({matched} matched the filter, higher score = higher rank)"
+                )
+
+        logger.info(
+            "composition re-rank: pool=%d matched=%d moved=%d filter=%s per_dim=%s",
+            N, matched, moved, clean_filter, dim_machine,
+        )
+
+        for (tn, ta, pooled, errored, msg) in primary_logs:
             tools_used_history.append({
-                'name': 'search_database', 'args': filter_args, 'songs': added,
-                'call_index': tool_call_counter,
-                'result_message': f"composition filter kept {len(filtered)}/{len(pool_songs)}",
+                'name': tn, 'args': ta, 'songs': pooled, 'error': errored,
+                'call_index': tool_call_counter, 'result_message': msg,
             })
-            tool_execution_summary.append(_summary('search_database', plan.filter, added))
+            tool_execution_summary.append(_summary(tn, ta, pooled))
             tool_call_counter += 1
+
+        filter_call_index = tool_call_counter
+        added = _add_songs(final, filter_call_index)
+        tools_used_history.append({
+            'name': 'search_database', 'args': dict(plan.filter), 'songs': added,
+            'call_index': filter_call_index,
+            'result_message': f"priority re-rank: {matched}/{N} matched filter",
+        })
+        tool_execution_summary.append(_summary('search_database', plan.filter, added))
+        tool_call_counter += 1
 
     else:
         all_calls: List[Dict] = list(plan.primaries)

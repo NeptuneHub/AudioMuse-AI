@@ -25,6 +25,7 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
 ) -> str:
     """Generate freeform text from an Ollama /api/generate endpoint.
 
@@ -32,7 +33,8 @@ def generate_text(
     shared (it auto-detects Ollama format from the URL).
     """
     return ai_api_openai.generate_text(
-        ollama_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=skip_delay
+        ollama_url, model_name, full_prompt, api_key="no-key-needed",
+        skip_delay=skip_delay, temperature=temperature,
     )
 
 

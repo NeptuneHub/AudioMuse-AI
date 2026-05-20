@@ -51,7 +51,7 @@ _FALLBACK_MOODS = "danceable, aggressive, happy, party, relaxed, sad"
 def get_dynamic_genres(library_context: Optional[Dict]) -> str:
     """Return genre list from library context, falling back to defaults."""
     if library_context and library_context.get('top_genres'):
-        return ', '.join(library_context['top_genres'][:15])
+        return ', '.join(library_context['top_genres'][:10])
     return _FALLBACK_GENRES
 
 
@@ -73,17 +73,6 @@ def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] =
     has_seed = 'seed_search' in tool_names
     has_text = 'text_match' in tool_names
     has_knowledge = 'knowledge_lookup' in tool_names
-
-    lib_section = ""
-    if library_context and library_context.get('total_songs', 0) > 0:
-        ctx = library_context
-        extras = []
-        if ctx.get('year_min') and ctx.get('year_max'):
-            extras.append(f"years {ctx['year_min']}-{ctx['year_max']}")
-        if ctx.get('has_ratings'):
-            extras.append(f"{ctx['rated_songs_pct']}% rated 0-5")
-        suffix = (" - " + ", ".join(extras)) if extras else ""
-        lib_section = f"\nLibrary: {ctx['total_songs']} songs / {ctx['unique_artists']} artists{suffix}\n"
 
     tool_lines: List[str] = []
     if has_seed:
@@ -114,33 +103,23 @@ def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] =
     voices_line = ", ".join(VOICE_VOCAB)
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
 
-    prompt = f"""You are a music playlist router. You MUST return a JSON object containing one or more tool calls. Front-load EVERY intent in a SINGLE response -- you will NOT be called again.
-{lib_section}
+    prompt = f"""You are a music playlist router. Return ONLY a JSON object with one or more tool calls. Put EVERY intent in this one response.
+
 TOOLS:
 {tools_block}
 
-THE THREE TAG COLUMNS IN search_database ARE SEPARATE -- DO NOT MIX:
-- genres : music styles. Closed list -> {genres_line}
-- voices : vocal type. Closed list  -> {voices_line}
-- moods  : real moods. ONLY these 6 -> {moods_line}
-
-SCALE: major | minor
-YEAR: single year -> set year_min AND year_max equal. Decade (80s) -> 1980/1989.
-ENERGY: 0.0 (calm) - 1.0 (intense). TEMPO: 40-200 BPM.
+search_database tag columns are SEPARATE -- do not mix:
+- genres : music styles -> {genres_line}
+- voices : vocal type -> {voices_line}
+- moods  : ONLY these 6 -> {moods_line}
+scale: major|minor. year: single year sets year_min=year_max; decade 80s -> 1980..1989. energy 0.0-1.0. tempo 40-200 BPM.
 
 RULES:
-1. ONLY use filters the user EXPLICITLY mentioned. Do NOT invent extra filters.
-2. "female voice"/"woman singer"/"female lead" -> voices=["female vocalists","female vocalist"]
-3. "male voice"/"man singer" -> voices=["male vocalists"]
-4. NEVER put a voice or a genre into 'moods'. moods is ONLY danceable/aggressive/happy/party/relaxed/sad.
-5. Multi-intent goes in ONE seed_search call. "songs like A and B" => seeds=[A,B], blend_mode='union'.
-   "A meets B" => seeds=[A,B], blend_mode='alchemy'. "A but not Y" => seeds=[A], subtract=[Y], blend_mode='subtract'.
-6. Mix primary + search_database when the user adds metadata constraints ('similar to X with female voice').
-7. SONG vs ARTIST inside seed_search seeds:
-   - Specific TRACK ("By The Way by RHCP", "Iron Maiden Run to the Hills") -> {{type:'song', title, artist}}.
-   - Bare artist ("Madonna", "more like Iron Maiden") -> {{type:'artist', name}}.
-   - User may not use dashes -- "Iron Maiden Run to the Hills" still means title='Run to the Hills', artist='Iron Maiden'.
-8. Year-only queries ('2024 songs') go to search_database (year_min=2024, year_max=2024), NOT text_match."""
+1. Only filters the user explicitly mentioned; never invent.
+2. seeds: a named TRACK -> {{type:'song',title,artist}} (e.g. "Iron Maiden Run to the Hills" = title 'Run to the Hills', artist 'Iron Maiden'); a bare artist -> {{type:'artist',name}}. Multiple in ONE seed_search: "A and B"=union, "A meets B"=alchemy, "A but not Y"=subtract.
+3. ANY descriptor beyond the song/artist (mood, genre, vocal, energy, tempo, year/decade, key, scale) MUST ALSO go in a search_database call. Even one trailing word: "...danceable" -> seed_search(...) AND search_database(moods=["danceable"]).
+4. voices: "female voice"/"woman singer" -> ["female vocalists","female vocalist"]; "male voice" -> ["male vocalists"]. Never put a voice or genre in 'moods'.
+5. "2024 songs" -> search_database(year_min=2024,year_max=2024), not text_match."""
 
     return prompt
 
@@ -178,11 +157,10 @@ def build_ollama_tool_calling_prompt(
         '], "blend_mode": "alchemy", "get_songs": 200}}}}]}}'
     )
     examples.append(
-        '"songs that sound like Pink Floyd with female voice, sad jazz from the 90s"\n'
+        '"Similar to By The Way by Red Hot Chili Peppers danceable"\n'
         '{{"tool_calls": ['
-        '{{"name": "seed_search", "arguments": {{"seeds": [{{"type": "artist", "name": "Pink Floyd"}}], "get_songs": 1000}}}}, '
-        '{{"name": "search_database", "arguments": {{"voices": ["female vocalists", "female vocalist"], '
-        '"genres": ["jazz"], "moods": ["sad"], "year_min": 1990, "year_max": 1999}}}}'
+        '{{"name": "seed_search", "arguments": {{"seeds": [{{"type": "song", "title": "By The Way", "artist": "Red Hot Chili Peppers"}}], "get_songs": 1000}}}}, '
+        '{{"name": "search_database", "arguments": {{"moods": ["danceable"]}}}}'
         ']}}'
     )
     examples_text = "\n\n".join(examples)
@@ -200,11 +178,9 @@ Return ONLY a valid JSON object with this EXACT format:
 === EXAMPLES ===
 {examples_text}
 
-=== COMMON MISTAKES (DO NOT DO THESE) ===
-WRONG: text_match(query="2024 songs")           -> year is metadata, use search_database
-WRONG: seed_search with blend_mode='alchemy' and only 1 seed
-WRONG: search_database(moods=["female voice"])  -> 'moods' is danceable/aggressive/happy/party/relaxed/sad ONLY
-WRONG: knowledge_lookup for songs the library can answer via seed_search or search_database
+=== COMMON MISTAKES ===
+WRONG: only seed_search when a descriptor was added -> also emit search_database
+WRONG: putting a voice/genre in 'moods' -> moods is danceable/aggressive/happy/party/relaxed/sad ONLY
 
 Now analyze this request and return ONLY the JSON:
 Request: "{user_message}"
@@ -216,49 +192,25 @@ def build_intent_classifier_prompt(user_message: str) -> str:
 
     Returned JSON shape: {"intent": <one of INTENT_CLASSES>, "needs_filter": bool}.
     """
-    return f"""You classify a music playlist request into ONE intent class and decide if it also needs a metadata filter. Return JSON ONLY.
+    return f"""Classify a music request. Return ONLY JSON: {{"intent": "seed|text|knowledge|metadata", "needs_filter": true|false}}.
 
-INTENT CLASSES:
-- "seed":     user names specific song(s) or artist(s) to find similar music to / blend / subtract.
-              Examples: "similar to By The Way by RHCP", "songs like Madonna", "Iron Maiden meets Metallica", "A but not Y".
-- "text":     user describes the SOUND ('calm piano') or LYRICAL THEME ('songs about heartbreak'). No specific song/artist seed.
-- "knowledge": user asks about POPULARITY / CULTURAL / HISTORICAL facts the library can't answer from metadata alone.
-              Trigger words: "top", "best", "popular", "famous", "classic", "radio", "radio hits", "trending",
-              "viral", "iconic", "#1", "chart", "charts", "Billboard", "Grammy", "Oscar", "soundtrack of",
-              "songs sampled by", "covers of", "anthems".
-              Examples: "top pop radio songs of 2025", "Grammy winners 2020", "#1 hits of 1985",
-              "biggest rock anthems of the 90s", "songs sampled by Daft Punk".
-- "metadata": user filters by year / genre / mood / vocal / tempo / energy / scale / rating / album / single-artist
-              WITHOUT any popularity or cultural-ranking superlative.
-              Examples: "sad jazz from the 90s", "energetic rock", "2024 songs", "songs in minor key",
-              "rock songs from 2020".
+intent:
+- seed: names specific song(s)/artist(s) to find similar/blend/subtract ("similar to By The Way by RHCP", "songs like Madonna").
+- text: describes the SOUND or LYRIC theme, no named song/artist ("calm piano", "songs about heartbreak").
+- knowledge: popularity/cultural/historical request ("top pop songs of 2025", "Grammy winners", "songs sampled by Daft Punk").
+- metadata: pure year/genre/mood/vocal/tempo/energy/scale/rating filter ("sad jazz from the 90s", "2024 songs").
 
-CRITICAL DISCRIMINATOR — popularity-superlative beats raw filter:
-- "rock songs from 2020"           -> metadata    (descriptive filter, no ranking)
-- "top rock songs from 2020"       -> knowledge   ("top" = popularity ranking, library has none)
-- "best 90s pop"                   -> knowledge   ("best" = cultural ranking)
-- "pop songs from 2025"            -> metadata    (no superlative)
-- "top pop radio songs of 2025"    -> knowledge   ("top" + "radio" = chart/popularity)
-- "viral TikTok songs of 2024"     -> knowledge   ("viral" = cultural)
+A popularity word (top/best/popular/radio/Grammy/viral/#1/charts) makes it knowledge even with a year/genre:
+"top rock 2020" = knowledge, but "rock 2020" = metadata.
 
-needs_filter is TRUE when the user adds metadata constraints ON TOP of a seed / text / knowledge query
-(e.g. "similar to Pink Floyd WITH female voice" or "top rock songs from 2020"). FALSE for a pure
-seed/text/knowledge query or when the intent itself is "metadata" (the filter IS the intent).
-
-OUTPUT FORMAT (return ONLY this JSON, nothing else):
-{{"intent": "seed" | "text" | "knowledge" | "metadata", "needs_filter": true | false}}
+needs_filter: true when a metadata constraint is added ON TOP of a seed/text/knowledge query
+("similar to Pink Floyd WITH female voice"); false for a pure seed/text/knowledge query, and false when intent is already metadata.
 
 EXAMPLES:
-"Similar to By The Way by RHCP and Iron Maiden Run to the Hills" -> {{"intent": "seed", "needs_filter": false}}
-"songs like Pink Floyd with female voice" -> {{"intent": "seed", "needs_filter": true}}
-"calm piano songs" -> {{"intent": "text", "needs_filter": false}}
-"songs about heartbreak in the rain" -> {{"intent": "text", "needs_filter": false}}
-"Top pop radio songs of 2025" -> {{"intent": "knowledge", "needs_filter": true}}
-"Grammy-winning rock songs from 2020" -> {{"intent": "knowledge", "needs_filter": true}}
-"best 90s pop" -> {{"intent": "knowledge", "needs_filter": true}}
-"sad jazz from the 90s in minor key" -> {{"intent": "metadata", "needs_filter": false}}
-"2024 songs" -> {{"intent": "metadata", "needs_filter": false}}
-"rock songs from 2020" -> {{"intent": "metadata", "needs_filter": false}}
+"songs like Madonna" -> {{"intent": "seed", "needs_filter": false}}
+"similar to Pink Floyd with female voice" -> {{"intent": "seed", "needs_filter": true}}
+"top pop radio songs of 2025" -> {{"intent": "knowledge", "needs_filter": true}}
+"sad jazz from the 90s" -> {{"intent": "metadata", "needs_filter": false}}
 
 Request: "{user_message}"
 JSON:"""

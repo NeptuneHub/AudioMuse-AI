@@ -44,6 +44,7 @@ def generate_text(
     api_key: str = "no-key-needed",
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
 ) -> str:
     """Generate freeform text from an OpenAI-compatible streaming endpoint.
 
@@ -57,15 +58,18 @@ def generate_text(
     """
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format
+    provider_label = "Ollama" if is_ollama_format else "OpenAI/OpenRouter"
 
     headers = _build_openai_headers(api_key, server_url)
+
+    temp = 0.7 if temperature is None else float(temperature)
 
     if is_openai_format:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": full_prompt}],
             "stream": True,
-            "temperature": 0.7,
+            "temperature": temp,
             "max_tokens": 8000,
         }
     else:
@@ -73,7 +77,7 @@ def generate_text(
             "model": model_name,
             "prompt": full_prompt,
             "stream": True,
-            "options": {"num_predict": 8000, "temperature": 0.7},
+            "options": {"num_predict": 8000, "temperature": temp},
             "think": False,
         }
 
@@ -161,13 +165,13 @@ def generate_text(
                 # SECURITY: log only length, not content (model output may
                 # echo back sensitive data from prompts/tool results).
                 logger.info(
-                    "OpenAI/OpenRouter API returned non-empty content (length=%d chars).",
-                    len(extracted_text),
+                    "%s API returned non-empty content (length=%d chars).",
+                    provider_label, len(extracted_text),
                 )
                 return extracted_text
             logger.warning(
-                "OpenAI/OpenRouter returned empty content (raw response length: %d chars).",
-                len(full_raw_response_content),
+                "%s returned empty content (raw response length: %d chars).",
+                provider_label, len(full_raw_response_content),
             )
             logger.debug(
                 "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",

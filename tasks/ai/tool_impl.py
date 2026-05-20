@@ -102,6 +102,47 @@ _FUZZY_CANDIDATE_POOL_LIMIT = 500
 _FUZZY_PREFIX_LEN = 3
 
 
+def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
+    """Fetch the scoring columns for a set of item_ids via the PK fast-path.
+
+    Returns ``{item_id: {mood_vector, other_features, tempo, energy, year,
+    scale, key, rating, author, album}}``. Empty dict when given no ids. One
+    indexed query (item_id = ANY) -- no text-column scan, no new index.
+    """
+    if not item_ids:
+        return {}
+    db_conn = get_db_connection()
+    try:
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT item_id, mood_vector, other_features, tempo, energy,
+                       year, scale, key, rating, author, album
+                FROM public.score
+                WHERE item_id = ANY(%s)
+                """,
+                (list(item_ids),),
+            )
+            rows = cur.fetchall()
+        out: Dict[str, Dict] = {}
+        for r in rows:
+            out[r['item_id']] = {
+                'mood_vector': r.get('mood_vector'),
+                'other_features': r.get('other_features'),
+                'tempo': r.get('tempo'),
+                'energy': r.get('energy'),
+                'year': r.get('year'),
+                'scale': r.get('scale'),
+                'key': r.get('key'),
+                'rating': r.get('rating'),
+                'author': r.get('author'),
+                'album': r.get('album'),
+            }
+        return out
+    finally:
+        db_conn.close()
+
+
 def _normalize_for_match(s: Optional[str]) -> str:
     if not s:
         return ""
@@ -698,6 +739,17 @@ def _database_genre_query_sync(
     if reroute_msg:
         log_messages.append(reroute_msg)
 
+    if moods:
+        merged_other = list(other_features or [])
+        for mood in moods:
+            if mood not in merged_other:
+                merged_other.append(mood)
+        other_features = merged_other
+        log_messages.append(
+            f"moods {moods} matched against other_features only (never mood_vector)"
+        )
+        moods = None
+
     pool_order_index = None
     if candidate_item_ids:
         pool_order_index = {iid: i for i, iid in enumerate(candidate_item_ids)}
@@ -741,21 +793,6 @@ def _database_genre_query_sync(
                 else:
                     conditions.append("(" + " OR ".join(voice_conditions) + ")")
                 has_voice_filter = True
-
-            has_mood_filter = False
-            if moods:
-                mood_conditions = []
-                for mood in moods:
-                    mood_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
-                    params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
-                    params.append(mood_vector_threshold)
-                if len(mood_conditions) == 1:
-                    conditions.append(mood_conditions[0])
-                else:
-                    conditions.append("(" + " OR ".join(mood_conditions) + ")")
-                has_mood_filter = True
 
             has_other_filter = False
             other_confidence_threshold = other_features_threshold
@@ -822,7 +859,7 @@ def _database_genre_query_sync(
 
             order_clause = "ORDER BY RANDOM()" if pool_order_index is None else ""
 
-            if has_genre_filter or has_voice_filter or has_mood_filter or has_other_filter:
+            if has_genre_filter or has_voice_filter or has_other_filter:
                 score_parts = []
                 score_params = []
                 if has_genre_filter:
@@ -853,20 +890,6 @@ def _database_genre_query_sync(
                             )
                         """)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
-                if has_mood_filter:
-                    for mood in moods:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
-                        score_params.append(f"(?i)(?:^|,)\\s*{re.escape(mood)}:(\\d+\\.?\\d*)")
                 if has_other_filter:
                     for of in other_features:
                         score_parts.append("""
@@ -925,10 +948,8 @@ def _database_genre_query_sync(
             filters.append(f"genres: {', '.join(genres)}")
         if voices:
             filters.append(f"voices: {', '.join(voices)}")
-        if moods:
-            filters.append(f"moods: {', '.join(moods)}")
         if other_features:
-            filters.append(f"other_features: {', '.join(other_features)}")
+            filters.append(f"moods: {', '.join(other_features)}")
         if tempo_min or tempo_max:
             filters.append(f"tempo: {tempo_min or 'any'}-{tempo_max or 'any'}")
         if energy_min or energy_max:

@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
 ) -> str:
     """Single-prompt completion via Mistral chat.complete."""
     if not _MISTRAL_AVAILABLE:
@@ -58,7 +59,7 @@ def generate_text(
 
         response = client.chat.complete(
             model=model_name,
-            temperature=0.9,
+            temperature=0.9 if temperature is None else float(temperature),
             timeout_ms=960,
             messages=[{"role": "user", "content": full_prompt}],
         )
