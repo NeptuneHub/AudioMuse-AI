@@ -394,6 +394,14 @@ LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "7
 # spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
 # or ~150 CJK chars (roughly equivalent lyrical content).
 LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
+# Repetition gate for text-source lyrics (media server / external API). Pure
+# ad-lib or filler content ("woo woo woo...") compresses far more than real
+# lyrics, so a high zlib compression ratio flags it. Above this ratio the text
+# is dropped before language detection / translation, preventing nonsensical
+# "translations" from polluting embeddings (issue #543). Set deliberately high
+# so genuinely chorus-heavy real songs (~7-8) survive while extreme ad-lib
+# repetition (~30-40+) is removed. Set to 0 to disable the gate.
+LYRICS_TEXT_MAX_COMPRESSION_RATIO = float(os.environ.get("LYRICS_TEXT_MAX_COMPRESSION_RATIO", "15.0"))
 # Maximum chars per chunk fed to the Marian translator. Stays well below
 # the model's 512-token context window even after tokenizer expansion on
 # rare scripts. The translator splitter applies this as a hard cap when

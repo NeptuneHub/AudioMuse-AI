@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import signal
+import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -45,6 +46,21 @@ except Exception:
 
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
 from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
+
+try:
+    from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as _CFG_TEXT_COMP
+    TEXT_COMPRESSION_RATIO_THRESHOLD = float(_CFG_TEXT_COMP)
+except Exception:
+    TEXT_COMPRESSION_RATIO_THRESHOLD = float(
+        os.environ.get('LYRICS_TEXT_MAX_COMPRESSION_RATIO', '15.0'))
+
+def _compression_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    encoded = text.encode('utf-8')
+    if not encoded:
+        return 0.0
+    return len(encoded) / max(1, len(zlib.compress(encoded)))
 
 MUSIC_ANALYSIS_AXES = {
     "AXIS_1_SETTING": {
@@ -733,6 +749,18 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         if len(raw_text) < MIN_CHARS_FOR_EMBEDDING:
             logger.info('STEP 2 char count below %s (%s chars) — skipping STEPS 3-5',
                         MIN_CHARS_FOR_EMBEDDING, len(raw_text))
+            raw_text = ''
+
+    if raw_text and whisper_raw_len == 0:
+        if len(raw_text) < MIN_CHARS_FOR_EMBEDDING:
+            logger.info('STEP 2t: text lyrics below %s chars (%s) - dropping',
+                        MIN_CHARS_FOR_EMBEDDING, len(raw_text))
+            raw_text = ''
+        elif (TEXT_COMPRESSION_RATIO_THRESHOLD > 0
+              and _compression_ratio(raw_text) > TEXT_COMPRESSION_RATIO_THRESHOLD):
+            logger.info('STEP 2t: text lyrics compression ratio %.2f > %.2f '
+                        '(repetitive ad-libs) - dropping',
+                        _compression_ratio(raw_text), TEXT_COMPRESSION_RATIO_THRESHOLD)
             raw_text = ''
 
     if raw_text and whisper_raw_len == 0:
