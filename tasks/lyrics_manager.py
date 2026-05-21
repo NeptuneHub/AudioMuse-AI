@@ -789,8 +789,14 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 # Search: by free text
 # ---------------------------------------------------------------------------
 
-def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
-    """Search lyrics by embedding the query with e5-base-v2 and querying the voyager index."""
+def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None) -> List[Dict]:
+    """Search lyrics by embedding the query with e5-base-v2 and querying the voyager index.
+
+    ``artist_cap`` controls the per-artist diversity cap: ``None`` uses the global
+    ``MAX_SONGS_PER_ARTIST`` (the default, for direct user-facing search); ``0``
+    disables it entirely, returning the full similarity-ranked pool up to ``limit``
+    (used when feeding a candidate pool that is diversity-capped downstream).
+    """
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
     from lyrics.lyrics_transcriber import embed_query_text
 
@@ -810,7 +816,9 @@ def search_by_text(query_text: str, limit: int = 50) -> List[Dict]:
             logger.error(f"Failed to embed lyrics query: {query_text!r}")
             return []
 
-        artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        if artist_cap is None:
+            artist_cap = MAX_SONGS_PER_ARTIST
+        artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
         voyager_index = _LYRICS_INDEX_CACHE['index']

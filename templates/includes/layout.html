@@ -53,6 +53,8 @@
     {% block bodyAdditions %}
         {# body additions from template will be set here #}
     {% endblock %}
+
+    <script src="{{ url_for('static', filename='song_tags.js') }}"></script>
 </body>
 </html>
 {% block postHTMLScripts %}

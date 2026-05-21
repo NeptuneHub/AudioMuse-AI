@@ -8,7 +8,7 @@ Tests cover MCP helper + tool functions:
 - Energy normalization in execute_mcp_tool()
 - Pre-execution validation (filterless search_database rejection)
 
-NOTE: uses importlib to load tasks.mcp_helper / tasks.mcp_tool_impl directly,
+NOTE: uses importlib to load tasks.mcp_helper / tasks.ai.tool_impl directly,
 bypassing tasks/__init__.py which pulls in pydub (requires audioop removed in
 Python 3.14).
 """
@@ -45,14 +45,13 @@ def _import_mcp_server():
 
 
 def _import_ai_mcp_client():
-    """Load tasks.mcp_tools (was previously the ``ai_mcp_client`` module)."""
+    """Load tasks.ai.tools (the MCP tool definitions + dispatcher)."""
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tools.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'ai', 'tools.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'tasks.mcp_tools'
+    mod_name = 'tasks.ai.tools'
     if mod_name not in sys.modules:
-        # mcp_tools imports from mcp_tool_impl which imports from mcp_helper -- preload them
         _import_mcp_server()
         _import_mcp_impl()
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
@@ -63,14 +62,13 @@ def _import_ai_mcp_client():
 
 
 def _import_mcp_impl():
-    """Load tasks.mcp_tool_impl directly without triggering tasks/__init__.py."""
+    """Load tasks.ai.tool_impl directly without triggering tasks/__init__.py."""
     mod_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_tool_impl.py'
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'ai', 'tool_impl.py'
     )
     mod_path = os.path.normpath(mod_path)
-    mod_name = 'tasks.mcp_tool_impl'
+    mod_name = 'tasks.ai.tool_impl'
     if mod_name not in sys.modules:
-        # mcp_tool_impl imports from mcp_helper, ai_api, ai_prompts, etc. -- preload mcp_helper
         _import_mcp_server()
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
         mod = importlib.util.module_from_spec(spec)
@@ -1024,7 +1022,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Error: API rate limit exceeded")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock classics", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1049,7 +1047,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("classic rock", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 2
@@ -1071,7 +1069,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("beatles hits", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1092,7 +1090,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("90s alternative", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1124,7 +1122,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("fun queen songs", self._make_ai_config(), 10)
 
         assert len(result["songs"]) == 1
@@ -1164,7 +1162,7 @@ class TestAiBrainstormSync:
         cur.fetchall = Mock(return_value=[])
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 50.0)
 
         assert "songs" in result
@@ -1179,7 +1177,7 @@ class TestAiBrainstormSync:
         ai_mod = self._make_ai_module("Here are some great rock songs that you might enjoy!")
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock", self._make_ai_config(), 10)
 
         assert result["songs"] == []
@@ -1205,7 +1203,7 @@ class TestAiBrainstormSync:
         conn.cursor = Mock(return_value=cur)
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai_api': ai_mod}):
+             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 10)
 
         assert len(result["songs"]) <= 10
@@ -1320,8 +1318,9 @@ class TestTextSearchSync:
         assert len(result["songs"]) == 2
         assert result["songs"][0]["item_id"] == "c1"
 
-    def test_tempo_filter_applied(self):
-        """Tempo filter 'slow' triggers DB filtering of CLAP results."""
+    def test_tempo_filter_ignored_pool_returned_as_is(self):
+        """tempo_filter is accepted for signature compatibility but ignored;
+        the tool returns the pure CLAP pool (tempo/energy re-rank is downstream)."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1330,10 +1329,6 @@ class TestTextSearchSync:
             {"item_id": "c2", "title": "Fast Song", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Slow Song", "author": "A1"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1347,11 +1342,11 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert len(result["songs"]) == 2
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2"]
 
-    def test_energy_filter_applied(self):
-        """Energy filter 'high' triggers DB filtering of CLAP results."""
+    def test_energy_filter_ignored_pool_returned_as_is(self):
+        """energy_filter is accepted but ignored; the pool comes back unfiltered."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1360,10 +1355,6 @@ class TestTextSearchSync:
             {"item_id": "c2", "title": "Low Energy", "author": "A2"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "High Energy", "author": "A1"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1377,11 +1368,11 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "c1"
+        assert len(result["songs"]) == 2
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2"]
 
-    def test_combined_tempo_and_energy_filters(self):
-        """Both tempo and energy filters applied together."""
+    def test_combined_tempo_and_energy_filters_ignored(self):
+        """Both tempo and energy filters are ignored; full pool returned in order."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
@@ -1391,11 +1382,6 @@ class TestTextSearchSync:
             {"item_id": "c3", "title": "Also Match", "author": "A3"},
         ]
         clap_mod = self._make_clap_module(results=clap_results)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "c1", "title": "Perfect Match", "author": "A1"}),
-            _make_dict_row({"item_id": "c3", "title": "Also Match", "author": "A3"}),
-        ])
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
@@ -1409,12 +1395,12 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        assert len(result["songs"]) == 2
-        assert result["songs"][0]["item_id"] == "c1"
-        assert result["songs"][1]["item_id"] == "c3"
+        assert len(result["songs"]) == 3
+        assert [s["item_id"] for s in result["songs"]] == ["c1", "c2", "c3"]
 
-    def test_results_limited_to_get_songs(self):
-        """CLAP returns 50 results, get_songs=10 -> only 10 returned."""
+    def test_get_songs_passed_as_clap_limit(self):
+        """get_songs is delegated to search_by_text as its limit; the tool itself
+        does not slice the returned pool."""
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
         conn = _make_connection(cur)
@@ -1422,7 +1408,7 @@ class TestTextSearchSync:
 
         clap_results = [
             {"item_id": f"c{i}", "title": f"Song {i}", "author": f"Artist {i}"}
-            for i in range(50)
+            for i in range(10)
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
@@ -1436,6 +1422,7 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
+        clap_mod.search_by_text.assert_called_once_with("anything", limit=10)
         assert len(result["songs"]) == 10
 
     def test_exception_returns_empty_with_message(self):

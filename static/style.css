@@ -1344,3 +1344,100 @@ tbody tr:hover {
 .message-box .close-btn:hover {
     color: var(--text-title);
 }
+
+/* Song Mood & Genre tag bar (shared across song-list views) */
+.song-tags-scroll {
+    overflow-x: auto;
+}
+.song-result-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+/* When the shared list sits inside the legacy table wrapper, drop the
+   wrapper's box so rows appear directly on the page (like CLAP / Lyrics). */
+#results-table-wrapper:has(.song-result-list) {
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+    padding: 0;
+}
+.result-item {
+    padding: 0.7rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-card);
+    display: grid;
+    grid-template-columns: 15rem 1fr auto;
+    grid-template-areas: "main tags score";
+    align-items: center;
+    gap: 0.4rem 1rem;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.result-item:hover {
+    border-color: var(--border-color-darker);
+    box-shadow: var(--shadow-card);
+}
+.result-main { grid-area: main; min-width: 0; }
+.result-item > .path-tags { grid-area: tags; min-width: 0; justify-content: center; }
+.similarity-badge { grid-area: score; justify-self: end; }
+.result-title { font-weight: 600; font-size: 1.02rem; margin-bottom: 0.2rem; }
+@media (max-width: 640px) {
+    .result-item {
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+            "main score"
+            "tags tags";
+    }
+    .result-item > .path-tags { justify-content: flex-start; }
+}
+.result-artist { color: var(--text-muted); font-size: 0.9rem; }
+.result-album { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.15rem; }
+.similarity-badge {
+    color: white;
+    padding: 0.4rem 0.8rem;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+.similarity-badge.badge-high { background: var(--color-success); }
+.similarity-badge.badge-medium { background: #d97706; }
+.similarity-badge.badge-low { background: #4B5563; }
+.similarity-badge.badge-neutral { background: #4B5563; }
+/* Dark mode: success var lightens too much for white text; pin readable shades. */
+body.dark-mode .similarity-badge.badge-high,
+html.dark-mode body .similarity-badge.badge-high { background: #15803D; }
+body.dark-mode .similarity-badge.badge-low,
+body.dark-mode .similarity-badge.badge-neutral,
+html.dark-mode body .similarity-badge.badge-low,
+html.dark-mode body .similarity-badge.badge-neutral { background: #4B5563; }
+.path-tags {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+.ptag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.6rem;
+    border: 1px solid currentColor;
+    border-radius: 9999px;
+    background-color: transparent;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+.ptag-happy      { color: #F59E0B; }
+.ptag-sad        { color: #3B82F6; }
+.ptag-aggressive { color: #EF4444; }
+.ptag-relaxed    { color: #22C55E; }
+.ptag-party      { color: #EC4899; }
+.ptag-danceable  { color: #06B6D4; }
+.ptag-genre      { color: hsl(var(--genre-hue, 220), 65%, 45%); }
+body.dark-mode .ptag-genre,
+html.dark-mode body .ptag-genre { color: hsl(var(--genre-hue, 220), 65%, 62%); }

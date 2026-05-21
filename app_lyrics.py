@@ -12,6 +12,8 @@ import logging
 
 from flask import Blueprint, jsonify, render_template, request
 
+from app_helper import attach_song_features
+
 logger = logging.getLogger(__name__)
 
 lyrics_search_bp = Blueprint('lyrics_search_bp', __name__, template_folder='../templates')
@@ -130,6 +132,7 @@ def lyrics_search_axes_api():
         results = search_by_axes(targets, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'results': []}), 404
+        attach_song_features(results)
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
@@ -207,6 +210,7 @@ def lyrics_search_text_api():
         results = search_by_text(query, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
+        attach_song_features(results)
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")

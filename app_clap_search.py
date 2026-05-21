@@ -98,6 +98,7 @@ def clap_search_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
+    from app_helper import attach_song_features
     
     if not CLAP_ENABLED:
         return jsonify({
@@ -132,7 +133,8 @@ def clap_search_api():
         
         # Perform search
         results = search_by_text(query, limit=limit)
-        
+        attach_song_features(results)
+
         return jsonify({
             'query': query,
             'results': results,

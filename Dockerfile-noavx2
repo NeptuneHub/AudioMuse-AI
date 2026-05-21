@@ -105,6 +105,8 @@ RUN uv pip install --system --no-cache --index-strategy unsafe-best-match -r /ap
     && find /usr/local/lib/python3.10/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.10/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
+RUN python3 -m wn download oewn:2024 && echo "wn / OEWN 2024 corpus downloaded"
+
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \

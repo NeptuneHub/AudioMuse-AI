@@ -16,6 +16,7 @@ ftfy
 flasgger
 sqlglot
 google-genai==1.57.0
+mistralai>=1.11.1,<2.0.0
 umap-learn
 pydub
 python-mpd2
@@ -41,3 +42,4 @@ stopwords==1.0.2
 langdetect==1.0.9
 gunicorn
 zstandard
+wn==0.13.0
