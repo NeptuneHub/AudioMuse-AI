@@ -66,6 +66,8 @@ VOICE_VOCAB = ["female vocalists", "female vocalist", "male vocalists"]
 
 INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
 
+PRIMARY_INTENTS = ["seed", "text", "knowledge"]
+
 
 def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] = None) -> str:
     """Build the canonical MCP system prompt used by ALL providers."""
@@ -119,7 +121,8 @@ RULES:
 2. seeds: a named TRACK -> {{type:'song',title,artist}} (e.g. "Iron Maiden Run to the Hills" = title 'Run to the Hills', artist 'Iron Maiden'); a bare artist -> {{type:'artist',name}}. Multiple in ONE seed_search: "A and B"=union, "A meets B"=alchemy, "A but not Y"=subtract.
 3. ANY descriptor beyond the song/artist (mood, genre, vocal, energy, tempo, year/decade, key, scale) MUST ALSO go in a search_database call. Even one trailing word: "...danceable" -> seed_search(...) AND search_database(moods=["danceable"]).
 4. voices: "female voice"/"woman singer" -> ["female vocalists","female vocalist"]; "male voice" -> ["male vocalists"]. Never put a voice or genre in 'moods'.
-5. "2024 songs" -> search_database(year_min=2024,year_max=2024), not text_match."""
+5. "2024 songs" -> search_database(year_min=2024,year_max=2024), not text_match.
+6. A topic/scenario the song should be ABOUT ("about summer", "roadtrip", "songs about heartbreak") -> text_match(mode='lyrics'); any genre/voice/energy/tempo/year mentioned ALONGSIDE -> ALSO a search_database call. Keep BOTH."""
 
     return prompt
 
@@ -167,6 +170,13 @@ def build_ollama_tool_calling_prompt(
         '"calm piano songs"\n'
         '{{"tool_calls": [{{"name": "text_match", "arguments": {{"query": "calm piano", "mode": "audio"}}}}]}}'
     )
+    examples.append(
+        '"upbeat pop roadtrip songs about summer with female vocals"\n'
+        '{{"tool_calls": ['
+        '{{"name": "text_match", "arguments": {{"query": "summer roadtrip", "mode": "lyrics"}}}}, '
+        '{{"name": "search_database", "arguments": {{"genres": ["pop"], "voices": ["female vocalists", "female vocalist"], "energy_min": 0.55}}}}'
+        ']}}'
+    )
     examples_text = "\n\n".join(examples)
 
     return f"""/no_think
@@ -195,29 +205,32 @@ Request: "{user_message}"
 
 
 def build_intent_classifier_prompt(user_message: str) -> str:
-    """Tiny Stage-1 prompt: classify the user request into ONE of 4 intent classes.
+    """Tiny Stage-1 prompt: classify the request into PRIMARY intents + a filter flag.
 
-    Returned JSON shape: {"intent": <one of INTENT_CLASSES>, "needs_filter": bool}.
+    Returned JSON shape: {"primaries": [<subset of PRIMARY_INTENTS>], "needs_filter": bool}.
+    A request may carry SEVERAL primaries (e.g. ["seed","text"]); a pure metadata
+    filter has no primary -> {"primaries": [], "needs_filter": true}.
     """
-    return f"""Classify a music request. Return ONLY JSON: {{"intent": "seed|text|knowledge|metadata", "needs_filter": true|false}}.
+    return f"""Classify a music request. Return ONLY JSON: {{"primaries": ["seed"|"text"|"knowledge", ...], "needs_filter": true|false}}.
 
-intent:
+primaries (zero or more, the ways to FIND songs):
 - seed: names specific song(s)/artist(s) to find similar/blend/subtract ("similar to By The Way by RHCP", "songs like Madonna").
-- text: describes the SOUND or LYRIC theme, no named song/artist ("calm piano", "songs about heartbreak").
+- text: describes the SOUND, or a LYRIC/TOPIC/SCENARIO theme -- what the song is ABOUT ("calm piano", "songs about heartbreak", "roadtrip songs about summer").
 - knowledge: popularity/cultural/historical request ("top pop songs of 2025", "Grammy winners", "songs sampled by Daft Punk").
-- metadata: pure year/genre/mood/vocal/tempo/energy/scale/rating filter ("sad jazz from the 90s", "2024 songs").
 
-A popularity word (top/best/popular/radio/Grammy/viral/#1/charts) makes it knowledge even with a year/genre:
-"top rock 2020" = knowledge, but "rock 2020" = metadata.
+THEME PRECEDENCE: a lyric/topic/scenario theme is a "text" primary and STAYS even when genre/voice/energy/tempo/year are also present -- those become the filter, they do NOT remove "text".
+A popularity word (top/best/popular/radio/Grammy/viral/#1/charts) makes it "knowledge" even with a year/genre: "top rock 2020" = knowledge, "rock 2020" = no primary.
+Multiple primaries can co-occur (e.g. a named song AND a theme -> ["seed","text"]).
 
-needs_filter: true when a metadata constraint is added ON TOP of a seed/text/knowledge query
-("similar to Pink Floyd WITH female voice"); false for a pure seed/text/knowledge query, and false when intent is already metadata.
+needs_filter: true when a metadata constraint (year/genre/mood/vocal/tempo/energy/scale/rating) is present.
+A PURE metadata filter with no theme/song/artist/popularity -> {{"primaries": [], "needs_filter": true}}.
 
 EXAMPLES:
-"songs like Madonna" -> {{"intent": "seed", "needs_filter": false}}
-"similar to Pink Floyd with female voice" -> {{"intent": "seed", "needs_filter": true}}
-"top pop radio songs of 2025" -> {{"intent": "knowledge", "needs_filter": true}}
-"sad jazz from the 90s" -> {{"intent": "metadata", "needs_filter": false}}
+"songs like Madonna" -> {{"primaries": ["seed"], "needs_filter": false}}
+"similar to Pink Floyd with female voice" -> {{"primaries": ["seed"], "needs_filter": true}}
+"top pop radio songs of 2025" -> {{"primaries": ["knowledge"], "needs_filter": true}}
+"sad jazz from the 90s" -> {{"primaries": [], "needs_filter": true}}
+"upbeat pop roadtrip songs about summer with female vocals" -> {{"primaries": ["text"], "needs_filter": true}}
 
 Request: "{user_message}"
 JSON:"""
@@ -229,10 +242,13 @@ def build_intent_classifier_schema() -> Dict:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "intent": {"type": "string", "enum": list(INTENT_CLASSES)},
+            "primaries": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(PRIMARY_INTENTS)},
+            },
             "needs_filter": {"type": "boolean"},
         },
-        "required": ["intent", "needs_filter"],
+        "required": ["primaries", "needs_filter"],
     }
 
 

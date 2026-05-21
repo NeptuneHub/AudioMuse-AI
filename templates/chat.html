@@ -588,14 +588,9 @@
             };
 
             function understandHeadline(m) {
-                let h;
-                if (m.intent && INTENT_LABEL[m.intent]) {
-                    h = INTENT_LABEL[m.intent];
-                    if (m.needsFilter) h += ' — plus your extra filters';
-                } else if (m.intentFallback) {
-                    h = "Couldn't auto-classify — considered all options.";
-                } else {
-                    h = 'Read your request.';
+                let h = intentHeadline(m.intentPrimaries, m.needsFilter);
+                if (h == null) {
+                    h = m.intentFallback ? "Couldn't auto-classify — considered all options." : 'Read your request.';
                 }
                 if (m.hints.length) h += ' · Also spotted: ' + m.hints.join('; ');
                 return h;
@@ -645,7 +640,7 @@
             /** Ordered live-step descriptors for the current parsed model. */
             function liveStepDefs(m) {
                 const defs = [
-                    { id: 'understand', done: (m.intent != null || m.intentFallback), headline: understandHeadline },
+                    { id: 'understand', done: (m.intentPrimaries != null || m.intentFallback), headline: understandHeadline },
                     { id: 'tools', done: m.emitted != null, headline: toolsHeadline },
                     { id: 'found', done: (m.composition && m.poolSize != null) || (!m.composition && m.seqRetrieved > 0), headline: foundHeadline }
                 ];
@@ -789,6 +784,16 @@
                 knowledge: 'Suggest well-known songs from world knowledge',
                 metadata: 'Filter your library directly'
             };
+            // Build a headline from the stage-1 primaries list (null = not classified,
+            // [] + needsFilter = pure metadata filter). Returns null to let the caller
+            // fall back to its fallback/default wording.
+            function intentHeadline(primaries, needsFilter) {
+                if (primaries == null) return null;
+                if (!primaries.length) return needsFilter ? INTENT_LABEL.metadata : null;
+                let h = primaries.map(p => INTENT_LABEL[p] || p).join(' + ');
+                if (needsFilter) h += ' — plus your extra filters';
+                return h;
+            }
             const TOOL_LABEL = {
                 seed_search: 'Song/Artist Similarity',
                 text_match: 'Sound/Lyrics Match',
@@ -814,7 +819,7 @@
                 const lines = (text || '').split('\n');
                 const model = {
                     request: null, provider: null,
-                    intent: null, needsFilter: false, intentFallback: false, hints: [],
+                    intentPrimaries: null, needsFilter: false, intentFallback: false, hints: [],
                     toolNames: [], narrowed: false, emitted: null,
                     composition: false, compositionHasFilter: false, primaries: [], seqTools: [], poolSize: null,
                     seqRetrieved: 0, seqAdded: 0,
@@ -830,8 +835,8 @@
                     let m;
                     if ((m = t.match(/^Request:\s*'(.*)'$/))) model.request = m[1];
                     else if ((m = t.match(/^AI Provider:\s*(.+)$/))) model.provider = m[1];
-                    else if ((m = t.match(/intent_classifier:\s*intent=(\w+),\s*needs_filter=(\w+)/i))) {
-                        model.intent = m[1].toLowerCase();
+                    else if ((m = t.match(/intent_classifier:\s*primaries=\[(.*?)\],\s*needs_filter=(\w+)/i))) {
+                        model.intentPrimaries = m[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
                         model.needsFilter = /true/i.test(m[2]);
                     }
                     else if (/classifier returned no intent|falling back to full tools|could not parse a valid JSON intent|provider returned error|transport error/i.test(t)) {
@@ -902,14 +907,11 @@
                 }
 
                 // 1. Understood your request
-                let h1;
-                if (model.intent && INTENT_LABEL[model.intent]) {
-                    h1 = INTENT_LABEL[model.intent];
-                    if (model.needsFilter) h1 += ' — plus your extra filters';
-                } else if (model.intentFallback) {
-                    h1 = "Couldn't auto-classify your request, so I considered all options.";
-                } else {
-                    h1 = 'Read your request.';
+                let h1 = intentHeadline(model.intentPrimaries, model.needsFilter);
+                if (h1 == null) {
+                    h1 = model.intentFallback
+                        ? "Couldn't auto-classify your request, so I considered all options."
+                        : 'Read your request.';
                 }
                 const step1 = { icon: '🧭', title: 'Understood your request', headline: h1 };
                 if (model.hints.length) step1.sub = 'Also spotted: ' + model.hints.join('; ');

@@ -910,7 +910,7 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
     try:
         from tasks.lyrics_manager import search_by_text
         log_messages.append(f"Lyrics search: '{text}'")
-        results = search_by_text(text, limit=int(get_songs) if get_songs else 200)
+        results = search_by_text(text, limit=int(get_songs) if get_songs else 200, artist_cap=0)
         if not results:
             log_messages.append("No lyrics matched (index empty, not loaded, or no semantic match)")
             return {"songs": [], "message": "\n".join(log_messages)}

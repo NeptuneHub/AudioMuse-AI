@@ -18,7 +18,7 @@ Public surface (call sites elsewhere import from here):
 
     Intent classifier (stage 1):
         classify(user_message, ai_config, log_messages=None) -> Optional[dict]
-        tools_for_intent(intent, needs_filter, all_tools)    -> filtered tool list
+        tools_for_intent(primaries, needs_filter, all_tools)  -> filtered tool list
 
     Orchestrators:
         call_ai_for_plan(...)          one transport call, returns raw tool_calls
@@ -33,7 +33,7 @@ from typing import Dict, List, Optional
 
 import config
 
-from tasks.ai.prompts import INTENT_CLASSES, build_intent_classifier_prompt
+from tasks.ai.prompts import PRIMARY_INTENTS, build_intent_classifier_prompt
 from tasks.ai.vocab import (
     ALIAS_ENERGY,
     ALIAS_TEMPO,
@@ -821,19 +821,48 @@ def _extract_first_json_object(text: str) -> Optional[Dict]:
         return None
 
 
+def _coerce_needs_filter(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
 def _normalize_classifier_result(parsed: Optional[Dict]) -> Optional[Dict]:
+    """Normalize a stage-1 classifier response into {"primaries": [...], "needs_filter": bool}.
+
+    Accepts the current multi-primary shape and translates the legacy single-intent
+    shape ({"intent": ..., "needs_filter": ...}); returns None for unusable output so
+    the caller falls back to the full tool surface.
+    """
     if not isinstance(parsed, dict):
         return None
-    intent = parsed.get("intent")
-    if not isinstance(intent, str):
+
+    if "primaries" not in parsed and isinstance(parsed.get("intent"), str):
+        intent = parsed["intent"].strip().lower()
+        needs_filter = _coerce_needs_filter(parsed.get("needs_filter", False))
+        if intent == "metadata":
+            return {"primaries": [], "needs_filter": True}
+        if intent in PRIMARY_INTENTS:
+            return {"primaries": [intent], "needs_filter": needs_filter}
         return None
-    intent = intent.strip().lower()
-    if intent not in INTENT_CLASSES:
+
+    raw = parsed.get("primaries", [])
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raw = []
+    primaries: List[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        p = item.strip().lower()
+        if p in PRIMARY_INTENTS and p not in primaries:
+            primaries.append(p)
+
+    needs_filter = _coerce_needs_filter(parsed.get("needs_filter", False))
+    if not primaries and not needs_filter:
         return None
-    needs_filter = parsed.get("needs_filter", False)
-    if isinstance(needs_filter, str):
-        needs_filter = needs_filter.strip().lower() in ("true", "1", "yes")
-    return {"intent": intent, "needs_filter": bool(needs_filter)}
+    return {"primaries": primaries, "needs_filter": needs_filter}
 
 
 def classify(
@@ -841,7 +870,7 @@ def classify(
     ai_config: Dict,
     log_messages: Optional[List[str]] = None,
 ) -> Optional[Dict]:
-    """Stage-1 classifier: returns {"intent": <class>, "needs_filter": bool} or None on any failure."""
+    """Stage-1 classifier: returns {"primaries": [<class>...], "needs_filter": bool} or None on any failure."""
     if log_messages is None:
         log_messages = []
 
@@ -873,27 +902,32 @@ def classify(
         return None
 
     log_messages.append(
-        f"intent_classifier: intent={result['intent']}, needs_filter={result['needs_filter']}"
+        f"intent_classifier: primaries=[{','.join(result['primaries'])}], needs_filter={result['needs_filter']}"
     )
     return result
 
 
-def tools_for_intent(intent: str, needs_filter: bool, all_tools: List[Dict]) -> List[Dict]:
-    """Filter the full tool list down to the subset the Stage-2 call should see."""
+def tools_for_intent(primaries: List[str], needs_filter: bool, all_tools: List[Dict]) -> List[Dict]:
+    """Filter the full tool list down to the subset the Stage-2 call should see.
+
+    Each primary intent maps to its tool; ``search_database`` is added when a
+    metadata filter is requested OR when there is no primary at all (pure filter).
+    """
     by_name = {t.get("name"): t for t in all_tools if isinstance(t, dict)}
 
     primary_map = {
         "seed": "seed_search",
         "text": "text_match",
         "knowledge": "knowledge_lookup",
-        "metadata": "search_database",
     }
-    primary = primary_map.get(intent)
 
     chosen: List[Dict] = []
-    if primary and primary in by_name:
-        chosen.append(by_name[primary])
-    if intent != "metadata" and needs_filter and "search_database" in by_name:
+    for p in primaries or []:
+        tool_name = primary_map.get(p)
+        if tool_name and tool_name in by_name and by_name[tool_name] not in chosen:
+            chosen.append(by_name[tool_name])
+    if (needs_filter or not primaries) and "search_database" in by_name \
+            and by_name["search_database"] not in chosen:
         chosen.append(by_name["search_database"])
 
     return chosen if chosen else list(all_tools)
@@ -1020,7 +1054,7 @@ def plan_and_execute_once(
 
     classification = classify(user_message, ai_config, log_messages=log_messages)
     if classification is not None:
-        narrowed = tools_for_intent(classification['intent'], classification['needs_filter'], tools)
+        narrowed = tools_for_intent(classification['primaries'], classification['needs_filter'], tools)
         if narrowed and len(narrowed) < len(tools):
             kept = ", ".join(t.get('name', '') for t in narrowed)
             log_messages.append(f"   stage-2 tools narrowed to: {kept}")
@@ -1030,7 +1064,7 @@ def plan_and_execute_once(
     else:
         log_messages.append("   classifier returned no intent; using full 4-tool surface for stage-2")
 
-    if classification is not None and classification['intent'] == 'knowledge':
+    if classification is not None and 'knowledge' in classification['primaries']:
         user_message = (
             "INTENT=knowledge. You MUST emit a knowledge_lookup tool call with "
             "user_request set to the user's request below. Add a search_database "
@@ -1060,7 +1094,7 @@ def plan_and_execute_once(
         raw_calls, user_wants_rating=user_wants_rating, log_messages=log_messages
     )
 
-    if classification is not None and classification['intent'] == 'knowledge':
+    if classification is not None and 'knowledge' in classification['primaries']:
         has_knowledge = any(
             isinstance(tc, dict) and tc.get('name') == 'knowledge_lookup'
             for tc in raw_calls

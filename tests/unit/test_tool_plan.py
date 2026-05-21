@@ -256,3 +256,89 @@ class TestIntentPreextract:
         from tasks.ai.planner import extract_hints
         h = extract_hints("songs with energy above 0.5")
         assert h['energy_min'] == 0.5
+
+
+class TestMultiPrimaryClassifier:
+    def _tools(self):
+        return [
+            {'name': 'seed_search'},
+            {'name': 'text_match'},
+            {'name': 'knowledge_lookup'},
+            {'name': 'search_database'},
+        ]
+
+    @staticmethod
+    def _names(tools):
+        return {t['name'] for t in tools}
+
+    def test_new_shape_passthrough(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'primaries': ['text'], 'needs_filter': True})
+        assert out == {'primaries': ['text'], 'needs_filter': True}
+
+    def test_dedupe_drop_invalid_preserve_order(self):
+        p = _plan()
+        out = p._normalize_classifier_result(
+            {'primaries': ['text', 'text', 'bogus', 'seed'], 'needs_filter': False}
+        )
+        assert out == {'primaries': ['text', 'seed'], 'needs_filter': False}
+
+    def test_pure_metadata_passthrough(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'primaries': [], 'needs_filter': True})
+        assert out == {'primaries': [], 'needs_filter': True}
+
+    def test_degenerate_empty_returns_none(self):
+        p = _plan()
+        assert p._normalize_classifier_result({'primaries': [], 'needs_filter': False}) is None
+
+    def test_needs_filter_string_coerced(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'primaries': ['seed'], 'needs_filter': 'true'})
+        assert out['needs_filter'] is True
+
+    def test_lone_string_primaries_coerced(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'primaries': 'seed', 'needs_filter': False})
+        assert out == {'primaries': ['seed'], 'needs_filter': False}
+
+    def test_legacy_metadata_translated(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'intent': 'metadata', 'needs_filter': False})
+        assert out == {'primaries': [], 'needs_filter': True}
+
+    def test_legacy_seed_translated(self):
+        p = _plan()
+        out = p._normalize_classifier_result({'intent': 'seed', 'needs_filter': True})
+        assert out == {'primaries': ['seed'], 'needs_filter': True}
+
+    def test_non_dict_returns_none(self):
+        p = _plan()
+        assert p._normalize_classifier_result(None) is None
+        assert p._normalize_classifier_result("text") is None
+
+    def test_tools_text_plus_filter(self):
+        p = _plan()
+        out = p.tools_for_intent(['text'], True, self._tools())
+        assert self._names(out) == {'text_match', 'search_database'}
+
+    def test_tools_two_primaries_no_filter(self):
+        p = _plan()
+        out = p.tools_for_intent(['seed', 'text'], False, self._tools())
+        assert self._names(out) == {'seed_search', 'text_match'}
+
+    def test_tools_empty_primaries_with_filter(self):
+        p = _plan()
+        out = p.tools_for_intent([], True, self._tools())
+        assert self._names(out) == {'search_database'}
+
+    def test_tools_knowledge_plus_filter(self):
+        p = _plan()
+        out = p.tools_for_intent(['knowledge'], True, self._tools())
+        assert self._names(out) == {'knowledge_lookup', 'search_database'}
+
+    def test_tools_unresolvable_falls_back_to_full(self):
+        p = _plan()
+        tools = [{'name': 'text_match'}, {'name': 'seed_search'}]
+        out = p.tools_for_intent(['knowledge'], False, tools)
+        assert out == tools
