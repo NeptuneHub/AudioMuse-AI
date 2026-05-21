@@ -19,6 +19,69 @@
         #fingerprint-form button:hover {
             background-color: var(--color-primary-hover);
         }
+        #results-container > h2 {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 1.25rem;
+        }
+        #results-container > h2::before {
+            content: "";
+            width: 0.35rem;
+            height: 1.4rem;
+            border-radius: 1rem;
+            background: var(--color-primary);
+        }
+        #fingerprint-summary {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 1rem;
+            box-shadow: var(--shadow-card);
+            padding: 1.75rem 1.5rem 1.5rem;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            position: relative;
+        }
+        #fingerprint-summary::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--color-primary), transparent);
+        }
+        .fingerprint-title {
+            text-align: center;
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin: 0;
+        }
+        .fingerprint-caption {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            text-align: center;
+            margin: 0.25rem 0 1.25rem;
+        }
+        .fingerprint-radar-wrap {
+            position: relative;
+            height: 340px;
+            max-width: 460px;
+            margin: 0 auto;
+        }
+        .fingerprint-genres-label {
+            text-align: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin: 1.5rem 0 0.75rem;
+        }
+        .fingerprint-genres {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+        }
 </style>
 {% endblock %}
 
@@ -108,6 +171,15 @@
 <section id="results-container" class="hidden">
     <h2>Results</h2>
     <div id="status"></div>
+    <div id="fingerprint-summary" class="hidden">
+        <h3 class="fingerprint-title">Your Sonic Fingerprint</h3>
+        <p id="fingerprint-caption" class="fingerprint-caption"></p>
+        <div class="fingerprint-radar-wrap">
+            <canvas id="fingerprint-radar"></canvas>
+        </div>
+        <div class="fingerprint-genres-label">Top Genres</div>
+        <div id="fingerprint-genres" class="fingerprint-genres"></div>
+    </div>
     <div id="results-table-wrapper"></div>
 </section>
 
@@ -129,9 +201,11 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+    <script src="{{ url_for('static', filename='chart.js') }}"></script>
     <script>
         (() => {
             let currentTrackIds = [];
+            let radarChart = null;
             const mediaserverType = "{{ mediaserver_type }}";
 
             const fingerprintForm = document.getElementById('fingerprint-form');
@@ -140,7 +214,81 @@
             const resultsContainer = document.getElementById('results-container');
             const playlistCreator = document.getElementById('playlist-creator');
             const resultsTableWrapper = document.getElementById('results-table-wrapper');
+            const fingerprintSummary = document.getElementById('fingerprint-summary');
+            const fingerprintCaption = document.getElementById('fingerprint-caption');
+            const fingerprintGenres = document.getElementById('fingerprint-genres');
             const playlistStatusDiv = document.getElementById('playlist-status');
+
+            const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+            const renderFingerprint = (songs) => {
+                const summary = computeFingerprintSummary(songs);
+                const labels = ['Danceable', 'Aggressive', 'Happy', 'Party', 'Relaxed', 'Sad'];
+                const order = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad'];
+                const total = summary.total;
+                const values = order.map(d => total ? Math.round(100 * summary.counts[d] / total) : 0);
+                const primary = cssVar('--color-primary') || '#6366f1';
+                const grid = cssVar('--border-color') || 'rgba(128,128,128,0.3)';
+                const text = cssVar('--text-muted') || '#888';
+
+                if (radarChart) radarChart.destroy();
+                const ctx = document.getElementById('fingerprint-radar').getContext('2d');
+                radarChart = new Chart(ctx, {
+                    type: 'radar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Songs',
+                            data: values,
+                            fill: true,
+                            backgroundColor: primary + '33',
+                            borderColor: primary,
+                            pointBackgroundColor: primary,
+                            pointBorderColor: primary,
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                            borderWidth: 2,
+                            tension: 0.05
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (c) => `${c.parsed.r}% of songs`
+                                }
+                            }
+                        },
+                        scales: {
+                            r: {
+                                min: 0,
+                                max: 100,
+                                ticks: {
+                                    stepSize: 25,
+                                    color: text,
+                                    backdropColor: 'transparent',
+                                    callback: (v) => v + '%'
+                                },
+                                grid: { color: grid },
+                                angleLines: { color: grid },
+                                pointLabels: { color: text, font: { size: 13, weight: '600' } }
+                            }
+                        }
+                    }
+                });
+
+                fingerprintCaption.textContent = `Share of your ${total} songs leaning toward each trait.`;
+
+                fingerprintGenres.innerHTML = summary.topGenres.map(g => {
+                    const pct = total ? Math.round(100 * g.count / total) : 0;
+                    return `<span class="ptag ptag-genre" style="--genre-hue: ${genreHue(g.genre)};">${g.genre} ${pct}%</span>`;
+                }).join('');
+
+                fingerprintSummary.classList.remove('hidden');
+            };
 
             window.addEventListener('DOMContentLoaded', async () => {
                 try {
@@ -191,6 +339,7 @@
                 statusDiv.textContent = 'Generating your sonic fingerprint... This may take a moment.';
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
+                fingerprintSummary.classList.add('hidden');
 
                 try {
                     const response = await fetch("{{ url_for('sonic_fingerprint_bp.generate_sonic_fingerprint_endpoint') }}", {
@@ -205,18 +354,21 @@
                     if (data.length === 0) {
                         statusDiv.textContent = 'Could not generate fingerprint. No recommendations found. Check credentials and listening history.';
                         statusDiv.className = 'status-error';
+                        fingerprintSummary.classList.add('hidden');
                         return;
                     }
 
                     currentTrackIds = data.map(track => track.item_id);
                     statusDiv.textContent = `Found ${data.length} recommended tracks.`;
                     resultsTableWrapper.innerHTML = renderSongList(data, { metric: songDistanceBadge });
+                    renderFingerprint(data);
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
                     document.getElementById('playlist_name').value = 'My Sonic Fingerprint Mix';
                 } catch (error) {
                     statusDiv.textContent = `Error: ${error.message}`;
                     statusDiv.className = 'status-error';
+                    fingerprintSummary.classList.add('hidden');
                 }
             });
 

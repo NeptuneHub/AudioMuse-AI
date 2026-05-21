@@ -92,6 +92,41 @@
         return `<div class="song-result-list">${rows}</div>`;
     };
 
+    const FEEL_DIMS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad'];
+
+    const computeFingerprintSummary = (songs) => {
+        const counts = {};
+        FEEL_DIMS.forEach(d => { counts[d] = 0; });
+        const genreTally = {};
+        const list = Array.isArray(songs) ? songs : [];
+
+        list.forEach(s => {
+            const moods = parseVector(s.other_features);
+
+            const happySad = higherOf(moods, 'happy', 'sad');
+            if (happySad) counts[happySad] += 1;
+
+            const aggressiveRelaxed = higherOf(moods, 'aggressive', 'relaxed');
+            if (aggressiveRelaxed) counts[aggressiveRelaxed] += 1;
+
+            if (moods['party'] > 0.70) counts['party'] += 1;
+            if (moods['danceable'] > 0.70) counts['danceable'] += 1;
+
+            const g = s.top_genre;
+            if (g) genreTally[g] = (genreTally[g] || 0) + 1;
+        });
+
+        const topGenres = Object.keys(genreTally)
+            .map(genre => ({ genre, count: genreTally[genre] }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
+
+        return { counts, total: list.length, topGenres };
+    };
+
+    window.parseVector = parseVector;
+    window.genreHue = genreHue;
+    window.computeFingerprintSummary = computeFingerprintSummary;
     window.renderTrackTags = renderTrackTags;
     window.renderSongList = renderSongList;
     window.songSimilarityBadge = songSimilarityBadge;
