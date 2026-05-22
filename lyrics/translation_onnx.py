@@ -40,19 +40,9 @@ def _default_model_dir() -> str:
     return os.environ.get('LYRICS_TRANSLATOR_ONNX_DIR', _DEFAULT_MODEL_DIR)
 
 def _cjk_model_dir(code: str) -> str:
+    import config as _cfg
     attr = 'LYRICS_TRANSLATOR_%s_ONNX_DIR' % code.upper()
-    try:
-        import config as _cfg
-        val = getattr(_cfg, attr, None)
-        if val:
-            return str(val)
-    except Exception:
-        pass
-    env = os.environ.get(attr)
-    if env:
-        return env
-    base = os.environ.get('LYRICS_MODEL_DIR', '/app/model')
-    return os.path.join(base, 'opus-mt-%s-en-onnx' % code)
+    return str(getattr(_cfg, attr, ''))
 
 _HANGUL_RE = re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
 _KANA_RE = re.compile(r'[぀-ゟ゠-ヿ]')
@@ -404,12 +394,13 @@ def translate_to_english(text: str, source_lang: Optional[str] = None,
     return ' '.join(pieces)
 
 def is_loaded() -> bool:
-    return any(
-        s.get('encoder_session') is not None
-        or s.get('decoder_session') is not None
-        or s.get('tokenizer') is not None
-        for s in _states.values()
-    )
+    with _lock:
+        return any(
+            s.get('encoder_session') is not None
+            or s.get('decoder_session') is not None
+            or s.get('tokenizer') is not None
+            for s in _states.values()
+        )
 
 def reset_session() -> None:
     with _lock:
