@@ -12,14 +12,14 @@ jobs:
 
     permissions:
       # Allow the workflow to commit the auto-generated
-      # test/lyrics_expected.json back to main on first run.
+      # test/lyrics_expected_gte.json back to main on first run.
       contents: write
 
     steps:
     - uses: actions/checkout@v4
       with:
         # Need a real (non-detached) checkout so we can push back the
-        # auto-recorded test/lyrics_expected.json. On pull_request events
+        # auto-recorded test/lyrics_expected_gte.json. On pull_request events
         # we explicitly check out the PR head branch (not the merge ref)
         # so `git push` lands on the PR branch and the change becomes
         # visible in the PR before merge.
@@ -130,7 +130,7 @@ jobs:
 
     - name: Run lyrics integration test
       run: |
-        # On first run test/lyrics_expected.json does not exist yet: the
+        # On first run test/lyrics_expected_gte.json does not exist yet: the
         # test enters RECORD mode automatically, writes the file and exits
         # successfully. The next step then commits it back to main so
         # subsequent runs pin against it (cosine similarity >= 0.99).
@@ -146,19 +146,19 @@ jobs:
         (github.event_name == 'pull_request' &&
          github.event.pull_request.head.repo.full_name == github.repository)
       run: |
-        if [ ! -f test/lyrics_expected.json ]; then
-          echo "No test/lyrics_expected.json produced - nothing to commit."
+        if [ ! -f test/lyrics_expected_gte.json ]; then
+          echo "No test/lyrics_expected_gte.json produced - nothing to commit."
           exit 0
         fi
         # Only commit if the file is new or actually changed.
-        if git diff --quiet -- test/lyrics_expected.json && \
-           ! git status --porcelain test/lyrics_expected.json | grep -q '^??'; then
-          echo "test/lyrics_expected.json is unchanged - skipping commit."
+        if git diff --quiet -- test/lyrics_expected_gte.json && \
+           ! git status --porcelain test/lyrics_expected_gte.json | grep -q '^??'; then
+          echo "test/lyrics_expected_gte.json is unchanged - skipping commit."
           exit 0
         fi
         git config user.name  "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add test/lyrics_expected.json
+        git add test/lyrics_expected_gte.json
         git commit -m "test(lyrics): record expected vectors for integration test"
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           target_branch="${{ github.event.pull_request.head.ref }}"
