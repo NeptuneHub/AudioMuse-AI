@@ -457,7 +457,7 @@ RUN set -eux; \
         ls -laR /app/model | head -50; \
         exit 1; \
     fi; \
-    for f in tokenizer.json tokenizer_config.json config.json special_tokens_map.json; do \
+    for f in tokenizer.json tokenizer_config.json config.json special_tokens_map.json sentencepiece.bpe.model; do \
         if [ ! -f "$gte_tok_dir/$f" ]; then \
             echo "ERROR: gte tokenizer file missing: $gte_tok_dir/$f"; exit 1; \
         fi; \
