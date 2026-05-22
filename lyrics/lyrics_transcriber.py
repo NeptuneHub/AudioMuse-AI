@@ -815,7 +815,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 logger.info('STEP 6: CJK script override %r → %r (langdetect conf=%.2f)',
                             text_lang, _script, text_conf)
             text_lang = _script
-            _reject = _text_quality_reject(raw_text)
+            _reject = _text_quality_reject(raw_text, _script)
             if _reject:
                 logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
                 raw_text = ''
