@@ -6,10 +6,9 @@
 # pre-built artifacts so the Docker build does not have to re-export them.
 #
 # Outputs:
-#   model/e5-base-v2.onnx              (~440 MB) — lyrics e5 embedding (ONNX weights)
-#   model/e5-base-v2/                  (~3 MB)   — e5 tokenizer files (no weights)
-#   model/opus-mt-mul-en-onnx/         (~550 MB) — multi-source → English translator
-#   model/whisper-small-onnx/          (~1.1 GB) — speech-to-text (multilingual)
+#   model/gte-multilingual-base-int8.onnx  (~325 MB) — lyrics embedding (INT8 ONNX)
+#   model/gte-multilingual-base/           (~5 MB)   — gte tokenizer files (no weights)
+#   model/whisper-small-onnx/              (~1.1 GB) — speech-to-text (multilingual)
 #
 # Usage:
 #   source .venv/bin/activate
@@ -44,14 +43,11 @@ if [ -z "${VIRTUAL_ENV:-}" ]; then
 fi
 echo "Using venv: ${VIRTUAL_ENV}"
 
-E5_SRC=/tmp/e5-base-v2
-MARIAN_SRC=Helsinki-NLP/opus-mt-mul-en
+GTE_SRC=/tmp/gte-multilingual-base
 WHISPER_SRC=openai/whisper-small
-E5_OUT=model/e5-base-v2.onnx
-MARIAN_OUT=model/opus-mt-mul-en-onnx
+GTE_OUT=model/gte-multilingual-base-int8.onnx
+GTE_TOK_OUT=model/gte-multilingual-base
 WHISPER_OUT=model/whisper-small-onnx
-
-CJK_CODES="zh ja ko"
 
 mkdir -p model
 
@@ -75,82 +71,26 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu \
     'optimum[onnxruntime]==1.27.0'
 
 # ---------------------------------------------------------------------------
-# 2) e5-base-v2 → ONNX
-#    Download the HF model then call our export_e5_to_onnx.py script.
+# 2) Alibaba-NLP/gte-multilingual-base → INT8 ONNX
+#    Download the HF model (custom architecture → trust_remote_code) then call
+#    our export_gte_to_onnx.py script, which exports fp32 and dynamic-INT8
+#    quantizes it. The runtime applies CLS pooling + L2 normalization.
 # ---------------------------------------------------------------------------
-if [ ! -f "${E5_OUT}" ]; then
-    echo "==> Downloading intfloat/e5-base-v2 to ${E5_SRC}..."
-    python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='intfloat/e5-base-v2', local_dir='${E5_SRC}')"
+if [ ! -f "${GTE_OUT}" ]; then
+    echo "==> Downloading Alibaba-NLP/gte-multilingual-base to ${GTE_SRC}..."
+    python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Alibaba-NLP/gte-multilingual-base', local_dir='${GTE_SRC}')"
 
-    echo "==> Exporting e5 → ${E5_OUT}..."
-    python scripts/onnx_export/export_e5_to_onnx.py \
-        --input "${E5_SRC}" \
-        --output "${E5_OUT}"
+    echo "==> Exporting gte → ${GTE_OUT} (INT8)..."
+    python scripts/onnx_export/export_gte_to_onnx.py \
+        --input "${GTE_SRC}" \
+        --output "${GTE_OUT}" \
+        --tokenizer-out "${GTE_TOK_OUT}"
 else
-    echo "==> ${E5_OUT} already exists, skipping e5 export."
-fi
-
-# Always (re)stage the e5 tokenizer files into model/e5-base-v2/. The runtime
-# loads the tokenizer with AutoTokenizer.from_pretrained('/app/model/e5-base-v2',
-# local_files_only=True), so this directory must contain config.json,
-# tokenizer.json, tokenizer_config.json, special_tokens_map.json, vocab.txt —
-# but NOT the PyTorch / ONNX weights (those live in e5-base-v2.onnx).
-mkdir -p model/e5-base-v2
-python - <<'PY'
-import os, shutil
-src = '/tmp/e5-base-v2'
-if not os.path.isdir(src):
-    # Older runs may have cleaned /tmp; re-fetch tokenizer-only files from HF.
-    from huggingface_hub import snapshot_download
-    snapshot_download(
-        repo_id='intfloat/e5-base-v2',
-        local_dir='/tmp/e5-base-v2-tokenizer',
-        allow_patterns=['config.json', 'tokenizer*', 'vocab*', 'special_tokens_map.json'],
-    )
-    src = '/tmp/e5-base-v2-tokenizer'
-keep = {'config.json', 'tokenizer.json', 'tokenizer_config.json',
-        'special_tokens_map.json', 'vocab.txt'}
-copied = 0
-for fname in keep:
-    s = os.path.join(src, fname)
-    if os.path.isfile(s):
-        shutil.copy2(s, os.path.join('model', 'e5-base-v2', fname))
-        copied += 1
-print(f'Staged {copied}/{len(keep)} e5 tokenizer files into model/e5-base-v2/')
-PY
-
-# ---------------------------------------------------------------------------
-# 3) Helsinki-NLP/opus-mt-mul-en → ONNX (encoder + decoder, no past)
-#    This is the multilingual → English translator used by the lyrics pipeline.
-#    optimum-cli downloads the source model from HF Hub itself.
-# ---------------------------------------------------------------------------
-if [ ! -f "${MARIAN_OUT}/encoder_model.onnx" ] || [ ! -f "${MARIAN_OUT}/decoder_model_merged.onnx" ]; then
-    echo "==> Exporting ${MARIAN_SRC} → ${MARIAN_OUT}..."
-    python scripts/onnx_export/export_marian_to_onnx.py \
-        --model "${MARIAN_SRC}" \
-        --output "${MARIAN_OUT}"
-else
-    echo "==> ${MARIAN_OUT} already exists, skipping Marian export."
+    echo "==> ${GTE_OUT} already exists, skipping gte export."
 fi
 
 # ---------------------------------------------------------------------------
-# 3b) Per-language CJK translators → ONNX (issue #553)
-# ---------------------------------------------------------------------------
-for code in ${CJK_CODES}; do
-    cjk_src="Helsinki-NLP/opus-mt-${code}-en"
-    cjk_out="model/opus-mt-${code}-en-onnx"
-    if [ ! -f "${cjk_out}/encoder_model.onnx" ] || [ ! -f "${cjk_out}/decoder_model_merged.onnx" ]; then
-        echo "==> Exporting ${cjk_src} → ${cjk_out}..."
-        python scripts/onnx_export/export_marian_to_onnx.py \
-            --model "${cjk_src}" \
-            --output "${cjk_out}"
-    else
-        echo "==> ${cjk_out} already exists, skipping ${code} export."
-    fi
-done
-
-# ---------------------------------------------------------------------------
-# 4) openai/whisper-small → ONNX (encoder + decoder, no past KV cache)
+# 3) openai/whisper-small → ONNX (encoder + decoder, no past KV cache)
 #    Used by lyrics/whisper_onnx.py with a custom mel + greedy decode loop.
 # ---------------------------------------------------------------------------
 if [ ! -f "${WHISPER_OUT}/encoder_model.onnx" ] || [ ! -f "${WHISPER_OUT}/decoder_model.onnx" ]; then
@@ -163,13 +103,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5) Summary
+# 4) Summary
 # ---------------------------------------------------------------------------
 echo
 echo "==> Done. Artifacts:"
-ls -lh "${E5_OUT}" 2>/dev/null || true
-for d in "${MARIAN_OUT}" "model/opus-mt-zh-en-onnx" "model/opus-mt-ja-en-onnx" \
-         "model/opus-mt-ko-en-onnx" "${WHISPER_OUT}"; do
+ls -lh "${GTE_OUT}" 2>/dev/null || true
+for d in "${GTE_TOK_OUT}" "${WHISPER_OUT}"; do
     if [ -d "${d}" ]; then
         du -sh "${d}"
         ls -lh "${d}"

@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__))) # Adds the current d
 # Signal to app.py that we are an RQ worker, so it should skip index loading and background threads
 os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
-# Cap thread pools used by ML libraries (whisper / torch / marian / numpy / blas) BEFORE
+# Cap thread pools used by ML libraries (whisper / torch / numpy / blas) BEFORE
 # any of them are imported, so libgomp/MKL/OpenBLAS pick up the limit at first init.
 _cpu_count = os.cpu_count() or 2
 _max_lyrics_threads = max(2, _cpu_count // 2)
@@ -46,7 +46,7 @@ configure_logging()
 # The order is important! Workers will always check 'high' before 'default'.
 queues_to_listen = ['default']
 
-# NOTE: Do NOT preload Whisper / e5 / Marian / silero ONNX sessions here in
+# NOTE: Do NOT preload Whisper / gte / silero ONNX sessions here in
 # the parent process. RQ uses os.fork() to spawn each job's child process.
 # OpenMP (libgomp / libomp) and the onnxruntime thread pools are NOT fork-safe:
 # any thread pool initialized in the parent becomes corrupted in the child and

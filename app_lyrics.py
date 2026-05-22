@@ -4,8 +4,8 @@ Provides web interface and API for lyrics-based song search.
 
 Two modes:
   * Axis search: target sliders over MUSIC_ANALYSIS_AXES labels (0..1).
-  * Free-text search: e5-base-v2 embedding nearest-neighbor on the lyrics
-    voyager index built from per-song lyrics embeddings.
+  * Free-text search: gte-multilingual-base embedding nearest-neighbor on the
+    lyrics voyager index built from per-song lyrics embeddings.
 """
 
 import logging
@@ -146,7 +146,7 @@ def lyrics_search_text_api():
     ---
     tags:
       - Lyrics Search
-    summary: Embed the query with e5-base-v2 and find nearest neighbors in the lyrics voyager index.
+    summary: Embed the query with gte-multilingual-base and find nearest neighbors in the lyrics voyager index.
     requestBody:
       required: true
       content:

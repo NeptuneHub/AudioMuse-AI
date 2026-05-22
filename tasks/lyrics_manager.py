@@ -3,8 +3,8 @@ Lyrics Search Manager
 Provides in-memory caching and fast search for lyrics analysis results.
 
 Mirrors the architecture of tasks/clap_text_search.py:
-- Persists a voyager HNSW index over per-song lyrics embeddings (e5-base-v2,
-  768-dim) into the chunked ``lyrics_index_data`` table.
+- Persists a voyager HNSW index over per-song lyrics embeddings
+  (gte-multilingual-base, 768-dim) into the chunked ``lyrics_index_data`` table.
 - Loads the index back at Flask startup and keeps it as a module-level
   singleton.
 - Caches per-song axis_vector (BYTEA float32, fixed order over MUSIC_ANALYSIS_AXES)
@@ -790,7 +790,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None) -> List[Dict]:
-    """Search lyrics by embedding the query with e5-base-v2 and querying the voyager index.
+    """Search lyrics by embedding the query with gte-multilingual-base and querying the voyager index.
 
     ``artist_cap`` controls the per-artist diversity cap: ``None`` uses the global
     ``MAX_SONGS_PER_ARTIST`` (the default, for direct user-facing search); ``0``
