@@ -39,30 +39,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_SAMPLE_RATE = 16000
 MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '240'))
 
-try:
-    from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as _CFG_MIN_CHARS
-    MIN_CHARS_FOR_EMBEDDING = int(_CFG_MIN_CHARS)
-except Exception:
-    MIN_CHARS_FOR_EMBEDDING = int(os.environ.get('LYRICS_MIN_CHARS_FOR_EMBEDDING', '250'))
-
+from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as MIN_CHARS_FOR_EMBEDDING
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
 from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
 
-try:
-    from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as _CFG_TEXT_COMP
-    TEXT_COMPRESSION_RATIO_THRESHOLD = float(_CFG_TEXT_COMP)
-except Exception:
-    TEXT_COMPRESSION_RATIO_THRESHOLD = float(
-        os.environ.get('LYRICS_TEXT_MAX_COMPRESSION_RATIO', '15.0'))
-
-try:
-    from config import LYRICS_ENABLE_TRANSLATION as ENABLE_TRANSLATION
-except Exception:
-    ENABLE_TRANSLATION = os.environ.get('LYRICS_ENABLE_TRANSLATION', 'true').lower() == 'true'
-try:
-    from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
-except Exception:
-    LANG_CONFIDENCE_MIN = float(os.environ.get('LYRICS_LANG_CONFIDENCE_MIN', '0.70'))
+from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as TEXT_COMPRESSION_RATIO_THRESHOLD
+from config import LYRICS_ENABLE_TRANSLATION as ENABLE_TRANSLATION
+from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
 
 _LATIN_MIN_RATIO = 0.90
 _NON_LATIN_SCRIPT_LANGS = {
@@ -637,7 +620,8 @@ def _latin_ratio(text: str) -> float:
 
 def _lyrics_result(text: str, translated_text: str, final_text: str,
                    language: str, used_seconds: float,
-                   embedding, axis_vector) -> Dict[str, object]:
+                   embedding: Optional[np.ndarray],
+                   axis_vector: np.ndarray) -> Dict[str, object]:
     return {
         'text': text,
         'translated_text': translated_text,
