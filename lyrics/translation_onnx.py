@@ -15,22 +15,82 @@ _DEFAULT_MODEL_DIR = '/app/model/opus-mt-mul-en-onnx'
 _DEFAULT_MAX_NEW_TOKENS = 512
 
 _lock = threading.Lock()
-_state: Dict[str, Any] = {
-    'model_dir': None,
-    'tokenizer': None,
-    'encoder_session': None,
-    'decoder_session': None,
-    'decoder_input_names': (),
-    'decoder_output_names': (),
-    'past_key_template': {},
-    'present_to_past': {},
-    'pad_token_id': 0,
-    'eos_token_id': 0,
-    'decoder_start_token_id': 0,
-    'num_layers': 0,
-    'num_heads': 0,
-    'head_dim': 0,
-}
+
+def _new_state() -> Dict[str, Any]:
+    return {
+        'model_dir': None,
+        'tokenizer': None,
+        'encoder_session': None,
+        'decoder_session': None,
+        'decoder_input_names': (),
+        'decoder_output_names': (),
+        'past_key_template': {},
+        'present_to_past': {},
+        'pad_token_id': 0,
+        'eos_token_id': 0,
+        'decoder_start_token_id': 0,
+        'num_layers': 0,
+        'num_heads': 0,
+        'head_dim': 0,
+    }
+
+_states: Dict[str, Dict[str, Any]] = {}
+
+def _default_model_dir() -> str:
+    return os.environ.get('LYRICS_TRANSLATOR_ONNX_DIR', _DEFAULT_MODEL_DIR)
+
+def _cjk_model_dir(code: str) -> str:
+    attr = 'LYRICS_TRANSLATOR_%s_ONNX_DIR' % code.upper()
+    try:
+        import config as _cfg
+        val = getattr(_cfg, attr, None)
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    env = os.environ.get(attr)
+    if env:
+        return env
+    base = os.environ.get('LYRICS_MODEL_DIR', '/app/model')
+    return os.path.join(base, 'opus-mt-%s-en-onnx' % code)
+
+_HANGUL_RE = re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
+_KANA_RE = re.compile(r'[぀-ゟ゠-ヿ]')
+_HAN_RE = re.compile(r'[一-鿿㐀-䶿]')
+
+def detect_cjk_script(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    if _HANGUL_RE.search(text):
+        return 'ko'
+    if _KANA_RE.search(text):
+        return 'ja'
+    if _HAN_RE.search(text):
+        return 'zh'
+    return None
+
+def _resolve_model_dir(source_lang: Optional[str], text: Optional[str] = None) -> str:
+    lang = (source_lang or '').strip().lower()
+    fallback = _default_model_dir()
+    if lang.startswith('zh'):
+        code = 'zh'
+    elif lang == 'ja':
+        code = 'ja'
+    elif lang == 'ko':
+        code = 'ko'
+    else:
+        return fallback
+    script = detect_cjk_script(text)
+    if script != code:
+        logger.info('CJK switch declined for %r: script check found %r '
+                    '- using multilingual %s', code, script, fallback)
+        return fallback
+    cjk = _cjk_model_dir(code)
+    if cjk and os.path.isdir(cjk):
+        return cjk
+    logger.info('No dedicated %s translator at %r; using multilingual %s',
+                code, cjk, fallback)
+    return fallback
 
 def _read_json(path: str) -> Optional[Dict[str, Any]]:
     if not os.path.isfile(path):
@@ -83,17 +143,16 @@ def _build_empty_past_template(decoder_session, num_heads: int, head_dim: int
     return template, present_to_past, num_layers
 
 def _load_translator(model_dir: Optional[str] = None):
-    target_dir = model_dir or os.environ.get(
-        'LYRICS_TRANSLATOR_ONNX_DIR', _DEFAULT_MODEL_DIR)
+    target_dir = model_dir or _default_model_dir()
 
-    if (_state['model_dir'] == target_dir
-            and _state['decoder_session'] is not None):
-        return _state
+    cached = _states.get(target_dir)
+    if cached is not None and cached['decoder_session'] is not None:
+        return cached
 
     with _lock:
-        if (_state['model_dir'] == target_dir
-                and _state['decoder_session'] is not None):
-            return _state
+        cached = _states.get(target_dir)
+        if cached is not None and cached['decoder_session'] is not None:
+            return cached
 
         if not os.path.isdir(target_dir):
             raise RuntimeError(
@@ -167,7 +226,8 @@ def _load_translator(model_dir: Optional[str] = None):
             gen.get('decoder_start_token_id',
                     cfg.get('decoder_start_token_id', pad_token_id)) or pad_token_id)
 
-        _state.update({
+        state = _new_state()
+        state.update({
             'model_dir': target_dir,
             'tokenizer': tokenizer,
             'encoder_session': encoder_session,
@@ -183,12 +243,13 @@ def _load_translator(model_dir: Optional[str] = None):
             'num_heads': num_heads,
             'head_dim': head_dim,
         })
+        _states[target_dir] = state
         logger.info(
             'Translator ONNX ready (dir=%s, layers=%s, num_heads=%s, head_dim=%s, '
             'decoder_start=%s, eos=%s, pad=%s)',
             target_dir, num_layers, num_heads, head_dim,
             decoder_start_token_id, eos_token_id, pad_token_id)
-        return _state
+        return state
 
 _SENTENCE_BREAK_RE = re.compile(r'(?<=[。！？．，、；：\.\!\?,;:])\s*')
 
@@ -302,11 +363,22 @@ def translate_to_english(text: str, source_lang: Optional[str] = None,
     if not text or not text.strip():
         return ''
 
+    target_dir = _resolve_model_dir(source_lang, text)
+    fallback = _default_model_dir()
     try:
-        state = _load_translator()
+        state = _load_translator(target_dir)
     except Exception as exc:
-        logger.warning('Translator not ready (%s); dropping lyrics', exc)
-        return ''
+        if target_dir != fallback:
+            logger.warning('Translator %s not ready (%s); falling back to multilingual %s',
+                           target_dir, exc, fallback)
+            try:
+                state = _load_translator(fallback)
+            except Exception as exc2:
+                logger.warning('Translator not ready (%s); dropping lyrics', exc2)
+                return ''
+        else:
+            logger.warning('Translator not ready (%s); dropping lyrics', exc)
+            return ''
 
     tokenizer = state['tokenizer']
     pieces: List[str] = []
@@ -332,16 +404,13 @@ def translate_to_english(text: str, source_lang: Optional[str] = None,
     return ' '.join(pieces)
 
 def is_loaded() -> bool:
-    return (_state.get('encoder_session') is not None
-            or _state.get('decoder_session') is not None
-            or _state.get('tokenizer') is not None)
+    return any(
+        s.get('encoder_session') is not None
+        or s.get('decoder_session') is not None
+        or s.get('tokenizer') is not None
+        for s in _states.values()
+    )
 
 def reset_session() -> None:
     with _lock:
-        for k in ('encoder_session', 'decoder_session', 'tokenizer'):
-            _state[k] = None
-        _state['model_dir'] = None
-        _state['decoder_input_names'] = ()
-        _state['decoder_output_names'] = ()
-        _state['past_key_template'] = {}
-        _state['present_to_past'] = {}
+        _states.clear()

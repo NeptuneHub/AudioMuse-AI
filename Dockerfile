@@ -507,6 +507,33 @@ RUN set -eux; \
     echo "✓ opus-mt-mul-en ONNX ready in $marian_dir"; \
     du -sh "$marian_dir"
 
+RUN set -eu; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    for code in zh ja ko; do \
+        cjk_dir="/app/model/opus-mt-${code}-en-onnx"; \
+        cjk_url="${base_url}/lyrics_model_marian_${code}.tar.gz"; \
+        cjk_dest="/tmp/lyrics_model_marian_${code}.tar.gz"; \
+        echo "Downloading opus-mt-${code}-en ONNX bundle (best-effort)..."; \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$cjk_dest" "$cjk_url"; then \
+            mkdir -p /app/model; \
+            if tar -xzf "$cjk_dest" -C /app/model; then \
+                ok=1; \
+                for f in encoder_model.onnx decoder_model_merged.onnx source.spm \
+                         target.spm tokenizer_config.json vocab.json config.json; do \
+                    if [ ! -f "$cjk_dir/$f" ]; then echo "WARNING: opus-mt-${code}-en missing $f"; ok=0; fi; \
+                done; \
+                if [ "$ok" = "1" ]; then echo "✓ opus-mt-${code}-en ONNX ready in $cjk_dir"; du -sh "$cjk_dir"; \
+                else rm -rf "$cjk_dir"; echo "opus-mt-${code}-en incomplete — runtime falls back to opus-mt-mul-en"; fi; \
+            else echo "WARNING: extract failed for opus-mt-${code}-en — runtime falls back to opus-mt-mul-en"; fi; \
+            rm -f "$cjk_dest"; \
+        else \
+            rm -f "$cjk_dest"; \
+            echo "WARNING: download failed for opus-mt-${code}-en — runtime falls back to opus-mt-mul-en"; \
+        fi; \
+    done
+
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app
 COPY deployment/docker-entrypoint.sh /app/docker-entrypoint.sh

@@ -51,6 +51,8 @@ E5_OUT=model/e5-base-v2.onnx
 MARIAN_OUT=model/opus-mt-mul-en-onnx
 WHISPER_OUT=model/whisper-small-onnx
 
+CJK_CODES="zh ja ko"
+
 mkdir -p model
 
 # ---------------------------------------------------------------------------
@@ -122,7 +124,7 @@ PY
 #    This is the multilingual → English translator used by the lyrics pipeline.
 #    optimum-cli downloads the source model from HF Hub itself.
 # ---------------------------------------------------------------------------
-if [ ! -f "${MARIAN_OUT}/encoder_model.onnx" ] || [ ! -f "${MARIAN_OUT}/decoder_model.onnx" ]; then
+if [ ! -f "${MARIAN_OUT}/encoder_model.onnx" ] || [ ! -f "${MARIAN_OUT}/decoder_model_merged.onnx" ]; then
     echo "==> Exporting ${MARIAN_SRC} → ${MARIAN_OUT}..."
     python scripts/onnx_export/export_marian_to_onnx.py \
         --model "${MARIAN_SRC}" \
@@ -130,6 +132,22 @@ if [ ! -f "${MARIAN_OUT}/encoder_model.onnx" ] || [ ! -f "${MARIAN_OUT}/decoder_
 else
     echo "==> ${MARIAN_OUT} already exists, skipping Marian export."
 fi
+
+# ---------------------------------------------------------------------------
+# 3b) Per-language CJK translators → ONNX (issue #553)
+# ---------------------------------------------------------------------------
+for code in ${CJK_CODES}; do
+    cjk_src="Helsinki-NLP/opus-mt-${code}-en"
+    cjk_out="model/opus-mt-${code}-en-onnx"
+    if [ ! -f "${cjk_out}/encoder_model.onnx" ] || [ ! -f "${cjk_out}/decoder_model_merged.onnx" ]; then
+        echo "==> Exporting ${cjk_src} → ${cjk_out}..."
+        python scripts/onnx_export/export_marian_to_onnx.py \
+            --model "${cjk_src}" \
+            --output "${cjk_out}"
+    else
+        echo "==> ${cjk_out} already exists, skipping ${code} export."
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # 4) openai/whisper-small → ONNX (encoder + decoder, no past KV cache)
@@ -150,7 +168,8 @@ fi
 echo
 echo "==> Done. Artifacts:"
 ls -lh "${E5_OUT}" 2>/dev/null || true
-for d in "${MARIAN_OUT}" "${WHISPER_OUT}"; do
+for d in "${MARIAN_OUT}" "model/opus-mt-zh-en-onnx" "model/opus-mt-ja-en-onnx" \
+         "model/opus-mt-ko-en-onnx" "${WHISPER_OUT}"; do
     if [ -d "${d}" ]; then
         du -sh "${d}"
         ls -lh "${d}"

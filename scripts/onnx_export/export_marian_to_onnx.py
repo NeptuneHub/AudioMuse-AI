@@ -2,9 +2,14 @@
 
 One multilingual Marian model that translates from ~70 source languages to
 English. Run once at Docker build time; ``lyrics/translation_onnx.py`` then
-consumes the resulting ``encoder_model.onnx`` + ``decoder_model.onnx`` files
-at runtime via raw onnxruntime, with a numpy greedy-decode loop — no torch
+consumes the resulting ``encoder_model.onnx`` + ``decoder_model_merged.onnx``
+files at runtime via raw onnxruntime, with a numpy greedy-decode loop — no torch
 required at runtime.
+
+Also used for the per-language CJK translators (issue #553):
+    python3 export_marian_to_onnx.py --model Helsinki-NLP/opus-mt-zh-en --output model/opus-mt-zh-en-onnx
+    python3 export_marian_to_onnx.py --model Helsinki-NLP/opus-mt-ja-en --output model/opus-mt-ja-en-onnx
+    python3 export_marian_to_onnx.py --model Helsinki-NLP/opus-mt-ko-en --output model/opus-mt-ko-en-onnx
 
 Usage
 -----
@@ -14,7 +19,7 @@ Usage
 
 The output directory will contain:
     encoder_model.onnx
-    decoder_model.onnx
+    decoder_model_merged.onnx   (use --no-merged for the legacy decoder_model.onnx)
     config.json
     tokenizer files (sentencepiece + vocab)
 """
@@ -28,50 +33,45 @@ import subprocess
 import sys
 
 
-def export_marian_to_onnx(model_id: str, output_dir: str) -> None:
-    """Run ``optimum-cli export onnx`` to produce the encoder/decoder ONNX pair."""
+def export_marian_to_onnx(model_id: str, output_dir: str, merged: bool = True) -> None:
+    """Run ``optimum-cli export onnx`` to produce the encoder/decoder ONNX pair.
+
+    With ``merged=True`` (default) the merged decoder graph
+    ``decoder_model_merged.onnx`` is kept — this is what
+    ``lyrics/translation_onnx.py`` loads at runtime via its ``use_cache_branch``
+    decode loop. With ``merged=False`` the legacy non-merged ``decoder_model.onnx``
+    is kept instead.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
-    # optimum-cli is the canonical path: it ships an exporter that handles the
-    # encoder/decoder split, the past_key_values plumbing, etc. We deliberately
-    # do NOT pass --task because optimum auto-detects it from the model config.
-    # Use --no-post-process to keep the exported graphs simple (we run our own
-    # decode loop, so we don't need merged decoder graphs).
+    task = 'text2text-generation-with-past' if merged else 'text2text-generation'
     cmd = [
         sys.executable, '-m', 'optimum.exporters.onnx',
         '--model', model_id,
-        '--task', 'text2text-generation',
-        '--no-post-process',
-        output_dir,
+        '--task', task,
     ]
+    if not merged:
+        cmd.append('--no-post-process')
+    cmd.append(output_dir)
     print(f'$ {" ".join(cmd)}', flush=True)
     completed = subprocess.run(cmd, capture_output=False)
     if completed.returncode != 0:
         raise SystemExit(f'optimum-cli export failed (rc={completed.returncode})')
 
-    # Trim files we don't need at runtime to keep image size down. We only need
-    # encoder_model.onnx, decoder_model.onnx, config.json, and the tokenizer
-    # files. The decoder_with_past / decoder_model_merged variants double the
-    # disk footprint and are not used by our greedy-decode loop.
-    keep_prefixes = (
-        'encoder_model',
-        'decoder_model.onnx',  # NB: precise filename, not the prefix
-        'config.json',
-        'generation_config.json',
-        'special_tokens_map.json',
-        'tokenizer',
-        'source.spm',
-        'target.spm',
-        'vocab.json',
-    )
+    if merged:
+        drop = ('decoder_model.onnx', 'decoder_model.onnx_data',
+                'decoder_with_past_model.onnx', 'decoder_with_past_model.onnx_data')
+        required = 'decoder_model_merged.onnx'
+    else:
+        drop = ('decoder_model_merged.onnx', 'decoder_model_merged.onnx_data',
+                'decoder_with_past_model.onnx', 'decoder_with_past_model.onnx_data')
+        required = 'decoder_model.onnx'
     for entry in os.listdir(output_dir):
-        full = os.path.join(output_dir, entry)
-        if entry == 'decoder_model_merged.onnx' or entry == 'decoder_model_merged.onnx_data':
-            os.remove(full)
-            continue
-        if entry == 'decoder_with_past_model.onnx' or entry == 'decoder_with_past_model.onnx_data':
-            os.remove(full)
-            continue
+        if entry in drop:
+            os.remove(os.path.join(output_dir, entry))
+
+    if not os.path.isfile(os.path.join(output_dir, required)):
+        raise SystemExit(f'expected {required} missing in {output_dir} after export')
 
     total = 0
     for entry in os.listdir(output_dir):
@@ -88,8 +88,12 @@ def main(argv=None) -> int:
                         help='HF Hub id of the Marian model to export.')
     parser.add_argument('--output', required=True,
                         help='Destination directory for the ONNX files.')
+    parser.add_argument('--no-merged', dest='merged', action='store_false',
+                        help='Export the legacy non-merged decoder_model.onnx '
+                             'instead of decoder_model_merged.onnx.')
+    parser.set_defaults(merged=True)
     args = parser.parse_args(argv)
-    export_marian_to_onnx(args.model, args.output)
+    export_marian_to_onnx(args.model, args.output, merged=args.merged)
     return 0
 
 
