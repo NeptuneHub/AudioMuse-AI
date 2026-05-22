@@ -527,7 +527,19 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
         lyrics_lines = data.get('Lyrics') or []
         if not lyrics_lines:
             return None
-        text = '\n'.join(line.get('Text', '') for line in lyrics_lines if line.get('Text'))
+        seen_starts = set()
+        deduped = []
+        for line in lyrics_lines:
+            txt = line.get('Text')
+            if not txt:
+                continue
+            start = line.get('Start')
+            if start is not None and start in seen_starts:
+                continue
+            if start is not None:
+                seen_starts.add(start)
+            deduped.append(txt)
+        text = '\n'.join(deduped)
         return text.strip() or None
     except Exception as exc:
         logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
