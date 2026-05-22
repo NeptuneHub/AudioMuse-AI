@@ -29,7 +29,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 * **Lyrics Search**: search your library by theme, story or meaning, like love songs, not just the sound.
 
-> **Lyrics language support:** the Lyrics Search feature works only with the **72 languages** listed below. These are the languages supported by **both** the Whisper-small speech-to-text model (used to transcribe sung lyrics) **and** the gte-multilingual-base embedding model (used to make lyrics searchable). All CJK languages (Chinese, Japanese, Korean) and all major European languages are included. Lyrics in any other language may still be processed, but search quality is not guaranteed.
+> **Lyrics language support:** the Lyrics Search feature works only with the **72 languages** listed below.
 >
 > <details>
 > <summary>Show the 72 supported languages</summary>
