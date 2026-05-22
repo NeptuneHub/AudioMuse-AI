@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import signal
+import unicodedata
+import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -37,14 +39,41 @@ logger = logging.getLogger(__name__)
 DEFAULT_SAMPLE_RATE = 16000
 MAX_AUDIO_SECONDS = float(os.environ.get('LYRICS_MAX_AUDIO_SECONDS', '240'))
 
-try:
-    from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as _CFG_MIN_CHARS
-    MIN_CHARS_FOR_EMBEDDING = int(_CFG_MIN_CHARS)
-except Exception:
-    MIN_CHARS_FOR_EMBEDDING = int(os.environ.get('LYRICS_MIN_CHARS_FOR_EMBEDDING', '250'))
-
+from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as MIN_CHARS_FOR_EMBEDDING
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
 from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
+
+from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as TEXT_COMPRESSION_RATIO_THRESHOLD
+from config import LYRICS_ENABLE_TRANSLATION as ENABLE_TRANSLATION
+from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
+
+_LATIN_MIN_RATIO = 0.90
+_NON_LATIN_SCRIPT_LANGS = {
+    'ar', 'fa', 'ur', 'he', 'ru', 'uk', 'bg', 'mk', 'el',
+    'zh-cn', 'zh-tw', 'ja', 'ko', 'th', 'hi', 'bn', 'gu', 'kn',
+    'ml', 'mr', 'ne', 'pa', 'ta', 'te',
+}
+
+def _compression_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    encoded = text.encode('utf-8')
+    if not encoded:
+        return 0.0
+    return len(encoded) / max(1, len(zlib.compress(encoded)))
+
+def _text_quality_reject(text: str, lang: str = '') -> Optional[str]:
+    if len(text) < MIN_CHARS_FOR_EMBEDDING:
+        return 'below %s chars (%s)' % (MIN_CHARS_FOR_EMBEDDING, len(text))
+    if TEXT_COMPRESSION_RATIO_THRESHOLD > 0:
+        ratio = _compression_ratio(text)
+        if ratio > TEXT_COMPRESSION_RATIO_THRESHOLD:
+            return 'compression ratio %.2f > %.2f' % (ratio, TEXT_COMPRESSION_RATIO_THRESHOLD)
+    if lang in _NON_LATIN_SCRIPT_LANGS:
+        latin = _latin_ratio(text)
+        if latin >= _LATIN_MIN_RATIO:
+            return 'lang %r is non-Latin but text is %.0f%% Latin' % (lang, latin * 100)
+    return None
 
 MUSIC_ANALYSIS_AXES = {
     "AXIS_1_SETTING": {
@@ -576,6 +605,33 @@ def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
 _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
 _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
 
+def _latin_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    latin = 0
+    for c in letters:
+        try:
+            if unicodedata.name(c).startswith('LATIN'):
+                latin += 1
+        except ValueError:
+            pass
+    return latin / len(letters)
+
+def _lyrics_result(text: str, translated_text: str, final_text: str,
+                   language: str, used_seconds: float,
+                   embedding: Optional[np.ndarray],
+                   axis_vector: np.ndarray) -> Dict[str, object]:
+    return {
+        'text': text,
+        'translated_text': translated_text,
+        'final_text': final_text,
+        'language': language,
+        'used_seconds': used_seconds,
+        'embedding': embedding,
+        'axis_vector': axis_vector,
+    }
+
 def _asr_should_drop(raw_text: str, whisper_raw_len: int,
                      asr_lang: str, asr_avg_logprob: float) -> bool:
     if not raw_text or whisper_raw_len <= 0:
@@ -620,15 +676,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             "(embedding_dim=%s, axis_dim=%s)",
             list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
         )
-        return {
-            'text': '',
-            'translated_text': '',
-            'final_text': '',
-            'language': '',
-            'used_seconds': 0.0,
-            'embedding': embedding,
-            'axis_vector': axis_vector,
-        }
+        return _lyrics_result('', '', '', '', 0.0, embedding, axis_vector)
 
     logger.info('STEP -1 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
@@ -730,21 +778,32 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                     'asr_lang=%r / avg_logprob=%.2f',
                     len(raw_text), asr_lang, asr_avg_logprob)
         logger.info('STEP 2 raw ASR output: %s', raw_text or '<empty>')
-        if len(raw_text) < MIN_CHARS_FOR_EMBEDDING:
-            logger.info('STEP 2 char count below %s (%s chars) — skipping STEPS 3-5',
-                        MIN_CHARS_FOR_EMBEDDING, len(raw_text))
+        _reject = _text_quality_reject(raw_text, asr_lang)
+        if _reject:
+            logger.info('STEP 2: ASR transcript rejected (%s) — skipping STEPS 3-5', _reject)
             raw_text = ''
 
     if raw_text and whisper_raw_len == 0:
         try:
-            from langdetect import detect, DetectorFactory
+            from langdetect import detect_langs, DetectorFactory
             DetectorFactory.seed = 0
-            text_lang = (detect(raw_text) or '').strip().lower()
-            logger.info('STEP 2.5: langdetect on non-ASR lyrics (%s chars) → %r',
-                        len(raw_text), text_lang)
+            _langs = detect_langs(raw_text)
+            text_lang = (_langs[0].lang or '').strip().lower() if _langs else ''
+            text_conf = float(_langs[0].prob) if _langs else 0.0
         except Exception as exc:
-            logger.warning('STEP 2.5: langdetect failed (%s) — assuming en', exc)
-            text_lang = 'en'
+            logger.warning('STEP 2.5: langdetect failed (%s)', exc)
+            text_lang, text_conf = '', 0.0
+        logger.info('STEP 2.5: langdetect (%s chars) → %r (conf=%.2f)',
+                    len(raw_text), text_lang, text_conf)
+        if text_conf < LANG_CONFIDENCE_MIN:
+            logger.info('STEP 2.5: confidence %.2f < %.2f - dropping to instrumental',
+                        text_conf, LANG_CONFIDENCE_MIN)
+            raw_text = ''
+        else:
+            _reject = _text_quality_reject(raw_text, text_lang)
+            if _reject:
+                logger.info('STEP 2.5: text lyrics rejected (%s) - dropping to instrumental', _reject)
+                raw_text = ''
 
     if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
         logger.info('STEP 3: dropping ASR transcript (lang=%r, logprob=%.2f)',
@@ -761,7 +820,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     logger.info('STEP 3 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     text_for_cleanup = raw_text
-    if raw_text and detected_lang != 'en':
+    if raw_text and detected_lang != 'en' and not ENABLE_TRANSLATION:
+        logger.info('STEP 4 skip: translation disabled (lang=%s) '
+                    '- dropping to instrumental', detected_lang)
+        raw_text = text_for_cleanup = ''
+    elif raw_text and detected_lang != 'en':
         logger.info('STEP 4 start: translation %s -> en (%s chars)',
                     detected_lang, len(raw_text))
         try:
@@ -778,6 +841,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                     detected_lang, len(text_for_cleanup), whisper_raw_len, MIN_CHARS_FOR_EMBEDDING)
 
     final_text = text_for_cleanup
+    if final_text:
+        _reject = _text_quality_reject(final_text)
+        if _reject:
+            logger.info('STEP 4b: final text rejected (%s) - dropping to instrumental', _reject)
+            raw_text = text_for_cleanup = final_text = ''
     logger.info('STEP 5 start: embedding + axis scoring (chars=%s)',
                 len(final_text))
     embedding = None
@@ -788,9 +856,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         if embedding is not None:
             axis_vector = _score_axes(embedding)
     else:
-        raw_text = ''
-        text_for_cleanup = ''
-        final_text = ''
+        raw_text = text_for_cleanup = final_text = ''
 
     if embedding is None or getattr(embedding, 'size', 0) == 0:
         try:
@@ -805,12 +871,5 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 None if embedding is None else embedding.shape,
                 int(axis_vector.shape[0]) if axis_vector is not None else 0)
 
-    return {
-        'text': raw_text,
-        'translated_text': text_for_cleanup,
-        'final_text': final_text,
-        'language': detected_lang,
-        'used_seconds': used_seconds,
-        'embedding': embedding,
-        'axis_vector': axis_vector,
-    }
+    return _lyrics_result(raw_text, text_for_cleanup, final_text,
+                          detected_lang, used_seconds, embedding, axis_vector)

@@ -321,6 +321,13 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
+# When true (default), non-English lyrics are translated to English before embedding.
+# When false, any non-English lyrics are dropped to the instrumental sentinel instead.
+LYRICS_ENABLE_TRANSLATION = os.environ.get("LYRICS_ENABLE_TRANSLATION", "true").lower() == "true"
+# Minimum langdetect confidence (API / music-server lyrics) to trust the detected
+# language. Below this the lyrics are dropped to the instrumental sentinel rather than
+# risk a fabricated translation polluting the embedding (issue #543).
+LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
@@ -394,6 +401,14 @@ LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "7
 # spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
 # or ~150 CJK chars (roughly equivalent lyrical content).
 LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
+# Repetition gate for text-source lyrics (media server / external API). Pure
+# ad-lib or filler content ("woo woo woo...") compresses far more than real
+# lyrics, so a high zlib compression ratio flags it. Above this ratio the text
+# is dropped before language detection / translation, preventing nonsensical
+# "translations" from polluting embeddings (issue #543). Set deliberately high
+# so genuinely chorus-heavy real songs (~7-8) survive while extreme ad-lib
+# repetition (~30-40+) is removed. Set to 0 to disable the gate.
+LYRICS_TEXT_MAX_COMPRESSION_RATIO = float(os.environ.get("LYRICS_TEXT_MAX_COMPRESSION_RATIO", "15.0"))
 # Maximum chars per chunk fed to the Marian translator. Stays well below
 # the model's 512-token context window even after tokenizer expansion on
 # rare scripts. The translator splitter applies this as a hard cap when
