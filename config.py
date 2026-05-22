@@ -321,6 +321,13 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
+# When true (default), non-English lyrics are translated to English before embedding.
+# When false, any non-English lyrics are dropped to the instrumental sentinel instead.
+LYRICS_ENABLE_TRANSLATION = os.environ.get("LYRICS_ENABLE_TRANSLATION", "true").lower() == "true"
+# Minimum langdetect confidence (API / music-server lyrics) to trust the detected
+# language. Below this the lyrics are dropped to the instrumental sentinel rather than
+# risk a fabricated translation polluting the embedding (issue #543).
+LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several

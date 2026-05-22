@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import signal
+import unicodedata
 import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -53,6 +54,22 @@ try:
 except Exception:
     TEXT_COMPRESSION_RATIO_THRESHOLD = float(
         os.environ.get('LYRICS_TEXT_MAX_COMPRESSION_RATIO', '15.0'))
+
+try:
+    from config import LYRICS_ENABLE_TRANSLATION as ENABLE_TRANSLATION
+except Exception:
+    ENABLE_TRANSLATION = os.environ.get('LYRICS_ENABLE_TRANSLATION', 'true').lower() == 'true'
+try:
+    from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
+except Exception:
+    LANG_CONFIDENCE_MIN = float(os.environ.get('LYRICS_LANG_CONFIDENCE_MIN', '0.70'))
+
+_LATIN_MIN_RATIO = 0.90
+_NON_LATIN_SCRIPT_LANGS = {
+    'ar', 'fa', 'ur', 'he', 'ru', 'uk', 'bg', 'mk', 'el',
+    'zh-cn', 'zh-tw', 'ja', 'ko', 'th', 'hi', 'bn', 'gu', 'kn',
+    'ml', 'mr', 'ne', 'pa', 'ta', 'te',
+}
 
 def _compression_ratio(text: str) -> float:
     if not text:
@@ -592,6 +609,19 @@ def _score_axes(embedding: np.ndarray, temperature: float = 0.1) -> np.ndarray:
 _ASR_NULL_LANGS = {'', 'none', 'nolang', 'unknown', 'nospeech', 'noisy'}
 _ASR_ENGLISH_LANGS = {'en', 'eng', 'english'}
 
+def _latin_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    latin = 0
+    for c in letters:
+        try:
+            if unicodedata.name(c).startswith('LATIN'):
+                latin += 1
+        except ValueError:
+            pass
+    return latin / len(letters)
+
 def _asr_should_drop(raw_text: str, whisper_raw_len: int,
                      asr_lang: str, asr_avg_logprob: float) -> bool:
     if not raw_text or whisper_raw_len <= 0:
@@ -751,6 +781,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                         MIN_CHARS_FOR_EMBEDDING, len(raw_text))
             raw_text = ''
 
+    if raw_text and whisper_raw_len > 0:
+        if asr_lang in _NON_LATIN_SCRIPT_LANGS and _latin_ratio(raw_text) >= _LATIN_MIN_RATIO:
+            logger.info('STEP 2b: Whisper lang %r is non-Latin but transcript is Latin '
+                        '- dropping to instrumental', asr_lang)
+            raw_text = ''
+
     if raw_text and whisper_raw_len == 0:
         if len(raw_text) < MIN_CHARS_FOR_EMBEDDING:
             logger.info('STEP 2t: text lyrics below %s chars (%s) - dropping',
@@ -765,14 +801,24 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     if raw_text and whisper_raw_len == 0:
         try:
-            from langdetect import detect, DetectorFactory
+            from langdetect import detect_langs, DetectorFactory
             DetectorFactory.seed = 0
-            text_lang = (detect(raw_text) or '').strip().lower()
-            logger.info('STEP 2.5: langdetect on non-ASR lyrics (%s chars) → %r',
-                        len(raw_text), text_lang)
+            _langs = detect_langs(raw_text)
+            text_lang = (_langs[0].lang or '').strip().lower() if _langs else ''
+            text_conf = float(_langs[0].prob) if _langs else 0.0
         except Exception as exc:
-            logger.warning('STEP 2.5: langdetect failed (%s) — assuming en', exc)
-            text_lang = 'en'
+            logger.warning('STEP 2.5: langdetect failed (%s)', exc)
+            text_lang, text_conf = '', 0.0
+        logger.info('STEP 2.5: langdetect (%s chars) → %r (conf=%.2f)',
+                    len(raw_text), text_lang, text_conf)
+        if text_conf < LANG_CONFIDENCE_MIN:
+            logger.info('STEP 2.5: confidence %.2f < %.2f - dropping to instrumental',
+                        text_conf, LANG_CONFIDENCE_MIN)
+            raw_text = ''
+        elif text_lang in _NON_LATIN_SCRIPT_LANGS and _latin_ratio(raw_text) >= _LATIN_MIN_RATIO:
+            logger.info('STEP 2.5: %r is non-Latin but text is Latin '
+                        '- dropping to instrumental', text_lang)
+            raw_text = ''
 
     if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
         logger.info('STEP 3: dropping ASR transcript (lang=%r, logprob=%.2f)',
@@ -789,7 +835,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     logger.info('STEP 3 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     text_for_cleanup = raw_text
-    if raw_text and detected_lang != 'en':
+    if raw_text and detected_lang != 'en' and not ENABLE_TRANSLATION:
+        logger.info('STEP 4 skip: translation disabled (lang=%s) '
+                    '- dropping to instrumental', detected_lang)
+        raw_text = ''
+        text_for_cleanup = ''
+    elif raw_text and detected_lang != 'en':
         logger.info('STEP 4 start: translation %s -> en (%s chars)',
                     detected_lang, len(raw_text))
         try:
