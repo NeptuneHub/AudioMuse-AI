@@ -46,6 +46,7 @@ from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOG
 from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as TEXT_COMPRESSION_RATIO_THRESHOLD
 from config import LYRICS_ENABLE_TRANSLATION as ENABLE_TRANSLATION
 from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
+from config import LYRICS_CJK_SCRIPT_MIN_RATIO as CJK_SCRIPT_MIN_RATIO
 
 _LATIN_MIN_RATIO = 0.90
 _NON_LATIN_SCRIPT_LANGS = {
@@ -618,6 +619,29 @@ def _latin_ratio(text: str) -> float:
             pass
     return latin / len(letters)
 
+def _cjk_script_lang(text: str, min_ratio: float = CJK_SCRIPT_MIN_RATIO) -> str:
+    if not text or min_ratio <= 0:
+        return ''
+    hangul = kana = han = letters = 0
+    for ch in text:
+        if ch.isalpha():
+            letters += 1
+        o = ord(ch)
+        if 0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F:
+            hangul += 1
+        elif 0x3040 <= o <= 0x30FF or 0x31F0 <= o <= 0x31FF or 0xFF66 <= o <= 0xFF9D:
+            kana += 1
+        elif 0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF:
+            han += 1
+    cjk = hangul + kana + han
+    if letters <= 0 or (cjk / letters) < min_ratio:
+        return ''
+    if hangul > 0:
+        return 'ko'
+    if kana > 0:
+        return 'ja'
+    return 'zh'
+
 def _lyrics_result(text: str, translated_text: str, final_text: str,
                    language: str, used_seconds: float,
                    embedding: Optional[np.ndarray],
@@ -795,7 +819,17 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             text_lang, text_conf = '', 0.0
         logger.info('STEP 2.5: langdetect (%s chars) → %r (conf=%.2f)',
                     len(raw_text), text_lang, text_conf)
-        if text_conf < LANG_CONFIDENCE_MIN:
+        _script = _cjk_script_lang(raw_text)
+        if _script:
+            if _script != text_lang:
+                logger.info('STEP 2.5: CJK script override %r → %r (langdetect conf=%.2f)',
+                            text_lang, _script, text_conf)
+            text_lang = _script
+            _reject = _text_quality_reject(raw_text, _script)
+            if _reject:
+                logger.info('STEP 2.5: text lyrics rejected (%s) - dropping to instrumental', _reject)
+                raw_text = ''
+        elif text_conf < LANG_CONFIDENCE_MIN:
             logger.info('STEP 2.5: confidence %.2f < %.2f - dropping to instrumental',
                         text_conf, LANG_CONFIDENCE_MIN)
             raw_text = ''
@@ -809,6 +843,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP 3: dropping ASR transcript (lang=%r, logprob=%.2f)',
                     asr_lang, asr_avg_logprob)
         raw_text = ''
+    if raw_text and whisper_raw_len > 0:
+        _script = _cjk_script_lang(raw_text)
+        if _script and _script != text_lang:
+            logger.info('STEP 3: ASR lang %r overridden to CJK script %r', text_lang, _script)
+            text_lang = _script
     if raw_text:
         if text_lang in _ASR_ENGLISH_LANGS:
             detected_lang = 'en'

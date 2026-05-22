@@ -328,6 +328,13 @@ LYRICS_ENABLE_TRANSLATION = os.environ.get("LYRICS_ENABLE_TRANSLATION", "true").
 # language. Below this the lyrics are dropped to the instrumental sentinel rather than
 # risk a fabricated translation polluting the embedding (issue #543).
 LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
+# Minimum fraction of letters that must be CJK script (Hangul / kana / Han) for
+# the lyrics to be routed to a CJK translator regardless of what langdetect or
+# Whisper report. Code-mixed K-pop / J-pop is frequently misdetected as English
+# by langdetect because of its Latin-script bias, leaving the CJK portion
+# untranslated in the embedding (issue #553). Script presence is a far more
+# reliable CJK signal than a statistical detector on mixed text. Set 0 to disable.
+LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
@@ -373,6 +380,18 @@ LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
 LYRICS_MARIAN_CACHE_DIR = os.environ.get(
     "LYRICS_MARIAN_CACHE_DIR",
     os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
+)
+LYRICS_TRANSLATOR_ZH_ONNX_DIR = os.environ.get(
+    "LYRICS_TRANSLATOR_ZH_ONNX_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-zh-en-onnx"),
+)
+LYRICS_TRANSLATOR_JA_ONNX_DIR = os.environ.get(
+    "LYRICS_TRANSLATOR_JA_ONNX_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-ja-en-onnx"),
+)
+LYRICS_TRANSLATOR_KO_ONNX_DIR = os.environ.get(
+    "LYRICS_TRANSLATOR_KO_ONNX_DIR",
+    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-ko-en-onnx"),
 )
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
