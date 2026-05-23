@@ -1,6 +1,5 @@
 #AudioMuse-AI/config.py
 import os
-import tempfile
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
@@ -102,7 +101,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v1.1.7"
+APP_VERSION = "v2.0.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -321,20 +320,6 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
-# When true (default), non-English lyrics are translated to English before embedding.
-# When false, any non-English lyrics are dropped to the instrumental sentinel instead.
-LYRICS_ENABLE_TRANSLATION = os.environ.get("LYRICS_ENABLE_TRANSLATION", "true").lower() == "true"
-# Minimum langdetect confidence (API / music-server lyrics) to trust the detected
-# language. Below this the lyrics are dropped to the instrumental sentinel rather than
-# risk a fabricated translation polluting the embedding (issue #543).
-LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
-# Minimum fraction of letters that must be CJK script (Hangul / kana / Han) for
-# the lyrics to be routed to a CJK translator regardless of what langdetect or
-# Whisper report. Code-mixed K-pop / J-pop is frequently misdetected as English
-# by langdetect because of its Latin-script bias, leaving the CJK portion
-# untranslated in the embedding (issue #553). Script presence is a far more
-# reliable CJK signal than a statistical detector on mixed text. Set 0 to disable.
-LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
@@ -373,26 +358,6 @@ LYRICS_WHISPER_MODEL_DIR = os.environ.get(
     os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "whisper-small-onnx"),
 )
 LYRICS_MODEL_DIR = os.environ.get("LYRICS_MODEL_DIR", "/app/model")
-# Writable directory for on-demand Marian translator downloads. Kept separate
-# from the bundled HF cache so stale locks / restrictive perms there cannot
-# block the translator. Default lives under /tmp; mount a persistent volume
-# here in production to avoid re-downloading language packs on each restart.
-LYRICS_MARIAN_CACHE_DIR = os.environ.get(
-    "LYRICS_MARIAN_CACHE_DIR",
-    os.path.join(tempfile.gettempdir(), "audiomuse-marian-cache"),
-)
-LYRICS_TRANSLATOR_ZH_ONNX_DIR = os.environ.get(
-    "LYRICS_TRANSLATOR_ZH_ONNX_DIR",
-    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-zh-en-onnx"),
-)
-LYRICS_TRANSLATOR_JA_ONNX_DIR = os.environ.get(
-    "LYRICS_TRANSLATOR_JA_ONNX_DIR",
-    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-ja-en-onnx"),
-)
-LYRICS_TRANSLATOR_KO_ONNX_DIR = os.environ.get(
-    "LYRICS_TRANSLATOR_KO_ONNX_DIR",
-    os.path.join(os.environ.get("LYRICS_MODEL_DIR", "/app/model"), "opus-mt-ko-en-onnx"),
-)
 LYRICS_MAX_SONGS_TO_ANALYZE = 1000
 LYRICS_SUPPORTED_AUDIO_EXTENSIONS = {
     '.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus', '.aac', '.aiff', '.aif', '.mp4'
@@ -405,11 +370,10 @@ VAD_VOICE_RECOGNITION = int(os.environ.get("VAD_VOICE_RECOGNITION", "25"))
 
 LYRICS_DEFAULT_SAMPLE_RATE = 16000
 LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
-LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'intfloat/e5-base-v2'
-LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'e5-base-v2')
-LYRICS_DEFAULT_MARIAN_PREFIX = 'Helsinki-NLP/opus-mt-{}-en'
-# Dimension of the e5-base-v2 sentence embedding stored in lyrics_embedding.embedding
-# and used to build the lyrics voyager index.
+LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'Alibaba-NLP/gte-multilingual-base'
+LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'gte-multilingual-base')
+# Dimension of the gte-multilingual-base sentence embedding stored in
+# lyrics_embedding.embedding and used to build the lyrics voyager index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
 
 # Minimum number of CHARACTERS (not words) a transcript must have for the
@@ -423,17 +387,31 @@ LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDD
 # Repetition gate for text-source lyrics (media server / external API). Pure
 # ad-lib or filler content ("woo woo woo...") compresses far more than real
 # lyrics, so a high zlib compression ratio flags it. Above this ratio the text
-# is dropped before language detection / translation, preventing nonsensical
-# "translations" from polluting embeddings (issue #543). Set deliberately high
-# so genuinely chorus-heavy real songs (~7-8) survive while extreme ad-lib
-# repetition (~30-40+) is removed. Set to 0 to disable the gate.
+# is dropped before embedding, preventing nonsensical content from polluting
+# embeddings (issue #543). Set deliberately high so genuinely chorus-heavy real
+# songs (~7-8) survive while extreme ad-lib repetition (~30-40+) is removed.
+# Set to 0 to disable the gate.
 LYRICS_TEXT_MAX_COMPRESSION_RATIO = float(os.environ.get("LYRICS_TEXT_MAX_COMPRESSION_RATIO", "15.0"))
-# Maximum chars per chunk fed to the Marian translator. Stays well below
-# the model's 512-token context window even after tokenizer expansion on
-# rare scripts. The translator splitter applies this as a hard cap when
-# line-break and sentence-punctuation splits have both failed to produce
-# a small-enough fragment (the layer-3 safety net for spaceless scripts).
-LYRICS_TRANSLATOR_CHUNK_CHARS = int(os.environ.get("LYRICS_TRANSLATOR_CHUNK_CHARS", "200"))
+# Minimum langdetect confidence (API / music-server lyrics) to accept the text as
+# real lyrics. Below this the lyrics are dropped to the instrumental sentinel rather
+# than let unidentifiable junk (garbled API responses, mojibake, filler) pollute the
+# embedding (issue #543). Embedding is multilingual now, so this is purely a quality
+# gate — no translation is performed.
+LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
+# Minimum fraction of letters that must be CJK script (Hangul / kana / Han) for the
+# lyrics to be treated as genuine CJK regardless of what langdetect reports. Code-mixed
+# K-pop / J-pop is frequently scored low-confidence by langdetect because of its
+# Latin-script bias; script presence is a far more reliable CJK signal, letting real
+# CJK lyrics bypass the confidence gate instead of being dropped (issue #553). Set 0
+# to disable.
+LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
+# Maximum number of tokens fed to the gte-multilingual-base embedding model per
+# track. The model supports up to 8192; lyrics are truncated here (default 512,
+# roughly a full song — ~500 tokens for English, fewer characters for CJK which
+# fragments into more tokens). Higher values embed more of long songs at extra
+# CPU cost. Changing this alters the embeddings, so re-embed (drop the lyrics
+# tables) afterwards for consistency.
+LYRICS_GTE_MAX_TOKENS = int(os.environ.get("LYRICS_GTE_MAX_TOKENS", "512"))
 
 # --- SemGrove (Semantic + Groove) merged index weights ---
 # Controls how much each signal contributes to the merged cosine similarity.
@@ -450,8 +428,8 @@ SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"
 #      instead of re-attempting transcription every time.
 #   2. The vectors are non-zero so cosine similarity is always well-defined.
 #   3. Querying the index with the same sentinel lists every instrumental at
-#      the top, while real songs cannot match them: the e5 sentinel sits on
-#      a single basis axis (cosine to typical e5 embeddings is ~0), and the
+#      the top, while real songs cannot match them: the embedding sentinel sits on
+#      a single basis axis (cosine to typical text embeddings is ~0), and the
 #      axis sentinel is uniformly negative, which a softmax-derived axis_vector
 #      can never produce.
 import numpy as _np

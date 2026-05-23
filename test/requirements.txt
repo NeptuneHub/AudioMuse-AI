@@ -47,12 +47,12 @@ PyJWT==2.12.1
 
 # Lyrics integration test dependencies (versions aligned with requirements/common.txt).
 # The lyrics integration test does NOT use whisper or audio decoding: it feeds
-# a hand-written English text directly into the e5 embedding + axis-scoring
-# pipeline by mocking the external lyrics API. So we only need transformers +
-# torch (CPU). langdetect is required because the pipeline still runs the
-# language-detection step on the fake lyrics.
-langdetect==1.0.9
+# a hand-written English text directly into the gte-multilingual-base embedding
+# + axis-scoring pipeline by mocking the external lyrics API. langdetect is
+# required because the text-source path runs the STEP 2.5 language-confidence
+# quality gate before embedding. So we need transformers + torch (CPU) + langdetect.
 torch==2.6.0
+langdetect==1.0.9
 
 # Notes:
 # - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or

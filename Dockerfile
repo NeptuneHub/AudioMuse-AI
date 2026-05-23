@@ -31,7 +31,7 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download musicnn ONNX models with diagnostics and retry logic.
-# Lyrics models (Whisper / e5 / MarianMT / silero-vad) are downloaded
+# Lyrics models (Whisper / gte-multilingual-base / silero-vad) are downloaded
 # in later stages from the project release tarballs.
 RUN set -eux; \
     mkdir -p /app/model; \
@@ -235,9 +235,9 @@ ENV LANG=C.UTF-8 \
     HF_HUB_DISABLE_XET=1 \
     HF_XET_DISABLE=1
 
-# Note: bundled HuggingFace models (e5, RoBERTa, ...) load with
-# local_files_only=True per call. Marian translation models download on demand
-# at first use of a new source language; HF_HUB_OFFLINE is intentionally NOT set.
+# Note: bundled HuggingFace models (RoBERTa, ...) load with
+# local_files_only=True per call. The gte/whisper/silero ONNX bundles are
+# pre-downloaded as release tarballs; HF_HUB_OFFLINE is intentionally NOT set.
 
 WORKDIR /app
 
@@ -423,116 +423,47 @@ RUN set -eux; \
     fi; \
     ls -lh "$silero_path"
 
-# Download e5-base-v2 ONNX bundle (~440 MB) — re-hosted on the project's
-# GitHub release for mirror independence. Tarball ships the ONNX file flat
-# at the archive root (`e5-base-v2.onnx`) plus a sibling `e5-base-v2/`
-# directory with the tokenizer files. Loaded by lyrics/e5_onnx.py via raw
-# onnxruntime + the bare `tokenizers` package.
+# Download gte-multilingual-base INT8 ONNX bundle (~325 MB) — multilingual
+# sentence embedding pre-exported and dynamic-INT8-quantized by this project.
+# Tarball ships the ONNX file flat at the archive root
+# (`gte-multilingual-base-int8.onnx`) plus a sibling `gte-multilingual-base/`
+# directory with the tokenizer files. Loaded by lyrics/gte_onnx.py via raw
+# onnxruntime + the bare `tokenizers` package (CLS pooling + L2 norm at runtime).
 RUN set -eux; \
-    e5_onnx_path="/app/model/e5-base-v2.onnx"; \
-    e5_tok_dir="/app/model/e5-base-v2"; \
-    e5_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_e5.tar.gz"; \
-    e5_dest="/tmp/lyrics_model_e5.tar.gz"; \
-    echo "Downloading e5-base-v2 ONNX bundle (~440 MB)..."; \
+    gte_onnx_path="/app/model/gte-multilingual-base-int8.onnx"; \
+    gte_tok_dir="/app/model/gte-multilingual-base"; \
+    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_gte.tar.gz"; \
+    gte_dest="/tmp/lyrics_model_gte.tar.gz"; \
+    echo "Downloading gte-multilingual-base INT8 ONNX bundle (~325 MB)..."; \
     n=0; \
     until [ "$n" -ge 5 ]; do \
         if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
             --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$e5_dest" "$e5_url"; then \
-            echo "✓ e5 bundle downloaded"; break; \
+            -O "$gte_dest" "$gte_url"; then \
+            echo "✓ gte bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for e5 bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for gte bundle failed — retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download e5 bundle"; exit 1; \
+        echo "ERROR: failed to download gte bundle"; exit 1; \
     fi; \
     mkdir -p /app/model; \
-    tar -xzf "$e5_dest" -C /app/model; \
-    rm -f "$e5_dest"; \
-    if [ ! -f "$e5_onnx_path" ]; then \
-        echo "ERROR: e5 ONNX missing after extraction: $e5_onnx_path"; \
+    tar -xzf "$gte_dest" -C /app/model; \
+    rm -f "$gte_dest"; \
+    if [ ! -f "$gte_onnx_path" ]; then \
+        echo "ERROR: gte ONNX missing after extraction: $gte_onnx_path"; \
         ls -laR /app/model | head -50; \
         exit 1; \
     fi; \
-    for f in tokenizer.json tokenizer_config.json vocab.txt config.json special_tokens_map.json; do \
-        if [ ! -f "$e5_tok_dir/$f" ]; then \
-            echo "ERROR: e5 tokenizer file missing: $e5_tok_dir/$f"; exit 1; \
+    for f in tokenizer.json tokenizer_config.json config.json special_tokens_map.json; do \
+        if [ ! -f "$gte_tok_dir/$f" ]; then \
+            echo "ERROR: gte tokenizer file missing: $gte_tok_dir/$f"; exit 1; \
         fi; \
     done; \
-    echo "✓ e5-base-v2 ONNX ready ($e5_onnx_path + $e5_tok_dir)"; \
-    du -sh "$e5_onnx_path" "$e5_tok_dir"
-
-# Download opus-mt-mul-en ONNX bundle (~520 MB) — multilingual-to-English
-# Marian translator pre-exported by this project (no official ONNX export
-# exists upstream for opus-mt-mul-en). The tarball ships
-# `opus-mt-mul-en-onnx/` as its top-level directory, so we extract it
-# straight into /app/model and verify the resulting path.
-# Loaded at runtime by lyrics/translation_onnx.py (raw onnxruntime).
-RUN set -eux; \
-    marian_dir="/app/model/opus-mt-mul-en-onnx"; \
-    marian_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_marian.tar.gz"; \
-    marian_dest="/tmp/lyrics_model_marian.tar.gz"; \
-    echo "Downloading opus-mt-mul-en ONNX bundle (~520 MB)..."; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$marian_dest" "$marian_url"; then \
-            echo "✓ marian bundle downloaded"; break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for marian bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download marian bundle"; exit 1; \
-    fi; \
-    mkdir -p /app/model; \
-    tar -xzf "$marian_dest" -C /app/model; \
-    rm -f "$marian_dest"; \
-    # Bundle ships SentencePiece tokenization (source.spm / target.spm) — no
-    # tokenizer.json. Loaded at runtime via transformers.MarianTokenizer.
-    for f in encoder_model.onnx decoder_model_merged.onnx \
-             source.spm target.spm tokenizer_config.json \
-             vocab.json config.json; do \
-        if [ ! -f "$marian_dir/$f" ]; then \
-            echo "ERROR: marian file missing: $marian_dir/$f"; \
-            echo "Actual /app/model contents:"; \
-            ls -laR /app/model | head -50; \
-            exit 1; \
-        fi; \
-    done; \
-    echo "✓ opus-mt-mul-en ONNX ready in $marian_dir"; \
-    du -sh "$marian_dir"
-
-RUN set -eu; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
-    for code in zh ja ko; do \
-        cjk_dir="/app/model/opus-mt-${code}-en-onnx"; \
-        cjk_url="${base_url}/lyrics_model_marian_${code}.tar.gz"; \
-        cjk_dest="/tmp/lyrics_model_marian_${code}.tar.gz"; \
-        echo "Downloading opus-mt-${code}-en ONNX bundle (best-effort)..."; \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$cjk_dest" "$cjk_url"; then \
-            mkdir -p /app/model; \
-            if tar -xzf "$cjk_dest" -C /app/model; then \
-                ok=1; \
-                for f in encoder_model.onnx decoder_model_merged.onnx source.spm \
-                         target.spm tokenizer_config.json vocab.json config.json; do \
-                    if [ ! -f "$cjk_dir/$f" ]; then echo "WARNING: opus-mt-${code}-en missing $f"; ok=0; fi; \
-                done; \
-                if [ "$ok" = "1" ]; then echo "✓ opus-mt-${code}-en ONNX ready in $cjk_dir"; du -sh "$cjk_dir"; \
-                else rm -rf "$cjk_dir"; echo "opus-mt-${code}-en incomplete — runtime falls back to opus-mt-mul-en"; fi; \
-            else echo "WARNING: extract failed for opus-mt-${code}-en — runtime falls back to opus-mt-mul-en"; fi; \
-            rm -f "$cjk_dest"; \
-        else \
-            rm -f "$cjk_dest"; \
-            echo "WARNING: download failed for opus-mt-${code}-en — runtime falls back to opus-mt-mul-en"; \
-        fi; \
-    done
+    echo "✓ gte-multilingual-base ONNX ready ($gte_onnx_path + $gte_tok_dir)"; \
+    du -sh "$gte_onnx_path" "$gte_tok_dir"
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

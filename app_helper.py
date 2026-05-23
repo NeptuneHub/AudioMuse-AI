@@ -987,7 +987,7 @@ def get_clap_embedding(item_id):
 
 
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
-    """Saves the lyrics embedding (e5-base-v2) and the fixed-order axis vector.
+    """Saves the lyrics embedding (gte-multilingual-base) and the fixed-order axis vector.
 
     ``axis_vector`` must be a numpy array (float32) already in canonical
     MUSIC_ANALYSIS_AXES order (use ``_score_axes`` to produce it). May be None.

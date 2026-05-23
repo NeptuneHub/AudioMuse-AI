@@ -29,6 +29,15 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 * **Lyrics Search**: search your library by theme, story or meaning, like love songs, not just the sound.
 
+> **Lyrics language support:** the Lyrics Search feature works only with the **72 languages** listed below.
+>
+> <details>
+> <summary>Show the 72 supported languages</summary>
+>
+> Afrikaans, Albanian, Arabic, Armenian, Azerbaijani, Basque, Belarusian, Bengali, Bulgarian, Burmese, Catalan, Chinese, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, Galician, Georgian, German, Greek, Gujarati, Haitian Creole, Hebrew, Hindi, Hungarian, Icelandic, Indonesian, Italian, Japanese, Javanese, Kannada, Kazakh, Khmer, Korean, Lao, Latvian, Lithuanian, Macedonian, Malay, Malayalam, Marathi, Mongolian, Nepali, Norwegian, Persian, Polish, Portuguese, Punjabi, Romanian, Russian, Serbian, Sinhala, Slovak, Slovenian, Somali, Spanish, Swahili, Swedish, Tagalog, Tamil, Telugu, Thai, Turkish, Ukrainian, Urdu, Vietnamese, Welsh, Yoruba.
+>
+> </details>
+
 More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTION](docs/ALGORITHM.md), [DEPLOYMENT STRATEGY](docs/DEPLOYMENT.md), [FAQ](docs/FAQ.md), [GPU DEPLOYMENT](docs/GPU.md), [CONFIGURATION PARAMETERS](docs/PARAMETERS.md) [AUTHENTICATION](docs/AUTH.md) and can be found in the [docs folder](docs).
 
 **The full list or AudioMuse-AI related repository are:** 
@@ -39,10 +48,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 1.0.3** introduces the use of index also for text search for a faster search. **Important:** after the update run the analysis of 1 album to create the index.
-> * **Version 1.0.2** introduces providers migration, multiple users support and the dashboard.
-> * **Version 1.0.0** introduces the Setup Wizard for an easy configuration with the web UI.
-> * **Version 0.9.6** authentication enabled by default. Read the [AUTHENTICATION](docs/AUTH.md) docs to know how to proceed.
+> * **Version 2.0.0** introduces a new faster and reliable multilangue model for lyrics search. Follow the release note to drop the old lyrics index and re-analyze the lyrics.
 
 ## Disclaimer
 
