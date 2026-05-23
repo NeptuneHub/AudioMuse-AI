@@ -14,8 +14,6 @@ import uuid
 import traceback
 import gc
 import platform
-from pydub import AudioSegment
-from tempfile import NamedTemporaryFile
 
 import librosa
 import onnxruntime as ort  # re-exported: tests patch `tasks.analysis.ort.InferenceSession`
@@ -156,10 +154,41 @@ def _run_all_index_builds(log_fn=None):
 
 # --- Core Analysis Functions ---
 
+def _decode_audio_with_pyav(file_path, target_sr):
+    import av
+
+    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
+    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if AUDIO_LOAD_TIMEOUT else None
+    chunks = []
+    total = 0
+    with av.open(file_path) as container:
+        if not container.streams.audio:
+            return np.array([], dtype=np.float32)
+        stream = container.streams.audio[0]
+        for frame in container.decode(stream):
+            for rframe in resampler.resample(frame):
+                arr = rframe.to_ndarray().reshape(-1)
+                if arr.size:
+                    chunks.append(arr)
+                    total += arr.size
+            if max_samples and total >= max_samples:
+                break
+        for rframe in resampler.resample(None):
+            arr = rframe.to_ndarray().reshape(-1)
+            if arr.size:
+                chunks.append(arr)
+    if not chunks:
+        return np.array([], dtype=np.float32)
+    audio = np.concatenate(chunks).astype(np.float32, copy=False)
+    if max_samples:
+        audio = audio[:max_samples]
+    return audio
+
+
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
     """
-    Try librosa.load directly; on failure or empty signal, fall back to a
-    pydub/ffmpeg conversion to a temporary mono WAV.
+    Try librosa.load directly; on failure or empty signal, fall back to an
+    in-process PyAV (ffmpeg) decode to mono float32 at target_sr.
     """
     name = os.path.basename(file_path)
     try:
@@ -168,35 +197,17 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
             raise ValueError("Librosa returned an empty audio signal.")
         return audio, sr
     except Exception as e:
-        logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting fallback conversion.")
+        logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
 
-    temp_wav_path = None
     try:
-        seg = AudioSegment.from_file(file_path, parameters=[
-            "-analyzeduration", "10M", "-probesize", "10M",
-            "-ignore_unknown", "-err_detect", "ignore_err", "-ac", "2",
-        ])
-        if len(seg) == 0:
-            logger.error(f"Pydub loaded zero-duration audio from {name}; file likely corrupt.")
-            return None, None
-        with NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_wav_path = f.name
-        logger.info(f"Fallback: Pre-processing {name} to a smaller WAV for safe loading...")
-        seg.set_frame_rate(target_sr).set_channels(1).export(
-            temp_wav_path, format="wav",
-            parameters=["-codec:a", "pcm_s16le", "-ar", str(target_sr), "-ac", "1"],
-        )
-        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        audio = _decode_audio_with_pyav(file_path, target_sr)
         if audio is None or audio.size == 0 or not np.any(audio):
-            logger.error(f"Fallback resulted in empty/silent audio for {name}.")
+            logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
-        return audio, sr
+        return audio, target_sr
     except Exception as e:
-        logger.error(f"Fallback loading also failed for {name}: {e}")
+        logger.error(f"PyAV fallback loading also failed for {name}: {e}")
         return None, None
-    finally:
-        if temp_wav_path and os.path.exists(temp_wav_path):
-            os.remove(temp_wav_path)
 
 def rebuild_all_indexes_task():
     """Rebuild all indexes as a standalone RQ task (enqueued on default queue)."""
