@@ -42,11 +42,15 @@ _TOP_QUERIES_CACHE = {
     'computing': False
 }
 
-# Warm cache timer for text search (keeps model loaded)
+# Warm cache timer for text search (keeps model loaded).
+# NOTE: `lock` is a REENTRANT lock and doubles as the model-use mutex: a search
+# holds it across warmup + inference, and the unload worker must hold it to
+# unload. This prevents the background unload (which tears down the CUDA/ONNX
+# pool) from running while an in-flight `session.run()` is using the model.
 _WARM_CACHE_TIMER = {
     'expiry_time': None,  # Unix timestamp when model should unload
     'timer_thread': None,  # Background thread for unloading
-    'lock': threading.Lock(),
+    'lock': threading.RLock(),
     'duration_seconds': None  # Loaded from config on first use
 }
 
@@ -315,34 +319,37 @@ def build_and_store_clap_index(db_conn=None):
 
 
 def _unload_timer_worker():
-    """Background thread that unloads CLAP text model after timer expires."""
+    """Background thread that unloads CLAP text model after timer expires.
+
+    Critical: the expiry re-check AND the unload happen while holding the lock,
+    and a search holds the same lock across warmup + inference. So (a) a search
+    that just reset the timer cancels the unload (we re-read expiry under the
+    lock, not a stale value), and (b) the unload's CUDA/ONNX-pool teardown can
+    never run concurrently with an in-flight ``session.run()`` -- which was
+    deadlocking the GPU and hanging chat/text-search requests.
+    """
     global _WARM_CACHE_TIMER
-    
+
     while True:
         with _WARM_CACHE_TIMER['lock']:
             expiry = _WARM_CACHE_TIMER['expiry_time']
-        
-        if expiry is None:
-            # Timer cancelled, exit thread
-            break
-        
-        time_remaining = expiry - time.time()
-        
-        if time_remaining <= 0:
-            # Timer expired - unload text model only
-            from .clap_analyzer import unload_clap_model, is_clap_text_loaded
-            
-            if is_clap_text_loaded():
-                logger.info("Warm cache timer expired - unloading CLAP text model")
-                unload_clap_model()
-            
-            with _WARM_CACHE_TIMER['lock']:
+            if expiry is None:
+                # Timer cancelled, exit thread
+                break
+            if expiry - time.time() <= 0:
+                # Re-checked under the lock: still expired and no search is
+                # mid-flight (a search would hold this lock). Safe to unload.
+                from .clap_analyzer import unload_clap_model, is_clap_text_loaded
+                if is_clap_text_loaded():
+                    logger.info("Warm cache timer expired - unloading CLAP text model")
+                    unload_clap_model()
                 _WARM_CACHE_TIMER['expiry_time'] = None
                 _WARM_CACHE_TIMER['timer_thread'] = None
-            break
-        
-        # Sleep in 1-second chunks to check for cancellation
-        time.sleep(min(1.0, time_remaining))
+                break
+            time_remaining = expiry - time.time()
+
+        # Sleep OUTSIDE the lock so searches can proceed; re-loop to re-check.
+        time.sleep(min(1.0, max(0.05, time_remaining)))
 
 
 def warmup_text_search_model():
@@ -472,17 +479,28 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
     
     try:
-        # Auto-warmup: ensures model is loaded and resets timer
-        warmup_text_search_model()
-        
-        # Get text embedding (model is now guaranteed loaded)
-        text_embedding = get_text_embedding(query_text)
+        # Hold the warm-cache lock across warmup + inference so the background
+        # unload worker cannot tear down the CUDA/ONNX pool mid-``session.run()``
+        # (the lock is reentrant; warmup re-acquires it internally). This is what
+        # prevents the GPU deadlock / minutes-long hang.
+        with _WARM_CACHE_TIMER['lock']:
+            # Auto-warmup: ensures model is loaded and resets timer
+            warmup_text_search_model()
+
+            # Get text embedding (model is now guaranteed loaded)
+            text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
             logger.error(f"Failed to generate text embedding for: {query_text}")
             return []
 
         from config import MAX_SONGS_PER_ARTIST
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        # A large limit means the caller wants a big re-rank POOL (the chat
+        # pipeline). Skip the in-CLAP per-artist cap there -- it would inflate the
+        # voyager k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
+        # applied downstream anyway. Small limits (search page) keep the cap.
+        if limit >= 1000:
+            artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:

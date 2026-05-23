@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 
 from tasks.song_alchemy import song_alchemy
+from app_helper import attach_song_features
 import config
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ def alchemy_api():
     subtract_distance = payload.get('subtract_distance')
     try:
         results = song_alchemy(add_items=add_items, subtract_items=subtract_items, n_results=n, subtract_distance=subtract_distance, temperature=temperature)
+        attach_song_features(results.get('results'))
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
     except ValueError as e:

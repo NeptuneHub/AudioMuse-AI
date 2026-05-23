@@ -6,7 +6,7 @@ similarity that respects both lyrical meaning and acoustic genre simultaneously.
 
 Architecture
 ------------
-* Fetches lyrics embeddings (e5-base-v2, 768-dim) from ``lyrics_embedding``
+* Fetches lyrics embeddings (gte-multilingual-base, 768-dim) from ``lyrics_embedding``
 * Fetches audio embeddings (MusicNN, N-dim) from ``embedding``
 * For every song present in **both** tables:
     1. L2-normalise each vector to unit length

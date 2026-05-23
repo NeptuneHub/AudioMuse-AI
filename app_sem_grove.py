@@ -72,6 +72,7 @@ def sem_grove_search_api():
         description: Internal error.
     """
     from tasks.sem_grove_manager import search_by_song
+    from app_helper import attach_song_features
 
     try:
         data    = request.get_json() or {}
@@ -96,6 +97,7 @@ def sem_grove_search_api():
                 "results": [],
             }), 404
 
+        attach_song_features(results)
         return jsonify({"results": results, "count": len(results)})
 
     except Exception:

@@ -173,20 +173,7 @@
         <canvas id="alchemy-plot"></canvas>
         <div id="projection-label" style="text-align: center; font-size:0.9rem; color:var(--text-muted); margin-top:0.5rem; text-transform: capitalize;"></div>
     </div>
-    <div id="results-table-wrapper">
-        <table id="results-table">
-            <thead>
-            <tr>
-                <th>Title</th>
-                <th>Artist</th>
-                <th>Album</th>
-                <th>Distance</th>
-            </tr>
-            </thead>
-            <tbody id="results-list">
-            </tbody>
-        </table>
-    </div>
+    <div id="results-table-wrapper"></div>
 </section>
 
 <section id="playlist-creator" class="hidden">
@@ -750,18 +737,13 @@
 
                 if (data.error) { showMessageBox('API Error', data.error); return }
 
-                const list = document.getElementById('results-list');
-                list.innerHTML = ''; // Clear previous results
+                const wrapper = document.getElementById('results-table-wrapper');
+                wrapper.innerHTML = ''; // Clear previous results
                 // Track current result IDs so playlist creation can use them
                 window.currentResultIds = [];
                 if(data.results && data.results.length > 0) {
-                    data.results.forEach(r => {
-                        const row = document.createElement('tr');
-                        const distText = (typeof r.distance === 'number') ? r.distance.toFixed(4) : 'N/A';
-                        row.innerHTML = `<td>${r.title || 'N/A'}</td><td>${r.author || 'N/A'}</td><td>${r.album || ''}</td><td>${distText}</td>`;
-                        list.appendChild(row);
-                        if (r.item_id) window.currentResultIds.push(r.item_id);
-                    });
+                    window.currentResultIds = data.results.map(r => r.item_id).filter(Boolean);
+                    wrapper.innerHTML = renderSongList(data.results, { metric: songDistanceBadge });
                     // Save centroid from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
                     // Show results, playlist creator, and save-anchor control for this run
@@ -946,9 +928,7 @@
                         console.warn('Failed to draw alchemy plot', errPlot);
                     }
                 } else {
-                     const row = document.createElement('tr');
-                     row.innerHTML = `<td colspan="4" style="text-align:center;">No results found.</td>`;
-                     list.appendChild(row);
+                     wrapper.innerHTML = `<p style="text-align:center; padding:1rem;">No results found.</p>`;
                      document.getElementById('playlist-creator').classList.add('hidden');
 
                      // If there are no kept results but there are filtered_out/add/sub items,

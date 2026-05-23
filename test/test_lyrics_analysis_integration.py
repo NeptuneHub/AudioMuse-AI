@@ -1,26 +1,27 @@
 # Real lyrics analysis integration test
 #
-# Goal: verify that the deterministic part of the lyrics pipeline (e5-base-v2
-# text embedding + per-axis softmax scoring) is stable across code changes.
+# Goal: verify that the deterministic part of the lyrics pipeline
+# (gte-multilingual-base text embedding + per-axis softmax scoring) is stable
+# across code changes.
 #
 # Strategy: skip Whisper entirely. We monkey-patch ``fetch_remote_lyrics`` to
 # return a fixed, hand-written ~200-word English lyric, so the pipeline takes
 # the API path:
-#     STEP 0 (API hit) -> STEP 3 (langdetect=en) -> STEP 4 (no translation)
-#     -> STEP 5 (LLM disabled) -> STEP 6 (e5 embedding + axis vector)
+#     STEP 3 (API hit) -> STEP 6 (quality gate) -> STEP 9 (gte embedding + axis vector)
 # Because the input text is identical on every run, the resulting
 # ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.99
 # vs the recorded reference).
 #
-# The e5 model is loaded the same way the production code and Dockerfile do:
-# ONNX weights at ``<models>/e5-base-v2.onnx`` and tokenizer files under
-# ``<models>/e5-base-v2/`` — the layout of the ``lyrics_model_e5.tar.gz``
-# GitHub release artifact, NOT a HuggingFace Hub cache.
+# The gte model is loaded the same way the production code and Dockerfile do:
+# INT8 ONNX weights at ``<models>/gte-multilingual-base-int8.onnx`` and
+# tokenizer files under ``<models>/gte-multilingual-base/`` — the layout of the
+# ``lyrics_model_gte.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
 #
-# First-run behaviour: if ``test/lyrics_expected.json`` is missing, the test
-# enters RECORD mode automatically, writes the file and passes. The CI
+# First-run behaviour: if ``test/lyrics_expected_gte_512.json`` is missing, the
+# test enters RECORD mode automatically, writes the file and passes. The CI
 # workflow (only on push to main) then commits the file back so subsequent
-# runs pin against it.
+# runs pin against it. The baseline is gte-specific so switching embedding
+# models is a clean re-record into a fresh file rather than an in-place edit.
 import json
 import os
 import sys
@@ -129,14 +130,14 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 @pytest.mark.integration
 def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     """Runs analyze_lyrics with a fake API hit (deterministic English text)
-    and checks the e5 embedding + axis vector against pre-recorded values
-    via cosine similarity (threshold = 0.99).
+    and checks the gte-multilingual-base embedding + axis vector against
+    pre-recorded values via cosine similarity (threshold = 0.99).
     """
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
-    expected_path = project_root / 'test' / 'lyrics_expected.json'
+    expected_path = project_root / 'test' / 'lyrics_expected_gte_512.json'
 
-    # Heavy deps required by the e5 ONNX path. Skip cleanly if missing.
+    # Heavy deps required by the gte ONNX path. Skip cleanly if missing.
     try:
         import onnxruntime  # noqa: F401
     except Exception as exc:  # pragma: no cover
@@ -146,15 +147,15 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'tokenizers not importable: {exc}')
 
-    # New e5 bundle layout (lyrics_model_e5.tar.gz):
-    #   <models>/e5-base-v2.onnx          - ONNX weights
-    #   <models>/e5-base-v2/tokenizer.json - tokenizer + config files
-    e5_onnx_path = models_dir / 'e5-base-v2.onnx'
-    e5_tokenizer_dir = models_dir / 'e5-base-v2'
-    if not e5_onnx_path.is_file() or not (e5_tokenizer_dir / 'tokenizer.json').is_file():
+    # gte bundle layout (lyrics_model_gte.tar.gz):
+    #   <models>/gte-multilingual-base-int8.onnx     - INT8 ONNX weights
+    #   <models>/gte-multilingual-base/tokenizer.json - tokenizer + config files
+    gte_onnx_path = models_dir / 'gte-multilingual-base-int8.onnx'
+    gte_tokenizer_dir = models_dir / 'gte-multilingual-base'
+    if not gte_onnx_path.is_file() or not (gte_tokenizer_dir / 'tokenizer.json').is_file():
         pytest.skip(
-            f'e5-base-v2 ONNX bundle not found at {models_dir}. '
-            f'In CI the workflow extracts lyrics_model_e5.tar.gz from release '
+            f'gte-multilingual-base ONNX bundle not found at {models_dir}. '
+            f'In CI the workflow extracts lyrics_model_gte.tar.gz from release '
             f'v4.0.0-model into test/models/. For a local run download and '
             f'extract it manually.'
         )
@@ -169,8 +170,8 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
 
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
-    os.environ['LYRICS_E5_ONNX_PATH'] = str(e5_onnx_path)
-    os.environ['LYRICS_E5_TOKENIZER_DIR'] = str(e5_tokenizer_dir)
+    os.environ['LYRICS_GTE_ONNX_PATH'] = str(gte_onnx_path)
+    os.environ['LYRICS_GTE_TOKENIZER_DIR'] = str(gte_tokenizer_dir)
 
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -182,7 +183,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     from lyrics import lyrics_transcriber
     from lyrics.lyrics_transcriber import analyze_lyrics, axis_columns
 
-    # ---- Fake the external API: STEP 0 returns our hand-written text -----
+    # ---- Fake the external API: STEP 3 returns our hand-written text -----
     current = {'name': None}
 
     def _fake_fetch_remote_lyrics(artist, track, total_budget=10.0):
@@ -192,11 +193,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
 
     monkeypatch.setattr(lyrics_transcriber, 'fetch_remote_lyrics',
                         _fake_fetch_remote_lyrics)
-
-    # Defensive: passthrough translator so a stray langdetect misclassification
-    # can never trigger a Marian download in offline CI.
-    monkeypatch.setattr(lyrics_transcriber, '_translate_to_english',
-                        lambda text, src_lang: text)
 
     # ---- Recording / replay logic -----------------------------------------
     explicit_record = os.environ.get('LYRICS_RECORD_EXPECTED', '').lower() in ('1', 'true', 'yes')

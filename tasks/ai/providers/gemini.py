@@ -13,6 +13,8 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Single-prompt completion via Gemini's generate_content."""
     if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
@@ -33,10 +35,14 @@ def generate_text(
         client = genai.Client(api_key=api_key)
         logger.debug("Starting API call for model '%s'.", model_name)
 
+        temp = 0.9 if temperature is None else float(temperature)
+        cfg_kwargs = {"temperature": temp}
+        if max_tokens is not None:
+            cfg_kwargs["max_output_tokens"] = int(max_tokens)
         response = client.models.generate_content(
             model=model_name,
             contents=full_prompt,
-            config=genai.types.GenerateContentConfig(temperature=0.9),
+            config=genai.types.GenerateContentConfig(**cfg_kwargs),
         )
 
         if response and hasattr(response, "text") and response.text:
@@ -68,40 +74,11 @@ def call_with_tools(
 
         client = genai.Client(api_key=api_key)
 
-        def convert_schema_for_gemini(schema):
-            """Convert JSON Schema to Gemini-compatible format (uppercase types)."""
-            if not isinstance(schema, dict):
-                return schema
-            result = {}
-            if "type" in schema:
-                schema_type = schema["type"]
-                type_map = {
-                    "string": "STRING",
-                    "number": "NUMBER",
-                    "integer": "INTEGER",
-                    "boolean": "BOOLEAN",
-                    "array": "ARRAY",
-                    "object": "OBJECT",
-                }
-                result["type"] = type_map.get(schema_type, schema_type.upper())
-            if "description" in schema:
-                result["description"] = schema["description"]
-            if "properties" in schema:
-                result["properties"] = {
-                    k: convert_schema_for_gemini(v) for k, v in schema["properties"].items()
-                }
-            if "items" in schema:
-                result["items"] = convert_schema_for_gemini(schema["items"])
-            for field in ("required", "enum"):
-                if field in schema:
-                    result[field] = schema[field]
-            return result
-
         function_declarations = [
             {
                 "name": tool["name"],
                 "description": tool["description"],
-                "parameters": convert_schema_for_gemini(tool["inputSchema"]),
+                "parameters": tool["inputSchema"],
             }
             for tool in tools
         ]
@@ -117,6 +94,7 @@ def call_with_tools(
                 tool_config=genai.types.ToolConfig(
                     function_calling_config=genai.types.FunctionCallingConfig(mode="ANY")
                 ),
+                temperature=0,
             ),
         )
 
@@ -158,6 +136,6 @@ def call_with_tools(
         log_messages.append(f"Gemini called {len(tool_calls)} tools")
         return {"tool_calls": tool_calls}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Gemini with tools")
-        return {"error": f"Gemini error: {str(e)}"}
+        return {"error": "Gemini service is currently unavailable."}

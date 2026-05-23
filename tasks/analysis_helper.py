@@ -501,7 +501,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
 
     ``top_moods`` is the MusicNN top-N moods dict (label → score). When it
     includes 'instrumental', analyze_lyrics short-circuits the entire pipeline
-    (skips Whisper-small ASR + Marian + e5) and writes the instrumental
+    (skips Whisper-small ASR + gte embedding) and writes the instrumental
     sentinel directly. When it includes 'female vocalists' / 'male vocalists'
     the VAD pre-pass is bypassed so quiet/low-voiced singers are not dropped.
 
