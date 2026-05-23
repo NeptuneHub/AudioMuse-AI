@@ -136,7 +136,7 @@ For more information about the GPU deployment requirements have a look to the [G
 Our GitHub Actions workflow automatically builds and publishes Docker images with the following tags:
 
 * **`:latest`**
-  Stable build from the **main** branch.
+  Last build from the **main** branch.
   **Recommended for most users.**
 
 * **`:devel`**
@@ -154,6 +154,9 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 * **`-nvidia`** variants
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
+
+> Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
+> Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.
 
 ## **How To Contribute**
 
