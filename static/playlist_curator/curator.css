@@ -754,6 +754,11 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 }
 
 /* ---------------- Workbench rail (desktop) ---------------- */
+/* --curator-player-h is bumped to the player's height when it's visible
+   (see :has() rule near the sticky-player block). Used to keep the rail's
+   bottom save / actions buttons visible above the sticky player. */
+:root { --curator-player-h: 0px; }
+
 .curator-workbench-rail {
     background: var(--bg-code);
     border-left: 1px solid var(--border-color);
@@ -763,14 +768,17 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     gap: 12px;
     position: sticky;
     /* Offset by the topbar height so the rail's bottom (save button) stays
-       visible inside the viewport instead of being pushed off-screen. */
+       visible inside the viewport instead of being pushed off-screen.
+       Also subtract the player height so the bottom buttons clear the
+       sticky web player when it's visible. */
     top: var(--curator-topbar-h);
-    height: calc(100vh - var(--curator-topbar-h));
-    max-height: calc(100vh - var(--curator-topbar-h));
+    height: calc(100vh - var(--curator-topbar-h) - var(--curator-player-h));
+    max-height: calc(100vh - var(--curator-topbar-h) - var(--curator-player-h));
     overflow: hidden;
     width: 340px;
     flex-shrink: 0;
     box-sizing: border-box;
+    transition: height 0.18s ease, max-height 0.18s ease;
 }
 
 .curator-wb-header {
@@ -998,6 +1006,13 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 }
 .curator-sticky-player.visible { display: flex; }
 
+/* When the player is visible, expose its height so other sticky/fixed UI
+   (workbench rail, toast stack) can offset itself above the player. The
+   height matches padding 10px*2 + 36px primary button + 1px border-top. */
+body:has(.curator-sticky-player.visible) {
+    --curator-player-h: 57px;
+}
+
 .curator-player-art {
     width: 36px;
     height: 36px;
@@ -1094,7 +1109,10 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 /* ---------------- Toast ---------------- */
 .curator-toast-stack {
     position: fixed;
-    bottom: 24px;
+    /* Sit above the sticky web player when it's visible (otherwise toasts
+       overlap the player controls). --curator-player-h is 0 when the player
+       is hidden, so the toast sits at the normal 24px offset by default. */
+    bottom: calc(24px + var(--curator-player-h, 0px));
     left: 50%;
     transform: translateX(-50%);
     display: flex;
@@ -1102,6 +1120,7 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     gap: 8px;
     z-index: 1000;
     pointer-events: none;
+    transition: bottom 0.18s ease;
 }
 .curator-toast {
     color: #fff;
@@ -1255,6 +1274,14 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     .curator-player-progress { display: none; }
     .curator-player-art { width: 32px; height: 32px; }
     .curator-player-title { font-size: 12px; }
+
+    /* Mobile player sits at bottom: 64px (above the workbench sheet handle),
+       so the *effective* occupied bottom space is 64px + player height (8+36+8+1
+       ≈ 53px). Toasts use this so they don't disappear behind the player. The
+       rail is display:none on mobile, so its height calc does not matter here. */
+    body:has(.curator-sticky-player.visible) {
+        --curator-player-h: 117px;
+    }
 }
 
 @media (max-width: 480px) {
