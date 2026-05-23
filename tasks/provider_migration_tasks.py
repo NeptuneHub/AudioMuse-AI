@@ -486,7 +486,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
             f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
         )
 
-    # 7. Refresh score metadata (file_path, title, author, album, year) from
+    # 7. Refresh score metadata (file_path, title, author, album, album_artist, year) from
     #    the new provider's values. New paths are critical: the new provider's
     #    path format may not overlap with the old one at all (Jellyfin absolute
     #    vs Navidrome relative), and downstream features use file_path.
@@ -495,30 +495,32 @@ def _run_migration_transaction(cur, mapping, new_meta,
             "CREATE TEMP TABLE migration_new_meta ("
             " new_id TEXT PRIMARY KEY, "
             " new_path TEXT, new_title TEXT, new_artist TEXT, "
-            " new_album TEXT, new_year INTEGER"
+            " new_album TEXT, new_album_artist TEXT, new_year INTEGER"
             ") ON COMMIT DROP"
         )
         for new_id, meta in new_meta.items():
             cur.execute(
                 "INSERT INTO migration_new_meta "
-                "(new_id, new_path, new_title, new_artist, new_album, new_year) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     _sanitize_text(new_id),
                     _sanitize_text(meta.get('path')),
                     _sanitize_text(meta.get('title')),
                     _sanitize_text(meta.get('artist')),
                     _sanitize_text(meta.get('album')),
+                    _sanitize_text(meta.get('album_artist')),
                     meta.get('year'),
                 ),
             )
         cur.execute(
             "UPDATE score s SET "
-            "  file_path = COALESCE(n.new_path,   s.file_path), "
-            "  title     = COALESCE(n.new_title,  s.title), "
-            "  author    = COALESCE(n.new_artist, s.author), "
-            "  album     = COALESCE(n.new_album,  s.album), "
-            "  year      = COALESCE(n.new_year,   s.year) "
+            "  file_path    = COALESCE(n.new_path,         s.file_path), "
+            "  title        = COALESCE(n.new_title,        s.title), "
+            "  author       = COALESCE(n.new_artist,       s.author), "
+            "  album        = COALESCE(n.new_album,        s.album), "
+            "  album_artist = COALESCE(n.new_album_artist, s.album_artist), "
+            "  year         = COALESCE(n.new_year,         s.year) "
             "FROM migration_new_meta n WHERE s.item_id = n.new_id"
         )
 
