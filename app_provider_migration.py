@@ -1381,7 +1381,7 @@ def dry_run_report(session_id):
     for old in old_rows:
         old_id = old.get('item_id')
         new_id = matches.get(old_id)
-        meta = new_meta.get(new_id) if new_id else None
+        meta = (new_meta.get(str(new_id)) or new_meta.get(new_id)) if new_id else None
         if new_id and manual_matches.get(old_id):
             source = 'manual'
         elif new_id:
@@ -1491,7 +1491,7 @@ def matched_albums(session_id):
     for (old_artist, old_album), g in groups.items():
         tally = {}  # (new_artist, new_album) -> count
         for new_id in g['new_ids']:
-            meta = new_meta.get(new_id) or {}
+            meta = new_meta.get(str(new_id)) or new_meta.get(new_id) or {}
             tally_key = (meta.get('album_artist') or meta.get('artist') or '', meta.get('album') or '')
             tally[tally_key] = tally.get(tally_key, 0) + 1
         if tally:
