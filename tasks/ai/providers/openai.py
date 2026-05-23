@@ -44,6 +44,8 @@ def generate_text(
     api_key: str = "no-key-needed",
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Generate freeform text from an OpenAI-compatible streaming endpoint.
 
@@ -57,23 +59,31 @@ def generate_text(
     """
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format
+    provider_label = "Ollama" if is_ollama_format else "OpenAI/OpenRouter"
 
     headers = _build_openai_headers(api_key, server_url)
+
+    temp = 0.7 if temperature is None else float(temperature)
+    out_tokens = 8000 if max_tokens is None else int(max_tokens)
 
     if is_openai_format:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": full_prompt}],
             "stream": True,
-            "temperature": 0.7,
-            "max_tokens": 8000,
+            "temperature": temp,
+            "max_tokens": out_tokens,
+            # Disable reasoning (OpenAI-standard switch; OpenRouter honors it too)
+            # so reasoning models don't think unbounded. Dropped in the 400
+            # unsupported_parameter fallback below if a model rejects it.
+            "reasoning_effort": "none",
         }
     else:
         payload = {
             "model": model_name,
             "prompt": full_prompt,
             "stream": True,
-            "options": {"num_predict": 8000, "temperature": 0.7},
+            "options": {"num_predict": out_tokens, "temperature": temp},
             "think": False,
         }
 
@@ -161,13 +171,13 @@ def generate_text(
                 # SECURITY: log only length, not content (model output may
                 # echo back sensitive data from prompts/tool results).
                 logger.info(
-                    "OpenAI/OpenRouter API returned non-empty content (length=%d chars).",
-                    len(extracted_text),
+                    "%s API returned non-empty content (length=%d chars).",
+                    provider_label, len(extracted_text),
                 )
                 return extracted_text
             logger.warning(
-                "OpenAI/OpenRouter returned empty content (raw response length: %d chars).",
-                len(full_raw_response_content),
+                "%s returned empty content (raw response length: %d chars).",
+                provider_label, len(full_raw_response_content),
             )
             logger.debug(
                 "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",
@@ -203,7 +213,8 @@ def generate_text(
                             )
                             payload.pop("temperature", None)
                             payload.pop("max_tokens", None)
-                            payload["max_completion_tokens"] = 8000
+                            payload.pop("reasoning_effort", None)
+                            payload["max_completion_tokens"] = out_tokens
                             tried_aggressive_fallback = True
                             continue
                         elif not tried_ultra_minimal_fallback:
@@ -276,27 +287,58 @@ def call_with_tools(
             ],
             "tools": functions,
             "tool_choice": "required",
+            "temperature": 0,
+            # Bound generation so a model that won't stop (e.g. a reasoning model
+            # that thinks unbounded) can't run forever. Generic OpenAI param,
+            # works on any OpenAI-compatible provider (OpenRouter, vLLM, ...).
+            # Matches the local Ollama num_predict cap (1024) for consistency.
+            "max_tokens": 1024,
+            # Disable reasoning so the model goes straight to the tool call (the
+            # OpenAI-standard switch; OpenRouter honors it too). The local Ollama
+            # path does the same via /no_think. Dropped automatically below if a
+            # provider/model rejects it.
+            "reasoning_effort": "none",
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for OpenAI request")
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(server_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
+
+        def _post(p):
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(server_url, headers=headers, json=p)
+                resp.raise_for_status()
+                return resp.json()
+
+        try:
+            result = _post(payload)
+        except httpx.HTTPStatusError as http_err:
+            # A model/provider that doesn't support reasoning_effort (e.g. a
+            # non-reasoning model) returns 400. Drop it and retry once.
+            if http_err.response.status_code == 400 and "reasoning_effort" in payload:
+                log_messages.append("reasoning_effort unsupported by this model; retrying without it")
+                payload.pop("reasoning_effort", None)
+                result = _post(payload)
+            else:
+                raise
 
         tool_calls = []
         if "choices" in result and result["choices"]:
             message = result["choices"][0].get("message", {})
             if "tool_calls" in message:
                 for tc in message["tool_calls"]:
-                    if tc["type"] == "function":
+                    if tc.get("type") == "function":
                         tool_calls.append(
                             {
                                 "name": tc["function"]["name"],
                                 "arguments": json.loads(tc["function"]["arguments"]),
                             }
                         )
+
+        # Max-items cap: never process a runaway list of tool calls (a tool plan
+        # needs only a few). Mirrors the Ollama schema maxItems; generic here.
+        if len(tool_calls) > 4:
+            log_messages.append(f"OpenAI returned {len(tool_calls)} tool calls; capping to first 4")
+            tool_calls = tool_calls[:4]
 
         if not tool_calls:
             text_response = (
@@ -319,13 +361,13 @@ def call_with_tools(
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"OpenAI request timed out: {str(e)}")
-        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds: {str(e)}")
+        logger.warning("OpenAI request timed out", exc_info=True)
+        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds.")
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling OpenAI with tools")
-        return {"error": f"OpenAI error: {str(e)}"}
+        return {"error": "OpenAI service is currently unavailable."}

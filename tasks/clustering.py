@@ -29,8 +29,8 @@ from config import (MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
                     CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS)
 
 # Import AI naming function and prompt template
-from tasks.ai_api import get_ai_playlist_name
-from tasks.ai_prompts import creative_prompt_template
+from tasks.ai.api import get_ai_playlist_name
+from tasks.ai.prompts import creative_prompt_template
 # Import media server functions
 from .mediaserver import create_playlist, delete_automatic_playlists
 # Import refactored clustering helpers

@@ -1,7 +1,7 @@
 """Ollama transport.
 
 Ollama lacks native function calling, so `call_with_tools` builds a JSON-output
-prompt (via `tasks.ai_prompts.build_ollama_tool_calling_prompt`) and parses the
+prompt (via `tasks.ai.prompts.build_ollama_tool_calling_prompt`) and parses the
 model's JSON response. `generate_text` delegates to the OpenAI-compatible
 streaming code path (since Ollama also exposes /api/generate streaming SSE).
 """
@@ -13,8 +13,8 @@ from typing import Dict, List, Optional
 import httpx
 
 import config
-from tasks import ai_api_openai
-from tasks.ai_prompts import build_ollama_tool_calling_prompt
+from tasks.ai.providers import openai as ai_api_openai
+from tasks.ai.prompts import build_ollama_tool_calling_prompt, build_tool_calls_schema
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,8 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Generate freeform text from an Ollama /api/generate endpoint.
 
@@ -32,7 +34,8 @@ def generate_text(
     shared (it auto-detects Ollama format from the URL).
     """
     return ai_api_openai.generate_text(
-        ollama_url, model_name, full_prompt, api_key="no-key-needed", skip_delay=skip_delay
+        ollama_url, model_name, full_prompt, api_key="no-key-needed",
+        skip_delay=skip_delay, temperature=temperature, max_tokens=max_tokens,
     )
 
 
@@ -51,16 +54,24 @@ def call_with_tools(
     try:
         prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
 
+        schema = build_tool_calls_schema(tools)
         payload = {
             "model": model_name,
             "prompt": prompt,
             "stream": False,
-            "format": "json",
+            "format": schema,
             "think": False,
+            # Cap how much the model can think/generate so it can't run on
+            # forever. A tool call needs only a few hundred tokens.
+            "options": {"temperature": 0, "num_predict": 1024},
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
+        # Single bounded call: the httpx read timeout aborts it at `timeout`
+        # seconds so it can never run forever. NO retry -- if the model returns
+        # nothing usable, we error out and the chat pipeline falls back (the user
+        # still gets a playlist) rather than making a second multi-minute call.
         with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
@@ -70,20 +81,6 @@ def call_with_tools(
             return {"error": "Invalid Ollama response"}
 
         response_text = result["response"]
-
-        # Thinking models (e.g. Qwen 3.5) return empty response with format=json.
-        # Retry without format constraint -- their response field will have clean JSON
-        # and the thinking/reasoning stays in the separate 'thinking' field.
-        if not response_text and result.get("thinking"):
-            log_messages.append("\u2139\ufe0f Thinking model detected -- retrying without format=json")
-            payload.pop("format", None)
-            with httpx.Client(timeout=timeout) as client:
-                response = client.post(ollama_url, json=payload)
-                response.raise_for_status()
-                result = response.json()
-            response_text = result.get("response", "")
-            if response_text and "</think>" in response_text:
-                response_text = response_text.split("</think>", 1)[-1].strip()
 
         cleaned = ""
         try:
@@ -167,15 +164,17 @@ def call_with_tools(
             log_messages.append(f"\u2705 Ollama returned {len(valid_calls)} valid tool calls")
             return {"tool_calls": valid_calls}
 
-        except json.JSONDecodeError as e:
-            log_messages.append(f"\u274c JSON decode error: {str(e)}")
+        except json.JSONDecodeError:
+            logger.exception("JSON decode error while parsing Ollama tool response")
+            log_messages.append("\u274c Failed to parse Ollama JSON response.")
             log_messages.append(f"Attempted to parse: {cleaned[:300]}")
             return {
-                "error": f"Failed to parse Ollama JSON: {str(e)}",
+                "error": "Failed to parse Ollama JSON response.",
                 "raw_response": response_text[:200],
             }
-        except Exception as e:
-            log_messages.append(f"Failed to parse Ollama response: {str(e)}")
+        except Exception:
+            logger.exception("Failed to parse Ollama response")
+            log_messages.append("Failed to parse Ollama response.")
             log_messages.append(f"Response was: {response_text[:200]}")
             return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
 
@@ -191,16 +190,16 @@ def call_with_tools(
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except httpx.TimeoutException as e:
+    except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"Ollama request timed out: {str(e)}")
-        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds: {str(e)}")
+        logger.warning("Ollama request timed out", exc_info=True)
+        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds.")
         log_messages.append(
             "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Ollama with tools")
-        return {"error": f"Ollama error: {str(e)}"}
+        return {"error": "Ollama service is currently unavailable."}

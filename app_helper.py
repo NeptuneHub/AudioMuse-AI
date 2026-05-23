@@ -19,7 +19,7 @@ from rq.exceptions import NoSuchJobError
 # Note: get_db, redis_conn will now be defined *in this file*.
 
 # Import configuration
-from config import DATABASE_URL, REDIS_URL
+from config import DATABASE_URL, REDIS_URL, STRATIFIED_GENRES
 from tz_helper import UTC_NOW_SQL
 
 # Import RQ specifics
@@ -987,7 +987,7 @@ def get_clap_embedding(item_id):
 
 
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
-    """Saves the lyrics embedding (e5-base-v2) and the fixed-order axis vector.
+    """Saves the lyrics embedding (gte-multilingual-base) and the fixed-order axis vector.
 
     ``axis_vector`` must be a numpy array (float32) already in canonical
     MUSIC_ANALYSIS_AXES order (use ``_score_axes`` to produce it). May be None.
@@ -1146,6 +1146,55 @@ def get_score_data_lite_by_ids(item_ids_list):
     finally:
         cur.close()
     return [dict(row) for row in rows]
+
+
+def top_stratified_genre(mood_vector):
+    """Return the highest-scoring genre label present in STRATIFIED_GENRES, or None.
+
+    Mirrors the genre selection used by clustering (tasks/clustering_helper.py): the
+    mood_vector also carries non-genre labels (e.g. 'female vocalist') and moods, so
+    only labels in STRATIFIED_GENRES qualify as the displayed genre.
+    """
+    if not mood_vector or not isinstance(mood_vector, str):
+        return None
+    scores = {}
+    for part in mood_vector.split(','):
+        label, _, value = part.partition(':')
+        label = label.strip()
+        if not label:
+            continue
+        try:
+            scores[label] = float(value)
+        except ValueError:
+            continue
+    candidates = [g for g in STRATIFIED_GENRES if g in scores]
+    if not candidates:
+        return None
+    return max(candidates, key=scores.get)
+
+
+def attach_song_features(rows, id_key='item_id'):
+    """Additively add album + mood_vector + other_features + top_genre to each result dict.
+
+    Signature-safe: only fills keys that are missing; never removes or overwrites
+    existing data, so callers that already include these fields are unaffected.
+    """
+    if not rows:
+        return rows
+    ids = [r.get(id_key) for r in rows if isinstance(r, dict) and r.get(id_key)]
+    if not ids:
+        return rows
+    score = {str(s['item_id']): s for s in get_score_data_by_ids(ids)}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        s = score.get(str(r.get(id_key)))
+        if s:
+            r.setdefault('album', s.get('album'))
+            r.setdefault('mood_vector', s.get('mood_vector'))
+            r.setdefault('other_features', s.get('other_features'))
+            r.setdefault('top_genre', top_stratified_genre(s.get('mood_vector')))
+    return rows
 
 
 def save_alchemy_anchor(name, centroid):

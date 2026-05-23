@@ -5,6 +5,7 @@ import logging
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
 from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
+from app_helper import top_stratified_genre
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,11 @@ def generate_sonic_fingerprint_endpoint():
                     "item_id": track_info['item_id'],
                     "title": track_info['title'],
                     "author": track_info['author'],
-                    "distance": distance_map[res_id]
+                    "album": track_info.get('album'),
+                    "distance": distance_map[res_id],
+                    "mood_vector": track_info.get('mood_vector'),
+                    "other_features": track_info.get('other_features'),
+                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
                 })
 
         return jsonify(final_results)

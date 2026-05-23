@@ -54,10 +54,10 @@ def is_lyrics_loaded() -> bool:
     if not _LYRICS_ENABLED:
         return False
     try:
-        from . import whisper_onnx, e5_onnx, silero_onnx, translation_onnx
+        from . import whisper_onnx, gte_onnx, silero_onnx
     except Exception:
         return False
-    for mod in (whisper_onnx, e5_onnx, silero_onnx, translation_onnx):
+    for mod in (whisper_onnx, gte_onnx, silero_onnx):
         try:
             if mod.is_loaded():
                 return True
@@ -78,21 +78,12 @@ def unload_lyrics_models() -> bool:
             _logger.warning("Lyrics whisper_onnx release failed: %s", exc)
 
         try:
-            from . import translation_onnx
-            if translation_onnx.is_loaded():
-                _safe_call('translation_onnx.reset_session',
-                           translation_onnx.reset_session)
+            from . import gte_onnx
+            if gte_onnx.is_loaded():
+                _safe_call('gte_onnx.reset_session', gte_onnx.reset_session)
                 released_any = True
         except Exception as exc:
-            _logger.warning("Lyrics translation_onnx release failed: %s", exc)
-
-        try:
-            from . import e5_onnx
-            if e5_onnx.is_loaded():
-                _safe_call('e5_onnx.reset_session', e5_onnx.reset_session)
-                released_any = True
-        except Exception as exc:
-            _logger.warning("Lyrics e5_onnx release failed: %s", exc)
+            _logger.warning("Lyrics gte_onnx release failed: %s", exc)
 
         try:
             from . import silero_onnx

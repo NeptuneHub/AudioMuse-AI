@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,8 @@ def generate_text(
     full_prompt: str,
     *,
     skip_delay: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> str:
     """Single-prompt completion via Mistral chat.complete."""
     if not _MISTRAL_AVAILABLE:
@@ -56,12 +58,15 @@ def generate_text(
         client = Mistral(api_key=api_key)
         logger.debug("Starting API call for model '%s'.", model_name)
 
-        response = client.chat.complete(
-            model=model_name,
-            temperature=0.9,
-            timeout_ms=960,
-            messages=[{"role": "user", "content": full_prompt}],
-        )
+        complete_kwargs = {
+            "model": model_name,
+            "temperature": 0.9 if temperature is None else float(temperature),
+            "timeout_ms": 960,
+            "messages": [{"role": "user", "content": full_prompt}],
+        }
+        if max_tokens is not None:
+            complete_kwargs["max_tokens"] = int(max_tokens)
+        response = client.chat.complete(**complete_kwargs)
 
         if response and response.choices[0].message.content:
             extracted_text = response.choices[0].message.content
@@ -116,6 +121,10 @@ def call_with_tools(
             ],
             tools=mistral_tools,
             tool_choice="any",
+            temperature=0,
+            # Bound generation so a model can't run on forever. Matches the
+            # Ollama num_predict / OpenAI max_tokens chat cap (1024).
+            max_tokens=1024,
         )
 
         tool_calls = []
@@ -138,6 +147,6 @@ def call_with_tools(
         log_messages.append(f"Mistral called {len(tool_calls)} tools")
         return {"tool_calls": tool_calls}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error calling Mistral with tools")
-        return {"error": f"Mistral error: {str(e)}"}
+        return {"error": "Mistral service is currently unavailable."}

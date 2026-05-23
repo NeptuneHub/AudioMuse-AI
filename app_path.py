@@ -5,6 +5,7 @@ import json
 from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE, MOOD_CENTROIDS_FILE
+from app_helper import top_stratified_genre
 import numpy as np
 import math # Import the math module
 
@@ -281,6 +282,8 @@ def find_path_endpoint():
             # Ensure album field is present (for frontend)
             if 'album' not in song:
                 song['album'] = song.get('album', '')
+
+            song.setdefault('top_genre', top_stratified_genre(song.get('mood_vector')))
 
         # --- FIX: Convert total_distance from numpy.float32 to a standard Python float ---
         final_distance = float(total_distance) if total_distance is not None and math.isfinite(total_distance) else 0.0
