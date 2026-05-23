@@ -57,9 +57,10 @@ def load_gte_model():
 
         logger.info('Loading gte tokenizer from %s', tokenizer_path)
         tokenizer = Tokenizer.from_file(tokenizer_path)
+        from config import LYRICS_GTE_MAX_TOKENS
         try:
-            tokenizer.enable_truncation(max_length=128)
-            tokenizer.enable_padding(length=128)
+            tokenizer.enable_truncation(max_length=LYRICS_GTE_MAX_TOKENS)
+            tokenizer.no_padding()
         except Exception as exc:
             logger.warning('Could not configure gte tokenizer padding/truncation: %s', exc)
 

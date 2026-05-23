@@ -17,7 +17,7 @@
 # tokenizer files under ``<models>/gte-multilingual-base/`` — the layout of the
 # ``lyrics_model_gte.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
 #
-# First-run behaviour: if ``test/lyrics_expected_gte.json`` is missing, the
+# First-run behaviour: if ``test/lyrics_expected_gte_512.json`` is missing, the
 # test enters RECORD mode automatically, writes the file and passes. The CI
 # workflow (only on push to main) then commits the file back so subsequent
 # runs pin against it. The baseline is gte-specific so switching embedding
@@ -135,7 +135,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     """
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
-    expected_path = project_root / 'test' / 'lyrics_expected_gte.json'
+    expected_path = project_root / 'test' / 'lyrics_expected_gte_512.json'
 
     # Heavy deps required by the gte ONNX path. Skip cleanly if missing.
     try:

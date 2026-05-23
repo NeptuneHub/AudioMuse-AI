@@ -405,6 +405,13 @@ LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", 
 # CJK lyrics bypass the confidence gate instead of being dropped (issue #553). Set 0
 # to disable.
 LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
+# Maximum number of tokens fed to the gte-multilingual-base embedding model per
+# track. The model supports up to 8192; lyrics are truncated here (default 512,
+# roughly a full song — ~500 tokens for English, fewer characters for CJK which
+# fragments into more tokens). Higher values embed more of long songs at extra
+# CPU cost. Changing this alters the embeddings, so re-embed (drop the lyrics
+# tables) afterwards for consistency.
+LYRICS_GTE_MAX_TOKENS = int(os.environ.get("LYRICS_GTE_MAX_TOKENS", "512"))
 
 # --- SemGrove (Semantic + Groove) merged index weights ---
 # Controls how much each signal contributes to the merged cosine similarity.
