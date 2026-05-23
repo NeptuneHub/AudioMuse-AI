@@ -580,8 +580,7 @@
                     }
 
                     statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
-                    const tableHTML = '<table><thead><tr><th>Title</th><th>Artist</th><th>Album</th><th>Distance</th></tr></thead><tbody>' + data.map(track => '<tr><td>' + (track.title || 'N/A') + '</td><td>' + (track.author || 'N/A') + '</td><td>' + (track.album || 'Unknown') + '</td><td>' + track.distance.toFixed(4) + '</td></tr>').join('') + '</tbody></table>';
-                    resultsTableWrapper.innerHTML = tableHTML;
+                    resultsTableWrapper.innerHTML = renderSongList(data, { metric: songDistanceBadge });
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
                     let defaultPlaylistName;

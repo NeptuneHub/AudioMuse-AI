@@ -182,16 +182,26 @@ def _load_text_model():
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
     
-    # Text model typically runs on CPU in Flask containers
+    # Provider choice depends on the process role:
+    #  - Flask (web) process: ALWAYS CPU. A CUDA ONNX session is thread-affine;
+    #    text search runs on short-lived per-request threads, so a GPU session
+    #    created on one (then-dead) thread and reused/torn-down from another
+    #    crashes the worker. CPU ONNX is thread-safe and frees GPU VRAM.
+    #  - RQ worker process: keep the original behaviour (CUDA if available) so
+    #    nothing changes for worker-side workloads.
     session = None
     available_providers = ort.get_available_providers()
-    
-    if 'CUDAExecutionProvider' in available_providers:
+    _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
+
+    if not _is_worker:
+        provider_options = [('CPUExecutionProvider', {})]
+        logger.info("CLAP text model: CPU only (Flask process) - thread-safe across request threads")
+    elif 'CUDAExecutionProvider' in available_providers:
         gpu_device_id = 0
         cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
         if cuda_visible and cuda_visible != '-1':
             gpu_device_id = 0
-        
+
         cuda_options = {
             'device_id': gpu_device_id,
             'arena_extend_strategy': 'kSameAsRequested',

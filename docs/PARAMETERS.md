@@ -192,33 +192,19 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_WHISPER_MODEL_DIR`                  | Path to the Whisper-small ONNX bundle directory. Must contain `encoder_model.onnx`, `decoder_model_merged.onnx`, `tokenizer.json` and the rest of the HuggingFace optimum export. Pre-bundled in the official Docker image from `lyrics_model_whisper.tar.gz`. | `/app/model/whisper-small-onnx` |
 | `LYRICS_WHISPER_LANG_CONFIDENCE`            | Confidence floor for Whisper's built-in language detection (softmax over the 99 language tokens at the first decoder step). Chunks whose top-language probability falls below this are dropped and the track is treated as instrumental — no external langdetect involved. Lower to 0.5 if you find legit songs being dropped. | `0.7` |
 | `LYRICS_WHISPER_MIN_FREE_RAM_GB`            | Minimum free RAM (GB) before Whisper loads. Whisper-small peaks ~1.5 GB, so 2.5 GB leaves headroom. | `2.5` |
+| `LYRICS_TEXT_MAX_COMPRESSION_RATIO`         | Compression ratio (zlib) used to filter out text that is not real lyrics. Highly repetitive content compresses far more than real lyrics, so text above this ratio is dropped before embedding. Set to `0` to disable the gate. | `15.0` |
 | `SEM_GROVE_WEIGHT_LYRICS`                   | Contribution of the lyrics embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.75` |
 | `SEM_GROVE_WEIGHT_AUDIO`                    | Contribution of the MusicNN audio embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.25` |
 
 
-The **AI model** tested for Clustering naming and for the instant playlist functionality are:
+> ⚠️ **The only officially supported model is `qwen3.5:9b` or `qwen3.5:4b` for faster one**. Compatibility testing is done exclusively against it. Other models below were tested and may work, but **use them at your own risk** — issues opened for untested or arbitrary models could be closed. Different models behave differently and outputs vary between runs.
 
-March 2026:
-* anthropic/claude-sonnet-4.6 (best performing model)
-* anthropic/claude-haiku-4.5
-* google/gemini-3-flash-preview
+> ℹ️ **The models listed below were tested in the past and will not be retested going forward.** They are documented for reference only.
 
-Earlier:
-* mistral:7b
-* llama3.1:8b
-* gemini-2.5-pro
-* gemini-1.5-flash-latest
+**Self-hosted (Ollama):** `gemma3:4b`, `ministral-3:3b` (fastest), plus: llama3.1:8b, llama3.2:1b/3b, gemma3:1b, qwen3:0.6b/1.7b, qwen2.5:1.5b, qwen3.5:0.8b/2b, deepseek-r1:1.5b, phi4-mini:3.8b, lfm2.5-thinking:1.2b.
 
-For **selhosting AI** with Ollama these are the ones that worked best when tested in March 2026 (in order):
-1. qwen3.5:9b (largest tested, best performing)
-2. qwen3.5:4b
-3. gemma3:4b
-4. ministral-3:3b (this one is the fastest)
+**Cloud, tested March 2026:** `claude-sonnet-4.6` (best), `claude-haiku-4.5`, `gemini-3-flash-preview`. Earlier: mistral:7b, llama3.1:8b, gemini-2.5-pro, gemini-1.5-flash-latest.
 
-The models we tested and compared: llama3.1:8b, llama3.2:1b, llama3.2:3b, gemma3:1b, gemma3:4b, qwen3:0.6b, qwen3:1.7b, qwen2.5:1.5b, qwen3.5:0.8b, qwen3.5:2b, qwen3.5:4b,qwen3.5:9b, deepseek-r1:1.5b, phi4-mini:3.8b, ministral-3:3b, lfm2.5-thinking:1.2b
-
-**Please note:** Different models can have different parameters and don't work. Every time you run the promnpt it can give you different results.
-
-**(*)** For using GEMINI API you need to have a Google account, a free account can be used if needed. Same goes for Mistral. Instead if you want to self-host Ollama here you can find a deployment example:
+You can use either an external AI API or self-host with Ollama — deployment example here:
 
 * https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama

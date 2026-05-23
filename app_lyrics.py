@@ -4,13 +4,15 @@ Provides web interface and API for lyrics-based song search.
 
 Two modes:
   * Axis search: target sliders over MUSIC_ANALYSIS_AXES labels (0..1).
-  * Free-text search: e5-base-v2 embedding nearest-neighbor on the lyrics
-    voyager index built from per-song lyrics embeddings.
+  * Free-text search: gte-multilingual-base embedding nearest-neighbor on the
+    lyrics voyager index built from per-song lyrics embeddings.
 """
 
 import logging
 
 from flask import Blueprint, jsonify, render_template, request
+
+from app_helper import attach_song_features
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +132,7 @@ def lyrics_search_axes_api():
         results = search_by_axes(targets, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'results': []}), 404
+        attach_song_features(results)
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
@@ -143,7 +146,7 @@ def lyrics_search_text_api():
     ---
     tags:
       - Lyrics Search
-    summary: Embed the query with e5-base-v2 and find nearest neighbors in the lyrics voyager index.
+    summary: Embed the query with gte-multilingual-base and find nearest neighbors in the lyrics voyager index.
     requestBody:
       required: true
       content:
@@ -207,6 +210,7 @@ def lyrics_search_text_api():
         results = search_by_text(query, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
+        attach_song_features(results)
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")

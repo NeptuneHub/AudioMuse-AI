@@ -854,7 +854,7 @@ if not _is_worker:
           logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load Lyrics search cache (voyager index over per-song e5 embeddings + axis-score matrix)
+    # Load Lyrics search cache (voyager index over per-song gte embeddings + axis-score matrix)
     try:
       from config import LYRICS_ENABLED
       if LYRICS_ENABLED:
