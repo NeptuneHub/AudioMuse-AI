@@ -1,0 +1,193 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+    .timeline-header {
+        margin-bottom: 1.5rem;
+    }
+    .timeline-header h1 {
+        font-size: 1.6rem;
+        margin-bottom: 0.25rem;
+    }
+    .timeline-header p {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+    }
+    .timeline-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-bottom: 1.5rem;
+    }
+    .summary-card {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        padding: 14px;
+        text-align: center;
+    }
+    .summary-card .value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: var(--text-title);
+    }
+    .summary-card .label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-top: 4px;
+        letter-spacing: 0.04em;
+    }
+    .timeline-controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 1.25rem;
+        flex-wrap: wrap;
+    }
+    .timeline-controls select,
+    .timeline-controls input {
+        padding: 6px 10px;
+        border: 1px solid var(--border-color);
+        border-radius: 0.4rem;
+        background: var(--bg-body);
+        color: var(--text-body);
+        font-size: 0.85rem;
+    }
+    .timeline-controls label {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+    .chart-container {
+        background: var(--bg-body);
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        padding: 16px;
+        margin-bottom: 1.5rem;
+        position: relative;
+        height: 350px;
+    }
+    .chart-container canvas {
+        width: 100% !important;
+        height: 100% !important;
+    }
+    .timeline-table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        border-radius: 0.6rem;
+        margin-bottom: 1.5rem;
+    }
+    .timeline-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }
+    .timeline-table th,
+    .timeline-table td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-color);
+        white-space: nowrap;
+    }
+    .timeline-table th {
+        background: var(--bg-body);
+        color: var(--text-muted);
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        position: sticky;
+        top: 0;
+    }
+    .timeline-table tr:hover {
+        background: var(--bg-hover, rgba(0,0,0,0.02));
+    }
+    .energy-bar {
+        display: inline-block;
+        height: 8px;
+        border-radius: 4px;
+        background: linear-gradient(90deg, #4ade80, #f59e0b, #ef4444);
+        vertical-align: middle;
+    }
+    .play-badge {
+        display: inline-block;
+        background: var(--accent-color, #6366f1);
+        color: #fff;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 10px;
+    }
+    .loading-spinner {
+        text-align: center;
+        padding: 3rem;
+        color: var(--text-muted);
+    }
+    .error-msg {
+        text-align: center;
+        padding: 2rem;
+        color: #ef4444;
+    }
+    @media (max-width: 600px) {
+        .chart-container { height: 250px; }
+        .timeline-table th, .timeline-table td { padding: 8px 6px; font-size: 0.78rem; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="timeline-header">
+    <h1>Listening History Timeline</h1>
+    <p>Your top played songs with mood and energy trends over time</p>
+</div>
+
+<div id="timeline-summary" class="timeline-summary" style="display:none;"></div>
+
+<div class="timeline-controls">
+    <label for="limit-select">Show top:</label>
+    <select id="limit-select">
+        <option value="25">25 songs</option>
+        <option value="50" selected>50 songs</option>
+        <option value="100">100 songs</option>
+        <option value="150">150 songs</option>
+        <option value="200">200 songs</option>
+    </select>
+    <label for="chart-metric">Chart metric:</label>
+    <select id="chart-metric">
+        <option value="play_count">Play Count</option>
+        <option value="energy">Energy</option>
+        <option value="tempo">Tempo (BPM)</option>
+    </select>
+</div>
+
+<div class="chart-container">
+    <canvas id="timeline-chart"></canvas>
+</div>
+
+<div id="timeline-loading" class="loading-spinner">Loading listening history...</div>
+<div id="timeline-error" class="error-msg" style="display:none;"></div>
+<div id="timeline-table-section" class="timeline-table-wrap" style="display:none;">
+    <table class="timeline-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Title</th>
+                <th>Artist</th>
+                <th>Album</th>
+                <th>Plays</th>
+                <th>Energy</th>
+                <th>Tempo</th>
+                <th>Key</th>
+                <th>Last Played</th>
+            </tr>
+        </thead>
+        <tbody id="timeline-tbody"></tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block postHTMLScripts %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+<script src="{{ url_for('static', filename='chart.js') }}"></script>
+<script src="{{ url_for('static', filename='timeline.js') }}"></script>
+{% endblock %}

@@ -777,6 +777,7 @@ from app_smart_sessions import smart_sessions_bp
 from app_backup import backup_bp
 from app_dashboard import dashboard_bp
 from app_users import users_bp
+from app_timeline import timeline_bp
 
 app.register_blueprint(chat_bp, url_prefix='/chat')
 app.register_blueprint(clustering_bp)
@@ -799,6 +800,7 @@ app.register_blueprint(backup_bp)
 app.register_blueprint(migration_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(users_bp)
+app.register_blueprint(timeline_bp)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
