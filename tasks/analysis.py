@@ -162,6 +162,8 @@ def _decode_audio_with_pyav(file_path, target_sr):
     chunks = []
     total = 0
     with av.open(file_path) as container:
+        if not container.streams.audio:
+            return np.array([], dtype=np.float32)
         stream = container.streams.audio[0]
         for frame in container.decode(stream):
             for rframe in resampler.resample(frame):
