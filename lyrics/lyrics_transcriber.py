@@ -635,6 +635,12 @@ def _cjk_script_lang(text: str, min_ratio: float = CJK_SCRIPT_MIN_RATIO) -> str:
         return 'ja'
     return 'zh'
 
+def _resolve_lang_and_quality(text: str, candidate_lang: str) -> Tuple[str, str, Optional[str]]:
+    script_lang = _cjk_script_lang(text)
+    resolved_lang = script_lang or (candidate_lang or '').strip().lower()
+    reject = _text_quality_reject(text, resolved_lang)
+    return resolved_lang, script_lang, reject
+
 def _lyrics_result(text: str, translated_text: str, final_text: str,
                    language: str, used_seconds: float,
                    embedding: Optional[np.ndarray],
@@ -792,7 +798,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                     'asr_lang=%r / avg_logprob=%.2f',
                     len(raw_text), asr_lang, asr_avg_logprob)
         logger.info('STEP 5 raw ASR output: %s', raw_text or '<empty>')
-        _reject = _text_quality_reject(raw_text, asr_lang)
+        _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, asr_lang)
+        if _script and _script != asr_lang:
+            logger.info('STEP 5: CJK script override %r → %r', asr_lang, _script)
+        if _resolved:
+            detected_lang = _resolved
         if _reject:
             logger.info('STEP 5: ASR transcript rejected (%s) — dropping to instrumental sentinel', _reject)
             raw_text = ''
@@ -809,13 +819,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             text_lang, text_conf = '', 0.0
         logger.info('STEP 6: langdetect (%s chars) → %r (conf=%.2f)',
                     len(raw_text), text_lang, text_conf)
-        _script = _cjk_script_lang(raw_text)
+        _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, text_lang)
         if _script:
             if _script != text_lang:
                 logger.info('STEP 6: CJK script override %r → %r (langdetect conf=%.2f)',
                             text_lang, _script, text_conf)
-            text_lang = _script
-            _reject = _text_quality_reject(raw_text, _script)
+            text_lang = _resolved
             if _reject:
                 logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
                 raw_text = ''
@@ -823,11 +832,9 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             logger.info('STEP 6: confidence %.2f < %.2f - dropping to instrumental',
                         text_conf, LANG_CONFIDENCE_MIN)
             raw_text = ''
-        else:
-            _reject = _text_quality_reject(raw_text, text_lang)
-            if _reject:
-                logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
-                raw_text = ''
+        elif _reject:
+            logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
+            raw_text = ''
         if raw_text:
             detected_lang = text_lang or detected_lang
 
@@ -835,19 +842,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP 7: dropping ASR transcript (lang=%r, logprob=%.2f)',
                     asr_lang, asr_avg_logprob)
         raw_text = ''
-    if whisper_raw_len > 0:
-        _script = _cjk_script_lang(raw_text)
-        if _script and _script != asr_lang:
-            logger.info('STEP 7: ASR lang %r overridden to CJK script %r', asr_lang, _script)
-            detected_lang = _script
-        else:
-            detected_lang = asr_lang or detected_lang
     logger.info('STEP 7 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
     text_for_cleanup = raw_text
     final_text = text_for_cleanup
     if final_text:
-        _reject = _text_quality_reject(final_text)
+        _reject = _text_quality_reject(final_text, detected_lang)
         if _reject:
             logger.info('STEP 8: final text rejected (%s) - dropping to instrumental', _reject)
             raw_text = text_for_cleanup = final_text = ''
