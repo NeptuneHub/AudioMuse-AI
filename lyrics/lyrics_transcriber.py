@@ -268,7 +268,7 @@ _NON_TEXT_UNICODE_RE = re.compile(
     flags=re.UNICODE,
 )
 
-def _sanitize_lyrics_text(text: str, max_words: int = 300, max_chars: int = 2000) -> str:
+def _sanitize_lyrics_text(text: str, max_words: int = 300) -> str:
     if not text:
         return ''
     text = text.replace('﻿', '').replace('​', '').replace('‌', '')
@@ -297,8 +297,6 @@ def _sanitize_lyrics_text(text: str, max_words: int = 300, max_chars: int = 2000
     words = cleaned.split()
     if len(words) > max_words:
         cleaned = ' '.join(words[:max_words])
-    if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars]
     return cleaned
 
 _sanitize_api_lyrics = _sanitize_lyrics_text
