@@ -1,0 +1,3 @@
+-r common.txt
+-r cpu.txt
+-r gpu.txt
