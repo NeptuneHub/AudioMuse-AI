@@ -105,6 +105,8 @@ jobs:
         ls -la test/models/
         echo "gte-multilingual-base/ contents:"
         ls -la test/models/gte-multilingual-base/ || true
+        echo "gte model checksums (sha256):"
+        sha256sum test/models/gte-multilingual-base-int8.onnx test/models/gte-multilingual-base/tokenizer.json || true
         echo "LYRICS_MODEL_DIR=${GITHUB_WORKSPACE}/test/models" >> "$GITHUB_ENV"
         echo "LYRICS_GTE_ONNX_PATH=${GITHUB_WORKSPACE}/test/models/gte-multilingual-base-int8.onnx" >> "$GITHUB_ENV"
         echo "LYRICS_GTE_TOKENIZER_DIR=${GITHUB_WORKSPACE}/test/models/gte-multilingual-base" >> "$GITHUB_ENV"
