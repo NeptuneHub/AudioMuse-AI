@@ -673,7 +673,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    artist: Optional[str] = None,
                    track: Optional[str] = None,
                    track_id: Optional[str] = None,
-                   top_moods: Optional[Dict[str, float]] = None) -> Dict[str, object]:
+                   top_moods: Optional[Dict[str, float]] = None,
+                   audio_loader=None) -> Dict[str, object]:
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
 
@@ -750,11 +751,15 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     if not raw_text and LYRICS_ASR_ENABLE:
         logger.info('STEP 4 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
         if audio is None or sr is None:
-            if not source_path:
-                raise ValueError('analyze_lyrics requires audio+sr, source_path, or artist+track for API lookup')
-            if not os.path.exists(str(source_path)):
-                raise FileNotFoundError(f'Audio source not found: {source_path}')
-            audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+            if source_path:
+                if not os.path.exists(str(source_path)):
+                    raise FileNotFoundError(f'Audio source not found: {source_path}')
+                audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+            elif audio_loader is not None:
+                logger.info('STEP 4: ASR needed - downloading audio now')
+                audio, sr = audio_loader()
+            else:
+                raise ValueError('analyze_lyrics requires audio+sr, source_path, audio_loader, or artist+track for API lookup')
         audio_clip, used_seconds = _clip_audio(audio, sr)
         logger.info('STEP 4 end: audio ready, used=%.2fs samples=%s sr=%s',
                     used_seconds, len(audio_clip), sr)

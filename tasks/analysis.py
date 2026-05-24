@@ -488,9 +488,19 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
 
-                path = download_track(TEMP_DIR, item)
-                if not path:
-                    continue
+                needs_audio_upfront = needs_musicnn or needs_clap
+                if needs_audio_upfront:
+                    path = download_track(TEMP_DIR, item)
+                    if not path:
+                        continue
+                else:
+                    path = None
+
+                def _ensure_track_download():
+                    nonlocal path
+                    if path is None:
+                        path = download_track(TEMP_DIR, item)
+                    return path
 
                 try:
                     track_processed = False  # MusiCNN | CLAP | Lyrics produced data?
@@ -557,7 +567,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
                     if _ah.run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                                                 needs_lyrics, LYRICS_ENABLED, robust_load_audio_with_fallback,
-                                                top_moods=top_moods):
+                                                top_moods=top_moods, download_fn=_ensure_track_download):
                         track_processed = True
 
                     if track_processed:
