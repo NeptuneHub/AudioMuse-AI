@@ -1,0 +1,6 @@
+# Dependabot-only manifest for the CPU stack (dependency reporting).
+# DO NOT pip install this file. The real install files live in /requirements
+# and are the ones used by the Dockerfiles. This only re-exports them so
+# Dependabot can report the CPU build's dependencies.
+-r ../../../requirements/common.txt
+-r ../../../requirements/cpu.txt
