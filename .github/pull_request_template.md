@@ -41,4 +41,4 @@
 - [ ] CONTRIBUTING.md read and accepted
 - [ ] Checked performance on a big library (> 150k songs) works without issues
 
-**Related ISSUE:** #xx
+**Related ISSUE:** Closes #xx
