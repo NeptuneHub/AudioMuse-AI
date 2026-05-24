@@ -496,7 +496,7 @@ def persist_clap_embedding(item_id, embedding, needs_clap):
 
 def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                          needs_lyrics, lyrics_enabled, robust_load_fn,
-                         top_moods=None):
+                         top_moods=None, download_fn=None):
     """Run lyrics analysis and persist embeddings. Returns True on save.
 
     ``top_moods`` is the MusicNN top-N moods dict (label → score). When it
@@ -517,16 +517,28 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
     logger.info(f"  - Starting lyrics analysis for {track_name_full}...")
     try:
         from lyrics.lyrics_transcriber import analyze_lyrics
+        audio_loader = None
         if track_audio is None or track_sr is None:
-            logger.info("  - Loading audio from file for lyrics analysis")
-            track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
-            if track_audio is None or track_audio.size == 0 or track_sr is None:
-                raise RuntimeError("Failed to load audio for lyrics analysis")
+            if path is not None:
+                logger.info("  - Loading audio from file for lyrics analysis")
+                track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
+                if track_audio is None or track_audio.size == 0 or track_sr is None:
+                    raise RuntimeError("Failed to load audio for lyrics analysis")
+            else:
+                def audio_loader():
+                    p = download_fn() if download_fn is not None else None
+                    if not p:
+                        raise RuntimeError("Failed to download audio for lyrics ASR")
+                    a, s = robust_load_fn(str(p), target_sr=16000)
+                    if a is None or a.size == 0 or s is None:
+                        raise RuntimeError("Failed to load audio for lyrics ASR")
+                    return a, s, str(p)
         result = analyze_lyrics(
-            audio=track_audio, sr=track_sr, source_path=str(path),
+            audio=track_audio, sr=track_sr,
+            source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'), track_id=item.get('Id') or item.get('id'),
-            top_moods=top_moods,
+            top_moods=top_moods, audio_loader=audio_loader,
         )
         emb = result.get('embedding')
         if emb is None or getattr(emb, 'size', 0) == 0:
