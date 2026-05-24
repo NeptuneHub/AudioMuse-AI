@@ -532,7 +532,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                     a, s = robust_load_fn(str(p), target_sr=16000)
                     if a is None or a.size == 0 or s is None:
                         raise RuntimeError("Failed to load audio for lyrics ASR")
-                    return a, s
+                    return a, s, str(p)
         result = analyze_lyrics(
             audio=track_audio, sr=track_sr,
             source_path=str(path) if path is not None else None,

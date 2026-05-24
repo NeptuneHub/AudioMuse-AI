@@ -757,9 +757,11 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
             elif audio_loader is not None:
                 logger.info('STEP 4: ASR needed - downloading audio now')
-                audio, sr = audio_loader()
+                audio, sr, loaded_path = audio_loader()
+                if not source_path and loaded_path:
+                    source_path = loaded_path
             else:
-                raise ValueError('analyze_lyrics requires audio+sr, source_path, audio_loader, or artist+track for API lookup')
+                raise ValueError('analyze_lyrics requires audio+sr, source_path, or audio_loader for ASR when lyrics are not found upstream')
         audio_clip, used_seconds = _clip_audio(audio, sr)
         logger.info('STEP 4 end: audio ready, used=%.2fs samples=%s sr=%s',
                     used_seconds, len(audio_clip), sr)
