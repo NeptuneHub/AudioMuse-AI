@@ -208,6 +208,56 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     failures = []
     expected_axis_dim = len(axis_columns())
 
+    import hashlib
+    import onnxruntime as _ort
+    import transformers as _tf
+    import tokenizers as _tk
+    from lyrics import gte_onnx as _gte
+
+    def _sha256(path):
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    model_sha = _sha256(gte_onnx_path)
+    gte_tokenizer, _ = _gte.load_gte_model()
+
+    current_meta = {
+        'model_sha256': model_sha,
+        'tokenizers': _tk.__version__,
+        'onnxruntime': _ort.__version__,
+        'transformers': _tf.__version__,
+        'max_tokens': int(config.LYRICS_GTE_MAX_TOKENS),
+    }
+
+    print('\n[lyrics-test] environment diagnostics')
+    print(f'  numpy        : {np.__version__}')
+    print(f'  onnxruntime  : {_ort.__version__}')
+    print(f'  transformers : {_tf.__version__}')
+    print(f'  tokenizers   : {_tk.__version__}')
+    print(f'  max_tokens   : {config.LYRICS_GTE_MAX_TOKENS}')
+    print(f'  gte onnx     : {gte_onnx_path.name}')
+    print(f'  gte sha256   : {model_sha}')
+    for _name, _text in FAKE_LYRICS_BY_TRACK.items():
+        print(f'  tokens[{_name}] : {len(gte_tokenizer.encode(_text).ids)}')
+
+    if not record_mode:
+        expected_meta = expected.get('_meta') if isinstance(expected, dict) else None
+        baseline_sha = (expected_meta or {}).get('model_sha256')
+        if baseline_sha and baseline_sha != model_sha:
+            pytest.fail(
+                'gte model changed since the baseline was recorded '
+                f'(baseline sha256={baseline_sha}, current sha256={model_sha}). '
+                f'The recorded vectors in {expected_path.name} are no longer valid '
+                'for this model. Delete the file to re-record against the new model, '
+                'or restore the model the baseline was recorded with.'
+            )
+        if expected_meta:
+            print(f'  baseline sha256 : {baseline_sha} [{"MATCH" if baseline_sha == model_sha else "MISMATCH"}]')
+            print(f'  baseline tokenizers : {expected_meta.get("tokenizers")}')
+
     for track_name in FAKE_LYRICS_BY_TRACK:
         current['name'] = track_name
         print(f'\n{"=" * 80}')
@@ -290,9 +340,10 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
             )
 
     if record_mode:
+        recorded['_meta'] = current_meta
         with expected_path.open('w', encoding='utf-8') as fh:
             json.dump(recorded, fh, indent=2)
-        print(f'\nWrote expected vectors to {expected_path}')
+        print(f'\nWrote expected vectors to {expected_path} (model sha256={model_sha})')
         return
 
     if failures:
