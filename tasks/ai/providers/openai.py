@@ -293,12 +293,18 @@ def call_with_tools(
             # works on any OpenAI-compatible provider (OpenRouter, vLLM, ...).
             # Matches the local Ollama num_predict cap (1024) for consistency.
             "max_tokens": 1024,
-            # Disable reasoning so the model goes straight to the tool call (the
-            # OpenAI-standard switch; OpenRouter honors it too). The local Ollama
-            # path does the same via /no_think. Dropped automatically below if a
-            # provider/model rejects it.
-            "reasoning_effort": "none",
         }
+
+        is_deepseek = "deepseek" in (model_name or "").lower()
+        deepseek_thinking_off_forms = [
+            {"thinking": {"type": "disabled"}},
+            {"thinking": "none"},
+            {"thinking_mode": "non_think"},
+        ]
+        if is_deepseek:
+            payload.update(deepseek_thinking_off_forms[0])
+        else:
+            payload["reasoning_effort"] = "none"
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for OpenAI request")
@@ -312,9 +318,26 @@ def call_with_tools(
         try:
             result = _post(payload)
         except httpx.HTTPStatusError as http_err:
-            # A model/provider that doesn't support reasoning_effort (e.g. a
-            # non-reasoning model) returns 400. Drop it and retry once.
-            if http_err.response.status_code == 400 and "reasoning_effort" in payload:
+            if http_err.response.status_code != 400:
+                raise
+            if is_deepseek:
+                last_err = http_err
+                result = None
+                for shape in deepseek_thinking_off_forms[1:]:
+                    payload.pop("thinking", None)
+                    payload.pop("thinking_mode", None)
+                    payload.update(shape)
+                    log_messages.append("DeepSeek rejected the thinking-disable parameter; retrying with an alternate form")
+                    try:
+                        result = _post(payload)
+                        break
+                    except httpx.HTTPStatusError as retry_err:
+                        if retry_err.response.status_code != 400:
+                            raise
+                        last_err = retry_err
+                if result is None:
+                    raise last_err
+            elif "reasoning_effort" in payload:
                 log_messages.append("reasoning_effort unsupported by this model; retrying without it")
                 payload.pop("reasoning_effort", None)
                 result = _post(payload)
