@@ -242,9 +242,9 @@ def lyrics_warmup_api():
     try:
         from tasks.gte_warm_cache import warmup_gte_model
         return jsonify(warmup_gte_model())
-    except Exception as e:
-        logger.error(f"Lyrics model warmup failed: {e}")
-        return jsonify({'error': str(e), 'loaded': False}), 500
+    except Exception:
+        logger.exception("Lyrics model warmup failed")
+        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup/status', methods=['GET'])
