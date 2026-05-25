@@ -284,6 +284,29 @@ def reset_onnx_memory_pool() -> bool:
         return False
 
 
+def release_memory_to_os() -> bool:
+    """Return freed heap memory to the OS via glibc malloc_trim (Linux only).
+
+    ONNX/glibc keep freed allocations in the process heap for reuse, so RSS does
+    not drop after a model is unloaded until the heap is trimmed. No-op on
+    non-Linux platforms.
+    """
+    gc.collect()
+    import platform
+    if platform.system() != "Linux":
+        return False
+    try:
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        ctypes.CDLL(libc_name).malloc_trim(0)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
 def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool = True) -> Dict[str, bool]:
     """
     Perform comprehensive memory cleanup combining all available methods.
@@ -303,23 +326,24 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
     results = {
         'cuda': False,
         'onnx_pool': False,
-        'gc': True  # Garbage collection always succeeds
+        'gc': True,  # Garbage collection always succeeds
+        'malloc_trim': False
     }
-    
+
     # CUDA cleanup (no-op on CPU-only systems)
     if force_cuda:
         results['cuda'] = cleanup_cuda_memory(force=True)
         # Note: cleanup_cuda_memory() returns False on CPU-only systems, which is expected
-    
+
     # ONNX memory pool reset (works for both CPU and GPU)
     if reset_onnx_pool:
         results['onnx_pool'] = reset_onnx_memory_pool()
-    
-    # Final garbage collection (always works)
-    gc.collect()
-    
+
+    # Final garbage collection + return the freed heap to the OS so RSS drops
+    results['malloc_trim'] = release_memory_to_os()
+
     successful_cleanups = sum(results.values())
-    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True}.items() if v])
+    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True, 'malloc_trim': True}.items() if v])
     
     return results
 

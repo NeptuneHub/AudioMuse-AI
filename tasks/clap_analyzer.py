@@ -304,8 +304,8 @@ def initialize_clap_text_model():
         return False
     
     try:
-        _text_session = _load_text_model()
         _tokenizer = _load_tokenizer()
+        _text_session = _load_text_model()
         logger.info("✓ CLAP text model initialized successfully (for text search)")
         return True
     except Exception as e:

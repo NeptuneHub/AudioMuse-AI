@@ -341,6 +341,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
     let currentResults = [];
 
+    const lyricsEnabled = "{{ 'true' if lyrics_enabled else 'false' }}" === "true";
+    if (lyricsEnabled) {
+        (async function warmupLyricsModel() {
+            try {
+                const r = await fetch("{{ url_for('lyrics_search_bp.lyrics_warmup_api') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const d = await r.json();
+                if (d.loaded) console.log(`Lyrics model warmed up (expires in ${d.expiry_seconds}s)`);
+            } catch (e) {
+                console.error('Failed to warmup lyrics model:', e);
+            }
+        })();
+    }
+
     // ----- Tabs -----
     tabs.forEach(btn => {
         btn.addEventListener('click', () => {

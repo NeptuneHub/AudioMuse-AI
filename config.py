@@ -501,6 +501,10 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
 
+# Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
+# loaded after last use. Auto-unloads after this idle period to free RAM.
+LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "300"))
+
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)

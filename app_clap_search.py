@@ -190,10 +190,10 @@ def warmup_model_api():
     try:
         status = warmup_text_search_model()
         return jsonify(status)
-    except Exception as e:
-        logger.error(f"Model warmup failed: {e}")
+    except Exception:
+        logger.exception("Model warmup failed")
         return jsonify({
-            'error': str(e),
+            'error': 'Warmup failed.',
             'loaded': False
         }), 500
 
