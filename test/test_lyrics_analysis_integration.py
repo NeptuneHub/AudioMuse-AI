@@ -9,8 +9,9 @@
 # the API path:
 #     STEP 3 (API hit) -> STEP 6 (quality gate) -> STEP 9 (gte embedding + axis vector)
 # Because the input text is identical on every run, the resulting
-# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.99
-# vs the recorded reference).
+# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.98
+# vs the recorded reference; the looser-than-1.0 bound absorbs INT8 cross-CPU
+# jitter, e.g. VNNI vs non-VNNI runners).
 #
 # The gte model is loaded the same way the production code and Dockerfile do:
 # INT8 ONNX weights at ``<models>/gte-multilingual-base-int8.onnx`` and
@@ -31,7 +32,7 @@ import numpy as np
 import pytest
 
 
-SIMILARITY_THRESHOLD = 0.99
+SIMILARITY_THRESHOLD = 0.98
 
 
 # Hand-written, deterministic, ~200-word English "lyrics" used as the fake
@@ -131,7 +132,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     """Runs analyze_lyrics with a fake API hit (deterministic English text)
     and checks the gte-multilingual-base embedding + axis vector against
-    pre-recorded values via cosine similarity (threshold = 0.99).
+    pre-recorded values via cosine similarity (threshold = 0.98).
     """
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
