@@ -86,7 +86,7 @@ jobs:
 
     - name: Download gte model bundle (release v4.0.0-model)
       run: |
-        # The Dockerfile downloads lyrics_model_gte.tar.gz from the
+        # The Dockerfile downloads lyrics_model_gte_vnni.tar.gz from the
         # v4.0.0-model release and extracts it flat into /app/model/. After
         # extraction the layout is:
         #   <models>/gte-multilingual-base-int8.onnx      (INT8 ONNX weights)
@@ -96,10 +96,10 @@ jobs:
         base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
         mkdir -p test/models
         if [ ! -f test/models/gte-multilingual-base-int8.onnx ] || [ ! -f test/models/gte-multilingual-base/tokenizer.json ]; then
-          echo "Downloading lyrics_model_gte.tar.gz..."
-          curl -L "${base_url}/lyrics_model_gte.tar.gz" -o /tmp/lyrics_model_gte.tar.gz
-          tar -xzf /tmp/lyrics_model_gte.tar.gz -C test/models
-          rm -f /tmp/lyrics_model_gte.tar.gz
+          echo "Downloading lyrics_model_gte_vnni.tar.gz..."
+          curl -L "${base_url}/lyrics_model_gte_vnni.tar.gz" -o /tmp/lyrics_model_gte_vnni.tar.gz
+          tar -xzf /tmp/lyrics_model_gte_vnni.tar.gz -C test/models
+          rm -f /tmp/lyrics_model_gte_vnni.tar.gz
         fi
         echo "test/models/ after extraction:"
         ls -la test/models/
@@ -121,6 +121,9 @@ jobs:
         echo ""
         echo "Checking for audio files in test/songs/..."
         ls -la test/songs/
+        echo ""
+        echo "Runner CPU INT8 path (vnni => int32 accumulation, none => int16/VPMADDUBSW):"
+        grep -o 'avx512_vnni\|avx_vnni' /proc/cpuinfo | sort -u | head -1 || echo "none (non-VNNI)"
 
     - name: Run integration tests
       run: |

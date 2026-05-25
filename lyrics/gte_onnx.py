@@ -43,7 +43,7 @@ def load_gte_model():
         if not os.path.isfile(onnx_path):
             raise RuntimeError(
                 f'gte-multilingual-base ONNX weights not found at {onnx_path}. '
-                'Expected from lyrics_model_gte.tar.gz (NeptuneHub release); '
+                'Expected from lyrics_model_gte_vnni.tar.gz (NeptuneHub release); '
                 'override with LYRICS_GTE_ONNX_PATH.')
 
         tokenizer_path = os.path.join(tokenizer_dir, 'tokenizer.json')

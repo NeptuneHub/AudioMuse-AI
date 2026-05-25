@@ -306,8 +306,8 @@ RUN set -eux; \
 RUN set -eux; \
     gte_onnx_path="/app/model/gte-multilingual-base-int8.onnx"; \
     gte_tok_dir="/app/model/gte-multilingual-base"; \
-    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_gte.tar.gz"; \
-    gte_dest="/tmp/lyrics_model_gte.tar.gz"; \
+    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_gte_vnni.tar.gz"; \
+    gte_dest="/tmp/lyrics_model_gte_vnni.tar.gz"; \
     echo "Downloading gte-multilingual-base INT8 ONNX bundle (~325 MB)..."; \
     n=0; \
     until [ "$n" -ge 5 ]; do \

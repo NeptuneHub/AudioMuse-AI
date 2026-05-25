@@ -5,9 +5,6 @@ on:
     # Trigger on version tags for stable releases
     tags:
       - 'v*.*.*'  # Trigger for version tags like v1.0.0
-    # Trigger on pushes to devel branch for development releases
-    branches:
-      - devel
   pull_request:
     types:
       - opened
