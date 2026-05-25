@@ -15,7 +15,7 @@
 # The gte model is loaded the same way the production code and Dockerfile do:
 # INT8 ONNX weights at ``<models>/gte-multilingual-base-int8.onnx`` and
 # tokenizer files under ``<models>/gte-multilingual-base/`` — the layout of the
-# ``lyrics_model_gte.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
+# ``lyrics_model_gte_vnni.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
 #
 # First-run behaviour: if ``test/lyrics_expected_gte_512.json`` is missing, the
 # test enters RECORD mode automatically, writes the file and passes. The CI
@@ -147,7 +147,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'tokenizers not importable: {exc}')
 
-    # gte bundle layout (lyrics_model_gte.tar.gz):
+    # gte bundle layout (lyrics_model_gte_vnni.tar.gz):
     #   <models>/gte-multilingual-base-int8.onnx     - INT8 ONNX weights
     #   <models>/gte-multilingual-base/tokenizer.json - tokenizer + config files
     gte_onnx_path = models_dir / 'gte-multilingual-base-int8.onnx'
@@ -155,7 +155,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     if not gte_onnx_path.is_file() or not (gte_tokenizer_dir / 'tokenizer.json').is_file():
         pytest.skip(
             f'gte-multilingual-base ONNX bundle not found at {models_dir}. '
-            f'In CI the workflow extracts lyrics_model_gte.tar.gz from release '
+            f'In CI the workflow extracts lyrics_model_gte_vnni.tar.gz from release '
             f'v4.0.0-model into test/models/. For a local run download and '
             f'extract it manually.'
         )

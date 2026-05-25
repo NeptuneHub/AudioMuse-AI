@@ -69,3 +69,4 @@ testing_suite/
 analysis.md
 .claude/settings.local.json
 .claude/settings.local.json
+lyrics_model_gte_vnni.tar.gz
