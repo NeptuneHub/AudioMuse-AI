@@ -12,8 +12,6 @@ name: Build and Push AudioMuse AI Docker Image (NOAVX2)
 
 on:
   push:
-    branches:
-      - devel
     tags:
       - 'v*.*.*'
   pull_request:
