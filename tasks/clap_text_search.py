@@ -364,16 +364,14 @@ def warmup_text_search_model():
     # Load duration from config on first use
     if _WARM_CACHE_TIMER['duration_seconds'] is None:
         _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
-    
-    # Load text model only (not audio model - saves 268MB)
-    if not is_clap_text_loaded():
-        logger.info("Warming up CLAP text model for text search (not loading audio model)...")
-        success = initialize_clap_text_model()
-        if not success:
-            return {'loaded': False, 'expiry_seconds': 0}
-    
-    # Reset timer
+
     with _WARM_CACHE_TIMER['lock']:
+        if not is_clap_text_loaded():
+            logger.info("Warming up CLAP text model for text search (not loading audio model)...")
+            success = initialize_clap_text_model()
+            if not success:
+                return {'loaded': False, 'expiry_seconds': 0}
+
         _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
         
         # Start timer thread if not already running
