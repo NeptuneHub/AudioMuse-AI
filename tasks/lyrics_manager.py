@@ -799,6 +799,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
     """
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
     from lyrics.lyrics_transcriber import embed_query_text
+    from tasks.gte_warm_cache import warm_lock, warmup_gte_model
 
     if not LYRICS_ENABLED:
         return []
@@ -811,7 +812,9 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
         return []
 
     try:
-        query_vec = embed_query_text(text)
+        with warm_lock():
+            warmup_gte_model()
+            query_vec = embed_query_text(text)
         if query_vec is None or query_vec.size == 0:
             logger.error(f"Failed to embed lyrics query: {query_text!r}")
             return []

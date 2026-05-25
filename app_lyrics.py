@@ -217,6 +217,61 @@ def lyrics_search_text_api():
         return jsonify({'error': 'An internal error occurred.'}), 500
 
 
+@lyrics_search_bp.route('/api/lyrics/warmup', methods=['POST'])
+def lyrics_warmup_api():
+    """
+    Warm up the lyrics free-text search model.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Preload the gte-multilingual-base model and reset its idle-eviction timer.
+    description: Call this when the lyrics search page loads so the first text query is fast.
+    responses:
+      200:
+        description: Model loaded; idle timer reset.
+      400:
+        description: Lyrics search is disabled.
+      500:
+        description: Warmup failed.
+    """
+    from config import LYRICS_ENABLED
+
+    if not LYRICS_ENABLED:
+        return jsonify({'error': 'Lyrics search is disabled.', 'loaded': False}), 400
+
+    try:
+        from tasks.gte_warm_cache import warmup_gte_model
+        return jsonify(warmup_gte_model())
+    except Exception as e:
+        logger.error(f"Lyrics model warmup failed: {e}")
+        return jsonify({'error': str(e), 'loaded': False}), 500
+
+
+@lyrics_search_bp.route('/api/lyrics/warmup/status', methods=['GET'])
+def lyrics_warmup_status_api():
+    """
+    Lyrics search warmup status.
+    ---
+    tags:
+      - Lyrics Search
+    summary: Return whether the gte model is warm and seconds until idle-unload.
+    responses:
+      200:
+        description: Warm cache state.
+    """
+    from config import LYRICS_ENABLED
+
+    if not LYRICS_ENABLED:
+        return jsonify({'active': False, 'seconds_remaining': 0})
+
+    try:
+        from tasks.gte_warm_cache import get_gte_warm_status
+        return jsonify(get_gte_warm_status())
+    except Exception as e:
+        logger.error(f"Failed to get lyrics warmup status: {e}")
+        return jsonify({'active': False, 'seconds_remaining': 0})
+
+
 @lyrics_search_bp.route('/api/lyrics/cache/refresh', methods=['POST'])
 def lyrics_refresh_cache_api():
     """

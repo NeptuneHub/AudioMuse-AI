@@ -144,9 +144,6 @@ def _apply_thread_env(num_threads: int) -> None:
         except Exception:
             pass
 
-_embedding_tokenizer = None
-_embedding_model = None
-_embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 
@@ -157,13 +154,8 @@ def load_asr_model(num_threads: Optional[int] = None):
     return _load()
 
 def load_topic_embedding_model(model_name: Optional[str] = None):
-    global _embedding_tokenizer, _embedding_model, _embedding_model_name
     from .gte_onnx import load_gte_model
-    tokenizer, session = load_gte_model()
-    _embedding_tokenizer = tokenizer
-    _embedding_model = session
-    _embedding_model_name = model_name or 'Alibaba-NLP/gte-multilingual-base'
-    return tokenizer, session
+    return load_gte_model()
 
 def _get_axis_embeddings():
     global _axis_label_map, _axis_embeddings

@@ -31,8 +31,9 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download musicnn ONNX models with diagnostics and retry logic.
-# Lyrics models (Whisper / gte-multilingual-base / silero-vad) are downloaded
-# in later stages from the project release tarballs.
+# Lyrics / CLAP / HuggingFace bundles are downloaded in the RUN steps below,
+# all within this models stage so they are cached independently of the
+# Python requirements and application code.
 RUN set -eux; \
     mkdir -p /app/model; \
     urls=( \
@@ -60,120 +61,6 @@ RUN set -eux; \
             exit 1; \
         fi; \
     done
-
-# NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
-
-# ============================================================================
-# Stage 2a: runtime-base — RUNTIME-ONLY system libs (parent of `runner`)
-# ============================================================================
-# This stage holds only what the application needs at run time: shared
-# libraries (.so) that Python wheels load, plus the small set of CLI tools
-# the entrypoint / supervisord / debugging rely on. It deliberately omits
-# compilers and -dev headers — those live in the `base` stage below, which
-# is used solely to build Python wheels in the `libraries` stage and never
-# becomes a parent of `runner`.
-#
-# `cuda-compiler` is INTENTIONALLY kept here (not moved to build-only)
-# because cupy JIT-compiles CUDA kernels at runtime on GPU builds.
-FROM ${BASE_IMAGE} AS runtime-base
-
-ARG BASE_IMAGE
-
-SHELL ["/bin/bash", "-c"]
-
-RUN set -ux; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        # Use noninteractive frontend to avoid tzdata prompts when installing tzdata
-        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3 python3-pip \
-            libfftw3-double3=3.3.10-1ubuntu3 \
-            libyaml-0-2=0.2.5-1build1 \
-            libsamplerate0=0.2.2-4build1 \
-            libsndfile1=1.2.2-1ubuntu5.24.04.1 \
-            libopenblas0 \
-            liblapack3=3.12.0-3build1.1 \
-            libgomp1 \
-            libpq5 postgresql-client \
-            ffmpeg wget curl \
-            supervisor procps \
-            git vim redis-tools strace iputils-ping \
-            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    rm -rf /var/lib/apt/lists/* && \
-    apt-get remove -y python3-numpy || true && \
-    apt-get autoremove -y || true && \
-    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
-
-# ============================================================================
-# Stage 2b: base — runtime-base + compilers / -dev headers (BUILD-ONLY)
-# ============================================================================
-# Adds the toolchain needed to compile Python wheels (psycopg2, essentia,
-# numpy/scipy fallbacks, etc.). Parent of `libraries` only — `runner`
-# branches off `runtime-base`, so gcc/g++/python3-dev and the -dev headers
-# never reach the final published image.
-FROM runtime-base AS base
-
-ARG BASE_IMAGE
-
-# Copy uv for fast package management (10-100x faster than pip)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-
-RUN set -ux; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3-dev \
-            libfftw3-dev \
-            libyaml-dev \
-            libsamplerate0-dev \
-            libsndfile1-dev \
-            libopenblas-dev \
-            liblapack-dev=3.12.0-3build1.1 \
-            libpq-dev \
-            gcc g++; then \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# Stage 3: Libraries - Python packages installation
-# ============================================================================
-FROM base AS libraries
-
-ARG BASE_IMAGE
-
-WORKDIR /app
-
-# Copy requirements files
-COPY requirements/ /app/requirements/
-
-# Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
-# CPU builds: onnxruntime (CPU only), torch (CPU)
-# Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
-RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
-    else \
-        echo "CPU base image: installing all packages together for dependency resolution"; \
-        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
-    fi \
-    && echo "Verifying psycopg2 installation..." \
-    && python3 -c "import psycopg2; print('psycopg2 OK')" \
-    && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
-    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-
-RUN python3 -m wn download oewn:2024 && echo "wn / OEWN 2024 corpus downloaded"
 
 # Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
 # These are the text encoders needed by laion-clap library for text embeddings
@@ -218,49 +105,7 @@ RUN set -eux; \
     echo "✓ HuggingFace models extracted to $cache_dir"; \
     du -sh "$cache_dir"
 
-# ============================================================================
-# Stage 4: Runner - Final production image
-# ============================================================================
-# IMPORTANT: extends `runtime-base` (NOT `base`). That keeps gcc/g++,
-# python3-dev and the *-dev headers out of the final image, saving
-# ~300-400 MB. Anything that needs compiling lives in the `libraries`
-# stage and gets COPY'd in as already-built artifacts below.
-FROM runtime-base AS runner
-
-ENV LANG=C.UTF-8 \
-    PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC \
-    HF_HOME=/app/.cache/huggingface \
-    HF_HUB_DISABLE_XET=1 \
-    HF_XET_DISABLE=1
-
-# Note: bundled HuggingFace models (RoBERTa, ...) load with
-# local_files_only=True per call. The gte/whisper/silero ONNX bundles are
-# pre-downloaded as release tarballs; HF_HUB_OFFLINE is intentionally NOT set.
-
-WORKDIR /app
-
-# Ensure tzdata package is installed so /usr/share/zoneinfo exists and TZ can be applied
-RUN set -eux; \
-    apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
-
-# Copy Python packages from libraries stage
-COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
-# Copy console entrypoints (gunicorn, etc.) from libraries stage
-COPY --from=libraries /usr/local/bin/ /usr/local/bin/
-# Copy HuggingFace cache (RoBERTa model) from libraries stage
-COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
-
-# Verify cache was copied correctly
-RUN ls -lah /app/.cache/huggingface/ && \
-    echo "HuggingFace cache contents:" && \
-    du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
-
-# Copy all downloaded/extracted models from models stage
-COPY --from=models /app/model/ /app/model/
-
-# Download CLAP ONNX models directly in runner stage
+# Download CLAP ONNX models
 # - DCLAP audio model (~20MB + external data): Distilled student for music analysis in worker containers
 # - Text model (~478MB): Original LAION CLAP text encoder for text search in Flask containers
 RUN set -eux; \
@@ -464,6 +309,158 @@ RUN set -eux; \
     done; \
     echo "✓ gte-multilingual-base ONNX ready ($gte_onnx_path + $gte_tok_dir)"; \
     du -sh "$gte_onnx_path" "$gte_tok_dir"
+
+# ============================================================================
+# Stage 2a: runtime-base — RUNTIME-ONLY system libs (parent of `runner`)
+# ============================================================================
+# This stage holds only what the application needs at run time: shared
+# libraries (.so) that Python wheels load, plus the small set of CLI tools
+# the entrypoint / supervisord / debugging rely on. It deliberately omits
+# compilers and -dev headers — those live in the `base` stage below, which
+# is used solely to build Python wheels in the `libraries` stage and never
+# becomes a parent of `runner`.
+#
+# `cuda-compiler` is INTENTIONALLY kept here (not moved to build-only)
+# because cupy JIT-compiles CUDA kernels at runtime on GPU builds.
+FROM ${BASE_IMAGE} AS runtime-base
+
+ARG BASE_IMAGE
+
+SHELL ["/bin/bash", "-c"]
+
+RUN set -ux; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        # Use noninteractive frontend to avoid tzdata prompts when installing tzdata
+        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 python3-pip \
+            libfftw3-double3=3.3.10-1ubuntu3 \
+            libyaml-0-2=0.2.5-1build1 \
+            libsamplerate0=0.2.2-4build1 \
+            libsndfile1=1.2.2-1ubuntu5.24.04.1 \
+            libopenblas0 \
+            liblapack3=3.12.0-3build1.1 \
+            libgomp1 \
+            libpq5 postgresql-client \
+            ffmpeg wget curl \
+            supervisor procps \
+            git vim redis-tools strace iputils-ping \
+            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get remove -y python3-numpy || true && \
+    apt-get autoremove -y || true && \
+    rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
+
+# ============================================================================
+# Stage 2b: base — runtime-base + compilers / -dev headers (BUILD-ONLY)
+# ============================================================================
+# Adds the toolchain needed to compile Python wheels (psycopg2, essentia,
+# numpy/scipy fallbacks, etc.). Parent of `libraries` only — `runner`
+# branches off `runtime-base`, so gcc/g++/python3-dev and the -dev headers
+# never reach the final published image.
+FROM runtime-base AS base
+
+ARG BASE_IMAGE
+
+# Copy uv for fast package management (10-100x faster than pip)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+RUN set -ux; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3-dev \
+            libfftw3-dev \
+            libyaml-dev \
+            libsamplerate0-dev \
+            libsndfile1-dev \
+            libopenblas-dev \
+            liblapack-dev=3.12.0-3build1.1 \
+            libpq-dev \
+            gcc g++; then \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+# ============================================================================
+# Stage 3: Libraries - Python packages installation
+# ============================================================================
+FROM base AS libraries
+
+ARG BASE_IMAGE
+
+WORKDIR /app
+
+# Copy requirements files
+COPY requirements/ /app/requirements/
+
+# Install Python packages with uv (combined in single layer for efficiency)
+# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# CPU builds: onnxruntime (CPU only), torch (CPU)
+# Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
+RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
+    else \
+        echo "CPU base image: installing all packages together for dependency resolution"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
+    fi \
+    && echo "Verifying psycopg2 installation..." \
+    && python3 -c "import psycopg2; print('psycopg2 OK')" \
+    && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+
+# ============================================================================
+# Stage 4: Runner - Final production image
+# ============================================================================
+# IMPORTANT: extends `runtime-base` (NOT `base`). That keeps gcc/g++,
+# python3-dev and the *-dev headers out of the final image, saving
+# ~300-400 MB. Anything that needs compiling lives in the `libraries`
+# stage and gets COPY'd in as already-built artifacts below.
+FROM runtime-base AS runner
+
+ENV LANG=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_DISABLE_XET=1 \
+    HF_XET_DISABLE=1
+
+# Note: bundled HuggingFace models (RoBERTa, ...) load with
+# local_files_only=True per call. The gte/whisper/silero ONNX bundles are
+# pre-downloaded as release tarballs; HF_HUB_OFFLINE is intentionally NOT set.
+
+WORKDIR /app
+
+# Ensure tzdata package is installed so /usr/share/zoneinfo exists and TZ can be applied
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+
+# Copy all downloaded/extracted models from the models stage
+COPY --from=models /app/model/ /app/model/
+# Copy HuggingFace cache (text encoders) from the models stage
+COPY --from=models /app/.cache/huggingface/ /app/.cache/huggingface/
+
+# Verify cache was copied correctly
+RUN ls -lah /app/.cache/huggingface/ && \
+    echo "HuggingFace cache contents:" && \
+    du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
+
+# Copy Python packages from libraries stage
+COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

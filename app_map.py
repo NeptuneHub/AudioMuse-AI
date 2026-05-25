@@ -1,3 +1,4 @@
+import gc
 import json
 import math
 import logging
@@ -98,8 +99,6 @@ def build_map_cache():
         cur.close()
 
     items = []
-    ids = []
-    embs = []
     for r in rows:
         # r: item_id, title, author, mood_vector, embedding_blob
         item_id = r[0]
@@ -117,8 +116,6 @@ def build_map_cache():
                 emb = np.array(r[4], dtype=np.float32)
             except Exception:
                 continue
-        ids.append(str(item_id))
-        embs.append(emb)
         items.append({'item_id': str(item_id), 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
 
     if not items:
@@ -170,6 +167,8 @@ def build_map_cache():
                 projections = [(0.0, 0.0) for _ in missing_indices]
                 used = 'none'
 
+            del mat
+
             for idx, coord in zip(missing_indices, projections):
                 coords_by_id[str(items[idx]['item_id'])] = (float(coord[0]), float(coord[1]))
             if used_projection == 'none':
@@ -193,6 +192,7 @@ def build_map_cache():
         }
         full_light.append(light)
     del items
+    gc.collect()
 
     n = len(full_light)
     frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
