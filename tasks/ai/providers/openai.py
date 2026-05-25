@@ -321,7 +321,6 @@ def call_with_tools(
             if http_err.response.status_code != 400:
                 raise
             if is_deepseek:
-                last_err = http_err
                 result = None
                 for shape in deepseek_thinking_off_forms[1:]:
                     payload.pop("thinking", None)
@@ -334,9 +333,11 @@ def call_with_tools(
                     except httpx.HTTPStatusError as retry_err:
                         if retry_err.response.status_code != 400:
                             raise
-                        last_err = retry_err
                 if result is None:
-                    raise last_err
+                    payload.pop("thinking", None)
+                    payload.pop("thinking_mode", None)
+                    log_messages.append("DeepSeek rejected all thinking-disable forms; retrying without them")
+                    result = _post(payload)
             elif "reasoning_effort" in payload:
                 log_messages.append("reasoning_effort unsupported by this model; retrying without it")
                 payload.pop("reasoning_effort", None)
