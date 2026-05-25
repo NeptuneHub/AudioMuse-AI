@@ -267,8 +267,8 @@ def lyrics_warmup_status_api():
     try:
         from tasks.gte_warm_cache import get_gte_warm_status
         return jsonify(get_gte_warm_status())
-    except Exception as e:
-        logger.error(f"Failed to get lyrics warmup status: {e}")
+    except Exception:
+        logger.exception("Failed to get lyrics warmup status")
         return jsonify({'active': False, 'seconds_remaining': 0})
 
 
