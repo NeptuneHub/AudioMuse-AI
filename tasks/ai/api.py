@@ -45,7 +45,7 @@ from tasks.ai.prompts import build_mcp_system_prompt
 
 logger = logging.getLogger(__name__)
 
-VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
+VALID_PROVIDERS = {"OLLAMA", "OPENAI", "ATLAS", "GEMINI", "MISTRAL", "NONE"}
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +116,32 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
         if not ai_config.get("openai_model"):
             msg = "Provider=OPENAI but openai_model is empty"
             logger.error("validate_ai_config: OPENAI model empty")
+            return False, msg
+
+    elif provider == "ATLAS":
+        url = (ai_config.get("atlas_url") or "")
+        key = ai_config.get("atlas_key")
+        if not url:
+            msg = "Provider=ATLAS but atlas_url is empty"
+            logger.error("validate_ai_config: ATLAS url empty")
+            return False, msg
+        if not (
+            "/v1/chat/completions" in url.lower()
+            or "/api/v1/chat/completions" in url.lower()
+        ):
+            msg = (
+                f"Provider=ATLAS but URL {url!r} does not look like an Atlas Cloud chat completions endpoint "
+                "(expected path /v1/chat/completions or /api/v1/chat/completions)"
+            )
+            logger.error("validate_ai_config: ATLAS url path mismatch")
+            return False, msg
+        if not key:
+            msg = "Provider=ATLAS but atlas_key is missing"
+            logger.error("validate_ai_config: ATLAS key missing")
+            return False, msg
+        if not ai_config.get("atlas_model"):
+            msg = "Provider=ATLAS but atlas_model is empty"
+            logger.error("validate_ai_config: ATLAS model empty")
             return False, msg
 
     elif provider == "GEMINI":
@@ -192,6 +218,16 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+    if provider == "ATLAS":
+        return ai_api_openai.generate_text(
+            ai_config["atlas_url"],
+            ai_config["atlas_model"],
+            prompt,
+            ai_config["atlas_key"],
+            skip_delay=skip_delay,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
     if provider == "GEMINI":
         return ai_api_gemini.generate_text(
             ai_config["gemini_key"],
@@ -263,6 +299,16 @@ def call_with_tools(
             ai_config["openai_url"],
             ai_config["openai_model"],
             ai_config["openai_key"],
+            system_prompt,
+            user_message,
+            tools,
+            log_messages,
+        )
+    if provider == "ATLAS":
+        return ai_api_openai.call_with_tools(
+            ai_config["atlas_url"],
+            ai_config["atlas_model"],
+            ai_config["atlas_key"],
             system_prompt,
             user_message,
             tools,

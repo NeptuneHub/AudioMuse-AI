@@ -128,7 +128,7 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch, call
 import requests
 import json
-from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name, validate_ai_config
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
 from tasks.ai.providers.ollama import generate_text as get_ollama_playlist_name
 from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
@@ -1046,6 +1046,23 @@ class TestGetAIPlaylistName:
         mock_generate.assert_called_once()
 
     @patch('tasks.ai.api.generate_text')
+    def test_routes_to_atlas(self, mock_generate):
+        mock_generate.return_value = "Atlas Playlist"
+
+        result = get_ai_playlist_name(
+            creative_prompt_template,
+            [{"title": "Track", "author": "Artist"}],
+            {},
+            self._ai_config("ATLAS",
+                            atlas_url="https://api.atlascloud.ai/v1/chat/completions",
+                            atlas_model="deepseek-ai/DeepSeek-V3-0324",
+                            atlas_key="atlas-test-key"),
+        )
+
+        assert result == "Atlas Playlist"
+        mock_generate.assert_called_once()
+
+    @patch('tasks.ai.api.generate_text')
     def test_routes_to_openai(self, mock_generate):
         mock_generate.return_value = "OpenAI Playlist"
 
@@ -1140,3 +1157,27 @@ class TestGetAIPlaylistName:
     def test_prompt_includes_length_requirement(self):
         """Ensure the prompt specifies the 5-40 character length requirement"""
         assert "The title MUST be within the range of 5 to 40 characters long." in creative_prompt_template
+
+
+class TestValidateAIConfig:
+    def test_accepts_atlas_config(self):
+        valid, err = validate_ai_config({
+            "provider": "ATLAS",
+            "atlas_url": "https://api.atlascloud.ai/v1/chat/completions",
+            "atlas_model": "deepseek-ai/DeepSeek-V3-0324",
+            "atlas_key": "atlas-test-key",
+        })
+
+        assert valid is True
+        assert err is None
+
+    def test_rejects_atlas_url_without_chat_completions_path(self):
+        valid, err = validate_ai_config({
+            "provider": "ATLAS",
+            "atlas_url": "https://api.atlascloud.ai/v1",
+            "atlas_model": "deepseek-ai/DeepSeek-V3-0324",
+            "atlas_key": "atlas-test-key",
+        })
+
+        assert valid is False
+        assert "chat completions endpoint" in err

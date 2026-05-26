@@ -15,6 +15,7 @@ from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, \
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, \
+    ATLAS_SERVER_URL, ATLAS_MODEL_NAME, ATLAS_API_KEY, \
     OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, \
     GEMINI_API_KEY, GEMINI_MODEL_NAME, \
     TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
@@ -188,8 +189,18 @@ def start_clustering_endpoint():
                 default: "Configured MAX_SONGS_PER_CLUSTER"
               ai_model_provider:
                 type: string
-                description: AI provider for playlist naming (OLLAMA, GEMINI, MISTRAL, NONE).
+                description: AI provider for playlist naming (OLLAMA, OPENAI, ATLAS, GEMINI, MISTRAL, NONE).
                 default: "Configured AI_MODEL_PROVIDER"
+              atlas_server_url:
+                type: string
+                description: Override for the Atlas Cloud server URL for this run.
+                nullable: true
+                default: "Defaults to server-configured ATLAS_SERVER_URL"
+              atlas_model_name:
+                type: string
+                description: Override for the Atlas Cloud model name for this run.
+                nullable: true
+                default: "Defaults to server-configured ATLAS_MODEL_NAME"
               ollama_server_url:
                 type: string
                 description: Override for the Ollama server URL for this run.
@@ -315,11 +326,14 @@ def start_clustering_endpoint():
             "ai_model_provider_param": data.get('ai_model_provider', AI_MODEL_PROVIDER).upper(),
             "ollama_server_url_param": data.get('ollama_server_url', OLLAMA_SERVER_URL),
             "ollama_model_name_param": data.get('ollama_model_name', OLLAMA_MODEL_NAME),
+            "atlas_server_url_param": data.get('atlas_server_url', ATLAS_SERVER_URL),
+            "atlas_model_name_param": data.get('atlas_model_name', ATLAS_MODEL_NAME),
             "openai_server_url_param": data.get('openai_server_url', OPENAI_SERVER_URL),
             "openai_model_name_param": data.get('openai_model_name', OPENAI_MODEL_NAME),
             # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
             # Any client-supplied *_api_key field is ignored to prevent token
             # exfiltration via the API surface.
+            "atlas_api_key_param": ATLAS_API_KEY,
             "openai_api_key_param": OPENAI_API_KEY,
             "gemini_api_key_param": GEMINI_API_KEY,
             "gemini_model_name_param": data.get('gemini_model_name', GEMINI_MODEL_NAME),

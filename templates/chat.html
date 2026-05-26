@@ -178,6 +178,7 @@
                     <select id="aiProvider">
                         <option value="NONE">None</option>
                         <option value="OLLAMA">Ollama</option>
+                        <option value="ATLAS">Atlas Cloud</option>
                         <option value="OPENAI">OpenAI / OpenRouter</option>
                         <option value="GEMINI">Gemini</option>
                         <option value="MISTRAL">Mistral</option>
@@ -201,6 +202,14 @@
                             </span>
                         </label>
                         <input type="text" id="ollamaServerUrl" placeholder="e.g., http://localhost:11434/api/generate">
+                    </div>
+                </div>
+                <div id="atlasConfig" class="hidden">
+                    <label for="atlasModel">Atlas Cloud Model</label>
+                    <input type="text" id="atlasModel" placeholder="e.g., deepseek-ai/DeepSeek-V3-0324">
+                    <div style="margin-top: 1.5rem;">
+                        <label for="atlasServerUrl">Atlas Cloud Server URL</label>
+                        <input type="text" id="atlasServerUrl" placeholder="e.g., https://api.atlascloud.ai/v1/chat/completions">
                     </div>
                 </div>
                 <div id="openaiConfig" class="hidden">
@@ -309,11 +318,14 @@
             // --- DOM Element References ---
             const aiProviderSelect = document.getElementById('aiProvider');
             const ollamaConfigDiv = document.getElementById('ollamaConfig');
+            const atlasConfigDiv = document.getElementById('atlasConfig');
             const openaiConfigDiv = document.getElementById('openaiConfig');
             const geminiConfigDiv = document.getElementById('geminiConfig');
             const mistralConfigDiv = document.getElementById('mistralConfig');
             const ollamaModelSelect = document.getElementById('ollamaModel');
             const ollamaServerUrlInput = document.getElementById('ollamaServerUrl'); // Added Ollama Server URL input
+            const atlasModelSelect = document.getElementById('atlasModel');
+            const atlasServerUrlInput = document.getElementById('atlasServerUrl');
             const openaiModelSelect = document.getElementById('openaiModel');
             const openaiServerUrlInput = document.getElementById('openaiServerUrl');
             const geminiModelSelect = document.getElementById('geminiModel');
@@ -359,6 +371,9 @@
                 ollamaModelSelect.value = globalConfig.default_ollama_model_name || ""; // Set default value for input
                 ollamaServerUrlInput.value = globalConfig.ollama_server_url || "http://localhost:11434/api/generate"; // Pre-fill Ollama Server URL
 
+                atlasModelSelect.value = globalConfig.default_atlas_model_name || "deepseek-v3";
+                atlasServerUrlInput.value = globalConfig.atlas_server_url || "https://api.atlascloud.ai/v1/chat/completions";
+
                 openaiModelSelect.value = globalConfig.default_openai_model_name || ""; // Set default value for OpenAI
                 openaiServerUrlInput.value = globalConfig.openai_server_url || "https://openrouter.ai/api/v1/chat/completions"; // Pre-fill OpenAI Server URL
 
@@ -374,26 +389,37 @@
                 const provider = aiProviderSelect.value;
                 if (provider === 'OLLAMA') {
                     ollamaConfigDiv.classList.remove('hidden');
+                    atlasConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
+                    geminiConfigDiv.classList.add('hidden');
+                    mistralConfigDiv.classList.add('hidden');
+                } else if (provider === 'ATLAS') {
+                    ollamaConfigDiv.classList.add('hidden');
+                    atlasConfigDiv.classList.remove('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 } else if (provider === 'OPENAI') {
                     ollamaConfigDiv.classList.add('hidden');
+                    atlasConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.remove('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 } else if (provider === 'GEMINI') {
                     ollamaConfigDiv.classList.add('hidden');
+                    atlasConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.remove('hidden');
                     mistralConfigDiv.classList.add('hidden');
                 } else if (provider === 'MISTRAL') {
                     ollamaConfigDiv.classList.add('hidden');
+                    atlasConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.remove('hidden');
                 } else {
                     ollamaConfigDiv.classList.add('hidden');
+                    atlasConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
@@ -423,6 +449,9 @@
                 if (payload.ai_provider === 'OLLAMA') {
                     payload.ai_model = ollamaModelSelect.value;
                     payload.ollama_server_url = ollamaServerUrlInput.value; // Include Ollama Server URL
+                } else if (payload.ai_provider === 'ATLAS') {
+                    payload.ai_model = atlasModelSelect.value;
+                    payload.atlas_server_url = atlasServerUrlInput.value;
                 } else if (payload.ai_provider === 'OPENAI') {
                     payload.ai_model = openaiModelSelect.value;
                     payload.openai_server_url = openaiServerUrlInput.value; // Include OpenAI Server URL

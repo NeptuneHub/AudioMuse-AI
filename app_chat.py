@@ -89,6 +89,8 @@ def chat_config_defaults_api():
         "default_ai_provider": cfg.AI_MODEL_PROVIDER,
         "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
         "ollama_server_url": cfg.OLLAMA_SERVER_URL,
+        "default_atlas_model_name": cfg.ATLAS_MODEL_NAME,
+        "atlas_server_url": cfg.ATLAS_SERVER_URL,
         "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
         "openai_server_url": cfg.OPENAI_SERVER_URL,
         "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
@@ -115,9 +117,9 @@ def chat_config_defaults_api():
                         },
                         'ai_provider': {
                             'type': 'string',
-                            'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
-                            'example': 'GEMINI',
-                            'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE']
+                            'description': 'The AI provider to use (OLLAMA, OPENAI, ATLAS, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                            'example': 'ATLAS',
+                            'enum': ['OLLAMA', 'OPENAI', 'ATLAS', 'GEMINI', "MISTRAL", 'NONE']
                         },
                         'ai_model': {
                             'type': 'string',
@@ -128,6 +130,11 @@ def chat_config_defaults_api():
                             'type': 'string',
                             'description': 'Custom Ollama server URL (if ai_provider is OLLAMA).',
                             'example': 'http://localhost:11434/api/generate'
+                        },
+                        'atlas_server_url': {
+                            'type': 'string',
+                            'description': 'Custom Atlas Cloud server URL (if ai_provider is ATLAS).',
+                            'example': 'https://api.atlascloud.ai/v1/chat/completions'
                         },
                         'openai_server_url': {
                             'type': 'string',
@@ -375,12 +382,15 @@ def _run_chat_pipeline(data, log_messages):
         'provider': ai_provider,
         'ollama_url': data.get('ollama_server_url', config.OLLAMA_SERVER_URL),
         'ollama_model': ai_model_from_request or config.OLLAMA_MODEL_NAME,
+        'atlas_url': data.get('atlas_server_url', config.ATLAS_SERVER_URL),
+        'atlas_model': ai_model_from_request or config.ATLAS_MODEL_NAME,
         'openai_url': data.get('openai_server_url', config.OPENAI_SERVER_URL),
         'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
         'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
         'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME,
     }
     ai_secrets = {
+        'atlas_key': config.ATLAS_API_KEY,
         'openai_key': config.OPENAI_API_KEY,
         'gemini_key': config.GEMINI_API_KEY,
         'mistral_key': config.MISTRAL_API_KEY,
@@ -391,12 +401,14 @@ def _run_chat_pipeline(data, log_messages):
     # Log the resolved AI target so it shows up in the flask log (without keys).
     _resolved_url = {
         "OLLAMA": ai_config['ollama_url'],
+        "ATLAS": ai_config['atlas_url'],
         "OPENAI": ai_config['openai_url'],
         "GEMINI": "(gemini-api)",
         "MISTRAL": "(mistral-api)",
     }.get(ai_provider, "(none)")
     _resolved_model = {
         "OLLAMA": ai_config['ollama_model'],
+        "ATLAS": ai_config['atlas_model'],
         "OPENAI": ai_config['openai_model'],
         "GEMINI": ai_config['gemini_model'],
         "MISTRAL": ai_config['mistral_model'],
@@ -411,6 +423,18 @@ def _run_chat_pipeline(data, log_messages):
     )
 
     # Validate API keys for cloud providers
+    if ai_provider == "ATLAS" and not ai_secrets['atlas_key']:
+        error_msg = "Error: Atlas Cloud API key is missing. Please provide a valid API key."
+        log_messages.append(error_msg)
+        return ({
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": ai_config.get('atlas_model'),
+            "executed_query": None,
+            "query_results": None
+        }, 400)
+
     if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
         error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
