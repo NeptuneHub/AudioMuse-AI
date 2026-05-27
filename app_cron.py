@@ -28,7 +28,7 @@ def cron_page():
     ---
     tags:
       - Cron
-    summary: HTML page for managing cron-scheduled tasks (analysis, clustering, sonic fingerprint).
+    summary: HTML page for managing cron-scheduled tasks (analysis, clustering, sonic fingerprint, alchemy anchors).
     responses:
       200:
         description: HTML page rendered.
@@ -60,7 +60,7 @@ def get_cron_entries():
                     type: string
                   task_type:
                     type: string
-                    enum: [analysis, clustering, sonic_fingerprint]
+                    enum: [analysis, clustering, sonic_fingerprint, alchemy_anchors]
                   cron_expr:
                     type: string
                     description: 5-field cron expression "min hour day month dow".
@@ -109,7 +109,7 @@ def save_cron_entry():
                 type: string
               task_type:
                 type: string
-                enum: [analysis, clustering, sonic_fingerprint]
+                enum: [analysis, clustering, sonic_fingerprint, alchemy_anchors]
               cron_expr:
                 type: string
                 description: 5-field cron expression "min hour day month dow".
@@ -304,6 +304,38 @@ def run_due_cron_jobs():
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception as e:
                         logger.error(f"Cron: error running sonic fingerprint: {e}")
+                elif task_type == 'alchemy_anchors':
+                    from app_helper import get_alchemy_anchors
+                    from tasks.song_alchemy import song_alchemy
+                    from tasks.mediaserver import create_or_replace_playlist
+                    from tasks.voyager_manager import create_playlist_from_ids
+                    try:
+                        anchors = get_alchemy_anchors()
+                        if not anchors:
+                            logger.warning(f"Cron: no alchemy anchors found (job_id={job_id})")
+                        for anchor in anchors:
+                            anchor_id = anchor.get('id')
+                            anchor_name = anchor.get('name') or f"Alchemy Anchor {anchor_id}"
+                            if not anchor_id:
+                                logger.warning(f"Cron: skipping alchemy anchor without id: {anchor}")
+                                continue
+                            alchemy_results = song_alchemy(add_items=[{'type': 'anchor', 'id': anchor_id}])
+                            tracks = alchemy_results.get('results') or []
+                            track_ids = [t.get('item_id') for t in tracks if t.get('item_id')]
+                            if not track_ids:
+                                logger.warning(f"Cron: alchemy anchor '{anchor_name}' returned no tracks (job_id={job_id})")
+                                continue
+                            playlist_name = f"{anchor_name}_automatic"
+                            try:
+                                create_or_replace_playlist(playlist_name, track_ids)
+                            except NotImplementedError:
+                                create_playlist_from_ids(playlist_name, track_ids)
+                            logger.info(
+                                f"Cron: refreshed alchemy anchor playlist '{playlist_name}' "
+                                f"(tracks={len(track_ids)}, job_id={job_id})"
+                            )
+                    except Exception as e:
+                        logger.error(f"Cron: error running alchemy anchor schedules: {e}", exc_info=True)
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))

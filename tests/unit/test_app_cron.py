@@ -90,3 +90,29 @@ def test_sonic_fingerprint_branch_falls_back_for_mpd(mock_get_db, _matches):
     legacy_name = legacy.call_args[0][0]
     assert legacy_name.startswith('Sonic Fingerprint (Cron ')
     assert legacy.call_args[0][1] == ['a']
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_alchemy_anchors_branch_refreshes_anchor_playlists(mock_get_db, _matches):
+    """Each saved alchemy anchor refreshes a stable <anchor>_automatic playlist."""
+    from app_cron import run_due_cron_jobs
+
+    cur = MagicMock()
+    cur.fetchall.return_value = [_make_cron_row('alchemy_anchors')]
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    anchors = [{'id': 7, 'name': 'Jazz Night'}]
+    alchemy = {'results': [{'item_id': 'a'}, {'item_id': 'b'}]}
+
+    with patch('app_helper.get_alchemy_anchors', return_value=anchors), \
+         patch('tasks.song_alchemy.song_alchemy', return_value=alchemy) as run_alchemy, \
+         patch('tasks.mediaserver.create_or_replace_playlist', return_value={'Id': 'pl-1'}) as upsert, \
+         patch('tasks.voyager_manager.create_playlist_from_ids') as legacy:
+        run_due_cron_jobs()
+
+    run_alchemy.assert_called_once_with(add_items=[{'type': 'anchor', 'id': 7}])
+    upsert.assert_called_once_with('Jazz Night_automatic', ['a', 'b'])
+    legacy.assert_not_called()
