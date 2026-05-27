@@ -144,6 +144,42 @@ class TestGenerateSonicFingerprint:
         assert 's2' in item_ids
         assert 's3' in item_ids
 
+    @patch('tasks.sonic_fingerprint_manager.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM', 2)
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_caps_sonic_fingerprint_songs_per_album(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
+        """Test that sonic fingerprint results can limit songs from the same album."""
+        mock_top_songs.return_value = [{'Id': f's{i}'} for i in range(1, 5)]
+        seed_details = [
+            {'item_id': f's{i}', 'embedding_vector': np.array([float(i)]), 'album': 'DJ Mix'}
+            for i in range(1, 5)
+        ]
+        candidate_details = [
+            {'item_id': 's5', 'embedding_vector': np.array([5.0]), 'album': 'Album A'},
+            {'item_id': 's6', 'embedding_vector': np.array([6.0]), 'album': 'Album B'},
+            {'item_id': 's7', 'embedding_vector': np.array([7.0]), 'album': 'Album C'},
+            {'item_id': 's8', 'embedding_vector': np.array([8.0]), 'album': 'Album D'},
+            {'item_id': 's9', 'embedding_vector': np.array([9.0]), 'album': 'Album E'},
+        ]
+        mock_get_tracks.side_effect = [seed_details, candidate_details]
+        mock_last_played.return_value = None
+        mock_voyager.return_value = [
+            {'item_id': 's5', 'distance': 0.1},
+            {'item_id': 's6', 'distance': 0.2},
+            {'item_id': 's7', 'distance': 0.3},
+            {'item_id': 's8', 'distance': 0.4},
+            {'item_id': 's9', 'distance': 0.5},
+        ]
+
+        result = generate_sonic_fingerprint(num_neighbors=5)
+
+        item_ids = [r['item_id'] for r in result]
+        assert len(result) == 5
+        assert len([item_id for item_id in item_ids if item_id in {'s1', 's2', 's3', 's4'}]) == 2
+        assert mock_voyager.call_args[1]['n'] == 5
+
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
     @patch('app_helper.get_tracks_by_ids')
     @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
@@ -513,6 +549,5 @@ class TestEdgeCases:
         
         # Should have exactly 10 results
         assert len(result) == 10
-
 
 
