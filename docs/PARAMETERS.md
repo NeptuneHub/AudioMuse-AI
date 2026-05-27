@@ -211,7 +211,7 @@ You can use either an external AI API or self-host with Ollama — deployment ex
 
 ## OpenAI-compatible hosted providers
 
-AudioMuse-AI can use hosted services that expose an OpenAI-compatible chat completions API through the existing `OPENAI` provider. Atlas Cloud is one example: point `OPENAI_SERVER_URL` at its OpenAI-compatible endpoint and keep using a model that has been validated for AudioMuse-AI unless you have tested another model with your library.
+AudioMuse-AI can use hosted services that expose an OpenAI-compatible chat completions API through the existing `OPENAI` provider. [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=AudioMuse-AI) is one example: point `OPENAI_SERVER_URL` at its OpenAI-compatible endpoint and keep using a model that has been validated for AudioMuse-AI unless you have tested another model with your library.
 
 Example Atlas Cloud configuration:
 
