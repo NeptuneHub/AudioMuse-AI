@@ -808,7 +808,7 @@ function testConnection() {
     }).catch(function(err) {
         testFeedback.className = 'status-failure inline-feedback';
         testFeedback.style.display = 'block';
-        testFeedback.textContent = '✕ Connection test failed: ' + err.message;
+        testFeedback.textContent = '✕ ' + (err.message || 'Media server connection test failed.');
     }).finally(function() {
         testButton.disabled = false;
         saveButton.disabled = false;
