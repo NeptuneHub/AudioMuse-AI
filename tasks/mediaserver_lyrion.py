@@ -503,10 +503,17 @@ def download_track(temp_dir, item):
         if not track_id:
             logger.error("Lyrion item does not have a track ID.")
             return None
+
+        track_title = item.get('Name') or item.get('title') or 'Unknown'
+        if _lyrion_is_remote(item):
+            remote_url = item.get('url') or item.get('Path') or item.get('path')
+            logger.info(f"Skipping Lyrion remote/streaming track '{track_title}' (id={track_id}, url/path={remote_url!r}).")
+            return None
             
         # The correct, stable URL format for directly downloading a track from Lyrion/LMS by its ID.
         # This avoids issues with the /stream endpoint which is often for the currently playing track.
-        download_url = f"{config.LYRION_URL}/music/{track_id}/download"
+        base_url = config.LYRION_URL.rstrip('/')
+        download_url = f"{base_url}/music/{track_id}/download"
         
         # A more robust way to handle the file extension.
         file_extension = item.get('Path', '.mp3')
@@ -526,10 +533,11 @@ def download_track(temp_dir, item):
                 with open(local_filename, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
-        logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
+        logger.info(f"Downloaded '{track_title}' to '{local_filename}'")
         return local_filename
     except Exception as e:
-        logger.error(f"Failed to download Lyrion track {item.get('title', 'Unknown')}: {e}", exc_info=True)
+        track_title = item.get('Name') or item.get('title') or 'Unknown'
+        logger.error(f"Failed to download Lyrion track {track_title}: {e}", exc_info=True)
     return None
 
 def _get_all_albums_simple(limit):

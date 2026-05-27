@@ -3,8 +3,9 @@
 Tests mock HTTP responses but verify real parsing, transformation, and error handling.
 If the response parsing or error handling changes, these tests will catch it.
 """
+import os
 import pytest
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
+from unittest.mock import Mock, MagicMock, patch, PropertyMock, mock_open
 import requests
 
 
@@ -1584,6 +1585,49 @@ class TestLyrionGetTracksFromAlbum:
         assert 'local1' in track_ids
         assert 'local2' in track_ids
         assert 'spotify1' not in track_ids, "Spotify tracks should be filtered"
+
+    @patch('tasks.mediaserver_lyrion.requests.Session')
+    @patch('tasks.mediaserver_lyrion.config')
+    def test_download_track_skips_remote_tracks(self, mock_config, mock_session):
+        """Remote Lyrion tracks should not reach the hanging /music download endpoint."""
+        from tasks.mediaserver_lyrion import download_track
+
+        mock_config.LYRION_URL = 'http://lyrion:9000/'
+        item = {
+            'Id': 'remote1',
+            'Name': 'Qobuz Track',
+            'url': 'qobuz://338379521.flac',
+        }
+
+        result = download_track('/tmp', item)
+
+        assert result is None
+        mock_session.assert_not_called()
+
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('tasks.mediaserver_lyrion.requests.Session')
+    @patch('tasks.mediaserver_lyrion.config')
+    def test_download_track_normalizes_base_url_and_title(self, mock_config, mock_session, mock_file):
+        """Local downloads should avoid //music URLs and use Lyrion's Name field."""
+        from tasks.mediaserver_lyrion import download_track
+
+        mock_config.LYRION_URL = 'http://lyrion:9000/'
+        mock_response = MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.iter_content.return_value = [b'audio']
+        mock_session.return_value.__enter__.return_value.get.return_value = mock_response
+        item = {
+            'Id': 'local1',
+            'Name': 'Local Track',
+            'Path': '/music/local.flac',
+        }
+
+        result = download_track('/tmp', item)
+
+        assert result == os.path.join('/tmp', 'local1.flac')
+        called_url = mock_session.return_value.__enter__.return_value.get.call_args[0][0]
+        assert called_url == 'http://lyrion:9000/music/local1/download'
+        mock_file.assert_called_once()
 
 
 # =============================================================================
