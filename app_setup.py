@@ -9,6 +9,7 @@ from app import app, setup_manager
 from app_helper import check_setup_needed
 import restart_manager
 import tasks.mediaserver as mediaserver
+from app_error_handler import setup_error_payload
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     field
@@ -522,7 +523,7 @@ def setup_api():
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
-            return jsonify({'error': 'Unable to get top player song. Check the server log for details.'}), 500
+            return jsonify(setup_error_payload(exc, default_code='MEDIA_SERVER_TEST_FAILED')), 400
         return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
 
     response = make_response(jsonify({
@@ -601,7 +602,7 @@ def setup_provider_libraries_api():
         result = _list_provider_libraries(filtered_values)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
-        return jsonify({'error': 'Unable to list libraries. Check the server log for details.'}), 500
+        return jsonify(setup_error_payload(exc, default_code='MEDIA_SERVER_TEST_FAILED')), 400
 
     return jsonify({
         'libraries': result.get('libraries', []),
