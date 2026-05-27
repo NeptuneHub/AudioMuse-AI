@@ -6,7 +6,7 @@
         <div id="config-header">
             <div class="config-title-group">
                 <h1>AudioMuse-AI - Scheduled Tasks</h1>
-                <p class="subtitle">Configure scheduled Analysis and Clustering runs using cron notation.</p>
+                <p class="subtitle">Configure scheduled Analysis, Clustering, Sonic Fingerprint, and Alchemy Anchor runs using cron notation.</p>
             </div>
             <div class="header-controls">
                 <!-- Header controls intentionally empty; the save button is placed under the form. -->
@@ -48,7 +48,19 @@
             <input id="sonic-fingerprint-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 1 * * 6)">
             <div style="margin-top:.5rem;"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</div>
 
-            <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00.</p>
+            <hr style="margin:1rem 0;">
+
+            <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                Alchemy Anchors
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Schedule automatic refresh of one playlist per saved Song Alchemy anchor. Uses default Song Alchemy parameters and creates playlists named &lt;anchor&gt;_automatic.</span>
+                </span>
+            </label>
+            <input id="alchemy-anchors-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * *)">
+            <div style="margin-top:.5rem;"><input id="alchemy-anchors-enabled" type="checkbox"> Enable</div>
+
+            <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00. Alchemy Anchors default: daily at 3:00.</p>
 
             <div style="margin-top:1rem;">
                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
@@ -80,12 +92,15 @@
                 const a = rows.find(r=>r.task_type==='analysis');
                 const c = rows.find(r=>r.task_type==='clustering');
                 const s = rows.find(r=>r.task_type==='sonic_fingerprint');
+                const aa = rows.find(r=>r.task_type==='alchemy_anchors');
                 if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled }
                 else { document.getElementById('analysis-cron').value = '0 2 * * 0-5'; document.getElementById('analysis-enabled').checked = false }
                 if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled }
                 else { document.getElementById('clustering-cron').value = '0 2 * * 6'; document.getElementById('clustering-enabled').checked = false }
                 if(s){ document.getElementById('sonic-fingerprint-cron').value = s.cron_expr; document.getElementById('sonic-fingerprint-enabled').checked = s.enabled }
                 else { document.getElementById('sonic-fingerprint-cron').value = '0 1 * * 6'; document.getElementById('sonic-fingerprint-enabled').checked = false }
+                if(aa){ document.getElementById('alchemy-anchors-cron').value = aa.cron_expr; document.getElementById('alchemy-anchors-enabled').checked = aa.enabled }
+                else { document.getElementById('alchemy-anchors-cron').value = '0 3 * * *'; document.getElementById('alchemy-anchors-enabled').checked = false }
             }catch(e){ console.error(e) }
         }
 
@@ -103,6 +118,7 @@
             const an = rows.find(r=>r.task_type==='analysis');
             const cn = rows.find(r=>r.task_type==='clustering');
             const sn = rows.find(r=>r.task_type==='sonic_fingerprint');
+            const aan = rows.find(r=>r.task_type==='alchemy_anchors');
 
             try{
                 if (an) {
@@ -123,6 +139,14 @@
                     saveCron({id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
                 } else {
                     saveCron({name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
+                }
+
+                const aaexpr = document.getElementById('alchemy-anchors-cron').value;
+                const aaen = document.getElementById('alchemy-anchors-enabled').checked;
+                if (aan) {
+                    saveCron({id:aan.id, name:'Alchemy Anchors', task_type:'alchemy_anchors', cron_expr:aaexpr, enabled:aaen})
+                } else {
+                    saveCron({name:'Alchemy Anchors', task_type:'alchemy_anchors', cron_expr:aaexpr, enabled:aaen})
                 }
 
                 // refresh cached rows after saving
