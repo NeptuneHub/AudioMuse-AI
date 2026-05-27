@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import psycopg2.extras
 from flask import Blueprint, request, jsonify
+from flasgger import swag_from
 
 import config
 from app_helper import get_db, load_map_projection
@@ -28,6 +29,111 @@ _DEFAULT_PROJECTION_NAME = 'main_map'
 
 
 @sync_bp.route('/api/sync', methods=['GET'])
+@swag_from({
+    'tags': ['Mobile Sync'],
+    'summary': 'Paginated read-only export of the analysis library for client apps.',
+    'description': (
+        'Bulk-export of analyzed tracks so a companion/client app can build and '
+        'incrementally maintain a local mirror of the library. Without `since` it '
+        'returns the full library page by page; with `since` it returns only tracks '
+        'changed after that timestamp plus `deleted_ids` (tombstones for tracks '
+        'removed since then). Not supported for the `mpd` media server (returns 501).'
+    ),
+    'parameters': [
+        {
+            'name': 'since',
+            'in': 'query',
+            'required': False,
+            'description': ('ISO 8601 timestamp. When provided, only tracks whose '
+                            '`updated_at` is after this are returned, and `deleted_ids` '
+                            'lists tracks deleted since then. Omit for a full sync.'),
+            'schema': {'type': 'string', 'format': 'date-time'},
+            'example': '2026-01-01T00:00:00Z',
+        },
+        {
+            'name': 'include_embeddings',
+            'in': 'query',
+            'required': False,
+            'description': 'Set to `false` to omit the MusiCNN/CLAP embedding payload (smaller, faster response).',
+            'schema': {'type': 'string', 'enum': ['true', 'false'], 'default': 'true'},
+        },
+        {
+            'name': 'page',
+            'in': 'query',
+            'required': False,
+            'description': '1-based page number.',
+            'schema': {'type': 'integer', 'minimum': 1, 'default': 1},
+        },
+        {
+            'name': 'limit',
+            'in': 'query',
+            'required': False,
+            'description': 'Tracks per page (capped at 1000).',
+            'schema': {'type': 'integer', 'minimum': 1, 'maximum': 1000, 'default': 500},
+        },
+    ],
+    'responses': {
+        '200': {
+            'description': 'A page of the analysis library.',
+            'content': {
+                'application/json': {
+                    'schema': {
+                        'type': 'object',
+                        'properties': {
+                            'tracks': {
+                                'type': 'array',
+                                'items': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'id': {'type': 'string', 'description': 'Mediaserver GUID (the same value used in deleted_ids).', 'example': 'a1b2c3d4'},
+                                        'title': {'type': 'string'},
+                                        'artist': {'type': 'string'},
+                                        'album_artist': {'type': 'string'},
+                                        'album': {'type': 'string'},
+                                        'year': {'type': 'integer', 'nullable': True},
+                                        'tempo': {'type': 'number', 'nullable': True},
+                                        'key': {'type': 'string', 'nullable': True},
+                                        'scale': {'type': 'string', 'nullable': True},
+                                        'mood_vector': {'type': 'string', 'description': 'Comma-separated label:score pairs.', 'example': 'rock:0.82,pop:0.45'},
+                                        'energy': {'type': 'number', 'nullable': True},
+                                        'other_features': {'type': 'string', 'nullable': True},
+                                        'rating': {'type': 'integer', 'nullable': True},
+                                        'umap_x': {'type': 'number', 'nullable': True},
+                                        'umap_y': {'type': 'number', 'nullable': True},
+                                        'updated_at': {'type': 'string', 'format': 'date-time', 'nullable': True},
+                                        'embedding': {'type': 'string', 'nullable': True, 'description': 'base64 of a little-endian float32 MusiCNN vector (200-d). Present only when include_embeddings is not false.'},
+                                        'clap_embedding': {'type': 'string', 'nullable': True, 'description': 'base64 of a little-endian float32 CLAP vector (512-d). Present only when CLAP is enabled and include_embeddings is not false.'},
+                                    },
+                                },
+                            },
+                            'deleted_ids': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': 'Mediaserver GUIDs deleted since `since`. Empty on a full sync.',
+                            },
+                            'total_tracks': {'type': 'integer', 'description': 'Total tracks matching the query (basis for pagination).'},
+                            'provider_type': {'type': 'string', 'example': 'jellyfin'},
+                            'has_more': {'type': 'boolean'},
+                            'next_page': {'type': 'integer', 'nullable': True},
+                        },
+                    },
+                },
+            },
+        },
+        '400': {
+            'description': 'Invalid `since` parameter (not ISO 8601).',
+            'content': {'application/json': {'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}}},
+        },
+        '500': {
+            'description': 'Internal server error.',
+            'content': {'application/json': {'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}}},
+        },
+        '501': {
+            'description': 'Media server type not supported (e.g. `mpd`).',
+            'content': {'application/json': {'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}}},
+        },
+    },
+})
 def sync_endpoint():
     if config.MEDIASERVER_TYPE == 'mpd':
         return jsonify({
