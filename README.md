@@ -18,6 +18,8 @@ Deploy it easily on your local machine with Docker Compose or Podman, or scale i
 
 > **Prefer not to self-host?** We're proud that [Elestio](https://elest.io/open-source/audiomuse-ai) picked AudioMuse-AI as a managed cloud service, happy to see the project reach more people.
 
+> **Need a hosted LLM provider?** AudioMuse-AI supports OpenAI-compatible APIs through the existing `OPENAI` provider. Atlas Cloud is one hosted option you can configure this way; see the [configuration parameters](docs/PARAMETERS.md#openai-compatible-hosted-providers) for details.
+
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
 * **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
