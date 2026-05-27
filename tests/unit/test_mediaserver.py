@@ -250,6 +250,45 @@ class TestJellyfinGetTracksFromAlbum:
         assert tracks == []
 
 
+class TestJellyfinGetAllSongs:
+    """Test full Jellyfin song fetching for provider migration."""
+
+    @patch('tasks.mediaserver_jellyfin.JELLYFIN_ITEMS_PAGE_SIZE', 2)
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_paginates_items_until_short_page(self, mock_config, mock_get):
+        """Large Jellyfin libraries should be fetched in smaller pages."""
+        from tasks.mediaserver_jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+
+        def response(items):
+            mock_response = Mock()
+            mock_response.json.return_value = {'Items': items}
+            mock_response.raise_for_status = Mock()
+            return mock_response
+
+        first_page = [
+            {'Id': 's1', 'Name': 'Song 1', 'Path': '/music/a.flac', 'ArtistItems': [{'Name': 'Artist 1', 'Id': 'a1'}]},
+            {'Id': 's2', 'Name': 'Song 2', 'Path': '/music/b.flac', 'Artists': ['Artist 2']},
+        ]
+        second_page = [
+            {'Id': 's3', 'Name': 'Song 3', 'Path': '/music/c.flac', 'AlbumArtist': 'Album Artist'},
+        ]
+        mock_get.side_effect = [response(first_page), response(second_page)]
+
+        songs = get_all_songs()
+
+        assert [call.kwargs['params']['StartIndex'] for call in mock_get.mock_calls] == [0, 2]
+        assert [call.kwargs['params']['Limit'] for call in mock_get.mock_calls] == [2, 2]
+        assert len(songs) == 3
+        assert songs[0]['AlbumArtist'] == 'Artist 1'
+        assert songs[0]['ArtistId'] == 'a1'
+        assert songs[2]['FilePath'] == '/music/c.flac'
+
+
 class TestJellyfinGetAllPlaylists:
     """Test playlist fetching - verifies exact URL and response parsing"""
 

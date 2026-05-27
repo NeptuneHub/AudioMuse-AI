@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 JELLYFIN_PLAYLIST_BATCH_SIZE = 100
+JELLYFIN_ITEMS_PAGE_SIZE = 500
 
 # ##############################################################################
 # JELLYFIN IMPLEMENTATION
@@ -318,30 +319,43 @@ def get_all_songs(user_creds=None):
     """Fetches all songs from Jellyfin using admin or override credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
-    params = {
-        "IncludeItemTypes": "Audio",
-        "Recursive": True,
-        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
-    }
-    try:
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
-        r.raise_for_status()
-        items = r.json().get("Items", [])
+    all_items = []
+    start_index = 0
 
-        # Apply artist field prioritization to each item
-        for item in items:
-            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
-            title = item.get('Name', 'Unknown')
-            artist_name, artist_id = _select_best_artist(item, title)
-            item['AlbumArtist'] = artist_name
-            item['ArtistId'] = artist_id
-            item['Year'] = item.get('ProductionYear')
-            item['FilePath'] = item.get('Path')
+    while True:
+        params = {
+            "IncludeItemTypes": "Audio",
+            "Recursive": True,
+            "StartIndex": start_index,
+            "Limit": JELLYFIN_ITEMS_PAGE_SIZE,
+            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+        }
+        try:
+            r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            items = r.json().get("Items", []) or []
 
-        return items
-    except Exception as e:
-        logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
-        return []
+            # Apply artist field prioritization to each item
+            for item in items:
+                item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+                title = item.get('Name', 'Unknown')
+                artist_name, artist_id = _select_best_artist(item, title)
+                item['AlbumArtist'] = artist_name
+                item['ArtistId'] = artist_id
+                item['Year'] = item.get('ProductionYear')
+                item['FilePath'] = item.get('Path')
+
+            all_items.extend(items)
+
+            if len(items) < JELLYFIN_ITEMS_PAGE_SIZE:
+                break
+
+            start_index += JELLYFIN_ITEMS_PAGE_SIZE
+        except Exception as e:
+            logger.error(f"Jellyfin get_all_songs failed at index {start_index}: {e}", exc_info=True)
+            break
+
+    return all_items
 
 
 def search_albums(query, user_creds=None):
@@ -699,4 +713,3 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
     logger.info(f"✅ Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
     return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
-
