@@ -208,3 +208,16 @@ These are the default parameters used when launching analysis or clustering task
 You can use either an external AI API or self-host with Ollama — deployment example here:
 
 * https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama
+
+## OpenAI-compatible hosted providers
+
+AudioMuse-AI can use hosted services that expose an OpenAI-compatible chat completions API through the existing `OPENAI` provider. Atlas Cloud is one example: point `OPENAI_SERVER_URL` at its OpenAI-compatible endpoint and keep using a model that has been validated for AudioMuse-AI unless you have tested another model with your library.
+
+Example Atlas Cloud configuration:
+
+```env
+AI_MODEL_PROVIDER=OPENAI
+OPENAI_SERVER_URL=https://api.atlascloud.ai/v1/chat/completions
+OPENAI_MODEL_NAME=qwen3.5:9b
+OPENAI_API_KEY=<atlas-key>
+```
