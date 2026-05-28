@@ -400,15 +400,16 @@ class TestStreamEmbeddingsToBuffer:
             np.testing.assert_array_equal(buf[i], expected)
 
     def test_closes_side_connection_on_iteration_failure(self):
-        class BoomCursor(MagicMock):
-            def __iter__(self_inner):
-                raise RuntimeError("simulated stream failure")
-
-        boom_cur = BoomCursor()
+        """Subclassing MagicMock + ``def __iter__`` does NOT actually
+        override iteration -- MagicMock's metaclass re-binds dunder methods
+        at instance construction. The documented way to force ``iter(m)``
+        to raise is ``m.__iter__.side_effect = ExceptionInstance``."""
+        boom_cur = MagicMock()
         boom_cur.__enter__ = MagicMock(return_value=boom_cur)
         boom_cur.__exit__ = MagicMock(return_value=False)
         boom_cur.itersize = 0
         boom_cur.execute = MagicMock()
+        boom_cur.__iter__ = MagicMock(side_effect=RuntimeError("simulated stream failure"))
 
         count_cur = MagicMock()
         count_cur.__enter__ = MagicMock(return_value=count_cur)
