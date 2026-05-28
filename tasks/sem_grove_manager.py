@@ -157,9 +157,11 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
     contiguous float32 buffer (no list-of-ndarrays, no vstack). Whitening
     statistics are computed via running sum / sum-of-squares accumulators
     instead of materializing full-library normalized matrices. Merged
-    vectors are written row-by-row into a single pre-allocated output
-    buffer, so peak RAM is roughly ``lyrics_buf + audio_buf + merged_buf``
-    and never holds extra copies of any of them at the same time.
+    vectors are produced in small batches by an internal generator and fed
+    directly to the streaming Voyager index builder -- the full-library
+    merged buffer (lyrics_dim + audio_dim per row × N) is never
+    materialized. Peak RAM is therefore ``lyrics_buf + audio_buf +
+    one merge batch + voyager's own HNSW storage``, with no extra copies.
     """
     try:
         import voyager  # type: ignore  # noqa: F401
@@ -171,8 +173,9 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
     from .index_build_helpers import (
         stream_embeddings_to_buffer,
-        build_voyager_index_bytes,
+        build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
+        build_id_map,
     )
 
     if db_conn is None:
@@ -243,40 +246,66 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         del sum_l, sumsq_l, sum_a, sumsq_a, mean_l, mean_a, var_l, var_a
         gc.collect()
 
-        logger.info("SemGrove: building %d merged vectors (dim=%d)…", len(common_ids), merged_dim)
-        merged_buf = np.empty((len(common_ids), merged_dim), dtype=np.float32)
-        id_map: Dict[int, str] = {}
-        vid = 0
-        for item_id in common_ids:
-            mv = _make_merged_vector(
-                lyrics_buf[lyrics_pos[item_id]], audio_buf[audio_pos[item_id]],
-                std_lyrics, std_audio,
-                W_LYRICS, W_AUDIO,
+        logger.info(
+            "SemGrove: building Voyager index for up to %d items (batched merge, dim=%d)…",
+            len(common_ids), merged_dim,
+        )
+
+        merge_batch_size = 4096
+
+        def _merge_batches():
+            """Yield (batch_buf, batch_ids) of merged vectors in chunks.
+
+            Reads ``lyrics_buf`` / ``audio_buf`` by closure; writes one
+            small batch buffer at a time and yields it to the streaming
+            index builder. Rows that produce ``None`` from
+            ``_make_merged_vector`` (zero-norm input) are skipped exactly
+            as the previous single-buffer implementation did.
+            """
+            for start in range(0, len(common_ids), merge_batch_size):
+                chunk = common_ids[start:start + merge_batch_size]
+                batch_buf = np.empty((len(chunk), merged_dim), dtype=np.float32)
+                batch_ids: List[str] = []
+                write_idx = 0
+                for item_id in chunk:
+                    mv = _make_merged_vector(
+                        lyrics_buf[lyrics_pos[item_id]],
+                        audio_buf[audio_pos[item_id]],
+                        std_lyrics, std_audio,
+                        W_LYRICS, W_AUDIO,
+                    )
+                    if mv is None:
+                        continue
+                    batch_buf[write_idx] = mv
+                    batch_ids.append(item_id)
+                    write_idx += 1
+                if write_idx == 0:
+                    continue
+                if write_idx < batch_buf.shape[0]:
+                    yield batch_buf[:write_idx].copy(), batch_ids
+                else:
+                    yield batch_buf, batch_ids
+
+        try:
+            index_bytes, kept_ids = build_voyager_index_bytes_streaming(
+                _merge_batches(), merged_dim, metric="angular",
             )
-            if mv is None:
-                continue
-            merged_buf[vid] = mv
-            id_map[vid] = item_id
-            vid += 1
-
-        del lyrics_buf, audio_buf, lyrics_pos, audio_pos
-        gc.collect()
-
-        if vid == 0:
-            logger.warning("SemGrove: no valid merged vectors; aborting.")
+        except ValueError as ve:
+            logger.warning("SemGrove: no valid merged vectors; aborting: %s", ve)
             return False
-
-        if vid < merged_buf.shape[0]:
-            merged_buf = merged_buf[:vid].copy()
-
-        logger.info("SemGrove: building Voyager index for %d items…", vid)
-        index_bytes = build_voyager_index_bytes(merged_buf, merged_dim, metric="angular")
-        del merged_buf
-        gc.collect()
+        finally:
+            try:
+                del lyrics_buf, audio_buf, lyrics_pos, audio_pos
+            except Exception:
+                pass
+            gc.collect()
 
         if not index_bytes:
             logger.error("SemGrove: generated index binary is empty; aborting.")
             return False
+
+        id_map: Dict[int, str] = build_id_map(kept_ids)
+        vid = len(kept_ids)
 
         whitening_json = json.dumps({
             "std_lyrics": std_lyrics.tolist(),
