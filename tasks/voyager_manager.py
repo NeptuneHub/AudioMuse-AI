@@ -304,7 +304,13 @@ def build_and_store_voyager_index(db_conn=None):
         logger.warning("Voyager not available - skipping index build")
         return
 
-    # Acquire DB connection if not provided
+    from .index_build_helpers import (
+        stream_embeddings_to_buffer,
+        build_voyager_index_bytes,
+        store_voyager_index_segmented,
+        build_id_map,
+    )
+
     if db_conn is None:
         try:
             from app_helper import get_db
@@ -315,82 +321,23 @@ def build_and_store_voyager_index(db_conn=None):
 
     logger.info("Starting to build and store Voyager index...")
 
-    # Map the string metric from config to the voyager.Space enum
-    metric_str = VOYAGER_METRIC.lower()
-    if metric_str == 'angular':
-        space = voyager.Space.Cosine
-    elif metric_str == 'euclidean':
-        space = voyager.Space.Euclidean
-    elif metric_str == 'dot':
-        space = voyager.Space.InnerProduct
-    else:
-        logger.warning(f"Unknown Voyager metric '{VOYAGER_METRIC}'. Defaulting to Cosine.")
-        space = voyager.Space.Cosine
-
-    cur = db_conn.cursor()
     try:
-        logger.info("Fetching all embeddings from the database...")
-        cur.execute("SELECT item_id, embedding FROM embedding")
-        all_embeddings = cur.fetchall()
-
-        if not all_embeddings:
-            logger.warning("No embeddings found in DB. Voyager index will not be built.")
-            return
-
-        logger.info(f"Found {len(all_embeddings)} embeddings to index.")
-
-        voyager_index_builder = voyager.Index(
-            space=space,
-            num_dimensions=EMBEDDING_DIMENSION,
-            M=VOYAGER_M,
-            ef_construction=VOYAGER_EF_CONSTRUCTION
+        buf, item_ids = stream_embeddings_to_buffer(
+            table="embedding",
+            column="embedding",
+            dim=EMBEDDING_DIMENSION,
         )
 
-        local_id_map = {}
-        voyager_item_index = 0
-        vectors_to_add = []
-        ids_to_add = []
-
-        for item_id, embedding_blob in all_embeddings:
-            if embedding_blob is None:
-                logger.warning(f"Skipping item_id {item_id}: embedding data is NULL.")
-                continue
-
-            embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
-
-            if embedding_vector.shape[0] != EMBEDDING_DIMENSION:
-                logger.warning(f"Skipping item_id {item_id}: embedding dimension mismatch. "
-                               f"Expected {EMBEDDING_DIMENSION}, got {embedding_vector.shape[0]}.")
-                continue
-
-            vectors_to_add.append(embedding_vector)
-            ids_to_add.append(voyager_item_index)
-            local_id_map[voyager_item_index] = item_id
-            voyager_item_index += 1
-
-        if not vectors_to_add:
+        if buf.shape[0] == 0:
             logger.warning("No valid embeddings were found to add to the Voyager index. Aborting build process.")
             return
 
-        logger.info(f"Adding {len(vectors_to_add)} items to the index...")
-        voyager_index_builder.add_items(np.array(vectors_to_add), ids=np.array(ids_to_add))
-
-        logger.info(f"Building index with {len(vectors_to_add)} items...")
-
-        temp_file_path = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-                temp_file_path = tmp.name
-
-            voyager_index_builder.save(temp_file_path)
-            del voyager_index_builder
-            gc.collect()
-
-            with open(temp_file_path, 'rb') as f:
-                index_binary_data = f.read()
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+        logger.info(f"Adding {buf.shape[0]} items to the index...")
+        index_binary_data = build_voyager_index_bytes(
+            buf, EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
+        )
+        del buf
+        gc.collect()
 
         logger.info(f"Voyager index binary data size to be stored: {len(index_binary_data)} bytes.")
 
@@ -398,50 +345,20 @@ def build_and_store_voyager_index(db_conn=None):
             logger.error("CRITICAL: Generated Voyager index file is empty. Aborting database storage.")
             return
 
-        id_map_json = json.dumps(local_id_map)
+        local_id_map = build_id_map(item_ids)
 
         logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
-
         try:
-            # Delete any existing single or segmented rows for this logical index name
-            cur.execute(
-                "DELETE FROM voyager_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                (INDEX_NAME, INDEX_NAME.replace('_', r'\_') + r"\_%\_%")
+            store_voyager_index_segmented(
+                db_conn,
+                target_table="voyager_index_data",
+                index_name=INDEX_NAME,
+                index_bytes=index_binary_data,
+                id_map=local_id_map,
+                embedding_dimension=EMBEDDING_DIMENSION,
             )
-
-            # Small enough to store in a single row (backwards-compatible)
-            if len(index_binary_data) <= VOYAGER_MAX_PART_SIZE:
-                upsert_query = """
-                    INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at)
-                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    ON CONFLICT (index_name) DO UPDATE SET
-                        index_data = EXCLUDED.index_data,
-                        id_map_json = EXCLUDED.id_map_json,
-                        embedding_dimension = EXCLUDED.embedding_dimension,
-                        created_at = CURRENT_TIMESTAMP;
-                """
-                cur.execute(upsert_query, (INDEX_NAME, psycopg2.Binary(index_binary_data), id_map_json, EMBEDDING_DIMENSION))
-                logger.info("Stored Voyager index as a single row (no segmentation required).")
-
-            else:
-                # Split into multiple rows named INDEX_NAME_<part>_<total>
-                parts = _split_bytes(index_binary_data, VOYAGER_MAX_PART_SIZE)
-                num_parts = len(parts)
-                logger.info(f"Index size {len(index_binary_data)} exceeds {VOYAGER_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
-
-                insert_q = "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                for idx, part in enumerate(parts, start=1):
-                    part_name = f"{INDEX_NAME}_{idx}_{num_parts}"
-                    # store full id_map_json only in the first part to save space; other parts keep an empty string
-                    part_id_map_json = id_map_json if idx == 1 else ''
-                    cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, EMBEDDING_DIMENSION))
-
-                logger.info(f"Stored Voyager index in {num_parts} parts (prefix='{INDEX_NAME}_<part>_<total>').")
-
-            # Commit the transaction atomically so readers never see partial state
             db_conn.commit()
             logger.info("Voyager index build and database storage complete.")
-
         except Exception as e:
             try:
                 db_conn.rollback()
@@ -454,11 +371,6 @@ def build_and_store_voyager_index(db_conn=None):
         logger.error("An error occurred during Voyager index build: %s", e, exc_info=True)
         try:
             db_conn.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            cur.close()
         except Exception:
             pass
 
