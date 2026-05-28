@@ -28,7 +28,11 @@ from sklearn.mixture import GaussianMixture
 import voyager  # type: ignore
 
 logger = logging.getLogger(__name__)
-from config import ARTIST_INDEX_MAX_PART_SIZE_MB
+from config import (
+    ARTIST_INDEX_MAX_PART_SIZE_MB,
+    VOYAGER_M,
+    VOYAGER_EF_CONSTRUCTION,
+)
 
 # --- Configuration ---
 ARTIST_INDEX_NAME = 'artist_similarity_index'
@@ -41,12 +45,6 @@ MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist 
 ARTIST_INDEX_MAX_PART_SIZE = ARTIST_INDEX_MAX_PART_SIZE_MB * 1024 * 1024  # bytes threshold for segmented artist index storage
 
 from .index_build_helpers import _split_bytes  # noqa: F401  (re-export of helper for legacy in-file callers)
-
-
-# Voyager index parameters (similar to song index)
-VOYAGER_M = 32  # Number of bi-directional links created for every new element
-VOYAGER_EF_CONSTRUCTION = 200  # Size of the dynamic list during index construction
-VOYAGER_EF_SEARCH = 100  # Size of the dynamic list during search (can be adjusted at query time)
 
 # --- Global cache for the loaded artist index ---
 artist_index = None  # voyager.Index object

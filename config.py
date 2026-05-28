@@ -508,8 +508,8 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
-VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "1024"))
-VOYAGER_M = int(os.environ.get("VOYAGER_M", "64"))
+VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "200"))
+VOYAGER_M = int(os.environ.get("VOYAGER_M", "32"))
 VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
 VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
 ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
