@@ -82,10 +82,6 @@ _SEM_GROVE_CACHE: Dict = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
-
 def _make_merged_vector(
     l_vec: np.ndarray,
     a_vec: np.ndarray,

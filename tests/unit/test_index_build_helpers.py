@@ -431,7 +431,15 @@ class TestStreamEmbeddingsToBuffer:
                 )
         conn.close.assert_called_once()
 
-    def test_uses_autocommit_readonly_side_session(self):
+    def test_side_session_is_read_only_and_transactional(self):
+        """The side connection must be readonly AND must NOT be autocommit.
+
+        autocommit=True + a named cursor in psycopg2 does NOT give snapshot
+        consistency: fetches can see different snapshots, defeating the
+        "concurrent writes can't corrupt this read" guarantee. Stay in the
+        default transactional mode so the named cursor inherits the
+        implicit BEGIN's snapshot for its entire lifetime.
+        """
         conn = self._fake_conn(count_value=0, rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             _helpers.stream_embeddings_to_buffer(
@@ -439,5 +447,249 @@ class TestStreamEmbeddingsToBuffer:
             )
         conn.set_session.assert_called_once()
         _, kwargs = conn.set_session.call_args
-        assert kwargs.get("autocommit") is True
         assert kwargs.get("readonly") is True
+        assert kwargs.get("autocommit") in (None, False), (
+            "side connection must NOT be autocommit -- snapshot consistency "
+            "of the named cursor depends on the default transactional mode"
+        )
+
+
+class TestIterEmbeddingBatches:
+    """Tests for the batched-streaming generator.
+
+    Same snapshot-safe pattern as TestStreamEmbeddingsToBuffer but the
+    generator does NOT issue a separate COUNT(*); only the named cursor is
+    used. The mock here only needs to support the streaming cursor.
+    """
+
+    def _fake_conn(self, rows):
+        stream_cur = MagicMock()
+        stream_cur.__enter__ = MagicMock(return_value=stream_cur)
+        stream_cur.__exit__ = MagicMock(return_value=False)
+        stream_cur.itersize = 0
+        stream_cur.execute = MagicMock()
+        stream_cur.__iter__ = MagicMock(return_value=iter(rows))
+
+        conn = MagicMock()
+        conn.cursor = MagicMock(return_value=stream_cur)
+        conn.set_session = MagicMock()
+        conn.close = MagicMock()
+        return conn
+
+    def test_validates_table(self):
+        with pytest.raises(ValueError):
+            list(_helpers.iter_embedding_batches("bad table", "embedding", dim=8))
+
+    def test_validates_column(self):
+        with pytest.raises(ValueError):
+            list(_helpers.iter_embedding_batches("embedding", "bad-col", dim=8))
+
+    def test_validates_dim_and_batch_size(self):
+        with pytest.raises(ValueError):
+            list(_helpers.iter_embedding_batches("embedding", "embedding", dim=0))
+        with pytest.raises(ValueError):
+            list(_helpers.iter_embedding_batches("embedding", "embedding", dim=8, batch_size=0))
+        with pytest.raises(ValueError):
+            list(_helpers.iter_embedding_batches("embedding", "embedding", dim=8, batch_size=-5))
+
+    def test_empty_source_yields_no_batches(self):
+        conn = self._fake_conn(rows=[])
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            batches = list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=8,
+            ))
+        assert batches == []
+        conn.close.assert_called_once()
+
+    def test_yields_exactly_one_partial_batch_when_smaller_than_batch_size(self):
+        rng = np.random.default_rng(1)
+        vecs = [rng.standard_normal(4).astype(np.float32) for _ in range(3)]
+        rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
+        conn = self._fake_conn(rows=rows)
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            batches = list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4, batch_size=10,
+            ))
+        assert len(batches) == 1
+        buf, ids = batches[0]
+        assert buf.shape == (3, 4)
+        assert buf.dtype == np.float32
+        assert ids == ["id-0", "id-1", "id-2"]
+        for i, expected in enumerate(vecs):
+            np.testing.assert_array_equal(buf[i], expected)
+
+    def test_yields_multiple_full_batches_and_one_partial(self):
+        rng = np.random.default_rng(2)
+        vecs = [rng.standard_normal(4).astype(np.float32) for _ in range(7)]
+        rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
+        conn = self._fake_conn(rows=rows)
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            batches = list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4, batch_size=3,
+            ))
+        assert len(batches) == 3
+        assert [b[0].shape[0] for b in batches] == [3, 3, 1]
+        flat_ids = [i for _, ids in batches for i in ids]
+        assert flat_ids == [f"id-{i}" for i in range(7)]
+        flat_vecs = np.vstack([b[0] for b in batches])
+        for i, expected in enumerate(vecs):
+            np.testing.assert_array_equal(flat_vecs[i], expected)
+
+    def test_skips_null_and_wrong_dim_across_batch_boundaries(self):
+        good = np.ones(4, dtype=np.float32)
+        bad_dim = np.ones(3, dtype=np.float32)
+        rows = [
+            ("a", good.tobytes()),
+            ("b", None),
+            ("c", bad_dim.tobytes()),
+            ("d", good.tobytes()),
+            ("e", good.tobytes()),
+            ("f", None),
+            ("g", good.tobytes()),
+        ]
+        conn = self._fake_conn(rows=rows)
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            batches = list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4, batch_size=2,
+            ))
+        flat_ids = [i for _, ids in batches for i in ids]
+        assert flat_ids == ["a", "d", "e", "g"]
+        total_rows = sum(b[0].shape[0] for b in batches)
+        assert total_rows == 4
+
+    def test_each_batch_is_a_fresh_buffer_not_a_view(self):
+        """If batches shared memory, mutating one would corrupt the next."""
+        rng = np.random.default_rng(3)
+        vecs = [rng.standard_normal(4).astype(np.float32) for _ in range(4)]
+        rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
+        conn = self._fake_conn(rows=rows)
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            batches = list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4, batch_size=2,
+            ))
+        assert len(batches) == 2
+        batches[0][0].fill(99.0)
+        np.testing.assert_array_equal(batches[1][0][0], vecs[2])
+        np.testing.assert_array_equal(batches[1][0][1], vecs[3])
+
+    def test_closes_connection_on_early_consumer_exit(self):
+        rng = np.random.default_rng(4)
+        rows = [(f"id-{i}", rng.standard_normal(4).astype(np.float32).tobytes()) for i in range(10)]
+        conn = self._fake_conn(rows=rows)
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            gen = _helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4, batch_size=2,
+            )
+            next(gen)
+            gen.close()
+        conn.close.assert_called_once()
+
+    def test_uses_readonly_non_autocommit_side_session(self):
+        conn = self._fake_conn(rows=[])
+        with patch.object(_helpers.psycopg2, "connect", return_value=conn):
+            list(_helpers.iter_embedding_batches(
+                table="embedding", column="embedding", dim=4,
+            ))
+        conn.set_session.assert_called_once()
+        _, kwargs = conn.set_session.call_args
+        assert kwargs.get("readonly") is True
+        assert kwargs.get("autocommit") in (None, False)
+
+
+class TestBuildVoyagerIndexBytesStreaming:
+    """Tests for the incremental index builder."""
+
+    def test_validates_dim(self):
+        try:
+            import voyager  # noqa: F401
+        except ImportError:
+            pytest.skip("voyager not installed")
+        with pytest.raises(ValueError):
+            _helpers.build_voyager_index_bytes_streaming(iter([]), dim=0)
+
+    def test_rejects_empty_generator(self):
+        try:
+            import voyager  # noqa: F401
+        except ImportError:
+            pytest.skip("voyager not installed")
+        with pytest.raises(ValueError, match="no items"):
+            _helpers.build_voyager_index_bytes_streaming(iter([]), dim=8)
+
+    def test_rejects_batch_with_wrong_dim(self):
+        try:
+            import voyager  # noqa: F401
+        except ImportError:
+            pytest.skip("voyager not installed")
+        bad_batch = (np.zeros((2, 7), dtype=np.float32), ["a", "b"])
+        with pytest.raises(ValueError, match="batch dim"):
+            _helpers.build_voyager_index_bytes_streaming(iter([bad_batch]), dim=8)
+
+    def test_rejects_batch_with_mismatched_ids_length(self):
+        try:
+            import voyager  # noqa: F401
+        except ImportError:
+            pytest.skip("voyager not installed")
+        bad = (np.zeros((3, 4), dtype=np.float32), ["only-two", "ids"])
+        with pytest.raises(ValueError, match="batch_ids len"):
+            _helpers.build_voyager_index_bytes_streaming(iter([bad]), dim=4)
+
+    def test_skips_empty_batches_silently(self):
+        try:
+            import voyager
+        except ImportError:
+            pytest.skip("voyager not installed")
+        rng = np.random.default_rng(5)
+        b1 = (rng.standard_normal((3, 4)).astype(np.float32), ["a", "b", "c"])
+        empty = (np.empty((0, 4), dtype=np.float32), [])
+        b2 = (rng.standard_normal((2, 4)).astype(np.float32), ["d", "e"])
+        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
+            iter([b1, empty, b2]), dim=4, metric="angular",
+        )
+        assert ids == ["a", "b", "c", "d", "e"]
+        assert len(index_bytes) > 0
+
+    def test_round_trip_across_multiple_batches(self):
+        try:
+            import voyager
+        except ImportError:
+            pytest.skip("voyager not installed")
+        import io as _io
+
+        rng = np.random.default_rng(6)
+        all_vecs = rng.standard_normal((12, 8)).astype(np.float32)
+        batches = [
+            (all_vecs[0:5].copy(), [f"id-{i}" for i in range(0, 5)]),
+            (all_vecs[5:10].copy(), [f"id-{i}" for i in range(5, 10)]),
+            (all_vecs[10:12].copy(), [f"id-{i}" for i in range(10, 12)]),
+        ]
+        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
+            iter(batches), dim=8, metric="angular",
+        )
+        assert ids == [f"id-{i}" for i in range(12)]
+
+        loaded = voyager.Index.load(_io.BytesIO(index_bytes))
+        assert len(loaded) == 12
+        neighbour_ids, _ = loaded.query(all_vecs[7], k=1)
+        assert int(neighbour_ids[0]) == 7
+
+    def test_dense_ids_are_assigned_consecutively_across_batches(self):
+        try:
+            import voyager
+        except ImportError:
+            pytest.skip("voyager not installed")
+        import io as _io
+
+        rng = np.random.default_rng(7)
+        b1_vecs = rng.standard_normal((3, 4)).astype(np.float32)
+        b2_vecs = rng.standard_normal((2, 4)).astype(np.float32)
+        batches = [
+            (b1_vecs, ["x", "y", "z"]),
+            (b2_vecs, ["w", "v"]),
+        ]
+        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
+            iter(batches), dim=4, metric="angular",
+        )
+        loaded = voyager.Index.load(_io.BytesIO(index_bytes))
+        for voyager_id in range(5):
+            assert voyager_id in loaded
+        assert ids == ["x", "y", "z", "w", "v"]

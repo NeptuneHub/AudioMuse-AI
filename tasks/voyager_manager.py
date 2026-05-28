@@ -51,10 +51,6 @@ id_map = None # {voyager_int_id: item_id_str}
 reverse_id_map = None # {item_id_str: voyager_int_id}
 
 
-def _split_bytes(data: bytes, part_size: int) -> list:
-    """Split `data` into a list of byte chunks, each <= part_size."""
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
 # --- Thread pool for parallel operations ---
 _thread_pool = None
 _thread_pool_lock = threading.Lock()
@@ -305,8 +301,8 @@ def build_and_store_voyager_index(db_conn=None):
         return
 
     from .index_build_helpers import (
-        stream_embeddings_to_buffer,
-        build_voyager_index_bytes,
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
     )
@@ -319,24 +315,21 @@ def build_and_store_voyager_index(db_conn=None):
             logger.error("build_and_store_voyager_index: no db_conn provided and get_db() failed.")
             return
 
-    logger.info("Starting to build and store Voyager index...")
+    logger.info("Starting to build and store Voyager index (streaming)...")
 
     try:
-        buf, item_ids = stream_embeddings_to_buffer(
+        batches = iter_embedding_batches(
             table="embedding",
             column="embedding",
             dim=EMBEDDING_DIMENSION,
         )
-
-        if buf.shape[0] == 0:
-            logger.warning("No valid embeddings were found to add to the Voyager index. Aborting build process.")
+        try:
+            index_binary_data, item_ids = build_voyager_index_bytes_streaming(
+                batches, EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
+            )
+        except ValueError as ve:
+            logger.warning(f"No valid embeddings were found to add to the Voyager index. Aborting build process: {ve}")
             return
-
-        logger.info(f"Adding {buf.shape[0]} items to the index...")
-        index_binary_data = build_voyager_index_bytes(
-            buf, EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-        )
-        del buf
         gc.collect()
 
         logger.info(f"Voyager index binary data size to be stored: {len(index_binary_data)} bytes.")

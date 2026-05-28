@@ -54,10 +54,6 @@ _LYRICS_AXIS_CACHE = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
-
 def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
     metadata_map: Dict[str, Dict[str, str]] = {}
     if not item_ids:
@@ -95,8 +91,8 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
     from app_helper import get_db
     from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, VOYAGER_METRIC
     from .index_build_helpers import (
-        stream_embeddings_to_buffer,
-        build_voyager_index_bytes,
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
     )
@@ -115,22 +111,20 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
         db_conn = get_db()
 
     try:
-        buf, item_ids = stream_embeddings_to_buffer(
+        logger.info("Building lyrics voyager index (streaming)...")
+        batches = iter_embedding_batches(
             table="lyrics_embedding",
             column="embedding",
             dim=LYRICS_EMBEDDING_DIMENSION,
             where_clause="embedding IS NOT NULL",
         )
-
-        if buf.shape[0] == 0:
-            logger.warning("No valid lyrics embedding vectors for index build.")
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, LYRICS_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
+            )
+        except ValueError as ve:
+            logger.warning(f"No valid lyrics embedding vectors for index build: {ve}")
             return False
-
-        logger.info(f"Building lyrics voyager index for {buf.shape[0]} items...")
-        index_bytes = build_voyager_index_bytes(
-            buf, LYRICS_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-        )
-        del buf
         gc.collect()
 
         if not index_bytes:
@@ -168,8 +162,8 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     from app_helper import get_db
     from config import LYRICS_ENABLED
     from .index_build_helpers import (
-        stream_embeddings_to_buffer,
-        build_voyager_index_bytes,
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
     )
@@ -194,20 +188,20 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     dim = len(columns)
 
     try:
-        buf, item_ids = stream_embeddings_to_buffer(
+        logger.info(f"Building lyrics axes voyager index (streaming, dim={dim})...")
+        batches = iter_embedding_batches(
             table="lyrics_embedding",
             column="axis_vector",
             dim=dim,
             where_clause="axis_vector IS NOT NULL",
         )
-
-        if buf.shape[0] == 0:
-            logger.warning("No usable axis_vector rows; aborting axes index build.")
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, dim, metric="angular",
+            )
+        except ValueError as ve:
+            logger.warning(f"No usable axis_vector rows; aborting axes index build: {ve}")
             return False
-
-        logger.info(f"Building lyrics axes voyager index for {buf.shape[0]} items (dim={dim})...")
-        index_bytes = build_voyager_index_bytes(buf, dim, metric="angular")
-        del buf
         gc.collect()
 
         if not index_bytes:

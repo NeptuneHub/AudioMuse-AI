@@ -84,11 +84,6 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
     return metadata_map
 
 
-def _split_bytes(data: bytes, part_size: int) -> list:
-    """Split a bytes object into chunks no larger than part_size."""
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
-
 def _load_clap_index_from_db() -> bool:
     """Load a persisted CLAP voyager index from the database."""
     global _CLAP_CACHE, _CLAP_INDEX_CACHE
@@ -219,8 +214,8 @@ def build_and_store_clap_index(db_conn=None):
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC
     from .index_build_helpers import (
-        stream_embeddings_to_buffer,
-        build_voyager_index_bytes,
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
     )
@@ -235,21 +230,19 @@ def build_and_store_clap_index(db_conn=None):
         db_conn = get_db()
 
     try:
-        buf, item_ids = stream_embeddings_to_buffer(
+        logger.info("Building CLAP voyager index (streaming)...")
+        batches = iter_embedding_batches(
             table="clap_embedding",
             column="embedding",
             dim=CLAP_EMBEDDING_DIMENSION,
         )
-
-        if buf.shape[0] == 0:
-            logger.warning("No valid CLAP embedding vectors found for CLAP index build.")
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, CLAP_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
+            )
+        except ValueError as ve:
+            logger.warning(f"No valid CLAP embedding vectors found for CLAP index build: {ve}")
             return False
-
-        logger.info(f"Building CLAP voyager index for {buf.shape[0]} items...")
-        index_bytes = build_voyager_index_bytes(
-            buf, CLAP_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-        )
-        del buf
         gc.collect()
 
         if not index_bytes:

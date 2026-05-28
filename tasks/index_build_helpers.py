@@ -21,15 +21,26 @@ many minutes), which broke whenever another worker on another container
 modified the same embedding tables, or when Postgres' idle-in-tx timeout
 fired.
 
-``stream_embeddings_to_buffer`` opens its own short-lived connection in
-autocommit + read-only mode, runs the SELECT through a named cursor, fills
-a pre-allocated float32 buffer, and closes the connection before the
-caller writes anything. Concurrent writes from other workers cannot affect
-the iteration: the SELECT runs against a stable PG snapshot, and the
-side connection holds no locks the rest of the build needs. The worst
-realistic outcome is an index that omits a handful of rows committed
-during the SELECT window -- acceptable because the next batch rebuild
-picks them up.
+``stream_embeddings_to_buffer`` opens its own dedicated short-lived
+read-only connection, runs the SELECT through a server-side named cursor
+inside that connection's own implicit transaction, fills a pre-allocated
+float32 buffer, and closes the connection (auto-rolling-back the read-only
+transaction) before the caller writes anything. Two independent guarantees:
+
+* **Snapshot consistency.** The named cursor sees a stable PG snapshot for
+  its entire lifetime, so concurrent writes from other workers cannot make
+  fetches inconsistent. We deliberately do NOT use ``autocommit=True`` --
+  psycopg2 still permits named cursors in autocommit mode but PG does not
+  hold a snapshot across fetches, which would silently return mixed data.
+* **No fate-sharing with the build's main transaction.** The streaming
+  transaction lives only on the side connection and only for the duration
+  of the SELECT. The worker's main connection (where the index is
+  ultimately written) is never put in idle-in-transaction state by this
+  helper, which is what caused the previous streaming revert.
+
+The worst realistic outcome is an index that omits a handful of rows
+committed AFTER the side connection's snapshot was taken -- acceptable
+because the next batch rebuild picks them up.
 """
 
 from __future__ import annotations
@@ -40,7 +51,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
@@ -68,7 +79,20 @@ def _validate_sql_identifier(ident: str, kind: str) -> None:
 
 
 def _open_side_connection() -> "psycopg2.extensions.connection":
-    """Open a fresh autocommit, read-only Postgres connection for streaming.
+    """Open a fresh read-only Postgres connection for streaming reads.
+
+    The connection runs in the default transactional mode (NOT autocommit):
+    psycopg2 with ``autocommit=True`` still permits server-side named
+    cursors, but PG does not hold a stable snapshot across fetches in that
+    mode -- concurrent writes from other workers could make iteration
+    return inconsistent data. With autocommit off, psycopg2 issues an
+    implicit ``BEGIN`` before the first statement and the named cursor
+    inherits that transaction's snapshot for its entire lifetime.
+
+    The transaction is closed cheaply: ``conn.close()`` issues an implicit
+    ``ROLLBACK`` (read-only, nothing to commit), and because this is a
+    dedicated short-lived connection, the open transaction never overlaps
+    with the rest of the build the way the previous streaming revert did.
 
     Statement timeout is disabled here because builds over large libraries
     can legitimately exceed the default 10-minute global limit. Keepalives
@@ -83,12 +107,13 @@ def _open_side_connection() -> "psycopg2.extensions.connection":
         options="-c statement_timeout=0",
     )
     try:
-        conn.set_session(autocommit=True, readonly=True)
+        conn.set_session(readonly=True)
     except Exception:
         try:
             conn.close()
-        finally:
-            raise
+        except Exception:
+            pass
+        raise
     return conn
 
 
@@ -156,7 +181,7 @@ def stream_embeddings_to_buffer(
                 if blob is None:
                     skipped_null += 1
                     continue
-                vec = np.frombuffer(bytes(blob), dtype=np.float32)
+                vec = np.frombuffer(blob, dtype=np.float32)
                 if vec.shape[0] != dim:
                     skipped_dim += 1
                     continue
@@ -187,6 +212,126 @@ def stream_embeddings_to_buffer(
             )
 
         return buf, item_ids
+    finally:
+        try:
+            side_conn.close()
+        except Exception:
+            pass
+
+
+def iter_embedding_batches(
+    table: str,
+    column: str,
+    dim: int,
+    batch_size: int = 5000,
+    where_clause: Optional[str] = None,
+    cursor_name: Optional[str] = None,
+) -> Iterator[Tuple[np.ndarray, List[str]]]:
+    """Yield ``(batch_buf, batch_ids)`` pairs from a BYTEA float32 column.
+
+    Same snapshot-safe pattern as :func:`stream_embeddings_to_buffer`
+    (dedicated short-lived read-only side connection, default transactional
+    mode, server-side named cursor inside the connection's own implicit
+    ``BEGIN``), but each batch is yielded and freed before the next is
+    fetched. Peak RAM per batch is ``batch_size * dim * 4`` bytes plus the
+    per-row item_id strings -- e.g. ~15 MB for a 5000-row batch at 768 dim.
+
+    Each yielded ``batch_buf`` is a fresh, contiguous float32 ndarray of
+    shape ``(actual_batch_n, dim)`` where ``actual_batch_n <= batch_size``
+    (last batch may be partial; rows with NULL or wrong-dim blobs are
+    skipped silently and counted in an aggregate warning at end).
+
+    The side connection is closed in the generator's ``finally`` so it is
+    released both on normal completion and on early ``GeneratorExit``
+    (consumer breaks out of the loop or hits an exception).
+
+    Args:
+        table: source table (must be a bare SQL identifier).
+        column: BYTEA column holding float32 little-endian vectors
+            (must be a bare SQL identifier).
+        dim: expected number of float32 elements per row.
+        batch_size: maximum rows per yielded batch. Defaults to 5000 to
+            match ``_STREAM_ITERSIZE``.
+        where_clause: optional raw SQL fragment appended after ``WHERE``.
+            Must not contain user input.
+        cursor_name: override for the server-side cursor name.
+
+    Yields:
+        ``(batch_buf, batch_ids)`` tuples. Yields nothing if the source has
+        no rows.
+
+    Raises:
+        ValueError: if ``table``/``column`` is not a bare SQL identifier or
+            ``dim``/``batch_size`` is not a positive int.
+        psycopg2.Error: on connection or query failure.
+    """
+    _validate_sql_identifier(table, "table")
+    _validate_sql_identifier(column, "column")
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError(f"dim must be a positive int, got {dim!r}")
+    if not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError(f"batch_size must be a positive int, got {batch_size!r}")
+
+    where_sql = f" WHERE {where_clause}" if where_clause else ""
+    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql}"
+    cname = cursor_name or f"_idx_iter_{table}_{column}"
+    _validate_sql_identifier(cname, "cursor name")
+
+    side_conn = _open_side_connection()
+    try:
+        batch_buf = np.empty((batch_size, dim), dtype=np.float32)
+        batch_ids: List[str] = []
+        write_idx = 0
+        total_kept = 0
+        total_skipped_null = 0
+        total_skipped_dim = 0
+        batch_no = 0
+
+        with side_conn.cursor(name=cname) as sc:
+            sc.itersize = min(_STREAM_ITERSIZE, batch_size)
+            sc.execute(select_sql)
+            for item_id, blob in sc:
+                if blob is None:
+                    total_skipped_null += 1
+                    continue
+                vec = np.frombuffer(blob, dtype=np.float32)
+                if vec.shape[0] != dim:
+                    total_skipped_dim += 1
+                    continue
+                batch_buf[write_idx] = vec
+                batch_ids.append(item_id)
+                write_idx += 1
+                if write_idx >= batch_size:
+                    batch_no += 1
+                    total_kept += write_idx
+                    logger.info(
+                        "iter_embedding_batches(%s.%s): batch %d yielded (%d rows).",
+                        table, column, batch_no, write_idx,
+                    )
+                    yield batch_buf, batch_ids
+                    batch_buf = np.empty((batch_size, dim), dtype=np.float32)
+                    batch_ids = []
+                    write_idx = 0
+
+        if write_idx > 0:
+            batch_no += 1
+            total_kept += write_idx
+            logger.info(
+                "iter_embedding_batches(%s.%s): batch %d yielded (%d rows, final).",
+                table, column, batch_no, write_idx,
+            )
+            yield batch_buf[:write_idx].copy(), batch_ids
+
+        if total_skipped_null or total_skipped_dim:
+            logger.warning(
+                "iter_embedding_batches(%s.%s): kept=%d skipped_null=%d skipped_dim=%d across %d batch(es).",
+                table, column, total_kept, total_skipped_null, total_skipped_dim, batch_no,
+            )
+        else:
+            logger.info(
+                "iter_embedding_batches(%s.%s): streamed %d rows across %d batch(es), dim=%d.",
+                table, column, total_kept, batch_no, dim,
+            )
     finally:
         try:
             side_conn.close()
@@ -276,6 +421,115 @@ def build_voyager_index_bytes(
         gc.collect()
         with open(temp_file_path, "rb") as f:
             return f.read()
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
+
+
+def build_voyager_index_bytes_streaming(
+    batch_iter: Iterable[Tuple[np.ndarray, List[str]]],
+    dim: int,
+    metric: str = "angular",
+    m: Optional[int] = None,
+    ef_construction: Optional[int] = None,
+) -> Tuple[bytes, List[str]]:
+    """Build a Voyager HNSW index incrementally and serialize to bytes.
+
+    Consumes batches from ``batch_iter`` (typically the generator returned by
+    :func:`iter_embedding_batches`) and calls ``voyager.Index.add_items``
+    once per batch with dense ``0..N-1`` ids assigned across batches. The
+    Voyager index auto-grows on each ``add_items`` call, so no upfront row
+    count is required.
+
+    Peak RAM during build is ``1 batch + voyager's internal HNSW storage``
+    rather than ``full library buffer + voyager's internal HNSW storage`` --
+    i.e. the input-side memory is essentially zero compared to the
+    unavoidable index storage.
+
+    Args:
+        batch_iter: iterable yielding ``(batch_buf, batch_ids)`` tuples.
+            Each ``batch_buf`` must be a float32 ndarray of shape
+            ``(batch_n, dim)`` (any dtype is silently coerced; non-2-D or
+            wrong-dim batches raise ``ValueError`` immediately).
+        dim: vector dimensionality. Must equal each batch's second axis.
+        metric: ``"angular"`` (cosine), ``"euclidean"``, or ``"dot"``.
+        m, ef_construction: HNSW graph parameters. Default to
+            ``config.VOYAGER_M`` / ``config.VOYAGER_EF_CONSTRUCTION``.
+
+    Returns:
+        ``(index_bytes, item_ids)`` -- the serialized Voyager index and the
+        flat list of item_id strings in row order. Items dropped by the
+        generator (NULL/wrong-dim blobs) do not appear in either output.
+
+    Raises:
+        ImportError: if the ``voyager`` library is not installed.
+        ValueError: if the iterator yields no batches at all, or a batch
+            has the wrong shape/dim.
+    """
+    import voyager
+
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError(f"dim must be a positive int, got {dim!r}")
+
+    m_val = config.VOYAGER_M if m is None else int(m)
+    ef_val = config.VOYAGER_EF_CONSTRUCTION if ef_construction is None else int(ef_construction)
+    space = _resolve_voyager_space(metric)
+
+    builder = voyager.Index(
+        space=space,
+        num_dimensions=dim,
+        M=m_val,
+        ef_construction=ef_val,
+    )
+
+    all_ids: List[str] = []
+    next_voyager_id = 0
+    saw_any = False
+
+    for batch_buf, batch_ids in batch_iter:
+        if not isinstance(batch_buf, np.ndarray) or batch_buf.ndim != 2:
+            raise ValueError(
+                "build_voyager_index_bytes_streaming: each batch_buf must be a 2-D ndarray"
+            )
+        if batch_buf.shape[1] != dim:
+            raise ValueError(
+                f"build_voyager_index_bytes_streaming: batch dim={batch_buf.shape[1]} != declared dim={dim}"
+            )
+        if batch_buf.shape[0] == 0:
+            continue
+        if batch_buf.dtype != np.float32:
+            batch_buf = batch_buf.astype(np.float32, copy=False)
+        if not batch_buf.flags["C_CONTIGUOUS"]:
+            batch_buf = np.ascontiguousarray(batch_buf)
+        if len(batch_ids) != batch_buf.shape[0]:
+            raise ValueError(
+                f"build_voyager_index_bytes_streaming: batch_ids len={len(batch_ids)} "
+                f"!= batch_buf rows={batch_buf.shape[0]}"
+            )
+
+        ids = np.arange(next_voyager_id, next_voyager_id + batch_buf.shape[0], dtype=np.int64)
+        builder.add_items(batch_buf, ids=ids)
+        all_ids.extend(batch_ids)
+        next_voyager_id += batch_buf.shape[0]
+        saw_any = True
+
+    if not saw_any or next_voyager_id == 0:
+        del builder
+        gc.collect()
+        raise ValueError("build_voyager_index_bytes_streaming: no items added; refusing to serialize empty index")
+
+    temp_file_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
+            temp_file_path = tmp.name
+        builder.save(temp_file_path)
+        del builder
+        gc.collect()
+        with open(temp_file_path, "rb") as f:
+            return f.read(), all_ids
     finally:
         if temp_file_path and os.path.exists(temp_file_path):
             try:
