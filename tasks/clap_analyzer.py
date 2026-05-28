@@ -39,6 +39,7 @@ _audio_session = None  # For audio analysis (worker containers)
 _text_session = None   # For text search (Flask containers)
 _tokenizer = None
 _cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
+_gte_proj_session = None  # GTE-to-DCLAP projection (multilingual text search)
 # Small dictionary of text embeddings for mood/feature labels that persists
 # across jobs in the same worker process (which may be reused by RQ).
 _label_text_embeddings_cache = None  # {'mood': np.ndarray, 'feature': np.ndarray}
@@ -313,6 +314,82 @@ def initialize_clap_text_model():
         import traceback
         traceback.print_exc()
         return False
+
+
+def _load_gte_proj():
+    """Load the GTE-to-DCLAP projection ONNX model (~1.3 MB)."""
+    import onnxruntime as ort
+
+    proj_path = config.CLAP_GTE_PROJ_PATH
+    if not os.path.isfile(proj_path):
+        return None
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.log_severity_level = 3
+    sess_options.enable_cpu_mem_arena = False
+    sess_options.enable_mem_pattern = False
+    sess_options.intra_op_num_threads = 1
+    sess_options.inter_op_num_threads = 1
+
+    try:
+        from tasks.analysis_helper import create_onnx_session
+        session = create_onnx_session(
+            proj_path,
+            provider_options=[('CPUExecutionProvider', {})],
+            sess_options=sess_options,
+            label='gte_proj',
+        )
+    except Exception:
+        session = ort.InferenceSession(
+            proj_path, sess_options=sess_options,
+            providers=['CPUExecutionProvider'])
+
+    logger.info("GTE-to-DCLAP projection loaded from %s", proj_path)
+    return session
+
+
+def _get_gte_proj_session():
+    global _gte_proj_session
+    if _gte_proj_session is None:
+        _gte_proj_session = _load_gte_proj()
+    return _gte_proj_session
+
+
+def _gte_text_embedding(text: str) -> Optional[np.ndarray]:
+    proj = _get_gte_proj_session()
+    if proj is None:
+        return None
+
+    from lyrics.gte_onnx import embed_text as gte_embed
+    gte_vec = gte_embed(text)
+    if gte_vec is None:
+        return None
+
+    proj_input = gte_vec.reshape(1, -1).astype(np.float32)
+    projected = proj.run(None, {proj.get_inputs()[0].name: proj_input})[0][0]
+    projected = projected / np.linalg.norm(projected)
+    return projected
+
+
+def _gte_text_embeddings_batch(texts: list) -> Optional[np.ndarray]:
+    proj = _get_gte_proj_session()
+    if proj is None:
+        return None
+
+    from lyrics.gte_onnx import embed_text as gte_embed
+    gte_vecs = []
+    for text in texts:
+        vec = gte_embed(text)
+        if vec is None:
+            return None
+        gte_vecs.append(vec)
+
+    batch = np.stack(gte_vecs).astype(np.float32)
+    projected = proj.run(None, {proj.get_inputs()[0].name: batch})[0]
+    norms = np.linalg.norm(projected, axis=1, keepdims=True)
+    projected = projected / norms
+    return projected
 
 
 def unload_clap_audio_only():
@@ -595,6 +672,13 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         return None
     
     try:
+        result = _gte_text_embedding(query_text)
+        if result is not None:
+            return result
+    except Exception as e:
+        logger.debug(f"GTE projection unavailable, falling back to RoBERTa: {e}")
+    
+    try:
         # Get text-only model for text search
         session = get_clap_text_model()
         tokenizer = get_tokenizer()
@@ -652,6 +736,13 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
     
     if not query_texts:
         return None
+    
+    try:
+        result = _gte_text_embeddings_batch(query_texts)
+        if result is not None:
+            return result
+    except Exception as e:
+        logger.debug(f"GTE projection batch unavailable, falling back to RoBERTa: {e}")
     
     try:
         # Get text-only model for text search

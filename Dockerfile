@@ -193,6 +193,21 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
+# Download GTE-to-DCLAP projection (~1.3 MB) for multilingual text search.
+# Maps gte-multilingual-base embeddings (768-dim) into DCLAP audio space (512-dim).
+# When present, text search uses GTE + this projection instead of the 478 MB RoBERTa
+# text model, enabling Chinese/Japanese/Korean and 70+ other languages.
+RUN set -eux; \
+    proj_url="https://github.com/raindropQwQ/AudioMuse-AI-DCLAP-Multilingual/releases/download/v1/gte_to_dclap_proj.onnx"; \
+    proj_dest="/app/model/gte_to_dclap_proj.onnx"; \
+    echo "Downloading GTE-to-DCLAP projection (~1.3 MB)..."; \
+    if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+        -O "$proj_dest" "$proj_url"; then \
+        echo "✓ GTE-to-DCLAP projection downloaded"; \
+    else \
+        echo "⚠ GTE-to-DCLAP projection download failed (multilingual text search will be unavailable)"; \
+    fi
+
 # Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
 # of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
 # tokenizer files + preprocessor config). Re-hosted on the project's GitHub

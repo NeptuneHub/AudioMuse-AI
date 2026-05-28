@@ -465,6 +465,7 @@ CLAP_AUDIO_FMAX = int(os.environ.get("CLAP_AUDIO_FMAX", "14000"))
 CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").lower() == "true"
 
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
+CLAP_GTE_PROJ_PATH = os.environ.get("CLAP_GTE_PROJ_PATH", "/app/model/gte_to_dclap_proj.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
