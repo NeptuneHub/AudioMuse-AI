@@ -305,6 +305,7 @@ def build_and_store_voyager_index(db_conn=None):
         build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
+        EmptyIndexError,
     )
 
     if db_conn is None:
@@ -327,7 +328,7 @@ def build_and_store_voyager_index(db_conn=None):
             index_binary_data, item_ids = build_voyager_index_bytes_streaming(
                 batches, EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
             )
-        except ValueError as ve:
+        except EmptyIndexError as ve:
             logger.warning(f"No valid embeddings were found to add to the Voyager index. Aborting build process: {ve}")
             return
         gc.collect()

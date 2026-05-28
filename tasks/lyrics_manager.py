@@ -15,17 +15,14 @@ Mirrors the architecture of tasks/clap_text_search.py:
 """
 
 import gc
-import io
 import json
 import logging
-import os
 import re
 import sys
 import tempfile
 from typing import Dict, List, Optional
 
 import numpy as np
-import psycopg2
 
 import config
 
@@ -95,6 +92,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
         build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
+        EmptyIndexError,
     )
 
     if not LYRICS_ENABLED:
@@ -122,7 +120,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
             index_bytes, item_ids = build_voyager_index_bytes_streaming(
                 batches, LYRICS_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
             )
-        except ValueError as ve:
+        except EmptyIndexError as ve:
             logger.warning(f"No valid lyrics embedding vectors for index build: {ve}")
             return False
         gc.collect()
@@ -166,6 +164,7 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
         build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
+        EmptyIndexError,
     )
 
     if not LYRICS_ENABLED:
@@ -199,7 +198,7 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
             index_bytes, item_ids = build_voyager_index_bytes_streaming(
                 batches, dim, metric="angular",
             )
-        except ValueError as ve:
+        except EmptyIndexError as ve:
             logger.warning(f"No usable axis_vector rows; aborting axes index build: {ve}")
             return False
         gc.collect()

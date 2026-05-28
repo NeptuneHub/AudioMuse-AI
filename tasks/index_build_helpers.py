@@ -63,6 +63,17 @@ import config
 logger = logging.getLogger(__name__)
 
 
+class EmptyIndexError(ValueError):
+    """Raised when an index builder is asked to serialize zero items.
+
+    Distinguishing this from a generic ``ValueError`` lets callers downgrade
+    "empty source" to a warning while still surfacing real programming errors
+    (wrong dim, batch shape mismatch, mismatched ids length) as exceptions.
+    Subclassing ``ValueError`` preserves backward compatibility with any code
+    that already catches ``ValueError`` here.
+    """
+
+
 _STREAM_ITERSIZE = 5000
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -521,7 +532,7 @@ def build_voyager_index_bytes_streaming(
     if not saw_any or next_voyager_id == 0:
         del builder
         gc.collect()
-        raise ValueError("build_voyager_index_bytes_streaming: no items added; refusing to serialize empty index")
+        raise EmptyIndexError("build_voyager_index_bytes_streaming: no items added; refusing to serialize empty index")
 
     temp_file_path: Optional[str] = None
     try:

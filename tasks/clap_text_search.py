@@ -4,10 +4,8 @@ Provides in-memory caching and fast text-based music search using CLAP embedding
 """
 
 import gc
-import io
 import json
 import logging
-import os
 import re
 import sys
 import tempfile
@@ -15,7 +13,6 @@ import threading
 import time
 
 import numpy as np
-import psycopg2
 from psycopg2.extras import DictCursor
 from typing import List, Dict, Optional
 import config
@@ -218,6 +215,7 @@ def build_and_store_clap_index(db_conn=None):
         build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
+        EmptyIndexError,
     )
 
     try:
@@ -240,7 +238,7 @@ def build_and_store_clap_index(db_conn=None):
             index_bytes, item_ids = build_voyager_index_bytes_streaming(
                 batches, CLAP_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
             )
-        except ValueError as ve:
+        except EmptyIndexError as ve:
             logger.warning(f"No valid CLAP embedding vectors found for CLAP index build: {ve}")
             return False
         gc.collect()

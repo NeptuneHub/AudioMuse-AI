@@ -40,9 +40,8 @@ GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
 ARTIST_INDEX_MAX_PART_SIZE = ARTIST_INDEX_MAX_PART_SIZE_MB * 1024 * 1024  # bytes threshold for segmented artist index storage
 
-def _split_bytes(data: bytes, part_size: int) -> list:
-    """Split `data` into byte chunks, each <= part_size."""
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
+from .index_build_helpers import _split_bytes  # noqa: F401  (re-export of helper for legacy in-file callers)
+
 
 # Voyager index parameters (similar to song index)
 VOYAGER_M = 32  # Number of bi-directional links created for every new element
@@ -690,7 +689,7 @@ def load_artist_index_for_querying(force_reload=False):
 
             metadata_blob = None
             try:
-                metadata_blob = load_segmented_blob(db_conn, "artist_metadata_data", "artist_metadata")
+                metadata_blob = load_segmented_blob(conn, "artist_metadata_data", "artist_metadata")
             except Exception as meta_load_err:
                 logger.warning(
                     f"artist_metadata_data load failed; falling back to legacy JSON columns: {meta_load_err}"

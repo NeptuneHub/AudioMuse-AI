@@ -19,10 +19,6 @@ from config import (
 
 # Import other project modules
 from .mediaserver import get_recent_albums, get_tracks_from_album
-from .voyager_manager import build_and_store_voyager_index
-from .artist_gmm_manager import build_and_store_artist_index
-from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
-from .sem_grove_manager import build_and_store_sem_grove_index
 
 from psycopg2 import OperationalError
 from redis.exceptions import TimeoutError as RedisTimeoutError
@@ -78,31 +74,11 @@ def identify_and_clean_orphaned_albums_task():
             
             if not all_media_server_albums:
                 log_and_update_main("⚠️ No albums found on media server.", 95, task_state=TASK_STATUS_PROGRESS)
-                # Still rebuild voyager index and map even when no albums found
-                log_and_update_main(f"🔄 Rebuilding voyager index, artist index, and maps...", 96)
+                log_and_update_main(f"🔄 Rebuilding all indexes and maps...", 96)
                 try:
-                    build_and_store_voyager_index(get_db())
-                    build_and_store_artist_index(get_db())
-                    try:
-                        build_and_store_lyrics_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
-                    try:
-                        build_and_store_lyrics_axes_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
-                    try:
-                        build_and_store_sem_grove_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
-                    from app_helper import build_and_store_map_projection, build_and_store_artist_projection
-                    build_and_store_map_projection('main_map')
-                    build_and_store_artist_projection('artist_map')
-                    try:
-                        redis_conn.publish('index-updates', 'reload')
-                    except Exception:
-                        logger.debug('Could not publish index-updates to redis after rebuild.')
-                    log_and_update_main(f"✅ Voyager index, artist index, and maps rebuilt successfully.", 99)
+                    from .analysis import _run_all_index_builds
+                    _run_all_index_builds(log_fn=None)
+                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps: {e}")
                     log_and_update_main(f"⚠️ Warning: Failed to rebuild indexes and maps: {str(e)}", 99)
@@ -197,31 +173,11 @@ def identify_and_clean_orphaned_albums_task():
             
             if len(orphaned_track_ids) == 0:
                 log_and_update_main("✅ No orphaned tracks found. Database is clean!", 95, task_state=TASK_STATUS_PROGRESS)
-                # Still rebuild voyager index and map even when no cleaning needed
-                log_and_update_main(f"🔄 Rebuilding voyager index, artist index, and maps...", 96)
+                log_and_update_main(f"🔄 Rebuilding all indexes and maps...", 96)
                 try:
-                    build_and_store_voyager_index(get_db())
-                    build_and_store_artist_index(get_db())
-                    try:
-                        build_and_store_lyrics_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
-                    try:
-                        build_and_store_lyrics_axes_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
-                    try:
-                        build_and_store_sem_grove_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
-                    from app_helper import build_and_store_map_projection, build_and_store_artist_projection
-                    build_and_store_map_projection('main_map')
-                    build_and_store_artist_projection('artist_map')
-                    try:
-                        redis_conn.publish('index-updates', 'reload')
-                    except Exception:
-                        logger.debug('Could not publish index-updates to redis after rebuild.')
-                    log_and_update_main(f"✅ Voyager index, artist index, and maps rebuilt successfully.", 99)
+                    from .analysis import _run_all_index_builds
+                    _run_all_index_builds(log_fn=None)
+                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps: {e}")
                     log_and_update_main(f"⚠️ Warning: Failed to rebuild indexes and maps: {str(e)}", 99)
@@ -261,32 +217,12 @@ def identify_and_clean_orphaned_albums_task():
             
             if deletion_result["status"] == "SUCCESS":
                 log_and_update_main(f"✅ Successfully deleted {deletion_result['deleted_count']} orphaned tracks.", 96)
-                
-                # Rebuild voyager index and map after cleaning like analysis does
-                log_and_update_main(f"🔄 Rebuilding voyager index, artist index, and maps after cleaning...", 97)
+
+                log_and_update_main(f"🔄 Rebuilding all indexes and maps after cleaning...", 97)
                 try:
-                    build_and_store_voyager_index(get_db())
-                    build_and_store_artist_index(get_db())
-                    try:
-                        build_and_store_lyrics_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics search index after cleaning: {e}")
-                    try:
-                        build_and_store_lyrics_axes_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store Lyrics axes index after cleaning: {e}")
-                    try:
-                        build_and_store_sem_grove_index(get_db())
-                    except Exception as e:
-                        logger.warning(f"Failed to build/store SemGrove merged index after cleaning: {e}")
-                    from app_helper import build_and_store_map_projection, build_and_store_artist_projection
-                    build_and_store_map_projection('main_map')
-                    build_and_store_artist_projection('artist_map')
-                    try:
-                        redis_conn.publish('index-updates', 'reload')
-                    except Exception:
-                        logger.debug('Could not publish index-updates to redis after rebuild.')
-                    log_and_update_main(f"✅ Voyager index, artist index, and maps rebuilt successfully after cleaning.", 99)
+                    from .analysis import _run_all_index_builds
+                    _run_all_index_builds(log_fn=None)
+                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully after cleaning.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps after cleaning: {e}")
                     log_and_update_main(f"⚠️ Warning: Failed to rebuild indexes and maps: {str(e)}", 99)

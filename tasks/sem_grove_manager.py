@@ -176,6 +176,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         build_voyager_index_bytes_streaming,
         store_voyager_index_segmented,
         build_id_map,
+        EmptyIndexError,
     )
 
     if db_conn is None:
@@ -290,7 +291,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             index_bytes, kept_ids = build_voyager_index_bytes_streaming(
                 _merge_batches(), merged_dim, metric="angular",
             )
-        except ValueError as ve:
+        except EmptyIndexError as ve:
             logger.warning("SemGrove: no valid merged vectors; aborting: %s", ve)
             return False
         finally:

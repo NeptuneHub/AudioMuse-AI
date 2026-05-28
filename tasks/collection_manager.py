@@ -13,7 +13,6 @@ import requests # Import requests to catch specific exceptions
 # Import project modules
 from .pocketbase import PocketBaseClient
 from .mediaserver import get_recent_albums, get_tracks_from_album
-from .voyager_manager import build_and_store_voyager_index
 
 logger = logging.getLogger(__name__)
 
@@ -398,16 +397,21 @@ def sync_collections_task(url, token, num_albums):
             
             failed_child_tasks = [t for t in all_child_tasks if t.get('status') == TASK_STATUS_FAILURE]
 
-            # --- Rebuild Voyager Index and Notify Flask ---
-            log_and_update("Performing final Voyager index rebuild...", 98)
+            # --- Rebuild all indexes and notify Flask ---
+            # Previously this only rebuilt the audio Voyager index, leaving CLAP,
+            # lyrics, lyrics-axes, SemGrove, artist, and the 2D map projections
+            # stale after a sync. _run_all_index_builds rebuilds the full set in
+            # the same order as the analysis task, publishes the reload message,
+            # and releases freed RAM at the end.
+            log_and_update("Performing final index rebuild...", 98)
             try:
-                build_and_store_voyager_index(get_db())
-                redis_conn.publish('index-updates', 'reload')
-                log_and_update("Successfully rebuilt Voyager index and triggered a reload.", 99)
+                from .analysis import _run_all_index_builds
+                _run_all_index_builds(log_fn=None)
+                log_and_update("Successfully rebuilt all indexes and triggered a reload.", 99)
             except Exception as e:
-                logger.error(f"{log_prefix} Failed during Voyager index rebuild and reload trigger: {e}", exc_info=True)
-                log_and_update(f"Failed during Voyager index rebuild: {e}", 99, details={"warning": "Failed to rebuild Voyager index."})
-            # --- End Rebuild ---
+                logger.error(f"{log_prefix} Failed during index rebuild and reload trigger: {e}", exc_info=True)
+                log_and_update(f"Failed during index rebuild: {e}", 99, details={"warning": "Failed to rebuild indexes."})
+            # --- End rebuild ---
 
             if failed_child_tasks:
                 num_failed = len(failed_child_tasks)
