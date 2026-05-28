@@ -231,6 +231,11 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'artist_metadata_data' table for the per-artist auxiliary
+            # metadata blob (artist_map + GMM params). Decoupled from the Voyager
+            # index binary and segmented independently so a single column value
+            # never crosses PG's 1 GB MaxAllocSize cap, regardless of library size.
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections
             cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_component_projection' table for precomputed 2D artist component projections

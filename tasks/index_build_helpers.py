@@ -46,12 +46,14 @@ because the next batch rebuild picks them up.
 from __future__ import annotations
 
 import gc
+import io
 import json
 import logging
 import os
 import re
+import struct
 import tempfile
-from typing import Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
 import psycopg2
@@ -181,10 +183,10 @@ def stream_embeddings_to_buffer(
                 if blob is None:
                     skipped_null += 1
                     continue
-                vec = np.frombuffer(blob, dtype=np.float32)
-                if vec.shape[0] != dim:
+                if len(blob) != dim * 4:
                     skipped_dim += 1
                     continue
+                vec = np.frombuffer(blob, dtype=np.float32)
                 if write_idx >= buf.shape[0]:
                     new_size = max(buf.shape[0] * 2, write_idx + 1)
                     grown = np.empty((new_size, dim), dtype=np.float32)
@@ -294,10 +296,10 @@ def iter_embedding_batches(
                 if blob is None:
                     total_skipped_null += 1
                     continue
-                vec = np.frombuffer(blob, dtype=np.float32)
-                if vec.shape[0] != dim:
+                if len(blob) != dim * 4:
                     total_skipped_dim += 1
                     continue
+                vec = np.frombuffer(blob, dtype=np.float32)
                 batch_buf[write_idx] = vec
                 batch_ids.append(item_id)
                 write_idx += 1
@@ -636,3 +638,324 @@ def store_voyager_index_segmented(
 def build_id_map(item_ids: Iterable[str]) -> dict:
     """Return ``{int_voyager_id: item_id_str}`` matching the row order."""
     return {i: item_id for i, item_id in enumerate(item_ids)}
+
+
+def store_segmented_blob(
+    db_conn,
+    target_table: str,
+    name: str,
+    blob: bytes,
+    max_part_size_mb: Optional[int] = None,
+) -> None:
+    """Persist a single BYTEA payload to a ``(name, blob_data, created_at)`` table.
+
+    Mirrors :func:`store_voyager_index_segmented` but for the simpler 2-column
+    schema used by ``artist_metadata_data``: ``name VARCHAR PRIMARY KEY``,
+    ``blob_data BYTEA NOT NULL``, ``created_at TIMESTAMP``. Any previous rows
+    matching ``name`` or ``name_<part>_<total>`` are deleted in the same
+    transaction before the new payload is written, so readers never see
+    partial state.
+
+    Payloads larger than ``max_part_size_mb`` are split into rows named
+    ``<name>_<part>_<total>``. This is what insulates the artist metadata
+    blob from PG's 1 GB MaxAllocSize cap at any library size: a 2.4 GB blob
+    becomes ~48 rows of 50 MB each, all well under the cap.
+
+    The caller's ``db_conn`` is used as-is and is **not** committed by this
+    function. The caller controls the transaction boundary.
+
+    Args:
+        db_conn: psycopg2 connection (caller's main connection).
+        target_table: ``(name VARCHAR PK, blob_data BYTEA, created_at TIMESTAMP)``
+            target table (must be a bare SQL identifier).
+        name: logical blob name (must be a bare SQL identifier so the
+            LIKE-escape pattern is unambiguous).
+        blob: payload to persist. Empty bytes raises ``ValueError``.
+        max_part_size_mb: override for ``config.VOYAGER_MAX_PART_SIZE_MB``
+            (the existing global tunable for segmented-row sizing).
+    """
+    _validate_sql_identifier(target_table, "table")
+    _validate_sql_identifier(name, "name")
+    if not blob:
+        raise ValueError("blob is empty; refusing to persist an empty payload")
+
+    mb = config.VOYAGER_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
+    max_part_size = mb * 1024 * 1024
+
+    delete_sql = (
+        f"DELETE FROM {target_table} "
+        f"WHERE name = %s OR name LIKE %s ESCAPE '\\'"
+    )
+    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+
+    upsert_sql = (
+        f"INSERT INTO {target_table} (name, blob_data, created_at) "
+        f"VALUES (%s, %s, CURRENT_TIMESTAMP) "
+        f"ON CONFLICT (name) DO UPDATE SET "
+        f"blob_data = EXCLUDED.blob_data, "
+        f"created_at = EXCLUDED.created_at"
+    )
+    insert_sql = (
+        f"INSERT INTO {target_table} (name, blob_data, created_at) "
+        f"VALUES (%s, %s, CURRENT_TIMESTAMP)"
+    )
+
+    with db_conn.cursor() as cur:
+        cur.execute(delete_sql, (name, like_pattern))
+
+        if len(blob) <= max_part_size:
+            cur.execute(upsert_sql, (name, psycopg2.Binary(blob)))
+            logger.info("Stored '%s' as a single row in %s.", name, target_table)
+        else:
+            parts = _split_bytes(blob, max_part_size)
+            num_parts = len(parts)
+            for idx, part in enumerate(parts, start=1):
+                part_name = f"{name}_{idx}_{num_parts}"
+                cur.execute(insert_sql, (part_name, psycopg2.Binary(part)))
+            logger.info(
+                "Stored '%s' in %d segmented rows in %s.",
+                name, num_parts, target_table,
+            )
+
+
+def load_segmented_blob(
+    db_conn,
+    target_table: str,
+    name: str,
+) -> Optional[bytes]:
+    """Reassemble a payload previously written by :func:`store_segmented_blob`.
+
+    Tries the single-row form first (``name = <name>``), then the segmented
+    form (``name LIKE <name>_<part>_<total>``). Returns ``None`` if neither
+    yields a row -- the loader can use that to detect a legacy deployment
+    that has not yet rebuilt onto the new table and fall back to whatever
+    older storage existed.
+
+    Validates that all expected segments are present before returning. A
+    missing or duplicated segment raises ``ValueError``; this is treated as
+    a corruption signal rather than silently returning a partial blob.
+
+    Args:
+        db_conn: psycopg2 connection.
+        target_table: ``(name VARCHAR PK, blob_data BYTEA, created_at TIMESTAMP)``
+            source table (must be a bare SQL identifier).
+        name: logical blob name (must be a bare SQL identifier).
+    """
+    _validate_sql_identifier(target_table, "table")
+    _validate_sql_identifier(name, "name")
+
+    select_single_sql = f"SELECT blob_data FROM {target_table} WHERE name = %s"
+    select_segments_sql = (
+        f"SELECT name, blob_data FROM {target_table} "
+        f"WHERE name LIKE %s ESCAPE '\\'"
+    )
+    like_pattern = name.replace("_", r"\_") + r"\_%\_%"
+    seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
+
+    with db_conn.cursor() as cur:
+        cur.execute(select_single_sql, (name,))
+        row = cur.fetchone()
+        if row and row[0]:
+            data = row[0]
+            return bytes(data) if not isinstance(data, (bytes, bytearray)) else bytes(data)
+
+        cur.execute(select_segments_sql, (like_pattern,))
+        rows = cur.fetchall()
+
+    if not rows:
+        return None
+
+    parts: List[Tuple[int, bytes]] = []
+    total_expected: Optional[int] = None
+    for row_name, row_blob in rows:
+        m = seg_pattern.match(row_name)
+        if not m:
+            continue
+        part_no = int(m.group(1))
+        total = int(m.group(2))
+        if total_expected is None:
+            total_expected = total
+        elif total_expected != total:
+            raise ValueError(
+                f"Segment total mismatch for '{name}' in {target_table}: "
+                f"saw {total_expected} and {total}."
+            )
+        parts.append((part_no, bytes(row_blob) if row_blob else b""))
+
+    if total_expected is None or len(parts) != total_expected:
+        raise ValueError(
+            f"Incomplete segmented blob for '{name}' in {target_table}: "
+            f"expected {total_expected}, found {len(parts)}."
+        )
+
+    parts.sort(key=lambda p: p[0])
+    return b"".join(part_data for _, part_data in parts)
+
+
+_ARTIST_META_MAGIC = b"ARMD"
+_ARTIST_META_VERSION = 1
+_ARTIST_META_HEADER_FMT = "<4sIIIII"
+_ARTIST_META_HEADER_SIZE = struct.calcsize(_ARTIST_META_HEADER_FMT)
+
+
+def pack_artist_metadata(
+    artist_map: Dict[int, str],
+    artist_gmms: Dict[str, Dict],
+) -> bytes:
+    """Serialize the artist index's auxiliary metadata into a single bytes blob.
+
+    Produces a self-describing little-endian binary container that replaces
+    the previous JSON-of-floats storage. Format documented in the plan; in
+    short:
+
+    * 24-byte header (magic ``ARMD``, version=1, artist_count, two section
+      offsets).
+    * Artist-map section: per (voyager_id, artist_name) tuple.
+    * GMM-params section: per artist, ``means`` and ``weights`` as raw
+      float32 little-endian bytes. ``covariances`` is deliberately not
+      stored -- nothing reads it.
+
+    Args:
+        artist_map: ``{voyager_id_int: artist_name_str}``.
+        artist_gmms: ``{artist_name_str: {means, weights, n_components,
+            n_features, n_tracks, is_few_songs, tracks_hash}}``. Extra keys
+            are ignored; missing keys raise ``KeyError``.
+    """
+    buf = io.BytesIO()
+    buf.write(b"\x00" * _ARTIST_META_HEADER_SIZE)
+
+    artist_map_offset = buf.tell()
+    buf.write(struct.pack("<I", len(artist_map)))
+    for voyager_id, artist_name in artist_map.items():
+        name_bytes = artist_name.encode("utf-8")
+        if len(name_bytes) > 0xFFFF:
+            raise ValueError(f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix")
+        buf.write(struct.pack("<IH", int(voyager_id), len(name_bytes)))
+        buf.write(name_bytes)
+
+    gmm_params_offset = buf.tell()
+    buf.write(struct.pack("<I", len(artist_gmms)))
+    for artist_name, gmm in artist_gmms.items():
+        name_bytes = artist_name.encode("utf-8")
+        if len(name_bytes) > 0xFFFF:
+            raise ValueError(f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix")
+
+        tracks_hash = gmm.get("tracks_hash", "")
+        tracks_hash_bytes = tracks_hash.encode("ascii") if tracks_hash else b""
+        if len(tracks_hash_bytes) > 0xFF:
+            raise ValueError(f"tracks_hash too long ({len(tracks_hash_bytes)} bytes) for uint8 length prefix")
+
+        n_components = int(gmm["n_components"])
+        n_features = int(gmm["n_features"])
+        n_tracks = int(gmm.get("n_tracks", 0))
+        is_few_songs = 1 if gmm.get("is_few_songs", False) else 0
+
+        means = np.ascontiguousarray(np.asarray(gmm["means"], dtype=np.float32))
+        weights = np.ascontiguousarray(np.asarray(gmm["weights"], dtype=np.float32))
+        if means.shape != (n_components, n_features):
+            raise ValueError(
+                f"means shape {means.shape} != ({n_components}, {n_features}) "
+                f"for artist '{artist_name}'"
+            )
+        if weights.shape != (n_components,):
+            raise ValueError(
+                f"weights shape {weights.shape} != ({n_components},) "
+                f"for artist '{artist_name}'"
+            )
+
+        buf.write(struct.pack("<H", len(name_bytes)))
+        buf.write(name_bytes)
+        buf.write(struct.pack("<B", len(tracks_hash_bytes)))
+        buf.write(tracks_hash_bytes)
+        buf.write(struct.pack("<BHHI", is_few_songs, n_components, n_features, n_tracks))
+        buf.write(means.tobytes())
+        buf.write(weights.tobytes())
+
+    payload = buf.getvalue()
+    header = struct.pack(
+        _ARTIST_META_HEADER_FMT,
+        _ARTIST_META_MAGIC,
+        _ARTIST_META_VERSION,
+        len(artist_gmms),
+        artist_map_offset,
+        gmm_params_offset,
+        0,
+    )
+    return header + payload[_ARTIST_META_HEADER_SIZE:]
+
+
+def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]]:
+    """Inverse of :func:`pack_artist_metadata`.
+
+    Returns ``(artist_map, artist_gmms)`` reconstructed from the binary blob.
+    ``artist_gmms`` entries have the same in-memory shape the rest of the
+    code expects (``means`` and ``weights`` as Python lists, plus the
+    metadata fields). ``covariances`` and ``covariance_type`` are NOT
+    re-introduced -- nothing live reads them.
+
+    Raises ``ValueError`` if the magic / version don't match or if the blob
+    is truncated.
+    """
+    if len(blob) < _ARTIST_META_HEADER_SIZE:
+        raise ValueError(f"artist metadata blob too short ({len(blob)} bytes)")
+
+    magic, version, artist_count, artist_map_offset, gmm_params_offset, _reserved = struct.unpack(
+        _ARTIST_META_HEADER_FMT, blob[:_ARTIST_META_HEADER_SIZE]
+    )
+    if magic != _ARTIST_META_MAGIC:
+        raise ValueError(f"artist metadata magic mismatch: {magic!r}")
+    if version != _ARTIST_META_VERSION:
+        raise ValueError(f"unsupported artist metadata version: {version}")
+    if artist_map_offset < _ARTIST_META_HEADER_SIZE or gmm_params_offset < artist_map_offset:
+        raise ValueError("artist metadata section offsets are inconsistent")
+
+    artist_map: Dict[int, str] = {}
+    pos = artist_map_offset
+    (map_count,) = struct.unpack_from("<I", blob, pos)
+    pos += 4
+    for _ in range(map_count):
+        voyager_id, name_len = struct.unpack_from("<IH", blob, pos)
+        pos += 6
+        name = blob[pos:pos + name_len].decode("utf-8")
+        pos += name_len
+        artist_map[int(voyager_id)] = name
+
+    artist_gmms: Dict[str, Dict] = {}
+    pos = gmm_params_offset
+    (gmm_count,) = struct.unpack_from("<I", blob, pos)
+    pos += 4
+    if gmm_count != artist_count:
+        raise ValueError(
+            f"header artist_count={artist_count} != gmm section count={gmm_count}"
+        )
+    for _ in range(gmm_count):
+        (name_len,) = struct.unpack_from("<H", blob, pos)
+        pos += 2
+        name = blob[pos:pos + name_len].decode("utf-8")
+        pos += name_len
+        (tracks_hash_len,) = struct.unpack_from("<B", blob, pos)
+        pos += 1
+        tracks_hash = blob[pos:pos + tracks_hash_len].decode("ascii") if tracks_hash_len else ""
+        pos += tracks_hash_len
+        is_few_songs, n_components, n_features, n_tracks = struct.unpack_from("<BHHI", blob, pos)
+        pos += 1 + 2 + 2 + 4
+
+        means_size = n_components * n_features * 4
+        weights_size = n_components * 4
+        means = np.frombuffer(blob, dtype=np.float32, count=n_components * n_features, offset=pos)
+        means = means.reshape(n_components, n_features)
+        pos += means_size
+        weights = np.frombuffer(blob, dtype=np.float32, count=n_components, offset=pos)
+        pos += weights_size
+
+        artist_gmms[name] = {
+            "means": means.tolist(),
+            "weights": weights.tolist(),
+            "n_components": int(n_components),
+            "n_features": int(n_features),
+            "n_tracks": int(n_tracks),
+            "is_few_songs": bool(is_few_songs),
+            "tracks_hash": tracks_hash,
+        }
+
+    return artist_map, artist_gmms

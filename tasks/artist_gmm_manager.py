@@ -49,9 +49,6 @@ VOYAGER_M = 32  # Number of bi-directional links created for every new element
 VOYAGER_EF_CONSTRUCTION = 200  # Size of the dynamic list during index construction
 VOYAGER_EF_SEARCH = 100  # Size of the dynamic list during search (can be adjusted at query time)
 
-# Monte Carlo sampling for KL divergence approximation
-MC_SAMPLES = 500  # Number of samples for Monte Carlo KL divergence estimation (reduced for speed)
-
 # --- Global cache for the loaded artist index ---
 artist_index = None  # voyager.Index object
 artist_map = None  # {voyager_int_id: artist_name}
@@ -164,19 +161,16 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             n_components = n_samples
             weights = [1.0 / n_components] * n_components
             means = all_embeddings.tolist()  # Each row is a song's embedding
-            covariances = [[fixed_variance] * n_features] * n_components  # Same small variance for all
-            
+
             gmm_params = {
                 'weights': weights,
                 'means': means,
-                'covariances': covariances,
                 'n_components': n_components,
-                'covariance_type': GMM_COVARIANCE_TYPE,
                 'n_features': n_features,
                 'n_tracks': n_samples,
                 'is_few_songs': True  # Flag to identify few-song artists
             }
-            
+
             logger.info(f"Created {n_components}-component GMM for artist '{artist_name}' (1 component per song, equal weights)")
             return gmm_params
         
@@ -195,13 +189,16 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
         
         gmm.fit(all_embeddings)
         
-        # Extract GMM parameters
+        # Extract GMM parameters. NOTE: covariances and covariance_type were
+        # previously stored too, but nothing in the live query path ever read
+        # them (the entire Jeffreys -> KL Monte Carlo chain was dead code).
+        # Dropping them keeps the per-artist payload ~half its old size, which
+        # is what gets gmm_params under PG's 1 GB MaxAllocSize cap at large
+        # library scales.
         gmm_params = {
             'weights': gmm.weights_.tolist(),
             'means': gmm.means_.tolist(),
-            'covariances': gmm.covariances_.tolist(),
             'n_components': optimal_n_components,  # Store the actual number used
-            'covariance_type': GMM_COVARIANCE_TYPE,
             'n_features': all_embeddings.shape[1],
             'n_tracks': len(track_embeddings),
             'is_few_songs': False
@@ -214,167 +211,6 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
     except Exception as e:
         logger.error(f"Failed to fit GMM for artist '{artist_name}': {e}")
         return None
-
-
-def gmm_params_to_objects(gmm_params: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Convert GMM parameters dictionary to numpy arrays.
-    Handles both fresh numpy arrays and JSON-deserialized lists.
-    
-    Returns: (weights, means, covariances)
-    """
-    weights = np.array(gmm_params['weights'], dtype=np.float64)
-    means = np.array(gmm_params['means'], dtype=np.float64)
-    covariances = np.array(gmm_params['covariances'], dtype=np.float64)
-    
-    # Normalize weights to ensure they sum to 1 (handle numerical errors from JSON serialization)
-    weights = weights / np.sum(weights)
-    
-    return weights, means, covariances
-
-
-def compute_kl_divergence_mc(gmm1_params: Dict, gmm2_params: Dict, n_samples: int = MC_SAMPLES) -> float:
-    """
-    Compute KL divergence D_KL(gmm1 || gmm2) using Monte Carlo sampling.
-    
-    Uses the formula: D_KL(p||q) = E_p[log(p(x)) - log(q(x))]
-    Approximated by sampling from gmm1 and computing the average log-density difference.
-    
-    Args:
-        gmm1_params: GMM parameters for first distribution
-        gmm2_params: GMM parameters for second distribution
-        n_samples: Number of Monte Carlo samples
-        
-    Returns: KL divergence estimate
-    """
-    try:
-        # Reconstruct GMM objects
-        weights1, means1, covs1 = gmm_params_to_objects(gmm1_params)
-        weights2, means2, covs2 = gmm_params_to_objects(gmm2_params)
-        
-        # Sample from gmm1
-        samples = sample_from_gmm(weights1, means1, covs1, n_samples)
-        
-        # Compute log densities under both GMMs
-        log_p = log_gmm_density(samples, weights1, means1, covs1)
-        log_q = log_gmm_density(samples, weights2, means2, covs2)
-        
-        # KL divergence estimate
-        kl_div = np.mean(log_p - log_q)
-        
-        return max(0.0, kl_div)  # KL divergence is non-negative
-        
-    except Exception as e:
-        logger.error(f"Failed to compute KL divergence: {e}")
-        return float('inf')
-
-
-def sample_from_gmm(weights: np.ndarray, means: np.ndarray, covariances: np.ndarray, n_samples: int) -> np.ndarray:
-    """
-    Sample points from a Gaussian Mixture Model.
-    
-    Args:
-        weights: Component weights (shape: [n_components])
-        means: Component means (shape: [n_components, n_features])
-        covariances: Component covariances (shape depends on covariance_type)
-        n_samples: Number of samples to generate
-        
-    Returns: Array of samples (shape: [n_samples, n_features])
-    """
-    n_components = len(weights)
-    n_features = means.shape[1]
-    
-    # Normalize weights to ensure they sum to 1
-    weights = weights / np.sum(weights)
-    
-    # Sample component indices based on weights
-    component_indices = np.random.choice(n_components, size=n_samples, p=weights)
-    
-    # Generate samples from selected components
-    samples = np.zeros((n_samples, n_features))
-    for i in range(n_samples):
-        comp_idx = component_indices[i]
-        mean = means[comp_idx]
-        cov_diag = covariances[comp_idx]  # Shape: [n_features] for 'diag' type
-        
-        # Convert diagonal covariance to full matrix for multivariate_normal
-        # Add small regularization for numerical stability
-        cov_matrix = np.diag(cov_diag + 1e-6)
-        
-        try:
-            samples[i] = np.random.multivariate_normal(mean, cov_matrix)
-        except np.linalg.LinAlgError:
-            # Fallback: sample from univariate normals independently
-            samples[i] = mean + np.random.randn(n_features) * np.sqrt(cov_diag + 1e-6)
-    
-    return samples
-
-
-def log_gmm_density(X: np.ndarray, weights: np.ndarray, means: np.ndarray, covariances: np.ndarray) -> np.ndarray:
-    """
-    Compute log probability density of samples X under a GMM.
-    
-    Args:
-        X: Samples (shape: [n_samples, n_features])
-        weights: Component weights (shape: [n_components])
-        means: Component means (shape: [n_components, n_features])
-        covariances: Component covariances
-        
-    Returns: Log densities (shape: [n_samples])
-    """
-    n_samples = X.shape[0]
-    n_components = len(weights)
-    
-    # Compute log probability for each component
-    log_probs = np.zeros((n_samples, n_components))
-    
-    for k in range(n_components):
-        mean = means[k]
-        cov_diag = covariances[k]  # Shape: [n_features] for 'diag' type
-        
-        # Multivariate Gaussian log probability
-        diff = X - mean
-        
-        # Add small regularization for numerical stability
-        cov_diag_reg = cov_diag + 1e-6
-        
-        try:
-            # For diagonal covariance, computations are simpler
-            # Log determinant: sum of log of diagonal elements
-            log_det = np.sum(np.log(cov_diag_reg))
-            
-            # Mahalanobis distance: sum of (diff^2 / variance) for each dimension
-            mahal = np.sum(diff**2 / cov_diag_reg, axis=1)
-            
-            # Log probability
-            log_probs[:, k] = np.log(weights[k] + 1e-10) - 0.5 * (log_det + mahal + X.shape[1] * np.log(2 * np.pi))
-            
-        except Exception as e:
-            log_probs[:, k] = -np.inf
-    
-    # Use logsumexp for numerical stability
-    from scipy.special import logsumexp
-    return logsumexp(log_probs, axis=1)
-
-
-def compute_jeffreys_divergence(gmm1_params: Dict, gmm2_params: Dict) -> float:
-    """
-    Compute Jeffreys Divergence (symmetric KL divergence) between two GMMs.
-    
-    Jeffreys Divergence: D_J(p||q) = D_KL(p||q) + D_KL(q||p)
-    
-    Args:
-        gmm1_params: GMM parameters for first artist
-        gmm2_params: GMM parameters for second artist
-        
-    Returns: Jeffreys divergence value (lower = more similar)
-    """
-    kl_pq = compute_kl_divergence_mc(gmm1_params, gmm2_params)
-    kl_qp = compute_kl_divergence_mc(gmm2_params, gmm1_params)
-    
-    jeffreys_div = kl_pq + kl_qp
-    
-    return jeffreys_div
 
 
 def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
@@ -426,49 +262,58 @@ def build_and_store_artist_index(db_conn=None):
     cur = db_conn.cursor()
     
     try:
-        # Step 0: Load existing GMM params for incremental rebuild
-        # Prefer single-row entry (backwards compatible). If not present, check for
-        # segmented rows named ARTIST_INDEX_NAME_<part>_<total> and pick the
-        # first non-empty `gmm_params_json` (prefer part 1).
+        # Step 0: Load existing GMM params for incremental rebuild.
+        # New path: read the binary blob from artist_metadata_data and unpack it.
+        # Legacy fallback: if that table is empty (deployment hasn't rebuilt on
+        # the new code yet), fall back to the old gmm_params_json in
+        # artist_index_data (single-row or segmented). Either way we end up with
+        # a {artist_name: gmm_params_dict} mapping driving the tracks_hash reuse
+        # check below.
+        from .index_build_helpers import load_segmented_blob, unpack_artist_metadata
         existing_gmm_params = None
         try:
-            cur.execute("""
-                SELECT gmm_params_json
-                FROM artist_index_data
-                WHERE index_name = %s
-            """, (ARTIST_INDEX_NAME,))
-            row = cur.fetchone()
-
-            if row and row[0]:
-                existing_gmm_params = json.loads(row[0])
-                logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode, single-row)")
-            else:
-                # Single-row not present or empty — look for segmented parts
-                cur.execute(
-                    "SELECT index_name, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                    (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
+            metadata_blob = load_segmented_blob(db_conn, "artist_metadata_data", "artist_metadata")
+            if metadata_blob:
+                _, existing_gmm_params = unpack_artist_metadata(metadata_blob)
+                logger.info(
+                    f"Loaded existing GMM params for {len(existing_gmm_params)} artists "
+                    f"(incremental mode, from artist_metadata_data BYTEA)"
                 )
-                candidates = cur.fetchall()
+            else:
+                cur.execute("""
+                    SELECT gmm_params_json
+                    FROM artist_index_data
+                    WHERE index_name = %s
+                """, (ARTIST_INDEX_NAME,))
+                row = cur.fetchone()
 
-                if candidates:
-                    seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
-                    selected_gmm_json = None
+                if row and row[0]:
+                    existing_gmm_params = json.loads(row[0])
+                    logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (legacy single-row JSON)")
+                else:
+                    cur.execute(
+                        "SELECT index_name, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+                        (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
+                    )
+                    candidates = cur.fetchall()
 
-                    # Prefer part 1's metadata if present; otherwise take first non-empty
-                    for name, part_artist_map_json, part_gmm_params_json in candidates:
-                        m = seg_pattern.match(name)
-                        if not m:
-                            continue
-                        part_no = int(m.group(1))
-                        if part_no == 1 and part_gmm_params_json:
-                            selected_gmm_json = part_gmm_params_json
-                            break
-                        if not selected_gmm_json and part_gmm_params_json:
-                            selected_gmm_json = part_gmm_params_json
+                    if candidates:
+                        seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
+                        selected_gmm_json = None
+                        for name, part_artist_map_json, part_gmm_params_json in candidates:
+                            m = seg_pattern.match(name)
+                            if not m:
+                                continue
+                            part_no = int(m.group(1))
+                            if part_no == 1 and part_gmm_params_json:
+                                selected_gmm_json = part_gmm_params_json
+                                break
+                            if not selected_gmm_json and part_gmm_params_json:
+                                selected_gmm_json = part_gmm_params_json
 
-                    if selected_gmm_json:
-                        existing_gmm_params = json.loads(selected_gmm_json)
-                        logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (incremental mode, segmented)")
+                        if selected_gmm_json:
+                            existing_gmm_params = json.loads(selected_gmm_json)
+                            logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (legacy segmented JSON)")
         except Exception as e:
             logger.warning(f"Could not load existing GMM params, will do full rebuild: {e}")
             existing_gmm_params = None
@@ -662,10 +507,14 @@ def build_and_store_artist_index(db_conn=None):
             if temp_file_path and os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
         
-        # Serialize mappings and GMM parameters
-        artist_map_json = json.dumps(artist_map_dict)
-        gmm_params_json = json.dumps(artist_gmms)
-        
+        # Pack the per-artist metadata (artist_map + GMM params, sans covariances)
+        # into a binary BYTEA blob and persist it to the dedicated
+        # artist_metadata_data table. Decoupled from the Voyager index storage so
+        # each PG row stays well under the 1 GB MaxAllocSize cap at any library
+        # size: a 2.4 GB blob would split into ~48 rows of 50 MB.
+        from .index_build_helpers import pack_artist_metadata, store_segmented_blob
+        metadata_blob = pack_artist_metadata(artist_map_dict, artist_gmms)
+
         # Store in database (atomic update)
         try:
             # Delete any existing single or segmented rows for this logical index name
@@ -674,7 +523,10 @@ def build_and_store_artist_index(db_conn=None):
                 (ARTIST_INDEX_NAME, ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%")
             )
 
-            # Small enough to store in a single row (backwards-compatible)
+            # Voyager index binary still lives in artist_index_data (segmented if
+            # large). The legacy artist_map_json / gmm_params_json columns get
+            # empty strings going forward -- the source of truth is now the
+            # artist_metadata_data BYTEA blob, written below.
             if len(index_bytes) <= ARTIST_INDEX_MAX_PART_SIZE:
                 cur.execute("""
                     INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at)
@@ -684,8 +536,8 @@ def build_and_store_artist_index(db_conn=None):
                         artist_map_json = EXCLUDED.artist_map_json,
                         gmm_params_json = EXCLUDED.gmm_params_json,
                         created_at = EXCLUDED.created_at
-                """, (ARTIST_INDEX_NAME, index_bytes, artist_map_json, gmm_params_json))
-                logger.info("Stored artist index as a single row (no segmentation required).")
+                """, (ARTIST_INDEX_NAME, index_bytes, '', ''))
+                logger.info("Stored artist index binary as a single row (no segmentation required).")
             else:
                 parts = _split_bytes(index_bytes, ARTIST_INDEX_MAX_PART_SIZE)
                 num_parts = len(parts)
@@ -694,12 +546,20 @@ def build_and_store_artist_index(db_conn=None):
                 insert_q = "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at) VALUES (%s, %s, %s, %s, NOW())"
                 for idx, part in enumerate(parts, start=1):
                     part_name = f"{ARTIST_INDEX_NAME}_{idx}_{num_parts}"
-                    # store full metadata only in the first part; other parts keep empty strings
-                    part_artist_map_json = artist_map_json if idx == 1 else ''
-                    part_gmm_params_json = gmm_params_json if idx == 1 else ''
-                    cur.execute(insert_q, (part_name, part, part_artist_map_json, part_gmm_params_json))
+                    cur.execute(insert_q, (part_name, part, '', ''))
 
                 logger.info(f"Stored artist index in {num_parts} parts (prefix='{ARTIST_INDEX_NAME}_<part>_<total>').")
+
+            store_segmented_blob(
+                db_conn,
+                target_table="artist_metadata_data",
+                name="artist_metadata",
+                blob=metadata_blob,
+            )
+            logger.info(
+                "Stored artist metadata blob (%d bytes, %d artists) in artist_metadata_data.",
+                len(metadata_blob), len(artist_gmms),
+            )
 
             db_conn.commit()
             logger.info(f"Artist similarity index built and stored successfully ({len(artist_gmms)} artists)")
@@ -742,165 +602,167 @@ def load_artist_index_for_querying(force_reload=False):
         conn = get_db()
         cur = conn.cursor()
         
+        def _reset_cache():
+            global artist_index, artist_map, reverse_artist_map, artist_gmm_params
+            artist_index = None
+            artist_map = None
+            reverse_artist_map = None
+            artist_gmm_params = None
+
+        from .index_build_helpers import load_segmented_blob, unpack_artist_metadata
+
         try:
+            # Step A: load the Voyager index bytes from artist_index_data
+            # (single-row or segmented). Legacy artist_map_json / gmm_params_json
+            # columns may or may not be populated on those rows -- we capture
+            # them only to support the backward-compat fallback for metadata in
+            # step B.
             cur.execute("""
                 SELECT index_data, artist_map_json, gmm_params_json
                 FROM artist_index_data
                 WHERE index_name = %s
             """, (ARTIST_INDEX_NAME,))
-            
             row = cur.fetchone()
 
+            index_bytes = None
+            legacy_artist_map_json = None
+            legacy_gmm_params_json = None
+
             if row and row[0]:
-                # Single-row index found (backwards compatible)
-                index_bytes, artist_map_json, gmm_params_json = row
+                index_bytes, legacy_artist_map_json, legacy_gmm_params_json = row
+                index_bytes = bytes(index_bytes)
+                logger.info(f"Retrieved artist index from database (single row): {len(index_bytes)} bytes")
+            else:
+                cur.execute(
+                    "SELECT index_name, index_data, artist_map_json, gmm_params_json "
+                    "FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
+                    (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
+                )
+                candidates = cur.fetchall()
 
-                logger.info(f"Retrieved artist index from database: {len(index_bytes)} bytes")
-
-                # Deserialize mappings and GMM parameters
-                artist_map_dict = json.loads(artist_map_json)
-                gmm_params_dict = json.loads(gmm_params_json)
-
-                logger.info(f"Deserialized metadata: {len(artist_map_dict)} artists")
-
-                # Convert string keys to integers for artist_map
-                artist_map = {int(k): v for k, v in artist_map_dict.items()}
-
-                # Build reverse map
-                reverse_artist_map = {v: k for k, v in artist_map.items()}
-
-                # Store GMM parameters
-                artist_gmm_params = gmm_params_dict
-
-                # Load Voyager index from bytes using BytesIO stream
-                logger.info("Loading Voyager index from BytesIO stream...")
-                try:
-                    index_stream = io.BytesIO(index_bytes)
-                    index = voyager.Index.load(index_stream)
-
-                    artist_index = index
-
-                    logger.info(f"Artist index loaded successfully ({len(artist_map)} artists, num_elements={artist_index.num_elements})")
-                except Exception as load_error:
-                    logger.error(f"Failed to load Voyager index from BytesIO: {load_error}", exc_info=True)
-                    raise
-
-                return
-
-            # Not found as single row — try segmented parts named ARTIST_INDEX_NAME_<part>_<total>
-            cur.execute(
-                "SELECT index_name, index_data, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
-            )
-            candidates = cur.fetchall()
-
-            if not candidates:
-                logger.warning("Artist index not found in database (single or segmented)")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
-
-            seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
-            parts = []
-            total_expected = None
-            artist_map_json_candidate = None
-            gmm_params_json_candidate = None
-
-            for row in candidates:
-                name, part_data, part_artist_map_json, part_gmm_params_json = row
-                m = seg_pattern.match(name)
-                if not m:
-                    continue
-                part_no = int(m.group(1))
-                total = int(m.group(2))
-                if total_expected is None:
-                    total_expected = total
-                elif total_expected != total:
-                    logger.error(f"Segment total mismatch for Artist index parts (found totals {total_expected} and {total}). Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
+                if not candidates:
+                    logger.warning("Artist index not found in database (single or segmented)")
+                    _reset_cache()
                     return
 
-                parts.append((part_no, part_data, part_artist_map_json, part_gmm_params_json))
-                if part_artist_map_json and not artist_map_json_candidate:
-                    artist_map_json_candidate = part_artist_map_json
-                if part_gmm_params_json and not gmm_params_json_candidate:
-                    gmm_params_json_candidate = part_gmm_params_json
+                seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
+                parts = []
+                total_expected = None
 
-            if not parts:
-                logger.error(f"No valid segmented Artist index rows found for prefix '{ARTIST_INDEX_NAME}'.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
+                for cand in candidates:
+                    name, part_data, part_artist_map_json, part_gmm_params_json = cand
+                    m = seg_pattern.match(name)
+                    if not m:
+                        continue
+                    part_no = int(m.group(1))
+                    total = int(m.group(2))
+                    if total_expected is None:
+                        total_expected = total
+                    elif total_expected != total:
+                        logger.error(f"Segment total mismatch for Artist index parts (found totals {total_expected} and {total}). Aborting load.")
+                        _reset_cache()
+                        return
+                    parts.append((part_no, part_data))
+                    if part_artist_map_json and not legacy_artist_map_json:
+                        legacy_artist_map_json = part_artist_map_json
+                    if part_gmm_params_json and not legacy_gmm_params_json:
+                        legacy_gmm_params_json = part_gmm_params_json
 
-            if total_expected is None or len(parts) != total_expected:
-                logger.error(f"Incomplete Artist index segments: expected {total_expected}, found {len(parts)}. Aborting load to avoid corruption.")
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
-                return
+                if not parts or total_expected is None or len(parts) != total_expected:
+                    logger.error(
+                        f"Incomplete Artist index segments: expected {total_expected}, found {len(parts)}. Aborting load."
+                    )
+                    _reset_cache()
+                    return
 
-            parts.sort(key=lambda p: p[0])
+                parts.sort(key=lambda p: p[0])
+                index_bytes = b"".join(bytes(p[1]) for p in parts)
+                logger.info(f"Reassembled artist index from {len(parts)} segmented rows: {len(index_bytes)} bytes")
 
-            # Reassemble segments into a temporary file and load from that stream
-            index_stream = tempfile.TemporaryFile()
+            # Step B: load the metadata (artist_map + gmm_params). New path
+            # reads the binary blob from artist_metadata_data; legacy fallback
+            # reads the JSON columns we already captured above. This keeps the
+            # upgrade zero-friction: existing deployments keep working from the
+            # legacy JSON columns until the next rebuild populates the new
+            # table; deployments that have already rebuilt skip the JSON path.
+            parsed_artist_map = None
+            parsed_gmm_params = None
+
+            metadata_blob = None
             try:
-                for _, part_data, _, _ in parts:
-                    index_stream.write(part_data)
-                index_stream.seek(0)
+                metadata_blob = load_segmented_blob(db_conn, "artist_metadata_data", "artist_metadata")
+            except Exception as meta_load_err:
+                logger.warning(
+                    f"artist_metadata_data load failed; falling back to legacy JSON columns: {meta_load_err}"
+                )
 
-                if not artist_map_json_candidate or not gmm_params_json_candidate:
-                    logger.error("No non-empty artist_map_json/gmm_params_json found in segmented Artist index rows. Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
-                    return
-
-                index = voyager.Index.load(index_stream)
-
-                parsed_artist_map = {int(k): v for k, v in json.loads(artist_map_json_candidate).items()}
-                # Validate element counts if possible
+            if metadata_blob:
                 try:
-                    idx_count = getattr(index, 'num_elements', None)
-                except Exception:
-                    idx_count = None
+                    parsed_artist_map, parsed_gmm_params = unpack_artist_metadata(metadata_blob)
+                    logger.info(
+                        f"Loaded artist metadata from artist_metadata_data: "
+                        f"{len(parsed_artist_map)} artists, {len(metadata_blob)} bytes."
+                    )
+                except Exception as meta_decode_err:
+                    logger.error(
+                        f"artist_metadata_data blob is corrupt; falling back to legacy JSON: {meta_decode_err}",
+                        exc_info=True,
+                    )
+                    parsed_artist_map = None
+                    parsed_gmm_params = None
 
-                if idx_count is not None and idx_count != len(parsed_artist_map):
-                    logger.error(f"Artist index element count mismatch after reassembly: index.num_elements={idx_count}, artist_map={len(parsed_artist_map)}. Aborting load.")
-                    artist_index = None
-                    artist_map = None
-                    reverse_artist_map = None
-                    artist_gmm_params = None
+            if parsed_artist_map is None or parsed_gmm_params is None:
+                if not legacy_artist_map_json or not legacy_gmm_params_json:
+                    logger.error(
+                        "No artist metadata available: artist_metadata_data is empty and "
+                        "legacy artist_map_json/gmm_params_json columns are also empty. Aborting load."
+                    )
+                    _reset_cache()
+                    return
+                try:
+                    parsed_artist_map = {int(k): v for k, v in json.loads(legacy_artist_map_json).items()}
+                    parsed_gmm_params = json.loads(legacy_gmm_params_json)
+                    logger.info(
+                        f"Loaded artist metadata from legacy JSON columns: {len(parsed_artist_map)} artists "
+                        f"(deployment hasn't rebuilt on the new BYTEA path yet)."
+                    )
+                except Exception as legacy_err:
+                    logger.error(f"Legacy JSON metadata is corrupt: {legacy_err}", exc_info=True)
+                    _reset_cache()
                     return
 
-                artist_index = index
-                artist_map = parsed_artist_map
-                reverse_artist_map = {v: k for k, v in artist_map.items()}
-                artist_gmm_params = json.loads(gmm_params_json_candidate)
-
-                logger.info(f"Artist segmented index ({len(parts)} parts) with {len(artist_map)} artists loaded successfully into memory.")
-                return
+            # Step C: load the Voyager index from the reassembled bytes and
+            # validate the element count matches the metadata.
+            try:
+                index = voyager.Index.load(io.BytesIO(index_bytes))
             except Exception as load_error:
-                logger.error(f"Failed to load reassembled Artist index: {load_error}", exc_info=True)
-                artist_index = None
-                artist_map = None
-                reverse_artist_map = None
-                artist_gmm_params = None
+                logger.error(f"Failed to load Voyager index from bytes: {load_error}", exc_info=True)
+                _reset_cache()
                 return
-            finally:
-                try:
-                    index_stream.close()
-                except Exception as close_error:
-                    logger.warning("Failed to close Artist index stream: %s", close_error, exc_info=True)
-            
+
+            try:
+                idx_count = getattr(index, 'num_elements', None)
+            except Exception:
+                idx_count = None
+            if idx_count is not None and idx_count != len(parsed_artist_map):
+                logger.error(
+                    f"Artist index element count mismatch: index.num_elements={idx_count}, "
+                    f"artist_map={len(parsed_artist_map)}. Aborting load."
+                )
+                _reset_cache()
+                return
+
+            artist_index = index
+            artist_map = parsed_artist_map
+            reverse_artist_map = {v: k for k, v in artist_map.items()}
+            artist_gmm_params = parsed_gmm_params
+
+            logger.info(
+                f"Artist index loaded successfully ({len(artist_map)} artists, "
+                f"num_elements={idx_count if idx_count is not None else 'unknown'})."
+            )
+            return
+
         except Exception as e:
             logger.error(f"Failed to load artist index: {e}", exc_info=True)
             artist_index = None
