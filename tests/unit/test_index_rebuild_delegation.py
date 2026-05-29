@@ -37,6 +37,8 @@ _PARTIAL_BUILDERS = (
     "build_and_store_lyrics_axes_index",
     "build_and_store_sem_grove_index",
     "build_and_store_artist_index",
+    "build_and_store_map_projection",
+    "build_and_store_artist_projection",
 )
 
 
