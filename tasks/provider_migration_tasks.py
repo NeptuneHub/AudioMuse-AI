@@ -555,6 +555,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
     # 9. Truncate provider-specific artist tables — they contain artist IDs
     #    from the old provider. They rebuild lazily on next query.
     cur.execute("DELETE FROM artist_index_data")
+    cur.execute("DELETE FROM artist_metadata_data")
     cur.execute("DELETE FROM artist_component_projection")
     cur.execute("DELETE FROM artist_mapping")
 

@@ -231,6 +231,11 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'artist_metadata_data' table for the per-artist auxiliary
+            # metadata blob (artist_map + GMM params). Decoupled from the Voyager
+            # index binary and segmented independently so a single column value
+            # never crosses PG's 1 GB MaxAllocSize cap, regardless of library size.
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections
             cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_component_projection' table for precomputed 2D artist component projections
@@ -1345,20 +1350,24 @@ def build_and_store_map_projection(index_name='main_map'):
         _project_with_umap = None
         _project_to_2d = None
 
-    rows = get_all_tracks()
-    # collect embeddings and ids
-    ids = []
-    embs = []
-    for r in rows:
-        v = r.get('embedding_vector')
-        if v is not None and v.size:
-            ids.append(r['item_id'])
-            embs.append(v)
-    if not embs:
+    from config import EMBEDDING_DIMENSION
+    from tasks.index_build_helpers import stream_embeddings_to_buffer
+
+    try:
+        mat, ids = stream_embeddings_to_buffer(
+            table="embedding",
+            column="embedding",
+            dim=EMBEDDING_DIMENSION,
+            where_clause="embedding IS NOT NULL",
+        )
+    except Exception as e:
+        logger.error(f"Failed to stream embeddings for map projection: {e}", exc_info=True)
+        return False
+
+    if mat.shape[0] == 0:
         logger.info('No embeddings available to build map projection.')
         return False
 
-    mat = np.vstack(embs)
     projections = None
     try:
         logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
@@ -1468,33 +1477,46 @@ def build_and_store_artist_projection(index_name='artist_map'):
     if not loaded_params:
         logger.warning("No artist GMM params available to build artist projection.")
         return False
-    
-    # Collect all artist component vectors
+
+    from app_helper_artist import get_artist_id_by_name
+
+    # Two-pass build: first pass counts components and infers dim, second
+    # pass fills a single pre-allocated ndarray. Avoids the previous
+    # ``vectors = []; vectors.append(...); np.vstack(vectors)`` pattern
+    # that materialised three copies of the component matrix at once.
+    total_components = 0
+    component_dim = None
+    for gmm in loaded_params.values():
+        means = gmm.get('means') or []
+        if not len(means):
+            continue
+        if component_dim is None:
+            component_dim = int(np.asarray(means[0], dtype=np.float32).size)
+        total_components += len(means)
+
+    if total_components == 0 or component_dim is None:
+        logger.info('No artist component vectors available to build projection.')
+        return False
+
+    mat = np.empty((total_components, component_dim), dtype=np.float32)
     component_map = []
-    vectors = []
-    
+    row_i = 0
     for artist_name, gmm in loaded_params.items():
-        means = np.array(gmm['means'])  # Shape: [n_components, embedding_dim]
-        weights = np.array(gmm['weights'])  # Shape: [n_components]
-        
-        # Get artist_id (use artist_name if no mapping exists)
-        from app_helper_artist import get_artist_id_by_name
+        means = gmm.get('means') or []
+        weights = gmm.get('weights') or []
+        if not len(means):
+            continue
         artist_id = get_artist_id_by_name(artist_name) or artist_name
-        
         for comp_idx in range(len(means)):
+            mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
             component_map.append({
                 'artist_id': artist_id,
                 'artist_name': artist_name,
                 'component_idx': comp_idx,
-                'weight': float(weights[comp_idx])
+                'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
             })
-            vectors.append(means[comp_idx])
-    
-    if not vectors:
-        logger.info('No artist component vectors available to build projection.')
-        return False
-    
-    mat = np.vstack(vectors)
+            row_i += 1
+
     projections = None
     
     try:

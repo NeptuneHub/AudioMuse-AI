@@ -101,7 +101,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.1.0"
+APP_VERSION = "v2.1.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -508,8 +508,8 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 # --- Voyager Index Constants ---
 INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
 VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
-VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "1024"))
-VOYAGER_M = int(os.environ.get("VOYAGER_M", "64"))
+VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "200"))
+VOYAGER_M = int(os.environ.get("VOYAGER_M", "32"))
 VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
 VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
 ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage

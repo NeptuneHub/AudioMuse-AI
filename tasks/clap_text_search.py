@@ -4,10 +4,8 @@ Provides in-memory caching and fast text-based music search using CLAP embedding
 """
 
 import gc
-import io
 import json
 import logging
-import os
 import re
 import sys
 import tempfile
@@ -15,7 +13,6 @@ import threading
 import time
 
 import numpy as np
-import psycopg2
 from psycopg2.extras import DictCursor
 from typing import List, Dict, Optional
 import config
@@ -82,11 +79,6 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
         pass
 
     return metadata_map
-
-
-def _split_bytes(data: bytes, part_size: int) -> list:
-    """Split a bytes object into chunks no larger than part_size."""
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
 
 
 def _load_clap_index_from_db() -> bool:
@@ -217,10 +209,17 @@ def _load_clap_index_from_db() -> bool:
 def build_and_store_clap_index(db_conn=None):
     """Build a CLAP text search voyager index from stored CLAP embeddings and save it to the DB."""
     from app_helper import get_db
-    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC, VOYAGER_M, VOYAGER_EF_CONSTRUCTION, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB
+    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC
+    from .index_build_helpers import (
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
+        store_voyager_index_segmented,
+        build_id_map,
+        EmptyIndexError,
+    )
 
     try:
-        import voyager  # type: ignore
+        import voyager  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("Voyager library is unavailable; cannot build CLAP index.")
         return False
@@ -228,83 +227,35 @@ def build_and_store_clap_index(db_conn=None):
     if db_conn is None:
         db_conn = get_db()
 
-    max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
-
     try:
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT item_id, embedding FROM clap_embedding")
-            all_embeddings = cur.fetchall()
-
-            if not all_embeddings:
-                logger.warning("No CLAP embeddings found in DB to build CLAP index.")
-                return False
-
-            space = voyager.Space.Cosine if VOYAGER_METRIC == 'angular' else {
-                'euclidean': voyager.Space.Euclidean,
-                'dot': voyager.Space.InnerProduct
-            }.get(VOYAGER_METRIC, voyager.Space.Cosine)
-
-            logger.info(f"Building CLAP voyager index for {len(all_embeddings)} items...")
-            index_builder = voyager.Index(space=space, num_dimensions=CLAP_EMBEDDING_DIMENSION, M=VOYAGER_M, ef_construction=VOYAGER_EF_CONSTRUCTION)
-
-            id_map = {}
-            vectors = []
-            voyager_id = 0
-            for item_id, embedding_blob in all_embeddings:
-                if embedding_blob is None:
-                    logger.warning(f"Skipping CLAP item {item_id} because embedding is NULL.")
-                    continue
-                embedding_vector = np.frombuffer(embedding_blob, dtype=np.float32)
-                if embedding_vector.shape[0] != CLAP_EMBEDDING_DIMENSION:
-                    logger.warning(f"Skipping CLAP item {item_id}: dimension {embedding_vector.shape[0]} != {CLAP_EMBEDDING_DIMENSION}")
-                    continue
-                vectors.append(embedding_vector)
-                id_map[voyager_id] = item_id
-                voyager_id += 1
-
-            if not vectors:
-                logger.warning("No valid CLAP embedding vectors found for CLAP index build.")
-                return False
-
-            index_builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
-                temp_file_path = tmp.name
-            try:
-                index_builder.save(temp_file_path)
-                del index_builder
-                gc.collect()
-                with open(temp_file_path, 'rb') as f:
-                    index_binary_data = f.read()
-            finally:
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-
-            if not index_binary_data:
-                logger.error("Generated CLAP index binary is empty. Aborting storage.")
-                return False
-
-            id_map_json = json.dumps(id_map)
-            cur.execute(
-                "DELETE FROM clap_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                ('clap_index', r'clap_index\_%\_%')
+        logger.info("Building CLAP voyager index (streaming)...")
+        batches = iter_embedding_batches(
+            table="clap_embedding",
+            column="embedding",
+            dim=CLAP_EMBEDDING_DIMENSION,
+        )
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, CLAP_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
             )
+        except EmptyIndexError as ve:
+            logger.warning(f"No valid CLAP embedding vectors found for CLAP index build: {ve}")
+            return False
+        gc.collect()
 
-            if len(index_binary_data) <= max_part_size:
-                cur.execute(
-                    "INSERT INTO clap_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT (index_name) DO UPDATE SET index_data = EXCLUDED.index_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = EXCLUDED.created_at",
-                    ('clap_index', psycopg2.Binary(index_binary_data), id_map_json, CLAP_EMBEDDING_DIMENSION)
-                )
-                logger.info("Stored CLAP index as single row in clap_index_data.")
-            else:
-                parts = _split_bytes(index_binary_data, max_part_size)
-                num_parts = len(parts)
-                insert_q = "INSERT INTO clap_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                for idx, part in enumerate(parts, start=1):
-                    part_name = f"clap_index_{idx}_{num_parts}"
-                    part_id_map_json = id_map_json if idx == 1 else ''
-                    cur.execute(insert_q, (part_name, psycopg2.Binary(part), part_id_map_json, CLAP_EMBEDDING_DIMENSION))
-                logger.info(f"Stored CLAP index in {num_parts} segmented rows in clap_index_data.")
+        if not index_bytes:
+            logger.error("Generated CLAP index binary is empty. Aborting storage.")
+            return False
+
+        id_map = build_id_map(item_ids)
+        store_voyager_index_segmented(
+            db_conn,
+            target_table="clap_index_data",
+            index_name="clap_index",
+            index_bytes=index_bytes,
+            id_map=id_map,
+            embedding_dimension=CLAP_EMBEDDING_DIMENSION,
+        )
 
         db_conn.commit()
         logger.info("CLAP text search index build successful.")

@@ -116,8 +116,19 @@ def _release_freed_ram_to_os():
 
 
 def _run_all_index_builds(log_fn=None):
-    """Run every index-rebuild step. log_fn(stage, progress) is optional."""
-    def _step(label, fn, fatal=False):
+    """Run every index-rebuild step. log_fn(stage, progress) is optional.
+
+    Each step announces itself via ``log_fn`` before running so the dashboard
+    shows which builder is currently active (otherwise users see "Building
+    CLAP text search index..." for the entire 95–97 % window even while the
+    lyrics or SemGrove builds are running).
+    """
+    def _step(label, fn, progress=None, banner=None, fatal=False):
+        if log_fn and progress is not None and banner is not None:
+            try:
+                log_fn(banner, progress)
+            except Exception:
+                pass
         try:
             fn()
             logger.info(f"✓ {label}")
@@ -130,18 +141,31 @@ def _run_all_index_builds(log_fn=None):
 
     if log_fn:
         log_fn("Performing final index rebuild...", 95)
-    _step("Voyager index rebuilt", lambda: build_and_store_voyager_index(get_db()), fatal=True)
-    if log_fn:
-        log_fn("Building CLAP text search index...", 96)
-    _step("CLAP text search index", lambda: build_and_store_clap_index(get_db()))
-    _step("Lyrics search index", lambda: build_and_store_lyrics_index(get_db()))
-    _step("Lyrics axes index", lambda: build_and_store_lyrics_axes_index(get_db()))
-    _step("SemGrove merged index rebuilt", lambda: build_and_store_sem_grove_index(get_db()))
-    if log_fn:
-        log_fn("Building artist similarity index...", 97)
-    _step("Artist similarity index rebuilt", lambda: build_and_store_artist_index(get_db()))
-    _step("Song map projection rebuilt", lambda: build_and_store_map_projection('main_map'))
-    _step("Artist component projection rebuilt", lambda: build_and_store_artist_projection('artist_map'))
+    _step("Voyager index rebuilt",
+          lambda: build_and_store_voyager_index(get_db()),
+          progress=95, banner="Building Voyager audio index...",
+          fatal=True)
+    _step("CLAP text search index",
+          lambda: build_and_store_clap_index(get_db()),
+          progress=96, banner="Building CLAP text search index...")
+    _step("Lyrics search index",
+          lambda: build_and_store_lyrics_index(get_db()),
+          progress=96, banner="Building lyrics search index...")
+    _step("Lyrics axes index",
+          lambda: build_and_store_lyrics_axes_index(get_db()),
+          progress=96, banner="Building lyrics axes index...")
+    _step("SemGrove merged index rebuilt",
+          lambda: build_and_store_sem_grove_index(get_db()),
+          progress=96, banner="Building SemGrove merged index...")
+    _step("Artist similarity index rebuilt",
+          lambda: build_and_store_artist_index(get_db()),
+          progress=97, banner="Building artist similarity index...")
+    _step("Song map projection rebuilt",
+          lambda: build_and_store_map_projection('main_map'),
+          progress=97, banner="Building song map projection...")
+    _step("Artist component projection rebuilt",
+          lambda: build_and_store_artist_projection('artist_map'),
+          progress=97, banner="Building artist component projection...")
     try:
         redis_conn.publish('index-updates', 'reload')
         logger.info('✓ Published reload message to Flask container')
