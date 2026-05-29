@@ -23,8 +23,8 @@ RUN set -ux; \
 
 RUN set -eux; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_embedding.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_prediction.onnx" \
     ); \
     mkdir -p /app/model; \
     for u in "${urls[@]}"; do \
@@ -108,7 +108,7 @@ RUN uv pip install --system --no-cache --index-strategy unsafe-best-match -r /ap
 RUN python3 -m wn download oewn:2024 && echo "wn / OEWN 2024 corpus downloaded"
 
 RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
     cache_dir="/app/.cache/huggingface"; \
     echo "Downloading HuggingFace models (~985MB)..."; \
@@ -166,7 +166,7 @@ COPY --from=models /app/model/*.onnx /app/model/
 
 RUN set -eux; \
     dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"; \
-    text_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
+    text_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"; \
     arch=$(uname -m); \
     echo "Architecture detected: $arch - Downloading CLAP ONNX models..."; \
     n=0; \
@@ -240,7 +240,7 @@ RUN set -eux; \
 
 RUN set -eux; \
     whisper_dir="/app/model/whisper-small-onnx"; \
-    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \
+    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_whisper.tar.gz"; \
     whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
     echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
     n=0; \
@@ -275,7 +275,7 @@ RUN set -eux; \
     du -sh "$whisper_dir"
 
 RUN set -eux; \
-    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_silero_vad.tar.gz"; \
+    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_silero_vad.tar.gz"; \
     silero_dest="/tmp/lyrics_model_silero_vad.tar.gz"; \
     silero_path="/app/model/silero_vad.onnx"; \
     echo "Downloading silero VAD ONNX bundle (~2 MB)..."; \
@@ -306,7 +306,7 @@ RUN set -eux; \
 RUN set -eux; \
     gte_onnx_path="/app/model/gte-multilingual-base-int8.onnx"; \
     gte_tok_dir="/app/model/gte-multilingual-base"; \
-    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_gte_vnni.tar.gz"; \
+    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_gte_vnni.tar.gz"; \
     gte_dest="/tmp/lyrics_model_gte_vnni.tar.gz"; \
     echo "Downloading gte-multilingual-base INT8 ONNX bundle (~325 MB)..."; \
     n=0; \

@@ -1,0 +1,131 @@
+name: Copy model release (lean subset)
+
+# Manually-triggered job that builds a NEW model release containing ONLY the
+# model assets the Docker images actually download, by transferring them from
+# an existing source release. The transfer (download + re-upload) runs entirely
+# on the runner, so it uses GitHub's internal network and no local bandwidth.
+#
+# SAFETY:
+#   * The source release is only ever READ (gh release download). It is never
+#     edited or deleted.
+#   * The job aborts if source_tag == new_tag, or if the destination release
+#     already exists, so an existing release can never be clobbered.
+#   * The tag is created with the built-in GITHUB_TOKEN. GitHub intentionally
+#     does NOT start new workflow runs for events triggered by GITHUB_TOKEN, so
+#     creating the v*.*.*-matching tag will NOT trigger the image build
+#     workflows (build-arm-intel / build-noavx2). Do not swap this for a PAT
+#     unless you want those builds to fire.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 'Existing release to copy assets FROM (read-only)'
+        required: true
+        type: string
+        default: v4.0.0-model
+      new_tag:
+        description: 'New release tag to create'
+        required: true
+        type: string
+        default: v5.0.0-model
+
+permissions:
+  contents: write
+
+concurrency:
+  group: copy-model-release-${{ github.event.inputs.new_tag }}
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_TAG: ${{ github.event.inputs.source_tag }}
+      NEW_TAG: ${{ github.event.inputs.new_tag }}
+    steps:
+      - name: Guard against touching the source release
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_TAG" = "$NEW_TAG" ]; then
+            echo "::error::source_tag and new_tag are identical ($SOURCE_TAG). Refusing to run."
+            exit 1
+          fi
+          if ! gh release view "$SOURCE_TAG" >/dev/null 2>&1; then
+            echo "::error::Source release '$SOURCE_TAG' does not exist."
+            exit 1
+          fi
+          if gh release view "$NEW_TAG" >/dev/null 2>&1; then
+            echo "::error::Destination release '$NEW_TAG' already exists. Delete it first or pick another tag."
+            exit 1
+          fi
+          echo "Copying assets: $SOURCE_TAG -> $NEW_TAG"
+
+      - name: Download the used assets from the source release
+        run: |
+          set -euo pipefail
+          mkdir -p models
+          # The 7 assets the Dockerfiles actually download from the model release.
+          # (model_epoch_36.onnx comes from the separate AudioMuse-AI-DCLAP repo
+          #  and is therefore NOT part of this transfer.)
+          gh release download "$SOURCE_TAG" -D models \
+            -p musicnn_embedding.onnx \
+            -p musicnn_prediction.onnx \
+            -p huggingface_models.tar.gz \
+            -p clap_text_model.onnx \
+            -p lyrics_model_whisper.tar.gz \
+            -p lyrics_model_silero_vad.tar.gz \
+            -p lyrics_model_gte_vnni.tar.gz
+          echo "Downloaded:"
+          ls -lh models
+
+      - name: Verify all 7 assets are present
+        run: |
+          set -euo pipefail
+          expected=( \
+            musicnn_embedding.onnx \
+            musicnn_prediction.onnx \
+            huggingface_models.tar.gz \
+            clap_text_model.onnx \
+            lyrics_model_whisper.tar.gz \
+            lyrics_model_silero_vad.tar.gz \
+            lyrics_model_gte_vnni.tar.gz \
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -s "models/$f" ]; then
+              echo "::error::Missing or empty asset: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::Refusing to create a partial release."; exit 1; }
+
+      - name: Create the new lean release and upload the assets
+        run: |
+          set -euo pipefail
+          notes=$(cat <<EOF
+          Lean model release — only the assets the Docker images actually download.
+
+          Copied verbatim from \`$SOURCE_TAG\`:
+
+          - musicnn_embedding.onnx
+          - musicnn_prediction.onnx
+          - huggingface_models.tar.gz
+          - clap_text_model.onnx
+          - lyrics_model_whisper.tar.gz
+          - lyrics_model_silero_vad.tar.gz
+          - lyrics_model_gte_vnni.tar.gz
+
+          The unused assets from \`$SOURCE_TAG\` (legacy lyrics bundles, Marian
+          translation models, e5/gte non-quantized, qwen3 ASR, distilbert/joinbert
+          caches, clap_audio_model.onnx) are intentionally omitted.
+          EOF
+          )
+          gh release create "$NEW_TAG" \
+            --title "Model $NEW_TAG (lean — only used models)" \
+            --notes "$notes" \
+            models/*
+          echo "Created release $NEW_TAG:"
+          gh release view "$NEW_TAG"
