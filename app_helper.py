@@ -1209,7 +1209,13 @@ def save_map_projection(index_name, id_map, projection_array):
     try:
         blob = projection_array.astype(np.float32).tobytes()
         if not blob:
-            logger.info(f"Map projection '{index_name}' has no data; skipping store.")
+            logger.info(f"Map projection '{index_name}' has no data; clearing existing store.")
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+                    (index_name, index_name.replace('_', r'\_') + r"\_%\_%"),
+                )
+            conn.commit()
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
         from tasks.index_build_helpers import store_voyager_index_segmented
