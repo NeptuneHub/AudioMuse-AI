@@ -14,6 +14,8 @@ from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 
+logger = logging.getLogger(__name__)
+
 # GPU clustering support (optional)
 try:
     from .clustering_gpu import get_clustering_model, get_pca_model
@@ -35,8 +37,6 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
                     USE_GPU_CLUSTERING)
 from .commons import score_vector
-
-logger = logging.getLogger(__name__)
 
 # --- Main Orchestrator for a Single Iteration ---
 
