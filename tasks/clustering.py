@@ -21,6 +21,9 @@ from psycopg2.extras import DictCursor
 # Import configuration
 from config import MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES, MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES
 
+from error import error_manager
+from error.error_dictionary import ERR_CLUSTERING_FAILED
+
 # Import AI naming function and prompt template
 from tasks.ai.api import get_ai_playlist_name
 from tasks.ai.prompts import creative_prompt_template
@@ -65,11 +68,11 @@ def batch_task_failure_handler(job, connection, type, value, tb):
 
         error_details = {
             "message": "Clustering batch sub-task failed permanently after all retries.",
+            "error": error_manager.build(ERR_CLUSTERING_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
-            "traceback": tb_formatted
         }
-        
+
         save_task_status(
             task_id,
             "clustering_batch",
@@ -79,7 +82,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             progress=100,
             details=error_details
         )
-        app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.")
+        app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}")
 
 def _sanitize_for_json(obj):
     """
@@ -240,7 +243,8 @@ def run_clustering_batch_task(
 
         except Exception as e:
             logger.error(f"Clustering batch {batch_id_str} failed", exc_info=True)
-            _log_and_update(f"Batch failed: {e}", 100, details={"error": str(e)}, state=TASK_STATUS_FAILURE)
+            err = error_manager.record(error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e), exc=e)
+            _log_and_update(f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE)
             return {"status": "FAILURE", "message": str(e)}
 
 
@@ -345,7 +349,6 @@ def run_clustering_task(
 
         # Helper for logging and updating main task status, using a shared dictionary.
         def _log_and_update(message, progress, details_to_add_or_update=None, task_state=TASK_STATUS_PROGRESS):
-            nonlocal _main_task_accumulated_details
             
             logger.info(f"[MainClusteringTask-{current_task_id}] {message}")
             if details_to_add_or_update:
@@ -627,7 +630,8 @@ def run_clustering_task(
 
         except Exception as e:
             logger.critical("FATAL ERROR in main clustering task", exc_info=True)
-            _log_and_update(f"Task failed: {e}", 100, details_to_add_or_update={"error": str(e)}, task_state=TASK_STATUS_FAILURE)
+            err = error_manager.record(error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e), exc=e)
+            _log_and_update(f"Task failed: {e}", 100, details_to_add_or_update={"error": err}, task_state=TASK_STATUS_FAILURE)
             raise
 
 # --- Internal Helper Functions for run_clustering_task ---

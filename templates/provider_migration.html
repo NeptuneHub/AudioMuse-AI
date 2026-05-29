@@ -1482,6 +1482,13 @@
                 const s = res.status || 'unknown';
                 statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
                 if (s === 'finished') {
+                    const r = res.result || {};
+                    const indexNote = r.index_rebuild_needed
+                        ? '<p style="margin:0.5rem 0 0;"><strong>Note:</strong> ' +
+                          'the similarity / map index for this library was reset during the ' +
+                          'migration. The <strong>full analysis</strong> above rebuilds it too — ' +
+                          'search and instant mixes will use the refreshed index once that finishes.</p>'
+                        : '';
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +
                         'Your active provider is now <code>' + esc(targetType) + '</code>. ' +
@@ -1492,6 +1499,7 @@
                         'This rebuilds the artist similarity index (which the migration had to ' +
                         'truncate because artist mappings are provider-specific) and re-verifies ' +
                         'every track against the new provider.</p>' +
+                        indexNote +
                         '<small><strong>Plays and listening history:</strong> never stored locally. ' +
                         'They come from your media server and now reflect the new provider automatically.</small>'
                     );

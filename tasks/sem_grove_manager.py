@@ -294,10 +294,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             logger.warning("SemGrove: no valid merged vectors; aborting: %s", ve)
             return False
         finally:
-            try:
-                del lyrics_buf, audio_buf, lyrics_pos, audio_pos
-            except Exception:
-                pass
+            lyrics_buf = audio_buf = lyrics_pos = audio_pos = None
             gc.collect()
 
         if not index_bytes:

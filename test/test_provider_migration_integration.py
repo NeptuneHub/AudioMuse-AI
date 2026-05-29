@@ -584,3 +584,92 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
         assert set(v for v in proj_map if v is not None) == new_ids
     verify.close()
     print(f"  ok (segmented): {len(vparts)} voyager parts reassembled + rewritten -> {target}")
+
+
+def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
+    """A relabel that cannot fit back into the existing part rows is a SOFT
+    failure: the migration still commits, the stale index is dropped, and
+    ``index_rebuild_needed`` is flagged so the UI can ask for a re-analysis.
+
+    Forced by shrinking ``VOYAGER_MAX_PART_SIZE_MB`` to 0 so the rewritten
+    id_map needs far more part rows than the seeded index has, which is exactly
+    the condition ``rewrite_segmented_id_map`` raises ``ValueError`` for.
+    """
+    import config
+
+    source, target = 'jellyfin', 'navidrome'
+
+    source_rendered = []
+    for index, track in enumerate(SHARED_TRACKS):
+        source_rendered.append({
+            'id': _provider_id(source, 0, index),
+            'path': _provider_path(source, _relative_path(track)),
+            'title': track['title'], 'artist': track['artist'],
+            'album': track['album'], 'album_artist': track['album_artist'],
+        })
+    source_rendered.append({
+        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+        'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
+        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
+        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
+    })
+    target_rendered = [{
+        'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
+        'path': _provider_path(target, _relative_path(track)),
+        'title': track['title'], 'artist': track['artist'],
+        'album': track['album'], 'album_artist': track['album_artist'],
+    } for index, track in enumerate(SHARED_TRACKS)]
+
+    old_rows = [
+        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
+         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        for r in source_rendered
+    ]
+    new_tracks = [
+        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+         'album': r['album'], 'album_artist': r['album_artist']}
+        for r in target_rendered
+    ]
+    matches = matcher.match_tracks(old_rows, new_tracks)['matches']
+    expected_map = {
+        source_rendered[i]['id']: target_rendered[i]['id']
+        for i in range(len(SHARED_TRACKS))
+    }
+    new_ids = set(expected_map.values())
+    new_meta = {
+        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+                  'album': r['album'], 'album_artist': r['album_artist'],
+                  'year': 2000 + i}
+        for i, r in enumerate(target_rendered)
+    }
+
+    conn = migration_db['connect']()
+    _seed_library(conn, source_rendered, segmented=True)
+    session_id = _insert_session(conn, source, target, matches, new_meta)
+
+    saved_max_part = config.VOYAGER_MAX_PART_SIZE_MB
+    config.VOYAGER_MAX_PART_SIZE_MB = 0
+    try:
+        result = mig.execute_provider_migration(session_id)
+    finally:
+        config.VOYAGER_MAX_PART_SIZE_MB = saved_max_part
+
+    assert result['ok'] is True
+    assert result['matched'] == len(SHARED_TRACKS)
+    assert result['index_rebuild_needed'] is True
+
+    verify = migration_db['connect']()
+    with verify.cursor() as cur:
+        cur.execute("SELECT count(*) FROM voyager_index_data")
+        assert cur.fetchone()[0] == 0, "stale voyager index must be dropped, not left corrupt"
+        cur.execute("SELECT count(*) FROM map_projection_data")
+        assert cur.fetchone()[0] == 0, "stale map projection must be dropped, not left corrupt"
+
+        cur.execute("SELECT item_id FROM score")
+        score_ids = {row[0] for row in cur.fetchall()}
+        assert score_ids == new_ids, "every other table must still migrate and commit"
+
+        cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
+        assert cur.fetchone()[0] == 'completed'
+    verify.close()
+    print(f"  ok (soft-fail): stale index dropped + flagged, {len(score_ids)} tracks migrated -> {target}")

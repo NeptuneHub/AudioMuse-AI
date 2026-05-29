@@ -405,7 +405,6 @@ def get_clap_text_model():
 
 def get_tokenizer():
     """Get the global tokenizer, initializing if needed (lazy loading)."""
-    global _tokenizer
     
     if _tokenizer is None:
         # Initialize tokenizer with text model
