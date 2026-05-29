@@ -70,10 +70,18 @@ def build(code, message=None):
 
 
 def classify(exc, default_code=UNKNOWN_ERROR_CODE):
-    """Map an exception to a registry code by type, falling back to default_code."""
+    """Map an exception to a registry code by type, falling back to default_code.
+
+    Walks the exception's MRO so a subclass of a registered exception (e.g. a
+    custom error inheriting from ConnectionError/OperationalError) is still
+    classified correctly, without importing the third-party classes.
+    """
     if isinstance(exc, AudioMuseError):
         return exc.code
-    return _EXCEPTION_NAME_CODES.get(type(exc).__name__, default_code)
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _EXCEPTION_NAME_CODES:
+            return _EXCEPTION_NAME_CODES[cls.__name__]
+    return default_code
 
 
 def http_status_for_code(code):

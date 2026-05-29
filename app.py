@@ -320,8 +320,10 @@ def get_task_status_endpoint(task_id):
     state_upper = str(response.get('state') or '').upper()
     if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
         existing_error = response['details'].get('error')
-        if isinstance(existing_error, dict) and 'error_code' in existing_error:
+        if isinstance(existing_error, dict) and 'error_code' in existing_error and 'error_message' in existing_error:
             pass
+        elif isinstance(existing_error, dict) and 'error_code' in existing_error:
+            response['details']['error'] = error_manager.build(existing_error['error_code'])
         else:
             response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
         response['details'].setdefault('error_message', response['details']['error']['error_message'])

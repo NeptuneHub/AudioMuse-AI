@@ -89,6 +89,15 @@ class TestClassify:
     def test_unknown_exception_uses_default(self):
         assert em.classify(ValueError('x'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_ANALYSIS_FAILED
 
+    def test_subclass_matches_parent_via_mro(self):
+        class OperationalError(Exception):
+            pass
+
+        class MyCustomDbError(OperationalError):
+            pass
+
+        assert em.classify(MyCustomDbError('x'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
+
     def test_audiomuse_error_keeps_its_code(self):
         exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down')
         assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
