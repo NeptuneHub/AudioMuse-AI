@@ -141,6 +141,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         statusLog.textContent = statusMessage;
         statusDetails.textContent = typeof task.details === 'object' ? JSON.stringify(task.details, null, 2) : task.details;
+
+        if (typeof renderTaskError === 'function') {
+            renderTaskError(task);
+        }
     }
     
     function disableAllTaskButtons(isDisabled) {

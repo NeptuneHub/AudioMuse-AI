@@ -71,6 +71,11 @@
                     <div id="progress-bar"></div>
                 </div>
                 <p><span class="status-label">Message:</span> <span id="status-message">N/A</span></p>
+                <div id="status-error-block" class="status-error-block status-failure" style="display:none;">
+                    <p><span class="status-label">Error Code:</span> <span id="status-error-code">N/A</span></p>
+                    <p><span class="status-label">Error Class:</span> <span id="status-error-class">N/A</span></p>
+                    <p><span class="status-label">Error Message:</span> <span id="status-error-message">N/A</span></p>
+                </div>
                 <div style="margin-top: 1rem;">
                     <h4>Details / Log:</h4>
                     <pre id="status-details"></pre>
@@ -194,6 +199,9 @@
                 document.getElementById('status-details').textContent = JSON.stringify(task.details, null, 2);
             }
             document.getElementById('status-message').textContent = statusMessage;
+            if (typeof renderTaskError === 'function') {
+                renderTaskError(task);
+            }
         }
 
         // Format running time
@@ -395,6 +403,9 @@
             if (data.details) {
                 document.getElementById('status-details').textContent = JSON.stringify(data.details, null, 2);
             }
+            if (typeof renderTaskError === 'function') {
+                renderTaskError(data);
+            }
         }
 
         // Handle cleaning completion
@@ -442,7 +453,8 @@
             // RESET UI BUTTONS immediately
             resetCleaningUI();
 
-            alert(`Cleaning failed: ${data.details?.error_message || 'Unknown error'}`);
+            const structured = (typeof formatErrorText === 'function') ? formatErrorText(data.details?.error) : '';
+            alert(`Cleaning failed: ${structured || data.details?.error_message || 'Unknown error'}`);
         }
 
         // Display cleaning results

@@ -8,6 +8,9 @@ import json
 from rq import get_current_job, Retry
 import requests # Import requests to catch specific exceptions
 
+from error import error_manager
+from error.error_dictionary import ERR_COLLECTION_SYNC_FAILED
+
 # Import project modules
 from .pocketbase import PocketBaseClient
 from .mediaserver import get_recent_albums, get_tracks_from_album
@@ -38,6 +41,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
         # This code correctly handles the StackSummary from the janitor.
         error_details = {
             "message": "Batch sync sub-task failed permanently after all retries.",
+            "error": error_manager.build(ERR_COLLECTION_SYNC_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
             "traceback": "".join(tb.format()) if isinstance(tb, traceback.StackSummary) else "".join(traceback.format_exception(type, value, tb))
@@ -251,9 +255,9 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
         except Exception as e:
             logger.error(f"{log_prefix} Error in sync_album_batch_task: {e}", exc_info=True)
             failure_details = {
-                "error": str(e), 
+                "error": error_manager.record(error_manager.classify(e, ERR_COLLECTION_SYNC_FAILED), str(e), exc=e),
                 "traceback": traceback.format_exc(),
-                "batch_name": batch_name_short 
+                "batch_name": batch_name_short
             }
             save_task_status(task_id, "album_batch_sync", TASK_STATUS_FAILURE, parent_task_id=parent_task_id, sub_type_identifier=lock_id, details=failure_details)
             raise
@@ -421,5 +425,6 @@ def sync_collections_task(url, token, num_albums):
             logger.error(f"{log_prefix} An unexpected error occurred in main sync task: {e}", exc_info=True)
             task_info = get_task_info_from_db(current_task_id)
             if not task_info or task_info.get('status') not in [TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-                 log_and_update(f"Error: {e}", 100, status=TASK_STATUS_FAILURE, details={"error": str(e), "traceback": traceback.format_exc()})
+                 err = error_manager.record(error_manager.classify(e, ERR_COLLECTION_SYNC_FAILED), str(e), exc=e)
+                 log_and_update(f"Error: {e}", 100, status=TASK_STATUS_FAILURE, details={"error": err, "traceback": traceback.format_exc()})
             raise

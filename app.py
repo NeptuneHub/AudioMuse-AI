@@ -49,9 +49,19 @@ from app_auth import (
 
 from app_provider_migration import migration_bp
 
+from error import error_manager
+from error.error_manager import AudioMuseError
+from error.error_dictionary import UNKNOWN_ERROR_CODE
+
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
+
+
+@app.errorhandler(AudioMuseError)
+def handle_audiomuse_error(err):
+    """Render any AudioMuseError raised by a synchronous route as a structured JSON body."""
+    return jsonify(err.to_dict()), error_manager.http_status_for_code(err.code)
 
 from app_logging import configure_logging
 configure_logging()
@@ -255,8 +265,9 @@ def get_task_status_endpoint(task_id):
         response['progress'] = job.meta.get('progress', 0)
         response['details'] = job.meta.get('details', {})
         if job.is_failed:
-            response['details']['error_message'] = job.exc_info if job.exc_info else "Job failed without error info."
             response['status_message'] = "FAILED"
+            if config.ERROR_INCLUDE_TRACEBACK and job.exc_info:
+                response['details']['traceback'] = job.exc_info
         elif job.is_finished:
              response['status_message'] = "SUCCESS" # RQ uses 'finished' for success
              response['progress'] = 100
@@ -304,6 +315,17 @@ def get_task_status_endpoint(task_id):
                 *log_entries[-10:]
             ]
     
+    state_upper = str(response.get('state') or '').upper()
+    if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
+        existing_error = response['details'].get('error')
+        if isinstance(existing_error, dict) and 'error_code' in existing_error:
+            pass
+        elif isinstance(existing_error, str) and existing_error.strip():
+            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE, existing_error)
+        else:
+            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE, "The task failed.")
+        response['details'].setdefault('error_message', response['details']['error']['error_message'])
+
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
     response.pop('start_time', None)

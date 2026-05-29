@@ -8,6 +8,9 @@ from app import app, setup_manager
 from app_helper import check_setup_needed
 import restart_manager
 import tasks.mediaserver as mediaserver
+from error import error_manager
+from error.error_manager import AudioMuseError
+from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     field
@@ -203,14 +206,16 @@ def _test_media_server_connection(filtered_values):
         probe_limit = getattr(config, 'PROBE_TOP_PLAYED_LIMIT', 1)
         items = mediaserver.get_top_played_songs(probe_limit)
         if not items:
-            raise ValueError(f'Possible problem in connecting to {media_type.capitalize()}. No top-played songs were returned')
+            raise AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.")
         return {
             'type': media_type,
             'probe_count': len(items),
             'probe_limit_hit': probe_limit and len(items) >= probe_limit,
         }
+    except AudioMuseError:
+        raise
     except Exception as exc:
-        raise ValueError(str(exc) or 'Media server connection test failed.') from exc
+        raise AudioMuseError(error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc) from exc
     finally:
         _restore_config(original_config)
 
@@ -518,6 +523,9 @@ def setup_api():
 
         restart_manager.publish_restart_request()
         restart_requested = True
+    except AudioMuseError as ae:
+        app.logger.error('Setup media server check failed: %s', ae, exc_info=ae.cause)
+        return jsonify(ae.to_dict()), error_manager.http_status_for_code(ae.code)
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:

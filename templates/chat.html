@@ -516,7 +516,8 @@
                             } else if (evt.type === 'error') {
                                 gotError = true;
                                 finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                                showErrorBelowStepper('Error: ' + evt.error);
+                                const structured = (typeof formatErrorText === 'function' && evt.error && typeof evt.error === 'object') ? formatErrorText(evt.error) : evt.error;
+                                showErrorBelowStepper('Error: ' + structured);
                                 return;
                             }
                         }
