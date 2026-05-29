@@ -1,0 +1,166 @@
+# Builds the standalone macOS .app for BOTH architectures NATIVELY and attaches
+# the resulting zips to the GitHub release that triggered the run.
+#
+# Why native (no cross-build / universal2): onnxruntime, PyAV and voyager wheels
+# are not reliably universal2, so each arch must be built on its own runner —
+# arm64 on Apple Silicon (macos-14), x86_64 on Intel (macos-13). This mirrors the
+# rule in macos/README.md ("build on the target architecture").
+#
+# The app is ad-hoc signed only (no Apple Developer account); that is expected and
+# unchanged by CI — end users still clear quarantine with `xattr -dr ...` after
+# download (see macos/README.md "Installing & authorizing").
+#
+# The ~2.5 GB of ONNX models are NOT in git. This workflow assembles ./model the
+# same way the Dockerfile's `models` stage does, EXCEPT it skips the HuggingFace
+# cache tarball: macos/env.py points CLAP text at the ONNX clap_text_model.onnx
+# and never sets HF_HOME, so the bundle does not need the laion-clap HF encoders.
+
+name: Build standalone macOS app
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag (same trigger as the Docker build)
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon -> uname -m == arm64
+            arch: arm64
+          - runner: macos-13   # Intel        -> uname -m == x86_64
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          if [ "$GOT" != "${{ matrix.arch }}" ]; then
+            echo "::error::Expected ${{ matrix.arch }} runner but uname -m reports $GOT"
+            exit 1
+          fi
+          echo "Building for $GOT"
+
+      - name: Vendor redis-server for this architecture
+        run: |
+          set -euo pipefail
+          brew install redis
+          dest="macos/vendor/redis/$(uname -m)"
+          mkdir -p "$dest"
+          cp "$(brew --prefix redis)/bin/redis-server" "$dest/redis-server"
+          chmod +x "$dest/redis-server"
+          file "$dest/redis-server"
+
+      - name: Assemble ./model (mirrors the Dockerfile models stage, minus the HF cache)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p model
+
+          echo "==> musicnn + CLAP text models (from ${MODEL_RELEASE})"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D model --clobber \
+            -p musicnn_embedding.onnx \
+            -p musicnn_prediction.onnx \
+            -p clap_text_model.onnx
+
+          echo "==> DCLAP audio model (from ${DCLAP_RELEASE} in the -DCLAP repo)"
+          gh release download "$DCLAP_RELEASE" -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber \
+            -p model_epoch_36.onnx \
+            -p model_epoch_36.onnx.data
+
+          echo "==> lyrics bundles (whisper / silero / gte) — downloaded then extracted into ./model"
+          tmp="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp" --clobber \
+            -p lyrics_model_whisper.tar.gz \
+            -p lyrics_model_silero_vad.tar.gz \
+            -p lyrics_model_gte_vnni.tar.gz
+          for t in lyrics_model_whisper lyrics_model_silero_vad lyrics_model_gte_vnni; do
+            tar -xzf "$tmp/$t.tar.gz" -C model
+          done
+          rm -rf "$tmp"
+
+      - name: Verify the assembled model/ is complete
+        run: |
+          set -euo pipefail
+          required=(
+            model/musicnn_embedding.onnx
+            model/musicnn_prediction.onnx
+            model/clap_text_model.onnx
+            model/model_epoch_36.onnx
+            model/model_epoch_36.onnx.data
+            model/silero_vad.onnx
+            model/gte-multilingual-base-int8.onnx
+            model/whisper-small-onnx/encoder_model.onnx
+            model/whisper-small-onnx/decoder_model_merged.onnx
+            model/gte-multilingual-base/tokenizer.json
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
+          du -sh model
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv-macos
+          source .venv-macos/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements/macos.txt
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          source .venv-macos/bin/activate
+          bash macos/build.sh
+
+      - name: Upload zip as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ matrix.arch }}
+          path: dist/AudioMuse-AI-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  # Attach both arch zips to the release in ONE place, so the two build jobs never
+  # race to create/update the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built zips
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach zips to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/AudioMuse-AI-*.zip
+          fail_on_unmatched_files: true
