@@ -1,0 +1,8 @@
+-r common.txt
+
+pgserver
+rumps
+pyobjc-framework-Cocoa
+waitress
+pyinstaller
+pyinstaller-hooks-contrib
