@@ -258,7 +258,7 @@ def prepare_spectrogram_patches(audio, sr):
         y=audio, sr=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels,
         window='hann', center=False, power=2.0, norm='slaney', htk=False,
     )
-    log_mel = np.log10(1 + 10000 * mel)
+    log_mel = np.log10(1 + 10000 * np.maximum(mel, 0.0))
     patches = [log_mel[:, i:i + frame] for i in range(0, log_mel.shape[1] - frame + 1, frame)]
     if not patches:
         return None

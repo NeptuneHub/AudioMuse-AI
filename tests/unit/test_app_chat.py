@@ -6,9 +6,6 @@ Tests verify:
 - Artist diversity enforcement (MAX_SONGS_PER_ARTIST_PLAYLIST cap, backfill)
 - Iteration message content (iteration 0 minimal, iteration > 0 rich feedback)
 """
-import pytest
-from unittest.mock import Mock, patch, MagicMock, call
-from tests.conftest import make_dict_row, make_mock_connection
 
 
 class TestPreValidation:

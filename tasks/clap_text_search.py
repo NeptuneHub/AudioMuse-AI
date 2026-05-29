@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 from psycopg2.extras import DictCursor
-from typing import List, Dict, Optional
+from typing import List, Dict
 import config
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,6 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 def _load_clap_index_from_db() -> bool:
     """Load a persisted CLAP voyager index from the database."""
-    global _CLAP_CACHE, _CLAP_INDEX_CACHE
 
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
@@ -109,7 +108,6 @@ def _load_clap_index_from_db() -> bool:
                     seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
                     parts = []
                     total_expected = None
-                    id_map_json_candidate = None
                     with conn.cursor(name='clap_index_segments') as seg_cur:
                         seg_cur.itersize = 50
                         seg_cur.execute(
@@ -128,20 +126,20 @@ def _load_clap_index_from_db() -> bool:
                                 logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
                                 return False
                             parts.append((part_no, part_data, part_id_map_json, part_dim))
-                            if part_id_map_json and not id_map_json_candidate:
-                                id_map_json_candidate = part_id_map_json
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
+                    id_map_json_candidate = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
                     for _, _, _, part_dim in parts:
                         if part_dim != CLAP_EMBEDDING_DIMENSION:
                             logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
                             return False
 
-                    if id_map_json_candidate is None:
+                    if not id_map_json_candidate:
                         logger.error("No id_map_json found in segmented CLAP index rows.")
                         return False
 
@@ -279,7 +277,6 @@ def _unload_timer_worker():
     never run concurrently with an in-flight ``session.run()`` -- which was
     deadlocking the GPU and hanging chat/text-search requests.
     """
-    global _WARM_CACHE_TIMER
 
     while True:
         with _WARM_CACHE_TIMER['lock']:
@@ -309,7 +306,6 @@ def warmup_text_search_model():
     Returns:
         dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
     """
-    global _WARM_CACHE_TIMER
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
     
     # Load duration from config on first use
@@ -346,7 +342,6 @@ def get_warm_cache_status() -> Dict:
     Returns:
         dict: Status with 'active' (bool), 'seconds_remaining' (int)
     """
-    global _WARM_CACHE_TIMER
     from .clap_analyzer import is_clap_model_loaded
     
     with _WARM_CACHE_TIMER['lock']:
@@ -364,7 +359,6 @@ def load_clap_cache_from_db():
     Load the persisted CLAP Voyager index from the database.
     Returns True if successful, False otherwise.
     """
-    global _CLAP_CACHE
     
     from app_helper import get_db
     from config import CLAP_ENABLED
@@ -388,7 +382,6 @@ def load_clap_cache_from_db():
 
 def refresh_clap_cache():
     """Force refresh of CLAP cache from database."""
-    global _CLAP_CACHE
     old_count = get_clap_cache_size()
     logger.info(f"Refreshing CLAP cache... (current: {old_count} songs)")
     result = load_clap_cache_from_db()
@@ -581,7 +574,6 @@ def load_top_queries_from_db():
     Returns True if queries were loaded, False otherwise.
     On first startup (empty DB), this will return False and trigger generation.
     """
-    global _TOP_QUERIES_CACHE
     from app_helper import get_db
     
     # Ensure table exists first
@@ -673,42 +665,6 @@ def load_top_queries_from_db():
                 return True
     except Exception as e:
         logger.warning(f"Could not load top queries from database: {e}")
-        return False
-
-
-def save_top_queries_to_db(queries: List[str], scores: List[float]):
-    """
-    Save top queries to database, replacing old ones atomically.
-    This ensures users get old queries until new ones are ready.
-    """
-    from app_helper import get_db
-    
-    # Safety check: don't delete existing queries if new list is empty
-    if not queries:
-        logger.warning("Refusing to save empty query list to database")
-        return False
-    
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            # Delete old queries
-            cur.execute("DELETE FROM text_search_queries")
-            
-            # Insert new queries
-            for rank, (query, score) in enumerate(zip(queries, scores), start=1):
-                cur.execute("""
-                    INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                    VALUES (%s, %s, %s, NOW())
-                """, (query, float(score), rank))
-            
-            conn.commit()
-            logger.info(f"Saved {len(queries)} top queries to database")
-            return True
-    except Exception as e:
-        logger.error(f"Failed to save top queries to database: {e}")
-        if conn:
-            conn.rollback()
         return False
 
 

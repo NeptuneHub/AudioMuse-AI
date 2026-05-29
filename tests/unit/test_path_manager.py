@@ -5,7 +5,6 @@ Tests core path generation logic:
 - Vector interpolation (Linear and SLERP)
 - Signature normalization for deduplication
 """
-import pytest
 import numpy as np
 from tasks.path_manager import (
     get_euclidean_distance,

@@ -1,5 +1,5 @@
 # app_collection.py
-from flask import Blueprint, jsonify, request, render_template, g
+from flask import Blueprint, jsonify, request, render_template
 import uuid
 import logging
 import json
@@ -8,6 +8,9 @@ import traceback
 
 from rq import Retry
 from psycopg2.extras import DictCursor
+
+from error import error_manager
+from error.error_dictionary import ERR_COLLECTION_SYNC_FAILED
 
 
 logger = logging.getLogger(__name__)
@@ -34,15 +37,15 @@ def collection_task_failure_handler(job, connection, type, value, tb):
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
+        tb_formatted = "".join(
+            tb.format() if isinstance(tb, traceback.StackSummary)
+            else traceback.format_exception(type, value, tb)
+        )
         error_details = {
             "message": "Task failed permanently after all retries.",
+            "error": error_manager.build(ERR_COLLECTION_SYNC_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
-            # --- FIX: Handle different traceback types, especially from rq-janitor ---
-            "traceback": "".join(
-                tb.format() if isinstance(tb, traceback.StackSummary)
-                else traceback.format_exception(type, value, tb)
-            )
         }
         save_task_status(
             task_id,
@@ -51,7 +54,7 @@ def collection_task_failure_handler(job, connection, type, value, tb):
             progress=100,
             details=error_details
         )
-        app.logger.error(f"Main collection sync task {task_id} failed permanently. DB status updated.")
+        app.logger.error(f"Main collection sync task {task_id} failed permanently. DB status updated.\n{tb_formatted}")
 
 @collection_bp.route('/api/collection/start', methods=['POST'])
 def start_collection_sync():

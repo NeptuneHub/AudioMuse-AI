@@ -22,7 +22,6 @@ Public surface (call sites elsewhere import from here):
 
     Orchestrators:
         call_ai_for_plan(...)          one transport call, returns raw tool_calls
-        plan_and_execute(...)          legacy single-call planner with retry
         plan_and_execute_once(...)     two-stage classifier + execute pipeline
 """
 import json
@@ -228,17 +227,6 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
         out['album'] = 1.0 if str(filt['album']).strip().lower() in alb else 0.0
 
     return out
-
-
-def _filter_score(filt: Dict, feats: Dict) -> float:
-    """Unnormalized mean of the per-dimension scores for a single song.
-
-    Kept for callers without a pool to normalize against. The composition
-    re-rank uses ``_filter_dim_scores`` + per-pool min-max normalization
-    instead, so wide-range dims don't dominate narrow ones.
-    """
-    dim = _filter_dim_scores(filt, feats)
-    return sum(dim.values()) / len(dim) if dim else 0.0
 
 
 def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]):
@@ -986,43 +974,6 @@ def call_ai_for_plan(
         log_messages=log_messages,
         library_context=library_context,
     )
-
-
-def plan_and_execute(
-    user_message: str,
-    tools: List[Dict],
-    ai_config: Dict,
-    log_messages: List[str],
-    library_context: Optional[Dict] = None,
-) -> Dict:
-    """Call the AI, classify the response into a ToolPlan, and return both.
-
-    Returns ``{"plan": ToolPlan, "tool_calls": [...], "raw": <ai_result>}`` on
-    success, ``{"error": "..."}`` on AI failure.
-    """
-    raw = call_ai_for_plan(user_message, tools, ai_config, log_messages, library_context)
-    if 'error' in raw:
-        return raw
-
-    tool_calls = raw.get('tool_calls', []) or []
-    plan = plan_from_tool_calls(tool_calls)
-
-    if not plan.primaries and plan.filter is None and tool_calls:
-        log_messages.append('Plan: AI returned tool_calls but none were valid primaries or filters; retrying once with explicit guidance')
-        retry_msg = (
-            f"{user_message}\n\n"
-            "IMPORTANT: Your previous response had no valid tool calls. "
-            "Emit at least ONE tool call. Pick a PRIMARY (seed_search / text_match / "
-            "knowledge_lookup) or a FILTER (search_database with at least one of "
-            "genres / voices / moods / year / artist / album / scale / tempo / energy / rating)."
-        )
-        raw = call_ai_for_plan(retry_msg, tools, ai_config, log_messages, library_context)
-        if 'error' in raw:
-            return raw
-        tool_calls = raw.get('tool_calls', []) or []
-        plan = plan_from_tool_calls(tool_calls)
-
-    return {"plan": plan, "tool_calls": tool_calls, "raw": raw}
 
 
 def plan_and_execute_once(

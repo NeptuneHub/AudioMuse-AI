@@ -14,14 +14,13 @@ This approach is fast (no audio re-processing) and consistent with the song simi
 import os
 import logging
 import json
-import pickle
 import tempfile
 import io
 import re
 import hashlib
 import numpy as np
 import threading
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 from collections import defaultdict
 
 from sklearn.mixture import GaussianMixture

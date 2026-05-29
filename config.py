@@ -31,6 +31,12 @@ PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 # beyond a couple hundred entries. The full count is still surfaced as a
 # warning so the user knows the list is truncated.
 MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
+# Hard cap on the per-collision detail rows persisted into migration_session.state.
+# collision_details is display-only (it tells the user which albums to re-match),
+# so storing one entry per collision would let this single JSONB field grow with
+# the library and eventually breach PG's ~1 GB field cap on a heavily-duplicated
+# collection. The true total is preserved separately as collision_details_total.
+MIGRATION_MAX_COLLISION_DETAILS = int(os.environ.get("MIGRATION_MAX_COLLISION_DETAILS", "1000"))
 TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
 
 

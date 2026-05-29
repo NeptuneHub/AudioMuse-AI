@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 _MOOD_CENTROIDS = {}  # mood_name -> list of np.array centroids
 
 def _load_mood_centroids():
-    global _MOOD_CENTROIDS
     try:
         with open(MOOD_CENTROIDS_FILE) as f:
             data = json.load(f)

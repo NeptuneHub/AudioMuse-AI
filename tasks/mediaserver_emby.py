@@ -164,14 +164,6 @@ def get_recent_albums(limit):
         # Normal case: get only real albums, no standalone tracks
         return _get_recent_albums_only(limit)
 
-def get_comprehensive_music_discovery(limit=0):
-    """
-    Convenience function for comprehensive music discovery including standalone tracks.
-    Always returns both albums and standalone tracks as pseudo-albums.
-    Use this when you want to ensure no music is missed, regardless of metadata completeness.
-    """
-    return get_recent_music_items(limit)
-
 def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
     # this is is compatble with Emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html

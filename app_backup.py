@@ -5,12 +5,14 @@ import time
 import logging
 import tempfile
 from datetime import datetime
-from flask import Blueprint, render_template, jsonify, request, send_file, after_this_request
+from flask import Blueprint, render_template, jsonify, request, send_file
 from redis import Redis
 from redis.exceptions import RedisError
 import config
 from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 import restart_manager
+from error import error_manager
+from error.error_dictionary import ERR_BACKUP_VERSION_MISMATCH, ERR_BACKUP_FAILED
 
 logger = logging.getLogger(__name__)
 
@@ -252,15 +254,22 @@ def create_backup():
             logger.error("pg_dump failed: %s", result.stderr)
             if os.path.exists(filepath):
                 os.remove(filepath)
-            return jsonify({'error': f'pg_dump failed: {result.stderr}'}), 500
+            stderr = result.stderr or ""
+            if "server version mismatch" in stderr.lower():
+                err = error_manager.build(ERR_BACKUP_VERSION_MISMATCH, stderr)
+            else:
+                err = error_manager.build(ERR_BACKUP_FAILED, stderr)
+            return jsonify({**err, 'error': err['error_message']}), 500
     except FileNotFoundError:
         logger.error("pg_dump not found on system PATH")
-        return jsonify({'error': 'pg_dump is not installed or not on PATH'}), 500
+        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
+        return jsonify({**err, 'error': err['error_message']}), 500
     except subprocess.TimeoutExpired:
         logger.error("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
-        return jsonify({'error': 'pg_dump timed out after 600 seconds'}), 500
+        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
+        return jsonify({**err, 'error': err['error_message']}), 500
 
     logger.info("Backup created: %s", filepath)
     return send_file(filepath, as_attachment=True, download_name=filename)

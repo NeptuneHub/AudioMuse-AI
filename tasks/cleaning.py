@@ -1,27 +1,24 @@
 # tasks/cleaning.py
 
-import os
 import time
 import logging
 import uuid
 import traceback
-import json
 from collections import defaultdict
 
 # RQ import
 from rq import get_current_job
-from rq.exceptions import NoSuchJobError
 
 # Import configuration
-from config import (
-    REDIS_URL, DATABASE_URL, MAX_QUEUED_ANALYSIS_JOBS, CLEANING_SAFETY_LIMIT
-)
+from config import CLEANING_SAFETY_LIMIT
+
+from error import error_manager
+from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
 # Import other project modules
 from .mediaserver import get_recent_albums, get_tracks_from_album
 
 from psycopg2 import OperationalError
-from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +29,7 @@ def identify_and_clean_orphaned_albums_task():
     This combines identification and deletion into a single automated process.
     """
     from app import app
-    from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import redis_conn, get_db, save_task_status, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -47,7 +44,7 @@ def identify_and_clean_orphaned_albums_task():
         current_task_logs = initial_details["log"]
 
         def log_and_update_main(message, progress, **kwargs):
-            nonlocal current_progress, current_task_logs
+            nonlocal current_progress
             current_progress = progress
             logger.info(f"[CleaningTask-{current_task_id}] {message}")
             details = {**kwargs, "status_message": message}
@@ -258,11 +255,13 @@ def identify_and_clean_orphaned_albums_task():
 
         except OperationalError as e:
             logger.error(f"Database connection error during cleaning identification: {e}. This job will be retried.", exc_info=True)
-            log_and_update_main(f"Database connection failed. Retrying...", current_progress, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
+            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            log_and_update_main(f"Database connection failed. Retrying...", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         except Exception as e:
             logger.critical(f"Orphaned album identification failed: {e}", exc_info=True)
-            log_and_update_main(f"❌ Orphaned album identification failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
+            err = error_manager.record(error_manager.classify(e, ERR_CLEANING_FAILED), str(e), exc=e)
+            log_and_update_main(f"❌ Orphaned album identification failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
 
 
