@@ -670,6 +670,94 @@ def store_voyager_index_segmented(
             )
 
 
+def rewrite_segmented_id_map(
+    cur,
+    target_table: str,
+    index_name: str,
+    rewrite_fn,
+    max_part_size_mb: Optional[int] = None,
+) -> bool:
+    """Rewrite ``id_map_json`` for a possibly-segmented index in place.
+
+    :func:`store_voyager_index_segmented` splits the id_map JSON across part
+    rows, so each segmented row holds a partial-JSON *fragment* rather than a
+    standalone document. A naive per-row ``json.loads`` rewrite therefore
+    silently no-ops on every fragment. This helper instead reassembles the
+    full id_map across all part rows (via :func:`reassemble_segmented_id_map`),
+    applies ``rewrite_fn`` to the whole JSON string, then writes the result
+    back -- re-split across the SAME part rows for a segmented index (the
+    binary columns are left untouched) or as a single field for a single-row
+    index.
+
+    ``rewrite_fn`` receives the full id_map JSON string and returns the
+    rewritten string; returning it unchanged means "nothing to do".
+
+    Every statement runs on the caller's ``cur`` so the rewrite joins the
+    caller's transaction. Returns True if any row was updated.
+
+    Raises ``ValueError`` if the rewritten id_map needs more part rows than the
+    index currently has -- only possible when the id_map dominates the part
+    count and the new ids are substantially longer. The caller should rebuild
+    the index from scratch in that case rather than risk a partial write.
+    """
+    _validate_sql_identifier(target_table, "table")
+    _validate_sql_identifier(index_name, "index_name")
+    mb = config.VOYAGER_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
+    max_part_size = mb * 1024 * 1024
+
+    cur.execute(
+        f"SELECT id_map_json FROM {target_table} WHERE index_name = %s",
+        (index_name,),
+    )
+    single_row = cur.fetchone()
+    if single_row is not None:
+        old_json = single_row[0]
+        new_json = rewrite_fn(old_json)
+        if new_json == old_json:
+            return False
+        cur.execute(
+            f"UPDATE {target_table} SET id_map_json = %s WHERE index_name = %s",
+            (new_json, index_name),
+        )
+        return True
+
+    like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
+    cur.execute(
+        f"SELECT index_name, id_map_json FROM {target_table} "
+        f"WHERE index_name LIKE %s ESCAPE '\\'",
+        (like_pattern,),
+    )
+    seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
+    parts = []
+    for name, frag in cur.fetchall() or []:
+        m = seg_pattern.match(name)
+        if m:
+            parts.append((int(m.group(1)), name, frag))
+    if not parts:
+        return False
+    parts.sort(key=lambda p: p[0])
+    num_parts = len(parts)
+
+    old_full = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
+    new_full = rewrite_fn(old_full)
+    if new_full == old_full:
+        return False
+
+    new_frags = _split_text(new_full, max_part_size)
+    if len(new_frags) > num_parts:
+        raise ValueError(
+            f"rewritten id_map for '{index_name}' needs {len(new_frags)} part rows "
+            f"but the index has {num_parts}; rebuild the index instead of rewriting in place."
+        )
+    for position, (_, name, _) in enumerate(parts):
+        frag = new_frags[position] if position < len(new_frags) else ""
+        cur.execute(
+            f"UPDATE {target_table} SET id_map_json = %s WHERE index_name = %s",
+            (frag, name),
+        )
+    return True
+
+
 def build_id_map(item_ids: Iterable[str]) -> dict:
     """Return ``{int_voyager_id: item_id_str}`` matching the row order."""
     return {i: item_id for i, item_id in enumerate(item_ids)}

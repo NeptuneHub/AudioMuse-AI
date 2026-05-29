@@ -33,6 +33,7 @@ Safety invariants enforced by the test suite:
 """
 import json
 import logging
+import re
 import time
 
 from tasks.memory_utils import sanitize_string_for_db as _sanitize_text
@@ -524,32 +525,18 @@ def _run_migration_transaction(cur, mapping, new_meta,
             "FROM migration_new_meta n WHERE s.item_id = n.new_id"
         )
 
-    # 8. Rewrite Voyager id_map_json in place (values only; int keys unchanged)
-    cur.execute(
-        "SELECT index_name, id_map_json FROM voyager_index_data "
-        "WHERE id_map_json <> ''"
-    )
-    for row in (cur.fetchall() or []):
-        index_name, id_map_json = row[0], row[1]
-        new_json = rewrite_id_map_json(id_map_json, mapping)
-        if new_json != id_map_json:
-            cur.execute(
-                "UPDATE voyager_index_data SET id_map_json = %s WHERE index_name = %s",
-                (new_json, index_name),
-            )
-
-    # Same transform for the 2D map projection id_map
-    cur.execute(
-        "SELECT index_name, id_map_json FROM map_projection_data "
-        "WHERE id_map_json <> ''"
-    )
-    for row in (cur.fetchall() or []):
-        index_name, id_map_json = row[0], row[1]
-        new_json = rewrite_id_map_json(id_map_json, mapping)
-        if new_json != id_map_json:
-            cur.execute(
-                "UPDATE map_projection_data SET id_map_json = %s WHERE index_name = %s",
-                (new_json, index_name),
+    # 8. Rewrite Voyager / map-projection id_map_json (segment-aware)
+    from tasks.index_build_helpers import rewrite_segmented_id_map
+    _seg_base = re.compile(r"^(.*)_\d+_\d+$")
+    for table in ('voyager_index_data', 'map_projection_data'):
+        cur.execute(f"SELECT DISTINCT index_name FROM {table}")
+        bases = set()
+        for (name,) in (cur.fetchall() or []):
+            m = _seg_base.match(name)
+            bases.add(m.group(1) if m else name)
+        for base in sorted(bases):
+            rewrite_segmented_id_map(
+                cur, table, base, lambda j: rewrite_id_map_json(j, mapping)
             )
 
     # 9. Truncate provider-specific artist tables — they contain artist IDs
