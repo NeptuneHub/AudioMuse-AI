@@ -1,7 +1,6 @@
 # app_helper.py
 import json
 import logging
-import os
 import time
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -11,7 +10,7 @@ from flask import g
 # RQ imports
 from redis import Redis
 from rq import Queue
-from rq.job import Job, JobStatus
+from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
 # Import from main app
@@ -1207,29 +1206,32 @@ def save_map_projection(index_name, id_map, projection_array):
     id_map: JSON-serializable list/dict mapping rows to item_ids
     """
     conn = get_db()
-    cur = conn.cursor()
     try:
         blob = projection_array.astype(np.float32).tobytes()
-        id_map_json = json.dumps(id_map)
-        cur.execute("""
-            INSERT INTO map_projection_data (index_name, projection_data, id_map_json, embedding_dimension)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = NOW()
-        """, (index_name, psycopg2.Binary(blob), id_map_json, projection_array.shape[1] if projection_array.ndim == 2 else 0))
+        if not blob:
+            logger.info(f"Map projection '{index_name}' has no data; skipping store.")
+            return
+        embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
+        from tasks.index_build_helpers import store_voyager_index_segmented
+        store_voyager_index_segmented(
+            conn,
+            target_table="map_projection_data",
+            index_name=index_name,
+            index_bytes=blob,
+            id_map=id_map,
+            embedding_dimension=embedding_dim,
+            binary_column="projection_data",
+        )
         conn.commit()
         try:
-            size_bytes = len(blob)
             id_count = len(id_map) if hasattr(id_map, '__len__') else None
-            logger.info(f"Saved map projection '{index_name}' to DB: {size_bytes} bytes, ids={id_count}")
+            logger.info(f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}")
         except Exception:
-            # non-critical logging error
             logger.debug("Saved map projection but failed to compute size/id_count for log.")
     except Exception as e:
         conn.rollback()
         logger.error(f"Failed to save map projection: {e}")
         raise
-    finally:
-        cur.close()
 
 
 def load_map_projection(index_name, force_reload=False):
@@ -1246,10 +1248,40 @@ def load_map_projection(index_name, force_reload=False):
     try:
         cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
         row = cur.fetchone()
-        if not row:
-            logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
-            return None, None
-        proj_blob, id_map_json = row[0], row[1]
+        if row and row[0] is not None:
+            proj_blob, id_map_json = row[0], row[1]
+        else:
+            import re
+            from tasks.index_build_helpers import reassemble_segmented_id_map
+            cur.execute(
+                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
+                (index_name.replace('_', r'\_') + r"\_%\_%",),
+            )
+            candidates = cur.fetchall()
+            if not candidates:
+                logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
+                return None, None
+            seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
+            parts = []
+            total_expected = None
+            for name, part_blob, part_id_map in candidates:
+                m = seg_pattern.match(name)
+                if not m:
+                    continue
+                part_no = int(m.group(1))
+                total = int(m.group(2))
+                if total_expected is None:
+                    total_expected = total
+                elif total_expected != total:
+                    logger.error(f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load.")
+                    return None, None
+                parts.append((part_no, part_blob, part_id_map))
+            if total_expected is None or len(parts) != total_expected:
+                logger.error(f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load.")
+                return None, None
+            parts.sort(key=lambda p: p[0])
+            proj_blob = b"".join(bytes(p[1]) for p in parts if p[1])
+            id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
         proj = np.frombuffer(proj_blob, dtype=np.float32)
         # infer shape as (-1,2) if length divisible by 2
         if proj.size % 2 == 0:
@@ -1391,7 +1423,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     This will be called during analysis to create the artist component map.
     Returns True on success.
     """
-    from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying
+    from tasks.artist_gmm_manager import load_artist_index_for_querying
     from tasks.song_alchemy import _project_with_umap, _project_to_2d
     
     # Always reload artist GMM params from database (force reload to ensure fresh data)

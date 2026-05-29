@@ -333,6 +333,54 @@ class TestStoreVoyagerIndexSegmented:
                 embedding_dimension=768,
             )
 
+    def test_large_id_map_is_split_across_parts_and_reassembles(self):
+        captured = []
+        mock_conn, _ = self._mock_conn(captured)
+        id_map = {i: "v" * 40 for i in range(40000)}
+        id_map_json = json.dumps(id_map)
+        max_part_size = 1 * 1024 * 1024
+        assert len(id_map_json.encode("utf-8")) > max_part_size
+
+        _helpers.store_voyager_index_segmented(
+            mock_conn,
+            target_table="map_projection_data",
+            index_name="main_map",
+            index_bytes=b"x" * 10,
+            id_map=id_map,
+            embedding_dimension=2,
+            max_part_size_mb=1,
+            binary_column="projection_data",
+        )
+
+        assert "DELETE FROM map_projection_data" in captured[0][0]
+        inserts = captured[1:]
+        assert len(inserts) >= 2
+
+        frags = []
+        for sql, params in inserts:
+            assert "INSERT INTO map_projection_data" in sql
+            assert "projection_data" in sql and "id_map_json" in sql
+            m = re.match(r"^main_map_(\d+)_(\d+)$", params[0])
+            assert m is not None
+            assert len(params[2].encode("utf-8")) <= max_part_size
+            frags.append((int(m.group(1)), params[2]))
+
+        assert _helpers.reassemble_segmented_id_map(frags) == id_map_json
+
+    def test_binary_column_defaults_to_index_data(self):
+        captured = []
+        mock_conn, _ = self._mock_conn(captured)
+        _helpers.store_voyager_index_segmented(
+            mock_conn,
+            target_table="voyager_index_data",
+            index_name="music_library",
+            index_bytes=b"small",
+            id_map={0: "a"},
+            embedding_dimension=256,
+            max_part_size_mb=100,
+        )
+        assert "(index_name, index_data, id_map_json" in captured[1][0]
+
 
 class TestStreamEmbeddingsToBuffer:
     """Mock psycopg2.connect to drive the streaming code without a real DB."""

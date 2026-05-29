@@ -31,7 +31,6 @@ import gc
 import json
 import logging
 import math
-import os
 import re
 import sys
 import tempfile
@@ -411,7 +410,6 @@ def _load_sem_grove_index_from_db() -> bool:
                     seg_pattern       = re.compile(r"^sem_grove_index_(\d+)_(\d+)$")
                     parts             = []
                     total_expected    = None
-                    id_map_json_cand  = None
 
                     with conn.cursor(name="sem_grove_index_segments") as seg_cur:
                         seg_cur.itersize = 50
@@ -432,8 +430,6 @@ def _load_sem_grove_index_from_db() -> bool:
                                 logger.error("SemGrove: segment total mismatch.")
                                 return False
                             parts.append((part_no, part_data, part_id_map, part_dim))
-                            if part_id_map and not id_map_json_cand:
-                                id_map_json_cand = part_id_map
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.info(
@@ -443,8 +439,9 @@ def _load_sem_grove_index_from_db() -> bool:
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
                     db_dim       = parts[0][3]
-                    id_map_json  = id_map_json_cand
+                    id_map_json  = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
                     index_stream = tempfile.TemporaryFile()
                     for _, part_data, _, _ in parts:
                         index_stream.write(part_data)

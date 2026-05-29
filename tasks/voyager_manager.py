@@ -4,7 +4,6 @@ import json
 import logging
 import tempfile
 import numpy as np
-import psycopg2 # type: ignore
 from psycopg2.extras import DictCursor
 import io
 
@@ -24,14 +23,7 @@ from functools import lru_cache
 import threading
 import math # Import math for ceiling function
 
-from config import (
-    EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_EF_CONSTRUCTION,
-    VOYAGER_M, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST,
-    DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
-    DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
-    , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT,
-    MOOD_SIMILARITY_ENABLE
-)
+from config import EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE
 # Import from other project modules
 from .mediaserver import create_instant_playlist
 
@@ -202,7 +194,6 @@ def load_voyager_index_for_querying(force_reload=False):
         seg_pattern = re.compile(rf"^{re.escape(INDEX_NAME)}_(\d+)_(\d+)$")
         parts = []
         total_expected = None
-        id_map_json_candidate = None
         for row in candidates:
             name, part_data, part_id_map_json, part_dim = row
             m = seg_pattern.match(name)
@@ -217,8 +208,6 @@ def load_voyager_index_for_querying(force_reload=False):
                 voyager_index, id_map, reverse_id_map = None, None, None
                 return
             parts.append((part_no, part_data, part_id_map_json, part_dim))
-            if part_id_map_json and not id_map_json_candidate:
-                id_map_json_candidate = part_id_map_json
 
         if not parts:
             logger.error(f"No valid segmented Voyager index rows found for prefix '{INDEX_NAME}'.")
@@ -233,6 +222,8 @@ def load_voyager_index_for_querying(force_reload=False):
 
         # Sort by part number and validate embedding_dimension consistency
         parts.sort(key=lambda p: p[0])
+        from .index_build_helpers import reassemble_segmented_id_map
+        id_map_json_candidate = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
         for p in parts:
             if p[3] != EMBEDDING_DIMENSION:
                 logger.error(f"Voyager index embedding_dimension mismatch in segment {p[0]}: {p[3]} != {EMBEDDING_DIMENSION}. Aborting load.")

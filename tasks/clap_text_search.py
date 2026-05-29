@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 from psycopg2.extras import DictCursor
-from typing import List, Dict, Optional
+from typing import List, Dict
 import config
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,6 @@ def _load_clap_index_from_db() -> bool:
                     seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
                     parts = []
                     total_expected = None
-                    id_map_json_candidate = None
                     with conn.cursor(name='clap_index_segments') as seg_cur:
                         seg_cur.itersize = 50
                         seg_cur.execute(
@@ -128,20 +127,20 @@ def _load_clap_index_from_db() -> bool:
                                 logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
                                 return False
                             parts.append((part_no, part_data, part_id_map_json, part_dim))
-                            if part_id_map_json and not id_map_json_candidate:
-                                id_map_json_candidate = part_id_map_json
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
+                    id_map_json_candidate = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
                     for _, _, _, part_dim in parts:
                         if part_dim != CLAP_EMBEDDING_DIMENSION:
                             logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
                             return False
 
-                    if id_map_json_candidate is None:
+                    if not id_map_json_candidate:
                         logger.error("No id_map_json found in segmented CLAP index rows.")
                         return False
 
