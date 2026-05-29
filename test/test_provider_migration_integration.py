@@ -1,56 +1,69 @@
-"""Real provider-migration integration test.
+"""Real provider-migration integration test (runs against a live Postgres).
 
-Exercises the actual migration decision pipeline — ``match_tracks`` (the
-tiered path/metadata matcher) followed by ``build_mapping`` (the dry-run ->
-execute mapping prep with collision dedup) — for every combination of
-supported media-server providers, including migrating from a provider to
-itself.
+Unlike a mocked-cursor unit test, this drives the *actual* migration end to
+end against a real PostgreSQL database for every combination of supported
+providers (including migrating a provider to itself):
 
-The execute step proper (``execute_provider_migration``) rewrites item_ids
-inside a Postgres transaction and is covered by the unit suite with a mocked
-cursor; it needs a live database and is therefore out of scope for this
-infra-free integration test (the GitHub workflow provisions no DB and no live
-media servers, exactly like the analysis integration test).
+  1. build a small library exactly as the SOURCE provider's score rows look
+     (provider-specific item_id + file_path), seed it into a real ``score``
+     table plus the embedding / voyager / map-projection / artist tables the
+     migration touches,
+  2. build the same library as the TARGET provider's probe would return it,
+  3. run the real ``tasks.provider_migration_matcher.match_tracks`` to produce
+     the old_id -> new_id mapping (one source-only track stays unmatched so we
+     also exercise orphan deletion),
+  4. persist a ``migration_session`` in ``dry_run_ready`` and run the real
+     ``tasks.provider_migration_tasks.execute_provider_migration`` job (the
+     transactional id rewrite),
+  5. assert the database ended up correct: item_ids rewritten, embeddings
+     followed through the FK cascade, the orphan deleted, voyager / map
+     id_maps rewritten, provider-specific artist tables cleared, ``app_config``
+     updated with the target provider's credentials, and the session marked
+     completed.
 
-The four providers are exactly those the migration probe supports
-(``tasks.provider_probe._SUPPORTED_PROVIDERS``); MPD is intentionally excluded
-because migration probing was never implemented for it. They are modelled with
-realistic id + path conventions taken from how each ``mediaserver_*.py`` and
-``tasks.provider_probe`` actually expose tracks:
+The only thing faked is the provider HTTP layer (we hand the matcher the
+probe-shaped dicts directly) and the embedding bytes — everything that touches
+the database is the production code path.
 
-  * jellyfin  - 32-char hex item id, absolute path under /media/music/...
-  * emby      - integer item id, absolute path under a different mount
-  * lyrion    - numeric track id, file:// URL-encoded path
-  * navidrome - hex item id, relative path (Report Real Path off)
+Migrating a provider to itself is the most demanding case: it models a library
+re-scan that re-issues ids so the new ids overlap the existing ones, which is
+exactly what the two-pass ``_MIG_TMP_PREFIX`` rewrite in
+``_run_migration_transaction`` exists to survive. A mocked cursor can never
+prove that works; a real Postgres can.
 
-Because the same physical library is rendered under each provider's
-conventions, every track must find its counterpart on the target:
-
-  * providers that share a path family (absolute vs relative) match on the
-    normalized ``path`` tier,
-  * providers in different families fall back to the ``tail`` tier (last 3
-    path components),
-  * migrating a provider to itself models a library re-scan that re-issues
-    item ids (a genuine remap).
+Database selection (in priority order):
+  * ``AUDIOMUSE_TEST_DATABASE_URL`` — a throwaway DB the test fully owns. The
+    test DROPs and recreates the ``public`` schema, so this MUST point at a
+    disposable database (the GitHub workflow points it at a postgres service).
+    The generic ``DATABASE_URL`` is intentionally NOT used, to avoid ever
+    dropping a real database.
+  * otherwise, an ephemeral instance via the optional ``pgserver`` package
+    (``pip install pgserver``) for zero-infra local runs.
+  * otherwise the whole module is skipped.
 
 Run locally:
+    pip install pgserver
     pytest test/test_provider_migration_integration.py -s -v --tb=short
 """
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 from urllib.parse import quote
+from unittest.mock import MagicMock
 
 import pytest
 
+try:
+    import psycopg2
+except Exception:  # pragma: no cover - psycopg2 is in test/requirements.txt
+    psycopg2 = None
+
 
 def _load_module(mod_name, *rel_parts):
-    """Load a ``tasks.*`` module straight from its file.
-
-    Mirrors the loader used by the provider-migration unit tests: it keeps the
-    import self-contained and independent of how the rest of the package is
-    wired together in any given environment.
-    """
+    """Load a ``tasks.*`` module straight from its file (same loader the
+    provider-migration unit tests use)."""
     if mod_name in sys.modules:
         return sys.modules[mod_name]
     repo_root = os.path.normpath(
@@ -76,49 +89,55 @@ mig = _load_module(
 
 PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion')
 
-_PATH_FAMILY = {
-    'jellyfin': 'absolute',
-    'emby': 'absolute',
-    'lyrion': 'absolute',
-    'navidrome': 'relative',
-}
-
 _ID_BASE = {
-    'jellyfin': 0x1000,
+    'jellyfin': 0x10000,
     'emby': 5000,
     'navidrome': 0xABCD00,
     'lyrion': 90000,
 }
 
-_TARGET_ROLE_SHIFT = 500000
+_CROSS_TARGET_SHIFT = 1_000_000
+
+_ORPHAN_OFFSET = 900
+
+_EXPECTED_CONFIG_KEYS = {
+    'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
+    'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+    'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
+    'lyrion': ['LYRION_URL'],
+}
+
+_TARGET_CREDS = {
+    'jellyfin': {'url': 'http://jf.test:8096', 'user_id': 'jfuser', 'token': 'jftoken'},
+    'emby': {'url': 'http://emby.test:8096', 'user_id': 'embyuser', 'token': 'embytoken'},
+    'navidrome': {'url': 'http://nav.test:4533', 'user': 'navuser', 'password': 'navpass'},
+    'lyrion': {'url': 'http://lms.test:9000'},
+}
 
 
-CANONICAL_LIBRARY = [
+SHARED_TRACKS = [
     {'artist': 'Daft Punk', 'album': 'Discovery', 'album_artist': 'Daft Punk',
      'title': 'One More Time', 'disc': 1, 'track': 1, 'ext': 'flac'},
-    {'artist': 'Daft Punk', 'album': 'Discovery', 'album_artist': 'Daft Punk',
-     'title': 'Aerodynamic', 'disc': 1, 'track': 2, 'ext': 'flac'},
-    {'artist': 'Green Day', 'album': 'American Idiot (Japanese Edition)',
-     'album_artist': 'Green Day', 'title': 'Are We The Waiting',
-     'disc': 1, 'track': 5, 'ext': 'flac'},
-    {'artist': 'Green Day', 'album': 'American Idiot (Japanese Edition)',
-     'album_artist': 'Green Day', 'title': 'Are We The Waiting',
-     'disc': 2, 'track': 4, 'ext': 'flac'},
-    {'artist': 'Eagles', 'album': 'Ultimate Rock Hits',
-     'album_artist': 'Various Artists', 'title': 'Hotel California',
-     'disc': 1, 'track': 3, 'ext': 'mp3'},
+    {'artist': 'Green Day', 'album': 'American Idiot', 'album_artist': 'Green Day',
+     'title': 'Boulevard of Broken Dreams', 'disc': 1, 'track': 4, 'ext': 'flac'},
+    {'artist': 'Eagles', 'album': 'Ultimate Rock Hits', 'album_artist': 'Various Artists',
+     'title': 'Hotel California', 'disc': 1, 'track': 3, 'ext': 'mp3'},
 ]
+
+ORPHAN_TRACK = {
+    'artist': 'Nobody', 'album': 'Orphan Album', 'album_artist': 'Nobody',
+    'title': 'Orphan Track', 'disc': 1, 'track': 1, 'ext': 'flac',
+}
 
 
 def _relative_path(track):
-    """Library-relative path shared by every provider (folder/album/file)."""
     folder_artist = track['album_artist'] or track['artist']
     filename = f"{track['disc']}-{track['track']:02d} - {track['title']}.{track['ext']}"
     return f"{folder_artist}/{track['album']}/{filename}"
 
 
-def _provider_id(provider, role, index):
-    n = _ID_BASE[provider] + (_TARGET_ROLE_SHIFT if role == 'target' else 0) + index
+def _provider_id(provider, shift, index):
+    n = _ID_BASE[provider] + shift + index
     if provider == 'jellyfin':
         return format(n, '032x')
     if provider == 'navidrome':
@@ -136,125 +155,307 @@ def _provider_path(provider, rel):
     return rel
 
 
-def _render(provider, role):
-    """Render the canonical library as ``provider`` would expose it."""
-    rendered = []
-    for index, track in enumerate(CANONICAL_LIBRARY):
-        rel = _relative_path(track)
-        rendered.append({
-            'index': index,
-            'id': _provider_id(provider, role, index),
-            'path': _provider_path(provider, rel),
-            'title': track['title'],
-            'artist': track['artist'],
-            'album': track['album'],
-            'album_artist': track['album_artist'],
-        })
-    return rendered
+# ---------------------------------------------------------------------------
+# Schema — mirrors the tables tasks.provider_migration_tasks touches, copied
+# from app_helper.init_db so the transaction runs against a real layout.
+# ---------------------------------------------------------------------------
+
+_SCHEMA_DDL = [
+    "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, "
+    "album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, "
+    "mood_vector TEXT, energy REAL, other_features TEXT, year INTEGER, "
+    "rating INTEGER, file_path TEXT)",
+    "CREATE TABLE playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, "
+    "item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))",
+    "CREATE TABLE embedding (item_id TEXT PRIMARY KEY, embedding BYTEA, "
+    "FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)",
+    "CREATE TABLE clap_embedding (item_id TEXT PRIMARY KEY, embedding BYTEA, "
+    "FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)",
+    "CREATE TABLE lyrics_embedding (item_id TEXT PRIMARY KEY, embedding BYTEA, "
+    "axis_vector BYTEA, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)",
+    "CREATE TABLE voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, "
+    "index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
+    "embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE map_projection_data (index_name VARCHAR(255) PRIMARY KEY, "
+    "projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, "
+    "embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE artist_index_data (index_name VARCHAR(255) PRIMARY KEY, "
+    "index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, "
+    "gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE artist_metadata_data (name VARCHAR(255) PRIMARY KEY, "
+    "blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, "
+    "projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, "
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)",
+    "CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+    "CREATE TABLE migration_session (id SERIAL PRIMARY KEY, "
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, "
+    "status TEXT NOT NULL DEFAULT 'in_progress', source_type TEXT NOT NULL, "
+    "target_type TEXT NOT NULL, target_creds TEXT NOT NULL, "
+    "state JSONB NOT NULL DEFAULT '{}')",
+]
 
 
-def _score_rows(rendered):
-    return [
-        {
-            'item_id': r['id'],
-            'file_path': r['path'],
-            'title': r['title'],
-            'author': r['artist'],
-            'album': r['album'],
-            'album_artist': r['album_artist'],
-        }
-        for r in rendered
-    ]
+@pytest.fixture(scope='session')
+def pg_dsn():
+    """A libpq DSN for a throwaway Postgres the test fully owns."""
+    if psycopg2 is None:
+        pytest.skip("psycopg2 not importable")
+
+    dsn = os.environ.get('AUDIOMUSE_TEST_DATABASE_URL')
+    if dsn:
+        try:
+            psycopg2.connect(dsn).close()
+        except Exception as e:
+            pytest.skip(f"AUDIOMUSE_TEST_DATABASE_URL not reachable: {e}")
+        yield dsn
+        return
+
+    try:
+        import pgserver
+    except Exception:
+        pytest.skip(
+            "No test database. Set AUDIOMUSE_TEST_DATABASE_URL to a disposable "
+            "DB, or `pip install pgserver` for an ephemeral local instance."
+        )
+
+    data_dir = tempfile.mkdtemp(prefix='audiomuse_pg_')
+    server = pgserver.get_server(data_dir)
+    try:
+        yield server.get_uri()
+    finally:
+        server.cleanup()
 
 
-def _probe_tracks(rendered):
-    return [
-        {
-            'id': r['id'],
-            'path': r['path'],
-            'title': r['title'],
-            'artist': r['artist'],
-            'album': r['album'],
-            'album_artist': r['album_artist'],
-        }
-        for r in rendered
-    ]
+@pytest.fixture
+def migration_db(pg_dsn):
+    """Reset the schema, wire the execute job at the real DB, yield helpers."""
+    setup = psycopg2.connect(pg_dsn)
+    setup.autocommit = True
+    with setup.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        cur.execute("CREATE SCHEMA public")
+        for ddl in _SCHEMA_DDL:
+            cur.execute(ddl)
+    setup.close()
+
+    opened = []
+
+    def _connect():
+        conn = psycopg2.connect(pg_dsn)
+        opened.append(conn)
+        return conn
+
+    mig._get_dedicated_conn = _connect
+    mig._get_redis = lambda: MagicMock()
+    mig._drain_workers_or_timeout = lambda *a, **k: None
+    mig._post_commit_reload = lambda *a, **k: None
+
+    yield {'dsn': pg_dsn, 'connect': _connect}
+
+    for conn in opened:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _seed_library(conn, source_rendered):
+    """Insert the source library into every table the migration rewrites."""
+    src_ids = [r['id'] for r in source_rendered]
+    with conn.cursor() as cur:
+        for index, r in enumerate(source_rendered):
+            cur.execute(
+                "INSERT INTO score (item_id, title, author, album, album_artist, "
+                "file_path, year) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (r['id'], r['title'], r['artist'], r['album'], r['album_artist'],
+                 r['path'], 1900 + index),
+            )
+            for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
+                cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
+        cur.execute(
+            "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, "
+            "embedding_dimension) VALUES (%s, %s, %s, %s)",
+            ('voyager_main', psycopg2.Binary(b'\x00'),
+             json.dumps({str(i): sid for i, sid in enumerate(src_ids)}), 128),
+        )
+        cur.execute(
+            "INSERT INTO map_projection_data (index_name, projection_data, "
+            "id_map_json, embedding_dimension) VALUES (%s, %s, %s, %s)",
+            ('map_main', psycopg2.Binary(b'\x00'), json.dumps(src_ids), 2),
+        )
+        cur.execute(
+            "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, "
+            "gmm_params_json) VALUES (%s, %s, %s, %s)",
+            ('artist_main', psycopg2.Binary(b'\x00'), '{}', '{}'),
+        )
+        cur.execute(
+            "INSERT INTO artist_metadata_data (name, blob_data) VALUES (%s, %s)",
+            ('artist_main', psycopg2.Binary(b'\x00')),
+        )
+        cur.execute(
+            "INSERT INTO artist_component_projection (index_name, projection_data, "
+            "artist_component_map_json) VALUES (%s, %s, %s)",
+            ('artist_main', psycopg2.Binary(b'\x00'), '{}'),
+        )
+        cur.execute(
+            "INSERT INTO artist_mapping (artist_name, artist_id) VALUES (%s, %s)",
+            ('Daft Punk', 'old-artist-id'),
+        )
+    conn.commit()
+
+
+def _insert_session(conn, source, target, matches, new_meta):
+    state = {
+        'dry_run': {'matches': matches},
+        'manual_matches': {},
+        'manual_unmatches': [],
+        'new_meta': new_meta,
+        'selected_libraries': None,
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO migration_session (source_type, target_type, target_creds, "
+            "state, status) VALUES (%s, %s, %s, %s, 'dry_run_ready') RETURNING id",
+            (source, target, json.dumps(_TARGET_CREDS[target]), json.dumps(state)),
+        )
+        session_id = cur.fetchone()[0]
+    conn.commit()
+    return session_id
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize('target', PROVIDERS)
 @pytest.mark.parametrize('source', PROVIDERS)
-def test_provider_migration_all_combinations(source, target):
-    """Every (source -> target) combination remaps the whole library."""
-    source_rendered = _render(source, 'source')
-    target_rendered = _render(target, 'target')
+def test_real_provider_migration(source, target, migration_db):
+    """Run the real execute transaction for one (source -> target) pair."""
+    self_migration = source == target
+    target_shift = 1 if self_migration else _CROSS_TARGET_SHIFT
 
-    old_rows = _score_rows(source_rendered)
-    new_tracks = _probe_tracks(target_rendered)
-    expected = {
-        s['id']: t['id'] for s, t in zip(source_rendered, target_rendered)
+    source_rendered = []
+    for index, track in enumerate(SHARED_TRACKS):
+        rel = _relative_path(track)
+        source_rendered.append({
+            'id': _provider_id(source, 0, index),
+            'path': _provider_path(source, rel),
+            'title': track['title'], 'artist': track['artist'],
+            'album': track['album'], 'album_artist': track['album_artist'],
+        })
+    orphan_rel = _relative_path(ORPHAN_TRACK)
+    source_rendered.append({
+        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+        'path': _provider_path(source, orphan_rel),
+        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
+        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
+    })
+    target_rendered = []
+    for index, track in enumerate(SHARED_TRACKS):
+        rel = _relative_path(track)
+        target_rendered.append({
+            'id': _provider_id(target, target_shift, index),
+            'path': _provider_path(target, rel),
+            'title': track['title'], 'artist': track['artist'],
+            'album': track['album'], 'album_artist': track['album_artist'],
+        })
+
+    old_rows = [
+        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
+         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        for r in source_rendered
+    ]
+    new_tracks = [
+        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+         'album': r['album'], 'album_artist': r['album_artist']}
+        for r in target_rendered
+    ]
+
+    match_result = matcher.match_tracks(old_rows, new_tracks)
+    matches = match_result['matches']
+
+    orphan_id = source_rendered[-1]['id']
+    expected_map = {
+        source_rendered[i]['id']: target_rendered[i]['id']
+        for i in range(len(SHARED_TRACKS))
+    }
+    assert matches == expected_map, (
+        f"{source}->{target}: matcher mapping wrong\n  expected {expected_map}\n  got {matches}"
+    )
+    assert orphan_id not in matches, "the source-only track must stay unmatched"
+
+    new_meta = {
+        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+                  'album': r['album'], 'album_artist': r['album_artist'],
+                  'year': 2000 + i}
+        for i, r in enumerate(target_rendered)
     }
 
-    print(f"\n=== Migrating {source} -> {target} ===")
-    print(f"  source item_id sample: {old_rows[0]['item_id']}")
-    print(f"  source file_path sample: {old_rows[0]['file_path']}")
-    print(f"  target id sample: {new_tracks[0]['id']}")
-    print(f"  target path sample: {new_tracks[0]['path']}")
+    conn = migration_db['connect']()
+    _seed_library(conn, source_rendered)
+    session_id = _insert_session(conn, source, target, matches, new_meta)
 
-    result = matcher.match_tracks(old_rows, new_tracks)
+    print(f"\n=== Migrating {source} -> {target} (session {session_id}) ===")
+    print(f"  source ids: {[r['id'] for r in source_rendered]}")
+    print(f"  target ids: {[r['id'] for r in target_rendered]}")
+    if self_migration:
+        overlap = set(expected_map.values()) & set(r['id'] for r in source_rendered)
+        print(f"  self-migration id overlap (exercises two-pass rewrite): {sorted(overlap)}")
+        assert overlap, "self-migration should produce overlapping new/old ids"
 
-    n = len(CANONICAL_LIBRARY)
-    assert result['unmatched'] == [], (
-        f"{source}->{target}: {len(result['unmatched'])} track(s) failed to "
-        f"migrate: {[r['item_id'] for r in result['unmatched']]}"
-    )
-    assert result['matches'] == expected, (
-        f"{source}->{target}: mapping mismatch\n"
-        f"  expected: {expected}\n  got:      {result['matches']}"
-    )
-    assert len(result['matches']) == n
+    result = mig.execute_provider_migration(session_id)
+    assert result['ok'] is True
+    assert result['matched'] == len(SHARED_TRACKS)
 
-    tier_counts = result['tier_counts']
-    same_family = _PATH_FAMILY[source] == _PATH_FAMILY[target]
-    if same_family:
-        assert tier_counts['path'] == n, (
-            f"{source}->{target}: same path family should match on the path "
-            f"tier, got {tier_counts}"
+    new_ids = set(expected_map.values())
+    verify = migration_db['connect']()
+    with verify.cursor() as cur:
+        cur.execute("SELECT item_id, file_path, title, album_artist, year FROM score")
+        score = {row[0]: row for row in cur.fetchall()}
+        assert set(score.keys()) == new_ids, (
+            f"{source}->{target}: score item_ids not rewritten\n  want {new_ids}\n  got {set(score.keys())}"
         )
-        assert tier_counts['tail'] == 0
-    else:
-        assert tier_counts['tail'] == n, (
-            f"{source}->{target}: cross path family should match on the tail "
-            f"tier, got {tier_counts}"
-        )
-        assert tier_counts['path'] == 0
-    assert tier_counts['exact_meta'] == 0
-    assert tier_counts['norm_meta'] == 0
+        assert orphan_id not in score, "orphan score row must be deleted"
+        for i, r in enumerate(target_rendered):
+            row = score[r['id']]
+            assert row[1] == r['path'], f"file_path not refreshed for {r['id']}"
+            assert row[2] == r['title']
+            assert row[3] == r['album_artist']
+            assert row[4] == 2000 + i, "year not refreshed from new_meta"
 
-    if source == target:
-        assert all(k != v for k, v in result['matches'].items()), (
-            f"{source}->{source}: a re-scan re-issues item ids, so every "
-            f"row must be remapped to a new id"
-        )
+        for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
+            cur.execute(f"SELECT item_id FROM {table}")
+            ids = {row[0] for row in cur.fetchall()}
+            assert ids == new_ids, (
+                f"{source}->{target}: {table} did not follow the rewrite "
+                f"(orphan cascade-delete + id remap)\n  want {new_ids}\n  got {ids}"
+            )
 
-    state = {
-        'dry_run': {'matches': dict(result['matches'])},
-        'manual_matches': {},
-        'manual_unmatches': [],
-    }
-    deduped, dropped = mig.build_mapping(state)
-    assert deduped == result['matches'], (
-        f"{source}->{target}: build_mapping changed the mapping unexpectedly"
-    )
-    assert dropped == [], (
-        f"{source}->{target}: build_mapping reported collisions: {dropped}"
-    )
-    print(f"  ok: {n} tracks remapped, no orphans, no collisions")
+        cur.execute("SELECT id_map_json FROM voyager_index_data WHERE index_name = 'voyager_main'")
+        voyager_map = json.loads(cur.fetchone()[0])
+        assert set(voyager_map.values()) == new_ids
+        assert orphan_id not in voyager_map.values()
 
+        cur.execute("SELECT id_map_json FROM map_projection_data WHERE index_name = 'map_main'")
+        proj_map = json.loads(cur.fetchone()[0])
+        assert len(proj_map) == len(SHARED_TRACKS) + 1, "list length must be preserved"
+        assert proj_map[-1] is None, "orphan slot in the projection list must become None"
+        assert set(v for v in proj_map if v is not None) == new_ids
 
-def test_all_provider_combinations_are_covered():
-    """Guard: the parametrization spans the full provider x provider matrix,
-    including each provider migrated to itself."""
-    combos = {(s, t) for s in PROVIDERS for t in PROVIDERS}
-    assert len(combos) == len(PROVIDERS) ** 2
-    assert all((p, p) in combos for p in PROVIDERS)
+        for table in ('artist_index_data', 'artist_metadata_data',
+                      'artist_component_projection', 'artist_mapping'):
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            assert cur.fetchone()[0] == 0, f"{table} should be cleared on migration"
+
+        cur.execute("SELECT key, value FROM app_config")
+        config_rows = dict(cur.fetchall())
+        assert config_rows.get('MEDIASERVER_TYPE') == target
+        for key in _EXPECTED_CONFIG_KEYS[target]:
+            assert key in config_rows, f"{target}: app_config missing {key}"
+        assert 'MUSIC_LIBRARIES' not in config_rows, "null selection should clear MUSIC_LIBRARIES"
+
+        cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
+        assert cur.fetchone()[0] == 'completed'
+    verify.close()
+    print(f"  ok: {len(new_ids)} tracks rewritten, orphan deleted, app_config -> {target}")
