@@ -776,31 +776,6 @@ def get_child_tasks_from_db(parent_task_id):
     # DictCursor returns a list of dictionary-like objects, convert to plain dicts
     return [dict(row) for row in tasks]
 
-def track_exists(item_id):
-    """
-    Checks if a track exists in the database AND has been analyzed for key features.
-    in both the 'score' and 'embedding' tables.
-    Returns True if:
-    1. The track exists in 'score' table and 'other_features', 'energy', 'mood_vector', and 'tempo' are populated.
-    2. The track exists in the 'embedding' table.
-    Returns False otherwise, indicating a re-analysis is needed.
-    """
-    conn = get_db() # This now calls the function within this file
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.item_id
-        FROM score s
-        JOIN embedding e ON s.item_id = e.item_id
-        WHERE s.item_id = %s
-          AND s.other_features IS NOT NULL AND s.other_features != ''
-          AND s.energy IS NOT NULL
-          AND s.mood_vector IS NOT NULL AND s.mood_vector != ''
-          AND s.tempo IS NOT NULL
-    """, (item_id,))
-    row = cur.fetchone()
-    cur.close()
-    return row is not None
-
 def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
     """Saves track analysis and embedding in a single transaction."""
     
@@ -1022,55 +997,6 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
     finally:
         cur.close()
 
-
-def get_lyrics_embedding(item_id):
-    """Load the lyrics embedding and axis vector for a track.
-
-    Returns:
-        tuple(np.ndarray or None, np.ndarray or None)
-    """
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT embedding, axis_vector FROM lyrics_embedding WHERE item_id = %s", (item_id,))
-        row = cur.fetchone()
-        if not row:
-            return None, None
-        embedding_blob, axis_blob = row
-        embedding = np.frombuffer(embedding_blob, dtype=np.float32) if embedding_blob is not None else None
-        axis_vec = np.frombuffer(axis_blob, dtype=np.float32) if axis_blob is not None else None
-        return embedding, axis_vec
-    except Exception as e:
-        logger.error(f"Error loading lyrics embedding for {item_id}: {e}")
-        return None, None
-    finally:
-        cur.close()
-
-
-def get_all_tracks():
-    """Fetches all tracks and their embeddings from the database."""
-    conn = get_db() # This now calls the function within this file
-    cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("""
-        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
-        FROM score s
-        LEFT JOIN embedding e ON s.item_id = e.item_id
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    
-    # Convert DictRow objects to regular dicts to allow adding new keys.
-    processed_rows = []
-    for row in rows:
-        row_dict = dict(row)
-        if row_dict.get('embedding'):
-            # Use np.frombuffer to convert the binary data back to a numpy array
-            row_dict['embedding_vector'] = np.frombuffer(row_dict['embedding'], dtype=np.float32)
-        else:
-            row_dict['embedding_vector'] = np.array([]) # Use a consistent name
-        processed_rows.append(row_dict)
-        
-    return processed_rows
 
 def get_tracks_by_ids(item_ids_list):
     """Fetches full track data (including embeddings) for a specific list of item_ids."""

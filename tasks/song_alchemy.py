@@ -153,18 +153,6 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
     return weighted_centroid
 
 
-def _compute_centroid_from_ids(ids: List[str]) -> np.ndarray:
-    """Fetch vectors by id and compute their centroid (mean)."""
-    vectors = []
-    for item_id in ids:
-        vec = get_vector_by_id(item_id)
-        if vec is not None:
-            vectors.append(np.array(vec, dtype=float))
-    if not vectors:
-        return None
-    return np.mean(vectors, axis=0)
-
-
 def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
     """Simple PCA via SVD to project a list of vectors to 2D.
     Returns a list of (x, y) tuples in the same order as input vectors.

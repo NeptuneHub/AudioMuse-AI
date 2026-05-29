@@ -676,42 +676,6 @@ def load_top_queries_from_db():
         return False
 
 
-def save_top_queries_to_db(queries: List[str], scores: List[float]):
-    """
-    Save top queries to database, replacing old ones atomically.
-    This ensures users get old queries until new ones are ready.
-    """
-    from app_helper import get_db
-    
-    # Safety check: don't delete existing queries if new list is empty
-    if not queries:
-        logger.warning("Refusing to save empty query list to database")
-        return False
-    
-    conn = None
-    try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            # Delete old queries
-            cur.execute("DELETE FROM text_search_queries")
-            
-            # Insert new queries
-            for rank, (query, score) in enumerate(zip(queries, scores), start=1):
-                cur.execute("""
-                    INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                    VALUES (%s, %s, %s, NOW())
-                """, (query, float(score), rank))
-            
-            conn.commit()
-            logger.info(f"Saved {len(queries)} top queries to database")
-            return True
-    except Exception as e:
-        logger.error(f"Failed to save top queries to database: {e}")
-        if conn:
-            conn.rollback()
-        return False
-
-
 def get_cached_top_queries() -> List[str]:
     """
     Get precomputed top queries from cache.

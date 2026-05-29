@@ -206,36 +206,6 @@ def _try_alternative_lms_calls_for_path(album):
         
     return None
 
-def _album_matches_target_paths(album, target_paths):
-    """
-    Check if an album's path matches any of the target paths.
-    Uses multiple LMS API methods to find path information.
-    """
-    if target_paths is None:
-        return True  # No filtering
-    
-    album_title = album.get('album', 'Unknown')
-    logger.info(f"DEBUG: Checking album '{album_title}' - basic album data: {album}")
-    
-    # Try to get path using alternative LMS calls
-    album_path = _try_alternative_lms_calls_for_path(album)
-    
-    if not album_path:
-        logger.info(f"DEBUG: No path found for album '{album_title}' using any method")
-        return False
-    
-    album_path_lower = album_path.lower()
-    logger.info(f"DEBUG: Checking album path '{album_path}' against targets: {list(target_paths)}")
-    
-    # Check if the album path contains any of the target paths
-    for target_path in target_paths:
-        if target_path in album_path_lower:
-            logger.info(f"DEBUG: MATCH found - '{target_path}' in '{album_path_lower}'")
-            return True
-    
-    logger.info(f"DEBUG: No match for album path '{album_path_lower}'")
-    return False
-
 def _get_target_music_folder_ids():
     """
     Parses config for music folder names and returns their IDs for filtering using a robust,
@@ -609,95 +579,6 @@ def _get_all_albums_simple(limit):
 
     logger.info(f"_get_all_albums_simple: fetched {len(albums_accum)} albums across {pages_fetched} pages (requested limit: {limit})")
     return albums_accum
-
-def _try_folder_id_based_filtering(target_paths, limit):
-    """
-    Try to get the actual folder ID and use it for filtering.
-    This bypasses the path detection issues by working directly with folder IDs.
-    """
-    if not target_paths:
-        return None
-        
-    logger.info(f"DEBUG: Trying folder-based filtering for paths: {list(target_paths)}")
-    
-    # Try to get music folders with retry and better error handling
-    music_folders = None
-    for attempt in range(3):
-        try:
-            logger.info(f"DEBUG: Attempt {attempt + 1}/3 to get musicfolders")
-            response = _jsonrpc_request("musicfolders", [0, 999])
-            if response:
-                music_folders = response
-                break
-        except Exception as e:
-            logger.info(f"DEBUG: Musicfolders attempt {attempt + 1} failed: {e}")
-            if attempt < 2:
-                import time
-                time.sleep(1)
-    
-    if not music_folders:
-        logger.info("DEBUG: Could not get music folders, cannot use folder-based filtering")
-        return None
-    
-    logger.info(f"DEBUG: Successfully got music folders: {music_folders}")
-    
-    # Extract folder list
-    all_folders = []
-    if isinstance(music_folders, dict) and "folder_loop" in music_folders:
-        all_folders = music_folders["folder_loop"]
-    elif isinstance(music_folders, list):
-        all_folders = music_folders
-    
-    if not all_folders:
-        logger.info("DEBUG: No folders found in musicfolders response")
-        return None
-    
-    # Find matching folder IDs - look for folders that contain our target path
-    matching_folder_ids = []
-    for folder in all_folders:
-        if isinstance(folder, dict):
-            folder_name = folder.get('name', '')
-            folder_path = folder.get('path', '') or folder.get('url', '')
-            folder_id = folder.get('id', '') or folder.get('folder_id', '')
-            
-            logger.info(f"DEBUG: Checking folder - ID: {folder_id}, Name: {folder_name}, Path: {folder_path}")
-            
-            # Check if any target path matches this folder's path
-            for target_path in target_paths:
-                if (target_path.lower() in folder_path.lower() or 
-                    target_path.lower() in folder_name.lower() or
-                    folder_path.lower() in target_path.lower()):
-                    logger.info(f"DEBUG: FOLDER MATCH found - folder '{folder_name}' (path: {folder_path}) matches target '{target_path}'")
-                    matching_folder_ids.append(folder_id)
-                    break
-    
-    if not matching_folder_ids:
-        logger.info(f"DEBUG: No matching folders found for target paths: {list(target_paths)}")
-        return None
-    
-    logger.info(f"DEBUG: Using folder IDs for filtering: {matching_folder_ids}")
-    
-    # Get albums from matching folders
-    albums_found = []
-    for folder_id in matching_folder_ids:
-        try:
-            albums_response = _jsonrpc_request("albums", [0, limit or 100, f"folder_id:{folder_id}", "sort:new"])
-            logger.info(f"DEBUG: Albums response for folder {folder_id}: found {len(albums_response.get('albums_loop', []))} albums" if albums_response else "No response")
-            
-            if albums_response and "albums_loop" in albums_response:
-                folder_albums = albums_response["albums_loop"]
-                mapped = [{'Id': a.get('id'), 'Name': a.get('album')} for a in folder_albums]
-                albums_found.extend(mapped)
-                
-                if limit and len(albums_found) >= limit:
-                    albums_found = albums_found[:limit]
-                    break
-                    
-        except Exception as e:
-            logger.info(f"DEBUG: Failed to get albums for folder {folder_id}: {e}")
-            continue
-    
-    return albums_found if albums_found else None
 
 def _album_has_tracks_in_target_path(album_id, target_paths):
     """

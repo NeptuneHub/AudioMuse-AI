@@ -131,45 +131,6 @@ def _create_path_from_ids(path_ids):
     return ordered_path_details
 
 
-def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
-    """
-    Calculates the average distance by creating a chain of neighbors and measuring the
-    distance between each step in the chain.
-    """
-    logger.info(f"Calculating chained average jump distance ({PATH_DISTANCE_METRIC}) for neighbors of {start_item_id} and {end_item_id}.")
-    
-    distances = []
-    
-    for item_id in [start_item_id, end_item_id]:
-        try:
-            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size, radius_similarity=None)
-            if not neighbors:
-                continue
-
-            source_vector = get_vector_by_id(item_id)
-            if source_vector is None:
-                continue
-
-            neighbor_vectors = [get_vector_by_id(n['item_id']) for n in neighbors]
-            valid_neighbor_vectors = [v for v in neighbor_vectors if v is not None]
-            vector_chain = [source_vector] + valid_neighbor_vectors
-
-            for i in range(len(vector_chain) - 1):
-                dist = get_distance(vector_chain[i], vector_chain[i+1])
-                distances.append(dist)
-
-        except Exception as e:
-            logger.warning(f"Could not process neighbors for song {item_id} during chained jump calculation: {e}")
-
-    if not distances:
-        logger.error("No valid chained distances could be calculated from start/end songs.")
-        return 0.1 # Return a sensible fallback default
-
-    avg_dist = np.mean(distances)
-    logger.info(f"Calculated chained average jump distance: {avg_dist:.4f} from {len(distances)} steps.")
-    return avg_dist
-
-
 def _normalize_signature(artist, title):
     """Creates a standardized, case-insensitive signature for a song."""
     artist_norm = (artist or "").strip().lower()

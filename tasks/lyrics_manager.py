@@ -75,10 +75,6 @@ def _axis_columns_from_axes() -> List[tuple]:
     return list(axis_columns())
 
 
-def _axis_dimension() -> int:
-    return len(_axis_columns_from_axes())
-
-
 # ---------------------------------------------------------------------------
 # Voyager index: build and persist
 # ---------------------------------------------------------------------------
@@ -520,10 +516,6 @@ def refresh_lyrics_cache() -> bool:
         f"axes {old_axis_count}->{new_axis_count}"
     )
     return result
-
-
-def is_lyrics_cache_loaded() -> bool:
-    return _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_AXIS_CACHE['loaded']
 
 
 # ---------------------------------------------------------------------------
