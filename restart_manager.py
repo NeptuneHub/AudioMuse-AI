@@ -64,16 +64,6 @@ def _run_supervisorctl(arguments):
         logger.exception('Failed to run supervisorctl command: %s', cmd)
         return False
 
-def stop_supervised_services():
-    """Stop supervised Flask and worker processes for restore."""
-    logger.info('Stopping supervised services: %s', ALL_SUPERVISOR_SERVICES)
-    return _run_supervisorctl(['stop'] + ALL_SUPERVISOR_SERVICES)
-
-def start_supervised_services():
-    """Start supervised Flask and worker processes after restore."""
-    logger.info('Starting supervised services: %s', ALL_SUPERVISOR_SERVICES)
-    return _run_supervisorctl(['start'] + ALL_SUPERVISOR_SERVICES)
-
 def stop_local_flask_service():
     """Stop the supervised Flask service locally."""
     logger.info('Stopping supervised Flask service')

@@ -1,27 +1,21 @@
 # tasks/cleaning.py
 
-import os
 import time
 import logging
 import uuid
 import traceback
-import json
 from collections import defaultdict
 
 # RQ import
 from rq import get_current_job
-from rq.exceptions import NoSuchJobError
 
 # Import configuration
-from config import (
-    REDIS_URL, DATABASE_URL, MAX_QUEUED_ANALYSIS_JOBS, CLEANING_SAFETY_LIMIT
-)
+from config import CLEANING_SAFETY_LIMIT
 
 # Import other project modules
 from .mediaserver import get_recent_albums, get_tracks_from_album
 
 from psycopg2 import OperationalError
-from redis.exceptions import TimeoutError as RedisTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +26,7 @@ def identify_and_clean_orphaned_albums_task():
     This combines identification and deletion into a single automated process.
     """
     from app import app
-    from app_helper import (redis_conn, get_db, save_task_status, get_task_info_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import redis_conn, get_db, save_task_status, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())

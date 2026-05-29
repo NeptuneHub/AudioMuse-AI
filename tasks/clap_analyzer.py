@@ -16,7 +16,6 @@ ONNX Runtime provides:
 """
 
 import os
-import sys
 import logging
 import numpy as np
 from typing import Tuple, Optional
@@ -379,11 +378,6 @@ def unload_clap_model():
 def is_clap_model_loaded():
     """Check if any CLAP model is currently loaded in memory."""
     return _audio_session is not None or _text_session is not None
-
-
-def is_clap_audio_loaded():
-    """Check if CLAP audio model is currently loaded."""
-    return _audio_session is not None
 
 
 def is_clap_text_loaded():

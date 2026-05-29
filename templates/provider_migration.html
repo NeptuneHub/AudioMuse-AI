@@ -1396,6 +1396,10 @@
                     html += 'The file path is the best way to tell them apart (e.g. multi-disc albums often have ';
                     html += '<code>01-XX</code> vs <code>02-XX</code> prefixes).';
                     html += '</div>';
+                    const collTotal = result.collision_details_total || details.length;
+                    if (collTotal > details.length) {
+                        html += '<div style="margin:0 0 0.5rem; font-size:0.85em; color:#a04000;">Showing the first ' + details.length + ' of ' + collTotal + ' duplicate pairs.</div>';
+                    }
                     html += '<table style="width:100%; margin-top:0.5rem; border-collapse:collapse; font-size:0.85em; background:#fff4e5; color:#3a2a10;">';
                     html += '<thead><tr style="background:#fbe8c9; color:#3a2a10; border-bottom:1px solid #e09f3e;">';
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be deleted</th>';

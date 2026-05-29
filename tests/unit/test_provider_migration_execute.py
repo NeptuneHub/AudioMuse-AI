@@ -13,7 +13,7 @@ import os
 import sys
 import importlib.util
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 def _load_tasks_mod():
@@ -170,10 +170,22 @@ def _install_fake_psycopg2(mig, session_row, voyager_rows=None, mproj_rows=None,
             mock_cur.fetchone.return_value = (lyrics_exists,)
         elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
             mock_cur.fetchone.return_value = session_row
-        elif 'FROM VOYAGER_INDEX_DATA' in up and 'SELECT' in up:
-            mock_cur.fetchall.return_value = voyager_rows or []
-        elif 'FROM MAP_PROJECTION_DATA' in up and 'SELECT' in up:
-            mock_cur.fetchall.return_value = mproj_rows or []
+        elif up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'):
+            mock_cur.fetchall.return_value = [(r[0],) for r in (voyager_rows or [])]
+        elif up.startswith('SELECT ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
+            name = params[0] if params else None
+            match = next((r for r in (voyager_rows or []) if r[0] == name), None)
+            mock_cur.fetchone.return_value = (match[1],) if match else None
+        elif up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
+            mock_cur.fetchall.return_value = []
+        elif up.startswith('SELECT DISTINCT INDEX_NAME FROM MAP_PROJECTION_DATA'):
+            mock_cur.fetchall.return_value = [(r[0],) for r in (mproj_rows or [])]
+        elif up.startswith('SELECT ID_MAP_JSON FROM MAP_PROJECTION_DATA'):
+            name = params[0] if params else None
+            match = next((r for r in (mproj_rows or []) if r[0] == name), None)
+            mock_cur.fetchone.return_value = (match[1],) if match else None
+        elif up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM MAP_PROJECTION_DATA'):
+            mock_cur.fetchall.return_value = []
         elif 'SELECT DISTINCT' in up and 'SCORE' in up:
             mock_cur.fetchall.return_value = [(a,) for a in (authors or [])]
 

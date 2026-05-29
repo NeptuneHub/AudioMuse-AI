@@ -79,7 +79,6 @@ from tasks.mediaserver_emby import (
     get_lyrics as emby_get_lyrics,
     delete_playlist as emby_delete_playlist,
     get_recent_albums as emby_get_recent_albums,
-    get_recent_music_items as emby_get_recent_music_items,
     get_tracks_from_album as emby_get_tracks_from_album,
     search_albums as emby_search_albums,
     test_connection as emby_test_connection,
@@ -149,25 +148,6 @@ def get_recent_albums(limit):
     if config.MEDIASERVER_TYPE == 'mpd': return mpd_get_recent_albums(limit)
     if config.MEDIASERVER_TYPE == 'emby': return emby_get_recent_albums(limit)
     return []
-
-def get_recent_music_items(limit):
-    """
-    Fetches both recent albums AND standalone tracks for comprehensive music discovery.
-    This ensures no music is missed during analysis, even with incomplete metadata.
-    Now implemented for Jellyfin, Navidrome, and Lyrion - all provide comprehensive discovery.
-    """
-    if config.MEDIASERVER_TYPE == 'jellyfin': 
-        return jellyfin_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'navidrome': 
-        return navidrome_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'lyrion': 
-        return lyrion_get_recent_music_items(limit)
-    elif config.MEDIASERVER_TYPE == 'emby': 
-        return emby_get_recent_music_items(limit)
-    else:
-        # Fallback to regular album fetching for servers without comprehensive discovery
-        logger.info(f"get_recent_music_items not yet implemented for {config.MEDIASERVER_TYPE}, falling back to get_recent_albums")
-        return get_recent_albums(limit)
 
 def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
     """Fetches tracks for an album, optionally using explicit creds."""

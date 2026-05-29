@@ -172,44 +172,6 @@ def cleanup_onnx_session(session, name: str = "session") -> None:
         logger.warning(f"Error cleaning up ONNX session {name}: {e}")
 
 
-def cleanup_tensors(*tensor_vars) -> None:
-    """
-    Explicit tensor cleanup with immediate garbage collection.
-    
-    Deletes multiple tensor variables and forces garbage collection.
-    This is critical for large tensors like mel-spectrograms and embeddings.
-    
-    Args:
-        *tensor_vars: Variable names to delete from caller's scope
-        
-    Example:
-        >>> mel_list = [...]
-        >>> mel_batch = np.array(...)
-        >>> cleanup_tensors('mel_list', 'mel_batch')  # Cleans caller's variables
-    """
-    import inspect
-    
-    # Get caller's frame to delete variables in their scope
-    frame = inspect.currentframe().f_back
-    
-    for var_name in tensor_vars:
-        if var_name in frame.f_locals:
-            try:
-                del frame.f_locals[var_name]
-                logger.debug(f"Deleted tensor variable: {var_name}")
-            except Exception as e:
-                logger.warning(f"Failed to delete tensor {var_name}: {e}")
-        elif var_name in frame.f_globals:
-            try:
-                del frame.f_globals[var_name]
-                logger.debug(f"Deleted global tensor variable: {var_name}")
-            except Exception as e:
-                logger.warning(f"Failed to delete global tensor {var_name}: {e}")
-    
-    # Force garbage collection after deletions
-    gc.collect()
-
-
 def reset_onnx_memory_pool() -> bool:
     """
     Reset ONNX Runtime memory pool to clear accumulated allocations.

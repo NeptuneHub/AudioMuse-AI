@@ -13,10 +13,8 @@ Public entry points:
     build_mcp_system_prompt(...)      -- canonical MCP tool-decision system prompt
     build_ollama_tool_calling_prompt  -- Ollama-specific JSON-output framing
     build_tool_calls_schema(tools)    -- shared JSON Schema for tool_calls (used by every transport)
-    build_artist_hits_prompt(...)     -- artist-hits MCP tool prompt
     build_ai_brainstorm_prompt(...)   -- ai_brainstorm MCP tool prompt
-    build_vibe_match_prompt(...)      -- vibe_match MCP tool prompt
-    get_dynamic_genres / get_dynamic_moods -- helpers, exposed for tests
+    get_dynamic_genres                -- helper, exposed for tests
 """
 from typing import Dict, List, Optional
 
@@ -45,7 +43,6 @@ _FALLBACK_GENRES = (
     "rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, "
     "hard rock, heavy metal, hip-hop, funk, country, soul"
 )
-_FALLBACK_MOODS = "danceable, aggressive, happy, party, relaxed, sad"
 
 
 def get_dynamic_genres(library_context: Optional[Dict]) -> str:
@@ -53,13 +50,6 @@ def get_dynamic_genres(library_context: Optional[Dict]) -> str:
     if library_context and library_context.get('top_genres'):
         return ', '.join(library_context['top_genres'][:10])
     return _FALLBACK_GENRES
-
-
-def get_dynamic_moods(library_context: Optional[Dict]) -> str:
-    """Return mood list from library context, falling back to defaults."""
-    if library_context and library_context.get('top_moods'):
-        return ', '.join(library_context['top_moods'][:10])
-    return _FALLBACK_MOODS
 
 
 VOICE_VOCAB = ["female vocalists", "female vocalist", "male vocalists"]
@@ -236,22 +226,6 @@ Request: "{user_message}"
 JSON:"""
 
 
-def build_intent_classifier_schema() -> Dict:
-    """JSON Schema for the Stage-1 classifier output."""
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "primaries": {
-                "type": "array",
-                "items": {"type": "string", "enum": list(PRIMARY_INTENTS)},
-            },
-            "needs_filter": {"type": "boolean"},
-        },
-        "required": ["primaries", "needs_filter"],
-    }
-
-
 def build_tool_calls_schema(tools: List[Dict]) -> Dict:
     """JSON Schema for the {tool_calls:[...]} envelope, shared by every transport.
 
@@ -284,23 +258,7 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
     }
 
 
-# --- Free-text MCP prompts (artist hits, brainstorm, vibe match) --------------
-
-def build_artist_hits_prompt(artist: str) -> str:
-    return f"""You are a music expert. List the most famous and popular songs by the artist "{artist}".
-
-CRITICAL REQUIREMENTS:
-1. Return ONLY a JSON array of song titles
-2. Include 15-25 of their most famous songs
-3. Use exact song titles as they appear on albums
-4. Format: ["Song Title 1", "Song Title 2", ...]
-5. NO explanations, NO numbering, ONLY the JSON array
-
-Example format:
-["Song A", "Song B", "Song C"]
-
-List the famous songs by {artist} now:"""
-
+# --- Free-text MCP prompts (brainstorm) ---------------------------------------
 
 def build_ai_brainstorm_prompt(user_request: str) -> str:
     return f"""You are a music expert with extensive knowledge of songs, artists, and music history. 
@@ -332,27 +290,3 @@ Example format:
 ]
 
 Suggest songs for "{user_request}" now:"""
-
-
-def build_vibe_match_prompt(vibe_description: str) -> str:
-    return f"""You are a music database expert. The user wants songs matching this vibe: "{vibe_description}"
-
-Analyze this vibe and return a JSON object with search criteria for a music database.
-
-Database schema:
-- mood_vector: Contains genres like 'rock', 'pop', 'jazz', etc.
-- other_features: Contains moods like 'danceable', 'party', 'relaxed', etc.
-- energy: 0.01-0.15 (higher = more energetic)
-- tempo: 40-200 BPM
-
-Return ONLY this JSON structure:
-{{
-    "genres": ["genre1", "genre2"],
-    "moods": ["mood1", "mood2"],
-    "energy_min": 0.05,
-    "energy_max": 0.12,
-    "tempo_min": 100,
-    "tempo_max": 140
-}}
-
-Return the JSON now:"""

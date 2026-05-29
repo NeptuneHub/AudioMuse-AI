@@ -44,7 +44,6 @@ Unified album dict shape returned by ``search_albums``::
       'warnings':     list[str],
     }
 """
-from tasks.mediaserver_helper import detect_path_format as _detect_path_format
 from tasks import mediaserver
 
 

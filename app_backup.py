@@ -5,7 +5,7 @@ import time
 import logging
 import tempfile
 from datetime import datetime
-from flask import Blueprint, render_template, jsonify, request, send_file, after_this_request
+from flask import Blueprint, render_template, jsonify, request, send_file
 from redis import Redis
 from redis.exceptions import RedisError
 import config

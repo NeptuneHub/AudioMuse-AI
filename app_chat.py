@@ -333,7 +333,6 @@ def _run_chat_pipeline(data, log_messages):
         data_for_log['openai_api_key'] = 'API-KEY'
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
     
-    from app_helper import get_db
     from tasks.ai.tools import get_mcp_tools
     from tasks.ai.planner import plan_and_execute_once
 

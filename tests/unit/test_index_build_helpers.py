@@ -17,7 +17,9 @@ tasks/__init__.py (which imports librosa).
 """
 
 import importlib.util
+import json
 import os
+import re
 import sys
 import types
 
@@ -28,15 +30,16 @@ from unittest.mock import MagicMock, patch
 
 def _load_helpers():
     """Load tasks.index_build_helpers without going through tasks/__init__.py."""
-    if 'tasks' not in sys.modules:
-        stub = types.ModuleType('tasks')
-        stub.__path__ = []
-        sys.modules['tasks'] = stub
-
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
-    mod_path = os.path.join(repo_root, 'tasks', 'index_build_helpers.py')
+    tasks_dir = os.path.join(repo_root, 'tasks')
+    if 'tasks' not in sys.modules:
+        stub = types.ModuleType('tasks')
+        stub.__path__ = [tasks_dir]
+        sys.modules['tasks'] = stub
+
+    mod_path = os.path.join(tasks_dir, 'index_build_helpers.py')
     mod_name = 'tasks.index_build_helpers'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
@@ -105,6 +108,139 @@ class TestSplitBytes:
 
     def test_part_larger_than_input(self):
         assert _helpers._split_bytes(b"abc", 100) == [b"abc"]
+
+
+class TestSplitText:
+    def test_empty_returns_single_empty(self):
+        assert _helpers._split_text("", 16) == [""]
+
+    def test_small_returns_single(self):
+        assert _helpers._split_text("hello", 64) == ["hello"]
+
+    def test_large_splits_and_roundtrips(self):
+        s = "x" * 1000
+        parts = _helpers._split_text(s, 100)
+        assert len(parts) > 1
+        assert "".join(parts) == s
+
+    def test_each_fragment_within_byte_bound(self):
+        s = "é" * 1000
+        max_bytes = 100
+        parts = _helpers._split_text(s, max_bytes)
+        assert "".join(parts) == s
+        for p in parts:
+            assert len(p.encode("utf-8")) <= max_bytes
+
+
+class TestReassembleSegmentedIdMap:
+    def test_single_fragment_legacy_layout(self):
+        frags = [(1, '{"0": "a", "1": "b"}'), (2, ""), (3, "")]
+        assert _helpers.reassemble_segmented_id_map(frags) == '{"0": "a", "1": "b"}'
+
+    def test_multi_fragment_concatenates_in_part_order(self):
+        full = '{"0": "aaaa", "1": "bbbb"}'
+        frags = [(2, full[10:]), (1, full[:10])]
+        assert _helpers.reassemble_segmented_id_map(frags) == full
+
+    def test_handles_none_fragments(self):
+        frags = [(1, '{"0": "a"}'), (2, None)]
+        assert _helpers.reassemble_segmented_id_map(frags) == '{"0": "a"}'
+
+
+class TestRewriteSegmentedIdMap:
+    """rewrite_segmented_id_map reassembles, rewrites, then re-splits in place."""
+
+    class _FakeCursor:
+        """Minimal psycopg2-cursor stand-in backed by an ``{index_name: json}`` dict."""
+
+        def __init__(self, store):
+            self.store = store
+            self._result = []
+
+        def execute(self, sql, params=None):
+            s = " ".join(sql.split())
+            if s.startswith("SELECT id_map_json FROM") and "WHERE index_name = %s" in s:
+                key = params[0]
+                self._result = [(self.store[key],)] if key in self.store else []
+            elif s.startswith("SELECT index_name, id_map_json FROM") and "LIKE" in s:
+                self._result = [
+                    (k, v) for k, v in self.store.items()
+                    if re.match(r".*_\d+_\d+$", k)
+                ]
+            elif s.startswith("UPDATE") and "SET id_map_json = %s WHERE index_name = %s" in s:
+                self.store[params[1]] = params[0]
+                self._result = []
+            else:
+                raise AssertionError(f"unexpected SQL: {s}")
+
+        def fetchone(self):
+            return self._result[0] if self._result else None
+
+        def fetchall(self):
+            return list(self._result)
+
+    @staticmethod
+    def _dict_rewriter(mapping):
+        def _fn(js):
+            d = json.loads(js)
+            return json.dumps({k: mapping[v] for k, v in d.items() if v in mapping})
+        return _fn
+
+    def test_single_row_rewrite(self):
+        store = {"voyager_main": json.dumps({"0": "a", "1": "b"})}
+        cur = self._FakeCursor(store)
+        changed = _helpers.rewrite_segmented_id_map(
+            cur, "voyager_index_data", "voyager_main",
+            self._dict_rewriter({"a": "A", "b": "B"}), max_part_size_mb=50,
+        )
+        assert changed is True
+        assert json.loads(store["voyager_main"]) == {"0": "A", "1": "B"}
+
+    def test_segmented_reassemble_rewrite_resplit(self):
+        full = json.dumps({str(i): c for i, c in enumerate("abcdef")})
+        step = max(1, -(-len(full) // 3))
+        frags = [full[i:i + step] for i in range(0, len(full), step)]
+        while len(frags) < 3:
+            frags.append("")
+        store = {f"voyager_main_{k}_3": frags[k - 1] for k in range(1, 4)}
+        assert "".join(store[f"voyager_main_{k}_3"] for k in range(1, 4)) == full
+        assert sum(1 for f in frags if f) >= 2, "fixture must actually be segmented"
+
+        cur = self._FakeCursor(store)
+        mapping = {c: c.upper() for c in "abcdef"}
+        changed = _helpers.rewrite_segmented_id_map(
+            cur, "voyager_index_data", "voyager_main",
+            self._dict_rewriter(mapping), max_part_size_mb=50,
+        )
+        assert changed is True
+
+        keys = [k for k in store if re.match(r".*_\d+_\d+$", k)]
+        assert len(keys) == 3, "row count must be preserved"
+        reassembled = _helpers.reassemble_segmented_id_map(
+            (int(k.split("_")[-2]), store[k]) for k in keys
+        )
+        assert json.loads(reassembled) == {str(i): c.upper() for i, c in enumerate("abcdef")}
+
+    def test_no_op_when_rewrite_returns_unchanged(self):
+        full = json.dumps({"0": "a"})
+        store = {"voyager_main": full}
+        cur = self._FakeCursor(store)
+        changed = _helpers.rewrite_segmented_id_map(
+            cur, "voyager_index_data", "voyager_main",
+            lambda js: js, max_part_size_mb=50,
+        )
+        assert changed is False
+        assert store["voyager_main"] == full
+
+    def test_raises_when_rewrite_needs_more_rows_than_exist(self):
+        store = {"voyager_main_1_1": json.dumps({"0": "a", "1": "b"})}
+        cur = self._FakeCursor(store)
+        with pytest.raises(ValueError, match="rebuild"):
+            _helpers.rewrite_segmented_id_map(
+                cur, "voyager_index_data", "voyager_main",
+                self._dict_rewriter({"a": "AAAA", "b": "BBBB"}),
+                max_part_size_mb=0,
+            )
 
 
 class TestResolveVoyagerSpace:
@@ -292,6 +428,54 @@ class TestStoreVoyagerIndexSegmented:
                 id_map={},
                 embedding_dimension=768,
             )
+
+    def test_large_id_map_is_split_across_parts_and_reassembles(self):
+        captured = []
+        mock_conn, _ = self._mock_conn(captured)
+        id_map = {i: "v" * 40 for i in range(40000)}
+        id_map_json = json.dumps(id_map)
+        max_part_size = 1 * 1024 * 1024
+        assert len(id_map_json.encode("utf-8")) > max_part_size
+
+        _helpers.store_voyager_index_segmented(
+            mock_conn,
+            target_table="map_projection_data",
+            index_name="main_map",
+            index_bytes=b"x" * 10,
+            id_map=id_map,
+            embedding_dimension=2,
+            max_part_size_mb=1,
+            binary_column="projection_data",
+        )
+
+        assert "DELETE FROM map_projection_data" in captured[0][0]
+        inserts = captured[1:]
+        assert len(inserts) >= 2
+
+        frags = []
+        for sql, params in inserts:
+            assert "INSERT INTO map_projection_data" in sql
+            assert "projection_data" in sql and "id_map_json" in sql
+            m = re.match(r"^main_map_(\d+)_(\d+)$", params[0])
+            assert m is not None
+            assert len(params[2].encode("utf-8")) <= max_part_size
+            frags.append((int(m.group(1)), params[2]))
+
+        assert _helpers.reassemble_segmented_id_map(frags) == id_map_json
+
+    def test_binary_column_defaults_to_index_data(self):
+        captured = []
+        mock_conn, _ = self._mock_conn(captured)
+        _helpers.store_voyager_index_segmented(
+            mock_conn,
+            target_table="voyager_index_data",
+            index_name="music_library",
+            index_bytes=b"small",
+            id_map={0: "a"},
+            embedding_dimension=256,
+            max_part_size_mb=100,
+        )
+        assert "(index_name, index_data, id_map_json" in captured[1][0]
 
 
 class TestStreamEmbeddingsToBuffer:

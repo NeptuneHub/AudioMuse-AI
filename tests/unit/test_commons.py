@@ -1,6 +1,4 @@
 """Unit tests for tasks/commons.py"""
-import pytest
-import numpy as np
 from tasks.commons import score_vector
 
 

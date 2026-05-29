@@ -16,9 +16,7 @@
 #         - Text: clap_text_model.onnx in test/models/
 import os
 import sys
-import types
 from pathlib import Path
-import json
 import pytest
 import numpy as np
 

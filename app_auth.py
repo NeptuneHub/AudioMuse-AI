@@ -181,20 +181,6 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     return True, None
 
 
-def delete_additional_user(user_id):
-    """Delete a user by id. Returns True when a row was deleted."""
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
-        return False
-    db = _get_db()
-    with db.cursor() as cur:
-        cur.execute("DELETE FROM audiomuse_users WHERE id = %s", (user_id,))
-        deleted = cur.rowcount
-    db.commit()
-    return bool(deleted)
-
-
 def delete_additional_user_safe(user_id):
     """Atomically delete a user, refusing to delete the last admin.
 

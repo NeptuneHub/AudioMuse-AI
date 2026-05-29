@@ -5,14 +5,8 @@ Tests GMM component selection and parameter extraction:
 - Small dataset handling (< 5 tracks)
 - GMM parameter structure validation
 """
-import pytest
 import numpy as np
-from tasks.artist_gmm_manager import (
-    select_optimal_gmm_components,
-    fit_artist_gmm,
-    GMM_N_COMPONENTS_MIN,
-    GMM_N_COMPONENTS_MAX,
-)
+from tasks.artist_gmm_manager import select_optimal_gmm_components, fit_artist_gmm, GMM_N_COMPONENTS_MAX
 
 
 class TestSelectOptimalGMMComponents:

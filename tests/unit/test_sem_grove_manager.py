@@ -10,13 +10,12 @@ Tests cover:
 - Full round-trip: build → load → search using an in-memory Voyager index
 """
 
-import json
 import sys
 import os
 import importlib.util
 import pytest
 import numpy as np
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -441,20 +440,13 @@ class TestSemGroveRoundTrip:
         search_by_song returns the seed as results[0].
         """
         import io
-        import json
-        import tempfile
 
         try:
             import voyager  # noqa: F401
         except ImportError:
             pytest.skip("voyager not installed")
 
-        from tasks.sem_grove_manager import (
-            build_and_store_sem_grove_index,
-            load_sem_grove_cache_from_db,
-            search_by_song,
-            _SEM_GROVE_CACHE,
-        )
+        from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
 
         n         = 15
         lyrics_dim = 16
