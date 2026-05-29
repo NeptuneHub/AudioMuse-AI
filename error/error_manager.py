@@ -7,14 +7,13 @@ renders:
     {"error_code": int, "error_class": str, "error_message": str}
 
 The user-facing ``error_message`` is always collapsed to a single line and never
-carries a stack trace. The full traceback is sent to the logger; it is added to
-the returned dict only when the centralized ``ERROR_INCLUDE_TRACEBACK`` toggle is
-enabled, so debugging stays opt-in.
+carries a stack trace. The full traceback is for the container log only (callers
+pass a ``logger`` here, or log it themselves with ``exc_info``); it is never put
+into the dict returned to the frontend. Unknown/unhandled errors resolve to a
+generic message that points the user at the container logs.
 """
 import logging
-import traceback
 
-from config import ERROR_INCLUDE_TRACEBACK
 from error.error_dictionary import (
     ERROR_REGISTRY,
     UNKNOWN_ERROR_CODE,
@@ -54,11 +53,16 @@ def _one_line(text):
 
 
 def build(code, message=None):
-    """Return the canonical {error_code, error_class, error_message} dict."""
+    """Return the canonical {error_code, error_class, error_message} dict.
+
+    The dict never contains a stack trace. For an unknown/unregistered code the
+    generic message (which points at the container logs) is used and any caller
+    detail is ignored, so unhandled errors never leak specifics to the frontend.
+    """
     resolved_code = code if code in ERROR_REGISTRY else UNKNOWN_ERROR_CODE
     error_class = get_error_class(resolved_code)
     base = get_default_message(resolved_code)
-    detail = _one_line(message) if message else ""
+    detail = _one_line(message) if (message and resolved_code != UNKNOWN_ERROR_CODE) else ""
     if detail and len(detail) > _MAX_MESSAGE_DETAIL:
         detail = detail[: _MAX_MESSAGE_DETAIL - 3].rstrip() + "..."
     full = f"{base} {detail}".strip() if detail else base
@@ -110,10 +114,10 @@ class AudioMuseError(Exception):
 
 
 def record(code, message=None, exc=None, logger=None, level=logging.ERROR):
-    """Build the structured error and, when a logger is given, log full detail.
+    """Build the structured error and, when a logger is given, log the full trace.
 
-    Returns the canonical dict. The full traceback is attached to the dict only
-    when ERROR_INCLUDE_TRACEBACK is enabled.
+    Returns the canonical dict. The full traceback only ever reaches the container
+    log (via ``exc_info``); it is never added to the returned dict.
     """
     err = build(code, message)
     if logger is not None:
@@ -125,10 +129,6 @@ def record(code, message=None, exc=None, logger=None, level=logging.ERROR):
             err["error_message"],
             exc_info=exc if exc is not None else False,
         )
-    if ERROR_INCLUDE_TRACEBACK and exc is not None:
-        err["traceback"] = "".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        )
     return err
 
 
@@ -136,8 +136,10 @@ def from_exception(exc, code=None, message=None, logger=None, level=logging.ERRO
     """Build a structured error from any exception.
 
     An ``AudioMuseError`` keeps its own code/class/message. Any other exception is
-    classified by type (or uses ``code`` when supplied) and its ``str()`` becomes
-    the one-line detail.
+    classified by type (or uses ``code`` when supplied); when it resolves to the
+    generic unknown code the exception text is suppressed so only the generic
+    "check the container logs" message reaches the frontend. The full trace goes
+    to ``logger`` (when supplied) and never into the returned dict.
     """
     if isinstance(exc, AudioMuseError):
         err = exc.to_dict()
@@ -150,13 +152,14 @@ def from_exception(exc, code=None, message=None, logger=None, level=logging.ERRO
                 err["error_message"],
                 exc_info=exc,
             )
-        if ERROR_INCLUDE_TRACEBACK:
-            err["traceback"] = "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            )
         return err
     resolved = code if code is not None else classify(exc, UNKNOWN_ERROR_CODE)
-    detail = message if message is not None else str(exc)
+    if message is not None:
+        detail = message
+    elif resolved == UNKNOWN_ERROR_CODE:
+        detail = None
+    else:
+        detail = str(exc)
     return record(resolved, detail, exc=exc, logger=logger, level=level)
 
 

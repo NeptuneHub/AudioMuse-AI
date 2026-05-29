@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 @app.errorhandler(AudioMuseError)
 def handle_audiomuse_error(err):
     """Render any AudioMuseError raised by a synchronous route as a structured JSON body."""
+    app.logger.error("[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err)
     return jsonify(err.to_dict()), error_manager.http_status_for_code(err.code)
 
 from app_logging import configure_logging
@@ -266,8 +267,6 @@ def get_task_status_endpoint(task_id):
         response['details'] = job.meta.get('details', {})
         if job.is_failed:
             response['status_message'] = "FAILED"
-            if config.ERROR_INCLUDE_TRACEBACK and job.exc_info:
-                response['details']['traceback'] = job.exc_info
         elif job.is_finished:
              response['status_message'] = "SUCCESS" # RQ uses 'finished' for success
              response['progress'] = 100
@@ -305,7 +304,10 @@ def get_task_status_endpoint(task_id):
     if response.get('task_type_from_db') and 'analysis' in response['task_type_from_db']:
         if isinstance(response.get('details'), dict):
             response['details'].pop('checked_album_ids', None)
-    
+
+    if isinstance(response.get('details'), dict):
+        response['details'].pop('traceback', None)
+
     # Truncate log entries to last 10 entries for all task types
     if isinstance(response.get('details'), dict) and 'log' in response['details']:
         log_entries = response['details']['log']
@@ -320,10 +322,8 @@ def get_task_status_endpoint(task_id):
         existing_error = response['details'].get('error')
         if isinstance(existing_error, dict) and 'error_code' in existing_error:
             pass
-        elif isinstance(existing_error, str) and existing_error.strip():
-            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE, existing_error)
         else:
-            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE, "The task failed.")
+            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
         response['details'].setdefault('error_message', response['details']['error']['error_message'])
 
     # Clean up the final response to remove confusing raw time columns

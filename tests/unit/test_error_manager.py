@@ -69,6 +69,15 @@ class TestBuild:
         assert result['error_code'] == ed.UNKNOWN_ERROR_CODE
         assert result['error_class'] == 'Unknown Error'
 
+    def test_unknown_message_points_to_container_logs(self):
+        result = em.build(987654)
+        assert 'log' in result['error_message'].lower()
+
+    def test_unknown_code_suppresses_caller_detail(self):
+        result = em.build(ed.UNKNOWN_ERROR_CODE, 'leak this secret detail')
+        assert 'leak this secret detail' not in result['error_message']
+        assert result['error_message'] == ed.get_default_message(ed.UNKNOWN_ERROR_CODE)
+
 
 class TestClassify:
     def test_known_exception_name_maps_to_code(self):
@@ -93,12 +102,13 @@ class TestFromException:
         assert result['error_class'] == 'Database Error'
         assert 'connection refused' in result['error_message']
 
-    def test_generic_exception_defaults_to_unknown(self):
+    def test_generic_exception_defaults_to_unknown_and_hides_detail(self):
         result = em.from_exception(ValueError('boom\nmore'))
         assert result['error_code'] == ed.UNKNOWN_ERROR_CODE
         assert result['error_class'] == 'Unknown Error'
         assert '\n' not in result['error_message']
-        assert 'boom' in result['error_message']
+        assert 'boom' not in result['error_message']
+        assert result['error_message'] == ed.get_default_message(ed.UNKNOWN_ERROR_CODE)
 
     def test_explicit_code_is_used(self):
         result = em.from_exception(ValueError('boom'), code=ed.ERR_ANALYSIS_FAILED)
@@ -116,9 +126,8 @@ class TestNoStackInMessage:
         assert '\n' not in from_exc['error_message']
 
 
-class TestRecordTraceback:
-    def test_traceback_absent_by_default(self, monkeypatch):
-        monkeypatch.setattr(em, 'ERROR_INCLUDE_TRACEBACK', False)
+class TestNoTracebackEverLeaks:
+    def test_record_never_returns_traceback(self):
         try:
             raise ValueError('boom')
         except ValueError as exc:
@@ -126,15 +135,38 @@ class TestRecordTraceback:
         assert 'traceback' not in result
         assert '\n' not in result['error_message']
 
-    def test_traceback_present_when_enabled(self, monkeypatch):
-        monkeypatch.setattr(em, 'ERROR_INCLUDE_TRACEBACK', True)
+    def test_from_exception_never_returns_traceback(self):
         try:
             raise ValueError('boom')
         except ValueError as exc:
-            result = em.record(ed.ERR_ANALYSIS_FAILED, str(exc), exc=exc)
-        assert 'traceback' in result
-        assert 'ValueError' in result['traceback']
-        assert '\n' not in result['error_message']
+            result = em.from_exception(exc)
+        assert 'traceback' not in result
+
+    def test_record_logs_full_trace_to_given_logger(self):
+        import logging as _logging
+
+        class _Capture(_logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.records = []
+
+            def emit(self, record):
+                self.records.append(record)
+
+        cap = _Capture()
+        test_logger = _logging.getLogger('test_error_manager_capture')
+        test_logger.addHandler(cap)
+        test_logger.setLevel(_logging.ERROR)
+        try:
+            raise ValueError('boom')
+        except ValueError as exc:
+            em.record(ed.ERR_ANALYSIS_FAILED, str(exc), exc=exc, logger=test_logger)
+        test_logger.removeHandler(cap)
+        assert cap.records and cap.records[0].exc_info is not None
+
+    def test_audiomuse_to_dict_is_exactly_three_keys(self):
+        exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down')
+        assert set(exc.to_dict().keys()) == {'error_code', 'error_class', 'error_message'}
 
 
 class TestAudioMuseError:

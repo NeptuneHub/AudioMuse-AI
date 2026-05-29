@@ -156,7 +156,7 @@ ERROR_REGISTRY = {
     },
     UNKNOWN_ERROR_CODE: {
         "error_class": "Unknown Error",
-        "default_message": "An unexpected error occurred.",
+        "default_message": "An unexpected error occurred. Check the container logs for details.",
     },
 }
 

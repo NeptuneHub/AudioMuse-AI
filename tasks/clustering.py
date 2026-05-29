@@ -71,9 +71,8 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             "error": error_manager.build(ERR_CLUSTERING_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
-            "traceback": tb_formatted
         }
-        
+
         save_task_status(
             task_id,
             "clustering_batch",
@@ -83,7 +82,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             progress=100,
             details=error_details
         )
-        app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.")
+        app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}")
 
 def _sanitize_for_json(obj):
     """
