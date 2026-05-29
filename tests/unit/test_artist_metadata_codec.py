@@ -28,15 +28,16 @@ from unittest.mock import MagicMock, patch
 
 def _load_helpers():
     """Load tasks.index_build_helpers without triggering tasks/__init__.py."""
-    if 'tasks' not in sys.modules:
-        stub = types.ModuleType('tasks')
-        stub.__path__ = []
-        sys.modules['tasks'] = stub
-
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
-    mod_path = os.path.join(repo_root, 'tasks', 'index_build_helpers.py')
+    tasks_dir = os.path.join(repo_root, 'tasks')
+    if 'tasks' not in sys.modules:
+        stub = types.ModuleType('tasks')
+        stub.__path__ = [tasks_dir]
+        sys.modules['tasks'] = stub
+
+    mod_path = os.path.join(tasks_dir, 'index_build_helpers.py')
     mod_name = 'tasks.index_build_helpers'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
