@@ -299,12 +299,11 @@ def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[
 
     # Fit logistic regression with regularization for robustness
     try:
-        # Use 'saga' solver with n_jobs=-1 to leverage multiple cores
-        clf = LogisticRegression(penalty='l2', C=1.0, solver='saga', max_iter=1000, n_jobs=-1)
+        clf = LogisticRegression(l1_ratio=0, C=1.0, solver='saga', max_iter=1000)
         clf.fit(Xp, y_train)
     except Exception:
         # Fallback with less regularization if solver fails
-        clf = LogisticRegression(penalty='l2', C=0.1, solver='saga', max_iter=1000, n_jobs=-1)
+        clf = LogisticRegression(l1_ratio=0, C=0.1, solver='saga', max_iter=1000)
         clf.fit(Xp, y_train)
 
     # direction in PCA space
