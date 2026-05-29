@@ -48,6 +48,7 @@ Run locally:
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 from urllib.parse import quote
@@ -263,9 +264,38 @@ def migration_db(pg_dsn):
             pass
 
 
-def _seed_library(conn, source_rendered):
-    """Insert the source library into every table the migration rewrites."""
+def _insert_segmented_index(cur, table, binary_col, base, id_map_json, dim, n_parts=3):
+    """Write ``id_map_json`` split across ``n_parts`` rows, mimicking the
+    large-library layout produced by ``store_voyager_index_segmented`` (each
+    row holds a partial-JSON fragment; the binary lives on part 1)."""
+    step = max(1, -(-len(id_map_json) // n_parts))
+    frags = [id_map_json[i:i + step] for i in range(0, len(id_map_json), step)]
+    while len(frags) < n_parts:
+        frags.append('')
+    for k in range(1, n_parts + 1):
+        cur.execute(
+            f"INSERT INTO {table} (index_name, {binary_col}, id_map_json, "
+            f"embedding_dimension) VALUES (%s, %s, %s, %s)",
+            (f"{base}_{k}_{n_parts}",
+             psycopg2.Binary(b'\x00' if k == 1 else b''), frags[k - 1], dim),
+        )
+
+
+def _reassemble_id_map(parts):
+    """Concatenate ``(index_name, id_map_json)`` fragments in part order."""
+    ordered = sorted(parts, key=lambda p: int(re.match(r'^.*_(\d+)_\d+$', p[0]).group(1)))
+    return ''.join((frag or '') for _, frag in ordered)
+
+
+def _seed_library(conn, source_rendered, segmented=False):
+    """Insert the source library into every table the migration rewrites.
+
+    With ``segmented=True`` the voyager / map-projection id_maps are written
+    split across part rows (the >~1M-song layout) instead of as a single row.
+    """
     src_ids = [r['id'] for r in source_rendered]
+    voyager_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
+    projection_map = json.dumps(src_ids)
     with conn.cursor() as cur:
         for index, r in enumerate(source_rendered):
             cur.execute(
@@ -276,17 +306,22 @@ def _seed_library(conn, source_rendered):
             )
             for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
                 cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
-        cur.execute(
-            "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, "
-            "embedding_dimension) VALUES (%s, %s, %s, %s)",
-            ('voyager_main', psycopg2.Binary(b'\x00'),
-             json.dumps({str(i): sid for i, sid in enumerate(src_ids)}), 128),
-        )
-        cur.execute(
-            "INSERT INTO map_projection_data (index_name, projection_data, "
-            "id_map_json, embedding_dimension) VALUES (%s, %s, %s, %s)",
-            ('map_main', psycopg2.Binary(b'\x00'), json.dumps(src_ids), 2),
-        )
+        if segmented:
+            _insert_segmented_index(cur, 'voyager_index_data', 'index_data',
+                                    'voyager_main', voyager_map, 128)
+            _insert_segmented_index(cur, 'map_projection_data', 'projection_data',
+                                    'map_main', projection_map, 2)
+        else:
+            cur.execute(
+                "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, "
+                "embedding_dimension) VALUES (%s, %s, %s, %s)",
+                ('voyager_main', psycopg2.Binary(b'\x00'), voyager_map, 128),
+            )
+            cur.execute(
+                "INSERT INTO map_projection_data (index_name, projection_data, "
+                "id_map_json, embedding_dimension) VALUES (%s, %s, %s, %s)",
+                ('map_main', psycopg2.Binary(b'\x00'), projection_map, 2),
+            )
         cur.execute(
             "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, "
             "gmm_params_json) VALUES (%s, %s, %s, %s)",
@@ -459,3 +494,93 @@ def test_real_provider_migration(source, target, migration_db):
         assert cur.fetchone()[0] == 'completed'
     verify.close()
     print(f"  ok: {len(new_ids)} tracks rewritten, orphan deleted, app_config -> {target}")
+
+
+@pytest.mark.integration
+def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
+    """Regression: a SEGMENTED voyager / map id_map must be rewritten end to end.
+
+    ``store_voyager_index_segmented`` splits ``id_map_json`` across part rows
+    once a library is large enough (~1M+ songs), so every segmented row holds a
+    partial-JSON fragment. The migration must reassemble + rewrite + re-split;
+    the previous per-row ``json.loads`` left every fragment untouched, leaving
+    the index pointing at deleted old-provider ids. This drives the real
+    execute job against a real Postgres with a segmented index seeded.
+    """
+    source, target = 'jellyfin', 'navidrome'
+
+    source_rendered = []
+    for index, track in enumerate(SHARED_TRACKS):
+        rel = _relative_path(track)
+        source_rendered.append({
+            'id': _provider_id(source, 0, index),
+            'path': _provider_path(source, rel),
+            'title': track['title'], 'artist': track['artist'],
+            'album': track['album'], 'album_artist': track['album_artist'],
+        })
+    source_rendered.append({
+        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+        'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
+        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
+        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
+    })
+    target_rendered = [{
+        'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
+        'path': _provider_path(target, _relative_path(track)),
+        'title': track['title'], 'artist': track['artist'],
+        'album': track['album'], 'album_artist': track['album_artist'],
+    } for index, track in enumerate(SHARED_TRACKS)]
+
+    old_rows = [
+        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
+         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        for r in source_rendered
+    ]
+    new_tracks = [
+        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+         'album': r['album'], 'album_artist': r['album_artist']}
+        for r in target_rendered
+    ]
+    matches = matcher.match_tracks(old_rows, new_tracks)['matches']
+    expected_map = {
+        source_rendered[i]['id']: target_rendered[i]['id']
+        for i in range(len(SHARED_TRACKS))
+    }
+    assert matches == expected_map
+    orphan_id = source_rendered[-1]['id']
+    new_meta = {
+        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
+                  'album': r['album'], 'album_artist': r['album_artist'],
+                  'year': 2000 + i}
+        for i, r in enumerate(target_rendered)
+    }
+
+    conn = migration_db['connect']()
+    _seed_library(conn, source_rendered, segmented=True)
+    session_id = _insert_session(conn, source, target, matches, new_meta)
+
+    result = mig.execute_provider_migration(session_id)
+    assert result['ok'] is True
+    assert result['matched'] == len(SHARED_TRACKS)
+
+    new_ids = set(expected_map.values())
+    old_ids = set(expected_map.keys()) | {orphan_id}
+    verify = migration_db['connect']()
+    with verify.cursor() as cur:
+        cur.execute("SELECT index_name, id_map_json FROM voyager_index_data")
+        vparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^voyager_main_\d+_\d+$', n)]
+        assert len(vparts) >= 2, "voyager index must actually be segmented in this test"
+        voyager_map = json.loads(_reassemble_id_map(vparts))
+        assert set(voyager_map.values()) == new_ids
+        assert not (set(voyager_map.values()) & old_ids), "no stale old-provider ids may remain"
+        assert orphan_id not in voyager_map.values()
+
+        cur.execute("SELECT index_name, id_map_json FROM map_projection_data")
+        pparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^map_main_\d+_\d+$', n)]
+        assert len(pparts) >= 2, "map projection must actually be segmented in this test"
+        proj_map = json.loads(_reassemble_id_map(pparts))
+        assert len(proj_map) == len(SHARED_TRACKS) + 1, "list length must be preserved"
+        assert proj_map[-1] is None, "orphan slot must become None"
+        assert set(v for v in proj_map if v is not None) == new_ids
+    verify.close()
+    print(f"  ok (segmented): {len(vparts)} voyager parts reassembled + rewritten -> {target}")
