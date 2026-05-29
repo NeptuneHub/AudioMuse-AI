@@ -6,10 +6,9 @@ Tests sonic fingerprint generation with actual function calls:
 - Playlist size limiting and deduplication
 - Integration with media server and Voyager
 """
-import pytest
 import numpy as np
 from datetime import datetime, timezone, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 
 

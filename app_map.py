@@ -2,12 +2,11 @@ import gc
 import json
 import math
 import logging
-from flask import Blueprint, jsonify, render_template, request, Response, current_app
+from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from app_helper import get_db, load_map_projection
-import config
 
 # Try to reuse projection helpers from song_alchemy
 try:
@@ -243,47 +242,6 @@ def map_ui():
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
-
-
-def _fetch_genre_samples(conn, genre, limit):
-    cur = conn.cursor()
-    # mood_vector is stored as 'label:score,label2:score' so use ILIKE for simple match
-    try:
-        cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, s.other_features, e.embedding
-            FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
-            WHERE s.mood_vector ILIKE %s
-            LIMIT %s
-        """, (f"%{genre}%", limit))
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-    return rows
-
-
-def _rows_to_items(rows):
-    items = []
-    for r in rows:
-        # r is a tuple-like from psycopg2; map by index to be robust
-        item_id = r[0]
-        title = r[1]
-        author = r[2]
-        mood_vector = r[3]
-        other_features = r[4]
-        embedding_blob = r[5]
-        if embedding_blob is None:
-            continue
-        emb = np.frombuffer(embedding_blob, dtype=np.float32)
-        items.append({
-            'item_id': item_id,
-            'title': title,
-            'author': author,
-            'mood_vector': mood_vector,
-            'other_features': other_features,
-            'embedding': emb
-        })
-    return items
 
 
 @map_bp.route('/api/map', methods=['GET'])

@@ -124,8 +124,7 @@ for _name, _relpath in (
     _load_submodule(_name, _relpath)
 
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import Mock, patch, call
 import requests
 import json
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name

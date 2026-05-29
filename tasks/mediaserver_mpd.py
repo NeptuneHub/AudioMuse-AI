@@ -2,7 +2,6 @@
 
 import logging
 import os
-import shutil
 from datetime import datetime
 import config
 import requests # <-- ADDED: Needed for HTTP downloads

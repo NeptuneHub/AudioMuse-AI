@@ -14,7 +14,6 @@ Supports:
 """
 
 import logging
-import numpy as np
 from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
 
 logger = logging.getLogger(__name__)

@@ -3,9 +3,8 @@
 Tests cover core search logic, cache management, similarity calculations,
 and result ranking with minimal external dependencies.
 """
-import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
 
 class DummyVoyagerIndex:

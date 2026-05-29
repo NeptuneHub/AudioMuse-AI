@@ -6,14 +6,14 @@ import numpy as np
 import hashlib
 import json
 from rq import get_current_job, Retry
-from rq.job import Job
-from rq.exceptions import NoSuchJobError
 import requests # Import requests to catch specific exceptions
+
+from error import error_manager
+from error.error_dictionary import ERR_COLLECTION_SYNC_FAILED
 
 # Import project modules
 from .pocketbase import PocketBaseClient
 from .mediaserver import get_recent_albums, get_tracks_from_album
-from .voyager_manager import build_and_store_voyager_index
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +39,14 @@ def batch_task_failure_handler(job, connection, type, value, tb):
         
         # The fix was already present here, but I'm confirming it's correct.
         # This code correctly handles the StackSummary from the janitor.
+        tb_formatted = "".join(tb.format()) if isinstance(tb, traceback.StackSummary) else "".join(traceback.format_exception(type, value, tb))
         error_details = {
             "message": "Batch sync sub-task failed permanently after all retries.",
+            "error": error_manager.build(ERR_COLLECTION_SYNC_FAILED, str(value)),
             "error_type": str(type.__name__),
             "error_value": str(value),
-            "traceback": "".join(tb.format()) if isinstance(tb, traceback.StackSummary) else "".join(traceback.format_exception(type, value, tb))
         }
-        
+
         # Determine sub_type_identifier from job args if possible, for completeness
         sub_type_identifier = None
         if job.args and len(job.args) > 1 and isinstance(job.args[1], list):
@@ -62,7 +63,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
             progress=100,
             details=error_details
         )
-        app.logger.error(f"Batch sync task {task_id} (parent: {parent_id}) failed permanently. DB status updated.")
+        app.logger.error(f"Batch sync task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}")
 
 def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbase_token, main_task_log_prefix="[MainTask-Unknown]"):
     """
@@ -254,9 +255,8 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
         except Exception as e:
             logger.error(f"{log_prefix} Error in sync_album_batch_task: {e}", exc_info=True)
             failure_details = {
-                "error": str(e), 
-                "traceback": traceback.format_exc(),
-                "batch_name": batch_name_short 
+                "error": error_manager.record(error_manager.classify(e, ERR_COLLECTION_SYNC_FAILED), str(e), exc=e),
+                "batch_name": batch_name_short
             }
             save_task_status(task_id, "album_batch_sync", TASK_STATUS_FAILURE, parent_task_id=parent_task_id, sub_type_identifier=lock_id, details=failure_details)
             raise
@@ -274,8 +274,7 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
 # --- Main task ---
 def sync_collections_task(url, token, num_albums):
     from app import app
-    from app_helper import (redis_conn, rq_queue_default, get_db, save_task_status, get_task_info_from_db, get_child_tasks_from_db,
-                     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    from app_helper import redis_conn, rq_queue_default, save_task_status, get_task_info_from_db, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 
     current_job = get_current_job()
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -398,16 +397,21 @@ def sync_collections_task(url, token, num_albums):
             
             failed_child_tasks = [t for t in all_child_tasks if t.get('status') == TASK_STATUS_FAILURE]
 
-            # --- Rebuild Voyager Index and Notify Flask ---
-            log_and_update("Performing final Voyager index rebuild...", 98)
+            # --- Rebuild all indexes and notify Flask ---
+            # Previously this only rebuilt the audio Voyager index, leaving CLAP,
+            # lyrics, lyrics-axes, SemGrove, artist, and the 2D map projections
+            # stale after a sync. _run_all_index_builds rebuilds the full set in
+            # the same order as the analysis task, publishes the reload message,
+            # and releases freed RAM at the end.
+            log_and_update("Performing final index rebuild...", 98)
             try:
-                build_and_store_voyager_index(get_db())
-                redis_conn.publish('index-updates', 'reload')
-                log_and_update("Successfully rebuilt Voyager index and triggered a reload.", 99)
+                from .analysis import _run_all_index_builds
+                _run_all_index_builds(log_fn=None)
+                log_and_update("Successfully rebuilt all indexes and triggered a reload.", 99)
             except Exception as e:
-                logger.error(f"{log_prefix} Failed during Voyager index rebuild and reload trigger: {e}", exc_info=True)
-                log_and_update(f"Failed during Voyager index rebuild: {e}", 99, details={"warning": "Failed to rebuild Voyager index."})
-            # --- End Rebuild ---
+                logger.error(f"{log_prefix} Failed during index rebuild and reload trigger: {e}", exc_info=True)
+                log_and_update(f"Failed during index rebuild: {e}", 99, details={"warning": "Failed to rebuild indexes."})
+            # --- End rebuild ---
 
             if failed_child_tasks:
                 num_failed = len(failed_child_tasks)
@@ -420,5 +424,6 @@ def sync_collections_task(url, token, num_albums):
             logger.error(f"{log_prefix} An unexpected error occurred in main sync task: {e}", exc_info=True)
             task_info = get_task_info_from_db(current_task_id)
             if not task_info or task_info.get('status') not in [TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
-                 log_and_update(f"Error: {e}", 100, status=TASK_STATUS_FAILURE, details={"error": str(e), "traceback": traceback.format_exc()})
+                 err = error_manager.record(error_manager.classify(e, ERR_COLLECTION_SYNC_FAILED), str(e), exc=e)
+                 log_and_update(f"Error: {e}", 100, status=TASK_STATUS_FAILURE, details={"error": err})
             raise

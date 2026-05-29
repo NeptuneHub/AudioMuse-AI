@@ -1,7 +1,6 @@
 # app_helper.py
 import json
 import logging
-import os
 import time
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -11,7 +10,7 @@ from flask import g
 # RQ imports
 from redis import Redis
 from rq import Queue
-from rq.job import Job, JobStatus
+from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
 # Import from main app
@@ -274,6 +273,11 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_index_data' table for artist GMM-based HNSW index
             cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Create 'artist_metadata_data' table for the per-artist auxiliary
+            # metadata blob (artist_map + GMM params). Decoupled from the Voyager
+            # index binary and segmented independently so a single column value
+            # never crosses PG's 1 GB MaxAllocSize cap, regardless of library size.
+            cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'map_projection_data' table for precomputed 2D map projections
             cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_component_projection' table for precomputed 2D artist component projections
@@ -814,31 +818,6 @@ def get_child_tasks_from_db(parent_task_id):
     # DictCursor returns a list of dictionary-like objects, convert to plain dicts
     return [dict(row) for row in tasks]
 
-def track_exists(item_id):
-    """
-    Checks if a track exists in the database AND has been analyzed for key features.
-    in both the 'score' and 'embedding' tables.
-    Returns True if:
-    1. The track exists in 'score' table and 'other_features', 'energy', 'mood_vector', and 'tempo' are populated.
-    2. The track exists in the 'embedding' table.
-    Returns False otherwise, indicating a re-analysis is needed.
-    """
-    conn = get_db() # This now calls the function within this file
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.item_id
-        FROM score s
-        JOIN embedding e ON s.item_id = e.item_id
-        WHERE s.item_id = %s
-          AND s.other_features IS NOT NULL AND s.other_features != ''
-          AND s.energy IS NOT NULL
-          AND s.mood_vector IS NOT NULL AND s.mood_vector != ''
-          AND s.tempo IS NOT NULL
-    """, (item_id,))
-    row = cur.fetchone()
-    cur.close()
-    return row is not None
-
 def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
     """Saves track analysis and embedding in a single transaction."""
     
@@ -1061,55 +1040,6 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
         cur.close()
 
 
-def get_lyrics_embedding(item_id):
-    """Load the lyrics embedding and axis vector for a track.
-
-    Returns:
-        tuple(np.ndarray or None, np.ndarray or None)
-    """
-    conn = get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT embedding, axis_vector FROM lyrics_embedding WHERE item_id = %s", (item_id,))
-        row = cur.fetchone()
-        if not row:
-            return None, None
-        embedding_blob, axis_blob = row
-        embedding = np.frombuffer(embedding_blob, dtype=np.float32) if embedding_blob is not None else None
-        axis_vec = np.frombuffer(axis_blob, dtype=np.float32) if axis_blob is not None else None
-        return embedding, axis_vec
-    except Exception as e:
-        logger.error(f"Error loading lyrics embedding for {item_id}: {e}")
-        return None, None
-    finally:
-        cur.close()
-
-
-def get_all_tracks():
-    """Fetches all tracks and their embeddings from the database."""
-    conn = get_db() # This now calls the function within this file
-    cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("""
-        SELECT s.item_id, s.title, s.author, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
-        FROM score s
-        LEFT JOIN embedding e ON s.item_id = e.item_id
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    
-    # Convert DictRow objects to regular dicts to allow adding new keys.
-    processed_rows = []
-    for row in rows:
-        row_dict = dict(row)
-        if row_dict.get('embedding'):
-            # Use np.frombuffer to convert the binary data back to a numpy array
-            row_dict['embedding_vector'] = np.frombuffer(row_dict['embedding'], dtype=np.float32)
-        else:
-            row_dict['embedding_vector'] = np.array([]) # Use a consistent name
-        processed_rows.append(row_dict)
-        
-    return processed_rows
-
 def get_tracks_by_ids(item_ids_list):
     """Fetches full track data (including embeddings) for a specific list of item_ids."""
     if not item_ids_list:
@@ -1319,29 +1249,38 @@ def save_map_projection(index_name, id_map, projection_array):
     id_map: JSON-serializable list/dict mapping rows to item_ids
     """
     conn = get_db()
-    cur = conn.cursor()
     try:
         blob = projection_array.astype(np.float32).tobytes()
-        id_map_json = json.dumps(id_map)
-        cur.execute("""
-            INSERT INTO map_projection_data (index_name, projection_data, id_map_json, embedding_dimension)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, id_map_json = EXCLUDED.id_map_json, embedding_dimension = EXCLUDED.embedding_dimension, created_at = NOW()
-        """, (index_name, psycopg2.Binary(blob), id_map_json, projection_array.shape[1] if projection_array.ndim == 2 else 0))
+        if not blob:
+            logger.info(f"Map projection '{index_name}' has no data; clearing existing store.")
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+                    (index_name, index_name.replace('_', r'\_') + r"\_%\_%"),
+                )
+            conn.commit()
+            return
+        embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
+        from tasks.index_build_helpers import store_voyager_index_segmented
+        store_voyager_index_segmented(
+            conn,
+            target_table="map_projection_data",
+            index_name=index_name,
+            index_bytes=blob,
+            id_map=id_map,
+            embedding_dimension=embedding_dim,
+            binary_column="projection_data",
+        )
         conn.commit()
         try:
-            size_bytes = len(blob)
             id_count = len(id_map) if hasattr(id_map, '__len__') else None
-            logger.info(f"Saved map projection '{index_name}' to DB: {size_bytes} bytes, ids={id_count}")
+            logger.info(f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}")
         except Exception:
-            # non-critical logging error
             logger.debug("Saved map projection but failed to compute size/id_count for log.")
     except Exception as e:
         conn.rollback()
         logger.error(f"Failed to save map projection: {e}")
         raise
-    finally:
-        cur.close()
 
 
 def load_map_projection(index_name, force_reload=False):
@@ -1358,10 +1297,40 @@ def load_map_projection(index_name, force_reload=False):
     try:
         cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
         row = cur.fetchone()
-        if not row:
-            logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
-            return None, None
-        proj_blob, id_map_json = row[0], row[1]
+        if row and row[0] is not None:
+            proj_blob, id_map_json = row[0], row[1]
+        else:
+            import re
+            from tasks.index_build_helpers import reassemble_segmented_id_map
+            cur.execute(
+                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
+                (index_name.replace('_', r'\_') + r"\_%\_%",),
+            )
+            candidates = cur.fetchall()
+            if not candidates:
+                logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
+                return None, None
+            seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
+            parts = []
+            total_expected = None
+            for name, part_blob, part_id_map in candidates:
+                m = seg_pattern.match(name)
+                if not m:
+                    continue
+                part_no = int(m.group(1))
+                total = int(m.group(2))
+                if total_expected is None:
+                    total_expected = total
+                elif total_expected != total:
+                    logger.error(f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load.")
+                    return None, None
+                parts.append((part_no, part_blob, part_id_map))
+            if total_expected is None or len(parts) != total_expected:
+                logger.error(f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load.")
+                return None, None
+            parts.sort(key=lambda p: p[0])
+            proj_blob = b"".join(bytes(p[1]) for p in parts if p[1])
+            id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
         proj = np.frombuffer(proj_blob, dtype=np.float32)
         # infer shape as (-1,2) if length divisible by 2
         if proj.size % 2 == 0:
@@ -1388,20 +1357,24 @@ def build_and_store_map_projection(index_name='main_map'):
         _project_with_umap = None
         _project_to_2d = None
 
-    rows = get_all_tracks()
-    # collect embeddings and ids
-    ids = []
-    embs = []
-    for r in rows:
-        v = r.get('embedding_vector')
-        if v is not None and v.size:
-            ids.append(r['item_id'])
-            embs.append(v)
-    if not embs:
+    from config import EMBEDDING_DIMENSION
+    from tasks.index_build_helpers import stream_embeddings_to_buffer
+
+    try:
+        mat, ids = stream_embeddings_to_buffer(
+            table="embedding",
+            column="embedding",
+            dim=EMBEDDING_DIMENSION,
+            where_clause="embedding IS NOT NULL",
+        )
+    except Exception as e:
+        logger.error(f"Failed to stream embeddings for map projection: {e}", exc_info=True)
+        return False
+
+    if mat.shape[0] == 0:
         logger.info('No embeddings available to build map projection.')
         return False
 
-    mat = np.vstack(embs)
     projections = None
     try:
         logger.info(f"Starting to build map projection: {mat.shape[0]} embeddings found.")
@@ -1499,7 +1472,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     This will be called during analysis to create the artist component map.
     Returns True on success.
     """
-    from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying
+    from tasks.artist_gmm_manager import load_artist_index_for_querying
     from tasks.song_alchemy import _project_with_umap, _project_to_2d
     
     # Always reload artist GMM params from database (force reload to ensure fresh data)
@@ -1511,33 +1484,46 @@ def build_and_store_artist_projection(index_name='artist_map'):
     if not loaded_params:
         logger.warning("No artist GMM params available to build artist projection.")
         return False
-    
-    # Collect all artist component vectors
+
+    from app_helper_artist import get_artist_id_by_name
+
+    # Two-pass build: first pass counts components and infers dim, second
+    # pass fills a single pre-allocated ndarray. Avoids the previous
+    # ``vectors = []; vectors.append(...); np.vstack(vectors)`` pattern
+    # that materialised three copies of the component matrix at once.
+    total_components = 0
+    component_dim = None
+    for gmm in loaded_params.values():
+        means = gmm.get('means') or []
+        if not len(means):
+            continue
+        if component_dim is None:
+            component_dim = int(np.asarray(means[0], dtype=np.float32).size)
+        total_components += len(means)
+
+    if total_components == 0 or component_dim is None:
+        logger.info('No artist component vectors available to build projection.')
+        return False
+
+    mat = np.empty((total_components, component_dim), dtype=np.float32)
     component_map = []
-    vectors = []
-    
+    row_i = 0
     for artist_name, gmm in loaded_params.items():
-        means = np.array(gmm['means'])  # Shape: [n_components, embedding_dim]
-        weights = np.array(gmm['weights'])  # Shape: [n_components]
-        
-        # Get artist_id (use artist_name if no mapping exists)
-        from app_helper_artist import get_artist_id_by_name
+        means = gmm.get('means') or []
+        weights = gmm.get('weights') or []
+        if not len(means):
+            continue
         artist_id = get_artist_id_by_name(artist_name) or artist_name
-        
         for comp_idx in range(len(means)):
+            mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
             component_map.append({
                 'artist_id': artist_id,
                 'artist_name': artist_name,
                 'component_idx': comp_idx,
-                'weight': float(weights[comp_idx])
+                'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
             })
-            vectors.append(means[comp_idx])
-    
-    if not vectors:
-        logger.info('No artist component vectors available to build projection.')
-        return False
-    
-    mat = np.vstack(vectors)
+            row_i += 1
+
     projections = None
     
     try:

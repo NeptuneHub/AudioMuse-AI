@@ -18,7 +18,7 @@ import os
 import sys
 import importlib.util
 import pytest
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import Mock, MagicMock, patch
 
 
 # ---------------------------------------------------------------------------

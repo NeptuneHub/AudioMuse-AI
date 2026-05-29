@@ -357,6 +357,10 @@ function displayTaskStatus(task) {
 
     statusDetails.textContent = typeof task.details === 'object' ? JSON.stringify(task.details, null, 2) : task.details;
     statusDetails.scrollTop = statusDetails.scrollHeight;
+
+    if (typeof renderTaskError === 'function') {
+        renderTaskError(task);
+    }
 }
 
 async function startTask(taskType) {

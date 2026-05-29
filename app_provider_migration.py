@@ -15,8 +15,6 @@ import csv
 import io
 import json
 import logging
-import os
-import sys
 
 from flask import Blueprint, jsonify, render_template, request
 
@@ -1106,12 +1104,18 @@ def finalize_dry_run():
                 'target_path':   tgt.get('path') or '',
             })
 
+    import config
+    collision_details_total = len(collision_details)
+    if collision_details_total > config.MIGRATION_MAX_COLLISION_DETAILS:
+        collision_details = collision_details[:config.MIGRATION_MAX_COLLISION_DETAILS]
+
     final_counts = {
-        'matched':            matched,
-        'orphans':            orphans,
-        'collisions':         collisions,
-        'collision_details':  collision_details,
-        'tier_counts':        dry.get('tier_counts') or {},
+        'matched':                 matched,
+        'orphans':                 orphans,
+        'collisions':              collisions,
+        'collision_details':       collision_details,
+        'collision_details_total': collision_details_total,
+        'tier_counts':             dry.get('tier_counts') or {},
     }
 
     db = get_db()

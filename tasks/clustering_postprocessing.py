@@ -20,11 +20,9 @@ import numpy as np
 import time
 import random
 import re
-from collections import defaultdict
 from scipy.spatial.distance import cdist
 from psycopg2.extras import DictCursor
 
-from config import (OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE, MAX_SONGS_PER_ARTIST)
 
 logger = logging.getLogger(__name__)
 

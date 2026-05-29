@@ -1,20 +1,12 @@
 # tasks/path_manager.py
 import logging
 import numpy as np
-import random
-import psycopg2 # Import psycopg2 to catch specific errors
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 # Imports from the project
 from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
-from config import (
-    PATH_AVG_JUMP_SAMPLE_SIZE, PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH,
-    PATH_DISTANCE_METRIC, VOYAGER_METRIC, PATH_LCORE_MULTIPLIER,
-    PATH_FIX_SIZE,
-    DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
-    DUPLICATE_DISTANCE_CHECK_LOOKBACK
-)
+from config import PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH, PATH_DISTANCE_METRIC, PATH_FIX_SIZE, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK
 # Also import per-artist cap
 from config import MAX_SONGS_PER_ARTIST
 
@@ -129,45 +121,6 @@ def _create_path_from_ids(path_ids):
 
     ordered_path_details = [details_map[song_id] for song_id in unique_path_ids if song_id in details_map]
     return ordered_path_details
-
-
-def _calculate_local_average_jump_distance(start_item_id, end_item_id, sample_size=PATH_AVG_JUMP_SAMPLE_SIZE):
-    """
-    Calculates the average distance by creating a chain of neighbors and measuring the
-    distance between each step in the chain.
-    """
-    logger.info(f"Calculating chained average jump distance ({PATH_DISTANCE_METRIC}) for neighbors of {start_item_id} and {end_item_id}.")
-    
-    distances = []
-    
-    for item_id in [start_item_id, end_item_id]:
-        try:
-            neighbors = find_nearest_neighbors_by_id(item_id, n=sample_size, radius_similarity=None)
-            if not neighbors:
-                continue
-
-            source_vector = get_vector_by_id(item_id)
-            if source_vector is None:
-                continue
-
-            neighbor_vectors = [get_vector_by_id(n['item_id']) for n in neighbors]
-            valid_neighbor_vectors = [v for v in neighbor_vectors if v is not None]
-            vector_chain = [source_vector] + valid_neighbor_vectors
-
-            for i in range(len(vector_chain) - 1):
-                dist = get_distance(vector_chain[i], vector_chain[i+1])
-                distances.append(dist)
-
-        except Exception as e:
-            logger.warning(f"Could not process neighbors for song {item_id} during chained jump calculation: {e}")
-
-    if not distances:
-        logger.error("No valid chained distances could be calculated from start/end songs.")
-        return 0.1 # Return a sensible fallback default
-
-    avg_dist = np.mean(distances)
-    logger.info(f"Calculated chained average jump distance: {avg_dist:.4f} from {len(distances)} steps.")
-    return avg_dist
 
 
 def _normalize_signature(artist, title):
@@ -326,7 +279,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     final merge fails catastrophically.
     """
     # Local import to prevent circular dependency
-    from app_helper import get_db, get_score_data_by_ids, get_tracks_by_ids
+    from app_helper import get_score_data_by_ids, get_tracks_by_ids
     logger.info(f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}.")
 
     if Lreq < 2:

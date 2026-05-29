@@ -8,10 +8,8 @@ Tests verify:
 - Energy arc reshaping
 - Handling of songs missing from database
 """
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 
-from tests.conftest import _import_module, make_dict_row, make_mock_connection
+from tests.conftest import _import_module
 
 
 def _load_playlist_ordering():
