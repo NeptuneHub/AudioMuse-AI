@@ -44,7 +44,7 @@ def identify_and_clean_orphaned_albums_task():
         current_task_logs = initial_details["log"]
 
         def log_and_update_main(message, progress, **kwargs):
-            nonlocal current_progress, current_task_logs
+            nonlocal current_progress
             current_progress = progress
             logger.info(f"[CleaningTask-{current_task_id}] {message}")
             details = {**kwargs, "status_message": message}

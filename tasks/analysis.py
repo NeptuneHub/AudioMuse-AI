@@ -433,7 +433,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
-            nonlocal current_progress_val, current_task_logs
+            nonlocal current_progress_val
             current_progress_val = progress
             logger.info(f"[AlbumTask-{current_task_id}-{album_name}] {message}")
             db_details = {"album_name": album_name, **kwargs}
@@ -664,7 +664,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
         current_task_logs = initial_details["log"]
 
         def log_and_update_main(message, progress, **kwargs):
-            nonlocal current_progress, current_task_logs
+            nonlocal current_progress
             current_progress = progress
             logger.info(f"[MainAnalysisTask-{current_task_id}] {message}")
             details = {**kwargs, "status_message": message}

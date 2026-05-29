@@ -350,7 +350,6 @@ def run_clustering_task(
 
         # Helper for logging and updating main task status, using a shared dictionary.
         def _log_and_update(message, progress, details_to_add_or_update=None, task_state=TASK_STATUS_PROGRESS):
-            nonlocal _main_task_accumulated_details
             
             logger.info(f"[MainClusteringTask-{current_task_id}] {message}")
             if details_to_add_or_update:

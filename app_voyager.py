@@ -23,7 +23,6 @@ _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
 _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)} for API
 
 def _load_mood_centroids_for_similarity():
-    global _MOOD_CENTROIDS_DATA, _MOOD_CENTROIDS_META
     try:
         with open(MOOD_CENTROIDS_FILE) as f:
             data = json.load(f)

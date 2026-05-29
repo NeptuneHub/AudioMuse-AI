@@ -40,7 +40,6 @@ def _unload_timer_worker():
     reset the timer cancels the unload (expiry is re-read under the lock), and
     the unload can never run concurrently with an in-flight embedding call.
     """
-    global _WARM
     while True:
         with _WARM['lock']:
             expiry = _WARM['expiry_time']
@@ -65,7 +64,6 @@ def _unload_timer_worker():
 
 def warmup_gte_model() -> Dict:
     """Load the gte model if needed and (re)start the idle-unload timer."""
-    global _WARM
     from lyrics import gte_onnx
 
     if not gte_onnx.is_loaded():
@@ -90,7 +88,6 @@ def warmup_gte_model() -> Dict:
 
 def get_gte_warm_status() -> Dict:
     """Return whether the gte model is warm and seconds until idle-unload."""
-    global _WARM
     from lyrics import gte_onnx
 
     with _WARM['lock']:

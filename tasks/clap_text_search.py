@@ -83,7 +83,6 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 def _load_clap_index_from_db() -> bool:
     """Load a persisted CLAP voyager index from the database."""
-    global _CLAP_CACHE, _CLAP_INDEX_CACHE
 
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
@@ -278,7 +277,6 @@ def _unload_timer_worker():
     never run concurrently with an in-flight ``session.run()`` -- which was
     deadlocking the GPU and hanging chat/text-search requests.
     """
-    global _WARM_CACHE_TIMER
 
     while True:
         with _WARM_CACHE_TIMER['lock']:
@@ -308,7 +306,6 @@ def warmup_text_search_model():
     Returns:
         dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
     """
-    global _WARM_CACHE_TIMER
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
     
     # Load duration from config on first use
@@ -345,7 +342,6 @@ def get_warm_cache_status() -> Dict:
     Returns:
         dict: Status with 'active' (bool), 'seconds_remaining' (int)
     """
-    global _WARM_CACHE_TIMER
     from .clap_analyzer import is_clap_model_loaded
     
     with _WARM_CACHE_TIMER['lock']:
@@ -363,7 +359,6 @@ def load_clap_cache_from_db():
     Load the persisted CLAP Voyager index from the database.
     Returns True if successful, False otherwise.
     """
-    global _CLAP_CACHE
     
     from app_helper import get_db
     from config import CLAP_ENABLED
@@ -387,7 +382,6 @@ def load_clap_cache_from_db():
 
 def refresh_clap_cache():
     """Force refresh of CLAP cache from database."""
-    global _CLAP_CACHE
     old_count = get_clap_cache_size()
     logger.info(f"Refreshing CLAP cache... (current: {old_count} songs)")
     result = load_clap_cache_from_db()
@@ -580,7 +574,6 @@ def load_top_queries_from_db():
     Returns True if queries were loaded, False otherwise.
     On first startup (empty DB), this will return False and trigger generation.
     """
-    global _TOP_QUERIES_CACHE
     from app_helper import get_db
     
     # Ensure table exists first
