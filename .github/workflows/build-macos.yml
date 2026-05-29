@@ -20,7 +20,12 @@ name: Build standalone macOS app
 on:
   push:
     tags:
-      - 'v*.*.*'        # Build on every version tag (same trigger as the Docker build)
+      - 'v*.*.*'        # Build on every version tag (same trigger as the Docker builds)
+  pull_request:         # Build on PRs too, to catch macOS bundle breakage early.
+    types:              # PR runs build+verify only; the release job is gated to tags.
+      - opened
+      - reopened
+      - synchronize
   workflow_dispatch:    # Allow manual runs for testing without a release
 
 concurrency:
