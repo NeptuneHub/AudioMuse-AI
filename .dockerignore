@@ -21,6 +21,10 @@ test/
 # Student CLAP training (not needed in production)
 student_clap/
 
+# macOS standalone build artifacts (PyInstaller output)
+build/
+dist/
+
 # Python virtual environment and cache
 __pycache__/
 *.pyc

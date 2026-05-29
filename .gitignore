@@ -64,6 +64,10 @@ student_clap/config.local.yaml
 student_clap/models/FMA_SONGS_LICENSE.md
 student_clap/models/FMA_SONGS_2247_LICENSE.md
 
+# macOS standalone build artifacts (PyInstaller output)
+/build/
+/dist/
+
 # Testing suite
 testing_suite/
 analysis.md
