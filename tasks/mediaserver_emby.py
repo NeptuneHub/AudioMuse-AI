@@ -607,7 +607,11 @@ def get_all_songs(user_creds=None):
             start_index += limit
         except Exception as e:
             logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
-            break
+            # Raise rather than returning the partial list accumulated so far:
+            # the result feeds the migration matcher, which deletes score rows
+            # missing from it as orphans. A silently truncated scan would
+            # destroy real analysis data (issue #523).
+            raise
 
     return all_items
 
