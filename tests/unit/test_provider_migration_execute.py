@@ -13,7 +13,7 @@ import os
 import sys
 import importlib.util
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 def _load_tasks_mod():

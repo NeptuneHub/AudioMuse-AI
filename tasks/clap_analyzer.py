@@ -16,7 +16,6 @@ ONNX Runtime provides:
 """
 
 import os
-import sys
 import logging
 import numpy as np
 from typing import Tuple, Optional

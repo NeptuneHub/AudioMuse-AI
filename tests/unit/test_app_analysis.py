@@ -4,8 +4,7 @@ Tests cover analysis and cleaning endpoints including request handling,
 task enqueueing, and error cases.
 """
 import pytest
-from unittest.mock import Mock, MagicMock, patch
-import uuid
+from unittest.mock import Mock, patch
 from flask import Flask
 from app_analysis import analysis_bp
 

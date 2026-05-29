@@ -6,7 +6,6 @@ Tests core duplicate filtering and playlist selection logic:
 - Distance-based duplicate detection
 - Diversity-based playlist selection
 """
-import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
 from tasks.clustering_postprocessing import (

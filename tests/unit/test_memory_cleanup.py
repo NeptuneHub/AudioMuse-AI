@@ -4,7 +4,7 @@ Tests the finally blocks that ensure cleanup on all code paths.
 """
 
 import sys
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 # Ensure a 'jwt' module exists in sys.modules so that `import jwt as pyjwt`
 # in app.py succeeds even when PyJWT is not installed (e.g. CI unit-test env).

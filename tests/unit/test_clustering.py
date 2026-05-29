@@ -3,9 +3,8 @@
 Tests cover clustering helper functions, parameter generation, post-processing,
 and duplicate filtering with minimal mocking.
 """
-import pytest
 import numpy as np
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 from collections import defaultdict
 
 

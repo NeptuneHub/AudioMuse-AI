@@ -13,7 +13,7 @@ Tests cover:
 
 import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 
 # =============================================================================
@@ -368,7 +368,6 @@ class TestLoadVoyagerIndex:
     def test_loads_index_from_database(self):
         """Should load index from database when not in memory"""
         import json
-        import io
         
         with patch('app_helper.get_db') as mock_get_db:
             # Mock database connection and cursor

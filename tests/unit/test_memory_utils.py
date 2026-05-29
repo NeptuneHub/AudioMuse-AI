@@ -3,8 +3,6 @@ Unit tests for tasks/memory_utils.py
 Tests the memory management and data sanitization utilities.
 """
 
-import pytest
-import gc
 from tasks.memory_utils import (
     sanitize_string_for_db,
     cleanup_cuda_memory,

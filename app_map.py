@@ -2,12 +2,11 @@ import gc
 import json
 import math
 import logging
-from flask import Blueprint, jsonify, render_template, request, Response, current_app
+from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from app_helper import get_db, load_map_projection
-import config
 
 # Try to reuse projection helpers from song_alchemy
 try:

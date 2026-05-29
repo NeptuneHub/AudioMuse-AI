@@ -34,7 +34,6 @@ import pytest
 import warnings
 import requests
 import time
-import re
 
 # Update the BASE_URL to point to your running API server
 BASE_URL = 'http://192.168.3.97:8000'

@@ -17,7 +17,9 @@ tasks/__init__.py (which imports librosa).
 """
 
 import importlib.util
+import json
 import os
+import re
 import sys
 import types
 
@@ -106,6 +108,43 @@ class TestSplitBytes:
 
     def test_part_larger_than_input(self):
         assert _helpers._split_bytes(b"abc", 100) == [b"abc"]
+
+
+class TestSplitText:
+    def test_empty_returns_single_empty(self):
+        assert _helpers._split_text("", 16) == [""]
+
+    def test_small_returns_single(self):
+        assert _helpers._split_text("hello", 64) == ["hello"]
+
+    def test_large_splits_and_roundtrips(self):
+        s = "x" * 1000
+        parts = _helpers._split_text(s, 100)
+        assert len(parts) > 1
+        assert "".join(parts) == s
+
+    def test_each_fragment_within_byte_bound(self):
+        s = "é" * 1000
+        max_bytes = 100
+        parts = _helpers._split_text(s, max_bytes)
+        assert "".join(parts) == s
+        for p in parts:
+            assert len(p.encode("utf-8")) <= max_bytes
+
+
+class TestReassembleSegmentedIdMap:
+    def test_single_fragment_legacy_layout(self):
+        frags = [(1, '{"0": "a", "1": "b"}'), (2, ""), (3, "")]
+        assert _helpers.reassemble_segmented_id_map(frags) == '{"0": "a", "1": "b"}'
+
+    def test_multi_fragment_concatenates_in_part_order(self):
+        full = '{"0": "aaaa", "1": "bbbb"}'
+        frags = [(2, full[10:]), (1, full[:10])]
+        assert _helpers.reassemble_segmented_id_map(frags) == full
+
+    def test_handles_none_fragments(self):
+        frags = [(1, '{"0": "a"}'), (2, None)]
+        assert _helpers.reassemble_segmented_id_map(frags) == '{"0": "a"}'
 
 
 class TestResolveVoyagerSpace:

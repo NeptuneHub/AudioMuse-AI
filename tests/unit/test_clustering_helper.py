@@ -7,10 +7,9 @@ Tests evolutionary parameter generation and mutation with ACTUAL function calls:
 - Stratified sampling logic
 - Clustering model application
 """
-import pytest
 import numpy as np
 import random
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 from tasks.clustering_helper import (
     _mutate_param,
     _generate_random_parameters,

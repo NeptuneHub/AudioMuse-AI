@@ -1,5 +1,5 @@
 # app_collection.py
-from flask import Blueprint, jsonify, request, render_template, g
+from flask import Blueprint, jsonify, request, render_template
 import uuid
 import logging
 import json

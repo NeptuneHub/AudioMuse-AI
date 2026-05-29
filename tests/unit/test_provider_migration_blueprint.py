@@ -7,7 +7,6 @@ without librosa.
 """
 import os
 import sys
-import json
 import importlib.util
 import pytest
 from unittest.mock import MagicMock, patch

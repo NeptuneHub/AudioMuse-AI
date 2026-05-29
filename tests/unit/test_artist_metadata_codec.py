@@ -23,7 +23,7 @@ import types
 
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _load_helpers():

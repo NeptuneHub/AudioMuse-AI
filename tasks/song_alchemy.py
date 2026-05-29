@@ -1,7 +1,6 @@
 import logging
 from typing import List, Tuple
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
 
 from .voyager_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
 from app_helper import get_score_data_by_ids, load_map_projection
