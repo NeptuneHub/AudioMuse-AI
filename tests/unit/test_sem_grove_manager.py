@@ -446,7 +446,7 @@ class TestSemGroveRoundTrip:
         except ImportError:
             pytest.skip("voyager not installed")
 
-from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
+        from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
 
         n         = 15
         lyrics_dim = 16

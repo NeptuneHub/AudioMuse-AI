@@ -270,7 +270,7 @@ def run_clustering_task(
     """
     # --- Local imports to prevent circular dependency ---
     from app import app
-from app_helper import redis_conn, get_db, save_task_status, get_task_info_from_db, update_playlist_table, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+    from app_helper import redis_conn, get_db, save_task_status, get_task_info_from_db, update_playlist_table, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -663,8 +663,8 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-from app_helper import redis_conn, get_child_tasks_from_db, get_task_info_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS
-    
+    from app_helper import redis_conn, get_child_tasks_from_db, get_task_info_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS
+
     current_time = time.time()
     timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
     processed_jobs = state_dict.get("processed_job_ids", set())

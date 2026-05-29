@@ -271,7 +271,7 @@ def sync_album_batch_task(parent_task_id, album_batch, pocketbase_url, pocketbas
 # --- Main task ---
 def sync_collections_task(url, token, num_albums):
     from app import app
-from app_helper import redis_conn, rq_queue_default, save_task_status, get_task_info_from_db, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+    from app_helper import redis_conn, rq_queue_default, save_task_status, get_task_info_from_db, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 
     current_job = get_current_job()
     current_task_id = current_job.id if current_job else str(uuid.uuid4())

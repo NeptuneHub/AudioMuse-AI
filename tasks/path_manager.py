@@ -279,7 +279,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     final merge fails catastrophically.
     """
     # Local import to prevent circular dependency
-from app_helper import get_score_data_by_ids, get_tracks_by_ids
+    from app_helper import get_score_data_by_ids, get_tracks_by_ids
     logger.info(f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}.")
 
     if Lreq < 2:

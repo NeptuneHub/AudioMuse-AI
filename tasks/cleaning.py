@@ -26,7 +26,7 @@ def identify_and_clean_orphaned_albums_task():
     This combines identification and deletion into a single automated process.
     """
     from app import app
-from app_helper import redis_conn, get_db, save_task_status, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
+    from app_helper import redis_conn, get_db, save_task_status, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
