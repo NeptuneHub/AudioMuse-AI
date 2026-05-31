@@ -208,6 +208,7 @@ class ProcessSupervisor:
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait(timeout=5)  # reap so it doesn't linger as a zombie
         except Exception:
             pass
 
@@ -344,7 +345,16 @@ class ProcessSupervisor:
                         proc.terminate()
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:
-                    os.kill(pid, signal.SIGTERM)
+                    # No psutil: verify the PID is still one of ours before
+                    # killing -- PIDs get recycled, so a stale pidfile entry could
+                    # otherwise name an unrelated process.
+                    comm = subprocess.check_output(
+                        ["ps", "-p", str(pid), "-o", "command="], text=True
+                    ).strip()
+                    if (paths.APP_NAME in comm or "--role=" in comm
+                            or "redis-server" in comm or "postgres" in comm):
+                        os.kill(pid, signal.SIGTERM)
+                        self._log.info("Reaped orphan %s (pid %s) via ps fallback", name, pid)
             except Exception:
                 continue
         self._reap_stale_infra()

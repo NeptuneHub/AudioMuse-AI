@@ -37,6 +37,12 @@ concurrency:
   group: build-macos-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default for GITHUB_TOKEN: the build job only reads the repo and
+# downloads public release assets. The release job below requests `contents: write`
+# explicitly to attach the zip.
+permissions:
+  contents: read
+
 env:
   # Releases the models live on. Bump these in lockstep with the Dockerfile.
   MODEL_RELEASE: v5.0.0-model

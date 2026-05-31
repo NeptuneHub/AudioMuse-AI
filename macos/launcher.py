@@ -66,12 +66,16 @@ def _acquire_single_instance_lock(paths):
     global _INSTANCE_LOCK
     import fcntl
     lock_path = os.path.join(paths.app_support_dir(), "supervisor.lock")
-    fh = open(lock_path, "w")
+    # Open with "a+" (not "w"): "w" truncates on open, which would erase the live
+    # holder's PID from the file before we even try the lock. Only rewrite the PID
+    # once we actually own the lock.
+    fh = open(lock_path, "a+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
         return False
+    fh.seek(0)
     fh.truncate(0)
     fh.write(str(os.getpid()))
     fh.flush()

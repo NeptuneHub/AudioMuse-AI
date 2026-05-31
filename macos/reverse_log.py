@@ -27,7 +27,8 @@ class NewestFirstFileHandler(logging.Handler):
         self._max_lines = max_lines
         self._flush_interval = flush_interval
         self._lines = []  # newest-first: index 0 is the most recent physical line
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()          # guards _lines / _timer (fast, held by emit)
+        self._write_lock = threading.Lock()    # serializes the disk write in _flush
         self._timer = None
         self._closed = False
         self._load_existing()
@@ -60,18 +61,22 @@ class NewestFirstFileHandler(logging.Handler):
                 self._timer.start()
 
     def _flush(self):
-        with self._lock:
-            self._timer = None
-            data = "\n".join(self._lines)
-        if data:
-            data += "\n"
-        tmp = self._path + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(data)
-            os.replace(tmp, self._path)  # atomic: readers never see a partial file
-        except OSError:
-            pass
+        # _write_lock serializes concurrent _flush calls (timer thread vs close())
+        # so they never race on the shared ``.tmp`` path; emit() never takes it, so
+        # logging stays non-blocking. Always acquire _write_lock before _lock.
+        with self._write_lock:
+            with self._lock:
+                self._timer = None
+                data = "\n".join(self._lines)
+            if data:
+                data += "\n"
+            tmp = self._path + ".tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+                os.replace(tmp, self._path)  # atomic: readers never see a partial file
+            except OSError:
+                pass
 
     def flush(self):
         with self._lock:

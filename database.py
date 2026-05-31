@@ -81,7 +81,11 @@ def ensure_embedded_running(data_dir):
     import pgserver
     from pathlib import Path
     try:
-        pgserver.PostgresServer._instances.pop(Path(data_dir), None)
+        # pgserver keys _instances by ``Path(pgdata).expanduser().resolve()`` (see
+        # its get_server), so we must resolve too -- a symlinked or relative
+        # data_dir would otherwise not match and the dead instance wouldn't be
+        # dropped, leaving the postmaster un-restarted.
+        pgserver.PostgresServer._instances.pop(Path(data_dir).expanduser().resolve(), None)
     except Exception:
         pass
     _embedded_server = pgserver.get_server(data_dir)
