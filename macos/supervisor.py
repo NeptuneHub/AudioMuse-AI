@@ -220,12 +220,39 @@ class ProcessSupervisor:
         while not self._health_stop.wait(5):
             if self._state != "running":
                 continue
+            # Redis is infrastructure, not a ``_desired`` child, so the child
+            # check below never covers it. Without this, a Redis death (crash,
+            # OOM, or a stale sibling unlinking the shared unix socket) leaves
+            # every worker crash-looping against a missing socket forever.
+            self._ensure_redis_healthy()
             for name in list(self._desired):
                 with self._lock:
                     proc = self._children.get(name)
                 if proc is not None and proc.poll() is not None:
                     self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
                     self.start_child(name)
+
+    def _ensure_redis_healthy(self):
+        """Restart embedded Redis if its process died or its socket stopped
+        answering (mirrors supervisord ``autorestart`` for the broker)."""
+        with self._lock:
+            proc = self._children.get("redis")
+        if proc is not None and proc.poll() is None:
+            try:
+                if redis_lib.Redis(
+                    unix_socket_path=paths.redis_socket_path(),
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                ).ping():
+                    return
+            except Exception:
+                pass  # alive but unreachable (e.g. socket unlinked) -> restart
+        self._log.warning("Embedded Redis unhealthy; restarting it")
+        try:
+            self._start_redis()
+            self._log.info("Embedded Redis restarted")
+        except Exception:
+            self._log.exception("Failed to restart embedded Redis")
 
     def dispatch_control(self, action, services):
         results = []
@@ -294,6 +321,42 @@ class ProcessSupervisor:
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:
                     os.kill(pid, signal.SIGTERM)
+            except Exception:
+                continue
+        self._reap_stale_infra()
+
+    def _reap_stale_infra(self):
+        """Kill any leftover embedded Redis/Postgres referencing *our* data dirs.
+
+        The pidfile sweep above misses processes from an unclean exit (force-quit
+        or crash, where ``stop_all`` never ran). Multiple ``redis-server``
+        instances share one unix-socket path, so a straggler unlinking that
+        socket on exit breaks the live broker -- hence we match by our own
+        socket/data paths and clear them before starting fresh."""
+        try:
+            import psutil
+        except Exception:
+            return
+        me = os.getpid()
+        redis_marker = paths.redis_dir()
+        pg_marker = paths.pgdata_dir()
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if proc.info["pid"] == me:
+                    continue
+                cmd = " ".join(proc.info.get("cmdline") or [])
+                if not cmd:
+                    continue
+                stale_redis = "redis-server" in cmd and redis_marker in cmd
+                stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
+                if stale_redis or stale_pg:
+                    proc.terminate()
+                    self._log.info(
+                        "Reaped stale %s (pid %s) referencing our data dir",
+                        proc.info.get("name"), proc.info["pid"],
+                    )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
             except Exception:
                 continue
         self._clear_pidfile()

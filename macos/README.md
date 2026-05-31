@@ -198,8 +198,15 @@ this is what runs `init_db()` and creates the schema) → `rq-worker-high` →
 `start_new_session=True`; shutdown is reverse-order `killpg(SIGTERM)` → `SIGKILL`
 backstop, then `database.stop_embedded()`. A health thread restarts children that
 exit while `RUNNING` (mirrors supervisord `autorestart`; note RQ workers
-intentionally exit after `max_jobs` and are meant to be respawned). Orphans from a
-crashed previous run are reaped on startup via a PID file + `psutil`.
+intentionally exit after `max_jobs` and are meant to be respawned). It also
+**pings embedded Redis each cycle and restarts it** if the process died or the
+socket stopped answering (`_ensure_redis_healthy`) — Redis is infrastructure, not
+a `_desired` child, so without this a Redis death leaves every worker
+crash-looping forever (see gotcha #14). Orphans from a crashed previous run are
+reaped on startup via a PID file + `psutil`, **plus** a path sweep
+(`_reap_stale_infra`) that kills any `redis-server`/`postgres` referencing our own
+data dirs — the pidfile misses processes left by a force-quit, and stale Redis
+instances share the one socket path and unlink it on exit.
 
 **Control plane.** The container uses supervisord; macOS has none. The web UI's
 "save config → restart workers" flow publishes to Redis → `restart_listener`
@@ -296,6 +303,17 @@ by `macos/control_ipc.ControlServer`, which calls
     and `gte-multilingual-base/` files must be present in `./model`. Symptom if it
     regresses: audio+CLAP succeed but lyrics fail with `... not found at
     /app/model/...` and `other_features`/lyrics are skipped.
+14. **Embedded Redis death is unrecoverable without explicit supervision** — Redis
+    is spawned outside the `_desired` child set, so the child health check does
+    NOT cover it. If Redis exits (crash/OOM) or its unix socket is unlinked, every
+    worker/flask/janitor crash-loops with `Error 2 connecting to .../redis.sock.
+    No such file or directory` and never recovers. Two related traps: (a) the
+    health loop must restart Redis itself (`_ensure_redis_healthy`); (b) all Redis
+    instances share ONE socket path, so a leftover `redis-server` from a
+    force-quit (which skips `stop_all`) unlinks the live socket on exit —
+    `_reap_stale_infra` sweeps those by data-dir match at startup. Symptom:
+    mass `redis.sock` "No such file or directory" tracebacks, often with flask
+    `Address already in use` (port 8000) from the restart churn.
 
 ### Debugging entry points
 
