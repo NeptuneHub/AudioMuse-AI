@@ -42,6 +42,42 @@ _cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
 # across jobs in the same worker process (which may be reused by RQ).
 _label_text_embeddings_cache = None  # {'mood': np.ndarray, 'feature': np.ndarray}
 
+# Every CLAP audio segment is exactly 10 s at 48 kHz; see analyze_audio_file().
+# Kept module-level so the CoreML static-shape pin and the segmenter can't drift.
+_SEGMENT_LENGTH_SAMPLES = 480000
+
+
+def _static_shape_model_bytes(model_path):
+    """Return the CLAP audio model with its dynamic time axis pinned to a fixed
+    size, serialized to bytes — or None if the model is already static.
+
+    The student model declares its mel input as ``(1, 1, n_mels, 's35')``: the
+    time axis is symbolic. CoreML's backend cannot compile a symbolic dim and
+    fails at run time with "Unable to compute the prediction (error code: -1)".
+    But every segment we feed is exactly ``_SEGMENT_LENGTH_SAMPLES`` long, so the
+    librosa (center=True) frame count is constant — ``1 + samples // hop``.
+    Pinning the symbolic dim to that value yields a fully static shape CoreML
+    can compile and run, while CPU/CUDA keep using the original dynamic model.
+    """
+    import onnx
+    from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
+
+    hop = getattr(config, 'CLAP_AUDIO_HOP_LENGTH', 480)
+    frames = 1 + _SEGMENT_LENGTH_SAMPLES // hop
+
+    model = onnx.load(model_path, load_external_data=True)
+    symbolic = {
+        d.dim_param
+        for inp in model.graph.input
+        for d in inp.type.tensor_type.shape.dim
+        if d.HasField('dim_param')
+    }
+    if not symbolic:
+        return None
+    for name in symbolic:
+        make_dim_param_fixed(model.graph, name, frames)
+    return model.SerializeToString()
+
 
 def _load_audio_model():
     """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
@@ -82,25 +118,18 @@ def _load_audio_model():
     # GPU support: ONNX Runtime handles CUDA availability internally
     session = None
     
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+    # Centralized provider selection: CUDA → CoreML (Apple Silicon) → CPU.
+    # Keep CLAP audio's original CUDA tuning (cudnn DEFAULT, no copy-in-default-
+    # stream) so the containerized GPU path stays byte-identical to before; this
+    # cuda_options override is CUDA-only and has no effect on the macOS CoreML
+    # path, which is added by allow_coreml=True.
+    from tasks.analysis_helper import resolve_providers
+    provider_options = resolve_providers(allow_coreml=True, cuda_options={
+        'device_id': 0,
+        'arena_extend_strategy': 'kSameAsRequested',
+        'cudnn_conv_algo_search': 'DEFAULT',
+    })
+
     # Create session — pass file path so ORT resolves external data natively
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -115,10 +144,25 @@ def _load_audio_model():
     cpu_providers      = ['CPUExecutionProvider']
     cpu_opts           = [{}]
 
+    # CoreML cannot compile the model's symbolic time axis (it fails at run time
+    # with error -1). When CoreML is in the chain, hand ORT a copy with that axis
+    # pinned to the fixed per-segment frame count so CoreML can actually run it.
+    # CPU/CUDA keep the original dynamic model (passed by path) so external data
+    # resolves natively.
+    preferred_model_input = model_path
+    if 'CoreMLExecutionProvider' in preferred_providers:
+        try:
+            static_bytes = _static_shape_model_bytes(model_path)
+            if static_bytes is not None:
+                preferred_model_input = static_bytes
+                logger.info("CoreML: pinned CLAP audio time axis to a static shape for compilation")
+        except Exception as e:
+            logger.warning(f"CoreML: could not build static-shape model ({e}); using dynamic model")
+
     try:
-        # 1) Direct path — ONNX Runtime resolves external data relative to
-        #    the model directory; works on all platforms and CI.
-        session = _create_session(model_path, preferred_providers, preferred_opts)
+        # 1) Preferred providers. For CoreML this is the static-shape model bytes;
+        #    otherwise the direct path so ORT resolves external data natively.
+        session = _create_session(preferred_model_input, preferred_providers, preferred_opts)
         logger.info("✓ CLAP audio model loaded successfully (direct path)")
 
     except Exception as direct_err:
@@ -487,7 +531,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
         # Audio constants (48 kHz, 10-second segments, 50 % overlap)
         SAMPLE_RATE = 48000
-        SEGMENT_LENGTH = 480000   # 10 seconds at 48 kHz
+        SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES   # 10 seconds at 48 kHz
         HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
 
         # --- robust audio loading (pydub fallback) ---
