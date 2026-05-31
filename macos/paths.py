@@ -64,6 +64,11 @@ def numba_cache_dir():
     return _ensure(os.path.join(app_support_dir(), "numba_cache"))
 
 
+def backup_dir():
+    """Writable dir for pg_dump backups / restore logs (``app_backup.py``)."""
+    return _ensure(os.path.join(app_support_dir(), "backup"))
+
+
 def redis_socket_path():
     return os.path.join(redis_dir(), "redis.sock")
 
@@ -93,3 +98,15 @@ def redis_binary():
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "redis-server")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "redis", platform.machine(), "redis-server")
+
+
+def pg_bin_dir():
+    """Directory holding the bundled Postgres client tools (pg_dump, psql, pg_restore).
+
+    Lives next to the pgserver server binaries inside the frozen bundle; in dev it
+    resolves from the installed pgserver package.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(resource_root(), "pgserver", "pginstall", "bin")
+    import pgserver
+    return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall", "bin")

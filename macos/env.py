@@ -60,6 +60,22 @@ def build_child_env(role, database_url, redis_url):
         "SILERO_VAD_ONNX_PATH": os.path.join(model_dir, "silero_vad.onnx"),
         "LYRICS_GTE_ONNX_PATH": os.path.join(model_dir, "gte-multilingual-base-int8.onnx"),
         "LYRICS_GTE_TOKENIZER_DIR": os.path.join(model_dir, "gte-multilingual-base"),
+        # Backup/restore (app_backup.py). Its defaults are container-shaped: it
+        # writes pg_dump output under /app/backup (read-only in the bundle) and
+        # builds pg_dump/psql/pg_restore connection args from the POSTGRES_* vars
+        # (TCP host/port that don't match the embedded server). Repoint all of it
+        # at the embedded unix socket + the writable Library dir. Only app_backup
+        # reads these POSTGRES_* values; the app itself connects via DATABASE_URL,
+        # which the supervisor already sets, so this does not affect anything else.
+        "BACKUP_DIR": paths.backup_dir(),
+        "RESTORE_LOG_DIR": paths.backup_dir(),
+        "POSTGRES_HOST": paths.pgdata_dir(),  # libpq treats a /path host as a unix-socket dir
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "",
+        "POSTGRES_DB": "postgres",
+        # Put the bundled Postgres client tools on PATH so pg_dump et al. resolve.
+        "PATH": paths.pg_bin_dir() + os.pathsep + os.environ.get("PATH", ""),
     })
     if role in _WORKER_ROLES:
         env["AUDIOMUSE_ROLE"] = "worker"
