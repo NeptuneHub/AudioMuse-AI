@@ -30,15 +30,28 @@ __all__ = [
     "send_stop_job_command",
     "get_current_job",
     "build_embedded_redis_argv",
+    "redis_socket_options",
 ]
+
+def redis_socket_options(url):
+    """Connection kwargs that depend on the transport.
+
+    ``socket_keepalive`` is a TCP-only option; redis-py's
+    ``UnixDomainSocketConnection`` raises ``TypeError`` if it is passed. The
+    embedded (macOS) queue connects over a unix socket (``unix://``), so the
+    option is omitted there and kept for the TCP ``redis://`` URLs used by the
+    container/cloud deployments.
+    """
+    return {} if str(url).startswith("unix://") else {"socket_keepalive": True}
+
 
 redis_conn = Redis.from_url(
     config.REDIS_URL,
     socket_connect_timeout=30,
     socket_timeout=60,
-    socket_keepalive=True,
     health_check_interval=30,
-    retry_on_timeout=True
+    retry_on_timeout=True,
+    **redis_socket_options(config.REDIS_URL),
 )
 
 rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1)

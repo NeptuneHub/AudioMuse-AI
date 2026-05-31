@@ -11,7 +11,6 @@ orphaned Postgres/Redis processes behind.
 
 import json
 import logging
-import logging.handlers
 import os
 import signal
 import subprocess
@@ -28,6 +27,7 @@ import taskqueue
 from macos import env as env_builder
 from macos import paths
 from macos.control_ipc import ControlServer
+from macos.reverse_log import NewestFirstFileHandler
 
 logger = logging.getLogger("audiomuse.supervisor")
 
@@ -61,9 +61,10 @@ class ProcessSupervisor:
         log = logging.getLogger("audiomuse.app")
         log.setLevel(logging.INFO)
         if not log.handlers:
-            handler = logging.handlers.RotatingFileHandler(
-                paths.log_file(), maxBytes=10 * 1024 * 1024, backupCount=3
-            )
+            # Newest line on top so opening the log shows the latest activity
+            # first. Bounded by line count (~40k) instead of a byte cap; see
+            # macos/reverse_log.py for why it's not a literal per-line prepend.
+            handler = NewestFirstFileHandler(paths.log_file())
             handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
             log.addHandler(handler)
         log.propagate = False

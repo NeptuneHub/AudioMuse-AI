@@ -21,6 +21,13 @@ def build_child_env(role, database_url, redis_url):
     model_dir = paths.model_dir()
     env.update({
         "AUDIOMUSE_PLATFORM": "macos",
+        # RQ workers fork a child per job. On macOS, if any thread in the parent
+        # is inside the Objective-C runtime when fork() happens (Foundation gets
+        # pulled in transitively via pyobjc/CoreAudio/onnxruntime), the child
+        # aborts with "+[NSNumber initialize] may have been in progress in
+        # another thread when fork() was called. Crashing instead." -- so jobs
+        # never run. This is the documented opt-out of that fork-safety check.
+        "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
         "APP_DATA_DIR": paths.app_support_dir(),
         "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
         "DATABASE_TYPE": "embedded",
@@ -29,11 +36,30 @@ def build_child_env(role, database_url, redis_url):
         "REDIS_URL": redis_url,
         "TEMP_DIR": paths.temp_audio_dir(),
         "NUMBA_CACHE_DIR": paths.numba_cache_dir(),
+        # transformers/huggingface_hub look up models (e.g. the CLAP RoBERTa
+        # tokenizer, loaded with local_files_only=True) in HF_HOME/hub. The
+        # container points HF_HOME at a pre-baked cache; we bundle the same cache
+        # at model/huggingface and point there. Offline flags guarantee no
+        # network stall on a machine that may be offline -- the bundled cache is
+        # complete (the integration suite runs CLAP+lyrics analysis with these
+        # same offline flags set).
+        "HF_HOME": os.path.join(model_dir, "huggingface"),
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
         "EMBEDDING_MODEL_PATH": os.path.join(model_dir, "musicnn_embedding.onnx"),
         "PREDICTION_MODEL_PATH": os.path.join(model_dir, "musicnn_prediction.onnx"),
         "CLAP_AUDIO_MODEL_PATH": os.path.join(model_dir, "model_epoch_36.onnx"),
         "CLAP_TEXT_MODEL_PATH": os.path.join(model_dir, "clap_text_model.onnx"),
         "LYRICS_MODEL_DIR": model_dir,
+        # The lyrics ONNX loaders (lyrics/silero_onnx.py, lyrics/gte_onnx.py)
+        # hardcode container ``/app/model/...`` defaults and do NOT derive from
+        # LYRICS_MODEL_DIR, so each needs its own override or the frozen app
+        # looks at the Linux path. (Whisper does derive from LYRICS_MODEL_DIR,
+        # but we set it explicitly too for clarity.)
+        "LYRICS_WHISPER_MODEL_DIR": os.path.join(model_dir, "whisper-small-onnx"),
+        "SILERO_VAD_ONNX_PATH": os.path.join(model_dir, "silero_vad.onnx"),
+        "LYRICS_GTE_ONNX_PATH": os.path.join(model_dir, "gte-multilingual-base-int8.onnx"),
+        "LYRICS_GTE_TOKENIZER_DIR": os.path.join(model_dir, "gte-multilingual-base"),
     })
     if role in _WORKER_ROLES:
         env["AUDIOMUSE_ROLE"] = "worker"

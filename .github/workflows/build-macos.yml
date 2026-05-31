@@ -1,19 +1,22 @@
-# Builds the standalone macOS .app for BOTH architectures NATIVELY and attaches
-# the resulting zips to the GitHub release that triggered the run.
+# Builds the standalone macOS .app for Apple Silicon and attaches the resulting
+# zip to the GitHub release that triggered the run.
 #
-# Why native (no cross-build / universal2): onnxruntime, PyAV and voyager wheels
-# are not reliably universal2, so each arch must be built on its own runner —
-# arm64 on Apple Silicon (macos-14), x86_64 on Intel (macos-13). This mirrors the
-# rule in macos/README.md ("build on the target architecture").
+# Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
+# exclusively — there is no Intel build. onnxruntime/PyAV/voyager wheels are not
+# reliably universal2, so we build natively on an arm64 runner (macos-14).
 #
-# The app is ad-hoc signed only (no Apple Developer account); that is expected and
-# unchanged by CI — end users still clear quarantine with `xattr -dr ...` after
-# download (see macos/README.md "Installing & authorizing").
+# Reproducibility: the small, exact-version native build inputs are committed in
+# git (macos/vendor/redis/arm64/redis-server and macos/vendor/pg-contrib/arm64/*),
+# NOT regenerated at build time, so the bundle's embedded Redis and the Postgres
+# unaccent/pg_trgm contrib extensions are byte-identical to the tested local build.
 #
-# The ~2.5 GB of ONNX models are NOT in git. This workflow assembles ./model the
-# same way the Dockerfile's `models` stage does, EXCEPT it skips the HuggingFace
-# cache tarball: macos/env.py points CLAP text at the ONNX clap_text_model.onnx
-# and never sets HF_HOME, so the bundle does not need the laion-clap HF encoders.
+# The app is ad-hoc signed only (no Apple Developer account); end users clear
+# quarantine with `xattr -dr ...` after download (see macos/README.md).
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
+# (huggingface_models.tar.gz) — macos/env.py points HF_HOME at model/huggingface
+# for the CLAP RoBERTa tokenizer, so the bundle needs it.
 
 name: Build standalone macOS app
 
@@ -39,15 +42,10 @@ env:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14   # Apple Silicon -> uname -m == arm64
-            arch: arm64
-          - runner: macos-13   # Intel        -> uname -m == x86_64
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
+    runs-on: macos-14
+    env:
+      ARCH: arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -57,27 +55,38 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Sanity-check runner architecture
+      - name: Sanity-check runner architecture (must be arm64)
         run: |
           set -euo pipefail
           GOT="$(uname -m)"
-          if [ "$GOT" != "${{ matrix.arch }}" ]; then
-            echo "::error::Expected ${{ matrix.arch }} runner but uname -m reports $GOT"
+          if [ "$GOT" != "arm64" ]; then
+            echo "::error::This build is Apple-Silicon-only but uname -m reports $GOT"
             exit 1
           fi
           echo "Building for $GOT"
 
-      - name: Vendor redis-server for this architecture
+      - name: Verify committed native build inputs are present
         run: |
           set -euo pipefail
-          brew install redis
-          dest="macos/vendor/redis/$(uname -m)"
-          mkdir -p "$dest"
-          cp "$(brew --prefix redis)/bin/redis-server" "$dest/redis-server"
-          chmod +x "$dest/redis-server"
-          file "$dest/redis-server"
+          # These are committed in git (not regenerated here) so the bundle is
+          # reproducible. If a fresh checkout is missing them, fail loudly.
+          required=(
+            macos/vendor/redis/arm64/redis-server
+            macos/vendor/pg-contrib/arm64/lib/unaccent.dylib
+            macos/vendor/pg-contrib/arm64/lib/pg_trgm.dylib
+            macos/vendor/pg-contrib/arm64/extension/unaccent.control
+            macos/vendor/pg-contrib/arm64/extension/pg_trgm.control
+            macos/vendor/pg-contrib/arm64/tsearch_data/unaccent.rules
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::Missing committed vendor file: $f"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::macos/vendor/ must be committed (see macos/vendor/pg-contrib/README.md)."; exit 1; }
+          chmod +x macos/vendor/redis/arm64/redis-server
+          file macos/vendor/redis/arm64/redis-server
 
-      - name: Assemble ./model (mirrors the Dockerfile models stage, minus the HF cache)
+      - name: Assemble ./model (mirrors the Dockerfile models stage)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -94,6 +103,14 @@ jobs:
           gh release download "$DCLAP_RELEASE" -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber \
             -p model_epoch_36.onnx \
             -p model_epoch_36.onnx.data
+
+          echo "==> HuggingFace cache (roberta/bert/bart) — HF_HOME points at model/huggingface"
+          tmp_hf="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp_hf" --clobber \
+            -p huggingface_models.tar.gz
+          mkdir -p model/huggingface
+          tar -xzf "$tmp_hf/huggingface_models.tar.gz" -C model/huggingface
+          rm -rf "$tmp_hf"
 
           echo "==> lyrics bundles (whisper / silero / gte) — downloaded then extracted into ./model"
           tmp="$(mktemp -d)"
@@ -115,6 +132,7 @@ jobs:
             model/clap_text_model.onnx
             model/model_epoch_36.onnx
             model/model_epoch_36.onnx.data
+            model/huggingface/hub/models--roberta-base
             model/silero_vad.onnx
             model/gte-multilingual-base-int8.onnx
             model/whisper-small-onnx/encoder_model.onnx
@@ -123,7 +141,7 @@ jobs:
           )
           missing=0
           for f in "${required[@]}"; do
-            if [ ! -s "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
+            if [ ! -e "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
           done
           [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
           du -sh model
@@ -145,12 +163,11 @@ jobs:
       - name: Upload zip as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-${{ matrix.arch }}
-          path: dist/AudioMuse-AI-${{ matrix.arch }}.zip
+          name: AudioMuse-AI-${{ env.ARCH }}
+          path: dist/AudioMuse-AI-${{ env.ARCH }}.zip
           if-no-files-found: error
 
-  # Attach both arch zips to the release in ONE place, so the two build jobs never
-  # race to create/update the release. Runs only for tag pushes.
+  # Attach the arm64 zip to the release. Runs only for tag pushes.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -158,13 +175,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download built zips
+      - name: Download built zip
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Attach zips to the release
+      - name: Attach zip to the release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/AudioMuse-AI-*.zip

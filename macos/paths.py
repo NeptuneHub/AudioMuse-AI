@@ -5,7 +5,9 @@ Read-only resources (ONNX models, Flask templates/static, the bundled
 frozen, the repo root in dev. Every *writable* path (the Postgres data dir, the
 Redis socket, transcode scratch, the numba cache, logs, the control socket and
 the supervisor pid file) lives under the user's ``~/Library``; nothing writable
-ever lands inside the read-only, signed bundle.
+ever lands inside the read-only, signed bundle. The writable root is
+``~/Library/AudioMuse-AI`` (deliberately *not* ``Application Support`` -- see
+``app_support_dir`` for why the path must be space-free).
 """
 
 import os
@@ -32,7 +34,14 @@ def _ensure(path):
 
 
 def app_support_dir():
-    return _ensure(os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME))
+    # NB: ``~/Library/AudioMuse-AI`` rather than the conventional
+    # ``~/Library/Application Support/AudioMuse-AI``. The path must not contain a
+    # space: pgserver hands the embedded Postgres its unix-socket directory via
+    # ``pg_ctl -o '-k <dir>'``, a single string that ``postgres`` re-splits on
+    # whitespace -- a space in the path makes startup fail with
+    # ``invalid argument``. The cluster's data dir doubles as its socket dir, so
+    # the whole writable root stays space-free.
+    return _ensure(os.path.join(os.path.expanduser("~"), "Library", APP_NAME))
 
 
 def logs_dir():

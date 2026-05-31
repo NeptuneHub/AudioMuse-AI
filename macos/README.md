@@ -10,19 +10,22 @@ menu-bar agent that starts everything for you:
 - The Flask web UI (served by `waitress`) on `http://127.0.0.1:8000`.
 - The two RQ workers, the janitor, and the config-restart listener.
 
-The ~2.5 GB of ONNX models (MusiCNN, CLAP, Whisper, gte-multilingual, Silero VAD)
-are bundled inside the app, so analysis works fully offline.
+The ~6.5 GB of models (MusiCNN, CLAP audio+text, the RoBERTa HF cache, Whisper-small,
+gte-multilingual, Silero VAD) are bundled inside the app, so analysis **and** lyrics
+transcription work fully offline.
 
 All writable state lives in your Library, never inside the (read-only, signed) app:
 
-- Database / Redis / scratch: `~/Library/Application Support/AudioMuse-AI/`
-- Logs: `~/Library/Logs/AudioMuse-AI/audiomuse.log` (rotated, capped at ~40 MB total)
+- Database / Redis / scratch: `~/Library/AudioMuse-AI/`
+- Logs: `~/Library/Logs/AudioMuse-AI/audiomuse.log` — written **newest line first**, so
+  opening it shows the latest activity at the top. Bounded to the most recent ~40k
+  lines (see `macos/reverse_log.py`).
 
 ## Menu-bar items
 
 - **Open in Browser** — opens the web UI at `http://127.0.0.1:8000`.
 - **Pause Server / Start Server** — stops or restarts all embedded services and workers.
-- **Open Log** — opens the rotating log in Console.app.
+- **Open Log** — opens the log (newest line first) in Console.app.
 - **Quit** — cleanly shuts down PostgreSQL, Redis and every worker (no orphans).
 
 After first launch, open the UI and configure your media server (Jellyfin, Navidrome,
@@ -32,22 +35,36 @@ Lyrion, Emby or MPD) exactly as you would for the container version.
 
 ## Building (developer machine)
 
-> Build **on the target architecture**: build on Apple Silicon for an arm64 app and
-> on an Intel Mac for an x86_64 app. (universal2 is intentionally not used — several
-> ML wheels are not universal2.)
+> **Apple Silicon only** (M1/M2/M3/M4...). The macOS build targets arm64
+> exclusively — there is no Intel/x86_64 build, and universal2 is not used
+> (onnxruntime/PyAV/voyager wheels aren't reliably universal2). Build on an
+> Apple Silicon Mac.
 
 ### Prerequisites
 
 1. macOS with **Xcode Command Line Tools** (`xcode-select --install`) — provides
    `codesign`, `sips`, `iconutil`, `ditto`.
 2. **Python 3.12** (matching the project venv).
-3. A **`redis-server`** binary for your architecture, vendored at:
-   ```
-   macos/vendor/redis/$(uname -m)/redis-server
-   ```
-   Get one from a Homebrew install (`brew install redis` then copy
-   `$(brew --prefix redis)/bin/redis-server`) or build it from source. Make it
-   executable: `chmod +x macos/vendor/redis/$(uname -m)/redis-server`.
+3. The native build inputs are **committed in git** and used as-is — you do **not**
+   regenerate them per build:
+   - `macos/vendor/redis/arm64/redis-server` (Redis 8.8.0, no-TLS, self-contained)
+   - `macos/vendor/pg-contrib/arm64/` (the `unaccent`/`pg_trgm` Postgres extensions,
+     compiled against pgserver's PostgreSQL 16.2)
+
+   See `macos/vendor/redis/README.md` and `macos/vendor/pg-contrib/README.md` for
+   how to regenerate them (only needed when bumping Redis or the `pgserver`/PG
+   version).
+4. The **models** are NOT in git (they are ~6.5 GB). Assemble `./model` from the
+   project releases before building — the CI workflow `.github/workflows/build-macos.yml`
+   does exactly this and is the source of truth. In short, into `./model`:
+   - musicnn + CLAP text (`musicnn_embedding.onnx`, `musicnn_prediction.onnx`,
+     `clap_text_model.onnx`) and the DCLAP audio model
+     (`model_epoch_36.onnx` + `.data`);
+   - the HuggingFace cache → `model/huggingface/` (from `huggingface_models.tar.gz`);
+   - the lyrics bundles → `whisper-small-onnx/`, `silero_vad.onnx`,
+     `gte-multilingual-base-int8.onnx`, `gte-multilingual-base/` (from
+     `lyrics_model_whisper.tar.gz`, `lyrics_model_silero_vad.tar.gz`,
+     `lyrics_model_gte_vnni.tar.gz`).
 
 ### Steps
 
@@ -221,24 +238,77 @@ by `macos/control_ipc.ControlServer`, which calls
    initdb/postgres, set `pgserver.POSTGRES_BIN_PATH` to the bundled path before
    calling it. (pgserver API used here: `get_server(data_dir)` → `.get_uri()` →
    `.cleanup()`, mirroring `test/test_provider_migration_integration.py`.)
-4. **numba "cannot cache function"** in frozen apps via librosa — `macos/env.py`
+4. **pgserver ships a minimal Postgres without `unaccent`/`pg_trgm`** — its 16.2
+   build only has `plpgsql` + `pgvector`, but `init_db` does
+   `CREATE EXTENSION unaccent`/`pg_trgm`, so first boot dies with
+   `extension "unaccent" is not available`. Fix: the two contrib modules are
+   vendored under `macos/vendor/pg-contrib/<arch>/` and grafted into the bundled
+   `pgserver/pginstall` tree by the spec. They must be **compiled from the exact
+   PostgreSQL source version pgserver ships** (16.2) against pgserver's own
+   headers/pgxs — a module from a different minor (e.g. Homebrew's 16.14) fails to
+   load with `Symbol not found`. See `macos/vendor/pg-contrib/README.md` to
+   regenerate (and to add the `x86_64/` set when building on Intel).
+5. **Spaces in the writable data dir break embedded Postgres** — pgserver uses
+   the data dir as the cluster's unix-socket dir and forwards it to `postgres`
+   via `pg_ctl -o '-k <dir>'`, a single string `postgres` re-splits on
+   whitespace. A path like `~/Library/Application Support/AudioMuse-AI/pgdata`
+   fails at startup with `postgres: invalid argument: "Support/..."`. That is why
+   `macos/paths.py::app_support_dir` uses the space-free `~/Library/AudioMuse-AI`
+   instead of `Application Support`. Keep the whole writable root space-free.
+6. **numba "cannot cache function"** in frozen apps via librosa — `macos/env.py`
    sets `NUMBA_CACHE_DIR` to a writable dir before any import.
-5. **LSUIElement may be ignored** by the PyInstaller bootloader, showing a Dock
+7. **LSUIElement may be ignored** by the PyInstaller bootloader, showing a Dock
    icon. Belt-and-braces: Info.plist key in the spec **and** a runtime
    `NSApp().setActivationPolicy_(Accessory)` in `_run_menubar`.
-6. **Per-arch, not universal2** — onnxruntime/PyAV/voyager wheels aren't reliably
-   universal2. Build once on arm64, once on x86_64.
-7. **waitress, not gunicorn**, for the macOS web server — avoids fork-in-frozen-app
+8. **Apple Silicon only, not universal2** — onnxruntime/PyAV/voyager wheels aren't
+   reliably universal2, and the target is arm64 exclusively (no Intel build). Build
+   on an Apple Silicon Mac; the committed vendor binaries are arm64-only.
+9. **waitress, not gunicorn**, for the macOS web server — avoids fork-in-frozen-app
    fragility. The RQ workers still fork per job (that's separate and unchanged).
+10. **RQ worker fork + Objective-C = crash on macOS** — the per-job `fork()` in
+    the workers aborts the child with `+[NSNumber initialize] may have been in
+    progress in another thread when fork() was called. Crashing instead.`
+    (Foundation is pulled in transitively), so jobs silently never run even
+    though Redis/queues look healthy. Fixed by exporting
+    `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` into every child env in
+    `macos/env.py`. Symptom if it regresses: web UI works, workers "Listening",
+    but analysis never progresses and the log shows repeated `objc[...]` aborts.
+11. **TCP-only Redis socket options over a unix socket** — embedded mode connects
+    via `unix://`, whose `UnixDomainSocketConnection` rejects `socket_keepalive`
+    (`TypeError: ... unexpected keyword argument 'socket_keepalive'`), killing the
+    workers. `taskqueue.redis_socket_options(url)` drops that kwarg for `unix://`
+    URLs and keeps it for the TCP `redis://` URLs used by the container/cloud.
+12. **HF_HOME must point at the bundled model cache** — analysis lazy-loads the
+    CLAP RoBERTa tokenizer with `AutoTokenizer.from_pretrained("roberta-base",
+    local_files_only=True)`. The container pre-bakes that under
+    `/app/.cache/huggingface` and sets `HF_HOME`; we bundle the same cache at
+    `model/huggingface` (already collected by the spec's `('model','model')`) and
+    `macos/env.py` sets `HF_HOME` there plus `HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE`.
+    Symptom if it regresses: audio analysis runs but CLAP text embeddings fail
+    with `LocalEntryNotFoundError` / "couldn't connect to huggingface.co", and
+    `other_features` come out as zeros.
+13. **Lyrics ONNX models need explicit path overrides** — `lyrics/silero_onnx.py`
+    and `lyrics/gte_onnx.py` hardcode container `/app/model/...` defaults and do
+    NOT derive from `LYRICS_MODEL_DIR`, so `macos/env.py` must set
+    `SILERO_VAD_ONNX_PATH`, `LYRICS_GTE_ONNX_PATH` and `LYRICS_GTE_TOKENIZER_DIR`
+    (plus `LYRICS_WHISPER_MODEL_DIR`) at `<bundle>/model/...`, and the
+    `whisper-small-onnx/`, `silero_vad.onnx`, `gte-multilingual-base-int8.onnx`
+    and `gte-multilingual-base/` files must be present in `./model`. Symptom if it
+    regresses: audio+CLAP succeed but lyrics fail with `... not found at
+    /app/model/...` and `other_features`/lyrics are skipped.
 
 ### Debugging entry points
 
-- **Logs:** `~/Library/Logs/AudioMuse-AI/audiomuse.log` (rotating). Every child's
-  stdout/stderr is pumped here, tagged `[flask]`, `[rq-worker-default]`, etc., by
+- **Logs:** `~/Library/Logs/AudioMuse-AI/audiomuse.log` (**newest line first**,
+  bounded ~40k lines; see `macos/reverse_log.py`). Every child's stdout/stderr is
+  pumped here, tagged `[flask]`, `[rq-worker-default]`, etc., by
   `ProcessSupervisor._pump`.
-- **State dir:** `~/Library/Application Support/AudioMuse-AI/` — `pgdata/`,
+- **State dir:** `~/Library/AudioMuse-AI/` — `pgdata/`,
   `redis/redis.sock`, `temp_audio/`, `numba_cache/`, `control.sock`,
-  `supervisor_pids.json`.
+  `supervisor_pids.json`. (Deliberately *not* under `Application Support`: the
+  embedded Postgres socket dir is passed to `postgres` via `pg_ctl -o '-k <dir>'`,
+  which re-splits on whitespace, so the writable root must be space-free —
+  see `macos/paths.py::app_support_dir`.)
 - **Run a single role by hand** (after building): `dist/AudioMuse-AI.app/Contents/MacOS/AudioMuse-AI --role=flask`
   (or `--role=worker-default`, etc.) — but it expects the supervisor's env vars, so
   reproduce them (or export `DATABASE_URL`/`REDIS_URL`/model paths) first.

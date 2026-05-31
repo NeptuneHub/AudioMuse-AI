@@ -7,17 +7,25 @@ once on Intel -- universal2 is avoided because onnxruntime/PyAV/voyager wheels
 are not reliably universal2).
 """
 
+import glob
+import os
 import platform
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 arch = platform.machine()
 
+# ``SPECPATH`` is the directory containing this spec (``<repo>/macos``); the repo
+# root is its parent. Anchor every relative source path to the root so the build
+# works regardless of CWD or PyInstaller version (PyInstaller 6.x resolves
+# relative spec paths against SPECPATH, older versions against the CWD).
+ROOT = os.path.dirname(SPECPATH)
+
 datas = [
-    ('templates', 'templates'),
-    ('static', 'static'),
-    ('model', 'model'),
-    ('macos/assets', 'assets'),
+    (os.path.join(ROOT, 'templates'), 'templates'),
+    (os.path.join(ROOT, 'static'), 'static'),
+    (os.path.join(ROOT, 'model'), 'model'),
+    (os.path.join(ROOT, 'macos/assets'), 'assets'),
 ]
 datas += collect_data_files('pgserver')
 datas += collect_data_files('librosa')
@@ -28,11 +36,26 @@ datas += collect_data_files('wn')
 datas += collect_data_files('langdetect')
 
 binaries = [
-    (f'macos/vendor/redis/{arch}/redis-server', '.'),
+    (os.path.join(ROOT, f'macos/vendor/redis/{arch}/redis-server'), '.'),
 ]
 binaries += collect_dynamic_libs('av')
 binaries += collect_dynamic_libs('voyager')
 binaries += collect_dynamic_libs('psycopg2')
+
+# pgserver bundles a minimal PostgreSQL 16.2 (only plpgsql + pgvector); the
+# schema needs the ``unaccent`` and ``pg_trgm`` contrib extensions, which it
+# lacks. We vendor them (compiled from PostgreSQL 16.2 source against pgserver's
+# own headers/ABI -- see macos/vendor/pg-contrib/README.md) and graft them into
+# the bundled pgserver tree. ``collect_data_files('pgserver')`` above lays down
+# pginstall under ``pgserver/pginstall``; these land beside it.
+_pg_contrib = os.path.join(ROOT, 'macos/vendor/pg-contrib', arch)
+_pg_dst = 'pgserver/pginstall'
+for _f in glob.glob(os.path.join(_pg_contrib, 'extension', '*')):
+    datas.append((_f, f'{_pg_dst}/share/postgresql/extension'))
+for _f in glob.glob(os.path.join(_pg_contrib, 'tsearch_data', '*')):
+    datas.append((_f, f'{_pg_dst}/share/postgresql/tsearch_data'))
+for _f in glob.glob(os.path.join(_pg_contrib, 'lib', '*.dylib')):
+    binaries.append((_f, f'{_pg_dst}/lib/postgresql'))
 
 hiddenimports = [
     'app',
@@ -49,12 +72,12 @@ hiddenimports += collect_submodules('macos')
 hiddenimports += collect_submodules('sklearn')
 
 a = Analysis(
-    ['macos/launcher.py'],
-    pathex=['.'],
+    [os.path.join(ROOT, 'macos/launcher.py')],
+    pathex=[ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=['macos/hooks'],
+    hookspath=[os.path.join(ROOT, 'macos/hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
@@ -88,7 +111,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='AudioMuse-AI.app',
-    icon='macos/assets/AudioMuse-AI.icns',
+    icon=os.path.join(ROOT, 'macos/assets/AudioMuse-AI.icns'),
     bundle_identifier='ai.audiomuse.standalone',
     info_plist={
         'LSUIElement': True,

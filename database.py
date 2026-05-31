@@ -53,8 +53,10 @@ def start_embedded(data_dir):
 
     Used only by the standalone (macOS) supervisor when ``DATABASE_TYPE`` is
     ``embedded``. The data directory must live outside the read-only app bundle
-    (e.g. Application Support). Initializes the cluster on first run, idempotent
-    afterwards.
+    and its path must not contain spaces (pgserver doubles it as the unix-socket
+    dir, which ``postgres`` receives via ``pg_ctl -o '-k <dir>'`` and re-splits on
+    whitespace); see ``macos/paths.py::app_support_dir``. Initializes the cluster
+    on first run, idempotent afterwards.
     """
     global _embedded_server
     import pgserver
