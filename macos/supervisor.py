@@ -220,10 +220,11 @@ class ProcessSupervisor:
         while not self._health_stop.wait(5):
             if self._state != "running":
                 continue
-            # Redis is infrastructure, not a ``_desired`` child, so the child
-            # check below never covers it. Without this, a Redis death (crash,
-            # OOM, or a stale sibling unlinking the shared unix socket) leaves
-            # every worker crash-looping against a missing socket forever.
+            # Postgres and Redis are infrastructure, not ``_desired`` children,
+            # so the child check below never covers them. Without this, a death
+            # of either (crash, OOM, or a stale sibling unlinking Redis's shared
+            # unix socket) leaves every worker crash-looping forever.
+            self._ensure_postgres_healthy()
             self._ensure_redis_healthy()
             for name in list(self._desired):
                 with self._lock:
@@ -231,6 +232,29 @@ class ProcessSupervisor:
                 if proc is not None and proc.poll() is not None:
                     self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
                     self.start_child(name)
+
+    def _ensure_postgres_healthy(self):
+        """Restart embedded Postgres if it stopped accepting connections."""
+        if self._database_url is None:
+            return
+        try:
+            import psycopg2
+            conn = psycopg2.connect(self._database_url, connect_timeout=3)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                conn.close()
+            return
+        except Exception:
+            pass  # unreachable -> restart below
+        self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
+        try:
+            self._database_url = database.ensure_embedded_running(paths.pgdata_dir())
+            self._log.info("Embedded PostgreSQL restarted")
+        except Exception:
+            self._log.exception("Failed to restart embedded PostgreSQL")
 
     def _ensure_redis_healthy(self):
         """Restart embedded Redis if its process died or its socket stopped

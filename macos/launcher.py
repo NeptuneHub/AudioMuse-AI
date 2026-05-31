@@ -50,6 +50,35 @@ def _run_role(role):
         raise SystemExit(f"Unknown role: {role}")
 
 
+# Held for the life of the menu-bar process so the flock is not released early.
+_INSTANCE_LOCK = None
+
+
+def _acquire_single_instance_lock(paths):
+    """Return True if we are the only menu-bar agent (and hold the lock).
+
+    A second live supervisor is catastrophic: both manage the *same* embedded
+    Postgres/Redis, and a newly started ``redis-server`` unlinks the existing
+    unix socket out from under the running stack, knocking every worker offline.
+    An ``flock`` guarantees only one agent runs; the OS releases it if the holder
+    dies, so a crash-relaunch cleanly takes over (and reaps the orphans on boot).
+    """
+    global _INSTANCE_LOCK
+    import fcntl
+    lock_path = os.path.join(paths.app_support_dir(), "supervisor.lock")
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return False
+    fh.truncate(0)
+    fh.write(str(os.getpid()))
+    fh.flush()
+    _INSTANCE_LOCK = fh  # keep the handle (and thus the lock) alive
+    return True
+
+
 def _run_menubar():
     import rumps
     try:
@@ -60,6 +89,11 @@ def _run_menubar():
 
     from macos import paths
     from macos.supervisor import ProcessSupervisor
+
+    # Refuse to start a second supervisor; just surface the already-running UI.
+    if not _acquire_single_instance_lock(paths):
+        subprocess.Popen(["open", "http://127.0.0.1:8000"])
+        return
 
     supervisor = ProcessSupervisor()
 

@@ -183,7 +183,13 @@ embedded services. With defaults unset, Docker/K8s behavior is unchanged.
 
 The frozen binary is **one** executable that behaves two ways:
 - No args → runs the **rumps menu-bar agent** (`macos/launcher.py::_run_menubar`),
-  which constructs a `ProcessSupervisor` and auto-starts it.
+  which constructs a `ProcessSupervisor` and auto-starts it. It first takes an
+  `flock` **single-instance lock** (`_acquire_single_instance_lock`): a second
+  agent would be catastrophic because both manage the *same* embedded
+  Postgres/Redis and a freshly started `redis-server` unlinks the live unix
+  socket out from under the running stack — so the second launch just opens the
+  UI and exits. The OS drops the lock if the holder dies, so a crash-relaunch
+  cleanly takes over (and `_reap_stale_infra` reaps any orphaned children).
 - `--role=<x>` → runs **one child service** (`_run_role`). Workers/janitor/listener
   are re-run via `runpy.run_module(<name>, run_name="__main__")` (they have no
   reusable `main()` except `restart_listener`); the web server is `waitress.serve`
@@ -199,10 +205,13 @@ this is what runs `init_db()` and creates the schema) → `rq-worker-high` →
 backstop, then `database.stop_embedded()`. A health thread restarts children that
 exit while `RUNNING` (mirrors supervisord `autorestart`; note RQ workers
 intentionally exit after `max_jobs` and are meant to be respawned). It also
-**pings embedded Redis each cycle and restarts it** if the process died or the
-socket stopped answering (`_ensure_redis_healthy`) — Redis is infrastructure, not
-a `_desired` child, so without this a Redis death leaves every worker
-crash-looping forever (see gotcha #14). Orphans from a crashed previous run are
+keeps the **infrastructure** alive each cycle: it runs `SELECT 1` against
+embedded Postgres (`_ensure_postgres_healthy` → `database.ensure_embedded_running`)
+and pings embedded Redis (`_ensure_redis_healthy`), restarting either if it died
+or stopped answering. Postgres and Redis are NOT `_desired` children, so without
+these checks a death of either leaves the workers crash-looping forever (see
+gotcha #14). Restarts reuse the same unix-socket paths, so children's
+`DATABASE_URL`/`REDIS_URL` stay valid and they reconnect on their own. Orphans from a crashed previous run are
 reaped on startup via a PID file + `psutil`, **plus** a path sweep
 (`_reap_stale_infra`) that kills any `redis-server`/`postgres` referencing our own
 data dirs — the pidfile misses processes left by a force-quit, and stale Redis
@@ -303,17 +312,30 @@ by `macos/control_ipc.ControlServer`, which calls
     and `gte-multilingual-base/` files must be present in `./model`. Symptom if it
     regresses: audio+CLAP succeed but lyrics fail with `... not found at
     /app/model/...` and `other_features`/lyrics are skipped.
-14. **Embedded Redis death is unrecoverable without explicit supervision** — Redis
-    is spawned outside the `_desired` child set, so the child health check does
-    NOT cover it. If Redis exits (crash/OOM) or its unix socket is unlinked, every
-    worker/flask/janitor crash-loops with `Error 2 connecting to .../redis.sock.
-    No such file or directory` and never recovers. Two related traps: (a) the
-    health loop must restart Redis itself (`_ensure_redis_healthy`); (b) all Redis
-    instances share ONE socket path, so a leftover `redis-server` from a
-    force-quit (which skips `stop_all`) unlinks the live socket on exit —
-    `_reap_stale_infra` sweeps those by data-dir match at startup. Symptom:
-    mass `redis.sock` "No such file or directory" tracebacks, often with flask
-    `Address already in use` (port 8000) from the restart churn.
+14. **Embedded Postgres/Redis deaths are unrecoverable without explicit
+    supervision** — both are spawned outside the `_desired` child set, so the
+    child health check does NOT cover them. If either exits (crash/OOM) — or
+    Redis's unix socket is unlinked — every worker/flask/janitor crash-loops
+    (`Error 2 connecting to .../redis.sock. No such file or directory`, or
+    `could not connect to server` for Postgres) and never recovers. The health
+    loop therefore probes both every cycle (`_ensure_postgres_healthy` runs
+    `SELECT 1`; `_ensure_redis_healthy` pings) and restarts whichever is down
+    (`database.ensure_embedded_running` for PG — needed because
+    `pgserver.get_server` returns its cached object without restarting a dead
+    postmaster). Related Redis trap: all Redis instances share ONE socket path,
+    so a leftover `redis-server` from a force-quit (which skips `stop_all`)
+    unlinks the live socket on exit — `_reap_stale_infra` sweeps stale
+    `redis-server`/`postgres` by data-dir match at startup. Symptom: mass
+    `redis.sock`/Postgres connection tracebacks, often with flask `Address
+    already in use` (port 8000) from the restart churn. **Root cause, not just
+    recovery:** the app code never signals/kills processes (no `killpg`/`os.kill`
+    in `tasks/` or the workers), and a finishing task only publishes an
+    `index-updates` reload — so task completion does NOT kill infra. The real
+    trigger is a *second* supervisor starting (double-launch, or a crash-relaunch
+    while old children linger) whose new `redis-server` unlinks the live socket;
+    the `flock` single-instance guard in `launcher.py` prevents that, the reaper
+    cleans orphans, and the health loop recovers from any genuine death (e.g.
+    macOS memory-pressure jetsam during the memory-heavy index rebuild).
 
 ### Debugging entry points
 

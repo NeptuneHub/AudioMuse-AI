@@ -64,6 +64,30 @@ def start_embedded(data_dir):
     return _embedded_server.get_uri()
 
 
+def ensure_embedded_running(data_dir):
+    """(Re)start the embedded Postgres if its postmaster died; return the DSN.
+
+    Used by the macOS supervisor's health loop. ``pgserver.get_server`` caches
+    the server object and returns it *without* a liveness check, so it will not
+    restart a dead postmaster on its own. We drop the cached instance first,
+    forcing a fresh ``get_server`` whose constructor runs (under pgserver's own
+    lock) ``ensure_postgres_running`` -- a no-op when the cluster is up, or a
+    restart (clearing any stale ``postmaster.pid``) when it died. The unix-socket
+    path is derived from the data dir, so the returned DSN is stable across
+    restarts and children's ``DATABASE_URL`` stays valid."""
+    global _embedded_server
+    if _embedded_server is None:
+        return start_embedded(data_dir)
+    import pgserver
+    from pathlib import Path
+    try:
+        pgserver.PostgresServer._instances.pop(Path(data_dir), None)
+    except Exception:
+        pass
+    _embedded_server = pgserver.get_server(data_dir)
+    return _embedded_server.get_uri()
+
+
 def stop_embedded():
     """Cleanly stop the embedded PostgreSQL server started by :func:`start_embedded`."""
     global _embedded_server
