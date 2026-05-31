@@ -21,7 +21,10 @@ test/
 # Student CLAP training (not needed in production)
 student_clap/
 
-# macOS standalone build artifacts (PyInstaller output)
+# macOS standalone app: source tree (PyInstaller spec, vendored redis/pg
+# binaries, assets) and build artifacts. None of it is used by the Linux
+# container, so keep it out of the image.
+macos/
 build/
 dist/
 

@@ -30,9 +30,29 @@ spctl -a -vv "$APP" || true
 
 ARCH="$(uname -m)"
 ZIP="dist/AudioMuse-AI-${ARCH}.zip"
-echo "==> Packaging ${ZIP}"
-ditto -c -k --keepParent "$APP" "$ZIP"
+echo "==> Packaging ${ZIP} (AudioMuse-AI.app + readme.md)"
+# Stage the app + a plain-text install note, then archive both at the zip root.
+# We archive with `ditto` (not `zip`): the bundle is >4 GB and needs ZIP64, which
+# the legacy `zip` tool mishandles ("extra bytes" / corrupt archive). `cp -c`
+# clones the app via APFS copy-on-write, so staging is instant and costs no extra
+# disk while preserving the signature and the bundle's symlinks (ditto copy is the
+# fallback on a non-APFS volume).
+STAGE="dist/_pkg"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -cR "$APP" "$STAGE/AudioMuse-AI.app" 2>/dev/null || ditto "$APP" "$STAGE/AudioMuse-AI.app"
+cat > "$STAGE/readme.md" <<'EOF'
+This AudioMuse-AI app is not signed to avoid Apple recurrent subscription cost. To have it working you need to:
+- Move AudioMuse-AI.app in /Applications
+- Open a terminal and run this command to authorize:
+xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app
 
-echo "==> Done: ${ZIP}"
+After this you can just open it like any other application.
+EOF
+rm -f "$ZIP"
+ditto -c -k "$STAGE" "$ZIP"   # no --keepParent: app + readme land at the zip root
+rm -rf "$STAGE"
+
+echo "==> Done: ${ZIP} (expands to AudioMuse-AI.app + readme.md)"
 echo "    End users must clear quarantine after download:"
 echo "    xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app"
