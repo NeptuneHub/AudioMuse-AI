@@ -16,7 +16,9 @@
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
 # GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
 # (huggingface_models.tar.gz) — macos/env.py points HF_HOME at model/huggingface
-# for the CLAP RoBERTa tokenizer, so the bundle needs it.
+# for the CLAP RoBERTa tokenizer, so the bundle needs it. The HF cache is then
+# trimmed to just that tokenizer (bert/bart and the roberta weights are unused by
+# the app, ~1.4 GB) so the release zip stays under GitHub's 2 GB asset limit.
 
 name: Build standalone macOS app
 
@@ -112,6 +114,25 @@ jobs:
           tar -xzf "$tmp_hf/huggingface_models.tar.gz" -C model/huggingface
           rm -rf "$tmp_hf"
 
+          echo "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
+          # The macOS app's ONLY runtime HF dependency is the roberta-base *tokenizer*
+          # (tasks/clap_analyzer.py: AutoTokenizer.from_pretrained("roberta-base")).
+          # bert-base-uncased and bart-base are never loaded by the app, and a tokenizer
+          # does not need model weights. Dropping them keeps the release zip under the
+          # 2 GB GitHub release-asset limit without removing any model the app uses.
+          # Note: this prunes only the macOS bundle copy — the shared release tarball
+          # and the Docker build are unaffected.
+          hf="model/huggingface/hub"
+          rm -rf "$hf/models--bert-base-uncased" "$hf/models--facebook--bart-base"
+          rb="$hf/models--roberta-base"
+          if [ -d "$rb" ]; then
+            # Drop the ~476 MB weight blob; AutoTokenizer reads only the tiny
+            # tokenizer.json/vocab.json/merges.txt/config files (all < 2 MB).
+            find "$rb/blobs" -type f -size +10M -delete
+            find "$rb/snapshots" \( -name "model.safetensors" -o -name "pytorch_model.bin" \) -delete
+            du -sh "$rb"
+          fi
+
           echo "==> lyrics bundles (whisper / silero / gte) — downloaded then extracted into ./model"
           tmp="$(mktemp -d)"
           gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp" --clobber \
@@ -132,7 +153,7 @@ jobs:
             model/clap_text_model.onnx
             model/model_epoch_36.onnx
             model/model_epoch_36.onnx.data
-            model/huggingface/hub/models--roberta-base
+            model/huggingface/hub/models--roberta-base/snapshots
             model/silero_vad.onnx
             model/gte-multilingual-base-int8.onnx
             model/whisper-small-onnx/encoder_model.onnx
@@ -143,6 +164,10 @@ jobs:
           for f in "${required[@]}"; do
             if [ ! -e "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
           done
+          # The roberta tokenizer files must survive the HF-cache prune above.
+          if [ -z "$(find model/huggingface/hub/models--roberta-base -name tokenizer.json -print -quit)" ]; then
+            echo "::error::roberta-base tokenizer.json missing after HF-cache prune"; missing=1
+          fi
           [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
           du -sh model
 
