@@ -586,7 +586,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
              everything else → 0.0. Axes the user did not pick contribute 0 across
              all their labels.
     """
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM
 
     if not LYRICS_ENABLED:
         return []
@@ -620,7 +620,8 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     metadata_map = _LYRICS_AXIS_CACHE['metadata'] or {}
 
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+    album_cap = MAX_SONGS_PER_ALBUM if MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0 else 0
+    fetch_size = (limit + max(20, limit * 4) + 1) if (artist_cap or album_cap) else limit
     num_to_query = min(fetch_size, len(voyager_index))
     if num_to_query <= 0:
         return []
@@ -633,6 +634,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
+    album_counts: Dict[str, int] = {}
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) >= limit:
             break
@@ -641,11 +643,18 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
             continue
         meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
         author = meta.get('author', '') or ''
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
+        album = meta.get('album', '') or ''
+        an = author.strip().lower() if author else ''
+        al = album.strip().lower() if album else ''
+        # Check both caps before mutating either counter.
+        if artist_cap and an and artist_counts.get(an, 0) >= artist_cap:
+            continue
+        if album_cap and al and album_counts.get(al, 0) >= album_cap:
+            continue
+        if artist_cap and an:
             artist_counts[an] = artist_counts.get(an, 0) + 1
+        if album_cap and al:
+            album_counts[al] = album_counts.get(al, 0) + 1
         similarity = 1.0 - float(dist)
         results.append({
             'item_id': item_id,
@@ -657,7 +666,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 
     logger.info(
         f"Lyrics axis search ({len(selected_pairs)} selections): {len(results)} results "
-        f"(artist cap: {artist_cap or 'disabled'})"
+        f"(artist cap: {artist_cap or 'disabled'}, album cap: {album_cap or 'disabled'})"
     )
     return results
 
@@ -666,15 +675,17 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 # Search: by free text
 # ---------------------------------------------------------------------------
 
-def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None) -> List[Dict]:
+def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None, album_cap: Optional[int] = None) -> List[Dict]:
     """Search lyrics by embedding the query with gte-multilingual-base and querying the voyager index.
 
     ``artist_cap`` controls the per-artist diversity cap: ``None`` uses the global
     ``MAX_SONGS_PER_ARTIST`` (the default, for direct user-facing search); ``0``
     disables it entirely, returning the full similarity-ranked pool up to ``limit``
     (used when feeding a candidate pool that is diversity-capped downstream).
+    ``album_cap`` mirrors this for the per-album cap (``None`` → global
+    ``MAX_SONGS_PER_ALBUM``; ``0`` disables it).
     """
-    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
+    from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM
     from lyrics.lyrics_transcriber import embed_query_text
     from tasks.gte_warm_cache import warm_lock, warmup_gte_model
 
@@ -699,7 +710,10 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
         if artist_cap is None:
             artist_cap = MAX_SONGS_PER_ARTIST
         artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+        if album_cap is None:
+            album_cap = MAX_SONGS_PER_ALBUM
+        album_cap = album_cap if album_cap and album_cap > 0 else 0
+        fetch_size = (limit + max(20, limit * 4) + 1) if (artist_cap or album_cap) else limit
 
         voyager_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}
@@ -714,6 +728,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
 
         results: List[Dict] = []
         artist_counts: Dict[str, int] = {}
+        album_counts: Dict[str, int] = {}
         for vid, dist in zip(neighbor_ids, distances):
             if len(results) >= limit:
                 break
@@ -722,11 +737,18 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
                 continue
             meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
             author = meta.get('author', '') or ''
-            if artist_cap and author:
-                an = author.strip().lower()
-                if artist_counts.get(an, 0) >= artist_cap:
-                    continue
+            album = meta.get('album', '') or ''
+            an = author.strip().lower() if author else ''
+            al = album.strip().lower() if album else ''
+            # Check both caps before mutating either counter.
+            if artist_cap and an and artist_counts.get(an, 0) >= artist_cap:
+                continue
+            if album_cap and al and album_counts.get(al, 0) >= album_cap:
+                continue
+            if artist_cap and an:
                 artist_counts[an] = artist_counts.get(an, 0) + 1
+            if album_cap and al:
+                album_counts[al] = album_counts.get(al, 0) + 1
             similarity = 1.0 - float(dist)
             results.append({
                 'item_id': item_id,
@@ -738,7 +760,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
 
         logger.info(
             f"Lyrics text search '{query_text}': {len(results)} results "
-            f"(artist cap: {artist_cap or 'disabled'})"
+            f"(artist cap: {artist_cap or 'disabled'}, album cap: {album_cap or 'disabled'})"
         )
         return results
     except Exception as e:

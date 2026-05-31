@@ -352,6 +352,52 @@ class TestSearchBySong:
         neighbours = [r for r in results if not r.get("is_seed")]
         assert len(neighbours) <= 1
 
+    def test_album_cap_respected(self):
+        """When album cap = 2, no album should appear more than twice (mirrors artist cap)."""
+        from tasks.sem_grove_manager import search_by_song
+
+        n = 20
+        cache, _ = self._build_cache(n)
+        seed = "song-0"
+
+        # Every song has a DISTINCT artist (so the artist cap is irrelevant) but
+        # they all share the same album, to stress-test the album cap in isolation.
+        def same_album_fetch(item_ids):
+            return {iid: {"title": f"Title {iid}", "author": f"Artist {iid}", "album": "Same Album"} for iid in item_ids}
+
+        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
+             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=same_album_fetch), \
+             patch("config.MAX_SONGS_PER_ARTIST", 0), \
+             patch("config.MAX_SONGS_PER_ALBUM", 2), \
+             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
+             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+            results = search_by_song(seed, limit=10)
+
+        neighbours = [r for r in results if not r.get("is_seed")]
+        assert len(neighbours) <= 2
+
+    def test_album_cap_disabled_by_default(self):
+        """With album cap = 0 (default) the per-album limit must not fire."""
+        from tasks.sem_grove_manager import search_by_song
+
+        n = 20
+        cache, _ = self._build_cache(n)
+        seed = "song-0"
+
+        def same_album_fetch(item_ids):
+            return {iid: {"title": f"Title {iid}", "author": f"Artist {iid}", "album": "Same Album"} for iid in item_ids}
+
+        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
+             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=same_album_fetch), \
+             patch("config.MAX_SONGS_PER_ARTIST", 0), \
+             patch("config.MAX_SONGS_PER_ALBUM", 0), \
+             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
+             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+            results = search_by_song(seed, limit=10)
+
+        neighbours = [r for r in results if not r.get("is_seed")]
+        assert len(neighbours) > 2
+
     def test_name_deduplication_removes_same_title_artist(self):
         """Two entries with identical (title, author) must be deduplicated."""
         from tasks.sem_grove_manager import search_by_song

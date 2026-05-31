@@ -442,15 +442,17 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             logger.error(f"Failed to generate text embedding for: {query_text}")
             return []
 
-        from config import MAX_SONGS_PER_ARTIST
+        from config import MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        album_cap = MAX_SONGS_PER_ALBUM if MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0 else 0
         # A large limit means the caller wants a big re-rank POOL (the chat
-        # pipeline). Skip the in-CLAP per-artist cap there -- it would inflate the
-        # voyager k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
-        # applied downstream anyway. Small limits (search page) keep the cap.
+        # pipeline). Skip the in-CLAP per-artist/album caps there -- they would inflate the
+        # voyager k to ~5x (e.g. 50 000 for a 10 000 pool) and diversity is
+        # applied downstream anyway. Small limits (search page) keep the caps.
         if limit >= 1000:
             artist_cap = 0
-        fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
+            album_cap = 0
+        fetch_size = (limit + max(20, limit * 4) + 1) if (artist_cap or album_cap) else limit
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
             voyager_index = _CLAP_INDEX_CACHE['index']
@@ -469,6 +471,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
             results = []
             artist_counts: dict = {}
+            album_counts: dict = {}
             for voyager_id, distance in zip(neighbor_ids, distances):
                 if len(results) >= limit:
                     break
@@ -478,12 +481,20 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
                 metadata = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
                 author = metadata.get('author', '')
+                album = metadata.get('album', '')
+                author_norm = author.strip().lower() if author else ''
+                album_norm = album.strip().lower() if album else ''
 
-                if artist_cap and author:
-                    author_norm = author.strip().lower()
-                    if artist_counts.get(author_norm, 0) >= artist_cap:
-                        continue
+                # Check both caps before mutating either counter, so a song rejected by
+                # one cap does not inflate the other.
+                if artist_cap and author_norm and artist_counts.get(author_norm, 0) >= artist_cap:
+                    continue
+                if album_cap and album_norm and album_counts.get(album_norm, 0) >= album_cap:
+                    continue
+                if artist_cap and author_norm:
                     artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
+                if album_cap and album_norm:
+                    album_counts[album_norm] = album_counts.get(album_norm, 0) + 1
 
                 similarity = 1.0 - float(distance)
                 results.append({
@@ -494,7 +505,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                     'similarity': similarity
                 })
 
-            logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})")
+            logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'}, album cap: {album_cap or 'disabled'})")
             return results
         
     except Exception as e:

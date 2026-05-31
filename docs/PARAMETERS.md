@@ -85,6 +85,7 @@ These are the default parameters used when launching analysis or clustering task
 | `CLUSTER_ALGORITHM`                         | Default clustering: `kmeans`, `dbscan`, `gmm`, `spectral`.                                                                | `kmeans`        |
 | `MAX_SONGS_PER_CLUSTER`                     | Max songs per generated playlist segment.                                                                                 | `0`             |
 | `MAX_SONGS_PER_ARTIST`                      | Max songs from one artist per cluster.                                                                                    | `3`             |
+| `MAX_SONGS_PER_ALBUM`                       | Max songs from one album across similarity, clustering, paths and Sonic Fingerprint. `0` = disabled.                      | `0`             |
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
@@ -94,7 +95,7 @@ These are the default parameters used when launching analysis or clustering task
 | `VOYAGER_M`                                 | Number of neighbor links per node in the HNSW graph. Higher = better recall + larger on-disk index + slower rebuilds. `32` is a tuned default; `64` was the previous default and roughly doubles the link payload.                                                                               | `32`            |
 | `VOYAGER_QUERY_EF`                          | Number neighbor analyzed during the query.                                                                                | `1024`          |
 | `VOYAGER_METRIC`                            | Different tipe of distance metrics: `angular`, `euclidean`,`dot`                                                          | `angular`       |
-| `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
+| `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` and `MAX_SONGS_PER_ALBUM` also in similar song                 | `true`          |
 | `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |

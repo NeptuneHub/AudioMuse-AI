@@ -598,14 +598,15 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         logger.error("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
         return []
 
-    from config import MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_CHECK_LOOKBACK
+    from config import MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_CHECK_LOOKBACK
     import numpy as np
 
     artist_cap    = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    album_cap     = MAX_SONGS_PER_ALBUM if MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0 else 0
     dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE  # cosine dist < this → near-duplicate
     lookback_n     = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
     # +1 because the seed itself may appear and will be skipped
-    fetch_size   = (limit + max(20, limit * 4) + 1) if (artist_cap or lookback_n) else (limit + 1)
+    fetch_size   = (limit + max(20, limit * 4) + 1) if (artist_cap or album_cap or lookback_n) else (limit + 1)
     num_to_query = min(fetch_size, len(index))
     if num_to_query <= 0:
         return []
@@ -635,6 +636,7 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         "is_seed":    True,
     }]
     artist_counts:  Dict[str, int]   = {}
+    album_counts:   Dict[str, int]   = {}
     seen_names:     set               = set()   # (title_lower, author_lower) deduplication
     lookback_vecs:  list              = []       # recent kept vectors for distance-based dedup
 
@@ -647,6 +649,7 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
         meta   = metadata_map.get(item_id, {"title": "", "author": "", "album": ""})
         author = meta.get("author", "") or ""
         title  = meta.get("title",  "") or ""
+        album  = meta.get("album",  "") or ""
 
         # Name-based deduplication (same title+artist = likely duplicate recording)
         name_key = (title.strip().lower(), author.strip().lower())
@@ -654,11 +657,18 @@ def search_by_song(seed_item_id: str, limit: int = 50) -> List[Dict]:
             continue
         seen_names.add(name_key)
 
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
+        an = author.strip().lower() if author else ''
+        al = album.strip().lower() if album else ''
+        # Check both caps before mutating either counter, so a song rejected by one
+        # cap does not inflate the other.
+        if artist_cap and an and artist_counts.get(an, 0) >= artist_cap:
+            continue
+        if album_cap and al and album_counts.get(al, 0) >= album_cap:
+            continue
+        if artist_cap and an:
             artist_counts[an] = artist_counts.get(an, 0) + 1
+        if album_cap and al:
+            album_counts[al] = album_counts.get(al, 0) + 1
 
         # Distance-based near-duplicate filter: skip if this song's merged vector is
         # too close (cosine dist < dist_threshold) to any song in the lookback window.

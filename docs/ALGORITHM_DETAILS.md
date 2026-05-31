@@ -393,6 +393,9 @@ candidate playlist inside
 - **Per-artist cap** — at most `MAX_SONGS_PER_ARTIST` (3) songs per artist
   (case-insensitive author key); set ≤ 0 to disable. Consistent with the path
   and voyager managers.
+- **Per-album cap** — at most `MAX_SONGS_PER_ALBUM` (0 = disabled) songs per
+  album (case-insensitive album key); tracks without an album are never capped.
+  Consistent with the path and voyager managers.
 - **Per-cluster cap** — at most `max_songs_per_cluster` songs (0 = unlimited).
 - **Naming** — [`_name_cluster`](../tasks/clustering_helper.py) inverts the
   centroid back to feature space and builds a name from the tempo band

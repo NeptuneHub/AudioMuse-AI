@@ -15,8 +15,8 @@ from config import (
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK
 )
-# Also import per-artist cap
-from config import MAX_SONGS_PER_ARTIST
+# Also import per-artist and per-album caps
+from config import MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def _normalize_signature(artist, title):
 
 
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
-                             k_search=10, num_to_find=1, artist_counts=None):
+                             k_search=10, num_to_find=1, artist_counts=None, album_counts=None):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
@@ -235,6 +235,14 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
                 continue
 
+        # Enforce global per-album cap if configured. Treat MAX_SONGS_PER_ALBUM <= 0 as DISABLED.
+        # Songs without an album are never capped.
+        album_norm = (details.get('album') or '').strip().lower()
+        if album_counts is not None and album_norm and MAX_SONGS_PER_ALBUM is not None and MAX_SONGS_PER_ALBUM > 0:
+            if album_counts.get(album_norm, 0) >= MAX_SONGS_PER_ALBUM:
+                logger.debug(f"Filtering song (ALBUM CAP) '{details.get('title')}' from album '{details.get('album')}' because album cap {MAX_SONGS_PER_ALBUM} reached.")
+                continue
+
         candidate_vector = get_vector_by_id(candidate_id)
         if candidate_vector is None:
             continue # Skip if vector is missing
@@ -279,7 +287,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             "signature": signature,
             "vector": candidate_vector,
             "title": details.get('title'),
-            "author": details.get('author')
+            "author": details.get('author'),
+            "album": details.get('album')
         })
 
         # IMPORTANT: Add to used_song_ids and used_signatures immediately
@@ -289,6 +298,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         # Increment artist count
         if artist_counts is not None:
             artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
+        # Increment album count (skip blank albums)
+        if album_counts is not None and album_norm:
+            album_counts[album_norm] = album_counts.get(album_norm, 0) + 1
 
 
     if len(found_songs) < num_to_find:
@@ -307,6 +319,11 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 auth = (song.get('author') or '').strip().lower()
                 if auth in artist_counts:
                     artist_counts[auth] = max(0, artist_counts.get(auth, 0) - 1)
+            # Decrement album count for rolled-back songs
+            if album_counts is not None:
+                alb = (song.get('album') or '').strip().lower()
+                if alb in album_counts:
+                    album_counts[alb] = max(0, album_counts.get(alb, 0) - 1)
         
         # Return an empty list to signal complete failure of this job
         return []
@@ -372,6 +389,15 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     if end_author:
         artist_counts[end_author] = artist_counts.get(end_author, 0) + 1
 
+    # Track per-album counts so we can enforce MAX_SONGS_PER_ALBUM across the path
+    album_counts = {}
+    start_album = (start_details.get('album') or '').strip().lower()
+    end_album = (end_details.get('album') or '').strip().lower()
+    if start_album:
+        album_counts[start_album] = album_counts.get(start_album, 0) + 1
+    if end_album:
+        album_counts[end_album] = album_counts.get(end_album, 0) + 1
+
     # This list holds the start song + all *found* intermediate songs
     path_songs_details = [{**start_details, 'vector': start_vector}]
     
@@ -430,7 +456,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     path_songs_details,
                     k_search=k_base,
                     num_to_find=1,
-                    artist_counts=artist_counts
+                    artist_counts=artist_counts,
+                    album_counts=album_counts
                 )
                 if found and len(found) > 0:
                     path_songs_details.extend(found)
@@ -477,7 +504,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     path_songs_details, # Pass the list of songs found so far
                     k_search=job['k'],
                     num_to_find=job['num_to_find'],
-                    artist_counts=artist_counts
+                    artist_counts=artist_counts,
+                    album_counts=album_counts
                 )
 
                 num_found = len(found_songs)

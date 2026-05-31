@@ -124,7 +124,7 @@ Additional DB & deployment knobs (explicit)
    * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — control how AI naming/chat is performed.
 
 - Safety & result caps:
-   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` — enforce limits on returned/affected rows.
+   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST`, `MAX_SONGS_PER_ALBUM` — enforce limits on returned/affected rows.
 
 Operational notes:
 

@@ -510,9 +510,87 @@ class TestEdgeCases:
         ]
         
         result = generate_sonic_fingerprint(num_neighbors=10)
-        
+
         # Should have exactly 10 results
         assert len(result) == 10
+
+
+class TestAlbumCap:
+    """Test the MAX_SONGS_PER_ALBUM cap on the final fingerprint playlist.
+
+    This cap is special: unlike the per-artist/album cap inside the Voyager
+    neighbor search, it ALSO covers the seed songs (top-played tracks), which
+    are otherwise added uncapped.
+    """
+
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_seed_songs_from_same_album_are_capped(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
+        """5 seed songs from one album, cap=2 -> only 2 survive."""
+        mock_top_songs.return_value = [{'Id': f's{i}'} for i in range(5)]
+        mock_get_tracks.return_value = [
+            {'item_id': f's{i}', 'embedding_vector': np.array([1.0, 0.0]), 'album': 'Mix CD'}
+            for i in range(5)
+        ]
+        mock_last_played.return_value = None
+        mock_voyager.return_value = []  # isolate the seed cap
+
+        with patch('config.MAX_SONGS_PER_ALBUM', 2):
+            result = generate_sonic_fingerprint(num_neighbors=10)
+
+        assert len(result) == 2
+
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_disabled_by_default_keeps_all_same_album_seeds(self, mock_voyager, mock_last_played, mock_get_tracks, mock_top_songs):
+        """With the default cap (0) all 5 same-album seeds are kept."""
+        mock_top_songs.return_value = [{'Id': f's{i}'} for i in range(5)]
+        mock_get_tracks.return_value = [
+            {'item_id': f's{i}', 'embedding_vector': np.array([1.0, 0.0]), 'album': 'Mix CD'}
+            for i in range(5)
+        ]
+        mock_last_played.return_value = None
+        mock_voyager.return_value = []
+
+        with patch('config.MAX_SONGS_PER_ALBUM', 0):
+            result = generate_sonic_fingerprint(num_neighbors=10)
+
+        assert len(result) == 5
+
+    @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
+    @patch('app_helper.get_tracks_by_ids')
+    @patch('app_helper.get_score_data_by_ids')
+    @patch('tasks.sonic_fingerprint_manager.get_last_played_time')
+    @patch('tasks.sonic_fingerprint_manager.find_nearest_neighbors_by_vector')
+    def test_cap_is_global_across_seeds_and_neighbors(self, mock_voyager, mock_last_played, mock_get_score, mock_get_tracks, mock_top_songs):
+        """1 seed + neighbors all from one album, cap=2 -> seed + 1 neighbor only."""
+        mock_top_songs.return_value = [{'Id': 's0'}]
+        mock_get_tracks.return_value = [
+            {'item_id': 's0', 'embedding_vector': np.array([1.0, 0.0]), 'album': 'Mix CD'}
+        ]
+        mock_last_played.return_value = None
+        mock_voyager.return_value = [
+            {'item_id': 'n1', 'distance': 0.1},
+            {'item_id': 'n2', 'distance': 0.2},
+            {'item_id': 'n3', 'distance': 0.3},
+        ]
+        # All neighbors are from the SAME album as the seed
+        mock_get_score.return_value = [
+            {'item_id': 'n1', 'album': 'Mix CD'},
+            {'item_id': 'n2', 'album': 'Mix CD'},
+            {'item_id': 'n3', 'album': 'Mix CD'},
+        ]
+
+        with patch('config.MAX_SONGS_PER_ALBUM', 2):
+            result = generate_sonic_fingerprint(num_neighbors=10)
+
+        # seed counts toward the budget, so only 1 neighbor is allowed
+        assert len(result) == 2
+        assert result[0]['item_id'] == 's0'
 
 
 

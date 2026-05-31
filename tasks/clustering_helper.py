@@ -29,7 +29,7 @@ from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
 from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
-                    MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
+                    MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
                     TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
@@ -389,13 +389,16 @@ def _format_and_score_iteration_result(
         if not cluster_tracks_info: continue
         
         cluster_tracks_info.sort(key=lambda x: x["distance"])
-        # Track per-artist counts using a normalized author key. Treat MAX_SONGS_PER_ARTIST <= 0
+        # Track per-artist and per-album counts using normalized keys. Treat each cap <= 0
         # or None as DISABLED (no cap), consistent with other modules (path_manager/voyager_manager).
         count_per_artist = defaultdict(int)
+        count_per_album = defaultdict(int)
         selected_tracks_for_playlist = []
         for t_item_info in cluster_tracks_info:
             author = t_item_info["row"].get("author")
             author_norm = (author or "").strip().lower()
+            album = t_item_info["row"].get("album")
+            album_norm = (album or "").strip().lower()
 
             # If MAX_SONGS_PER_ARTIST is not configured or <= 0, disable per-artist cap.
             if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
@@ -403,9 +406,18 @@ def _format_and_score_iteration_result(
             else:
                 allowed_by_artist = count_per_artist[author_norm] < MAX_SONGS_PER_ARTIST
 
-            if allowed_by_artist:
+            # If MAX_SONGS_PER_ALBUM is not configured or <= 0, disable per-album cap.
+            # Tracks without an album are never capped.
+            if MAX_SONGS_PER_ALBUM is None or MAX_SONGS_PER_ALBUM <= 0 or not album_norm:
+                allowed_by_album = True
+            else:
+                allowed_by_album = count_per_album[album_norm] < MAX_SONGS_PER_ALBUM
+
+            if allowed_by_artist and allowed_by_album:
                 selected_tracks_for_playlist.append(t_item_info)
                 count_per_artist[author_norm] += 1
+                if album_norm:
+                    count_per_album[album_norm] += 1
 
             if max_songs_per_cluster > 0 and len(selected_tracks_for_playlist) >= max_songs_per_cluster:
                 break

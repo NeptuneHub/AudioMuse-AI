@@ -26,7 +26,7 @@ import math # Import math for ceiling function
 
 from config import (
     EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_EF_CONSTRUCTION,
-    VOYAGER_M, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST,
+    VOYAGER_M, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
     DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD
     , SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT,
@@ -834,13 +834,14 @@ def _radius_walk_get_candidates(
                 except Exception:
                     vector = np.array(vector, dtype=np.float32)
                 dist_to_anchor = get_direct_distance(vector, anchor_vector)
-                info = details_map.get(item_id, {'title': None, 'author': None})
+                info = details_map.get(item_id, {'title': None, 'author': None, 'album': None})
                 candidate_data.append({
                     "item_id": item_id,
                     "vector": vector,
                     "dist_anchor": dist_to_anchor,
                     "title": info.get('title'),
-                    "author": info.get('author')
+                    "author": info.get('author'),
+                    "album": info.get('album')
                 })
             
     logger.info(f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates.")
@@ -960,6 +961,17 @@ def _execute_radius_walk(
     # rule until the global per-artist cap (MAX_SONGS_PER_ARTIST) is reached.
     artist_bucket_counts = {}
 
+    # Track per-album counts during the walk for a flat global per-album cap
+    # (MAX_SONGS_PER_ALBUM). Unlike the artist rule there is no per-bucket nuance:
+    # an album simply may not exceed the global cap across the whole walk.
+    album_counts = {}
+    try:
+        first_album = first_song.get('album')
+        if first_album:
+            album_counts[first_album] = album_counts.get(first_album, 0) + 1
+    except Exception:
+        pass
+
     # --- Step 3: Iteratively build the playlist (Greedy, low-cost scanning) ---
 
     # Optimization: instead of computing distances for many candidates each iteration,
@@ -1043,6 +1055,11 @@ def _execute_radius_walk(
                         return False
                     if artist_counts.get(author, 0) >= MAX_SONGS_PER_ARTIST:
                         return False
+            # Enforce flat global album cap. Treat MAX_SONGS_PER_ALBUM <= 0 as DISABLED.
+            if eliminate_duplicates and MAX_SONGS_PER_ALBUM is not None and MAX_SONGS_PER_ALBUM > 0:
+                album = items[i].get('album')
+                if album and album_counts.get(album, 0) >= MAX_SONGS_PER_ALBUM:
+                    return False
             return True
 
         # Try to accept start index, otherwise mark it unavailable and find next
@@ -1068,6 +1085,9 @@ def _execute_radius_walk(
                     if a not in bucket_artist_set:
                         bucket_artist_set.add(a)
                         artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+                alb = items[cur_idx].get('album')
+                if alb:
+                    album_counts[alb] = album_counts.get(alb, 0) + 1
         else:
             remaining[cur_idx] = False
 
@@ -1118,6 +1138,13 @@ def _execute_radius_walk(
                             if INSTRUMENT_BUCKET_SKIPS:
                                 logger.debug(f"Bucket {bucket_index}: skipping idx={i} artist-cap {auth}")
                             continue
+                # Flat global album cap check (only enforce if positive cap configured)
+                if eliminate_duplicates and MAX_SONGS_PER_ALBUM is not None and MAX_SONGS_PER_ALBUM > 0:
+                    alb = meta.get('album')
+                    if alb and album_counts.get(alb, 0) >= MAX_SONGS_PER_ALBUM:
+                        if INSTRUMENT_BUCKET_SKIPS:
+                            logger.debug(f"Bucket {bucket_index}: skipping idx={i} album-cap {alb}")
+                        continue
 
                 # compute dist_prev (distance to current song) using configured metric
                 try:
@@ -1160,6 +1187,9 @@ def _execute_radius_walk(
                     if a not in bucket_artist_set:
                         bucket_artist_set.add(a)
                         artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+                alb = items[best_i].get('album')
+                if alb:
+                    album_counts[alb] = album_counts.get(alb, 0) + 1
 
             if INSTRUMENT_BUCKET_SKIPS:
                 logger.debug(f"Bucket {bucket_index}: accepted idx={best_i} item_id={cid}")
@@ -1422,31 +1452,40 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         else:
             logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
         
-        # 5. Apply artist cap (eliminate_duplicates)
-        if eliminate_duplicates:
-            # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
-            if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
-                final_results = unique_results_by_song
-            else:
-                item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-                
-                track_details_list = get_score_data_by_ids(item_ids_to_check)
-                details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
+        # 5. Apply artist + album caps (eliminate_duplicates)
+        artist_cap = MAX_SONGS_PER_ARTIST if (MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0) else 0
+        album_cap = MAX_SONGS_PER_ALBUM if (MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0) else 0
+        if eliminate_duplicates and (artist_cap or album_cap):
+            item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
 
-                artist_counts = {}
-                final_results = []
-                for song in unique_results_by_song:
-                    song_id = song['item_id']
-                    author = details_map.get(song_id, {}).get('author')
+            track_details_list = get_score_data_by_ids(item_ids_to_check)
+            details_map = {d['item_id']: {'author': d['author'], 'album': d.get('album')} for d in track_details_list}
 
+            artist_counts = {}
+            album_counts = {}
+            final_results = []
+            for song in unique_results_by_song:
+                song_id = song['item_id']
+                details = details_map.get(song_id, {})
+                author = details.get('author')
+                album = details.get('album')
+
+                # Artist cap (when enabled, songs without an author are skipped, as before)
+                if artist_cap:
                     if not author:
                         logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
                         continue
+                    if artist_counts.get(author, 0) >= artist_cap:
+                        continue
+                # Album cap (songs without an album are never capped)
+                if album_cap and album and album_counts.get(album, 0) >= album_cap:
+                    continue
 
-                    current_count = artist_counts.get(author, 0)
-                    if current_count < MAX_SONGS_PER_ARTIST:
-                        final_results.append(song)
-                        artist_counts[author] = current_count + 1
+                final_results.append(song)
+                if author:
+                    artist_counts[author] = artist_counts.get(author, 0) + 1
+                if album:
+                    album_counts[album] = album_counts.get(album, 0) + 1
         else:
             final_results = unique_results_by_song
 
@@ -1545,21 +1584,35 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
             added_songs_details.append(current_details)
 
     if eliminate_duplicates:
-        # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
-        if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
+        # Per-artist and per-album caps. Treat each <= 0 (or None) as DISABLED.
+        artist_cap = MAX_SONGS_PER_ARTIST if (MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0) else 0
+        album_cap = MAX_SONGS_PER_ALBUM if (MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0) else 0
+        if not artist_cap and not album_cap:
             final_results = unique_songs_by_content
         else:
             artist_counts = {}
+            album_counts = {}
             final_results = []
             for song in unique_songs_by_content:
-                author = item_details.get(song['item_id'], {}).get('author')
-                if not author:
+                details = item_details.get(song['item_id'], {})
+                author = details.get('author')
+                album = details.get('album')
+
+                # Artist cap (when enabled, songs without an author are skipped, as before)
+                if artist_cap:
+                    if not author:
+                        continue
+                    if artist_counts.get(author, 0) >= artist_cap:
+                        continue
+                # Album cap (songs without an album are never capped)
+                if album_cap and album and album_counts.get(album, 0) >= album_cap:
                     continue
 
-                current_count = artist_counts.get(author, 0)
-                if current_count < MAX_SONGS_PER_ARTIST:
-                    final_results.append(song)
-                    artist_counts[author] = current_count + 1
+                final_results.append(song)
+                if author:
+                    artist_counts[author] = artist_counts.get(author, 0) + 1
+                if album:
+                    album_counts[album] = album_counts.get(album, 0) + 1
     else:
         final_results = unique_songs_by_content
 

@@ -112,19 +112,43 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     contributing_seed_ids = list(embeddings_map.keys())
     num_seed_songs = len(contributing_seed_ids)
 
+    # Per-album cap for the FINAL fingerprint playlist (seeds + neighbors). 0 = disabled.
+    # Unlike the per-artist/album cap inside the Voyager neighbor search, this also covers
+    # the seed songs (top-played tracks), which are otherwise added uncapped -- the common
+    # cause of many same-album tracks for heavy re-listeners (e.g. a single DJ-mix CD).
+    from config import MAX_SONGS_PER_ALBUM
+    album_cap = MAX_SONGS_PER_ALBUM if (MAX_SONGS_PER_ALBUM and MAX_SONGS_PER_ALBUM > 0) else 0
+    seed_album_by_id = {}
+    if album_cap:
+        seed_album_by_id = {t['item_id']: (t.get('album') or '').strip().lower() for t in track_details}
+
     # Calculate how many new neighbors to find to reach the total desired size
     neighbors_to_find = total_desired_size - num_seed_songs
 
     if neighbors_to_find <= 0:
         logger.info(f"The number of seed songs ({num_seed_songs}) is >= the desired playlist size ({total_desired_size}). Returning only seed songs, truncated to the desired size.")
-        final_results = [{'item_id': song_id, 'distance': 0.0} for song_id in contributing_seed_ids[:total_desired_size]]
+        final_results = []
+        album_counts = {}
+        for song_id in contributing_seed_ids:
+            if len(final_results) >= total_desired_size:
+                break
+            album = seed_album_by_id.get(song_id, '')
+            if album_cap and album and album_counts.get(album, 0) >= album_cap:
+                continue
+            final_results.append({'item_id': song_id, 'distance': 0.0})
+            if album:
+                album_counts[album] = album_counts.get(album, 0) + 1
         return final_results
 
     try:
-        logger.info(f"Searching for {neighbors_to_find} new neighbors to supplement the {num_seed_songs} seed songs.")
+        # When the album cap is active it can drop some seed songs, freeing slots in
+        # the final playlist. Over-request neighbors so we can still backfill up to the
+        # desired size instead of returning a short playlist.
+        neighbors_to_request = total_desired_size if album_cap else neighbors_to_find
+        logger.info(f"Searching for {neighbors_to_request} new neighbors to supplement the {num_seed_songs} seed songs.")
         similar_songs_from_voyager = find_nearest_neighbors_by_vector(
             query_vector=average_vector,
-            n=neighbors_to_find,
+            n=neighbors_to_request,
             eliminate_duplicates=True
         )
         logger.info(f"Found {len(similar_songs_from_voyager)} similar songs for the sonic fingerprint.")
@@ -133,22 +157,57 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         final_song_ids = set()
         combined_results = []
 
-        # 1. Add the seed songs first
-        for song_id in contributing_seed_ids:
-            if song_id not in final_song_ids:
-                combined_results.append({'item_id': song_id, 'distance': 0.0})
-                final_song_ids.add(song_id)
-        
-        logger.info(f"Added {len(final_song_ids)} seed songs to the results.")
+        # Build an item_id -> normalized album map covering seeds AND the Voyager
+        # neighbors, so the per-album cap is enforced GLOBALLY across the whole
+        # playlist (a neighbor cannot exceed the budget already used by the seeds).
+        album_by_id = dict(seed_album_by_id)
+        if album_cap:
+            from app_helper import get_score_data_by_ids
+            missing_ids = [s['item_id'] for s in similar_songs_from_voyager if s['item_id'] not in album_by_id]
+            if missing_ids:
+                for d in get_score_data_by_ids(missing_ids):
+                    album_by_id[d['item_id']] = (d.get('album') or '').strip().lower()
 
-        # 2. Add the similar songs found by Voyager, skipping duplicates, until the desired size is reached
+        album_counts = {}
+
+        def _album_allows(item_id):
+            """Per-album cap gate. Records the album on success. Songs without an
+            album, or when the cap is disabled, always pass."""
+            if not album_cap:
+                return True
+            album = album_by_id.get(item_id, '')
+            if album and album_counts.get(album, 0) >= album_cap:
+                return False
+            if album:
+                album_counts[album] = album_counts.get(album, 0) + 1
+            return True
+
+        # 1. Add the seed songs first (subject to the per-album cap)
+        skipped_by_album = 0
+        for song_id in contributing_seed_ids:
+            if song_id in final_song_ids:
+                continue
+            if not _album_allows(song_id):
+                skipped_by_album += 1
+                continue
+            combined_results.append({'item_id': song_id, 'distance': 0.0})
+            final_song_ids.add(song_id)
+
+        logger.info(f"Added {len(final_song_ids)} seed songs to the results"
+                    + (f" ({skipped_by_album} seed(s) skipped by album cap {album_cap})." if skipped_by_album else "."))
+
+        # 2. Add the similar songs found by Voyager, skipping duplicates and album-capped
+        #    songs, until the desired size is reached
         for song in similar_songs_from_voyager:
             if len(combined_results) >= total_desired_size:
                 break
-            if song['item_id'] not in final_song_ids:
-                combined_results.append(song)
-                final_song_ids.add(song['item_id'])
-                
+            if song['item_id'] in final_song_ids:
+                continue
+            if not _album_allows(song['item_id']):
+                continue
+            combined_results.append(song)
+            final_song_ids.add(song['item_id'])
+
         logger.info(f"Total unique songs in final fingerprint playlist: {len(combined_results)}")
 
         return combined_results

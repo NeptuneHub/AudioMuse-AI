@@ -21,7 +21,7 @@ from flasgger import Swagger, swag_from
 
 # Import configuration
 from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
-  REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
+  REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, MAX_SONGS_PER_ALBUM, NUM_RECENT_ALBUMS, \
   SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
   SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, \
   MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, \
@@ -591,6 +591,7 @@ def get_config_endpoint():
     return jsonify({
         "num_recent_albums": config.NUM_RECENT_ALBUMS, "max_distance": config.MAX_DISTANCE,
         "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
+        "max_songs_per_album": config.MAX_SONGS_PER_ALBUM,
         "cluster_algorithm": config.CLUSTER_ALGORITHM, "num_clusters_min": config.NUM_CLUSTERS_MIN, "num_clusters_max": config.NUM_CLUSTERS_MAX,
         "dbscan_eps_min": config.DBSCAN_EPS_MIN, "dbscan_eps_max": config.DBSCAN_EPS_MAX, "gmm_covariance_type": config.GMM_COVARIANCE_TYPE,
         "dbscan_min_samples_min": config.DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": config.DBSCAN_MIN_SAMPLES_MAX,
