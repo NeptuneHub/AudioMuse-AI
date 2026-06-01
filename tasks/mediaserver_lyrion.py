@@ -1,6 +1,6 @@
 # tasks/mediaserver_lyrion.py
 
-import requests
+from tasks import mediaserver_http as requests
 import logging
 import os
 from urllib.parse import unquote, urlparse
