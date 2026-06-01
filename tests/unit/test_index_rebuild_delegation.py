@@ -67,24 +67,6 @@ def _called_names(func_node):
     return names
 
 
-class TestSyncCollectionsDelegatesRebuild:
-    """tasks/collection_manager.py :: sync_collections_task"""
-
-    def test_calls_run_all_index_builds(self):
-        funcs = _function_defs("tasks/collection_manager.py")
-        assert "sync_collections_task" in funcs
-        assert "_run_all_index_builds" in _called_names(funcs["sync_collections_task"])
-
-    def test_does_not_rebuild_only_the_audio_index(self):
-        funcs = _function_defs("tasks/collection_manager.py")
-        called = _called_names(funcs["sync_collections_task"])
-        assert "build_and_store_voyager_index" not in called, (
-            "sync must rebuild the full index set via _run_all_index_builds, not "
-            "the audio Voyager index alone (regression: stale CLAP/lyrics/SemGrove/"
-            "artist indexes after a sync)."
-        )
-
-
 class TestCleaningDelegatesRebuild:
     """tasks/cleaning.py :: identify_and_clean_orphaned_albums_task"""
 

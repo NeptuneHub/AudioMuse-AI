@@ -771,7 +771,6 @@ from app_cron import cron_bp, run_due_cron_jobs
 from app_voyager import voyager_bp
 from app_sonic_fingerprint import sonic_fingerprint_bp
 from app_path import path_bp
-from app_collection import collection_bp
 from app_external import external_bp # --- NEW: Import the external blueprint ---
 from app_alchemy import alchemy_bp
 from app_map import map_bp
@@ -791,7 +790,6 @@ app.register_blueprint(cron_bp)
 app.register_blueprint(voyager_bp)
 app.register_blueprint(sonic_fingerprint_bp)
 app.register_blueprint(path_bp)
-app.register_blueprint(collection_bp)
 app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
 app.register_blueprint(alchemy_bp)
 app.register_blueprint(map_bp)
