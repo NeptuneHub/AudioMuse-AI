@@ -3,7 +3,6 @@ Unit tests for string sanitization in app_helper.py
 Tests the enhanced string sanitization to prevent database errors.
 """
 
-import pytest
 from unittest.mock import Mock, MagicMock, patch
 import numpy as np
 

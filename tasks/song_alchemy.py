@@ -1,7 +1,6 @@
 import logging
 from typing import List, Tuple
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
 
 from .voyager_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
 from app_helper import get_score_data_by_ids, load_map_projection
@@ -153,18 +152,6 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
     return weighted_centroid
 
 
-def _compute_centroid_from_ids(ids: List[str]) -> np.ndarray:
-    """Fetch vectors by id and compute their centroid (mean)."""
-    vectors = []
-    for item_id in ids:
-        vec = get_vector_by_id(item_id)
-        if vec is not None:
-            vectors.append(np.array(vec, dtype=float))
-    if not vectors:
-        return None
-    return np.mean(vectors, axis=0)
-
-
 def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
     """Simple PCA via SVD to project a list of vectors to 2D.
     Returns a list of (x, y) tuples in the same order as input vectors.
@@ -312,12 +299,11 @@ def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[
 
     # Fit logistic regression with regularization for robustness
     try:
-        # Use 'saga' solver with n_jobs=-1 to leverage multiple cores
-        clf = LogisticRegression(penalty='l2', C=1.0, solver='saga', max_iter=1000, n_jobs=-1)
+        clf = LogisticRegression(l1_ratio=0, C=1.0, solver='saga', max_iter=1000)
         clf.fit(Xp, y_train)
     except Exception:
         # Fallback with less regularization if solver fails
-        clf = LogisticRegression(penalty='l2', C=0.1, solver='saga', max_iter=1000, n_jobs=-1)
+        clf = LogisticRegression(l1_ratio=0, C=0.1, solver='saga', max_iter=1000)
         clf.fit(Xp, y_train)
 
     # direction in PCA space

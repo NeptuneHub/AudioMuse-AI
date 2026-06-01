@@ -1396,6 +1396,10 @@
                     html += 'The file path is the best way to tell them apart (e.g. multi-disc albums often have ';
                     html += '<code>01-XX</code> vs <code>02-XX</code> prefixes).';
                     html += '</div>';
+                    const collTotal = result.collision_details_total || details.length;
+                    if (collTotal > details.length) {
+                        html += '<div style="margin:0 0 0.5rem; font-size:0.85em; color:#a04000;">Showing the first ' + details.length + ' of ' + collTotal + ' duplicate pairs.</div>';
+                    }
                     html += '<table style="width:100%; margin-top:0.5rem; border-collapse:collapse; font-size:0.85em; background:#fff4e5; color:#3a2a10;">';
                     html += '<thead><tr style="background:#fbe8c9; color:#3a2a10; border-bottom:1px solid #e09f3e;">';
                     html += '<th style="text-align:left; padding:0.35rem 0.5rem;">Will be deleted</th>';
@@ -1478,6 +1482,13 @@
                 const s = res.status || 'unknown';
                 statusEl.innerHTML = '<div class="mig-status">Status: <strong>' + esc(s) + '</strong></div>';
                 if (s === 'finished') {
+                    const r = res.result || {};
+                    const indexNote = r.index_rebuild_needed
+                        ? '<p style="margin:0.5rem 0 0;"><strong>Note:</strong> ' +
+                          'the similarity / map index for this library was reset during the ' +
+                          'migration. The <strong>full analysis</strong> above rebuilds it too — ' +
+                          'search and instant mixes will use the refreshed index once that finishes.</p>'
+                        : '';
                     showSuccess(statusEl,
                         '<strong>Migration complete.</strong> ' +
                         'Your active provider is now <code>' + esc(targetType) + '</code>. ' +
@@ -1488,6 +1499,7 @@
                         'This rebuilds the artist similarity index (which the migration had to ' +
                         'truncate because artist mappings are provider-specific) and re-verifies ' +
                         'every track against the new provider.</p>' +
+                        indexNote +
                         '<small><strong>Plays and listening history:</strong> never stored locally. ' +
                         'They come from your media server and now reflect the new provider automatically.</small>'
                     );

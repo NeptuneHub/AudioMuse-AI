@@ -33,6 +33,7 @@ Safety invariants enforced by the test suite:
 """
 import json
 import logging
+import re
 import time
 
 from tasks.memory_utils import sanitize_string_for_db as _sanitize_text
@@ -231,7 +232,7 @@ def execute_provider_migration(session_id):
 
         # 5. Run the transaction
         try:
-            _run_migration_transaction(
+            index_rebuild_needed = _run_migration_transaction(
                 cur=cur,
                 mapping=mapping,
                 new_meta=new_meta,
@@ -258,6 +259,7 @@ def execute_provider_migration(session_id):
         return {
             'ok': True,
             'matched': len(mapping),
+            'index_rebuild_needed': bool(index_rebuild_needed),
         }
     finally:
         # Always clear the pause flag, even on failure — otherwise workers
@@ -524,37 +526,39 @@ def _run_migration_transaction(cur, mapping, new_meta,
             "FROM migration_new_meta n WHERE s.item_id = n.new_id"
         )
 
-    # 8. Rewrite Voyager id_map_json in place (values only; int keys unchanged)
-    cur.execute(
-        "SELECT index_name, id_map_json FROM voyager_index_data "
-        "WHERE id_map_json <> ''"
-    )
-    for row in (cur.fetchall() or []):
-        index_name, id_map_json = row[0], row[1]
-        new_json = rewrite_id_map_json(id_map_json, mapping)
-        if new_json != id_map_json:
-            cur.execute(
-                "UPDATE voyager_index_data SET id_map_json = %s WHERE index_name = %s",
-                (new_json, index_name),
-            )
-
-    # Same transform for the 2D map projection id_map
-    cur.execute(
-        "SELECT index_name, id_map_json FROM map_projection_data "
-        "WHERE id_map_json <> ''"
-    )
-    for row in (cur.fetchall() or []):
-        index_name, id_map_json = row[0], row[1]
-        new_json = rewrite_id_map_json(id_map_json, mapping)
-        if new_json != id_map_json:
-            cur.execute(
-                "UPDATE map_projection_data SET id_map_json = %s WHERE index_name = %s",
-                (new_json, index_name),
-            )
+    # 8. Rewrite Voyager / map-projection id_map_json (segment-aware)
+    from tasks.index_build_helpers import rewrite_segmented_id_map
+    _seg_base = re.compile(r"^(.*)_\d+_\d+$")
+    index_rebuild_needed = []
+    for table in ('voyager_index_data', 'map_projection_data'):
+        cur.execute(f"SELECT DISTINCT index_name FROM {table}")
+        bases = set()
+        for (name,) in (cur.fetchall() or []):
+            m = _seg_base.match(name)
+            bases.add(m.group(1) if m else name)
+        for base in sorted(bases):
+            try:
+                rewrite_segmented_id_map(
+                    cur, table, base, lambda j: rewrite_id_map_json(j, mapping)
+                )
+            except ValueError:
+                logger.warning(
+                    "provider migration: id_map for '%s' in %s could not be "
+                    "relabelled in place; dropping the stale index so it "
+                    "rebuilds on the next analysis", base, table, exc_info=True,
+                )
+                like_pattern = base.replace("_", r"\_") + r"\_%\_%"
+                cur.execute(
+                    f"DELETE FROM {table} WHERE index_name = %s "
+                    f"OR index_name LIKE %s ESCAPE '\\'",
+                    (base, like_pattern),
+                )
+                index_rebuild_needed.append(f"{table}:{base}")
 
     # 9. Truncate provider-specific artist tables — they contain artist IDs
     #    from the old provider. They rebuild lazily on next query.
     cur.execute("DELETE FROM artist_index_data")
+    cur.execute("DELETE FROM artist_metadata_data")
     cur.execute("DELETE FROM artist_component_projection")
     cur.execute("DELETE FROM artist_mapping")
 
@@ -567,6 +571,8 @@ def _run_migration_transaction(cur, mapping, new_meta,
         "WHERE id = %s",
         (session_id,),
     )
+
+    return index_rebuild_needed
 
 
 _CREDS_TO_CONFIG = {

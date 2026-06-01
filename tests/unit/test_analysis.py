@@ -10,9 +10,8 @@
 #      python -m pytest tests/unit/test_analysis.py --tb=short
 
 """Unit tests for tasks/analysis.py"""
-import pytest
 import numpy as np
-from unittest.mock import Mock, MagicMock, patch, mock_open
+from unittest.mock import Mock, patch
 from tasks.analysis import run_inference, _find_onnx_name, sigmoid, robust_load_audio_with_fallback, analyze_track
 
 

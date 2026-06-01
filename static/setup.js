@@ -785,7 +785,8 @@ function testConnection() {
     }).then(function(resp) {
         return resp.json().then(function(data) {
             if (!resp.ok) {
-                throw new Error(data.error || 'Unable to test connection.');
+                var structured = (typeof formatErrorText === 'function' && data.error_code) ? formatErrorText(data) : null;
+                throw new Error(structured || data.error || 'Unable to test connection.');
             }
             return data;
         });

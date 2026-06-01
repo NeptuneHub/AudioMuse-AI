@@ -5,15 +5,8 @@ Tests GMM component selection and parameter extraction:
 - Small dataset handling (< 5 tracks)
 - GMM parameter structure validation
 """
-import pytest
 import numpy as np
-from tasks.artist_gmm_manager import (
-    select_optimal_gmm_components,
-    fit_artist_gmm,
-    GMM_N_COMPONENTS_MIN,
-    GMM_N_COMPONENTS_MAX,
-    GMM_COVARIANCE_TYPE
-)
+from tasks.artist_gmm_manager import select_optimal_gmm_components, fit_artist_gmm, GMM_N_COMPONENTS_MAX
 
 
 class TestSelectOptimalGMMComponents:
@@ -143,20 +136,29 @@ class TestFitArtistGMM:
         assert 1 <= gmm_params['n_components'] <= GMM_N_COMPONENTS_MAX
 
     def test_gmm_params_structure(self):
-        """Test that GMM params have correct structure"""
+        """Test that GMM params have correct structure.
+
+        ``covariances`` and ``covariance_type`` are deliberately NOT stored
+        anymore -- the entire Jeffreys re-rank code path that read them was
+        dead code, and dropping them is what gets gmm_params under PG's
+        1 GB MaxAllocSize cap at large library scales.
+        """
         embeddings = [np.random.rand(128) for _ in range(10)]
-        
+
         gmm_params = fit_artist_gmm("Artist", embeddings)
-        
-        # Check all required fields
+
+        # Required fields
         assert 'weights' in gmm_params
         assert 'means' in gmm_params
-        assert 'covariances' in gmm_params
         assert 'n_components' in gmm_params
-        assert 'covariance_type' in gmm_params
         assert 'n_features' in gmm_params
         assert 'n_tracks' in gmm_params
         assert 'is_few_songs' in gmm_params
+
+        # Removed fields -- assert they are explicitly absent so we catch any
+        # accidental re-introduction in a future refactor.
+        assert 'covariances' not in gmm_params
+        assert 'covariance_type' not in gmm_params
 
     def test_weights_sum_to_one(self):
         """Test that GMM weights sum to 1.0"""
@@ -177,26 +179,6 @@ class TestFitArtistGMM:
         assert len(gmm_params['means']) == n_components
         # Each mean should be 128-dimensional
         assert all(len(mean) == 128 for mean in gmm_params['means'])
-
-    def test_covariances_shape_matches_components(self):
-        """Test that covariances array matches number of components"""
-        embeddings = [np.random.rand(128) for _ in range(12)]
-        
-        gmm_params = fit_artist_gmm("Artist", embeddings)
-        
-        n_components = gmm_params['n_components']
-        assert len(gmm_params['covariances']) == n_components
-        # Diagonal covariance: each should be 128-dimensional
-        assert all(len(cov) == 128 for cov in gmm_params['covariances'])
-
-    def test_covariance_type_is_diagonal(self):
-        """Test that covariance type is set to diagonal"""
-        embeddings = [np.random.rand(128) for _ in range(10)]
-        
-        gmm_params = fit_artist_gmm("Artist", embeddings)
-        
-        assert gmm_params['covariance_type'] == GMM_COVARIANCE_TYPE
-        assert gmm_params['covariance_type'] == 'diag'
 
     def test_n_features_matches_embedding_dim(self):
         """Test that n_features matches embedding dimensionality"""

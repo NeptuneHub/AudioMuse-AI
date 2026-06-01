@@ -98,6 +98,7 @@ When submitting a pull request, ensure:
 * **License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
+* **Static analysis (flake8):** the `Static Analysis` workflow (`.github/workflows/lint-flake8.yml`) runs `flake8 --select=E9,F63,F7,F82` on every push/PR to `main` and must pass. To avoid failing it: don't reference undefined names, leftover/renamed variables, or unresolved imports; fix syntax errors; and only keep a `global`/`nonlocal` declaration when the function actually reassigns that name (declaring one for a variable you merely read or mutate in place — `d[k]=v`, `.append()`, `.update()` — will fail the check).
 
 > Important: Prefear opening small PR, focused on specific functionality that directly add value. Avoid to change multiple unrelated functionality to facilitate test.
 

@@ -140,6 +140,7 @@ def compare_pytorch_vs_onnx():
             print("\nPlease generate the ONNX model first using pythorch.sh")
             return False
         
+        onnx_model_path = onnx_audio_model_path
         print(f"Loading from: {onnx_model_path}")
         
         # Load ONNX session

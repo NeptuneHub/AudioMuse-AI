@@ -1,5 +1,4 @@
 import os
-import psycopg2
 from psycopg2.extras import DictCursor
 from flask import jsonify, request, render_template, g
 import json
@@ -17,23 +16,10 @@ from tasks.setup_manager import SetupManager
 from redis import Redis
 
 # Swagger imports
-from flasgger import Swagger, swag_from
+from flasgger import Swagger
 
 # Import configuration
-from config import JELLYFIN_URL, JELLYFIN_USER_ID, JELLYFIN_TOKEN, HEADERS, TEMP_DIR, \
-  REDIS_URL, DATABASE_URL, MAX_DISTANCE, MAX_SONGS_PER_CLUSTER, MAX_SONGS_PER_ARTIST, NUM_RECENT_ALBUMS, \
-  SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, \
-  SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, \
-  MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, \
-  CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, GMM_COVARIANCE_TYPE, \
-  DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, \
-  SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, \
-  PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, MOOD_LABELS, TOP_N_MOODS, APP_VERSION, \
-  AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, GEMINI_API_KEY, GEMINI_MODEL_NAME, MISTRAL_MODEL_NAME, \
-  TOP_N_PLAYLISTS, PATH_DISTANCE_METRIC, ALCHEMY_DEFAULT_N_RESULTS, ALCHEMY_MAX_N_RESULTS, \
-  ENABLE_PROXY_FIX, \
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR, ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN, \
-  API_TOKEN, JWT_SECRET, AUTH_ENABLED
+from config import TEMP_DIR, REDIS_URL, APP_VERSION, ENABLE_PROXY_FIX, JWT_SECRET
 
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
@@ -48,9 +34,7 @@ setup_manager = SetupManager()
 # Import helper functions
 from app_helper import (
     init_db, get_db, close_db,
-    redis_conn, rq_queue_high, rq_queue_default,
-    clean_up_previous_main_tasks,
-    save_task_status,
+    redis_conn,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
@@ -65,9 +49,20 @@ from app_auth import (
 
 from app_provider_migration import migration_bp
 
+from error import error_manager
+from error.error_manager import AudioMuseError
+from error.error_dictionary import UNKNOWN_ERROR_CODE
+
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
+
+
+@app.errorhandler(AudioMuseError)
+def handle_audiomuse_error(err):
+    """Render any AudioMuseError raised by a synchronous route as a structured JSON body."""
+    app.logger.error("[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err)
+    return jsonify(err.to_dict()), error_manager.http_status_for_code(err.code)
 
 from app_logging import configure_logging
 configure_logging()
@@ -271,7 +266,6 @@ def get_task_status_endpoint(task_id):
         response['progress'] = job.meta.get('progress', 0)
         response['details'] = job.meta.get('details', {})
         if job.is_failed:
-            response['details']['error_message'] = job.exc_info if job.exc_info else "Job failed without error info."
             response['status_message'] = "FAILED"
         elif job.is_finished:
              response['status_message'] = "SUCCESS" # RQ uses 'finished' for success
@@ -310,7 +304,10 @@ def get_task_status_endpoint(task_id):
     if response.get('task_type_from_db') and 'analysis' in response['task_type_from_db']:
         if isinstance(response.get('details'), dict):
             response['details'].pop('checked_album_ids', None)
-    
+
+    if isinstance(response.get('details'), dict):
+        response['details'].pop('traceback', None)
+
     # Truncate log entries to last 10 entries for all task types
     if isinstance(response.get('details'), dict) and 'log' in response['details']:
         log_entries = response['details']['log']
@@ -320,6 +317,17 @@ def get_task_status_endpoint(task_id):
                 *log_entries[-10:]
             ]
     
+    state_upper = str(response.get('state') or '').upper()
+    if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
+        existing_error = response['details'].get('error')
+        if isinstance(existing_error, dict) and 'error_code' in existing_error and 'error_message' in existing_error:
+            pass
+        elif isinstance(existing_error, dict) and 'error_code' in existing_error:
+            response['details']['error'] = error_manager.build(existing_error['error_code'])
+        else:
+            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
+        response['details'].setdefault('error_message', response['details']['error']['error_message'])
+
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
     response.pop('start_time', None)
@@ -750,8 +758,6 @@ def listen_for_index_reloads():
 
 # --- Import and Register Blueprints ---
 # This is the original, working structure.
-from app_helper import get_child_tasks_from_db, get_score_data_by_ids, get_tracks_by_ids, save_track_analysis_and_embedding, track_exists, update_playlist_table
-
 # Import tasks modules to ensure they're available to RQ workers
 import tasks.clustering
 import tasks.analysis

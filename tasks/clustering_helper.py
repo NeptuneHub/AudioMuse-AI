@@ -6,7 +6,6 @@ import logging
 import numpy as np
 from collections import defaultdict
 # time, re, and cdist imports moved to clustering_postprocessing.py
-from psycopg2.extras import DictCursor
 
 # Sklearn imports
 from sklearn.preprocessing import StandardScaler
@@ -14,7 +13,8 @@ from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
-from sklearn.neighbors import NearestNeighbors
+
+logger = logging.getLogger(__name__)
 
 # GPU clustering support (optional)
 try:
@@ -37,8 +37,6 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
                     USE_GPU_CLUSTERING)
 from .commons import score_vector
-
-logger = logging.getLogger(__name__)
 
 # --- Main Orchestrator for a Single Iteration ---
 
