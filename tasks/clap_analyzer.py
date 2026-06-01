@@ -367,7 +367,9 @@ def _gte_text_embedding(text: str) -> Optional[np.ndarray]:
 
     proj_input = gte_vec.reshape(1, -1).astype(np.float32)
     projected = proj.run(None, {proj.get_inputs()[0].name: proj_input})[0][0]
-    projected = projected / np.linalg.norm(projected)
+    norm = np.linalg.norm(projected)
+    if norm > 0:
+        projected = projected / norm
     return projected
 
 
@@ -387,7 +389,7 @@ def _gte_text_embeddings_batch(texts: list) -> Optional[np.ndarray]:
     batch = np.stack(gte_vecs).astype(np.float32)
     projected = proj.run(None, {proj.get_inputs()[0].name: batch})[0]
     norms = np.linalg.norm(projected, axis=1, keepdims=True)
-    projected = projected / norms
+    projected = projected / np.maximum(norms, 1e-9)
     return projected
 
 
@@ -418,7 +420,7 @@ def unload_clap_audio_only():
 
 def unload_clap_model():
     """Unload CLAP model from memory to free RAM and GPU VRAM."""
-    global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids
+    global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids, _gte_proj_session
     
     if _audio_session is None and _text_session is None:
         return False
@@ -435,6 +437,7 @@ def unload_clap_model():
         
         _tokenizer = None
         _cached_dummy_input_ids = None
+        _gte_proj_session = None
         
         # Force garbage collection
         import gc
