@@ -140,13 +140,44 @@ def redis_binary():
     )
 
 
-def pg_bin_dir():
-    """Directory holding the bundled Postgres client tools (pg_dump, psql, pg_restore).
+def _uses_pgserver():
+    """x86_64 uses the pgserver wheel; other arches (aarch64) use the
+    from-source PostgreSQL bundled under ``pgsql/`` (pgserver has no arm64
+    wheel). Mirrors ``linux/db_backend.py``'s selector."""
+    return platform.machine() in ("x86_64", "amd64")
 
-    Lives next to the pgserver server binaries inside the frozen bundle; in dev it
-    resolves from the installed pgserver package.
+
+def pg_install_dir():
+    """Root of the embedded PostgreSQL install (holds bin/, lib/, share/).
+
+    * x86_64: the pgserver wheel's ``pginstall`` tree (bundled at
+      ``pgserver/pginstall`` when frozen; resolved from the package in dev).
+    * aarch64: the from-source server bundled at ``pgsql/`` (built by
+      ``linux/vendor/postgres/build-postgres.sh`` into
+      ``linux/vendor/postgres/<arch>`` in dev).
     """
+    if _uses_pgserver():
+        if getattr(sys, "frozen", False):
+            return os.path.join(resource_root(), "pgserver", "pginstall")
+        import pgserver
+        return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall")
     if getattr(sys, "frozen", False):
-        return os.path.join(resource_root(), "pgserver", "pginstall", "bin")
-    import pgserver
-    return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall", "bin")
+        return os.path.join(resource_root(), "pgsql")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "vendor", "postgres", platform.machine()
+    )
+
+
+def pg_bin_dir():
+    """Directory holding the bundled Postgres tools (postgres, initdb, pg_ctl,
+    pg_dump, psql, pg_restore)."""
+    return os.path.join(pg_install_dir(), "bin")
+
+
+def pg_lib_dir():
+    """Library dir for the bundled-from-source server (used to set
+    ``LD_LIBRARY_PATH``); ``None`` for the pgserver path, which manages its own
+    library resolution."""
+    if _uses_pgserver():
+        return None
+    return os.path.join(pg_install_dir(), "lib")

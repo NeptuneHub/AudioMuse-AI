@@ -28,8 +28,8 @@ import urllib.request
 
 import redis as redis_lib
 
-import database
 import taskqueue
+from linux import db_backend
 from linux import env as env_builder
 from linux import paths
 from macos.control_ipc import ControlServer
@@ -88,7 +88,7 @@ class ProcessSupervisor:
         try:
             self._reap_orphans()
             self._control.start()
-            self._database_url = database.start_embedded(paths.pgdata_dir())
+            self._database_url = db_backend.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
             self._start_redis()
             self._log.info("Embedded Redis ready")
@@ -118,7 +118,7 @@ class ProcessSupervisor:
             self._terminate_named(name)
         self._terminate_named("redis")
         try:
-            database.stop_embedded()
+            db_backend.stop_embedded()
         except Exception:
             logger.exception("Error stopping embedded PostgreSQL")
         self._control.stop()
@@ -255,7 +255,7 @@ class ProcessSupervisor:
             pass  # unreachable -> restart below
         self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
         try:
-            self._database_url = database.ensure_embedded_running(paths.pgdata_dir())
+            self._database_url = db_backend.ensure_embedded_running(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL restarted")
         except Exception:
             self._log.exception("Failed to restart embedded PostgreSQL")
@@ -377,6 +377,7 @@ class ProcessSupervisor:
         me = os.getpid()
         redis_marker = paths.redis_dir()
         pg_marker = paths.pgdata_dir()
+        terminated = []
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 if proc.info["pid"] == me:
@@ -388,6 +389,7 @@ class ProcessSupervisor:
                 stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
                 if stale_redis or stale_pg:
                     proc.terminate()
+                    terminated.append(proc)
                     self._log.info(
                         "Reaped stale %s (pid %s) referencing our data dir",
                         proc.info.get("name"), proc.info["pid"],
@@ -396,4 +398,18 @@ class ProcessSupervisor:
                 continue
             except Exception:
                 continue
+        # SIGTERM is asynchronous: wait for the stragglers to actually exit
+        # before the caller starts fresh Postgres/Redis, or the new instances
+        # race a still-shutting-down process for the data-dir lock / unix
+        # socket. Hard-kill anything that ignores SIGTERM within the window.
+        if terminated:
+            try:
+                _gone, alive = psutil.wait_procs(terminated, timeout=5)
+                for p in alive:
+                    try:
+                        p.kill()
+                    except Exception:
+                        continue
+            except Exception:
+                pass
         self._clear_pidfile()

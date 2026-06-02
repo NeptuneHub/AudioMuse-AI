@@ -14,6 +14,7 @@ env/
 # Linux native build inputs built fresh in CI (not committed; see linux/vendor/README.md)
 /linux/vendor/redis/
 /linux/vendor/pg-contrib/*/
+/linux/vendor/postgres/*/
 
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!

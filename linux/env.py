@@ -85,8 +85,11 @@ def build_child_env(role, database_url, redis_url):
         "POSTGRES_USER": "postgres",
         "POSTGRES_PASSWORD": "",
         "POSTGRES_DB": "postgres",
-        # Put the bundled Postgres client tools on PATH so pg_dump et al. resolve.
-        "PATH": paths.pg_bin_dir() + os.pathsep + os.environ.get("PATH", ""),
+        # Put the bundled Postgres client tools on PATH so pg_dump et al.
+        # resolve. Build with a filtered join so an unset/empty inherited PATH
+        # cannot leave a trailing separator -- an empty PATH entry is treated as
+        # the current working directory on Unix (CWE-426, untrusted search path).
+        "PATH": os.pathsep.join(filter(None, [paths.pg_bin_dir(), os.environ.get("PATH")])),
     })
     if role in _WORKER_ROLES:
         env["AUDIOMUSE_ROLE"] = "worker"

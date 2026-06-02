@@ -58,6 +58,11 @@ def _run_flask():
 
 
 def _run_role(role):
+    # Strip the launcher's own ``--role=`` flag from argv before handing control
+    # to a child module: the reused entry points (rq_worker, restart_listener,
+    # ...) don't parse argv today, but a future argparse/click in any of them
+    # would otherwise choke on the unrecognized flag.
+    sys.argv = [a for a in sys.argv if not a.startswith("--role=")]
     if role == "flask":
         _run_flask()
     elif role == "worker-high":

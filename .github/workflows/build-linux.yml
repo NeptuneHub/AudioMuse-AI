@@ -1,5 +1,8 @@
 # Builds the standalone native Linux packages (.deb + .rpm) for x86_64 and
-# aarch64, and attaches them to the GitHub release that triggered the run.
+# aarch64 and attaches them to the GitHub release that triggered the run. The
+# embedded PostgreSQL is sourced differently per arch (pgserver wheel on x86_64;
+# a from-source build on aarch64, which has no pgserver wheel) -- see the
+# `strategy` block and the per-arch build steps below.
 #
 # Mirrors build-macos.yml. The package bundles EVERYTHING (Python runtime,
 # onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver
@@ -51,6 +54,12 @@ jobs:
       github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository)
+    # Two legs. The embedded PostgreSQL differs by arch because the `pgserver`
+    # wheel exists for manylinux x86_64 but NOT for Linux aarch64:
+    #   * x86_64  -> pgserver wheel (+ vendored unaccent/pg_trgm grafted in).
+    #   * aarch64 -> a from-source PostgreSQL (server + the two contrib modules)
+    #                built here and bundled wholesale; managed by
+    #                linux/embedded_pg.py at runtime.
     strategy:
       fail-fast: false
       matrix:
@@ -87,11 +96,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # build-essential + libreadline/zlib headers: redis + the PG contrib
-          # modules compile against these. rpm: so nfpm can emit an .rpm.
+          # build-essential + zlib headers: redis and the PG contrib modules
+          # compile against these. bison/flex: required to build PostgreSQL from
+          # source (aarch64 leg). rpm: so nfpm can emit an .rpm.
           sudo apt-get install -y --no-install-recommends \
             build-essential curl ca-certificates pkg-config \
-            libreadline-dev zlib1g-dev rpm
+            libreadline-dev zlib1g-dev bison flex rpm
           # nfpm (builds both .deb and .rpm from one config).
           case "${ARCH}" in
             x86_64)  NFPM_ARCH=x86_64 ;;
@@ -112,11 +122,19 @@ jobs:
       - name: Build vendored redis-server
         run: bash linux/vendor/build-redis.sh
 
-      - name: Build vendored PostgreSQL contrib (unaccent, pg_trgm)
+      # x86_64: compile unaccent/pg_trgm against the installed pgserver's PG.
+      - name: Build vendored PostgreSQL contrib (x86_64, against pgserver)
+        if: matrix.arch == 'x86_64'
         run: |
           set -euo pipefail
           source .venv-linux/bin/activate   # pgserver must be importable
           bash linux/vendor/pg-contrib/build-pg-contrib.sh
+
+      # aarch64: no pgserver wheel -> build a relocatable PostgreSQL (server +
+      # unaccent/pg_trgm) from source and bundle the whole tree.
+      - name: Build vendored PostgreSQL from source (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: bash linux/vendor/postgres/build-postgres.sh
 
       - name: Assemble ./model (mirrors the Dockerfile/macOS models stage)
         env:
@@ -202,9 +220,19 @@ jobs:
         run: |
           set -euo pipefail
           source .venv-linux/bin/activate
-          PKG_VERSION="${GITHUB_REF_NAME}" bash linux/build.sh
+          # Derive a package-manager-safe version. On a tag push github.ref_name
+          # is `vX.Y.Z` -> `X.Y.Z`; on a PR it is `<num>/merge` (and on dispatch a
+          # branch name), neither of which is a valid deb/rpm version, so use a
+          # placeholder for non-tag builds.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            PKG_VERSION="0.0.0"
+          fi
+          PKG_VERSION="$PKG_VERSION" bash linux/build.sh
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
 
       - name: Upload packages as workflow artifacts
         uses: actions/upload-artifact@v4

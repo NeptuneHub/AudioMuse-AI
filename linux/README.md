@@ -7,8 +7,11 @@ application menu. It is the Linux counterpart of the [`macos/`](../macos) build.
 
 The package bundles:
 
-- **Embedded PostgreSQL** via [`pgserver`](https://github.com/orm011/pgserver)
-  (with `pgvector`, plus the `unaccent` / `pg_trgm` contrib extensions we vendor).
+- **Embedded PostgreSQL** with the `unaccent` / `pg_trgm` extensions the schema
+  needs. On **x86_64** this is [`pgserver`](https://github.com/orm011/pgserver)
+  (+ the two contrib modules we vendor); on **aarch64** (no pgserver wheel) it's
+  a relocatable PostgreSQL built from source in CI and driven by `initdb` /
+  `pg_ctl` (`linux/embedded_pg.py`). Both look identical to the app.
 - **Embedded Redis** via a bundled `redis-server` binary.
 - The Flask web UI (served by `waitress`) on `http://127.0.0.1:8000`.
 - The two RQ workers, the janitor, and the config-restart listener.
@@ -87,28 +90,34 @@ The only genuine system dependencies declared by the package are `libgomp`
 
 ## Building (CI)
 
-`.github/workflows/build-linux.yml` builds both architectures
-(`x86_64` on `ubuntu-22.04`, `aarch64` on `ubuntu-22.04-arm`) on every `v*.*.*`
-tag and on PRs, and attaches the `.deb`/`.rpm` to the release. For each arch it:
+`.github/workflows/build-linux.yml` builds **x86_64** (on `ubuntu-22.04`) and
+**aarch64** (on `ubuntu-22.04-arm`) on every `v*.*.*` tag and on PRs, and
+attaches the `.deb`/`.rpm` to the release. For each arch it:
 
-1. installs the build toolchain + Python deps (`requirements/linux.txt`),
+1. installs the build toolchain + Python deps (`requirements/linux.txt`;
+   `pgserver` is x86_64-only via a platform marker),
 2. builds the vendored `redis-server` (`linux/vendor/build-redis.sh`),
-3. builds the vendored `unaccent`/`pg_trgm` against pgserver's PostgreSQL
-   (`linux/vendor/pg-contrib/build-pg-contrib.sh`),
+3. provides embedded PostgreSQL per arch:
+   - **x86_64** — builds `unaccent`/`pg_trgm` against the pgserver wheel's
+     PostgreSQL (`linux/vendor/pg-contrib/build-pg-contrib.sh`),
+   - **aarch64** — builds a relocatable PostgreSQL + those contrib modules from
+     source (`linux/vendor/postgres/build-postgres.sh`),
 4. assembles `./model` from the model releases (trimming the HF cache to the
    roberta tokenizer so the assets stay under GitHub's 2 GB limit),
 5. runs `linux/build.sh` → PyInstaller (`linux/AudioMuse-AI.spec`) → `nfpm`.
 
-## Building (developer machine, x86_64 or aarch64 Linux)
+## Building (developer machine)
 
 ```bash
 python3.12 -m venv .venv-linux
 source .venv-linux/bin/activate
 pip install -r requirements/linux.txt
 
-# Native build inputs (need build-essential, libreadline-dev, zlib1g-dev, rpm)
+# Native build inputs (need build-essential, bison, flex, zlib1g-dev, rpm)
 bash linux/vendor/build-redis.sh
-bash linux/vendor/pg-contrib/build-pg-contrib.sh
+# Embedded PostgreSQL — pick the one for your arch:
+bash linux/vendor/pg-contrib/build-pg-contrib.sh   # x86_64 (against pgserver)
+bash linux/vendor/postgres/build-postgres.sh       # aarch64 (from source)
 
 # Models: assemble ./model exactly as the workflow does (see build-linux.yml),
 # or copy an existing ./model tree into the repo root.
@@ -124,12 +133,14 @@ PKG_VERSION=1.0.0 bash linux/build.sh
 | --- | --- |
 | `launcher.py` | PyInstaller entry point: `start`/`stop`/`status`/`open` and the `--role=` child entry points. |
 | `supervisor.py` | Process supervisor (embedded PG/Redis + Flask + workers); port of `macos/supervisor.py`. |
-| `paths.py` | XDG-based writable dirs + bundled-resource locations. |
+| `db_backend.py` | Selects the embedded-Postgres backend by arch (pgserver on x86_64, `embedded_pg` on aarch64). |
+| `embedded_pg.py` | `initdb`/`pg_ctl` manager for the from-source PostgreSQL bundled on aarch64. |
+| `paths.py` | XDG-based writable dirs + bundled-resource locations (incl. per-arch Postgres paths). |
 | `env.py` | The environment handed to each child (embedded DB/queue, model paths). |
 | `AudioMuse-AI.spec` | PyInstaller one-dir spec. |
 | `build.sh` | PyInstaller build + `nfpm` packaging into `.deb`/`.rpm`. |
 | `packaging/` | `nfpm` config template, `.desktop` entries, post-install/-remove scripts. |
-| `vendor/` | Helper scripts that build `redis-server` and the PG contrib modules in CI. |
+| `vendor/` | Helper scripts that build `redis-server`, the x86_64 PG contrib modules, and the aarch64 from-source PostgreSQL in CI. |
 
 > **No shared code is modified by this build.** The `linux/` package only *adds*
 > helpers. It reuses the platform-agnostic `macos.control_ipc` /
