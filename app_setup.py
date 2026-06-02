@@ -1,11 +1,9 @@
 import re
 import types
-import ipaddress
-import socket
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from app import app, setup_manager
-from app_helper import check_setup_needed
+from app_helper import check_setup_needed, validate_outbound_url
 import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager
@@ -18,49 +16,6 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     for field in fields
 ]
 
-
-def _is_public_http_url(url):
-    """Return (True, None) if URL is safe for outbound HTTP(S), else (False, reason)."""
-    try:
-        parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(url)
-    except Exception:
-        return False, "Invalid URL"
-
-    if parsed.scheme not in ("http", "https"):
-        return False, "Only http and https URLs are supported"
-
-    host = parsed.hostname
-    if not host:
-        return False, "URL host is required"
-
-    # Block obvious local hostnames early.
-    host_l = host.strip().lower()
-    if host_l == "localhost" or host_l.endswith(".localhost") or host_l.endswith(".local"):
-        return False, "Local network hosts are not allowed"
-
-    try:
-        addrinfo = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
-    except Exception:
-        return False, "Could not resolve host"
-
-    for entry in addrinfo:
-        ip_text = entry[4][0]
-        try:
-            ip_obj = ipaddress.ip_address(ip_text)
-        except ValueError:
-            return False, "Resolved host to invalid IP"
-
-        if (
-            ip_obj.is_private
-            or ip_obj.is_loopback
-            or ip_obj.is_link_local
-            or ip_obj.is_multicast
-            or ip_obj.is_reserved
-            or ip_obj.is_unspecified
-        ):
-            return False, "Target host resolves to a non-public IP address"
-
-    return True, None
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
 SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
@@ -411,7 +366,7 @@ def setup_api():
             if url_key in filtered_values:
                 url_val = str(filtered_values[url_key] or '').strip()
                 if url_val:
-                    is_safe, reason = _is_public_http_url(url_val)
+                    is_safe, reason = validate_outbound_url(url_val)
                     if not is_safe:
                         return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
 
@@ -683,13 +638,7 @@ def setup_lyrics_api_analyze():
         return jsonify({'error': 'example_url is required'}), 400
 
     # Validate scheme and destination safety (SSRF guard)
-    try:
-        parsed_check = urllib.parse.urlparse(example_url)
-    except Exception:
-        return jsonify({'error': 'Invalid URL'}), 400
-    if parsed_check.scheme not in ('http', 'https'):
-        return jsonify({'error': 'Only http and https URLs are supported'}), 400
-    is_safe_url, unsafe_reason = _is_public_http_url(example_url)
+    is_safe_url, unsafe_reason = validate_outbound_url(example_url)
     if not is_safe_url:
         return jsonify({'error': unsafe_reason}), 400
 

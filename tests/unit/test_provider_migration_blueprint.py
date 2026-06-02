@@ -93,7 +93,7 @@ class TestSessionStart:
 
         resp = client.post('/api/migration/session/start', json={
             'target_type': 'navidrome',
-            'target_creds': {'url': 'http://nav', 'user': 'u', 'password': 'p'},
+            'target_creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
         })
 
         assert resp.status_code == 200
@@ -119,7 +119,7 @@ class TestProbeTest:
             p.test_connection.return_value = fake
             resp = client.post('/api/migration/probe/test', json={
                 'type': 'navidrome',
-                'creds': {'url': 'http://nav', 'user': 'u', 'password': 'p'},
+                'creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
             })
         assert resp.status_code == 200
         data = resp.get_json()
@@ -341,3 +341,76 @@ class TestExecuteGate:
         data = resp.get_json()
         assert data['task_id'] == 'job-xyz'
         assert fake_queue.enqueue.called
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard on the user-supplied media-server URL (_validate_probe_url ->
+# app_helper.validate_outbound_url). Self-hosted servers live on the LAN /
+# loopback, so those are accepted; cloud-metadata, link-local, multicast,
+# unspecified and non-HTTP(S) schemes are rejected. IP literals are used so the
+# checks never depend on DNS resolution.
+# ---------------------------------------------------------------------------
+
+class TestProbeUrlValidation:
+    # (url, reason) — http/https to public / private (LAN) / loopback is fine.
+    ACCEPTED = [
+        'http://127.0.0.1',                 # loopback (same-host server)
+        'http://127.0.0.1:8096',            # loopback with port
+        'http://192.168.1.50:8096',         # private LAN (RFC1918)
+        'http://10.0.0.5/rest',             # private with path
+        'http://172.16.3.4',                # private (172.16/12)
+        'https://8.8.8.8',                  # public IP literal, https
+        'http://1.2.3.4:8096',              # public IP literal with port
+    ]
+
+    REJECTED = [
+        'http://169.254.169.254/latest/meta-data',  # cloud metadata (link-local)
+        'http://169.254.10.20',                      # link-local
+        'http://0.0.0.0',                            # unspecified
+        'http://224.0.0.1',                          # multicast
+        'http://',                                   # no host
+        'not-a-url',                                 # no scheme/host
+        'file:///etc/passwd',                        # disallowed scheme
+        'gopher://10.0.0.1:6379/',                   # disallowed scheme
+        'ftp://1.2.3.4/',                            # disallowed scheme
+        'redis://1.2.3.4:6379',                      # disallowed scheme
+    ]
+
+    @pytest.mark.parametrize('url', ACCEPTED)
+    def test_accepts_safe_urls(self, bp_mod, url):
+        ok, reason = bp_mod._validate_probe_url({'url': url})
+        assert ok is True, f'{url!r} should be accepted (reason={reason!r})'
+        assert reason is None
+
+    @pytest.mark.parametrize('url', REJECTED)
+    def test_rejects_unsafe_urls(self, bp_mod, url):
+        ok, reason = bp_mod._validate_probe_url({'url': url})
+        assert ok is False, f'{url!r} should be rejected'
+        assert isinstance(reason, str) and reason  # a human-readable reason
+
+    @pytest.mark.parametrize('creds', [{}, {'url': ''}, {'url': None}])
+    def test_missing_url_is_allowed_for_mpd(self, bp_mod, creds):
+        # MPD targets carry no URL; the wrapper lets the downstream probe handle it.
+        ok, reason = bp_mod._validate_probe_url(creds)
+        assert ok is True
+        assert reason is None
+
+    def test_probe_endpoint_rejects_metadata_url(self, bp_mod, client):
+        # End-to-end: the SSRF guard blocks before provider_probe is ever called.
+        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
+            resp = client.post('/api/migration/probe/test', json={
+                'type': 'navidrome',
+                'creds': {'url': 'http://169.254.169.254/'},
+            })
+        assert resp.status_code == 200
+        assert resp.get_json()['ok'] is False
+        assert not p.test_connection.called
+
+    def test_session_start_rejects_disallowed_scheme(self, client):
+        # Validation rejects with 400 before get_db is ever reached.
+        resp = client.post('/api/migration/session/start', json={
+            'target_type': 'navidrome',
+            'target_creds': {'url': 'file:///etc/passwd'},
+        })
+        assert resp.status_code == 400
+        assert 'not allowed' in resp.get_json().get('error', '').lower()
