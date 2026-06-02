@@ -28,6 +28,16 @@ def build_child_env(role, database_url, redis_url):
         # another thread when fork() was called. Crashing instead." -- so jobs
         # never run. This is the documented opt-out of that fork-safety check.
         "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
+        # NumPy converts ints to longdouble via the C library's locale-sensitive
+        # strtold. macOS frameworks (Cocoa/CoreAudio) call setlocale() at startup,
+        # and a concurrent locale change while scipy imports causes an intermittent
+        # "Could not parse python long as longdouble" crash that leaves analysis
+        # tasks stuck pending. Pinning the *numeric* locale to C makes strtold
+        # deterministic with no transition to race against. Kept to LC_NUMERIC only
+        # so LC_CTYPE/UTF-8 (accented file paths) is untouched. The matching
+        # in-process pin lives in macos/launcher.py (numeric_bootstrap.py); this
+        # is all macOS-only and does not affect the Linux/Docker images.
+        "LC_NUMERIC": "C",
         "APP_DATA_DIR": paths.app_support_dir(),
         "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
         "DATABASE_TYPE": "embedded",

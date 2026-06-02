@@ -159,6 +159,18 @@ def _run_menubar():
 
 
 def main():
+    # Force a deterministic C *numeric* locale in every frozen process before any
+    # heavy import. NumPy's int->longdouble conversion (used by scipy at import)
+    # goes through the locale-sensitive C strtold; a macOS framework changing the
+    # locale concurrently otherwise causes an intermittent
+    # "Could not parse python long as longdouble" crash. This is macOS-only (the
+    # Linux/Docker workers never run launcher.py), so it cannot affect containers.
+    try:
+        import numeric_bootstrap
+        numeric_bootstrap.pin_numeric_locale()
+    except Exception:
+        pass
+
     role = _role_from_argv()
     if role:
         _run_role(role)
