@@ -1,6 +1,6 @@
 # tasks/mediaserver_navidrome.py
 
-import requests
+from tasks import mediaserver_http as requests
 import logging
 import os
 import random

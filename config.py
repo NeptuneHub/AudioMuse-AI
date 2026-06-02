@@ -37,7 +37,7 @@ MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCH
 # the library and eventually breach PG's ~1 GB field cap on a heavily-duplicated
 # collection. The true total is preserved separately as collision_details_total.
 MIGRATION_MAX_COLLISION_DETAILS = int(os.environ.get("MIGRATION_MAX_COLLISION_DETAILS", "1000"))
-TEMP_DIR = "/app/temp_audio"  # Always use /app/temp_audio
+TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 
 
 def _compute_headers():
@@ -107,7 +107,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.1.1"
+APP_VERSION = "v2.1.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -300,6 +300,12 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     f"postgresql://{_pg_user_esc}:{_pg_pass_esc}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 )
+
+DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()
+QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()
+APP_DATA_DIR = os.environ.get("APP_DATA_DIR", "")
+AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
+AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")

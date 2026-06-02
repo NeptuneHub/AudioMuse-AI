@@ -21,7 +21,7 @@ from flask import Blueprint, jsonify, render_template, request
 # App-level singletons (DB connection, Redis, RQ queues). Importing here keeps
 # the blueprint file self-contained — the rest of the app doesn't need to hand
 # anything in.
-from app_helper import get_db, redis_conn, rq_queue_high
+from app_helper import get_db, redis_conn, rq_queue_high, validate_outbound_url
 from tasks.mediaserver_helper import detect_path_format as _detect_path_format
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,21 @@ provider_probe = _LazyProbe()
 # ---------------------------------------------------------------------------
 
 _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'mpd'})
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard for the user-supplied media-server URL. Delegates to the shared
+# ``app_helper.validate_outbound_url`` (allows LAN/loopback, blocks non-HTTP(S)
+# schemes and link-local/cloud-metadata). MPD targets carry no URL, so a missing
+# url is allowed and left to the downstream probe.
+# ---------------------------------------------------------------------------
+
+def _validate_probe_url(creds):
+    """Return (True, None) if ``creds['url']`` is safe to fetch, else (False, reason)."""
+    url = (creds or {}).get('url')
+    if not url:
+        return True, None
+    return validate_outbound_url(url)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +249,10 @@ def session_start():
     if target_type not in _SUPPORTED_TARGETS:
         return jsonify({'error': f'target_type must be one of {sorted(_SUPPORTED_TARGETS)}'}), 400
 
+    ok, reason = _validate_probe_url(target_creds)
+    if not ok:
+        return jsonify({'error': f'target_creds url is not allowed: {reason}'}), 400
+
     import config
     source_type = getattr(config, 'MEDIASERVER_TYPE', '') or ''
 
@@ -406,6 +425,10 @@ def probe_test():
     payload = request.get_json(silent=True) or {}
     t = (payload.get('type') or '').lower()
     creds = payload.get('creds') or {}
+    ok, reason = _validate_probe_url(creds)
+    if not ok:
+        return jsonify({'ok': False, 'error': reason, 'path_format': 'none',
+                        'sample_count': 0, 'warnings': []}), 200
     try:
         result = provider_probe.test_connection(t, creds)
     except NotImplementedError as e:

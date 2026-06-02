@@ -1,6 +1,6 @@
 # tasks/mediaserver_emby.py
 
-import requests
+from tasks import mediaserver_http as requests
 import logging
 import os
 import config
@@ -195,7 +195,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                 r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                 r.raise_for_status()
                 response_data = r.json()
-                tracks_on_page = response_data.get("Items", [])
+                tracks_on_page = response_data.get("Items") or []
                 
                 if not tracks_on_page:
                     break
@@ -252,7 +252,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                     r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                     r.raise_for_status()
                     response_data = r.json()
-                    tracks_on_page = response_data.get("Items", [])
+                    tracks_on_page = response_data.get("Items") or []
                     
                     if not tracks_on_page:
                         break
@@ -336,7 +336,7 @@ def _get_recent_albums_only(limit, user_creds=None):
                 r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                 r.raise_for_status()
                 response_data = r.json()
-                albums_on_page = response_data.get("Items", [])
+                albums_on_page = response_data.get("Items") or []
                 
                 if not albums_on_page:
                     break
@@ -367,7 +367,7 @@ def _get_recent_albums_only(limit, user_creds=None):
                     r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                     r.raise_for_status()
                     response_data = r.json()
-                    albums_on_page = response_data.get("Items", [])
+                    albums_on_page = response_data.get("Items") or []
                     
                     if not albums_on_page:
                         break
@@ -479,7 +479,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     try:
         r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
 
         # Apply artist field prioritization to each track
         for item in items:
@@ -578,7 +578,7 @@ def get_all_songs(user_creds=None):
         try:
             r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
-            items = r.json().get("Items", [])
+            items = r.json().get("Items") or []
 
             # Apply artist field prioritization
             for item in items:
@@ -599,7 +599,11 @@ def get_all_songs(user_creds=None):
             start_index += limit
         except Exception as e:
             logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
-            break
+            # Raise rather than returning the partial list accumulated so far:
+            # the result feeds the migration matcher, which deletes score rows
+            # missing from it as orphans. A silently truncated scan would
+            # destroy real analysis data (issue #523).
+            raise
 
     return all_items
 
@@ -618,7 +622,7 @@ def search_albums(query, user_creds=None):
     try:
         r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", []) or []
+        items = r.json().get("Items") or []
         return [
             {
                 'id':          item.get('Id'),
@@ -682,7 +686,7 @@ def get_playlist_by_name(playlist_name, user_creds=None):
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        playlists = r.json().get("Items", [])
+        playlists = r.json().get("Items") or []
 
         # Filter manually by name (case-sensitive exact match)
         for playlist in playlists:
@@ -762,7 +766,7 @@ def get_all_playlists(user_creds=None):
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        return r.json().get("Items") or []
     except Exception as e:
         logger.error(f"Emby get_all_playlists failed: {e}", exc_info=True)
         return []
@@ -801,7 +805,7 @@ def get_top_played_songs(limit, user_creds=None):
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
 
         # Apply artist field prioritization to each track
         for item in items:
@@ -926,7 +930,7 @@ def _get_playlist_entry_ids(playlist_id, user_id, headers):
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
         entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
         if len(entry_ids) != len(items):
             logger.warning(

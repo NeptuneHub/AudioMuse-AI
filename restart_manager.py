@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import socket
 import subprocess
 import threading
 
@@ -46,7 +48,38 @@ def publish_start_request():
     return publish_control_request('start')
 
 
+def _send_control(arguments):
+    """Forward an ``[action, *services]`` request to the standalone supervisor over a unix socket.
+
+    Used on macOS where there is no supervisord: the menu-bar ProcessSupervisor
+    listens on ``config.AUDIOMUSE_CONTROL_SOCKET`` and applies the same
+    start/stop/restart semantics to its child processes that supervisorctl would.
+    """
+    if not arguments:
+        return False
+    if not config.AUDIOMUSE_CONTROL_SOCKET:
+        logger.error('AUDIOMUSE_CONTROL_SOCKET not set; cannot dispatch %s', arguments)
+        return False
+    payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(15)
+            sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
+            sock.sendall(payload + b'\n')
+            response = sock.recv(1024).strip()
+    except Exception:
+        logger.exception('Failed to send control command %s to %s', arguments, config.AUDIOMUSE_CONTROL_SOCKET)
+        return False
+    if response == b'ok':
+        logger.info('Control command succeeded: %s', arguments)
+        return True
+    logger.error('Control server rejected %s: %s', arguments, response)
+    return False
+
+
 def _run_supervisorctl(arguments):
+    if config.AUDIOMUSE_PLATFORM == 'macos':
+        return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -89,6 +122,8 @@ def start_supervisor_workers():
 
 
 def _spawn_supervisorctl(arguments):
+    if config.AUDIOMUSE_PLATFORM == 'macos':
+        return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         subprocess.Popen(
