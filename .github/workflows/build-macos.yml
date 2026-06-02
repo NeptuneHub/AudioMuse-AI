@@ -51,6 +51,12 @@ env:
 jobs:
   build:
     # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
+    # Skip draft PRs and fork PRs — the same guard the Docker build workflows use.
+    # (A fork PR's token is read-only, so the PR-body edit below could not run.)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-14
     permissions:
       contents: read
@@ -201,14 +207,15 @@ jobs:
           path: dist/AudioMuse-AI-${{ env.ARCH }}.zip
           if-no-files-found: error
 
-      # On PRs, append (and on later pushes refresh-in-place) a PUBLIC, login-free
-      # download link to the build at the BOTTOM of the PR description, so testers
-      # can grab it before release. GitHub Actions artifacts require a logged-in
-      # user with repo access; nightly.link proxies the same artifact as a public
-      # URL. The block lives between HTML-comment markers so it is replaced (never
-      # duplicated) and the author's own description text is left untouched. (PRs
-      # here are from our own branches, so the token can edit the PR; not forks.)
-      - name: Append public test-build link to the PR description
+      # On PRs, append (and on later pushes refresh-in-place) a single "PR test
+      # image" block at the BOTTOM of the PR description listing every test build:
+      # the macOS app (public via nightly.link, since Actions artifacts need a
+      # logged-in user) plus the Docker image tags the nvidia/arm-intel/noavx2
+      # workflows publish for this PR. Only THIS workflow edits the PR body, so the
+      # blocks can never collide. The block lives between HTML-comment markers so it
+      # is replaced (never duplicated) and the author's own text is left untouched.
+      # (PRs here are from our own branches, so the token can edit the PR; not forks.)
+      - name: Append PR test-image links to the PR description
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         env:
@@ -221,14 +228,19 @@ jobs:
             const url = `https://nightly.link/${owner}/${repo}/actions/runs/${context.runId}/AudioMuse-AI-${arch}.zip`;
             const START = '<!-- macos-test-build:start -->';
             const END = '<!-- macos-test-build:end -->';
+            // The Docker image tags are deterministic from the PR number, produced
+            // by the separate nvidia / arm-intel / noavx2 workflows. We just list
+            // them here (no cross-workflow coordination), so only THIS workflow ever
+            // edits the PR body -> no collision. The macOS zip is this run's artifact,
+            // served publicly via nightly.link.
+            const ghcr = `ghcr.io/${owner}/${repo}`.toLowerCase();
             const block = [
               START,
-              `### macOS test build (Apple Silicon) — commit \`${context.sha.substring(0, 7)}\``,
-              `**Public download (no GitHub login needed):** [AudioMuse-AI-${arch}.zip](${url})`,
-              `Downloads as a zip *containing* the app zip — unzip twice (\`AudioMuse-AI-${arch}.zip\` → \`AudioMuse-AI.app\`).`,
-              '**Install (unsigned app):** move `AudioMuse-AI.app` to `/Applications`, run',
-              '`xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then open it.',
-              `_Auto-updated by the macOS build workflow (run [${context.runId}](https://github.com/${owner}/${repo}/actions/runs/${context.runId}))._`,
+              '### PR test image:',
+              `- MacOS Public download: [AudioMuse-AI-${arch}.zip](${url})`,
+              `- Docker image: \`${ghcr}:build-arm64-pr-${pull_number}\``,
+              `- Docker image noavx2: \`${ghcr}:pr-${pull_number}-noavx2\``,
+              `- Docker image nvidia: \`${ghcr}:pr-${pull_number}-nvidia\``,
               END,
             ].join('\n');
 
