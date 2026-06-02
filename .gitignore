@@ -8,7 +8,12 @@ __pycache__/
 venv/
 .venv/
 .venv-macos/
+.venv-linux/
 env/
+
+# Linux native build inputs built fresh in CI (not committed; see linux/vendor/README.md)
+/linux/vendor/redis/
+/linux/vendor/pg-contrib/*/
 
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!

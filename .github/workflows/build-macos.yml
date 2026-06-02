@@ -37,9 +37,9 @@ concurrency:
   group: build-macos-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege default for GITHUB_TOKEN: read-only. Individual jobs widen it:
-# the build job adds `pull-requests: write` (to post the test-build link on PRs),
-# and the release job adds `contents: write` (to attach the zip to a release).
+# Least-privilege default for GITHUB_TOKEN: read-only. Only the release job
+# widens it (`contents: write`, to attach the zip to a release). The PR
+# test-build link is posted by the separate `pr-test-link.yml` workflow.
 permissions:
   contents: read
 
@@ -52,7 +52,6 @@ jobs:
   build:
     # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
     # Skip draft PRs and fork PRs — the same guard the Docker build workflows use.
-    # (A fork PR's token is read-only, so the PR-body edit below could not run.)
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&
@@ -60,7 +59,6 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: read
-      pull-requests: write   # edit the PR description with the test-build download link
     env:
       ARCH: arm64
     steps:
@@ -207,56 +205,10 @@ jobs:
           path: dist/AudioMuse-AI-${{ env.ARCH }}.zip
           if-no-files-found: error
 
-      # On PRs, append (and on later pushes refresh-in-place) a single "PR test
-      # image" block at the BOTTOM of the PR description listing every test build:
-      # the macOS app (public via nightly.link, since Actions artifacts need a
-      # logged-in user) plus the Docker image tags the nvidia/arm-intel/noavx2
-      # workflows publish for this PR. Only THIS workflow edits the PR body, so the
-      # blocks can never collide. The block lives between HTML-comment markers so it
-      # is replaced (never duplicated) and the author's own text is left untouched.
-      # (PRs here are from our own branches, so the token can edit the PR; not forks.)
-      - name: Append PR test-image links to the PR description
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          ARCH: ${{ env.ARCH }}
-        with:
-          script: |
-            const arch = process.env.ARCH;
-            const { owner, repo } = context.repo;
-            const pull_number = context.issue.number;
-            const url = `https://nightly.link/${owner}/${repo}/actions/runs/${context.runId}/AudioMuse-AI-${arch}.zip`;
-            const START = '<!-- macos-test-build:start -->';
-            const END = '<!-- macos-test-build:end -->';
-            // The Docker image tags are deterministic from the PR number, produced
-            // by the separate nvidia / arm-intel / noavx2 workflows. We just list
-            // them here (no cross-workflow coordination), so only THIS workflow ever
-            // edits the PR body -> no collision. The macOS zip is this run's artifact,
-            // served publicly via nightly.link.
-            const ghcr = `ghcr.io/${owner}/${repo}`.toLowerCase();
-            const block = [
-              START,
-              '### PR test image:',
-              `- MacOS Public download: [AudioMuse-AI-${arch}.zip](${url})`,
-              `- Docker image: \`${ghcr}:build-arm64-pr-${pull_number}\``,
-              `- Docker image noavx2: \`${ghcr}:pr-${pull_number}-noavx2\``,
-              `- Docker image nvidia: \`${ghcr}:pr-${pull_number}-nvidia\``,
-              END,
-            ].join('\n');
-
-            // Fetch the live body (the author may have edited it since the event fired).
-            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
-            let body = pr.body || '';
-            const s = body.indexOf(START);
-            const e = body.indexOf(END);
-            if (s !== -1 && e !== -1 && e > s) {
-              // Replace our managed block in place, leaving the rest of the description intact.
-              body = body.slice(0, s) + block + body.slice(e + END.length);
-            } else {
-              // First time: append at the very bottom.
-              body = body.replace(/\s+$/, '') + '\n\n' + block;
-            }
-            await github.rest.pulls.update({ owner, repo, pull_number, body });
+      # NB: the PR-description "test build links" block is no longer written
+      # here. The dedicated `pr-test-link.yml` workflow runs after this build
+      # completes, verifies the artifact exists, and posts the consolidated
+      # macOS + Linux + Docker link block to the PR.
 
   # Attach the arm64 zip to the release. Runs only for tag pushes.
   release:

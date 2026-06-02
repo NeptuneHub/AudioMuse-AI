@@ -1,0 +1,242 @@
+# Builds the standalone native Linux packages (.deb + .rpm) for x86_64 and
+# aarch64, and attaches them to the GitHub release that triggered the run.
+#
+# Mirrors build-macos.yml. The package bundles EVERYTHING (Python runtime,
+# onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver
+# and an embedded Redis), so an installed package needs no Docker and no
+# separately-installed database/broker. See linux/README.md for why Postgres and
+# Redis are bundled rather than declared as system dependencies (pgvector +
+# unaccent/pg_trgm against an exact PG minor, plus the per-distro package-name /
+# version skew, make a portable single .deb/.rpm "hard dependency" infeasible).
+#
+# The small native build inputs (redis-server, the unaccent/pg_trgm contrib
+# modules) are built from source in this workflow (linux/vendor/*) rather than
+# committed, then baked into the bundle by linux/AudioMuse-AI.spec.
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# same GitHub releases the Dockerfile/macOS build use, INCLUDING the HuggingFace
+# cache (trimmed to just the roberta-base tokenizer the app actually loads) so
+# the release assets stay under GitHub's 2 GB per-file limit.
+
+name: Build standalone Linux packages
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag (same trigger as the other builds)
+  pull_request:         # Build on PRs too, to catch bundle breakage early.
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+  NFPM_VERSION: '2.41.1'
+
+jobs:
+  build:
+    # Skip draft PRs and fork PRs -- the same guard the other build workflows use.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          if [ "$GOT" != "${ARCH}" ]; then
+            echo "::error::Expected ${ARCH} runner but uname -m reports $GOT"
+            exit 1
+          fi
+          echo "Building for $GOT"
+
+      - name: Install build toolchain (compilers, headers, nfpm)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # build-essential + libreadline/zlib headers: redis + the PG contrib
+          # modules compile against these. rpm: so nfpm can emit an .rpm.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config \
+            libreadline-dev zlib1g-dev rpm
+          # nfpm (builds both .deb and .rpm from one config).
+          case "${ARCH}" in
+            x86_64)  NFPM_ARCH=x86_64 ;;
+            aarch64) NFPM_ARCH=arm64 ;;
+          esac
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz" \
+            | sudo tar xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv-linux
+          source .venv-linux/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements/linux.txt
+
+      - name: Build vendored redis-server
+        run: bash linux/vendor/build-redis.sh
+
+      - name: Build vendored PostgreSQL contrib (unaccent, pg_trgm)
+        run: |
+          set -euo pipefail
+          source .venv-linux/bin/activate   # pgserver must be importable
+          bash linux/vendor/pg-contrib/build-pg-contrib.sh
+
+      - name: Assemble ./model (mirrors the Dockerfile/macOS models stage)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p model
+
+          echo "==> musicnn + CLAP text models (from ${MODEL_RELEASE})"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D model --clobber \
+            -p musicnn_embedding.onnx \
+            -p musicnn_prediction.onnx \
+            -p clap_text_model.onnx
+
+          echo "==> DCLAP audio model (from ${DCLAP_RELEASE} in the -DCLAP repo)"
+          gh release download "$DCLAP_RELEASE" -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber \
+            -p model_epoch_36.onnx \
+            -p model_epoch_36.onnx.data
+
+          echo "==> HuggingFace cache (roberta/bert/bart) -- HF_HOME points at model/huggingface"
+          tmp_hf="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp_hf" --clobber \
+            -p huggingface_models.tar.gz
+          mkdir -p model/huggingface
+          tar -xzf "$tmp_hf/huggingface_models.tar.gz" -C model/huggingface
+          rm -rf "$tmp_hf"
+
+          echo "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
+          # The app's ONLY runtime HF dependency is the roberta-base *tokenizer*
+          # (tasks/clap_analyzer.py: AutoTokenizer.from_pretrained("roberta-base")).
+          # bert-base-uncased and bart-base are never loaded by the app, and a
+          # tokenizer does not need model weights. Dropping them keeps the release
+          # assets under the 2 GB GitHub limit without removing any model the app
+          # uses. (This prunes only this bundle copy -- the shared release tarball
+          # and the Docker build are unaffected.)
+          hf="model/huggingface/hub"
+          rm -rf "$hf/models--bert-base-uncased" "$hf/models--facebook--bart-base"
+          rb="$hf/models--roberta-base"
+          if [ -d "$rb" ]; then
+            find "$rb/blobs" -type f -size +10M -delete
+            find "$rb/snapshots" \( -name "model.safetensors" -o -name "pytorch_model.bin" \) -delete
+            du -sh "$rb"
+          fi
+
+          echo "==> lyrics bundles (whisper / silero / gte)"
+          tmp="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp" --clobber \
+            -p lyrics_model_whisper.tar.gz \
+            -p lyrics_model_silero_vad.tar.gz \
+            -p lyrics_model_gte_vnni.tar.gz
+          for t in lyrics_model_whisper lyrics_model_silero_vad lyrics_model_gte_vnni; do
+            tar -xzf "$tmp/$t.tar.gz" -C model
+          done
+          rm -rf "$tmp"
+
+      - name: Verify the assembled model/ is complete
+        run: |
+          set -euo pipefail
+          required=(
+            model/musicnn_embedding.onnx
+            model/musicnn_prediction.onnx
+            model/clap_text_model.onnx
+            model/model_epoch_36.onnx
+            model/model_epoch_36.onnx.data
+            model/huggingface/hub/models--roberta-base/snapshots
+            model/silero_vad.onnx
+            model/gte-multilingual-base-int8.onnx
+            model/whisper-small-onnx/encoder_model.onnx
+            model/whisper-small-onnx/decoder_model_merged.onnx
+            model/gte-multilingual-base/tokenizer.json
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -e "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
+          done
+          if [ -z "$(find model/huggingface/hub/models--roberta-base -name tokenizer.json -print -quit)" ]; then
+            echo "::error::roberta-base tokenizer.json missing after HF-cache prune"; missing=1
+          fi
+          [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
+          du -sh model
+
+      - name: Build the packages (.deb + .rpm)
+        run: |
+          set -euo pipefail
+          source .venv-linux/bin/activate
+          PKG_VERSION="${GITHUB_REF_NAME}" bash linux/build.sh
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload packages as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-linux-${{ env.ARCH }}
+          path: |
+            dist/AudioMuse-AI-${{ env.ARCH }}.deb
+            dist/AudioMuse-AI-${{ env.ARCH }}.rpm
+          if-no-files-found: error
+
+      # NB: the PR-description "test build links" block is written by the
+      # dedicated `pr-test-link.yml` workflow (which runs after this build,
+      # verifies the artifacts exist, and posts the consolidated link block).
+
+  # Attach the packages to the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach packages to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/AudioMuse-AI-*.deb
+            artifacts/AudioMuse-AI-*.rpm
+          fail_on_unmatched_files: true
