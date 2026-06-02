@@ -63,7 +63,17 @@ ls -1 "$PREFIX"
 echo "==> Sanity: versions + contrib present"
 "$PREFIX/bin/postgres" --version
 "$PREFIX/bin/initdb"   --version
-ls "$PREFIX/lib/postgresql/unaccent.so" "$PREFIX/lib/postgresql/pg_trgm.so"
-ls "$PREFIX/share/postgresql/extension/unaccent.control" \
-   "$PREFIX/share/postgresql/extension/pg_trgm.control"
+# A from-source --prefix install uses the plain layout (pkglibdir=$PREFIX/lib,
+# sharedir=$PREFIX/share), not the Debian-style lib/postgresql + share/postgresql,
+# and the exact subdir can vary, so locate the artifacts rather than hardcoding.
+fail=0
+for f in unaccent.so pg_trgm.so unaccent.control pg_trgm.control; do
+  hit="$(find "$PREFIX" -name "$f" -print -quit)"
+  if [ -n "$hit" ]; then
+    echo "    found $f -> $hit"
+  else
+    echo "::error::contrib artifact not found after install: $f"; fail=1
+  fi
+done
+[ "$fail" -eq 0 ] || { echo "::error::PostgreSQL contrib build incomplete"; exit 1; }
 echo "==> Done."

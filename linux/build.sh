@@ -50,21 +50,29 @@ if [ "$UNAME_ARCH" = "x86_64" ]; then
     "linux/vendor/pg-contrib/${UNAME_ARCH}/tsearch_data/unaccent.rules"
   )
 else
+  # Fixed-path inputs (the from-source server binaries).
   required=(
     "linux/vendor/redis/${UNAME_ARCH}/redis-server"
     "linux/vendor/postgres/${UNAME_ARCH}/bin/postgres"
     "linux/vendor/postgres/${UNAME_ARCH}/bin/initdb"
     "linux/vendor/postgres/${UNAME_ARCH}/bin/pg_ctl"
-    "linux/vendor/postgres/${UNAME_ARCH}/lib/postgresql/unaccent.so"
-    "linux/vendor/postgres/${UNAME_ARCH}/lib/postgresql/pg_trgm.so"
-    "linux/vendor/postgres/${UNAME_ARCH}/share/postgresql/extension/unaccent.control"
-    "linux/vendor/postgres/${UNAME_ARCH}/share/postgresql/extension/pg_trgm.control"
   )
 fi
 missing=0
 for f in "${required[@]}"; do
   if [ ! -s "$f" ]; then echo "::error::Missing vendored file: $f"; missing=1; fi
 done
+if [ "$UNAME_ARCH" != "x86_64" ]; then
+  # Contrib modules live in the server's pkglibdir/sharedir, whose exact layout
+  # depends on the from-source build (plain --prefix layout, not Debian's), so
+  # locate them rather than hardcoding the subdir.
+  PGTREE="linux/vendor/postgres/${UNAME_ARCH}"
+  for f in unaccent.so pg_trgm.so unaccent.control pg_trgm.control; do
+    if [ -z "$(find "$PGTREE" -name "$f" -print -quit 2>/dev/null)" ]; then
+      echo "::error::Missing contrib artifact in $PGTREE: $f"; missing=1
+    fi
+  done
+fi
 [ "$missing" -eq 0 ] || { echo "Vendored inputs missing (see linux/vendor/*/README.md)." >&2; exit 1; }
 chmod +x "linux/vendor/redis/${UNAME_ARCH}/redis-server"
 
