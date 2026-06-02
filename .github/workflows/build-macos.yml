@@ -223,16 +223,11 @@ jobs:
             const END = '<!-- macos-test-build:end -->';
             const block = [
               START,
-              '---',
-              `### 🍎 macOS test build (Apple Silicon) — commit \`${context.sha.substring(0, 7)}\``,
-              '',
+              `### macOS test build (Apple Silicon) — commit \`${context.sha.substring(0, 7)}\``,
               `**Public download (no GitHub login needed):** [AudioMuse-AI-${arch}.zip](${url})`,
-              '',
               `Downloads as a zip *containing* the app zip — unzip twice (\`AudioMuse-AI-${arch}.zip\` → \`AudioMuse-AI.app\`).`,
-              '',
               '**Install (unsigned app):** move `AudioMuse-AI.app` to `/Applications`, run',
               '`xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then open it.',
-              '',
               `_Auto-updated by the macOS build workflow (run [${context.runId}](https://github.com/${owner}/${repo}/actions/runs/${context.runId}))._`,
               END,
             ].join('\n');
