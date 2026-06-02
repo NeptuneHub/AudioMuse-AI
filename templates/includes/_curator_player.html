@@ -1,0 +1,28 @@
+{# Sticky web player at the bottom of the page. Shared between both curator pages. #}
+<div class="curator-sticky-player" id="curator-sticky-player">
+    <audio id="curator-audio"></audio>
+    <div class="curator-player-art">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    </div>
+    <div class="curator-player-info">
+        <div class="curator-player-title" id="curator-player-title">Not Playing</div>
+        <div class="curator-player-artist" id="curator-player-artist"></div>
+    </div>
+    <div class="curator-player-progress">
+        <div class="curator-player-progress-row">
+            <span id="curator-player-current">0:00</span>
+            <div class="curator-player-bar" id="curator-player-bar">
+                <div class="curator-player-bar-fill" id="curator-player-bar-fill"></div>
+            </div>
+            <span id="curator-player-duration">0:00</span>
+        </div>
+    </div>
+    <div class="curator-player-controls">
+        <button type="button" class="curator-player-btn" id="curator-player-back" title="Back 10s">↺</button>
+        <button type="button" class="curator-player-btn primary" id="curator-player-playpause" title="Play / Pause">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button type="button" class="curator-player-btn" id="curator-player-fwd" title="Forward 10s">↻</button>
+        <button type="button" class="curator-player-btn" id="curator-player-stop" title="Stop" style="font-size:16px;">■</button>
+    </div>
+</div>

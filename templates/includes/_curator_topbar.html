@@ -1,0 +1,27 @@
+{# Topbar shared by Smart Search + Playlist Extender pages.
+   Vars expected:
+     active_tool: 'search' | 'extender'
+#}
+<div class="curator-topbar">
+    <div class="curator-topbar-title">AudioMuse · Curate</div>
+    <div class="curator-nav-tabs">
+        <a class="curator-nav-tab {% if active_tool == 'search' %}active{% endif %}"
+           href="{{ url_for('playlist_curator_bp.smart_search_page') }}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            Smart Search
+        </a>
+        <a class="curator-nav-tab {% if active_tool == 'extender' %}active{% endif %}"
+           href="{{ url_for('playlist_curator_bp.playlist_extender_page') }}">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 4-2 2M19 8l-2 2M19 4l2 2M11 12l8-8M14 15l5 5M11 18l3 3M3 21l6-6"/></svg>
+            Playlist Extender
+        </a>
+    </div>
+    <span class="curator-pill" data-tone="purple">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        Workbench shared
+    </span>
+    <div class="curator-topbar-spacer"></div>
+    <div class="curator-topbar-count" id="curator-topbar-count" style="display:none;">
+        <strong id="curator-topbar-count-num">0</strong> in Workbench →
+    </div>
+</div>
