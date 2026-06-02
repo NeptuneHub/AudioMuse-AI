@@ -1,0 +1,279 @@
+# Builds the standalone macOS .app for Apple Silicon and attaches the resulting
+# zip to the GitHub release that triggered the run.
+#
+# Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
+# exclusively — there is no Intel build. onnxruntime/PyAV/voyager wheels are not
+# reliably universal2, so we build natively on an arm64 runner (macos-14).
+#
+# Reproducibility: the small, exact-version native build inputs are committed in
+# git (macos/vendor/redis/arm64/redis-server and macos/vendor/pg-contrib/arm64/*),
+# NOT regenerated at build time, so the bundle's embedded Redis and the Postgres
+# unaccent/pg_trgm contrib extensions are byte-identical to the tested local build.
+#
+# The app is ad-hoc signed only (no Apple Developer account); end users clear
+# quarantine with `xattr -dr ...` after download (see macos/README.md).
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
+# (huggingface_models.tar.gz) — macos/env.py points HF_HOME at model/huggingface
+# for the CLAP RoBERTa tokenizer, so the bundle needs it. The HF cache is then
+# trimmed to just that tokenizer (bert/bart and the roberta weights are unused by
+# the app, ~1.4 GB) so the release zip stays under GitHub's 2 GB asset limit.
+
+name: Build standalone macOS app
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag (same trigger as the Docker builds)
+  pull_request:         # Build on PRs too, to catch macOS bundle breakage early.
+    types:              # PR runs build+verify only; the release job is gated to tags.
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default for GITHUB_TOKEN: read-only. Individual jobs widen it:
+# the build job adds `pull-requests: write` (to post the test-build link on PRs),
+# and the release job adds `contents: write` (to attach the zip to a release).
+permissions:
+  contents: read
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+
+jobs:
+  build:
+    # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
+    # Skip draft PRs and fork PRs — the same guard the Docker build workflows use.
+    # (A fork PR's token is read-only, so the PR-body edit below could not run.)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-14
+    permissions:
+      contents: read
+      pull-requests: write   # edit the PR description with the test-build download link
+    env:
+      ARCH: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture (must be arm64)
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          if [ "$GOT" != "arm64" ]; then
+            echo "::error::This build is Apple-Silicon-only but uname -m reports $GOT"
+            exit 1
+          fi
+          echo "Building for $GOT"
+
+      - name: Verify committed native build inputs are present
+        run: |
+          set -euo pipefail
+          # These are committed in git (not regenerated here) so the bundle is
+          # reproducible. If a fresh checkout is missing them, fail loudly.
+          required=(
+            macos/vendor/redis/arm64/redis-server
+            macos/vendor/pg-contrib/arm64/lib/unaccent.dylib
+            macos/vendor/pg-contrib/arm64/lib/pg_trgm.dylib
+            macos/vendor/pg-contrib/arm64/extension/unaccent.control
+            macos/vendor/pg-contrib/arm64/extension/pg_trgm.control
+            macos/vendor/pg-contrib/arm64/tsearch_data/unaccent.rules
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::Missing committed vendor file: $f"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::macos/vendor/ must be committed (see macos/vendor/pg-contrib/README.md)."; exit 1; }
+          chmod +x macos/vendor/redis/arm64/redis-server
+          file macos/vendor/redis/arm64/redis-server
+
+      - name: Assemble ./model (mirrors the Dockerfile models stage)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p model
+
+          echo "==> musicnn + CLAP text models (from ${MODEL_RELEASE})"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D model --clobber \
+            -p musicnn_embedding.onnx \
+            -p musicnn_prediction.onnx \
+            -p clap_text_model.onnx
+
+          echo "==> DCLAP audio model (from ${DCLAP_RELEASE} in the -DCLAP repo)"
+          gh release download "$DCLAP_RELEASE" -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber \
+            -p model_epoch_36.onnx \
+            -p model_epoch_36.onnx.data
+
+          echo "==> HuggingFace cache (roberta/bert/bart) — HF_HOME points at model/huggingface"
+          tmp_hf="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp_hf" --clobber \
+            -p huggingface_models.tar.gz
+          mkdir -p model/huggingface
+          tar -xzf "$tmp_hf/huggingface_models.tar.gz" -C model/huggingface
+          rm -rf "$tmp_hf"
+
+          echo "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
+          # The macOS app's ONLY runtime HF dependency is the roberta-base *tokenizer*
+          # (tasks/clap_analyzer.py: AutoTokenizer.from_pretrained("roberta-base")).
+          # bert-base-uncased and bart-base are never loaded by the app, and a tokenizer
+          # does not need model weights. Dropping them keeps the release zip under the
+          # 2 GB GitHub release-asset limit without removing any model the app uses.
+          # Note: this prunes only the macOS bundle copy — the shared release tarball
+          # and the Docker build are unaffected.
+          hf="model/huggingface/hub"
+          rm -rf "$hf/models--bert-base-uncased" "$hf/models--facebook--bart-base"
+          rb="$hf/models--roberta-base"
+          if [ -d "$rb" ]; then
+            # Drop the ~476 MB weight blob; AutoTokenizer reads only the tiny
+            # tokenizer.json/vocab.json/merges.txt/config files (all < 2 MB).
+            find "$rb/blobs" -type f -size +10M -delete
+            find "$rb/snapshots" \( -name "model.safetensors" -o -name "pytorch_model.bin" \) -delete
+            du -sh "$rb"
+          fi
+
+          echo "==> lyrics bundles (whisper / silero / gte) — downloaded then extracted into ./model"
+          tmp="$(mktemp -d)"
+          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp" --clobber \
+            -p lyrics_model_whisper.tar.gz \
+            -p lyrics_model_silero_vad.tar.gz \
+            -p lyrics_model_gte_vnni.tar.gz
+          for t in lyrics_model_whisper lyrics_model_silero_vad lyrics_model_gte_vnni; do
+            tar -xzf "$tmp/$t.tar.gz" -C model
+          done
+          rm -rf "$tmp"
+
+      - name: Verify the assembled model/ is complete
+        run: |
+          set -euo pipefail
+          required=(
+            model/musicnn_embedding.onnx
+            model/musicnn_prediction.onnx
+            model/clap_text_model.onnx
+            model/model_epoch_36.onnx
+            model/model_epoch_36.onnx.data
+            model/huggingface/hub/models--roberta-base/snapshots
+            model/silero_vad.onnx
+            model/gte-multilingual-base-int8.onnx
+            model/whisper-small-onnx/encoder_model.onnx
+            model/whisper-small-onnx/decoder_model_merged.onnx
+            model/gte-multilingual-base/tokenizer.json
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -e "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
+          done
+          # The roberta tokenizer files must survive the HF-cache prune above.
+          if [ -z "$(find model/huggingface/hub/models--roberta-base -name tokenizer.json -print -quit)" ]; then
+            echo "::error::roberta-base tokenizer.json missing after HF-cache prune"; missing=1
+          fi
+          [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
+          du -sh model
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv-macos
+          source .venv-macos/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements/macos.txt
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          source .venv-macos/bin/activate
+          bash macos/build.sh
+
+      - name: Upload zip as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}
+          path: dist/AudioMuse-AI-${{ env.ARCH }}.zip
+          if-no-files-found: error
+
+      # On PRs, append (and on later pushes refresh-in-place) a single "PR test
+      # image" block at the BOTTOM of the PR description listing every test build:
+      # the macOS app (public via nightly.link, since Actions artifacts need a
+      # logged-in user) plus the Docker image tags the nvidia/arm-intel/noavx2
+      # workflows publish for this PR. Only THIS workflow edits the PR body, so the
+      # blocks can never collide. The block lives between HTML-comment markers so it
+      # is replaced (never duplicated) and the author's own text is left untouched.
+      # (PRs here are from our own branches, so the token can edit the PR; not forks.)
+      - name: Append PR test-image links to the PR description
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          ARCH: ${{ env.ARCH }}
+        with:
+          script: |
+            const arch = process.env.ARCH;
+            const { owner, repo } = context.repo;
+            const pull_number = context.issue.number;
+            const url = `https://nightly.link/${owner}/${repo}/actions/runs/${context.runId}/AudioMuse-AI-${arch}.zip`;
+            const START = '<!-- macos-test-build:start -->';
+            const END = '<!-- macos-test-build:end -->';
+            // The Docker image tags are deterministic from the PR number, produced
+            // by the separate nvidia / arm-intel / noavx2 workflows. We just list
+            // them here (no cross-workflow coordination), so only THIS workflow ever
+            // edits the PR body -> no collision. The macOS zip is this run's artifact,
+            // served publicly via nightly.link.
+            const ghcr = `ghcr.io/${owner}/${repo}`.toLowerCase();
+            const block = [
+              START,
+              '### PR test image:',
+              `- MacOS Public download: [AudioMuse-AI-${arch}.zip](${url})`,
+              `- Docker image: \`${ghcr}:build-arm64-pr-${pull_number}\``,
+              `- Docker image noavx2: \`${ghcr}:pr-${pull_number}-noavx2\``,
+              `- Docker image nvidia: \`${ghcr}:pr-${pull_number}-nvidia\``,
+              END,
+            ].join('\n');
+
+            // Fetch the live body (the author may have edited it since the event fired).
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            let body = pr.body || '';
+            const s = body.indexOf(START);
+            const e = body.indexOf(END);
+            if (s !== -1 && e !== -1 && e > s) {
+              // Replace our managed block in place, leaving the rest of the description intact.
+              body = body.slice(0, s) + block + body.slice(e + END.length);
+            } else {
+              // First time: append at the very bottom.
+              body = body.replace(/\s+$/, '') + '\n\n' + block;
+            }
+            await github.rest.pulls.update({ owner, repo, pull_number, body });
+
+  # Attach the arm64 zip to the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built zip
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach zip to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/AudioMuse-AI-*.zip
+          fail_on_unmatched_files: true
