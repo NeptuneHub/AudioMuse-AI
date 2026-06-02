@@ -31,13 +31,14 @@ RUN set -ux; \
     rm -rf /var/lib/apt/lists/*
 
 # Download musicnn ONNX models with diagnostics and retry logic.
-# Lyrics models (Whisper / gte-multilingual-base / silero-vad) are downloaded
-# in later stages from the project release tarballs.
+# Lyrics / CLAP / HuggingFace bundles are downloaded in the RUN steps below,
+# all within this models stage so they are cached independently of the
+# Python requirements and application code.
 RUN set -eux; \
     mkdir -p /app/model; \
     urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_embedding.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/musicnn_prediction.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_embedding.onnx" \
+        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/musicnn_prediction.onnx" \
     ); \
     for u in "${urls[@]}"; do \
         n=0; \
@@ -61,7 +62,253 @@ RUN set -eux; \
         fi; \
     done
 
-# NOTE: CLAP model download moved to runner stage to avoid EOF errors with large file transfers in multi-arch builds
+# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
+# These are the text encoders needed by laion-clap library for text embeddings
+RUN set -eux; \
+    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"; \
+    hf_models="huggingface_models.tar.gz"; \
+    cache_dir="/app/.cache/huggingface"; \
+    echo "Downloading HuggingFace models (~985MB)..."; \
+    \
+    # Download with retry logic \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
+            echo "✓ HuggingFace models downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download HuggingFace models after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Extract to cache directory \
+    mkdir -p "$cache_dir"; \
+    echo "Extracting HuggingFace models..."; \
+    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
+    \
+    # Verify extraction \
+    if [ ! -d "$cache_dir/hub" ]; then \
+        echo "ERROR: HuggingFace models extraction failed"; \
+        exit 1; \
+    fi; \
+    \
+    # Clean up tarball \
+    rm -f "/tmp/$hf_models"; \
+    \
+    echo "✓ HuggingFace models extracted to $cache_dir"; \
+    du -sh "$cache_dir"
+
+# Download CLAP ONNX models
+# - DCLAP audio model (~20MB + external data): Distilled student for music analysis in worker containers
+# - Text model (~478MB): Original LAION CLAP text encoder for text search in Flask containers
+RUN set -eux; \
+    dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"; \
+    text_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"; \
+    arch=$(uname -m); \
+    echo "Architecture detected: $arch - Downloading CLAP ONNX models..."; \
+    \
+    # Download DCLAP audio model (~1.2MB ONNX + ~20MB external data) \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/model_epoch_36.onnx" "$dclap_url/model_epoch_36.onnx"; then \
+            echo "✓ DCLAP audio model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for DCLAP audio model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download DCLAP audio model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Download DCLAP audio model external data file \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/model_epoch_36.onnx.data" "$dclap_url/model_epoch_36.onnx.data"; then \
+            echo "✓ DCLAP audio model data downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for DCLAP audio data failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download DCLAP audio model data after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Download text model (~478MB) \
+    text_model="clap_text_model.onnx"; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "/app/model/$text_model" "$text_url/$text_model"; then \
+            echo "✓ CLAP text model downloaded"; \
+            break; \
+        fi; \
+        n=$((n+1)); \
+        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: Failed to download CLAP text model after 5 attempts"; \
+        exit 1; \
+    fi; \
+    \
+    # Verify DCLAP audio model \
+    if [ ! -f "/app/model/model_epoch_36.onnx" ]; then \
+        echo "ERROR: DCLAP audio model file not created"; \
+        exit 1; \
+    fi; \
+    if [ ! -f "/app/model/model_epoch_36.onnx.data" ]; then \
+        echo "ERROR: DCLAP audio model data file not created"; \
+        exit 1; \
+    fi; \
+    \
+    # Verify text model \
+    if [ ! -f "/app/model/$text_model" ]; then \
+        echo "ERROR: CLAP text model file not created"; \
+        exit 1; \
+    fi; \
+    file_size=$(stat -c%s "/app/model/$text_model" 2>/dev/null || stat -f%z "/app/model/$text_model" 2>/dev/null || echo "0"); \
+    if [ "$file_size" -lt 450000000 ]; then \
+        echo "ERROR: CLAP text model file is too small (expected ~478MB, got $file_size bytes)"; \
+        exit 1; \
+    fi; \
+    \
+    echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
+    ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
+
+# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
+# of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
+# tokenizer files + preprocessor config). Re-hosted on the project's GitHub
+# release for mirror independence. Bundle ships `whisper-small-onnx/` as
+# its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
+# raw onnxruntime.
+RUN set -eux; \
+    whisper_dir="/app/model/whisper-small-onnx"; \
+    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_whisper.tar.gz"; \
+    whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
+    echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$whisper_dest" "$whisper_url"; then \
+            echo "✓ whisper bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download whisper bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$whisper_dest" -C /app/model; \
+    rm -f "$whisper_dest"; \
+    for f in encoder_model.onnx decoder_model_merged.onnx \
+             tokenizer.json tokenizer_config.json \
+             special_tokens_map.json preprocessor_config.json \
+             config.json generation_config.json vocab.json merges.txt; do \
+        if [ ! -f "$whisper_dir/$f" ]; then \
+            echo "ERROR: Whisper file missing: $whisper_dir/$f"; \
+            echo "Actual /app/model contents:"; \
+            ls -laR /app/model | head -50; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
+    du -sh "$whisper_dir"
+
+# Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
+# for mirror independence (original source: snakers4/silero-vad). Bundle ships
+# silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw
+# onnxruntime.
+RUN set -eux; \
+    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_silero_vad.tar.gz"; \
+    silero_dest="/tmp/lyrics_model_silero_vad.tar.gz"; \
+    silero_path="/app/model/silero_vad.onnx"; \
+    echo "Downloading silero VAD ONNX bundle (~2 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$silero_dest" "$silero_url"; then \
+            echo "✓ silero bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download silero bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$silero_dest" -C /app/model; \
+    rm -f "$silero_dest"; \
+    if [ ! -f "$silero_path" ]; then \
+        echo "ERROR: silero_vad.onnx missing after extraction"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    ls -lh "$silero_path"
+
+# Download gte-multilingual-base INT8 ONNX bundle (~325 MB) — multilingual
+# sentence embedding pre-exported and dynamic-INT8-quantized by this project.
+# Tarball ships the ONNX file flat at the archive root
+# (`gte-multilingual-base-int8.onnx`) plus a sibling `gte-multilingual-base/`
+# directory with the tokenizer files. Loaded by lyrics/gte_onnx.py via raw
+# onnxruntime + the bare `tokenizers` package (CLS pooling + L2 norm at runtime).
+RUN set -eux; \
+    gte_onnx_path="/app/model/gte-multilingual-base-int8.onnx"; \
+    gte_tok_dir="/app/model/gte-multilingual-base"; \
+    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/lyrics_model_gte_vnni.tar.gz"; \
+    gte_dest="/tmp/lyrics_model_gte_vnni.tar.gz"; \
+    echo "Downloading gte-multilingual-base INT8 ONNX bundle (~325 MB)..."; \
+    n=0; \
+    until [ "$n" -ge 5 ]; do \
+        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
+            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+            -O "$gte_dest" "$gte_url"; then \
+            echo "✓ gte bundle downloaded"; break; \
+        fi; \
+        n=$((n+1)); \
+        echo "wget attempt $n for gte bundle failed — retrying in $((n*n))s"; \
+        sleep $((n*n)); \
+    done; \
+    if [ "$n" -ge 5 ]; then \
+        echo "ERROR: failed to download gte bundle"; exit 1; \
+    fi; \
+    mkdir -p /app/model; \
+    tar -xzf "$gte_dest" -C /app/model; \
+    rm -f "$gte_dest"; \
+    if [ ! -f "$gte_onnx_path" ]; then \
+        echo "ERROR: gte ONNX missing after extraction: $gte_onnx_path"; \
+        ls -laR /app/model | head -50; \
+        exit 1; \
+    fi; \
+    for f in tokenizer.json tokenizer_config.json config.json special_tokens_map.json; do \
+        if [ ! -f "$gte_tok_dir/$f" ]; then \
+            echo "ERROR: gte tokenizer file missing: $gte_tok_dir/$f"; exit 1; \
+        fi; \
+    done; \
+    echo "✓ gte-multilingual-base ONNX ready ($gte_onnx_path + $gte_tok_dir)"; \
+    du -sh "$gte_onnx_path" "$gte_tok_dir"
 
 # ============================================================================
 # Stage 2a: runtime-base — RUNTIME-ONLY system libs (parent of `runner`)
@@ -173,51 +420,6 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     && find /usr/local/lib/python3.12/dist-packages -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12/dist-packages -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
-RUN python3 -m wn download oewn:2024 && echo "wn / OEWN 2024 corpus downloaded"
-
-# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
-# These are the text encoders needed by laion-clap library for text embeddings
-RUN set -eux; \
-    base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
-    hf_models="huggingface_models.tar.gz"; \
-    cache_dir="/app/.cache/huggingface"; \
-    echo "Downloading HuggingFace models (~985MB)..."; \
-    \
-    # Download with retry logic \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/tmp/$hf_models" "$base_url/$hf_models"; then \
-            echo "✓ HuggingFace models downloaded"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "Download attempt $n failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download HuggingFace models after 5 attempts"; \
-        exit 1; \
-    fi; \
-    \
-    # Extract to cache directory \
-    mkdir -p "$cache_dir"; \
-    echo "Extracting HuggingFace models..."; \
-    tar -xzf "/tmp/$hf_models" -C "$cache_dir"; \
-    \
-    # Verify extraction \
-    if [ ! -d "$cache_dir/hub" ]; then \
-        echo "ERROR: HuggingFace models extraction failed"; \
-        exit 1; \
-    fi; \
-    \
-    # Clean up tarball \
-    rm -f "/tmp/$hf_models"; \
-    \
-    echo "✓ HuggingFace models extracted to $cache_dir"; \
-    du -sh "$cache_dir"
-
 # ============================================================================
 # Stage 4: Runner - Final production image
 # ============================================================================
@@ -245,225 +447,20 @@ WORKDIR /app
 RUN set -eux; \
     apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from libraries stage
-COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
-# Copy console entrypoints (gunicorn, etc.) from libraries stage
-COPY --from=libraries /usr/local/bin/ /usr/local/bin/
-# Copy HuggingFace cache (RoBERTa model) from libraries stage
-COPY --from=libraries /app/.cache/huggingface/ /app/.cache/huggingface/
+# Copy all downloaded/extracted models from the models stage
+COPY --from=models /app/model/ /app/model/
+# Copy HuggingFace cache (text encoders) from the models stage
+COPY --from=models /app/.cache/huggingface/ /app/.cache/huggingface/
 
 # Verify cache was copied correctly
 RUN ls -lah /app/.cache/huggingface/ && \
     echo "HuggingFace cache contents:" && \
     du -sh /app/.cache/huggingface/* || echo "Cache directory empty!"
 
-# Copy all downloaded/extracted models from models stage
-COPY --from=models /app/model/ /app/model/
-
-# Download CLAP ONNX models directly in runner stage
-# - DCLAP audio model (~20MB + external data): Distilled student for music analysis in worker containers
-# - Text model (~478MB): Original LAION CLAP text encoder for text search in Flask containers
-RUN set -eux; \
-    dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"; \
-    text_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"; \
-    arch=$(uname -m); \
-    echo "Architecture detected: $arch - Downloading CLAP ONNX models..."; \
-    \
-    # Download DCLAP audio model (~1.2MB ONNX + ~20MB external data) \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/model_epoch_36.onnx" "$dclap_url/model_epoch_36.onnx"; then \
-            echo "✓ DCLAP audio model downloaded"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio model failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download DCLAP audio model after 5 attempts"; \
-        exit 1; \
-    fi; \
-    \
-    # Download DCLAP audio model external data file \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/model_epoch_36.onnx.data" "$dclap_url/model_epoch_36.onnx.data"; then \
-            echo "✓ DCLAP audio model data downloaded"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio data failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download DCLAP audio model data after 5 attempts"; \
-        exit 1; \
-    fi; \
-    \
-    # Download text model (~478MB) \
-    text_model="clap_text_model.onnx"; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "/app/model/$text_model" "$text_url/$text_model"; then \
-            echo "✓ CLAP text model downloaded"; \
-            break; \
-        fi; \
-        n=$((n+1)); \
-        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: Failed to download CLAP text model after 5 attempts"; \
-        exit 1; \
-    fi; \
-    \
-    # Verify DCLAP audio model \
-    if [ ! -f "/app/model/model_epoch_36.onnx" ]; then \
-        echo "ERROR: DCLAP audio model file not created"; \
-        exit 1; \
-    fi; \
-    if [ ! -f "/app/model/model_epoch_36.onnx.data" ]; then \
-        echo "ERROR: DCLAP audio model data file not created"; \
-        exit 1; \
-    fi; \
-    \
-    # Verify text model \
-    if [ ! -f "/app/model/$text_model" ]; then \
-        echo "ERROR: CLAP text model file not created"; \
-        exit 1; \
-    fi; \
-    file_size=$(stat -c%s "/app/model/$text_model" 2>/dev/null || stat -f%z "/app/model/$text_model" 2>/dev/null || echo "0"); \
-    if [ "$file_size" -lt 450000000 ]; then \
-        echo "ERROR: CLAP text model file is too small (expected ~478MB, got $file_size bytes)"; \
-        exit 1; \
-    fi; \
-    \
-    echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
-    ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
-
-# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
-# of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
-# tokenizer files + preprocessor config). Re-hosted on the project's GitHub
-# release for mirror independence. Bundle ships `whisper-small-onnx/` as
-# its top-level directory. Loaded at runtime by lyrics/whisper_onnx.py via
-# raw onnxruntime.
-RUN set -eux; \
-    whisper_dir="/app/model/whisper-small-onnx"; \
-    whisper_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_whisper.tar.gz"; \
-    whisper_dest="/tmp/lyrics_model_whisper.tar.gz"; \
-    echo "Downloading Whisper-small ONNX bundle (~570 MB)..."; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$whisper_dest" "$whisper_url"; then \
-            echo "✓ whisper bundle downloaded"; break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download whisper bundle"; exit 1; \
-    fi; \
-    mkdir -p /app/model; \
-    tar -xzf "$whisper_dest" -C /app/model; \
-    rm -f "$whisper_dest"; \
-    for f in encoder_model.onnx decoder_model_merged.onnx \
-             tokenizer.json tokenizer_config.json \
-             special_tokens_map.json preprocessor_config.json \
-             config.json generation_config.json vocab.json merges.txt; do \
-        if [ ! -f "$whisper_dir/$f" ]; then \
-            echo "ERROR: Whisper file missing: $whisper_dir/$f"; \
-            echo "Actual /app/model contents:"; \
-            ls -laR /app/model | head -50; \
-            exit 1; \
-        fi; \
-    done; \
-    echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
-    du -sh "$whisper_dir"
-
-# Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
-# for mirror independence (original source: snakers4/silero-vad). Bundle ships
-# silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw
-# onnxruntime.
-RUN set -eux; \
-    silero_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_silero_vad.tar.gz"; \
-    silero_dest="/tmp/lyrics_model_silero_vad.tar.gz"; \
-    silero_path="/app/model/silero_vad.onnx"; \
-    echo "Downloading silero VAD ONNX bundle (~2 MB)..."; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$silero_dest" "$silero_url"; then \
-            echo "✓ silero bundle downloaded"; break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download silero bundle"; exit 1; \
-    fi; \
-    mkdir -p /app/model; \
-    tar -xzf "$silero_dest" -C /app/model; \
-    rm -f "$silero_dest"; \
-    if [ ! -f "$silero_path" ]; then \
-        echo "ERROR: silero_vad.onnx missing after extraction"; \
-        ls -laR /app/model | head -50; \
-        exit 1; \
-    fi; \
-    ls -lh "$silero_path"
-
-# Download gte-multilingual-base INT8 ONNX bundle (~325 MB) — multilingual
-# sentence embedding pre-exported and dynamic-INT8-quantized by this project.
-# Tarball ships the ONNX file flat at the archive root
-# (`gte-multilingual-base-int8.onnx`) plus a sibling `gte-multilingual-base/`
-# directory with the tokenizer files. Loaded by lyrics/gte_onnx.py via raw
-# onnxruntime + the bare `tokenizers` package (CLS pooling + L2 norm at runtime).
-RUN set -eux; \
-    gte_onnx_path="/app/model/gte-multilingual-base-int8.onnx"; \
-    gte_tok_dir="/app/model/gte-multilingual-base"; \
-    gte_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model/lyrics_model_gte.tar.gz"; \
-    gte_dest="/tmp/lyrics_model_gte.tar.gz"; \
-    echo "Downloading gte-multilingual-base INT8 ONNX bundle (~325 MB)..."; \
-    n=0; \
-    until [ "$n" -ge 5 ]; do \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=10 \
-            --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-            -O "$gte_dest" "$gte_url"; then \
-            echo "✓ gte bundle downloaded"; break; \
-        fi; \
-        n=$((n+1)); \
-        echo "wget attempt $n for gte bundle failed — retrying in $((n*n))s"; \
-        sleep $((n*n)); \
-    done; \
-    if [ "$n" -ge 5 ]; then \
-        echo "ERROR: failed to download gte bundle"; exit 1; \
-    fi; \
-    mkdir -p /app/model; \
-    tar -xzf "$gte_dest" -C /app/model; \
-    rm -f "$gte_dest"; \
-    if [ ! -f "$gte_onnx_path" ]; then \
-        echo "ERROR: gte ONNX missing after extraction: $gte_onnx_path"; \
-        ls -laR /app/model | head -50; \
-        exit 1; \
-    fi; \
-    for f in tokenizer.json tokenizer_config.json config.json special_tokens_map.json; do \
-        if [ ! -f "$gte_tok_dir/$f" ]; then \
-            echo "ERROR: gte tokenizer file missing: $gte_tok_dir/$f"; exit 1; \
-        fi; \
-    done; \
-    echo "✓ gte-multilingual-base ONNX ready ($gte_onnx_path + $gte_tok_dir)"; \
-    du -sh "$gte_onnx_path" "$gte_tok_dir"
+# Copy Python packages from libraries stage
+COPY --from=libraries /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+# Copy console entrypoints (gunicorn, etc.) from libraries stage
+COPY --from=libraries /usr/local/bin/ /usr/local/bin/
 
 # Copy application code (last to maximize cache hits for code changes)
 COPY . /app

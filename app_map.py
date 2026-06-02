@@ -1,12 +1,12 @@
+import gc
 import json
 import math
 import logging
-from flask import Blueprint, jsonify, render_template, request, Response, current_app
+from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from app_helper import get_db, load_map_projection
-import config
 
 # Try to reuse projection helpers from song_alchemy
 try:
@@ -98,8 +98,6 @@ def build_map_cache():
         cur.close()
 
     items = []
-    ids = []
-    embs = []
     for r in rows:
         # r: item_id, title, author, mood_vector, embedding_blob
         item_id = r[0]
@@ -117,8 +115,6 @@ def build_map_cache():
                 emb = np.array(r[4], dtype=np.float32)
             except Exception:
                 continue
-        ids.append(str(item_id))
-        embs.append(emb)
         items.append({'item_id': str(item_id), 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
 
     if not items:
@@ -170,6 +166,8 @@ def build_map_cache():
                 projections = [(0.0, 0.0) for _ in missing_indices]
                 used = 'none'
 
+            del mat
+
             for idx, coord in zip(missing_indices, projections):
                 coords_by_id[str(items[idx]['item_id'])] = (float(coord[0]), float(coord[1]))
             if used_projection == 'none':
@@ -193,6 +191,7 @@ def build_map_cache():
         }
         full_light.append(light)
     del items
+    gc.collect()
 
     n = len(full_light)
     frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
@@ -243,47 +242,6 @@ def map_ui():
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
-
-
-def _fetch_genre_samples(conn, genre, limit):
-    cur = conn.cursor()
-    # mood_vector is stored as 'label:score,label2:score' so use ILIKE for simple match
-    try:
-        cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, s.other_features, e.embedding
-            FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
-            WHERE s.mood_vector ILIKE %s
-            LIMIT %s
-        """, (f"%{genre}%", limit))
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-    return rows
-
-
-def _rows_to_items(rows):
-    items = []
-    for r in rows:
-        # r is a tuple-like from psycopg2; map by index to be robust
-        item_id = r[0]
-        title = r[1]
-        author = r[2]
-        mood_vector = r[3]
-        other_features = r[4]
-        embedding_blob = r[5]
-        if embedding_blob is None:
-            continue
-        emb = np.frombuffer(embedding_blob, dtype=np.float32)
-        items.append({
-            'item_id': item_id,
-            'title': title,
-            'author': author,
-            'mood_vector': mood_vector,
-            'other_features': other_features,
-            'embedding': emb
-        })
-    return items
 
 
 @map_bp.route('/api/map', methods=['GET'])

@@ -89,6 +89,8 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
         model_input=fp32_path,
         model_output=output_path,
         weight_type=QuantType.QInt8,
+        per_channel=True,
+        reduce_range=True,
     )
     os.remove(fp32_path)
 

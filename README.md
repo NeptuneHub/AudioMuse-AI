@@ -18,6 +18,14 @@ Deploy it easily on your local machine with Docker Compose or Podman, or scale i
 
 > **Prefer not to self-host?** We're proud that [Elestio](https://elest.io/open-source/audiomuse-ai) picked AudioMuse-AI as a managed cloud service, happy to see the project reach more people.
 
+<p align="center">
+  <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=AudioMuse-AI">
+    <img src="screenshot/atlas-cloud.png?raw=true" alt="Atlas Cloud Logo" width="180">
+  </a>
+</p>
+
+> **Need a hosted LLM provider?** AudioMuse-AI supports OpenAI-compatible APIs through the existing `OPENAI` provider. [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=AudioMuse-AI) is one hosted option you can configure this way; see the [configuration parameters](docs/PARAMETERS.md#openai-compatible-hosted-providers) for details.
+
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
 * **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
@@ -48,6 +56,12 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 2.1.0** re-exports the GTE lyrics model so it produces correct embeddings on **every CPU**. The only affected users are those who analyzed lyrics on an **older CPU without VNNI** (`avx512_vnni`/`avx_vnni`), where the previous model could produce degraded vectors, they should re-analyze the lyrics. To check if your CPU has VNNI, run on the host: `grep -oE 'avx512_vnni|avx_vnni' /proc/cpuinfo | head -1` , if it prints nothing, you have no VNNI and we suggest to re-analyze. Before re-analyzing, drop the old lyrics tables:
+> ```bash
+> docker compose exec -e PGPASSWORD=audiomusepassword postgres \
+>   psql -U audiomuse -d audiomusedb \
+>   -c "DROP TABLE IF EXISTS lyrics_embedding; DROP TABLE IF EXISTS lyrics_index_data; DROP TABLE IF EXISTS lyrics_axes_index_data;"
+> ```
 > * **Version 2.0.0** introduces a new faster and reliable multilangue model for lyrics search. Follow the release note to drop the old lyrics index and re-analyze the lyrics.
 
 ## Disclaimer
@@ -136,7 +150,7 @@ For more information about the GPU deployment requirements have a look to the [G
 Our GitHub Actions workflow automatically builds and publishes Docker images with the following tags:
 
 * **`:latest`**
-  Stable build from the **main** branch.
+  Last build from the **main** branch.
   **Recommended for most users.**
 
 * **`:devel`**
@@ -154,6 +168,9 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 * **`-nvidia`** variants
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
+
+> Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
+> Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.
 
 ## **How To Contribute**
 

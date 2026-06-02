@@ -10,9 +10,8 @@
 #      python -m pytest tests/unit/test_analysis.py --tb=short
 
 """Unit tests for tasks/analysis.py"""
-import pytest
 import numpy as np
-from unittest.mock import Mock, MagicMock, patch, mock_open
+from unittest.mock import Mock, patch
 from tasks.analysis import run_inference, _find_onnx_name, sigmoid, robust_load_audio_with_fallback, analyze_track
 
 
@@ -373,37 +372,18 @@ class TestRobustLoadAudioWithFallback:
         assert sr == 22050
         mock_librosa_load.assert_called_once_with('test.wav', sr=22050, mono=True, duration=600)
 
-    @patch('tasks.analysis.os.remove')
     @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_on_librosa_failure(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback to pydub when librosa fails"""
-        # First librosa call fails
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.random.rand(16000), 16000)  # Second call succeeds (loading temp WAV)
-        ]
-        
-        # Mock AudioSegment
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)  # Non-zero duration
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        # Mock temp file
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
+    @patch('tasks.analysis._decode_audio_with_pyav')
+    def test_fallback_on_librosa_failure(self, mock_pyav_decode, mock_librosa_load):
+        """Test fallback to PyAV decode when librosa fails"""
+        mock_librosa_load.side_effect = Exception("Librosa failed")
+        mock_pyav_decode.return_value = np.random.rand(16000).astype(np.float32)
+
         audio, sr = robust_load_audio_with_fallback('corrupted.mp3')
-        
+
         assert audio is not None
         assert sr == 16000
-        assert mock_librosa_load.call_count == 2
-        mock_audio_segment.assert_called_once()
+        mock_pyav_decode.assert_called_once_with('corrupted.mp3', 16000)
 
     @patch('tasks.analysis.librosa.load')
     def test_returns_none_on_empty_audio(self, mock_librosa_load):
@@ -426,146 +406,29 @@ class TestRobustLoadAudioWithFallback:
         assert audio is None
         assert sr is None
 
-    @patch('tasks.analysis.os.remove')
     @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_with_zero_duration_segment(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback returns None when pydub loads zero-duration segment"""
-        mock_librosa_load.side_effect = Exception("Librosa failed")
-        
-        # Mock AudioSegment with zero duration
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=0)
-        mock_audio_segment.return_value = mock_segment
-        
-        audio, sr = robust_load_audio_with_fallback('corrupted.mp3')
-        
-        assert audio is None
-        assert sr is None
-
-    @patch('tasks.analysis.os.remove')
-    @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_cleans_up_temp_file(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback cleans up temporary WAV file"""
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.random.rand(16000), 16000)
-        ]
-        
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
-        # Mock os.path.exists to return True
-        with patch('tasks.analysis.os.path.exists', return_value=True):
-            audio, sr = robust_load_audio_with_fallback('test.mp3')
-        
-        # Verify temp file was removed
-        mock_remove.assert_called_with('/tmp/test.wav')
-
-    @patch('tasks.analysis.os.remove')
-    @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_handles_silent_audio(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
+    @patch('tasks.analysis._decode_audio_with_pyav')
+    def test_fallback_handles_silent_audio(self, mock_pyav_decode, mock_librosa_load):
         """Test fallback detects and rejects silent audio (all zeros)"""
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.zeros(16000), 16000)  # Silent audio
-        ]
-        
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
-        audio, sr = robust_load_audio_with_fallback('silent.mp3')
-        
-        assert audio is None
-        assert sr is None
-
-    @patch('tasks.analysis.os.remove')
-    @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    def test_fallback_handles_pydub_failure(self, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test returns None when both librosa and pydub fail"""
         mock_librosa_load.side_effect = Exception("Librosa failed")
-        mock_audio_segment.side_effect = Exception("Pydub failed")
-        
-        audio, sr = robust_load_audio_with_fallback('corrupted.mp3')
-        
+        mock_pyav_decode.return_value = np.zeros(16000, dtype=np.float32)
+
+        audio, sr = robust_load_audio_with_fallback('silent.mp3')
+
         assert audio is None
         assert sr is None
 
-    @patch('tasks.analysis.os.remove')
     @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_resamples_audio(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback resamples audio to target sample rate"""
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.random.rand(22050), 22050)
-        ]
-        
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
-        audio, sr = robust_load_audio_with_fallback('test.mp3', target_sr=22050)
-        
-        # Verify set_frame_rate was called with target_sr
-        mock_segment.set_frame_rate.assert_called_once_with(22050)
+    @patch('tasks.analysis._decode_audio_with_pyav')
+    def test_fallback_handles_decode_failure(self, mock_pyav_decode, mock_librosa_load):
+        """Test returns None when both librosa and the PyAV fallback fail"""
+        mock_librosa_load.side_effect = Exception("Librosa failed")
+        mock_pyav_decode.side_effect = Exception("PyAV failed")
 
-    @patch('tasks.analysis.os.remove')
-    @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_converts_to_mono(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback converts audio to mono"""
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.random.rand(16000), 16000)
-        ]
-        
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
-        audio, sr = robust_load_audio_with_fallback('stereo.mp3')
-        
-        # Verify set_channels was called with 1 (mono)
-        mock_processed.set_channels.assert_called_once_with(1)
+        audio, sr = robust_load_audio_with_fallback('corrupted.mp3')
+
+        assert audio is None
+        assert sr is None
 
     @patch('tasks.analysis.librosa.load')
     def test_uses_audio_load_timeout_config(self, mock_librosa_load):
@@ -578,36 +441,6 @@ class TestRobustLoadAudioWithFallback:
         call_args = mock_librosa_load.call_args
         assert 'duration' in call_args.kwargs
         assert call_args.kwargs['duration'] == 600  # AUDIO_LOAD_TIMEOUT from config
-
-    @patch('tasks.analysis.os.remove')
-    @patch('tasks.analysis.librosa.load')
-    @patch('tasks.analysis.AudioSegment.from_file')
-    @patch('tasks.analysis.NamedTemporaryFile')
-    def test_fallback_export_parameters(self, mock_temp_file, mock_audio_segment, mock_librosa_load, mock_remove):
-        """Test fallback uses correct export parameters for WAV conversion"""
-        mock_librosa_load.side_effect = [
-            Exception("Librosa failed"),
-            (np.random.rand(16000), 16000)
-        ]
-        
-        mock_segment = Mock()
-        mock_segment.__len__ = Mock(return_value=1000)
-        mock_processed = Mock()
-        mock_segment.set_frame_rate.return_value = mock_processed
-        mock_processed.set_channels.return_value = mock_processed
-        mock_audio_segment.return_value = mock_segment
-        
-        mock_temp = Mock()
-        mock_temp.name = '/tmp/test.wav'
-        mock_temp_file.return_value.__enter__.return_value = mock_temp
-        
-        robust_load_audio_with_fallback('test.mp3', target_sr=16000)
-        
-        # Verify export was called with correct parameters
-        export_call = mock_processed.export.call_args
-        assert export_call[1]['format'] == 'wav'
-        assert '-codec:a' in export_call[1]['parameters']
-        assert 'pcm_s16le' in export_call[1]['parameters']
 
 
 class TestAnalyzeTrack:

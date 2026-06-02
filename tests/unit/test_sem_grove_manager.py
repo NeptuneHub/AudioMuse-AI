@@ -10,13 +10,12 @@ Tests cover:
 - Full round-trip: build → load → search using an in-memory Voyager index
 """
 
-import json
 import sys
 import os
 import importlib.util
 import pytest
 import numpy as np
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -31,18 +30,30 @@ def _load_sem_grove():
     Also stubs out the parent ``tasks`` package so that later
     ``from tasks.sem_grove_manager import X`` statements inside test
     methods do not trigger tasks/__init__.py (which imports librosa).
+
+    Pre-loads ``tasks.index_build_helpers`` for the same reason: the
+    refactored builder does ``from .index_build_helpers import ...``
+    inside the function body, which resolves via ``sys.modules`` first.
     """
     import types
 
-    # Stub the parent package if it hasn't been imported yet
     if 'tasks' not in sys.modules:
         stub = types.ModuleType('tasks')
-        stub.__path__ = []  # mark as package
+        stub.__path__ = []
         sys.modules['tasks'] = stub
 
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
+
+    helper_path = os.path.join(repo_root, 'tasks', 'index_build_helpers.py')
+    helper_name = 'tasks.index_build_helpers'
+    if helper_name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(helper_name, helper_path)
+        mod  = importlib.util.module_from_spec(spec)
+        sys.modules[helper_name] = mod
+        spec.loader.exec_module(mod)
+
     mod_path = os.path.join(repo_root, 'tasks', 'sem_grove_manager.py')
     mod_name = 'tasks.sem_grove_manager'
     if mod_name not in sys.modules:
@@ -429,46 +440,27 @@ class TestSemGroveRoundTrip:
         search_by_song returns the seed as results[0].
         """
         import io
-        import json
-        import tempfile
 
         try:
             import voyager  # noqa: F401
         except ImportError:
             pytest.skip("voyager not installed")
 
-        from tasks.sem_grove_manager import (
-            build_and_store_sem_grove_index,
-            load_sem_grove_cache_from_db,
-            search_by_song,
-            _SEM_GROVE_CACHE,
-        )
+        from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
 
         n         = 15
         lyrics_dim = 16
         audio_dim  = 8
         lyrics_rows, audio_rows, ld, ad = self._make_db_mock(n, lyrics_dim, audio_dim)
 
-        # ---- Intercept DB writes so we can feed them back at load time ----
-        stored: dict = {}  # index_name → (index_data, id_map_json, embedding_dimension)
+        stored: dict = {}
 
         mock_cur = MagicMock()
         mock_cur.__enter__ = MagicMock(return_value=mock_cur)
         mock_cur.__exit__ = MagicMock(return_value=False)
-
-        call_count = {"fetch": 0}
-
-        def fetchall_side():
-            call_count["fetch"] += 1
-            if call_count["fetch"] == 1:
-                return lyrics_rows
-            return audio_rows
-
-        mock_cur.fetchall.side_effect = fetchall_side
         mock_cur.fetchone.return_value = None
 
         def execute_side(sql, params=None):
-            # Intercept INSERT INTO lyrics_index_data
             if params and "INSERT" in sql.upper() and len(params) >= 4:
                 name, data, idmap, dim = params[0], params[1], params[2], params[3]
                 stored[name] = (bytes(data) if data else b"", idmap, int(dim))
@@ -479,24 +471,31 @@ class TestSemGroveRoundTrip:
         mock_conn.cursor.return_value = mock_cur
         mock_conn.commit.return_value = None
 
-        # build_and_store_sem_grove_index does ``from app_helper import get_db``
-        # at function entry even when db_conn is supplied.  Install a scoped stub
-        # via patch.dict so sys.modules is restored after this block and other
-        # test files (e.g. test_string_sanitization.py) still get the real module.
+        def fake_stream(table, column, dim, where_clause=None, **kwargs):
+            if table == "lyrics_embedding":
+                rows = lyrics_rows
+            elif table == "embedding":
+                rows = audio_rows
+            else:
+                raise AssertionError(f"unexpected stream table: {table!r}")
+            ids = [r[0] for r in rows]
+            buf = np.empty((len(rows), dim), dtype=np.float32)
+            for i, (_, blob) in enumerate(rows):
+                buf[i] = np.frombuffer(blob, dtype=np.float32)
+            return buf, ids
+
         import types as _t
         _ah_stub = _t.ModuleType('app_helper')
         _ah_stub.get_db = MagicMock(return_value=mock_conn)
         _ah_stub.get_score_data_by_ids = lambda item_ids: []
 
         with patch.dict(sys.modules, {'app_helper': _ah_stub}), \
-             patch("tasks.sem_grove_manager.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True), \
-             patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True):
-            from config import (
-                EMBEDDING_DIMENSION,
-                VOYAGER_MAX_PART_SIZE_MB,
-            )
-            with patch("tasks.sem_grove_manager.EMBEDDING_DIMENSION", audio_dim, create=True):
-                ok = build_and_store_sem_grove_index(db_conn=mock_conn)
+             patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True), \
+             patch("config.EMBEDDING_DIMENSION", audio_dim, create=True), \
+             patch("tasks.index_build_helpers.stream_embeddings_to_buffer",
+                   side_effect=fake_stream):
+            from config import VOYAGER_MAX_PART_SIZE_MB  # noqa: F401
+            ok = build_and_store_sem_grove_index(db_conn=mock_conn)
 
         if not ok or not stored:
             pytest.skip("build_and_store_sem_grove_index did not store anything (likely missing config)")

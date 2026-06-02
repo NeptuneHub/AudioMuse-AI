@@ -15,17 +15,14 @@ Mirrors the architecture of tasks/clap_text_search.py:
 """
 
 import gc
-import io
 import json
 import logging
-import os
 import re
 import sys
 import tempfile
 from typing import Dict, List, Optional
 
 import numpy as np
-import psycopg2
 
 import config
 
@@ -54,10 +51,6 @@ _LYRICS_AXIS_CACHE = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
-
 def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
     metadata_map: Dict[str, Dict[str, str]] = {}
     if not item_ids:
@@ -82,10 +75,6 @@ def _axis_columns_from_axes() -> List[tuple]:
     return list(axis_columns())
 
 
-def _axis_dimension() -> int:
-    return len(_axis_columns_from_axes())
-
-
 # ---------------------------------------------------------------------------
 # Voyager index: build and persist
 # ---------------------------------------------------------------------------
@@ -93,13 +82,13 @@ def _axis_dimension() -> int:
 def build_and_store_lyrics_index(db_conn=None) -> bool:
     """Build a voyager index from stored lyrics embeddings and persist it."""
     from app_helper import get_db
-    from config import (
-        LYRICS_ENABLED,
-        LYRICS_EMBEDDING_DIMENSION,
-        VOYAGER_METRIC,
-        VOYAGER_M,
-        VOYAGER_EF_CONSTRUCTION,
-        VOYAGER_MAX_PART_SIZE_MB,
+    from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, VOYAGER_METRIC
+    from .index_build_helpers import (
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
+        store_voyager_index_segmented,
+        build_id_map,
+        EmptyIndexError,
     )
 
     if not LYRICS_ENABLED:
@@ -107,7 +96,7 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
         return False
 
     try:
-        import voyager  # type: ignore
+        import voyager  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("Voyager library is unavailable; cannot build lyrics index.")
         return False
@@ -115,99 +104,36 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
     if db_conn is None:
         db_conn = get_db()
 
-    max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
-
     try:
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT item_id, embedding FROM lyrics_embedding WHERE embedding IS NOT NULL")
-            rows = cur.fetchall()
-
-            if not rows:
-                logger.warning("No lyrics embeddings found in DB; skipping lyrics index build.")
-                return False
-
-            space = voyager.Space.Cosine if VOYAGER_METRIC == 'angular' else {
-                'euclidean': voyager.Space.Euclidean,
-                'dot': voyager.Space.InnerProduct,
-            }.get(VOYAGER_METRIC, voyager.Space.Cosine)
-
-            logger.info(f"Building lyrics voyager index for {len(rows)} items...")
-            builder = voyager.Index(
-                space=space,
-                num_dimensions=LYRICS_EMBEDDING_DIMENSION,
-                M=VOYAGER_M,
-                ef_construction=VOYAGER_EF_CONSTRUCTION,
+        logger.info("Building lyrics voyager index (streaming)...")
+        batches = iter_embedding_batches(
+            table="lyrics_embedding",
+            column="embedding",
+            dim=LYRICS_EMBEDDING_DIMENSION,
+            where_clause="embedding IS NOT NULL",
+        )
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, LYRICS_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
             )
+        except EmptyIndexError as ve:
+            logger.warning(f"No valid lyrics embedding vectors for index build: {ve}")
+            return False
+        gc.collect()
 
-            id_map: Dict[int, str] = {}
-            vectors: List[np.ndarray] = []
-            voyager_id = 0
-            for item_id, blob in rows:
-                if blob is None:
-                    continue
-                vec = np.frombuffer(blob, dtype=np.float32)
-                if vec.shape[0] != LYRICS_EMBEDDING_DIMENSION:
-                    logger.warning(
-                        f"Skipping lyrics item {item_id}: dim={vec.shape[0]} != {LYRICS_EMBEDDING_DIMENSION}"
-                    )
-                    continue
-                vectors.append(vec)
-                id_map[voyager_id] = item_id
-                voyager_id += 1
+        if not index_bytes:
+            logger.error("Generated lyrics index binary is empty; aborting storage.")
+            return False
 
-            if not vectors:
-                logger.warning("No valid lyrics embedding vectors for index build.")
-                return False
-
-            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
-                temp_path = tmp.name
-            try:
-                builder.save(temp_path)
-                del builder
-                gc.collect()
-                with open(temp_path, 'rb') as f:
-                    index_binary = f.read()
-            finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-
-            if not index_binary:
-                logger.error("Generated lyrics index binary is empty; aborting storage.")
-                return False
-
-            id_map_json = json.dumps(id_map)
-            cur.execute(
-                "DELETE FROM lyrics_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                ('lyrics_index', r'lyrics_index\_%\_%'),
-            )
-
-            if len(index_binary) <= max_part_size:
-                cur.execute(
-                    "INSERT INTO lyrics_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) "
-                    "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT (index_name) DO UPDATE SET "
-                    "index_data = EXCLUDED.index_data, id_map_json = EXCLUDED.id_map_json, "
-                    "embedding_dimension = EXCLUDED.embedding_dimension, created_at = EXCLUDED.created_at",
-                    ('lyrics_index', psycopg2.Binary(index_binary), id_map_json, LYRICS_EMBEDDING_DIMENSION),
-                )
-                logger.info("Stored lyrics index as single row.")
-            else:
-                parts = _split_bytes(index_binary, max_part_size)
-                num_parts = len(parts)
-                insert_q = (
-                    "INSERT INTO lyrics_index_data (index_name, index_data, id_map_json, "
-                    "embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                )
-                for idx, part in enumerate(parts, start=1):
-                    name = f"lyrics_index_{idx}_{num_parts}"
-                    part_id_map = id_map_json if idx == 1 else ''
-                    cur.execute(
-                        insert_q,
-                        (name, psycopg2.Binary(part), part_id_map, LYRICS_EMBEDDING_DIMENSION),
-                    )
-                logger.info(f"Stored lyrics index in {num_parts} segmented rows.")
+        id_map = build_id_map(item_ids)
+        store_voyager_index_segmented(
+            db_conn,
+            target_table="lyrics_index_data",
+            index_name="lyrics_index",
+            index_bytes=index_bytes,
+            id_map=id_map,
+            embedding_dimension=LYRICS_EMBEDDING_DIMENSION,
+        )
 
         db_conn.commit()
         logger.info("Lyrics search index build successful.")
@@ -228,11 +154,13 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     """Build a voyager index from the per-song axis_scores flattened to a fixed-order vector."""
     from app_helper import get_db
-    from config import (
-        LYRICS_ENABLED,
-        VOYAGER_M,
-        VOYAGER_EF_CONSTRUCTION,
-        VOYAGER_MAX_PART_SIZE_MB,
+    from config import LYRICS_ENABLED
+    from .index_build_helpers import (
+        iter_embedding_batches,
+        build_voyager_index_bytes_streaming,
+        store_voyager_index_segmented,
+        build_id_map,
+        EmptyIndexError,
     )
 
     if not LYRICS_ENABLED:
@@ -240,7 +168,7 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
         return False
 
     try:
-        import voyager  # type: ignore
+        import voyager  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("Voyager library is unavailable; cannot build lyrics axes index.")
         return False
@@ -253,92 +181,37 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
         logger.warning("No axis columns defined; skipping lyrics axes index build.")
         return False
     dim = len(columns)
-    max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
 
     try:
-        with db_conn.cursor() as cur:
-            cur.execute("SELECT item_id, axis_vector FROM lyrics_embedding WHERE axis_vector IS NOT NULL")
-            rows = cur.fetchall()
-
-            if not rows:
-                logger.warning("No lyrics axis_vector rows; skipping axes index build.")
-                return False
-
-            logger.info(f"Building lyrics axes voyager index for {len(rows)} candidate items (dim={dim})...")
-            builder = voyager.Index(
-                space=voyager.Space.Cosine,
-                num_dimensions=dim,
-                M=VOYAGER_M,
-                ef_construction=VOYAGER_EF_CONSTRUCTION,
+        logger.info(f"Building lyrics axes voyager index (streaming, dim={dim})...")
+        batches = iter_embedding_batches(
+            table="lyrics_embedding",
+            column="axis_vector",
+            dim=dim,
+            where_clause="axis_vector IS NOT NULL",
+        )
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, dim, metric="angular",
             )
+        except EmptyIndexError as ve:
+            logger.warning(f"No usable axis_vector rows; aborting axes index build: {ve}")
+            return False
+        gc.collect()
 
-            id_map: Dict[int, str] = {}
-            vectors: List[np.ndarray] = []
-            voyager_id = 0
-            for item_id, axis_blob in rows:
-                if not axis_blob:
-                    continue
-                vec = np.frombuffer(axis_blob, dtype=np.float32)
-                if vec.shape[0] != dim:
-                    logger.warning(
-                        f"Skipping lyrics axes item {item_id}: dim={vec.shape[0]} != {dim}"
-                    )
-                    continue
-                vectors.append(vec)
-                id_map[voyager_id] = item_id
-                voyager_id += 1
+        if not index_bytes:
+            logger.error("Generated lyrics axes index binary is empty; aborting storage.")
+            return False
 
-            if not vectors:
-                logger.warning("No usable axis_vector rows; aborting axes index build.")
-                return False
-
-            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.voyager') as tmp:
-                temp_path = tmp.name
-            try:
-                builder.save(temp_path)
-                del builder
-                gc.collect()
-                with open(temp_path, 'rb') as f:
-                    index_binary = f.read()
-            finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-
-            if not index_binary:
-                logger.error("Generated lyrics axes index binary is empty; aborting storage.")
-                return False
-
-            id_map_json = json.dumps(id_map)
-            cur.execute(
-                "DELETE FROM lyrics_axes_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                ('lyrics_axes_index', r'lyrics_axes_index\_%\_%'),
-            )
-
-            if len(index_binary) <= max_part_size:
-                cur.execute(
-                    "INSERT INTO lyrics_axes_index_data (index_name, index_data, id_map_json, embedding_dimension, created_at) "
-                    "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT (index_name) DO UPDATE SET "
-                    "index_data = EXCLUDED.index_data, id_map_json = EXCLUDED.id_map_json, "
-                    "embedding_dimension = EXCLUDED.embedding_dimension, created_at = EXCLUDED.created_at",
-                    ('lyrics_axes_index', psycopg2.Binary(index_binary), id_map_json, dim),
-                )
-                logger.info("Stored lyrics axes index as single row.")
-            else:
-                parts = _split_bytes(index_binary, max_part_size)
-                num_parts = len(parts)
-                insert_q = (
-                    "INSERT INTO lyrics_axes_index_data (index_name, index_data, id_map_json, "
-                    "embedding_dimension, created_at) VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                )
-                for idx, part in enumerate(parts, start=1):
-                    name = f"lyrics_axes_index_{idx}_{num_parts}"
-                    part_id_map = id_map_json if idx == 1 else ''
-                    cur.execute(insert_q,
-                                (name, psycopg2.Binary(part), part_id_map, dim))
-                logger.info(f"Stored lyrics axes index in {num_parts} segmented rows.")
+        id_map = build_id_map(item_ids)
+        store_voyager_index_segmented(
+            db_conn,
+            target_table="lyrics_axes_index_data",
+            index_name="lyrics_axes_index",
+            index_bytes=index_bytes,
+            id_map=id_map,
+            embedding_dimension=dim,
+        )
 
         db_conn.commit()
         logger.info("Lyrics axes index build successful.")
@@ -383,7 +256,6 @@ def _load_lyrics_index_from_db() -> bool:
                     seg_pattern = re.compile(r'^lyrics_index_(\d+)_(\d+)$')
                     parts = []
                     total_expected = None
-                    id_map_json_candidate = None
                     with conn.cursor(name='lyrics_index_segments') as seg_cur:
                         seg_cur.itersize = 50
                         seg_cur.execute(
@@ -405,8 +277,6 @@ def _load_lyrics_index_from_db() -> bool:
                                 )
                                 return False
                             parts.append((part_no, part_data, part_id_map, part_dim))
-                            if part_id_map and not id_map_json_candidate:
-                                id_map_json_candidate = part_id_map
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.info(
@@ -416,12 +286,13 @@ def _load_lyrics_index_from_db() -> bool:
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
                     db_dim = parts[0][3]
                     index_stream = tempfile.TemporaryFile()
                     for _, part_data, _, _ in parts:
                         index_stream.write(part_data)
                     index_stream.seek(0)
-                    id_map_json = id_map_json_candidate
+                    id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
 
                 if index_stream is None:
                     return False
@@ -500,7 +371,6 @@ def _load_lyrics_axes_index_from_db() -> bool:
                     seg_pattern = re.compile(r'^lyrics_axes_index_(\d+)_(\d+)$')
                     parts = []
                     total_expected = None
-                    id_map_json_candidate = None
                     with conn.cursor(name='lyrics_axes_index_segments') as seg_cur:
                         seg_cur.itersize = 50
                         seg_cur.execute(
@@ -522,8 +392,6 @@ def _load_lyrics_axes_index_from_db() -> bool:
                                 )
                                 return False
                             parts.append((part_no, part_data, part_id_map, part_dim))
-                            if part_id_map and not id_map_json_candidate:
-                                id_map_json_candidate = part_id_map
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.info(
@@ -533,12 +401,13 @@ def _load_lyrics_axes_index_from_db() -> bool:
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
                     db_dim = parts[0][3]
                     index_stream = tempfile.TemporaryFile()
                     for _, part_data, _, _ in parts:
                         index_stream.write(part_data)
                     index_stream.seek(0)
-                    id_map_json = id_map_json_candidate
+                    id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
 
                 if index_stream is None:
                     return False
@@ -643,10 +512,6 @@ def refresh_lyrics_cache() -> bool:
         f"axes {old_axis_count}->{new_axis_count}"
     )
     return result
-
-
-def is_lyrics_cache_loaded() -> bool:
-    return _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_AXIS_CACHE['loaded']
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +664,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
     """
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
     from lyrics.lyrics_transcriber import embed_query_text
+    from tasks.gte_warm_cache import warm_lock, warmup_gte_model
 
     if not LYRICS_ENABLED:
         return []
@@ -811,7 +677,9 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
         return []
 
     try:
-        query_vec = embed_query_text(text)
+        with warm_lock():
+            warmup_gte_model()
+            query_vec = embed_query_text(text)
         if query_vec is None or query_vec.size == 0:
             logger.error(f"Failed to embed lyrics query: {query_text!r}")
             return []

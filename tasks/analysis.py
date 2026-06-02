@@ -14,8 +14,6 @@ import uuid
 import traceback
 import gc
 import platform
-from pydub import AudioSegment
-from tempfile import NamedTemporaryFile
 
 import librosa
 import onnxruntime as ort  # re-exported: tests patch `tasks.analysis.ort.InferenceSession`
@@ -59,6 +57,16 @@ from app_helper import (
     build_and_store_map_projection, build_and_store_artist_projection,
     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+)
+
+from error import error_manager
+from error.error_dictionary import (
+    ERR_ANALYSIS_FAILED,
+    ERR_ALBUM_ANALYSIS_FAILED,
+    ERR_DB_CONNECTION,
+    ERR_MEDIASERVER_LIBRARY,
+    ERR_INDEX_BUILD,
+    ERR_INDEX_EMPTY,
 )
 
 # Helper module — exposes refactored utilities. The explicit re-exports
@@ -118,8 +126,19 @@ def _release_freed_ram_to_os():
 
 
 def _run_all_index_builds(log_fn=None):
-    """Run every index-rebuild step. log_fn(stage, progress) is optional."""
-    def _step(label, fn, fatal=False):
+    """Run every index-rebuild step. log_fn(stage, progress) is optional.
+
+    Each step announces itself via ``log_fn`` before running so the dashboard
+    shows which builder is currently active (otherwise users see "Building
+    CLAP text search index..." for the entire 95–97 % window even while the
+    lyrics or SemGrove builds are running).
+    """
+    def _step(label, fn, progress=None, banner=None, fatal=False):
+        if log_fn and progress is not None and banner is not None:
+            try:
+                log_fn(banner, progress)
+            except Exception:
+                pass
         try:
             fn()
             logger.info(f"✓ {label}")
@@ -132,18 +151,31 @@ def _run_all_index_builds(log_fn=None):
 
     if log_fn:
         log_fn("Performing final index rebuild...", 95)
-    _step("Voyager index rebuilt", lambda: build_and_store_voyager_index(get_db()), fatal=True)
-    if log_fn:
-        log_fn("Building CLAP text search index...", 96)
-    _step("CLAP text search index", lambda: build_and_store_clap_index(get_db()))
-    _step("Lyrics search index", lambda: build_and_store_lyrics_index(get_db()))
-    _step("Lyrics axes index", lambda: build_and_store_lyrics_axes_index(get_db()))
-    _step("SemGrove merged index rebuilt", lambda: build_and_store_sem_grove_index(get_db()))
-    if log_fn:
-        log_fn("Building artist similarity index...", 97)
-    _step("Artist similarity index rebuilt", lambda: build_and_store_artist_index(get_db()))
-    _step("Song map projection rebuilt", lambda: build_and_store_map_projection('main_map'))
-    _step("Artist component projection rebuilt", lambda: build_and_store_artist_projection('artist_map'))
+    _step("Voyager index rebuilt",
+          lambda: build_and_store_voyager_index(get_db()),
+          progress=95, banner="Building Voyager audio index...",
+          fatal=True)
+    _step("CLAP text search index",
+          lambda: build_and_store_clap_index(get_db()),
+          progress=96, banner="Building CLAP text search index...")
+    _step("Lyrics search index",
+          lambda: build_and_store_lyrics_index(get_db()),
+          progress=96, banner="Building lyrics search index...")
+    _step("Lyrics axes index",
+          lambda: build_and_store_lyrics_axes_index(get_db()),
+          progress=96, banner="Building lyrics axes index...")
+    _step("SemGrove merged index rebuilt",
+          lambda: build_and_store_sem_grove_index(get_db()),
+          progress=96, banner="Building SemGrove merged index...")
+    _step("Artist similarity index rebuilt",
+          lambda: build_and_store_artist_index(get_db()),
+          progress=97, banner="Building artist similarity index...")
+    _step("Song map projection rebuilt",
+          lambda: build_and_store_map_projection('main_map'),
+          progress=97, banner="Building song map projection...")
+    _step("Artist component projection rebuilt",
+          lambda: build_and_store_artist_projection('artist_map'),
+          progress=97, banner="Building artist component projection...")
     try:
         redis_conn.publish('index-updates', 'reload')
         logger.info('✓ Published reload message to Flask container')
@@ -156,10 +188,41 @@ def _run_all_index_builds(log_fn=None):
 
 # --- Core Analysis Functions ---
 
+def _decode_audio_with_pyav(file_path, target_sr):
+    import av
+
+    resampler = av.audio.resampler.AudioResampler(format="flt", layout="mono", rate=target_sr)
+    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if AUDIO_LOAD_TIMEOUT else None
+    chunks = []
+    total = 0
+    with av.open(file_path) as container:
+        if not container.streams.audio:
+            return np.array([], dtype=np.float32)
+        stream = container.streams.audio[0]
+        for frame in container.decode(stream):
+            for rframe in resampler.resample(frame):
+                arr = rframe.to_ndarray().reshape(-1)
+                if arr.size:
+                    chunks.append(arr)
+                    total += arr.size
+            if max_samples and total >= max_samples:
+                break
+        for rframe in resampler.resample(None):
+            arr = rframe.to_ndarray().reshape(-1)
+            if arr.size:
+                chunks.append(arr)
+    if not chunks:
+        return np.array([], dtype=np.float32)
+    audio = np.concatenate(chunks).astype(np.float32, copy=False)
+    if max_samples:
+        audio = audio[:max_samples]
+    return audio
+
+
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
     """
-    Try librosa.load directly; on failure or empty signal, fall back to a
-    pydub/ffmpeg conversion to a temporary mono WAV.
+    Try librosa.load directly; on failure or empty signal, fall back to an
+    in-process PyAV (ffmpeg) decode to mono float32 at target_sr.
     """
     name = os.path.basename(file_path)
     try:
@@ -168,35 +231,17 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
             raise ValueError("Librosa returned an empty audio signal.")
         return audio, sr
     except Exception as e:
-        logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting fallback conversion.")
+        logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
 
-    temp_wav_path = None
     try:
-        seg = AudioSegment.from_file(file_path, parameters=[
-            "-analyzeduration", "10M", "-probesize", "10M",
-            "-ignore_unknown", "-err_detect", "ignore_err", "-ac", "2",
-        ])
-        if len(seg) == 0:
-            logger.error(f"Pydub loaded zero-duration audio from {name}; file likely corrupt.")
-            return None, None
-        with NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_wav_path = f.name
-        logger.info(f"Fallback: Pre-processing {name} to a smaller WAV for safe loading...")
-        seg.set_frame_rate(target_sr).set_channels(1).export(
-            temp_wav_path, format="wav",
-            parameters=["-codec:a", "pcm_s16le", "-ar", str(target_sr), "-ac", "1"],
-        )
-        audio, sr = librosa.load(temp_wav_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
+        audio = _decode_audio_with_pyav(file_path, target_sr)
         if audio is None or audio.size == 0 or not np.any(audio):
-            logger.error(f"Fallback resulted in empty/silent audio for {name}.")
+            logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
-        return audio, sr
+        return audio, target_sr
     except Exception as e:
-        logger.error(f"Fallback loading also failed for {name}: {e}")
+        logger.error(f"PyAV fallback loading also failed for {name}: {e}")
         return None, None
-    finally:
-        if temp_wav_path and os.path.exists(temp_wav_path):
-            os.remove(temp_wav_path)
 
 def rebuild_all_indexes_task():
     """Rebuild all indexes as a standalone RQ task (enqueued on default queue)."""
@@ -388,7 +433,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
-            nonlocal current_progress_val, current_task_logs
+            nonlocal current_progress_val
             current_progress_val = progress
             logger.info(f"[AlbumTask-{current_task_id}-{album_name}] {message}")
             db_details = {"album_name": album_name, **kwargs}
@@ -477,9 +522,19 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     logger.info(f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})")
                     continue
 
-                path = download_track(TEMP_DIR, item)
-                if not path:
-                    continue
+                needs_audio_upfront = needs_musicnn or needs_clap
+                if needs_audio_upfront:
+                    path = download_track(TEMP_DIR, item)
+                    if not path:
+                        continue
+                else:
+                    path = None
+
+                def _ensure_track_download():
+                    nonlocal path
+                    if path is None:
+                        path = download_track(TEMP_DIR, item)
+                    return path
 
                 try:
                     track_processed = False  # MusiCNN | CLAP | Lyrics produced data?
@@ -546,7 +601,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
                     if _ah.run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                                                 needs_lyrics, LYRICS_ENABLED, robust_load_audio_with_fallback,
-                                                top_moods=top_moods):
+                                                top_moods=top_moods, download_fn=_ensure_track_download):
                         track_processed = True
 
                     if track_processed:
@@ -567,11 +622,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
         except OperationalError as e:
             logger.error(f"Database connection error during album analysis {album_id}: {e}. This job will be retried.", exc_info=True)
-            log_and_update_album_task(f"Database connection failed for album '{album_name}'. Retrying...", current_progress_val, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
+            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            log_and_update_album_task(f"Database connection failed for album '{album_name}'. Retrying...", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         except Exception as e:
             logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
-            log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, final_summary_details={"error": str(e), "traceback": traceback.format_exc()})
+            err = error_manager.record(error_manager.classify(e, ERR_ALBUM_ANALYSIS_FAILED), str(e), exc=e)
+            log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         finally:
             cleanup_musicnn_sessions(onnx_sessions, context="finally")
@@ -607,7 +664,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
         current_task_logs = initial_details["log"]
 
         def log_and_update_main(message, progress, **kwargs):
-            nonlocal current_progress, current_task_logs
+            nonlocal current_progress
             current_progress = progress
             logger.info(f"[MainAnalysisTask-{current_task_id}] {message}")
             details = {**kwargs, "status_message": message}
@@ -639,6 +696,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             active_jobs = {}
             launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
+            albums_no_tracks = 0
 
             def monitor_and_clear_jobs():
                 """Sync `albums_completed` with terminal RQ jobs and DB child-task statuses.
@@ -711,6 +769,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 tracks = get_tracks_from_album(album['Id'])
                 if not tracks:
                     albums_skipped += 1
+                    albums_no_tracks += 1
                     checked_album_ids.add(album['Id'])
                     logger.info(f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - no tracks returned by media server.")
                     continue
@@ -754,6 +813,10 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                                     albums_skipped=albums_skipped,
                                     checked_album_ids=list(checked_album_ids))
 
+            if albums_launched == 0 and total_albums_to_check > 0 and albums_no_tracks == total_albums_to_check:
+                logger.error(f"No tracks were returned for any of the {total_albums_to_check} albums; the media server library may be unreachable or empty.")
+                raise error_manager.AudioMuseError(ERR_MEDIASERVER_LIBRARY, f"The media server returned no tracks for any of the {total_albums_to_check} album(s).")
+
             if albums_launched == 0 and albums_skipped == total_albums_to_check:
                 logger.warning(f"No albums were enqueued: all {total_albums_to_check} albums were skipped (no tracks or already analyzed). Try num_recent_albums=0 or inspect media server responses.")
 
@@ -765,7 +828,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
-            _run_all_index_builds(log_fn=log_and_update_main)
+            try:
+                _run_all_index_builds(log_fn=log_and_update_main)
+            except error_manager.AudioMuseError:
+                raise
+            except Exception as e:
+                code = ERR_INDEX_EMPTY if type(e).__name__ == "EmptyIndexError" else ERR_INDEX_BUILD
+                raise error_manager.AudioMuseError(code, str(e), cause=e) from e
             logger.info('Analysis complete. CLAP text search uses default queries (no auto-regeneration).')
 
             final_message = f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
@@ -775,10 +844,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
         except OperationalError as e:
             logger.critical(f"FATAL ERROR: Main analysis task failed due to DB connection issue: {e}", exc_info=True)
-            log_and_update_main(f"❌ Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), traceback=traceback.format_exc())
+            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            log_and_update_main(f"❌ Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
             # Re-raise to allow RQ to handle retries if configured on the task itself
             raise
         except Exception as e:
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)
-            log_and_update_main(f"❌ Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), traceback=traceback.format_exc())
+            err = error_manager.record(error_manager.classify(e, ERR_ANALYSIS_FAILED), str(e), exc=e)
+            log_and_update_main(f"❌ Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
             raise

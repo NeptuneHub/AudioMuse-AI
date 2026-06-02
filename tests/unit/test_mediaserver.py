@@ -4,7 +4,7 @@ Tests mock HTTP responses but verify real parsing, transformation, and error han
 If the response parsing or error handling changes, these tests will catch it.
 """
 import pytest
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
+from unittest.mock import Mock, MagicMock, patch
 import requests
 
 

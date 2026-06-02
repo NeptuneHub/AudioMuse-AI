@@ -144,9 +144,6 @@ def _apply_thread_env(num_threads: int) -> None:
         except Exception:
             pass
 
-_embedding_tokenizer = None
-_embedding_model = None
-_embedding_model_name: Optional[str] = None
 _axis_label_map: Optional[Dict] = None
 _axis_embeddings: Optional[Dict] = None
 
@@ -157,13 +154,8 @@ def load_asr_model(num_threads: Optional[int] = None):
     return _load()
 
 def load_topic_embedding_model(model_name: Optional[str] = None):
-    global _embedding_tokenizer, _embedding_model, _embedding_model_name
     from .gte_onnx import load_gte_model
-    tokenizer, session = load_gte_model()
-    _embedding_tokenizer = tokenizer
-    _embedding_model = session
-    _embedding_model_name = model_name or 'Alibaba-NLP/gte-multilingual-base'
-    return tokenizer, session
+    return load_gte_model()
 
 def _get_axis_embeddings():
     global _axis_label_map, _axis_embeddings
@@ -673,7 +665,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                    artist: Optional[str] = None,
                    track: Optional[str] = None,
                    track_id: Optional[str] = None,
-                   top_moods: Optional[Dict[str, float]] = None) -> Dict[str, object]:
+                   top_moods: Optional[Dict[str, float]] = None,
+                   audio_loader=None) -> Dict[str, object]:
     threads = get_lyrics_threads()
     _apply_thread_env(threads)
 
@@ -750,11 +743,17 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
     if not raw_text and LYRICS_ASR_ENABLE:
         logger.info('STEP 4 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
         if audio is None or sr is None:
-            if not source_path:
-                raise ValueError('analyze_lyrics requires audio+sr, source_path, or artist+track for API lookup')
-            if not os.path.exists(str(source_path)):
-                raise FileNotFoundError(f'Audio source not found: {source_path}')
-            audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+            if source_path:
+                if not os.path.exists(str(source_path)):
+                    raise FileNotFoundError(f'Audio source not found: {source_path}')
+                audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+            elif audio_loader is not None:
+                logger.info('STEP 4: ASR needed - downloading audio now')
+                audio, sr, loaded_path = audio_loader()
+                if not source_path and loaded_path:
+                    source_path = loaded_path
+            else:
+                raise ValueError('analyze_lyrics requires audio+sr, source_path, or audio_loader for ASR when lyrics are not found upstream')
         audio_clip, used_seconds = _clip_audio(audio, sr)
         logger.info('STEP 4 end: audio ready, used=%.2fs samples=%s sr=%s',
                     used_seconds, len(audio_clip), sr)

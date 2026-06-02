@@ -497,6 +497,17 @@ body.dark-mode #cancel-sync-btn:disabled {
     background-color: var(--status-failure-bg);
 }
 
+.status-error-block {
+    margin: 0.5rem 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    border-left: 4px solid var(--status-failure-text);
+}
+.status-error-block p {
+    margin: 0.15rem 0;
+    word-break: break-word;
+}
+
 .progress-bar-container {
     width: 100%;
     background-color: var(--border-color);

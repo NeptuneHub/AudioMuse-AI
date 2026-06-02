@@ -172,44 +172,6 @@ def cleanup_onnx_session(session, name: str = "session") -> None:
         logger.warning(f"Error cleaning up ONNX session {name}: {e}")
 
 
-def cleanup_tensors(*tensor_vars) -> None:
-    """
-    Explicit tensor cleanup with immediate garbage collection.
-    
-    Deletes multiple tensor variables and forces garbage collection.
-    This is critical for large tensors like mel-spectrograms and embeddings.
-    
-    Args:
-        *tensor_vars: Variable names to delete from caller's scope
-        
-    Example:
-        >>> mel_list = [...]
-        >>> mel_batch = np.array(...)
-        >>> cleanup_tensors('mel_list', 'mel_batch')  # Cleans caller's variables
-    """
-    import inspect
-    
-    # Get caller's frame to delete variables in their scope
-    frame = inspect.currentframe().f_back
-    
-    for var_name in tensor_vars:
-        if var_name in frame.f_locals:
-            try:
-                del frame.f_locals[var_name]
-                logger.debug(f"Deleted tensor variable: {var_name}")
-            except Exception as e:
-                logger.warning(f"Failed to delete tensor {var_name}: {e}")
-        elif var_name in frame.f_globals:
-            try:
-                del frame.f_globals[var_name]
-                logger.debug(f"Deleted global tensor variable: {var_name}")
-            except Exception as e:
-                logger.warning(f"Failed to delete global tensor {var_name}: {e}")
-    
-    # Force garbage collection after deletions
-    gc.collect()
-
-
 def reset_onnx_memory_pool() -> bool:
     """
     Reset ONNX Runtime memory pool to clear accumulated allocations.
@@ -284,6 +246,29 @@ def reset_onnx_memory_pool() -> bool:
         return False
 
 
+def release_memory_to_os() -> bool:
+    """Return freed heap memory to the OS via glibc malloc_trim (Linux only).
+
+    ONNX/glibc keep freed allocations in the process heap for reuse, so RSS does
+    not drop after a model is unloaded until the heap is trimmed. No-op on
+    non-Linux platforms.
+    """
+    gc.collect()
+    import platform
+    if platform.system() != "Linux":
+        return False
+    try:
+        import ctypes
+        import ctypes.util
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            return False
+        ctypes.CDLL(libc_name).malloc_trim(0)
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
 def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool = True) -> Dict[str, bool]:
     """
     Perform comprehensive memory cleanup combining all available methods.
@@ -303,23 +288,24 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
     results = {
         'cuda': False,
         'onnx_pool': False,
-        'gc': True  # Garbage collection always succeeds
+        'gc': True,  # Garbage collection always succeeds
+        'malloc_trim': False
     }
-    
+
     # CUDA cleanup (no-op on CPU-only systems)
     if force_cuda:
         results['cuda'] = cleanup_cuda_memory(force=True)
         # Note: cleanup_cuda_memory() returns False on CPU-only systems, which is expected
-    
+
     # ONNX memory pool reset (works for both CPU and GPU)
     if reset_onnx_pool:
         results['onnx_pool'] = reset_onnx_memory_pool()
-    
-    # Final garbage collection (always works)
-    gc.collect()
-    
+
+    # Final garbage collection + return the freed heap to the OS so RSS drops
+    results['malloc_trim'] = release_memory_to_os()
+
     successful_cleanups = sum(results.values())
-    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True}.items() if v])
+    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True, 'malloc_trim': True}.items() if v])
     
     return results
 

@@ -11,10 +11,6 @@ name: Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM
 
 on:
   push:
-    # We avoid triggering this workflow on direct pushes to `main` to prevent
-    # accidental builds from routine commits.
-    branches:
-      - devel         # Trigger for 'devel' tag
     tags:
       - 'v*.*.*'      # Trigger for version tags like v1.0.0
   pull_request:

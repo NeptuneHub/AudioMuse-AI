@@ -23,7 +23,6 @@ _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
 _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)} for API
 
 def _load_mood_centroids_for_similarity():
-    global _MOOD_CENTROIDS_DATA, _MOOD_CENTROIDS_META
     try:
         with open(MOOD_CENTROIDS_FILE) as f:
             data = json.load(f)
@@ -324,7 +323,7 @@ def get_similar_tracks_endpoint():
         if not neighbor_results:
             return jsonify({"error": "No similar tracks found for this mood centroid."}), 404
 
-        from app import get_score_data_by_ids
+        from app_helper import get_score_data_by_ids
         neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
         neighbor_details = get_score_data_by_ids(neighbor_ids)
         details_map = {d['item_id']: d for d in neighbor_details}
@@ -371,7 +370,7 @@ def get_similar_tracks_endpoint():
         if not neighbor_results:
             return jsonify({"error": "No similar tracks found for this anchor."}), 404
 
-        from app import get_score_data_by_ids
+        from app_helper import get_score_data_by_ids
         neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
         neighbor_details = get_score_data_by_ids(neighbor_ids)
         details_map = {d['item_id']: d for d in neighbor_details}
@@ -418,7 +417,7 @@ def get_similar_tracks_endpoint():
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404
 
-        from app import get_score_data_by_ids
+        from app_helper import get_score_data_by_ids
 
         neighbor_ids = [n['item_id'] for n in neighbor_results]
         neighbor_details = get_score_data_by_ids(neighbor_ids)
@@ -543,7 +542,7 @@ def get_track_endpoint():
     return jsonify({"error": "Missing 'item_id' parameter."}), 400
 
   try:
-    from app import get_score_data_by_ids
+    from app_helper import get_score_data_by_ids
     details = get_score_data_by_ids([item_id])
     if not details:
       return jsonify({"error": f"Item '{item_id}' not found."}), 404

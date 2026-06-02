@@ -161,7 +161,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await fetch("{{ url_for('backup_bp.create_backup') }}", { method: 'POST' });
             if (!res.ok) {
                 const err = await res.json();
-                throw new Error(err.error || 'Backup failed');
+                const structured = (typeof formatErrorText === 'function' && err.error_code) ? formatErrorText(err) : null;
+                throw new Error(structured || err.error || 'Backup failed');
             }
             const blob = await res.blob();
             const disposition = res.headers.get('Content-Disposition') || '';

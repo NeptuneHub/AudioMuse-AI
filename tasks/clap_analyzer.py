@@ -16,7 +16,6 @@ ONNX Runtime provides:
 """
 
 import os
-import sys
 import logging
 import numpy as np
 from typing import Tuple, Optional
@@ -304,8 +303,8 @@ def initialize_clap_text_model():
         return False
     
     try:
-        _text_session = _load_text_model()
         _tokenizer = _load_tokenizer()
+        _text_session = _load_text_model()
         logger.info("✓ CLAP text model initialized successfully (for text search)")
         return True
     except Exception as e:
@@ -381,11 +380,6 @@ def is_clap_model_loaded():
     return _audio_session is not None or _text_session is not None
 
 
-def is_clap_audio_loaded():
-    """Check if CLAP audio model is currently loaded."""
-    return _audio_session is not None
-
-
 def is_clap_text_loaded():
     """Check if CLAP text model is currently loaded."""
     return _text_session is not None
@@ -411,7 +405,6 @@ def get_clap_text_model():
 
 def get_tokenizer():
     """Get the global tokenizer, initializing if needed (lazy loading)."""
-    global _tokenizer
     
     if _tokenizer is None:
         # Initialize tokenizer with text model

@@ -31,7 +31,6 @@ import gc
 import json
 import logging
 import math
-import os
 import re
 import sys
 import tempfile
@@ -81,10 +80,6 @@ _SEM_GROVE_CACHE: Dict = {
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
-
 
 def _make_merged_vector(
     l_vec: np.ndarray,
@@ -156,158 +151,168 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
     Rows written to ``lyrics_index_data``:
       * ``sem_grove_whitening`` – JSON whitening stats (no binary payload)
       * ``sem_grove_index``     – Voyager binary + id_map (segmented if large)
+
+    Memory profile: lyrics and audio embeddings are each streamed into one
+    contiguous float32 buffer (no list-of-ndarrays, no vstack). Whitening
+    statistics are computed via running sum / sum-of-squares accumulators
+    instead of materializing full-library normalized matrices. Merged
+    vectors are produced in small batches by an internal generator and fed
+    directly to the streaming Voyager index builder -- the full-library
+    merged buffer (lyrics_dim + audio_dim per row × N) is never
+    materialized. Peak RAM is therefore ``lyrics_buf + audio_buf +
+    one merge batch + voyager's own HNSW storage``, with no extra copies.
     """
     try:
-        import voyager  # type: ignore
+        import voyager  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("Voyager unavailable; skipping SemGrove index build.")
         return False
 
     from app_helper import get_db
-    from config import (
-        LYRICS_EMBEDDING_DIMENSION,
-        EMBEDDING_DIMENSION,
-        VOYAGER_M,
-        VOYAGER_EF_CONSTRUCTION,
-        VOYAGER_MAX_PART_SIZE_MB,
+    from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
+    from .index_build_helpers import (
+        stream_embeddings_to_buffer,
+        build_voyager_index_bytes_streaming,
+        store_voyager_index_segmented,
+        build_id_map,
+        EmptyIndexError,
     )
 
     if db_conn is None:
         db_conn = get_db()
 
-    lyrics_dim    = LYRICS_EMBEDDING_DIMENSION
-    audio_dim     = EMBEDDING_DIMENSION
-    merged_dim    = lyrics_dim + audio_dim
-    max_part_size = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
+    lyrics_dim = LYRICS_EMBEDDING_DIMENSION
+    audio_dim  = EMBEDDING_DIMENSION
+    merged_dim = lyrics_dim + audio_dim
 
-    # Read weights fresh from config at build time so setup-wizard changes
-    # are picked up without a server restart.
     W_LYRICS, W_AUDIO = _get_weights()
 
     try:
+        logger.info("SemGrove: streaming lyrics embeddings…")
+        lyrics_buf, lyrics_ids = stream_embeddings_to_buffer(
+            table="lyrics_embedding",
+            column="embedding",
+            dim=lyrics_dim,
+            where_clause="embedding IS NOT NULL",
+        )
+        if lyrics_buf.shape[0] == 0:
+            logger.warning("SemGrove: no lyrics embeddings found; aborting.")
+            return False
+
+        logger.info("SemGrove: streaming audio embeddings…")
+        audio_buf, audio_ids = stream_embeddings_to_buffer(
+            table="embedding",
+            column="embedding",
+            dim=audio_dim,
+            where_clause="embedding IS NOT NULL",
+        )
+        if audio_buf.shape[0] == 0:
+            logger.warning("SemGrove: no audio embeddings found; aborting.")
+            return False
+
+        lyrics_pos = {item_id: i for i, item_id in enumerate(lyrics_ids)}
+        audio_pos  = {item_id: i for i, item_id in enumerate(audio_ids)}
+        common_ids = sorted(set(lyrics_ids) & set(audio_ids))
+        if not common_ids:
+            logger.warning("SemGrove: no songs have both lyrics and audio embeddings; aborting.")
+            return False
+        logger.info(
+            "SemGrove: %d songs have both embeddings (lyrics=%d, audio=%d).",
+            len(common_ids), lyrics_buf.shape[0], audio_buf.shape[0],
+        )
+
+        logger.info("SemGrove: computing whitening statistics (streaming)…")
+        sum_l   = np.zeros(lyrics_dim, dtype=np.float64)
+        sumsq_l = np.zeros(lyrics_dim, dtype=np.float64)
+        sum_a   = np.zeros(audio_dim,  dtype=np.float64)
+        sumsq_a = np.zeros(audio_dim,  dtype=np.float64)
+        n_stats = 0
+        for item_id in common_ids:
+            lv = lyrics_buf[lyrics_pos[item_id]]
+            av = audio_buf[audio_pos[item_id]]
+            lv_n = lv / (np.linalg.norm(lv) + 1e-8)
+            av_n = av / (np.linalg.norm(av) + 1e-8)
+            sum_l   += lv_n
+            sumsq_l += lv_n * lv_n
+            sum_a   += av_n
+            sumsq_a += av_n * av_n
+            n_stats += 1
+        mean_l = sum_l / n_stats
+        mean_a = sum_a / n_stats
+        var_l  = np.maximum(sumsq_l / n_stats - mean_l * mean_l, 0.0)
+        var_a  = np.maximum(sumsq_a / n_stats - mean_a * mean_a, 0.0)
+        std_lyrics = np.sqrt(var_l).astype(np.float32)
+        std_audio  = np.sqrt(var_a).astype(np.float32)
+        del sum_l, sumsq_l, sum_a, sumsq_a, mean_l, mean_a, var_l, var_a
+        gc.collect()
+
+        logger.info(
+            "SemGrove: building Voyager index for up to %d items (batched merge, dim=%d)…",
+            len(common_ids), merged_dim,
+        )
+
+        merge_batch_size = 4096
+
+        def _merge_batches():
+            """Yield (batch_buf, batch_ids) of merged vectors in chunks.
+
+            Reads ``lyrics_buf`` / ``audio_buf`` by closure; writes one
+            small batch buffer at a time and yields it to the streaming
+            index builder. Rows that produce ``None`` from
+            ``_make_merged_vector`` (zero-norm input) are skipped exactly
+            as the previous single-buffer implementation did.
+            """
+            for start in range(0, len(common_ids), merge_batch_size):
+                chunk = common_ids[start:start + merge_batch_size]
+                batch_buf = np.empty((len(chunk), merged_dim), dtype=np.float32)
+                batch_ids: List[str] = []
+                write_idx = 0
+                for item_id in chunk:
+                    mv = _make_merged_vector(
+                        lyrics_buf[lyrics_pos[item_id]],
+                        audio_buf[audio_pos[item_id]],
+                        std_lyrics, std_audio,
+                        W_LYRICS, W_AUDIO,
+                    )
+                    if mv is None:
+                        continue
+                    batch_buf[write_idx] = mv
+                    batch_ids.append(item_id)
+                    write_idx += 1
+                if write_idx == 0:
+                    continue
+                if write_idx < batch_buf.shape[0]:
+                    yield batch_buf[:write_idx].copy(), batch_ids
+                else:
+                    yield batch_buf, batch_ids
+
+        try:
+            index_bytes, kept_ids = build_voyager_index_bytes_streaming(
+                _merge_batches(), merged_dim, metric="angular",
+            )
+        except EmptyIndexError as ve:
+            logger.warning("SemGrove: no valid merged vectors; aborting: %s", ve)
+            return False
+        finally:
+            lyrics_buf = audio_buf = lyrics_pos = audio_pos = None
+            gc.collect()
+
+        if not index_bytes:
+            logger.error("SemGrove: generated index binary is empty; aborting.")
+            return False
+
+        id_map: Dict[int, str] = build_id_map(kept_ids)
+        vid = len(kept_ids)
+
+        whitening_json = json.dumps({
+            "std_lyrics": std_lyrics.tolist(),
+            "std_audio":  std_audio.tolist(),
+            "w_lyrics":   W_LYRICS,
+            "w_audio":    W_AUDIO,
+            "lyrics_dim": lyrics_dim,
+            "audio_dim":  audio_dim,
+        })
         with db_conn.cursor() as cur:
-            logger.info("SemGrove: fetching lyrics embeddings…")
-            cur.execute(
-                "SELECT item_id, embedding FROM lyrics_embedding "
-                "WHERE embedding IS NOT NULL"
-            )
-            lyrics_map: Dict[str, np.ndarray] = {}
-            for item_id, blob in cur.fetchall():
-                if blob is None:
-                    continue
-                v = np.frombuffer(blob, dtype=np.float32)
-                if v.shape[0] == lyrics_dim:
-                    lyrics_map[item_id] = v
-
-            if not lyrics_map:
-                logger.warning("SemGrove: no lyrics embeddings found; aborting.")
-                return False
-
-            logger.info("SemGrove: fetching audio embeddings…")
-            cur.execute(
-                "SELECT item_id, embedding FROM embedding "
-                "WHERE embedding IS NOT NULL"
-            )
-            audio_map: Dict[str, np.ndarray] = {}
-            for item_id, blob in cur.fetchall():
-                if blob is None:
-                    continue
-                v = np.frombuffer(blob, dtype=np.float32)
-                if v.shape[0] == audio_dim:
-                    audio_map[item_id] = v
-
-            if not audio_map:
-                logger.warning("SemGrove: no audio embeddings found; aborting.")
-                return False
-
-            common_ids = sorted(set(lyrics_map.keys()) & set(audio_map.keys()))
-            if not common_ids:
-                logger.warning(
-                    "SemGrove: no songs have both lyrics and audio embeddings; aborting."
-                )
-                return False
-            logger.info(
-                "SemGrove: %d songs have both embeddings (lyrics=%d, audio=%d).",
-                len(common_ids), len(lyrics_map), len(audio_map),
-            )
-
-            logger.info("SemGrove: computing whitening statistics…")
-            norm_lyrics = np.vstack([
-                lyrics_map[i] / (np.linalg.norm(lyrics_map[i]) + 1e-8)
-                for i in common_ids
-            ])
-            norm_audio = np.vstack([
-                audio_map[i] / (np.linalg.norm(audio_map[i]) + 1e-8)
-                for i in common_ids
-            ])
-            std_lyrics = np.std(norm_lyrics, axis=0).astype(np.float32)
-            std_audio  = np.std(norm_audio,  axis=0).astype(np.float32)
-
-            logger.info("SemGrove: building %d merged vectors (dim=%d)…", len(common_ids), merged_dim)
-            id_map:  Dict[int, str]      = {}
-            vectors: List[np.ndarray]    = []
-            vid = 0
-            for item_id in common_ids:
-                mv = _make_merged_vector(
-                    lyrics_map[item_id], audio_map[item_id],
-                    std_lyrics, std_audio,
-                    W_LYRICS, W_AUDIO,
-                )
-                if mv is None:
-                    continue
-                vectors.append(mv)
-                id_map[vid] = item_id
-                vid += 1
-
-            if not vectors:
-                logger.warning("SemGrove: no valid merged vectors; aborting.")
-                return False
-
-            logger.info("SemGrove: building Voyager index for %d items…", len(vectors))
-            builder = voyager.Index(
-                space=voyager.Space.Cosine,
-                num_dimensions=merged_dim,
-                M=VOYAGER_M,
-                ef_construction=VOYAGER_EF_CONSTRUCTION,
-            )
-            builder.add_items(np.vstack(vectors), ids=np.array(list(id_map.keys())))
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-                temp_path = tmp.name
-            try:
-                builder.save(temp_path)
-                del builder
-                gc.collect()
-                with open(temp_path, "rb") as f:
-                    index_binary = f.read()
-            finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-
-            if not index_binary:
-                logger.error("SemGrove: generated index binary is empty; aborting.")
-                return False
-
-            id_map_json = json.dumps(id_map)
-
-            # ---- Persist ----
-            # Delete any previous rows
-            cur.execute(
-                "DELETE FROM lyrics_index_data "
-                "WHERE index_name IN (%s, %s) OR index_name LIKE %s ESCAPE '\\'",
-                (SEM_GROVE_INDEX_NAME, SEM_GROVE_WHITENING_NAME,
-                 r"sem_grove_index\_%\_%"),
-            )
-
-            # Whitening stats row (index_data is empty, payload is in id_map_json)
-            whitening_json = json.dumps({
-                "std_lyrics": std_lyrics.tolist(),
-                "std_audio":  std_audio.tolist(),
-                "w_lyrics":   W_LYRICS,
-                "w_audio":    W_AUDIO,
-                "lyrics_dim": lyrics_dim,
-                "audio_dim":  audio_dim,
-            })
             cur.execute(
                 "INSERT INTO lyrics_index_data "
                 "(index_name, index_data, id_map_json, embedding_dimension, created_at) "
@@ -320,38 +325,17 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
                 (SEM_GROVE_WHITENING_NAME, psycopg2.Binary(b""), whitening_json, 0),
             )
 
-            # Index binary (single row or segmented)
-            if len(index_binary) <= max_part_size:
-                cur.execute(
-                    "INSERT INTO lyrics_index_data "
-                    "(index_name, index_data, id_map_json, embedding_dimension, created_at) "
-                    "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT (index_name) DO UPDATE SET "
-                    "index_data = EXCLUDED.index_data, "
-                    "id_map_json = EXCLUDED.id_map_json, "
-                    "embedding_dimension = EXCLUDED.embedding_dimension, "
-                    "created_at = EXCLUDED.created_at",
-                    (SEM_GROVE_INDEX_NAME, psycopg2.Binary(index_binary), id_map_json, merged_dim),
-                )
-                logger.info("SemGrove: stored index as single row.")
-            else:
-                parts    = _split_bytes(index_binary, max_part_size)
-                n_parts  = len(parts)
-                insert_q = (
-                    "INSERT INTO lyrics_index_data "
-                    "(index_name, index_data, id_map_json, embedding_dimension, created_at) "
-                    "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
-                )
-                for idx, part in enumerate(parts, start=1):
-                    name        = f"{SEM_GROVE_INDEX_NAME}_{idx}_{n_parts}"
-                    part_id_map = id_map_json if idx == 1 else ""
-                    cur.execute(insert_q, (name, psycopg2.Binary(part), part_id_map, merged_dim))
-                logger.info("SemGrove: stored index in %d segmented rows.", n_parts)
+        store_voyager_index_segmented(
+            db_conn,
+            target_table="lyrics_index_data",
+            index_name=SEM_GROVE_INDEX_NAME,
+            index_bytes=index_bytes,
+            id_map=id_map,
+            embedding_dimension=merged_dim,
+        )
 
         db_conn.commit()
-        logger.info(
-            "SemGrove index build complete: %d songs, dim=%d.", vid, merged_dim
-        )
+        logger.info("SemGrove index build complete: %d songs, dim=%d.", vid, merged_dim)
         return True
 
     except Exception as exc:
@@ -423,7 +407,6 @@ def _load_sem_grove_index_from_db() -> bool:
                     seg_pattern       = re.compile(r"^sem_grove_index_(\d+)_(\d+)$")
                     parts             = []
                     total_expected    = None
-                    id_map_json_cand  = None
 
                     with conn.cursor(name="sem_grove_index_segments") as seg_cur:
                         seg_cur.itersize = 50
@@ -444,8 +427,6 @@ def _load_sem_grove_index_from_db() -> bool:
                                 logger.error("SemGrove: segment total mismatch.")
                                 return False
                             parts.append((part_no, part_data, part_id_map, part_dim))
-                            if part_id_map and not id_map_json_cand:
-                                id_map_json_cand = part_id_map
 
                     if total_expected is None or len(parts) != total_expected:
                         logger.info(
@@ -455,8 +436,9 @@ def _load_sem_grove_index_from_db() -> bool:
                         return False
 
                     parts.sort(key=lambda p: p[0])
+                    from .index_build_helpers import reassemble_segmented_id_map
                     db_dim       = parts[0][3]
-                    id_map_json  = id_map_json_cand
+                    id_map_json  = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
                     index_stream = tempfile.TemporaryFile()
                     for _, part_data, _, _ in parts:
                         index_stream.write(part_data)

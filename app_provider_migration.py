@@ -15,8 +15,6 @@ import csv
 import io
 import json
 import logging
-import os
-import sys
 
 from flask import Blueprint, jsonify, render_template, request
 
@@ -819,14 +817,15 @@ def dry_run():
         'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     # Also snapshot new track metadata keyed by new_id for the post-execute
-    # score refresh (file_path, title, artist, album, year).
+    # score refresh (file_path, title, artist, album, album_artist, year).
     new_meta = {
         n['id']: {
-            'path':   n.get('path'),
-            'title':  n.get('title'),
-            'artist': n.get('album_artist') or n.get('artist'),
-            'album':  n.get('album'),
-            'year':   n.get('year'),
+            'path':         n.get('path'),
+            'title':        n.get('title'),
+            'artist':       n.get('artist'),
+            'album':        n.get('album'),
+            'album_artist': n.get('album_artist'),
+            'year':         n.get('year'),
         }
         for n in new_tracks if n.get('id')
     }
@@ -1105,12 +1104,18 @@ def finalize_dry_run():
                 'target_path':   tgt.get('path') or '',
             })
 
+    import config
+    collision_details_total = len(collision_details)
+    if collision_details_total > config.MIGRATION_MAX_COLLISION_DETAILS:
+        collision_details = collision_details[:config.MIGRATION_MAX_COLLISION_DETAILS]
+
     final_counts = {
-        'matched':            matched,
-        'orphans':            orphans,
-        'collisions':         collisions,
-        'collision_details':  collision_details,
-        'tier_counts':        dry.get('tier_counts') or {},
+        'matched':                 matched,
+        'orphans':                 orphans,
+        'collisions':              collisions,
+        'collision_details':       collision_details,
+        'collision_details_total': collision_details_total,
+        'tier_counts':             dry.get('tier_counts') or {},
     }
 
     db = get_db()
@@ -1332,8 +1337,8 @@ def dry_run_report(session_id):
       - Provider Migration
     summary: CSV showing the planned old→new mapping for every score row (orphans have blank new-side cells).
     description: |
-      Columns: old_id, old_artist, old_album, old_track, old_path, new_id,
-      new_artist, new_album, new_track, new_path, match_source
+      Columns: old_id, old_artist, old_album, old_album_artist, old_track, old_path, new_id,
+      new_artist, new_album, new_album_artist, new_track, new_path, match_source
       (`auto`/`manual`/`orphan`).
     parameters:
       - name: session_id
@@ -1373,14 +1378,14 @@ def dry_run_report(session_id):
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
-        'old_id', 'old_artist', 'old_album', 'old_track', 'old_path',
-        'new_id', 'new_artist', 'new_album', 'new_track', 'new_path',
+        'old_id', 'old_artist', 'old_album', 'old_album_artist', 'old_track', 'old_path',
+        'new_id', 'new_artist', 'new_album', 'new_album_artist', 'new_track', 'new_path',
         'match_source',
     ])
     for old in old_rows:
         old_id = old.get('item_id')
         new_id = matches.get(old_id)
-        meta = new_meta.get(new_id) if new_id else None
+        meta = (new_meta.get(str(new_id)) or new_meta.get(new_id)) if new_id else None
         if new_id and manual_matches.get(old_id):
             source = 'manual'
         elif new_id:
@@ -1389,13 +1394,15 @@ def dry_run_report(session_id):
             source = 'orphan'
         writer.writerow([
             old_id,
-            old.get('album_artist') or old.get('author') or '',
+            old.get('author') or old.get('album_artist') or '',
             old.get('album') or '',
+            old.get('album_artist') or '',
             old.get('title') or '',
             old.get('file_path') or '',
             new_id or '',
             (meta or {}).get('artist') or '',
             (meta or {}).get('album') or '',
+            (meta or {}).get('album_artist') or '',
             (meta or {}).get('title') or '',
             (meta or {}).get('path') or '',
             source,
@@ -1488,8 +1495,8 @@ def matched_albums(session_id):
     for (old_artist, old_album), g in groups.items():
         tally = {}  # (new_artist, new_album) -> count
         for new_id in g['new_ids']:
-            meta = new_meta.get(new_id) or {}
-            tally_key = (meta.get('artist') or '', meta.get('album') or '')
+            meta = new_meta.get(str(new_id)) or new_meta.get(new_id) or {}
+            tally_key = (meta.get('album_artist') or meta.get('artist') or '', meta.get('album') or '')
             tally[tally_key] = tally.get(tally_key, 0) + 1
         if tally:
             (new_artist, new_album), _ = max(tally.items(), key=lambda kv: kv[1])

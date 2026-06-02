@@ -9,13 +9,14 @@
 # the API path:
 #     STEP 3 (API hit) -> STEP 6 (quality gate) -> STEP 9 (gte embedding + axis vector)
 # Because the input text is identical on every run, the resulting
-# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.99
-# vs the recorded reference).
+# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.98
+# vs the recorded reference; the looser-than-1.0 bound absorbs INT8 cross-CPU
+# jitter, e.g. VNNI vs non-VNNI runners).
 #
 # The gte model is loaded the same way the production code and Dockerfile do:
 # INT8 ONNX weights at ``<models>/gte-multilingual-base-int8.onnx`` and
 # tokenizer files under ``<models>/gte-multilingual-base/`` — the layout of the
-# ``lyrics_model_gte.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
+# ``lyrics_model_gte_vnni.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
 #
 # First-run behaviour: if ``test/lyrics_expected_gte_512.json`` is missing, the
 # test enters RECORD mode automatically, writes the file and passes. The CI
@@ -31,7 +32,7 @@ import numpy as np
 import pytest
 
 
-SIMILARITY_THRESHOLD = 0.99
+SIMILARITY_THRESHOLD = 0.98
 
 
 # Hand-written, deterministic, ~200-word English "lyrics" used as the fake
@@ -131,7 +132,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     """Runs analyze_lyrics with a fake API hit (deterministic English text)
     and checks the gte-multilingual-base embedding + axis vector against
-    pre-recorded values via cosine similarity (threshold = 0.99).
+    pre-recorded values via cosine similarity (threshold = 0.98).
     """
     project_root = Path(__file__).resolve().parents[1]
     models_dir = project_root / 'test' / 'models'
@@ -147,7 +148,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'tokenizers not importable: {exc}')
 
-    # gte bundle layout (lyrics_model_gte.tar.gz):
+    # gte bundle layout (lyrics_model_gte_vnni.tar.gz):
     #   <models>/gte-multilingual-base-int8.onnx     - INT8 ONNX weights
     #   <models>/gte-multilingual-base/tokenizer.json - tokenizer + config files
     gte_onnx_path = models_dir / 'gte-multilingual-base-int8.onnx'
@@ -155,7 +156,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     if not gte_onnx_path.is_file() or not (gte_tokenizer_dir / 'tokenizer.json').is_file():
         pytest.skip(
             f'gte-multilingual-base ONNX bundle not found at {models_dir}. '
-            f'In CI the workflow extracts lyrics_model_gte.tar.gz from release '
+            f'In CI the workflow extracts lyrics_model_gte_vnni.tar.gz from release '
             f'v4.0.0-model into test/models/. For a local run download and '
             f'extract it manually.'
         )
@@ -207,6 +208,56 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     recorded = {}
     failures = []
     expected_axis_dim = len(axis_columns())
+
+    import hashlib
+    import onnxruntime as _ort
+    import transformers as _tf
+    import tokenizers as _tk
+    from lyrics import gte_onnx as _gte
+
+    def _sha256(path):
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    model_sha = _sha256(gte_onnx_path)
+    gte_tokenizer, _ = _gte.load_gte_model()
+
+    current_meta = {
+        'model_sha256': model_sha,
+        'tokenizers': _tk.__version__,
+        'onnxruntime': _ort.__version__,
+        'transformers': _tf.__version__,
+        'max_tokens': int(config.LYRICS_GTE_MAX_TOKENS),
+    }
+
+    print('\n[lyrics-test] environment diagnostics')
+    print(f'  numpy        : {np.__version__}')
+    print(f'  onnxruntime  : {_ort.__version__}')
+    print(f'  transformers : {_tf.__version__}')
+    print(f'  tokenizers   : {_tk.__version__}')
+    print(f'  max_tokens   : {config.LYRICS_GTE_MAX_TOKENS}')
+    print(f'  gte onnx     : {gte_onnx_path.name}')
+    print(f'  gte sha256   : {model_sha}')
+    for _name, _text in FAKE_LYRICS_BY_TRACK.items():
+        print(f'  tokens[{_name}] : {len(gte_tokenizer.encode(_text).ids)}')
+
+    if not record_mode:
+        expected_meta = expected.get('_meta') if isinstance(expected, dict) else None
+        baseline_sha = (expected_meta or {}).get('model_sha256')
+        if baseline_sha and baseline_sha != model_sha:
+            pytest.fail(
+                'gte model changed since the baseline was recorded '
+                f'(baseline sha256={baseline_sha}, current sha256={model_sha}). '
+                f'The recorded vectors in {expected_path.name} are no longer valid '
+                'for this model. Delete the file to re-record against the new model, '
+                'or restore the model the baseline was recorded with.'
+            )
+        if expected_meta:
+            print(f'  baseline sha256 : {baseline_sha} [{"MATCH" if baseline_sha == model_sha else "MISMATCH"}]')
+            print(f'  baseline tokenizers : {expected_meta.get("tokenizers")}')
 
     for track_name in FAKE_LYRICS_BY_TRACK:
         current['name'] = track_name
@@ -290,9 +341,10 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
             )
 
     if record_mode:
+        recorded['_meta'] = current_meta
         with expected_path.open('w', encoding='utf-8') as fh:
             json.dump(recorded, fh, indent=2)
-        print(f'\nWrote expected vectors to {expected_path}')
+        print(f'\nWrote expected vectors to {expected_path} (model sha256={model_sha})')
         return
 
     if failures:
