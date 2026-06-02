@@ -345,7 +345,7 @@ def get_all_songs(user_creds=None):
         try:
             r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
-            items = r.json().get("Items", [])
+            items = r.json().get("Items") or []
 
             # Apply artist field prioritization to each item
             for item in items:
