@@ -655,7 +655,14 @@ def get_top_played_songs(limit, user_creds):
         # contribute so one large album (e.g. a 100+ track DJ mix) cannot
         # dominate the seed pool — see issue #603.
         per_album_cap = max(3, limit // 10)
-        for album in response["albumList2"]["album"]:
+        # Subsonic-compatible servers may return a single dict (not a list) when
+        # only one frequent album exists. Coerce to a list for safe iteration.
+        albums = response["albumList2"]["album"]
+        if isinstance(albums, dict):
+            albums = [albums]
+        elif not isinstance(albums, list):
+            albums = []
+        for album in albums:
             tracks = get_tracks_from_album(album.get("id"), user_creds=user_creds)
             if not tracks:
                 continue
@@ -670,8 +677,9 @@ def get_last_played_time(item_id, user_creds):
     if response and "song" in response:
         # OpenSubsonic/Navidrome expose the last-played date as ``played``
         # (ISO 8601). Fall back to ``lastPlayed`` for non-OpenSubsonic servers.
-        song = response["song"]
-        return song.get("played") or song.get("lastPlayed")
+        song = response.get("song")
+        if isinstance(song, dict):
+            return song.get("played") or song.get("lastPlayed")
     return None
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
