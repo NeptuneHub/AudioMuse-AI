@@ -58,6 +58,12 @@ echo "==> Pruning build-only artifacts (headers, pgxs, static libs, docs)"
 rm -rf "$PREFIX/include" "$PREFIX/lib/pgxs" "$PREFIX/share/doc" "$PREFIX/share/man"
 find "$PREFIX/lib" -maxdepth 1 -name '*.a' -delete 2>/dev/null || true
 
+echo "==> Stripping debug symbols from binaries/libraries"
+# strip --strip-unneeded is safe for executables and shared objects (keeps the
+# dynamic symbols needed at load time, drops debug/symbol tables).
+find "$PREFIX/bin" -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
+find "$PREFIX/lib" -type f \( -name '*.so' -o -name '*.so.*' \) -exec strip --strip-unneeded {} + 2>/dev/null || true
+
 echo "==> Installed tree:"
 ls -1 "$PREFIX"
 echo "==> Sanity: versions + contrib present"

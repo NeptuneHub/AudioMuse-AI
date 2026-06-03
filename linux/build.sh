@@ -96,6 +96,15 @@ if [ "$UNAME_ARCH" != "x86_64" ]; then
   fi
 fi
 
+echo "==> Bundle size breakdown (to spot what dominates the package)"
+echo "    total bundle:"
+du -sh "$BUNDLE" || true
+echo "    largest dirs under _internal:"
+du -sh "$BUNDLE"/_internal/* 2>/dev/null | sort -rh | head -20 || true
+echo "    largest single files:"
+find "$BUNDLE" -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -20 \
+  | awk '{ printf "    %8.1f MB  %s\n", $1/1048576, $2 }' || true
+
 echo "==> Staging package payload"
 STAGE="dist/_pkg"
 rm -rf "$STAGE"

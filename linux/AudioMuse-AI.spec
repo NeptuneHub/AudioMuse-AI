@@ -113,6 +113,11 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# strip=True: unlike the macOS spec (where stripping is off because the bundle is
+# code-signed), on Linux we strip debug symbols from every bundled .so/binary.
+# Linux wheels (scipy/numpy/onnxruntime/llvmlite/PyAV) often ship unstripped, so
+# this removes hundreds of MB. It does NOT touch the bundled PostgreSQL/Redis
+# (those are added as data / pre-built binaries, stripped in their own build).
 exe = EXE(
     pyz,
     a.scripts,
@@ -121,7 +126,7 @@ exe = EXE(
     name='AudioMuse-AI',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,
     upx=False,
     console=True,
 )
@@ -130,7 +135,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=False,
+    strip=True,
     upx=False,
     name='AudioMuse-AI',
 )

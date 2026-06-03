@@ -29,10 +29,14 @@ license: GPL-3.0
 #   * xdg-utils -- provides xdg-open so the launcher can open the web UI.
 overrides:
   deb:
+    # xz compresses the (large) payload far better than nfpm's default gzip, and
+    # every supported dpkg understands xz-compressed .debs.
+    compression: xz
     depends:
       - libgomp1
       - xdg-utils
   rpm:
+    compression: xz
     depends:
       - libgomp
       - xdg-utils
