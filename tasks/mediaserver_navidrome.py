@@ -650,15 +650,28 @@ def get_top_played_songs(limit, user_creds):
     params = {"type": "frequent", "size": num_albums_to_fetch}
     response = _navidrome_request("getAlbumList2", params, user_creds=user_creds)
     if response and "albumList2" in response and "album" in response["albumList2"]:
+        # Subsonic only exposes "frequent" at the album level, so we expand each
+        # album into its tracks. Cap how many tracks a single album can
+        # contribute so one large album (e.g. a 100+ track DJ mix) cannot
+        # dominate the seed pool — see issue #603.
+        per_album_cap = max(3, limit // 10)
         for album in response["albumList2"]["album"]:
             tracks = get_tracks_from_album(album.get("id"), user_creds=user_creds)
-            if tracks: all_top_songs.extend(tracks)
+            if not tracks:
+                continue
+            if len(tracks) > per_album_cap:
+                tracks = random.sample(tracks, per_album_cap)
+            all_top_songs.extend(tracks)
     return random.sample(all_top_songs, limit) if len(all_top_songs) > limit else all_top_songs
 
 def get_last_played_time(item_id, user_creds):
     """Fetches the last played time for a track for a specific user."""
     response = _navidrome_request("getSong", {"id": item_id}, user_creds=user_creds)
-    if response and "song" in response: return response["song"].get("lastPlayed")
+    if response and "song" in response:
+        # OpenSubsonic/Navidrome expose the last-played date as ``played``
+        # (ISO 8601). Fall back to ``lastPlayed`` for non-OpenSubsonic servers.
+        song = response["song"]
+        return song.get("played") or song.get("lastPlayed")
     return None
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
