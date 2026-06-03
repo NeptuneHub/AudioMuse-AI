@@ -56,6 +56,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 2.1.2** introduces the MacOS native version. Attached to each release you will find `AudioMuse-AI-arm64.zip`.
 > * **Version 2.1.0** re-exports the GTE lyrics model so it produces correct embeddings on **every CPU**. The only affected users are those who analyzed lyrics on an **older CPU without VNNI** (`avx512_vnni`/`avx_vnni`), where the previous model could produce degraded vectors, they should re-analyze the lyrics. To check if your CPU has VNNI, run on the host: `grep -oE 'avx512_vnni|avx_vnni' /proc/cpuinfo | head -1` , if it prints nothing, you have no VNNI and we suggest to re-analyze. Before re-analyzing, drop the old lyrics tables:
 > ```bash
 > docker compose exec -e PGPASSWORD=audiomusepassword postgres \
@@ -73,6 +74,7 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 ## **Table of Contents**
 
 - [Quick Start Deployment](#quick-start-deployment)
+- [Quick Start Deployment MacOS](#quick-start-deployment-macos)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
@@ -130,8 +132,26 @@ docker compose -f deployment/docker-compose.yaml down
 ```
 > **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
-## **Hardware Requirements**
+## Quick Start Deployment MacOS
+Starting from release v2.1.2 we introduce a MacOS native version. You will find it as `AudioMuse-AI-arm64.zip` attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
 
+To run it you have two option:
+
+- **Option A - Terminal:**
+  - Unzip and move AudioMuse-AI.app to /Applications.
+  - Run in a terminal: `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`
+  - Double-click the app - the icon appears in your menu bar.
+
+- **Option B - no Terminal:**
+  - Move the app to /Applications, double-click, dismiss the warning.
+  - System Settings → Privacy & Security → Security → "Open Anyway" next to AudioMuse-AI, authenticate.
+  - Launch again.
+
+The core step both share is removing the quarantine flag due to the fact that the app is not signed.
+
+This version run only on Apple Silicon (ARM) processor on recent version of MacOS (tested on MacOS 15.3.1 on MacMini M4 with 16gb ram)
+
+## **Hardware Requirements**
 AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
 * **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD / Mac Mini M4 16GB / Amphere based VM with 4core 8GB ram
