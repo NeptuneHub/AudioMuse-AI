@@ -133,7 +133,7 @@ docker compose -f deployment/docker-compose.yaml down
 > **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
 ## Quick Start Deployment MacOS
-Starting from release v2.1.2 we introduce a MacOS native version. You will find it as `AudioMuse-AI-arm64.zip` attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
+Starting from release `v2.1.2` we introduce a MacOS native version. You will find it as `AudioMuse-AI-arm64.zip` attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
 
 To run it you have two option:
 
