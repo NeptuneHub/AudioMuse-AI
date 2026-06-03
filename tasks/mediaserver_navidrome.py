@@ -653,8 +653,9 @@ def get_top_played_songs(limit, user_creds):
         # Subsonic only exposes "frequent" at the album level, so we expand each
         # album into its tracks. Cap how many tracks a single album can
         # contribute so one large album (e.g. a 100+ track DJ mix) cannot
-        # dominate the seed pool — see issue #603.
-        per_album_cap = max(3, limit // 10)
+        # dominate the seed pool — see issue #603. Cap is configurable via
+        # SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM.
+        per_album_cap = max(config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM, limit // 10)
         # Subsonic-compatible servers may return a single dict (not a list) when
         # only one frequent album exists. Coerce to a list for safe iteration.
         albums = response["albumList2"]["album"]
