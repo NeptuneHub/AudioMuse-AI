@@ -484,9 +484,12 @@ def check_auth_needed(jwt_secret):
     if not _cfg.AUTH_ENABLED:
         return None
 
-    # Check valid JWT cookie
+    # Check valid JWT cookie. Never attempt verification with an empty/None
+    # secret: PyJWT validates HS256 tokens signed with an empty key (it only
+    # warns), so a blank secret would let anyone forge an admin token. Fail
+    # closed by treating a missing secret as "no valid session".
     token = request.cookies.get('audiomuse_jwt')
-    if token:
+    if token and jwt_secret:
         try:
             payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
             # Backward-compat: tokens issued before the multi-user feature
@@ -597,7 +600,10 @@ def resolve_jwt_secret(setup_manager):
 
     Reads ``config.JWT_SECRET`` first; when empty and auth is enabled,
     refreshes config (another worker may have saved one), then generates and
-    stores a new random secret. Safe to call only after ``init_db``.
+    stores a new random secret. Generation is gated on ``AUTH_ENABLED`` so a
+    secret is never persisted on an auth-disabled deployment (the setup flow
+    deletes JWT_SECRET when auth is turned off, and enabling auth forces a
+    restart that re-runs this). Safe to call only after ``init_db``.
     """
     import config as _cfg
     secret = _cfg.JWT_SECRET
@@ -639,9 +645,10 @@ def login_page():
     if not _cfg.AUTH_ENABLED:
         return redirect(url_for('dashboard_bp.dashboard_page'))
     token = request.cookies.get('audiomuse_jwt')
-    if token:
+    secret = _jwt_secret()
+    if token and secret:
         try:
-            pyjwt.decode(token, _jwt_secret(), algorithms=['HS256'])
+            pyjwt.decode(token, secret, algorithms=['HS256'])
             return redirect(url_for('dashboard_bp.dashboard_page'))
         except pyjwt.InvalidTokenError:
             pass
@@ -731,6 +738,16 @@ def auth_endpoint():
             login_error='Invalid username or password.',
         )
 
+    secret = _jwt_secret()
+    if not secret:
+        # Refuse to mint a session signed with an empty key — such a token
+        # would be trivially forgeable. This should never happen once
+        # resolve_jwt_secret has run, so surface it as a server error.
+        current_app.logger.error(
+            "Cannot issue session token: JWT secret is not configured."
+        )
+        return jsonify({"error": "Server authentication is misconfigured."}), 500
+
     now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         'sub': user,
@@ -738,7 +755,7 @@ def auth_endpoint():
         'iat': now,
         'exp': now + datetime.timedelta(hours=8),
     }
-    token = pyjwt.encode(payload, _jwt_secret(), algorithm='HS256')
+    token = pyjwt.encode(payload, secret, algorithm='HS256')
 
     if is_ajax:
         resp = make_response(jsonify({"status": "ok"}), 200)
