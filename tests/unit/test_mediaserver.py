@@ -2606,3 +2606,119 @@ class TestDispatcherCreateOrReplacePlaylist:
         create_or_replace_playlist('SF', ['s1'])
 
         mock_provider.assert_called_once()
+
+
+# =============================================================================
+# Issue #523: get_all_songs must paginate AND fail loudly on a page error.
+#
+# A single unpaginated request for a large library times out on Jellyfin
+# 10.11.x (the reported bug). Pagination fixes that. But the error path matters
+# just as much: get_all_songs feeds the migration probe
+# (provider_probe.fetch_all_tracks) -> provider_migration_matcher.match_tracks,
+# where every score row NOT present in the returned list becomes "unmatched"
+# and is deleted as an orphan by the migration execute step. A silently
+# truncated (`break`) or silently empty (`return []`) result on a mid-scan
+# timeout would look like a successful migration while destroying real analysis
+# data. The contract is therefore: return ALL songs, or raise.
+# =============================================================================
+
+
+def _audio_page(n_items, start=0):
+    """Build a mock Jellyfin/Emby ``/Items`` response holding ``n_items`` rows."""
+    resp = Mock()
+    resp.raise_for_status = Mock()
+    resp.json.return_value = {
+        'Items': [{'Id': f'id{start + i}', 'Name': f'Song {start + i}'}
+                  for i in range(n_items)]
+    }
+    return resp
+
+
+class TestJellyfinGetAllSongsPagination:
+    """Jellyfin get_all_songs: paginate, and raise rather than truncate."""
+
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_paginates_until_short_page(self, mock_config, mock_get):
+        """A full page (== limit) triggers another request; a short page stops it."""
+        from tasks.mediaserver_jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        # Page 1 full (500) -> continue; page 2 short (3) -> stop.
+        mock_get.side_effect = [_audio_page(500), _audio_page(3, start=500)]
+
+        songs = get_all_songs()
+
+        assert len(songs) == 503
+        assert mock_get.call_count == 2
+        # Page 2 must advance StartIndex by the page size.
+        page2_params = mock_get.call_args_list[1].kwargs['params']
+        assert page2_params['StartIndex'] == 500
+        assert page2_params['Limit'] == 500
+
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_raises_on_midscan_failure_instead_of_truncating(self, mock_config, mock_get):
+        """A timeout on a later page must propagate, NOT return the partial list."""
+        from tasks.mediaserver_jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        # Page 1 succeeds (full -> would continue); page 2 times out.
+        mock_get.side_effect = [
+            _audio_page(500),
+            requests.exceptions.ReadTimeout("read timed out"),
+        ]
+
+        with pytest.raises(requests.exceptions.ReadTimeout):
+            get_all_songs()
+
+    @patch('tasks.mediaserver_jellyfin.requests.get')
+    @patch('tasks.mediaserver_jellyfin.config')
+    def test_empty_library_returns_empty_without_raising(self, mock_config, mock_get):
+        """A genuinely empty library (first page empty) returns [], does not raise."""
+        from tasks.mediaserver_jellyfin import get_all_songs
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {}
+        mock_get.side_effect = [_audio_page(0)]
+
+        assert get_all_songs() == []
+
+
+class TestEmbyGetAllSongsRaisesOnFailure:
+    """Emby is already paginated (limit=1000); on a page error it must raise,
+    not return the partial list it had accumulated."""
+
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_raises_on_midscan_failure_instead_of_truncating(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import get_all_songs
+
+        mock_config.EMBY_URL = 'http://emby:8096'
+        mock_config.EMBY_USER_ID = 'user123'
+        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        # Page 1 full (1000 -> would continue); page 2 times out.
+        mock_get.side_effect = [
+            _audio_page(1000),
+            requests.exceptions.ReadTimeout("read timed out"),
+        ]
+
+        with pytest.raises(requests.exceptions.ReadTimeout):
+            get_all_songs()
+
+    @patch('tasks.mediaserver_emby.requests.get')
+    @patch('tasks.mediaserver_emby.config')
+    def test_empty_library_returns_empty_without_raising(self, mock_config, mock_get):
+        from tasks.mediaserver_emby import get_all_songs
+
+        mock_config.EMBY_URL = 'http://emby:8096'
+        mock_config.EMBY_USER_ID = 'user123'
+        mock_config.HEADERS = {}
+        mock_get.side_effect = [_audio_page(0)]
+
+        assert get_all_songs() == []

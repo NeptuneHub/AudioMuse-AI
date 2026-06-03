@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime
 import config
-import requests # <-- ADDED: Needed for HTTP downloads
+from tasks import mediaserver_http as requests # <-- shared retrying HTTP session
 import random   # <-- ADDED: For shuffling albums
 
 # Add the MPD client library dependency

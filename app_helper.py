@@ -1,28 +1,28 @@
 # app_helper.py
+import ipaddress
 import json
 import logging
+import socket
 import time
+from urllib.parse import urlparse
+
 import psycopg2
 from psycopg2.extras import DictCursor
 import numpy as np
 from flask import g
 
-# RQ imports
-from redis import Redis
-from rq import Queue
-from rq.job import Job
-from rq.exceptions import NoSuchJobError
+from database import get_db, close_db
+from taskqueue import (
+    redis_conn,
+    rq_queue_high,
+    rq_queue_default,
+    Job,
+    NoSuchJobError,
+    send_stop_job_command,
+)
 
-# Import from main app
-# We import 'app' to use its context (e.g., for logging)
-# Note: get_db, redis_conn will now be defined *in this file*.
-
-# Import configuration
-from config import DATABASE_URL, REDIS_URL, STRATIFIED_GENRES
+from config import STRATIFIED_GENRES
 from tz_helper import UTC_NOW_SQL
-
-# Import RQ specifics
-from rq.command import send_stop_job_command
 
 logger = logging.getLogger(__name__)
 # Import app object after it's defined to break circular dependency
@@ -32,53 +32,62 @@ logger = logging.getLogger(__name__)
 # In-memory cache for the precomputed 2D map projection (optional)
 MAP_PROJECTION_CACHE = None
 
+
+def validate_outbound_url(url):
+    """SSRF guard for user-supplied outbound HTTP(S) URLs.
+
+    Returns ``(True, None)`` when the URL is safe to fetch, else
+    ``(False, reason)``.
+
+    Self-hosted media servers and APIs (e.g. a private Lyrics API) legitimately
+    live on the LAN (RFC1918) or the same host (loopback), so those are allowed.
+    Only what is never a real user service and is a classic SSRF target is
+    rejected: non-HTTP(S) schemes and link-local / multicast / reserved /
+    unspecified addresses (notably 169.254.169.254 cloud metadata).
+    """
+    if not url:
+        return False, 'URL is required'
+
+    try:
+        parsed = urlparse(str(url))
+    except Exception:
+        return False, 'Invalid URL'
+
+    if parsed.scheme not in ('http', 'https'):
+        return False, 'Only http and https URLs are supported'
+
+    host = parsed.hostname
+    if not host:
+        return False, 'URL host is required'
+
+    try:
+        addrinfo = socket.getaddrinfo(
+            host, parsed.port or (443 if parsed.scheme == 'https' else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except Exception:
+        return False, 'Could not resolve host'
+
+    for entry in addrinfo:
+        try:
+            ip_obj = ipaddress.ip_address(entry[4][0])
+        except ValueError:
+            return False, 'Resolved host to invalid IP'
+        if (
+            ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            return False, 'Target host resolves to a disallowed IP address'
+
+    return True, None
+
 # In-memory cache for the precomputed 2D artist component projections
 ARTIST_PROJECTION_CACHE = None
 
 # --- Constants ---
 MAX_LOG_ENTRIES_STORED = 10 # Max number of recent log entries to store in the database per task
-
-# --- RQ Setup ---
-# Enhanced Redis connection settings for remote server stability:
-# - socket_connect_timeout: max time to establish connection
-# - socket_timeout: max time for socket operations (read/write)
-# - socket_keepalive: enables TCP keepalive to prevent idle connection drops
-# - health_check_interval: seconds between health checks on idle connections
-# - retry_on_timeout: automatically retry on timeout errors
-redis_conn = Redis.from_url(
-    REDIS_URL, 
-    socket_connect_timeout=30,
-    socket_timeout=60,
-    socket_keepalive=True,
-    health_check_interval=30,
-    retry_on_timeout=True
-)
-# FIX: result_ttl removed - caused jobs to disappear from Redis before monitor_and_clear_jobs could track them
-# This was breaking the throttle mechanism causing all jobs to launch at once
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1) # High priority for main tasks
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1) # Default queue for sub-tasks
-
-# --- Database Setup (PostgreSQL) ---
-def get_db():
-    if 'db' not in g:
-        try:
-            g.db = psycopg2.connect(
-                DATABASE_URL,
-                connect_timeout=30,        # Time to establish connection (increased from 15)
-                keepalives_idle=600,       # Start keepalives after 10 min idle
-                keepalives_interval=30,    # Send keepalive every 30 sec
-                keepalives_count=3,        # 3 failed keepalives = dead connection
-                options='-c statement_timeout=600000'  # 10 min query timeout (600 seconds)
-            )
-        except psycopg2.OperationalError as e:
-            logger.error(f"Failed to connect to database: {e}")
-            raise # Re-raise to ensure the operation that needed the DB fails clearly
-    return g.db
-
-def close_db(e=None):
-    db = g.pop('db', None)
-    if db is not None:
-        db.close()
 
 def init_db():
     db = get_db()

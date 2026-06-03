@@ -1,6 +1,6 @@
 # tasks/mediaserver_jellyfin.py
 
-import requests
+from tasks import mediaserver_http as requests
 import logging
 import os
 import config
@@ -171,7 +171,7 @@ def get_recent_albums(limit):
                 r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                 r.raise_for_status()
                 response_data = r.json()
-                albums_on_page = response_data.get("Items", [])
+                albums_on_page = response_data.get("Items") or []
                 
                 if not albums_on_page:
                     break
@@ -202,7 +202,7 @@ def get_recent_albums(limit):
                     r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
                     r.raise_for_status()
                     response_data = r.json()
-                    albums_on_page = response_data.get("Items", [])
+                    albums_on_page = response_data.get("Items") or []
                     
                     if not albums_on_page:
                         break
@@ -238,7 +238,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     try:
         r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
 
         # Apply artist field prioritization to each track
         for item in items:
@@ -315,33 +315,60 @@ def _select_best_artist(item, title="Unknown"):
     return track_artist, artist_id
 
 def get_all_songs(user_creds=None):
-    """Fetches all songs from Jellyfin using admin or override credentials."""
+    """Fetches all songs from Jellyfin using admin or override credentials, paginated.
+
+    Jellyfin 10.11.x scales poorly on a single unbounded ``/Items`` query: for a
+    large library (tens of thousands of tracks) it exceeds the HTTP read timeout
+    even at very high ``REQUESTS_TIMEOUT`` values (issue #523). Paginating keeps
+    each request's server-side cost bounded.
+
+    On a page failure this RAISES rather than returning a partial or empty list.
+    The result feeds the migration matcher, where any score row missing from the
+    returned set is deleted as an orphan by the execute step, so a silently
+    truncated scan would destroy real analysis data. The migration probe routes
+    already wrap this call and surface the error to the user.
+    """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
-    params = {
-        "IncludeItemTypes": "Audio",
-        "Recursive": True,
-        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
-    }
-    try:
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
-        r.raise_for_status()
-        items = r.json().get("Items", [])
+    all_items = []
+    start_index = 0
+    limit = 500  # smaller than Emby's 1000 due to Jellyfin 10.11.x per-request DB cost
 
-        # Apply artist field prioritization to each item
-        for item in items:
-            item['OriginalAlbumArtist'] = item.get('AlbumArtist')
-            title = item.get('Name', 'Unknown')
-            artist_name, artist_id = _select_best_artist(item, title)
-            item['AlbumArtist'] = artist_name
-            item['ArtistId'] = artist_id
-            item['Year'] = item.get('ProductionYear')
-            item['FilePath'] = item.get('Path')
+    while True:
+        params = {
+            "IncludeItemTypes": "Audio",
+            "Recursive": True,
+            "StartIndex": start_index,
+            "Limit": limit,
+            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+        }
+        try:
+            r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+            r.raise_for_status()
+            items = r.json().get("Items") or []
 
-        return items
-    except Exception as e:
-        logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
-        return []
+            # Apply artist field prioritization to each item
+            for item in items:
+                item['OriginalAlbumArtist'] = item.get('AlbumArtist')
+                title = item.get('Name', 'Unknown')
+                artist_name, artist_id = _select_best_artist(item, title)
+                item['AlbumArtist'] = artist_name
+                item['ArtistId'] = artist_id
+                item['Year'] = item.get('ProductionYear')
+                item['FilePath'] = item.get('Path')
+
+            all_items.extend(items)
+
+            if len(items) < limit:
+                # Last (short) page reached.
+                break
+
+            start_index += limit
+        except Exception as e:
+            logger.error(f"Jellyfin get_all_songs failed at index {start_index}: {e}", exc_info=True)
+            raise
+
+    return all_items
 
 
 def search_albums(query, user_creds=None):
@@ -358,7 +385,7 @@ def search_albums(query, user_creds=None):
     try:
         r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", []) or []
+        items = r.json().get("Items") or []
         return [
             {
                 'id':          item.get('Id'),
@@ -423,7 +450,7 @@ def get_playlist_by_name(playlist_name):
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        playlists = r.json().get("Items", [])
+        playlists = r.json().get("Items") or []
         for playlist in playlists:
             if playlist.get("Name") == playlist_name:
                 return playlist
@@ -449,7 +476,7 @@ def get_all_playlists():
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items", [])
+        return r.json().get("Items") or []
     except Exception as e:
         logger.error(f"Jellyfin get_all_playlists failed: {e}", exc_info=True)
         return []
@@ -478,7 +505,7 @@ def get_top_played_songs(limit, user_creds=None):
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
 
         # Apply artist field prioritization to each item
         for item in items:
@@ -577,7 +604,7 @@ def _get_playlist_entry_ids(playlist_id):
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items", [])
+        items = r.json().get("Items") or []
         entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
         if len(entry_ids) != len(items):
             logger.warning(
