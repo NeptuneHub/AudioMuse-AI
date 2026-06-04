@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 # Imports from the project
-from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector
+from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
 from config import PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH, PATH_DISTANCE_METRIC, PATH_FIX_SIZE, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK
 # Also import per-artist cap
 from config import MAX_SONGS_PER_ARTIST
@@ -272,7 +272,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
 
 def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE,
-                            get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector):
+                            get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
+                            neighbors_by_id_fn=find_nearest_neighbors_by_id):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -353,8 +354,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
             sample_n = 50
 
         try:
-            start_neighbors = neighbors_fn(start_vector, n=sample_n) or []
-            end_neighbors = neighbors_fn(end_vector, n=sample_n) or []
+            start_neighbors = neighbors_by_id_fn(start_item_id, n=sample_n) or []
+            end_neighbors = neighbors_by_id_fn(end_item_id, n=sample_n) or []
             start_ids = {n['item_id'] for n in start_neighbors}
             end_ids = {n['item_id'] for n in end_neighbors}
             intersection_size = len(start_ids & end_ids)

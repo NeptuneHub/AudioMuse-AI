@@ -276,6 +276,7 @@ def find_path_endpoint():
                 get_sem_grove_item_ids,
                 get_sem_grove_vector_by_id,
                 find_sem_grove_neighbors_by_vector,
+                find_sem_grove_neighbors_by_id,
             )
             if not is_sem_grove_cache_loaded():
                 return jsonify({"error": "The Lyrics (SemGrove) index is not loaded yet. Analyze lyrics and build the SemGrove index first."}), 404
@@ -288,7 +289,8 @@ def find_path_endpoint():
                 max_steps,
                 path_fix_size=path_fix_size,
                 get_vector_fn=get_sem_grove_vector_by_id,
-                neighbors_fn=find_sem_grove_neighbors_by_vector
+                neighbors_fn=find_sem_grove_neighbors_by_vector,
+                neighbors_by_id_fn=find_sem_grove_neighbors_by_id
             )
         else:
             path, total_distance = find_path_between_songs(

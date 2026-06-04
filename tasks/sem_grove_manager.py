@@ -609,6 +609,14 @@ def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]
     return results
 
 
+def find_sem_grove_neighbors_by_id(item_id: str, n: int = 100) -> List[Dict]:
+    """Nearest neighbours of a song (by id) in merged SemGrove space."""
+    vec = get_sem_grove_vector_by_id(item_id)
+    if vec is None:
+        return []
+    return find_sem_grove_neighbors_by_vector(vec, n=n)
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
