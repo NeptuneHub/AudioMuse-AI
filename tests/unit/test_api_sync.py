@@ -1,15 +1,13 @@
 """Unit tests for the /api/sync endpoint (app_sync blueprint).
 
 Mocks `get_db` and `load_map_projection` at the blueprint-module level so we
-never touch a real database. Mirrors the loader pattern in
-``test_provider_migration_blueprint.py``.
+never touch a real database.
 """
 import base64
 import importlib.util
 import os
 import sys
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -51,8 +49,6 @@ def client(app):
 
 @pytest.fixture(autouse=True)
 def mediaserver_type_jellyfin():
-    """Default MEDIASERVER_TYPE to 'jellyfin' for every test (and restore after).
-    Tests that need a different value override it inline."""
     import config
     saved = getattr(config, 'MEDIASERVER_TYPE', 'jellyfin')
     config.MEDIASERVER_TYPE = 'jellyfin'
@@ -60,18 +56,18 @@ def mediaserver_type_jellyfin():
     config.MEDIASERVER_TYPE = saved
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 # Fake DB plumbing
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 
 class FakeCursor:
     """Mock psycopg2 DictCursor that yields queued results in execute order."""
 
     def __init__(self):
-        self.queries = []           # all SQL strings executed, in order
-        self.query_params = []      # corresponding param tuples
-        self._fetchone_queue = []   # fetchone() pops from here
-        self._fetchall_queue = []   # fetchall() pops from here
+        self.queries = []
+        self.query_params = []
+        self._fetchone_queue = []
+        self._fetchall_queue = []
         self._raise_on_execute = None
 
     def __enter__(self):
@@ -99,19 +95,15 @@ class FakeCursor:
 
 @pytest.fixture
 def fake_db(bp_mod):
-    """Patch app_sync.get_db to return a mock connection with a FakeCursor."""
     cur = FakeCursor()
     conn = MagicMock()
     conn.cursor.return_value = cur
-
     bp_mod.get_db = MagicMock(return_value=conn)
-    # By default no UMAP cache loaded
     bp_mod.load_map_projection = MagicMock(return_value=(None, None))
     return conn, cur
 
 
-def make_dict_row(mapping: dict):
-    """psycopg2-DictRow-like: supports both dict-key and attribute access."""
+def make_dict_row(mapping):
     class FakeRow(dict):
         def __getattr__(self, name):
             try:
@@ -122,7 +114,6 @@ def make_dict_row(mapping: dict):
 
 
 def _minimal_track_row(**overrides):
-    """A row with all the columns the endpoint SELECTs from `score`."""
     base = {
         'item_id': 'track-1',
         'title': 'Echoes',
@@ -137,10 +128,7 @@ def _minimal_track_row(**overrides):
         'other_features': 'relaxed:0.8',
         'energy': 0.07,
         'rating': 5,
-        'updated_at': datetime(2026, 3, 15, 14, 30, 0),
-        # Embedding columns mirror the SELECT when include_embeddings=true; LEFT
-        # JOIN returns NULL when the row is missing from embedding/clap_embedding.
-        # Tests that want non-empty blobs override these.
+        'fp': 'deadbeefcafe0001',
         'musicnn_blob': None,
         'clap_blob': None,
     }
@@ -148,337 +136,298 @@ def _minimal_track_row(**overrides):
     return make_dict_row(base)
 
 
-def _setup_happy_path(cur, tracks=None, total=None, deleted=None):
-    """Queue cursor fetches in the order the endpoint calls them:
-       1. SELECT COUNT(*) → fetchone -> total
-       2. SELECT ... FROM score ... → fetchall -> tracks
-       3. (optional, only if since given) SELECT FROM deleted_tracks → fetchall
-    """
+def _manifest_row(item_id='track-1', fp='deadbeefcafe0001'):
+    return make_dict_row({'item_id': item_id, 'fp': fp})
+
+
+def _setup_payload(cur, tracks=None, total=None):
+    """Default payload path: COUNT(*) fetchone, then SELECT fetchall."""
     tracks = tracks if tracks is not None else []
     total = total if total is not None else len(tracks)
     cur._fetchone_queue.append(make_dict_row({'n': total}))
     cur._fetchall_queue.append(tracks)
-    if deleted is not None:
-        cur._fetchall_queue.append([make_dict_row({'item_id': d}) for d in deleted])
 
 
-# ---------------------------------------------------------------------------
-# Entry-gate tests (no DB needed)
-# ---------------------------------------------------------------------------
+def _setup_manifest(cur, rows=None, total=None):
+    """Manifest path: COUNT(*) fetchone, then SELECT fetchall."""
+    rows = rows if rows is not None else []
+    total = total if total is not None else len(rows)
+    cur._fetchone_queue.append(make_dict_row({'n': total}))
+    cur._fetchall_queue.append(rows)
 
+
+def _setup_ids(cur, tracks=None):
+    """ids path: only the IN SELECT fetchall (no COUNT)."""
+    cur._fetchall_queue.append(tracks if tracks is not None else [])
+
+
+# --------------------------------------------------------------------------- #
+# Entry gate
+# --------------------------------------------------------------------------- #
 
 class TestMpdGate:
     def test_mpd_returns_501(self, bp_mod, client):
         import config
         config.MEDIASERVER_TYPE = 'mpd'
-
         resp = client.get('/api/sync?limit=1')
-
         assert resp.status_code == 501
-        body = resp.get_json()
-        assert 'mpd' in body['error'].lower()
+        assert 'mpd' in resp.get_json()['error'].lower()
 
 
-class TestSinceParsing:
-    def test_bad_since_returns_400(self, bp_mod, client):
-        resp = client.get('/api/sync?since=garbage')
-
-        assert resp.status_code == 400
-        body = resp.get_json()
-        assert 'since' in body['error'].lower()
-
-    def test_since_with_z_suffix(self, bp_mod, client, fake_db):
-        _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=0, deleted=[])
-
-        resp = client.get('/api/sync?since=2026-03-15T14:30:00Z')
-
-        assert resp.status_code == 200
-        # Naive UTC normalized (no tzinfo) was passed to SQL
-        since_param = cur.query_params[0][0]
-        assert isinstance(since_param, datetime)
-        assert since_param.tzinfo is None
-        assert since_param == datetime(2026, 3, 15, 14, 30, 0)
-
-    def test_since_with_offset_normalized_to_utc(self, bp_mod, client, fake_db):
-        _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=0, deleted=[])
-
-        # 14:30 +05:30 == 09:00 UTC
-        resp = client.get('/api/sync?since=2026-03-15T14:30:00%2B05:30')
-
-        assert resp.status_code == 200
-        since_param = cur.query_params[0][0]
-        assert since_param.tzinfo is None
-        assert since_param == datetime(2026, 3, 15, 9, 0, 0)
-
-
-# ---------------------------------------------------------------------------
-# Envelope shape (happy path)
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# Envelope (payload)
+# --------------------------------------------------------------------------- #
 
 class TestEnvelope:
     def test_envelope_keys_present(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=0)
-
-        resp = client.get('/api/sync?limit=1')
-
-        assert resp.status_code == 200
-        body = resp.get_json()
-        for key in ('tracks', 'deleted_ids', 'total_tracks',
-                    'provider_type', 'has_more', 'next_page'):
+        _setup_payload(cur, tracks=[], total=0)
+        body = client.get('/api/sync?limit=1').get_json()
+        for key in ('tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'):
             assert key in body, f"missing {key}"
 
-    def test_no_model_version_key(self, bp_mod, client, fake_db):
+    def test_no_deleted_ids_key(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=0)
-
-        resp = client.get('/api/sync?limit=1')
-
-        body = resp.get_json()
-        assert 'model_version' not in body
+        _setup_payload(cur, tracks=[], total=0)
+        assert 'deleted_ids' not in client.get('/api/sync?limit=1').get_json()
 
     def test_provider_type_from_config(self, bp_mod, client, fake_db):
         import config
         config.MEDIASERVER_TYPE = 'navidrome'
         _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=0)
-
-        resp = client.get('/api/sync?limit=1')
-
-        assert resp.get_json()['provider_type'] == 'navidrome'
+        _setup_payload(cur, tracks=[], total=0)
+        assert client.get('/api/sync?limit=1').get_json()['provider_type'] == 'navidrome'
 
     def test_total_tracks_from_count_query(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, tracks=[], total=15000)
-
-        resp = client.get('/api/sync?limit=1')
-
-        assert resp.get_json()['total_tracks'] == 15000
+        _setup_payload(cur, tracks=[], total=15000)
+        assert client.get('/api/sync?limit=1').get_json()['total_tracks'] == 15000
 
 
-# ---------------------------------------------------------------------------
-# Pagination math
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# Pagination (payload)
+# --------------------------------------------------------------------------- #
 
 class TestPaginationMath:
     def test_has_more_when_more_pages_exist(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        # 750 total, page=1 limit=500 → 500 rows on this page, has_more=true
-        _setup_happy_path(
-            cur, total=750,
-            tracks=[_minimal_track_row(item_id=f't{i}') for i in range(500)],
-        )
-
+        _setup_payload(cur, total=750,
+                       tracks=[_minimal_track_row(item_id=f't{i}') for i in range(500)])
         body = client.get('/api/sync?page=1&limit=500').get_json()
-
         assert body['has_more'] is True
         assert body['next_page'] == 2
 
     def test_no_has_more_on_last_page(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        # 750 total, page=2 limit=500 → 250 rows on this page, has_more=false
-        _setup_happy_path(
-            cur, total=750,
-            tracks=[_minimal_track_row(item_id=f't{i}') for i in range(250)],
-        )
-
+        _setup_payload(cur, total=750,
+                       tracks=[_minimal_track_row(item_id=f't{i}') for i in range(250)])
         body = client.get('/api/sync?page=2&limit=500').get_json()
-
         assert body['has_more'] is False
         assert body['next_page'] is None
 
     def test_offset_passed_to_sql(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[])
-
+        _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?page=3&limit=100')
-
-        # 2nd query is the page query; its tail params are (limit, offset)
-        page_params = cur.query_params[1]
-        assert page_params[-2] == 100  # limit
-        assert page_params[-1] == 200  # offset = (3-1)*100
+        page_params = cur.query_params[1]  # [0]=COUNT, [1]=SELECT
+        assert page_params[-2] == 100   # limit
+        assert page_params[-1] == 200   # offset = (3-1)*100
 
 
-# ---------------------------------------------------------------------------
-# Limit / page clamping
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# Limit clamping
+# --------------------------------------------------------------------------- #
 
 class TestClamping:
-    def test_limit_cap_at_1000(self, bp_mod, client, fake_db):
+    def test_payload_limit_cap_at_500(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[])
-
+        _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?limit=99999')
+        assert cur.query_params[1][-2] == 500
 
-        assert cur.query_params[1][-2] == 1000  # limit clamped
+    def test_manifest_limit_cap_at_1000(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_manifest(cur, rows=[], total=0)
+        client.get('/api/sync?fields=index&limit=99999')
+        assert cur.query_params[1][-2] == 1000
 
     def test_limit_floor_at_1(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[])
-
+        _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?limit=0')
-
         assert cur.query_params[1][-2] == 1
 
     def test_page_floor_at_1(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[])
-
+        _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?page=0&limit=1')
+        assert cur.query_params[1][-1] == 0
 
-        assert cur.query_params[1][-1] == 0  # offset = (1-1)*1 = 0
 
-
-# ---------------------------------------------------------------------------
-# Per-track field shape
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# Per-track shape
+# --------------------------------------------------------------------------- #
 
 class TestTrackShape:
     def test_artist_renamed_from_author(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(author='Pink Floyd'),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(author='Pink Floyd')])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
         assert track['artist'] == 'Pink Floyd'
         assert 'author' not in track
 
     def test_id_field_from_item_id(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(item_id='abc-123'),
-        ])
-
-        track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert track['id'] == 'abc-123'
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(item_id='abc-123')])
+        assert client.get('/api/sync?limit=1').get_json()['tracks'][0]['id'] == 'abc-123'
 
     def test_energy_is_raw_value(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(energy=0.07),
-        ])
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(energy=0.07)])
+        assert client.get('/api/sync?limit=1').get_json()['tracks'][0]['energy'] == 0.07
 
-        track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert track['energy'] == 0.07  # not normalized
-
-    def test_updated_at_isoformat(self, bp_mod, client, fake_db):
+    def test_no_updated_at_key(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(updated_at=datetime(2026, 3, 15, 14, 30, 0)),
-        ])
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
+        assert 'updated_at' not in client.get('/api/sync?limit=1').get_json()['tracks'][0]
 
-        track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
 
-        assert track['updated_at'] == '2026-03-15T14:30:00'
+# --------------------------------------------------------------------------- #
+# Fingerprint
+# --------------------------------------------------------------------------- #
 
-    def test_updated_at_null_passes_through(self, bp_mod, client, fake_db):
+class TestFingerprint:
+    def test_fp_present_on_payload_rows(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(updated_at=None),
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(fp='abc123def4560000')])
+        assert client.get('/api/sync?limit=1').get_json()['tracks'][0]['fp'] == 'abc123def4560000'
+
+    def test_fp_computed_in_sql(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_payload(cur, total=0, tracks=[])
+        client.get('/api/sync?limit=1')
+        select_sql = cur.queries[1]  # [0]=COUNT, [1]=SELECT
+        assert 'md5(' in select_sql
+        assert 'AS fp' in select_sql
+
+    def test_distinct_fp_passes_through(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_payload(cur, total=2, tracks=[
+            _minimal_track_row(item_id='a', fp='1111111111111111'),
+            _minimal_track_row(item_id='b', fp='2222222222222222'),
         ])
-
-        track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert track['updated_at'] is None
+        tracks = client.get('/api/sync?limit=10').get_json()['tracks']
+        assert tracks[0]['fp'] != tracks[1]['fp']
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+# Manifest mode (?fields=index)
+# --------------------------------------------------------------------------- #
+
+class TestManifest:
+    def test_rows_are_id_fp_only(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_manifest(cur, total=1, rows=[_manifest_row('track-X', 'ffffffff00000000')])
+        track = client.get('/api/sync?fields=index&limit=1').get_json()['tracks'][0]
+        assert track == {'id': 'track-X', 'fp': 'ffffffff00000000'}
+
+    def test_envelope_no_deleted_ids(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_manifest(cur, total=0, rows=[])
+        body = client.get('/api/sync?fields=index').get_json()
+        assert 'deleted_ids' not in body
+        for key in ('tracks', 'total_tracks', 'provider_type', 'has_more', 'next_page'):
+            assert key in body
+
+    def test_paginates_at_1000(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_manifest(cur, total=2000, rows=[_manifest_row(f't{i}') for i in range(1000)])
+        body = client.get('/api/sync?fields=index&page=1&limit=1000').get_json()
+        assert body['has_more'] is True
+        assert body['next_page'] == 2
+
+
+# --------------------------------------------------------------------------- #
+# ids filter (?ids=a,b)
+# --------------------------------------------------------------------------- #
+
+class TestIdsFilter:
+    def test_filters_to_set(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        _setup_ids(cur, tracks=[_minimal_track_row(item_id='a'),
+                                _minimal_track_row(item_id='b')])
+        body = client.get('/api/sync?ids=a,b').get_json()
+        assert [t['id'] for t in body['tracks']] == ['a', 'b']
+        assert body['has_more'] is False
+        assert body['next_page'] is None
+        assert 'item_id IN (' in cur.queries[0]   # no COUNT on the ids path
+        assert cur.query_params[0] == ('a', 'b')
+
+    def test_empty_ids_runs_no_query(self, bp_mod, client, fake_db):
+        _, cur = fake_db
+        body = client.get('/api/sync?ids=').get_json()
+        assert body['tracks'] == []
+        assert body['total_tracks'] == 0
+        assert cur.queries == []
+
+
+# --------------------------------------------------------------------------- #
 # include_embeddings + CLAP toggle
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
 
 class TestIncludeEmbeddings:
-    def test_default_includes_embedding(self, bp_mod, client, fake_db):
+    def test_default_includes_both(self, bp_mod, client, fake_db):
         import config
         config.CLAP_ENABLED = True
-        blob = np.arange(200, dtype=np.float32).tobytes()
-        clap_blob = np.arange(512, dtype=np.float32).tobytes()
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(musicnn_blob=blob, clap_blob=clap_blob),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
+            musicnn_blob=np.arange(200, dtype=np.float32).tobytes(),
+            clap_blob=np.arange(512, dtype=np.float32).tobytes())])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert 'embedding' in track
-        assert 'clap_embedding' in track
+        assert 'embedding' in track and 'clap_embedding' in track
 
     def test_explicit_false_omits_keys(self, bp_mod, client, fake_db):
         import config
         config.CLAP_ENABLED = True
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
         track = client.get('/api/sync?limit=1&include_embeddings=false').get_json()['tracks'][0]
-
-        assert 'embedding' not in track
-        assert 'clap_embedding' not in track
+        assert 'embedding' not in track and 'clap_embedding' not in track
 
     def test_case_insensitive_false(self, bp_mod, client, fake_db):
         import config
         config.CLAP_ENABLED = True
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
         track = client.get('/api/sync?limit=1&include_embeddings=FALSE').get_json()['tracks'][0]
-
         assert 'embedding' not in track
 
     def test_non_false_value_includes_embeddings(self, bp_mod, client, fake_db):
-        """Per spec: ONLY literal 'false' (case-insensitive) disables. '0' does not."""
+        # Only literal 'false' (case-insensitive) disables; '0' does not.
         import config
         config.CLAP_ENABLED = True
-        blob = np.arange(200, dtype=np.float32).tobytes()
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(musicnn_blob=blob, clap_blob=None),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
+            musicnn_blob=np.arange(200, dtype=np.float32).tobytes(), clap_blob=None)])
         track = client.get('/api/sync?limit=1&include_embeddings=0').get_json()['tracks'][0]
-
         assert 'embedding' in track
 
     def test_clap_disabled_omits_clap_key(self, bp_mod, client, fake_db):
         import config
         config.CLAP_ENABLED = False
-        blob = np.arange(200, dtype=np.float32).tobytes()
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(musicnn_blob=blob),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
+            musicnn_blob=np.arange(200, dtype=np.float32).tobytes())])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert 'embedding' in track
-        assert 'clap_embedding' not in track
+        assert 'embedding' in track and 'clap_embedding' not in track
 
     def test_empty_blob_yields_null(self, bp_mod, client, fake_db):
         import config
         config.CLAP_ENABLED = True
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(musicnn_blob=None, clap_blob=None),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(musicnn_blob=None, clap_blob=None)])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        # Keys present (because include_embeddings defaulted to true) but null
-        assert track['embedding'] is None
-        assert track['clap_embedding'] is None
+        assert track['embedding'] is None and track['clap_embedding'] is None
 
     def test_base64_roundtrip(self, bp_mod, client, fake_db):
         import config
@@ -486,110 +435,58 @@ class TestIncludeEmbeddings:
         original = np.arange(200, dtype=np.float32)
         clap_orig = np.linspace(-1, 1, 512, dtype=np.float32)
         _, cur = fake_db
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(
-                musicnn_blob=original.tobytes(),
-                clap_blob=clap_orig.tobytes(),
-            ),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
+            musicnn_blob=original.tobytes(), clap_blob=clap_orig.tobytes())])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        decoded = np.frombuffer(base64.b64decode(track['embedding']), dtype=np.float32)
-        assert decoded.shape == (200,)
-        np.testing.assert_array_equal(decoded, original)
-
-        decoded_clap = np.frombuffer(base64.b64decode(track['clap_embedding']), dtype=np.float32)
-        assert decoded_clap.shape == (512,)
-        np.testing.assert_allclose(decoded_clap, clap_orig)
+        np.testing.assert_array_equal(
+            np.frombuffer(base64.b64decode(track['embedding']), dtype=np.float32), original)
+        np.testing.assert_allclose(
+            np.frombuffer(base64.b64decode(track['clap_embedding']), dtype=np.float32), clap_orig)
 
 
-# ---------------------------------------------------------------------------
-# deleted_ids gating
-# ---------------------------------------------------------------------------
-
-
-class TestDeletedIds:
-    def test_no_since_returns_empty(self, bp_mod, client, fake_db):
-        _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[])  # no deleted queue
-
-        body = client.get('/api/sync').get_json()
-
-        assert body['deleted_ids'] == []
-        # And no DELETED_TRACKS query was issued
-        assert not any('deleted_tracks' in sql.lower() for sql in cur.queries)
-
-    def test_with_since_populates_list(self, bp_mod, client, fake_db):
-        _, cur = fake_db
-        _setup_happy_path(cur, total=0, tracks=[], deleted=['gone-1', 'gone-2'])
-
-        body = client.get('/api/sync?since=2026-01-01T00:00:00').get_json()
-
-        assert body['deleted_ids'] == ['gone-1', 'gone-2']
-
-
-# ---------------------------------------------------------------------------
-# UMAP behavior
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
+# UMAP
+# --------------------------------------------------------------------------- #
 
 class TestUmap:
     def test_lookup_populates_coords(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        id_map = ['track-A', 'track-B']
-        proj = np.array([[1.5, -2.5], [3.0, 4.0]], dtype=np.float32)
-        bp_mod.load_map_projection = MagicMock(return_value=(id_map, proj))
-        _setup_happy_path(cur, total=2, tracks=[
+        bp_mod.load_map_projection = MagicMock(return_value=(
+            ['track-A', 'track-B'],
+            np.array([[1.5, -2.5], [3.0, 4.0]], dtype=np.float32)))
+        _setup_payload(cur, total=2, tracks=[
             _minimal_track_row(item_id='track-A'),
-            _minimal_track_row(item_id='track-B'),
-        ])
-
+            _minimal_track_row(item_id='track-B')])
         tracks = client.get('/api/sync?limit=10').get_json()['tracks']
-
         assert tracks[0]['umap_x'] == pytest.approx(1.5)
         assert tracks[0]['umap_y'] == pytest.approx(-2.5)
         assert tracks[1]['umap_x'] == pytest.approx(3.0)
 
     def test_missing_track_yields_null(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        id_map = ['track-A']
-        proj = np.array([[1.5, -2.5]], dtype=np.float32)
-        bp_mod.load_map_projection = MagicMock(return_value=(id_map, proj))
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(item_id='track-NOT-IN-MAP'),
-        ])
-
+        bp_mod.load_map_projection = MagicMock(return_value=(
+            ['track-A'], np.array([[1.5, -2.5]], dtype=np.float32)))
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(item_id='track-NOT-IN-MAP')])
         track = client.get('/api/sync?limit=10').get_json()['tracks'][0]
-
-        assert track['umap_x'] is None
-        assert track['umap_y'] is None
+        assert track['umap_x'] is None and track['umap_y'] is None
 
     def test_projection_unavailable(self, bp_mod, client, fake_db):
         _, cur = fake_db
         bp_mod.load_map_projection = MagicMock(return_value=(None, None))
-        _setup_happy_path(cur, total=1, tracks=[
-            _minimal_track_row(),
-        ])
-
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-
-        assert track['umap_x'] is None
-        assert track['umap_y'] is None
+        assert track['umap_x'] is None and track['umap_y'] is None
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 # Error handling
-# ---------------------------------------------------------------------------
-
+# --------------------------------------------------------------------------- #
 
 class TestErrorHandling:
     def test_db_error_returns_500(self, bp_mod, client, fake_db):
         _, cur = fake_db
+        _setup_payload(cur, total=0, tracks=[])
         cur._raise_on_execute = RuntimeError("simulated DB failure")
-
         resp = client.get('/api/sync?limit=1')
-
         assert resp.status_code == 500
-        body = resp.get_json()
-        assert 'error' in body
+        assert 'error' in resp.get_json()

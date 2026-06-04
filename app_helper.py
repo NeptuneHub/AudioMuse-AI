@@ -190,49 +190,6 @@ def init_db():
             # Create index on 'score' to assist in searches
             cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
-            # /api/sync support: updated_at trigger + deletion log.
-            # Placed AFTER the search_u backfill above so re-runs don't double-bump updated_at.
-            cur.execute("ALTER TABLE score ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_updated_at ON score(updated_at)")
-            cur.execute("""
-                CREATE OR REPLACE FUNCTION score_updated_at_sync() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN
-                    NEW.updated_at := NOW();
-                    RETURN NEW;
-                END;
-                $$;
-            """)
-            cur.execute("DROP TRIGGER IF EXISTS score_updated_at_trigger ON score")
-            cur.execute("""
-                CREATE TRIGGER score_updated_at_trigger
-                BEFORE INSERT OR UPDATE ON score
-                FOR EACH ROW
-                EXECUTE FUNCTION score_updated_at_sync();
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS deleted_tracks (
-                    id SERIAL PRIMARY KEY,
-                    item_id TEXT NOT NULL,
-                    deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_deleted_tracks_deleted_at ON deleted_tracks(deleted_at)")
-            cur.execute("""
-                CREATE OR REPLACE FUNCTION score_deletion_logger() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN
-                    INSERT INTO deleted_tracks (item_id) VALUES (OLD.item_id);
-                    RETURN OLD;
-                END;
-                $$;
-            """)
-            cur.execute("DROP TRIGGER IF EXISTS score_deletion_logger_trigger ON score")
-            cur.execute("""
-                CREATE TRIGGER score_deletion_logger_trigger
-                AFTER DELETE ON score
-                FOR EACH ROW
-                EXECUTE FUNCTION score_deletion_logger();
-            """)
-
             # Create 'playlist' table
             cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
             # Create 'task_status' table
