@@ -646,16 +646,17 @@ def get_playlist_by_name(playlist_name, user_creds=None):
 def get_top_played_songs(limit, user_creds):
     """Fetches the top N most played songs from Navidrome for a specific user."""
     all_top_songs = []
-    num_albums_to_fetch = (limit // 10) + 10
+    # Subsonic only exposes "frequent" at the album level, so we expand each
+    # album into its tracks. Cap how many tracks a single album can contribute
+    # so one large album (e.g. a 100+ track DJ mix) cannot dominate the seed
+    # pool — see issue #603. This is a hard maximum set by
+    # SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM; fetch enough albums that the capped
+    # pool can still reach ``limit`` total seeds.
+    per_album_cap = max(1, config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM)
+    num_albums_to_fetch = (limit // per_album_cap) + 10
     params = {"type": "frequent", "size": num_albums_to_fetch}
     response = _navidrome_request("getAlbumList2", params, user_creds=user_creds)
     if response and "albumList2" in response and "album" in response["albumList2"]:
-        # Subsonic only exposes "frequent" at the album level, so we expand each
-        # album into its tracks. Cap how many tracks a single album can
-        # contribute so one large album (e.g. a 100+ track DJ mix) cannot
-        # dominate the seed pool — see issue #603. Cap is configurable via
-        # SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM.
-        per_album_cap = max(config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM, limit // 10)
         # Subsonic-compatible servers may return a single dict (not a list) when
         # only one frequent album exists. Coerce to a list for safe iteration.
         albums = response["albumList2"]["album"]
