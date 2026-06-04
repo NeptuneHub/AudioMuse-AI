@@ -561,6 +561,55 @@ def get_sem_grove_item_ids() -> set:
 
 
 # ---------------------------------------------------------------------------
+# Vector backend (used by Song Path's Lyrics mode)
+# ---------------------------------------------------------------------------
+
+def get_sem_grove_vector_by_id(item_id: str) -> Optional[np.ndarray]:
+    """Return the stored merged lyrics+audio vector for ``item_id``, or None."""
+    if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+        return None
+    vid = _SEM_GROVE_CACHE["reverse_id_map"].get(item_id)
+    if vid is None:
+        return None
+    try:
+        return np.asarray(_SEM_GROVE_CACHE["index"].get_vector(vid), dtype=np.float32)
+    except Exception as exc:
+        logger.debug("SemGrove get_vector failed for '%s': %s", item_id, exc)
+        return None
+
+
+def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]:
+    """Nearest neighbours of ``query_vector`` in merged SemGrove space.
+
+    Returns ``[{"item_id": str, "distance": float}, ...]`` mirroring the shape
+    that ``voyager_manager.find_nearest_neighbors_by_vector`` returns, so the
+    Song Path engine can use it as a drop-in vector backend. Deduplication and
+    artist-cap filtering are handled by the path engine itself, so this only
+    performs the raw index query.
+    """
+    if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+        return []
+    index  = _SEM_GROVE_CACHE["index"]
+    id_map = _SEM_GROVE_CACHE["id_map"]
+    num_to_query = min(max(1, int(n)), len(index))
+    if num_to_query <= 0:
+        return []
+    try:
+        neighbor_ids, distances = index.query(
+            np.asarray(query_vector, dtype=np.float32), k=num_to_query
+        )
+    except Exception as exc:
+        logger.error("SemGrove neighbor query failed: %s", exc, exc_info=True)
+        return []
+    results: List[Dict] = []
+    for vid, dist in zip(neighbor_ids, distances):
+        item_id = id_map.get(int(vid))
+        if item_id is not None:
+            results.append({"item_id": item_id, "distance": float(dist)})
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
 

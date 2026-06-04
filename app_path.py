@@ -168,6 +168,18 @@ def find_path_endpoint():
         in: query
         schema: { type: boolean }
         description: When true, force the path to exactly `max_steps` songs. Defaults to PATH_FIX_SIZE.
+      - name: path_space
+        in: query
+        schema:
+          type: string
+          enum: [audio, lyrics]
+          default: audio
+        description: |
+          Which vector space to build the path in. `audio` (default) uses the
+          MusiCNN similarity index. `lyrics` uses the merged lyrics+audio
+          SemGrove index, so the path follows lyrical meaning while staying
+          acoustically smooth. Both endpoints must be songs present in the
+          SemGrove index (require both lyrics and audio analysis).
     responses:
       200:
         description: Path found.
@@ -256,12 +268,35 @@ def find_path_endpoint():
 
         # Note: `find_path_between_songs` does not accept mood direction options.
         # Path mood/anchor resolution is already done above (start/end resolved to song id).
-        path, total_distance = find_path_between_songs(
-            start_song_id,
-            end_song_id,
-            max_steps,
-            path_fix_size=path_fix_size
-        )
+        path_space = (request.args.get('path_space') or 'audio').strip().lower()
+
+        if path_space in ('lyrics', 'sem_grove', 'semgrove'):
+            from tasks.sem_grove_manager import (
+                is_sem_grove_cache_loaded,
+                get_sem_grove_item_ids,
+                get_sem_grove_vector_by_id,
+                find_sem_grove_neighbors_by_vector,
+            )
+            if not is_sem_grove_cache_loaded():
+                return jsonify({"error": "The Lyrics (SemGrove) index is not loaded yet. Analyze lyrics and build the SemGrove index first."}), 404
+            sem_ids = get_sem_grove_item_ids()
+            if start_song_id not in sem_ids or end_song_id not in sem_ids:
+                return jsonify({"error": "One or both selected songs are not in the Lyrics index (they need both lyrics and audio analysis)."}), 404
+            path, total_distance = find_path_between_songs(
+                start_song_id,
+                end_song_id,
+                max_steps,
+                path_fix_size=path_fix_size,
+                get_vector_fn=get_sem_grove_vector_by_id,
+                neighbors_fn=find_sem_grove_neighbors_by_vector
+            )
+        else:
+            path, total_distance = find_path_between_songs(
+                start_song_id,
+                end_song_id,
+                max_steps,
+                path_fix_size=path_fix_size
+            )
 
         if not path:
             return jsonify({"error": f"No path found between the selected songs within {max_steps} steps."}), 404
