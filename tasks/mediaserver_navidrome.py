@@ -671,7 +671,8 @@ def get_top_played_songs(limit, user_creds):
             if len(tracks) > per_album_cap:
                 tracks = random.sample(tracks, per_album_cap)
             all_top_songs.extend(tracks)
-    return random.sample(all_top_songs, limit) if len(all_top_songs) > limit else all_top_songs
+    all_top_songs.sort(key=lambda song: song.get('played') or song.get('lastPlayed') or '', reverse=True)
+    return all_top_songs[:limit]
 
 def get_last_played_time(item_id, user_creds):
     """Fetches the last played time for a track for a specific user."""

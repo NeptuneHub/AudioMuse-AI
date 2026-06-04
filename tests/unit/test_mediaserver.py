@@ -838,6 +838,49 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
         assert requested_size >= 60 // 2, \
             f"Album fetch size {requested_size} too small to reach limit under cap=2"
 
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_final_selection_keeps_most_recently_played(self, mock_config, mock_request, mock_get_tracks):
+        """Step 3: from the capped pool, the most recently played tracks win.
+        Never-played tracks (no ``played``) fall to the bottom."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
+        mock_request.return_value = self._album_list_response(['a1'])
+        mock_get_tracks.return_value = [
+            {'Id': 'old', 'Album': 'a1', 'played': '2026-01-01T00:00:00Z'},
+            {'Id': 'newest', 'Album': 'a1', 'played': '2026-06-01T00:00:00Z'},
+            {'Id': 'mid', 'Album': 'a1', 'played': '2026-03-01T00:00:00Z'},
+            {'Id': 'never', 'Album': 'a1'},
+            {'Id': 'recent', 'Album': 'a1', 'played': '2026-05-01T00:00:00Z'},
+        ]
+
+        result = get_top_played_songs(limit=2, user_creds={})
+
+        assert {s['Id'] for s in result} == {'newest', 'recent'}, \
+            f"Expected the 2 most recently played, got {[s['Id'] for s in result]}"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_final_selection_falls_back_to_lastPlayed_field(self, mock_config, mock_request, mock_get_tracks):
+        """Non-OpenSubsonic servers expose recency as ``lastPlayed``; it must
+        still drive the ordering when ``played`` is absent."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
+        mock_request.return_value = self._album_list_response(['a1'])
+        mock_get_tracks.return_value = [
+            {'Id': 'older', 'Album': 'a1', 'lastPlayed': '2026-02-01T00:00:00Z'},
+            {'Id': 'newer', 'Album': 'a1', 'lastPlayed': '2026-04-01T00:00:00Z'},
+        ]
+
+        result = get_top_played_songs(limit=1, user_creds={})
+
+        assert [s['Id'] for s in result] == ['newer'], \
+            f"Expected the most recently played via lastPlayed, got {[s['Id'] for s in result]}"
+
 
 class TestNavidromeGetAllPlaylists:
     """Test playlist fetching and normalization - verifies exact response parsing"""
