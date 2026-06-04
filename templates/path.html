@@ -75,6 +75,12 @@
         .mode-toggle-btn.mood-active:hover {
             background: #7C3AED;
         }
+        .mode-toggle-btn.lyrics-active {
+            background: #0EA5E9;
+        }
+        .mode-toggle-btn.lyrics-active:hover {
+            background: #0284C7;
+        }
         .mood-select {
             width: 100%;
             padding: 0.5rem;
@@ -95,7 +101,7 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Song Path</h1>
-        <p>Find a path between a song and another song, mood, or anchor.</p>
+        <p>Find a path between a song and another song, lyrics, mood, or anchor.</p>
     </header>
 
     <form id="path-form">
@@ -106,10 +112,10 @@
             <div class="autocomplete-container">
                 <label for="start_search" class="label-with-tooltip">
                     Start:
-                    <button type="button" class="mode-toggle-btn" id="start-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
+                    <button type="button" class="mode-toggle-btn" id="start-mode-toggle" title="Click to cycle Song/Lyrics/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Lyrics (two songs, path follows lyrical meaning via the SemGrove index), Mood, and Anchor.</span>
                     </span>
                 </label>
                 <div id="start-song-fields">
@@ -149,10 +155,10 @@
             <div class="autocomplete-container">
                 <label for="end_search" class="label-with-tooltip">
                     End:
-                    <button type="button" class="mode-toggle-btn" id="end-mode-toggle" title="Click to cycle Song/Mood/Anchor">🎵 Song</button>
+                    <button type="button" class="mode-toggle-btn" id="end-mode-toggle" title="Click to cycle Song/Lyrics/Mood/Anchor">🎵 Song</button>
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Mood, and Anchor.</span>
+                        <span class="tooltip-text">Click the button to cycle between Song (search by name), Lyrics (two songs, path follows lyrical meaning via the SemGrove index), Mood, and Anchor.</span>
                     </span>
                 </label>
                 <div id="end-song-fields">
@@ -447,6 +453,24 @@
                 const songFields = isStart ? startSongFields : endSongFields;
                 const moodFields = isStart ? startMoodFields : endMoodFields;
                 const anchorFields = isStart ? startAnchorFields : endAnchorFields;
+                const other = isStart ? 'end' : 'start';
+                const otherMode = () => isStart ? endMode : startMode;
+
+                // Lyrics mode reuses the song picker but routes the path through the
+                // SemGrove (lyrics+audio) index. A lyrics path needs two songs, so
+                // selecting it on one endpoint mirrors it onto the other.
+                if (mode === 'lyrics') {
+                    songFields.classList.remove('hidden');
+                    moodFields.classList.add('hidden');
+                    anchorFields.classList.add('hidden');
+                    toggleBtn.innerHTML = '📖 Lyrics';
+                    toggleBtn.classList.remove('mood-active');
+                    toggleBtn.classList.remove('anchor-active');
+                    toggleBtn.classList.add('lyrics-active');
+                    if (isStart) startMode = 'lyrics'; else endMode = 'lyrics';
+                    if (otherMode() !== 'lyrics') setMode(other, 'lyrics');
+                    return;
+                }
 
                 if (mode === 'song') {
                     songFields.classList.remove('hidden');
@@ -455,6 +479,7 @@
                     toggleBtn.innerHTML = '🎵 Song';
                     toggleBtn.classList.remove('mood-active');
                     toggleBtn.classList.remove('anchor-active');
+                    toggleBtn.classList.remove('lyrics-active');
                 } else if (mode === 'mood') {
                     songFields.classList.add('hidden');
                     moodFields.classList.remove('hidden');
@@ -462,9 +487,9 @@
                     toggleBtn.innerHTML = '🎭 Mood';
                     toggleBtn.classList.add('mood-active');
                     toggleBtn.classList.remove('anchor-active');
-                    // Force the other endpoint back to song if already mode mood/anchor is active so only one
-                    const other = isStart ? 'end' : 'start';
-                    if ((isStart ? endMode : startMode) !== 'song') {
+                    toggleBtn.classList.remove('lyrics-active');
+                    // Force the other endpoint back to song if mood/anchor/lyrics is active so only one
+                    if (otherMode() !== 'song') {
                         setMode(other, 'song');
                     }
                 } else {
@@ -474,8 +499,8 @@
                     toggleBtn.innerHTML = '🔖 Anchor';
                     toggleBtn.classList.remove('mood-active');
                     toggleBtn.classList.add('anchor-active');
-                    const other = isStart ? 'end' : 'start';
-                    if ((isStart ? endMode : startMode) !== 'song') {
+                    toggleBtn.classList.remove('lyrics-active');
+                    if (otherMode() !== 'song') {
                         setMode(other, 'song');
                     }
                 }
@@ -484,7 +509,10 @@
 
             const cycleMode = (endpoint) => {
                 const current = endpoint === 'start' ? startMode : endMode;
-                const next = current === 'song' ? 'mood' : (current === 'mood' ? 'anchor' : 'song');
+                const next = current === 'song' ? 'lyrics'
+                    : current === 'lyrics' ? 'mood'
+                    : current === 'mood' ? 'anchor'
+                    : 'song';
                 setMode(endpoint, next);
             };
 
@@ -961,9 +989,12 @@
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
 
-                // Validate: each endpoint must have a song ID, mood, or anchor selected
-                const hasStart = startMode === 'song' ? !!startSongId : !!startMood || !!startAnchor;
-                const hasEnd = endMode === 'song' ? !!endSongId : !!endMood || !!endAnchor;
+                // Validate: each endpoint must have a song ID, mood, or anchor selected.
+                // Lyrics mode uses the same song picker as Song mode.
+                const startIsSong = startMode === 'song' || startMode === 'lyrics';
+                const endIsSong = endMode === 'song' || endMode === 'lyrics';
+                const hasStart = startIsSong ? !!startSongId : !!startMood || !!startAnchor;
+                const hasEnd = endIsSong ? !!endSongId : !!endMood || !!endAnchor;
                 if (!hasStart || !hasEnd) {
                     statusDiv.textContent = 'Please select a song, mood, or anchor for both start and end.';
                     statusDiv.className = 'status-error';
@@ -973,19 +1004,22 @@
                 try {
                     const pathFixSize = document.getElementById('path_fix_size_checkbox')?.checked ? 'true' : 'false';
                     const params = new URLSearchParams({ max_steps: maxSteps, path_fix_size: pathFixSize });
-                    if (startMode === 'song') {
+                    if (startIsSong) {
                         params.set('start_song_id', startSongId);
                     } else if (startAnchor) {
                         params.set('start_anchor', startAnchor);
                     } else {
                         params.set('start_mood', startMood);
                     }
-                    if (endMode === 'song') {
+                    if (endIsSong) {
                         params.set('end_song_id', endSongId);
                     } else if (endAnchor) {
                         params.set('end_anchor', endAnchor);
                     } else {
                         params.set('end_mood', endMood);
+                    }
+                    if (startMode === 'lyrics' || endMode === 'lyrics') {
+                        params.set('path_space', 'lyrics');
                     }
                     // Send mood intensity percentage
                     const moodPct = startMode === 'mood'
@@ -1064,12 +1098,12 @@
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
-                    const startLabel = startMode === 'song'
+                    const startLabel = startIsSong
                         ? (startTitleDiv.textContent || '').replace(/^Title:\s*/, '')
                         : startMode === 'mood'
                         ? (startMoodSelect.options[startMoodSelect.selectedIndex]?.text || 'Mood')
                         : (startAnchorSelect.options[startAnchorSelect.selectedIndex]?.text || 'Anchor');
-                    const endLabel = endMode === 'song'
+                    const endLabel = endIsSong
                         ? (endTitleDiv.textContent || '').replace(/^Title:\s*/, '')
                         : endMode === 'mood'
                         ? (endMoodSelect.options[endMoodSelect.selectedIndex]?.text || 'Mood')
