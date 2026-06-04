@@ -36,8 +36,10 @@ def get_angular_distance(v1, v2):
     return float('inf')
 
 
-def get_distance(v1, v2, metric=PATH_DISTANCE_METRIC):
+def get_distance(v1, v2, metric=None):
     """Calculates distance based on the given metric (defaults to the configured one)."""
+    if metric is None:
+        metric = PATH_DISTANCE_METRIC
     if metric == 'angular':
         return get_angular_distance(v1, v2)
     else: # Default to euclidean
@@ -133,7 +135,7 @@ def _normalize_signature(artist, title):
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
                              k_search=10, num_to_find=1, artist_counts=None,
                              get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                             metric=PATH_DISTANCE_METRIC):
+                             metric=None):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
@@ -143,6 +145,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     # Local import to prevent circular dependency
     from app_helper import get_score_data_by_ids
 
+    if metric is None:
+        metric = PATH_DISTANCE_METRIC
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if metric == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if metric == 'angular' else 'Euclidean'
 
@@ -274,7 +278,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
 def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE,
                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=PATH_DISTANCE_METRIC):
+                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=None):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -285,6 +289,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     # Local import to prevent circular dependency
     from app_helper import get_score_data_by_ids, get_tracks_by_ids
     logger.info(f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}.")
+
+    if metric is None:
+        metric = PATH_DISTANCE_METRIC
 
     if Lreq < 2:
         logger.warning(f"Requested path length {Lreq} is less than 2. Returning just start and end songs if different.")
