@@ -135,7 +135,7 @@ def _normalize_signature(artist, title):
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
                              k_search=10, num_to_find=1, artist_counts=None,
                              get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                             metric=None):
+                             metric=None, dup_threshold_cosine=None):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
@@ -147,7 +147,10 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
     if metric is None:
         metric = PATH_DISTANCE_METRIC
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if metric == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    if metric == 'angular':
+        threshold = dup_threshold_cosine if dup_threshold_cosine is not None else DUPLICATE_DISTANCE_THRESHOLD_COSINE
+    else:
+        threshold = DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if metric == 'angular' else 'Euclidean'
 
     found_songs = []
@@ -278,7 +281,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
 def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE,
                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=None):
+                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=None, dup_threshold_cosine=None):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -397,7 +400,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     artist_counts=artist_counts,
                     get_vector_fn=get_vector_fn,
                     neighbors_fn=neighbors_fn,
-                    metric=metric
+                    metric=metric,
+                    dup_threshold_cosine=dup_threshold_cosine
                 )
                 if found and len(found) > 0:
                     path_songs_details.extend(found)
@@ -447,7 +451,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     artist_counts=artist_counts,
                     get_vector_fn=get_vector_fn,
                     neighbors_fn=neighbors_fn,
-                    metric=metric
+                    metric=metric,
+                    dup_threshold_cosine=dup_threshold_cosine
                 )
 
                 num_found = len(found_songs)

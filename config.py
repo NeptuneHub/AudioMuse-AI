@@ -616,6 +616,7 @@ SAMPLING_PERCENTAGE_CHANGE_PER_RUN = float(os.getenv("SAMPLING_PERCENTAGE_CHANGE
 # Threshold for considering songs as duplicates based on their distance in the vector space.
 # This helps catch identical songs with slightly different metadata (e.g., from different albums).
 DUPLICATE_DISTANCE_THRESHOLD_COSINE = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE", "0.01"))
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", "0.05"))
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
 
