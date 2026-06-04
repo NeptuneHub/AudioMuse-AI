@@ -154,6 +154,12 @@ jobs:
       run: |
         pytest test/test_provider_migration_integration.py -s -v --tb=short
 
+    - name: Run app endpoint and auth integration tests
+      env:
+        AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
+      run: |
+        pytest test/test_app_endpoints_integration.py test/test_auth_users_integration.py -m integration -s -v --tb=short
+
     - name: Run lyrics integration test
       run: |
         # On first run test/lyrics_expected_gte_512.json does not exist yet: the

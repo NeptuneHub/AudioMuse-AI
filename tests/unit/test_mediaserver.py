@@ -764,10 +764,155 @@ class TestNavidromeGetTracksFromAlbum:
         from tasks.mediaserver_navidrome import get_tracks_from_album
         
         mock_request.return_value = None
-        
+
         tracks = get_tracks_from_album('album123')
-        
+
         assert tracks == []
+
+
+class TestNavidromeGetTopPlayedSongsAlbumCap:
+    """Regression tests for issue #603: a single large album must not dominate
+    the sonic-fingerprint seed pool. SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM is a
+    hard maximum and must be honored regardless of the requested limit."""
+
+    @staticmethod
+    def _album_list_response(album_ids):
+        return {'status': 'ok', 'albumList2': {'album': [{'id': aid} for aid in album_ids]}}
+
+    @staticmethod
+    def _tracks_for(album_id, count):
+        return [{'Id': f'{album_id}_track{i}', 'Album': album_id} for i in range(count)]
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_single_album_capped_even_with_large_limit(self, mock_config, mock_request, mock_get_tracks):
+        """A 100-track album with cap=2 must contribute at most 2 seeds, even
+        when limit//10 (the old floor) would have allowed 6."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
+        mock_request.return_value = self._album_list_response(['big'])
+        mock_get_tracks.return_value = self._tracks_for('big', 100)
+
+        result = get_top_played_songs(limit=60, user_creds={})
+
+        assert len(result) == 2, \
+            f"Expected configured cap of 2, got {len(result)} (limit//10 floor regressed)"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_cap_honored_per_album_across_multiple_albums(self, mock_config, mock_request, mock_get_tracks):
+        """No album may contribute more than the configured cap to the pool."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
+        mock_request.return_value = self._album_list_response(['a1', 'a2', 'a3'])
+        mock_get_tracks.side_effect = lambda album_id, user_creds=None: self._tracks_for(album_id, 10)
+
+        result = get_top_played_songs(limit=20, user_creds={})
+
+        per_album = {}
+        for song in result:
+            album = song['Id'].split('_')[0]
+            per_album[album] = per_album.get(album, 0) + 1
+        assert all(count <= 2 for count in per_album.values()), \
+            f"Some album exceeded the cap of 2: {per_album}"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_fetches_enough_albums_to_reach_limit_under_tight_cap(self, mock_config, mock_request, mock_get_tracks):
+        """With a tight cap the album fetch size must scale so the pool can
+        still reach the requested limit."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
+        mock_request.return_value = self._album_list_response([f'a{i}' for i in range(40)])
+        mock_get_tracks.side_effect = lambda album_id, user_creds=None: self._tracks_for(album_id, 10)
+
+        get_top_played_songs(limit=60, user_creds={})
+
+        requested_size = mock_request.call_args[0][1]['size']
+        assert requested_size >= 60 // 2, \
+            f"Album fetch size {requested_size} too small to reach limit under cap=2"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_final_selection_keeps_most_recently_played(self, mock_config, mock_request, mock_get_tracks):
+        """Step 3: from the capped pool, the most recently played tracks win.
+        Never-played tracks (no ``played``) fall to the bottom."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
+        mock_request.return_value = self._album_list_response(['a1'])
+        mock_get_tracks.return_value = [
+            {'Id': 'old', 'Album': 'a1', 'played': '2026-01-01T00:00:00Z'},
+            {'Id': 'newest', 'Album': 'a1', 'played': '2026-06-01T00:00:00Z'},
+            {'Id': 'mid', 'Album': 'a1', 'played': '2026-03-01T00:00:00Z'},
+            {'Id': 'never', 'Album': 'a1'},
+            {'Id': 'recent', 'Album': 'a1', 'played': '2026-05-01T00:00:00Z'},
+        ]
+
+        result = get_top_played_songs(limit=2, user_creds={})
+
+        assert {s['Id'] for s in result} == {'newest', 'recent'}, \
+            f"Expected the 2 most recently played, got {[s['Id'] for s in result]}"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_final_selection_falls_back_to_lastPlayed_field(self, mock_config, mock_request, mock_get_tracks):
+        """Non-OpenSubsonic servers expose recency as ``lastPlayed``; it must
+        still drive the ordering when ``played`` is absent."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
+        mock_request.return_value = self._album_list_response(['a1'])
+        mock_get_tracks.return_value = [
+            {'Id': 'older', 'Album': 'a1', 'lastPlayed': '2026-02-01T00:00:00Z'},
+            {'Id': 'newer', 'Album': 'a1', 'lastPlayed': '2026-04-01T00:00:00Z'},
+        ]
+
+        result = get_top_played_songs(limit=1, user_creds={})
+
+        assert [s['Id'] for s in result] == ['newer'], \
+            f"Expected the most recently played via lastPlayed, got {[s['Id'] for s in result]}"
+
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_never_played_songs_handled_without_error(self, mock_config, mock_request, mock_get_tracks):
+        """A pool where no track was ever played (no played/lastPlayed) must
+        sort and return cleanly instead of raising."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
+        mock_request.return_value = self._album_list_response(['a1', 'a2'])
+        mock_get_tracks.side_effect = lambda album_id, user_creds=None: [
+            {'Id': f'{album_id}_t{i}', 'Album': album_id} for i in range(4)
+        ]
+
+        result = get_top_played_songs(limit=5, user_creds={})
+
+        assert len(result) == 5
+        assert all('Id' in s for s in result)
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_no_frequent_albums_returns_empty(self, mock_config, mock_request):
+        """An empty 'frequent' response (e.g. a fresh library) yields an empty
+        seed pool, not an error."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
+        mock_request.return_value = {'status': 'ok', 'albumList2': {}}
+
+        result = get_top_played_songs(limit=20, user_creds={})
+
+        assert result == []
 
 
 class TestNavidromeGetAllPlaylists:

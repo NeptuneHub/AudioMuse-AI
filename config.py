@@ -579,6 +579,9 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", 
 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
+# Max tracks a single album may contribute to the seed pool, so one large album
+# (e.g. a 100+ track DJ mix) cannot dominate the fingerprint — see issue #603.
+SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
 SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
