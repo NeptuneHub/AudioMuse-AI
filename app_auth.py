@@ -526,6 +526,9 @@ _ADMIN_PATH_PREFIXES = (
     '/backup', '/api/backup',
     '/provider-migration', '/api/migration',
     '/analysis', '/api/analysis', '/api/clustering',
+    '/api/cancel', '/api/cancel_all',
+    '/api/rebuild_map_cache',
+    '/api/clap/cache/refresh', '/api/lyrics/cache/refresh', '/api/sem_grove/cache/refresh',
 )
 
 
