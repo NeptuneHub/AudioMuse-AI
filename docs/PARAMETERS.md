@@ -98,6 +98,7 @@ These are the default parameters used when launching analysis or clustering task
 | `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |
 | `SONIC_FINGERPRINT_NEIGHBORS`               | Default number of track for the sonic fingerprint                                                                         | `100`           |
+| `SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM`     | **Navidrome only.** Max tracks a single album may contribute to the fingerprint seed pool, so one large album (e.g. a 100+ track DJ mix) cannot dominate. Other media servers fetch top songs directly and ignore this. | `3`             |
 | **Song Alchemy General**                     |                                                                                                                            |                 |
 | `ALCHEMY_DEFAULT_N_RESULTS`                  | Number of similar songs to return when creating the Alchemy result (default).                                              | `100`           |
 | `ALCHEMY_MAX_N_RESULTS`                      | Maximum number of similar songs to return for Alchemy results.                                                             | `200`           |
