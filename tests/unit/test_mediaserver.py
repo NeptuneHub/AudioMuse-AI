@@ -881,6 +881,39 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
         assert [s['Id'] for s in result] == ['newer'], \
             f"Expected the most recently played via lastPlayed, got {[s['Id'] for s in result]}"
 
+    @patch('tasks.mediaserver_navidrome.get_tracks_from_album')
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_never_played_songs_handled_without_error(self, mock_config, mock_request, mock_get_tracks):
+        """A pool where no track was ever played (no played/lastPlayed) must
+        sort and return cleanly instead of raising."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
+        mock_request.return_value = self._album_list_response(['a1', 'a2'])
+        mock_get_tracks.side_effect = lambda album_id, user_creds=None: [
+            {'Id': f'{album_id}_t{i}', 'Album': album_id} for i in range(4)
+        ]
+
+        result = get_top_played_songs(limit=5, user_creds={})
+
+        assert len(result) == 5
+        assert all('Id' in s for s in result)
+
+    @patch('tasks.mediaserver_navidrome._navidrome_request')
+    @patch('tasks.mediaserver_navidrome.config')
+    def test_no_frequent_albums_returns_empty(self, mock_config, mock_request):
+        """An empty 'frequent' response (e.g. a fresh library) yields an empty
+        seed pool, not an error."""
+        from tasks.mediaserver_navidrome import get_top_played_songs
+
+        mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
+        mock_request.return_value = {'status': 'ok', 'albumList2': {}}
+
+        result = get_top_played_songs(limit=20, user_creds={})
+
+        assert result == []
+
 
 class TestNavidromeGetAllPlaylists:
     """Test playlist fetching and normalization - verifies exact response parsing"""
