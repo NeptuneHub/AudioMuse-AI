@@ -36,9 +36,9 @@ def get_angular_distance(v1, v2):
     return float('inf')
 
 
-def get_distance(v1, v2):
-    """Calculates distance based on the configured metric."""
-    if PATH_DISTANCE_METRIC == 'angular':
+def get_distance(v1, v2, metric=PATH_DISTANCE_METRIC):
+    """Calculates distance based on the given metric (defaults to the configured one)."""
+    if metric == 'angular':
         return get_angular_distance(v1, v2)
     else: # Default to euclidean
         return get_euclidean_distance(v1, v2)
@@ -132,7 +132,8 @@ def _normalize_signature(artist, title):
 
 def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
                              k_search=10, num_to_find=1, artist_counts=None,
-                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector):
+                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
+                             metric=PATH_DISTANCE_METRIC):
     """
     Finds a specific number (`num_to_find`) of best songs for a centroid
     by searching k_search neighbors.
@@ -142,8 +143,8 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     # Local import to prevent circular dependency
     from app_helper import get_score_data_by_ids
 
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if PATH_DISTANCE_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if PATH_DISTANCE_METRIC == 'angular' else 'Euclidean'
+    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if metric == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if metric == 'angular' else 'Euclidean'
 
     found_songs = []
 
@@ -199,7 +200,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and path_songs_details_so_far:
             for prev_song_details in path_songs_details_so_far[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
-                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
+                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'], metric=metric)
                     if distance_from_prev < threshold:
                         logger.debug(
                             f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
@@ -215,7 +216,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and found_songs:
             for prev_song_details in found_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
-                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'])
+                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'], metric=metric)
                     if distance_from_prev < threshold:
                         logger.debug(
                             f"Filtering song (INTERNAL JOB DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
@@ -273,7 +274,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
 def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE,
                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                            neighbors_by_id_fn=find_nearest_neighbors_by_id):
+                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=PATH_DISTANCE_METRIC):
     """
     Finds a path between two songs using linear interpolation of centroids
     and a centroid-merging strategy on failure, ensuring exact path length.
@@ -297,7 +298,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         v1 = get_vector_fn(start_item_id)
         v2 = get_vector_fn(end_item_id)
         if v1 is not None and v2 is not None:
-            total_path_distance = get_distance(v1, v2)
+            total_path_distance = get_distance(v1, v2, metric=metric)
         return path_details, total_path_distance
 
     start_vector = get_vector_fn(start_item_id)
@@ -338,7 +339,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     if num_intermediate > 0:
         logger.info(f"Attempting to find {num_intermediate} intermediate songs for a total path of {Lreq}.")
         # Generate Lreq total centroids (start, ...intermediate..., end)
-        all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=PATH_DISTANCE_METRIC)
+        all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=metric)
         
         # We only want the intermediate ones
         intermediate_centroids = all_centroids[1:-1] 
@@ -388,7 +389,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     num_to_find=1,
                     artist_counts=artist_counts,
                     get_vector_fn=get_vector_fn,
-                    neighbors_fn=neighbors_fn
+                    neighbors_fn=neighbors_fn,
+                    metric=metric
                 )
                 if found and len(found) > 0:
                     path_songs_details.extend(found)
@@ -437,7 +439,8 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     num_to_find=job['num_to_find'],
                     artist_counts=artist_counts,
                     get_vector_fn=get_vector_fn,
-                    neighbors_fn=neighbors_fn
+                    neighbors_fn=neighbors_fn,
+                    metric=metric
                 )
 
                 num_found = len(found_songs)
@@ -470,7 +473,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                         vec_b_orig = intermediate_centroids[idx_b_end]
 
                         # Create new merged vector (midpoint of the two *original* vectors)
-                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=PATH_DISTANCE_METRIC)[1]
+                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=metric)[1]
 
                         # Sum k, cap at k_max
                         merged_k = min(job_a['k'] + job_b['k'], k_max)
@@ -506,7 +509,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
             v1 = path_vectors[i]
             v2 = path_vectors[i+1]
             if v1 is not None and v2 is not None:
-                total_path_distance += get_distance(v1, v2)
+                total_path_distance += get_distance(v1, v2, metric=metric)
 
     # Log if the final length is not what was requested
     if len(final_path_details) != Lreq:

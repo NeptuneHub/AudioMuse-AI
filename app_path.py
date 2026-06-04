@@ -290,7 +290,8 @@ def find_path_endpoint():
                 path_fix_size=path_fix_size,
                 get_vector_fn=get_sem_grove_vector_by_id,
                 neighbors_fn=find_sem_grove_neighbors_by_vector,
-                neighbors_by_id_fn=find_sem_grove_neighbors_by_id
+                neighbors_by_id_fn=find_sem_grove_neighbors_by_id,
+                metric="angular"
             )
         else:
             path, total_distance = find_path_between_songs(
