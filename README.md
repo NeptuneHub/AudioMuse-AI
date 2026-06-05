@@ -162,6 +162,7 @@ Starting from release `v2.1.4` we provide a native Linux package (`.deb` and `.r
 - **Run as your normal user** (never with `sudo`/root — it stores data in your home and will not start as root):
   - `audiomuse-ai start`, then open http://127.0.0.1:8000
   - Or auto-start on login: `systemctl --user enable --now audiomuse-ai`
+  - `audiomuse-ai stop` can be used to stop
 
 **Files** (under the launching user's home):
 - Data (database, Redis, temp audio): `~/.local/share/AudioMuse-AI`
