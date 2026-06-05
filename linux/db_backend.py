@@ -27,7 +27,12 @@ def using_pgserver():
 def start_embedded(data_dir):
     if _USE_PGSERVER:
         import database
-        return database.start_embedded(data_dir)
+        from linux import env
+        # pgserver spawns the bundled initdb/postgres with an inherited
+        # os.environ; scrub PyInstaller's LD_LIBRARY_PATH so those children load
+        # their own libs (not the bundle's), avoiding an initdb SIGSEGV.
+        with env.native_lib_path_restored():
+            return database.start_embedded(data_dir)
     from linux import embedded_pg
     return embedded_pg.start(data_dir)
 
@@ -35,7 +40,9 @@ def start_embedded(data_dir):
 def ensure_embedded_running(data_dir):
     if _USE_PGSERVER:
         import database
-        return database.ensure_embedded_running(data_dir)
+        from linux import env
+        with env.native_lib_path_restored():
+            return database.ensure_embedded_running(data_dir)
     from linux import embedded_pg
     return embedded_pg.ensure_running(data_dir)
 

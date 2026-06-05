@@ -132,7 +132,13 @@ class ProcessSupervisor:
             paths.redis_binary(), paths.redis_socket_path(), paths.redis_dir()
         )
         self._redis_url = url
-        self._spawn("redis", argv, dict(os.environ))
+        # Scrub PyInstaller's LD_LIBRARY_PATH (it points at the bundle's
+        # _internal libs) so the bundled redis-server resolves its own libraries
+        # via rpath instead of crashing on the frozen app's incompatible ones --
+        # same hazard that SIGSEGVs pgserver's initdb. The RQ/flask children
+        # re-exec the frozen binary, whose bootloader re-sets the path, so they
+        # don't need this; redis is a plain external binary that does.
+        self._spawn("redis", argv, env_builder.restore_native_lib_path(dict(os.environ)))
         self._wait_redis(timeout=60)
 
     def _wait_redis(self, timeout):

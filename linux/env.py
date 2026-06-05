@@ -25,11 +25,63 @@ Apple-framework behavior that does not exist on Linux (and Linux is the platform
 ``config.py``/the container already target, so its defaults are correct here).
 """
 
+import contextlib
 import os
+import sys
 
 from linux import paths
 
 _WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
+
+
+def restore_native_lib_path(env):
+    """Undo PyInstaller's ``LD_LIBRARY_PATH`` injection in ``env`` (mutates+returns it).
+
+    PyInstaller's bootloader prepends the frozen bundle's ``_internal`` dir to
+    ``LD_LIBRARY_PATH`` so the frozen Python finds its own bundled ``.so`` files,
+    saving the prior value in ``LD_LIBRARY_PATH_ORIG``. A *bundled external*
+    binary (``initdb``/``postgres`` via pgserver, ``redis-server``) that inherits
+    this polluted path loads the bundle's incompatible ``libssl``/``libz``/
+    ``libstdc++`` instead of its own (rpath ``$ORIGIN/../lib``) libraries and
+    crashes -- pgserver's ``initdb`` dies with SIGSEGV. Restore the original
+    value so the child resolves its own libraries (PyInstaller documents this as
+    the required handling before executing other programs).
+
+    No-op outside the frozen build (``LD_LIBRARY_PATH_ORIG`` is set only by the
+    bootloader), so a developer's own ``LD_LIBRARY_PATH`` is left untouched.
+    """
+    if not getattr(sys, "frozen", False):
+        return env
+    orig = env.get("LD_LIBRARY_PATH_ORIG")
+    if orig:
+        env["LD_LIBRARY_PATH"] = orig
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
+@contextlib.contextmanager
+def native_lib_path_restored():
+    """Temporarily apply :func:`restore_native_lib_path` to ``os.environ``.
+
+    For native binaries spawned by a library we don't control: pgserver runs
+    ``initdb``/``postgres`` with an inherited ``os.environ`` we can't override per
+    call. We narrow the scrub to the spawn window and restore ``os.environ``
+    afterwards so the frozen parent's own later ``dlopen`` calls keep resolving
+    the bundled libraries.
+    """
+    if not getattr(sys, "frozen", False):
+        yield
+        return
+    saved = os.environ.get("LD_LIBRARY_PATH")
+    try:
+        restore_native_lib_path(os.environ)
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("LD_LIBRARY_PATH", None)
+        else:
+            os.environ["LD_LIBRARY_PATH"] = saved
 
 
 def build_child_env(role, database_url, redis_url):

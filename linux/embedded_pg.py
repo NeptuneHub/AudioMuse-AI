@@ -35,8 +35,15 @@ def _pg_env():
     The from-source build is relocatable via rpath, but we also set
     ``LD_LIBRARY_PATH`` defensively so the server/tools always find their own
     bundled shared libraries regardless of how they were invoked.
+
+    We first scrub PyInstaller's injected ``LD_LIBRARY_PATH`` (which points at the
+    frozen app's ``_internal`` libs): otherwise the bundle's incompatible
+    ``libssl``/``libz``/... would sit on the search path after our pg libdir and
+    a tool needing one of those (not shipped in the pg tree) could load the wrong
+    copy and crash -- the same hazard that SIGSEGVs pgserver's ``initdb`` on x86_64.
     """
-    env = dict(os.environ)
+    from linux import env as env_builder
+    env = env_builder.restore_native_lib_path(dict(os.environ))
     libdir = paths.pg_lib_dir()
     if libdir:
         parts = [libdir, os.path.join(libdir, "postgresql"), env.get("LD_LIBRARY_PATH", "")]
