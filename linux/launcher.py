@@ -236,6 +236,30 @@ def _cmd_open():
     return 0
 
 
+def _refuse_root_for_stack():
+    """Abort (with guidance) if asked to boot the stack as root.
+
+    The embedded PostgreSQL (pgserver) takes a different, fragile code path when
+    ``euid == 0``: it creates a synthetic ``pgserver`` system user and runs
+    ``initdb`` through a setuid transition, which SIGSEGVs in the frozen bundle.
+    That path is never exercised by the build's smoke test (it runs as a normal
+    user), so a root launch fails opaquely deep inside ``initdb``. This whole
+    build is designed for a normal user anyway (per-user data dir under
+    ``~/.local/share/AudioMuse-AI`` and a ``systemctl --user`` service), so refuse
+    root early with a clear message instead of crashing in Postgres.
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print(
+            "AudioMuse-AI must not be run as root.\n"
+            "Run it as your normal user instead:\n"
+            "    audiomuse-ai start\n"
+            "or enable the per-user service:\n"
+            "    systemctl --user enable --now audiomuse-ai",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
     role = _role_from_argv()
     if role:
@@ -244,6 +268,7 @@ def main():
 
     command = _command_from_argv()
     if command in (None, "start"):
+        _refuse_root_for_stack()
         open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"
         sys.exit(_run_supervisor(open_browser=open_browser))
     elif command == "stop":
@@ -251,6 +276,7 @@ def main():
     elif command == "status":
         sys.exit(_cmd_status())
     elif command == "open":
+        _refuse_root_for_stack()
         sys.exit(_cmd_open())
     else:
         print("Usage: AudioMuse-AI [start|stop|status|open]", file=sys.stderr)
