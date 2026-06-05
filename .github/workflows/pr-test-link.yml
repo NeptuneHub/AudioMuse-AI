@@ -8,12 +8,14 @@
 # body (to avoid two workflows racing on the same description). That coupled the
 # link list to one build and meant a link could be posted before its artifact
 # actually existed. This workflow instead runs *after* a build finishes
-# (``workflow_run``) and, before emitting any link, VERIFIES via the API that:
-#   * the build's workflow run for this PR's head commit concluded ``success``, and
+# (``workflow_run``) and emits a line ONLY for a build that has a SUCCESSFUL
+# run, after VERIFYING via the API that:
+#   * the latest run of that build on the PR branch concluded ``success``, and
 #   * for artifact builds (macOS / Linux), the named artifact actually exists.
-# So every link it writes is known-good. It recomputes the whole block from the
-# current state of all builds on each trigger, so the block is idempotent: it
-# fills in as builds complete and never duplicates or goes stale.
+# In-progress and failed builds produce no line. It keys off the latest
+# SUCCESSFUL run on the PR branch, so when a new build is triggered the existing
+# link stays until the new one succeeds -- a working link is never replaced by a
+# placeholder, and users always have something to test.
 #
 # Note: ``workflow_run`` workflows only fire from the copy of this file on the
 # repository's DEFAULT branch -- links start appearing on PRs once this file is
@@ -71,13 +73,16 @@ jobs:
               return;
             }
 
-            // ---- All workflow runs for this head commit ---------------------
+            // ---- Latest SUCCESSFUL run per build, scoped to the PR branch ----
+            const headBranch = context.payload.workflow_run.head_branch;
             const allRuns = await github.paginate(
               github.rest.actions.listWorkflowRunsForRepo,
-              { owner, repo, head_sha: headSha, per_page: 100 },
+              { owner, repo, branch: headBranch, per_page: 100 },
             );
-            const latestRun = (wfFile) => {
-              const c = allRuns.filter(r => r.path === `.github/workflows/${wfFile}`);
+            const latestSuccessfulRun = (wfFile) => {
+              const c = allRuns.filter(r =>
+                r.path === `.github/workflows/${wfFile}` &&
+                r.status === 'completed' && r.conclusion === 'success');
               c.sort((a, b) => b.run_number - a.run_number);
               return c[0] || null;
             };
@@ -96,10 +101,8 @@ jobs:
                 kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-deb' },
               { label: 'Linux aarch64 (.rpm)', wf: 'build-linux.yml',
                 kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-rpm' },
-              { label: 'Docker image (amd64)', wf: 'build-arm-intel.yml',
-                kind: 'image', image: `${ghcr}:build-amd64-pr-${pull_number}` },
-              { label: 'Docker image (arm64)', wf: 'build-arm-intel.yml',
-                kind: 'image', image: `${ghcr}:build-arm64-pr-${pull_number}` },
+              { label: 'Docker image', wf: 'build-arm-intel.yml',
+                kind: 'image', image: `${ghcr}:pr-${pull_number}` },
               { label: 'Docker image (nvidia)', wf: 'build-nvidia.yml',
                 kind: 'image', image: `${ghcr}:pr-${pull_number}-nvidia` },
               { label: 'Docker image (noavx2)', wf: 'build-noavx2.yml',
@@ -108,16 +111,8 @@ jobs:
 
             const lines = [];
             for (const b of builds) {
-              const run = latestRun(b.wf);
-              if (!run) continue;                       // build never triggered for this PR
-              if (run.status !== 'completed') {
-                lines.push(`- ${b.label}: ⏳ building…`);
-                continue;
-              }
-              if (run.conclusion !== 'success') {
-                lines.push(`- ${b.label}: ❌ build failed ([log](${run.html_url}))`);
-                continue;
-              }
+              const run = latestSuccessfulRun(b.wf);
+              if (!run) continue;                       // no successful build yet — show nothing
               if (b.kind === 'artifact') {
                 // VERIFY the artifact exists before publishing its public link.
                 const arts = await github.paginate(
@@ -128,8 +123,6 @@ jobs:
                 if (a) {
                   const url = `https://nightly.link/${owner}/${repo}/actions/runs/${run.id}/${b.artifact}.zip`;
                   lines.push(`- ${b.label}: [${b.artifact}.zip](${url})`);
-                } else {
-                  lines.push(`- ${b.label}: ⚠️ run succeeded but artifact not found`);
                 }
               } else {
                 // Image builds: a successful run means the tag was pushed.
