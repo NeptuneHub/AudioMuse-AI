@@ -1,0 +1,15 @@
+[Unit]
+Description=AudioMuse-AI (standalone music analysis + smart playlists)
+Documentation=https://github.com/NeptuneHub/AudioMuse-AI
+
+[Service]
+Type=simple
+Environment=AUDIOMUSE_OPEN_BROWSER=0
+ExecStart=/usr/bin/audiomuse-ai start
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

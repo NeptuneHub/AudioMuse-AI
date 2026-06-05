@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AudioMuse-AI
+GenericName=Music Analysis & Smart Playlists
+Comment=Start AudioMuse-AI and open it in your browser
+Exec=/usr/bin/audiomuse-ai start
+Icon=audiomuse-ai
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=music;playlist;analysis;jellyfin;navidrome;
+StartupNotify=false
