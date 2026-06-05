@@ -73,6 +73,7 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 - [Quick Start Deployment](#quick-start-deployment)
 - [Quick Start Deployment MacOS](#quick-start-deployment-macos)
+- [Quick Start Deployment Linux](#quick-start-deployment-linux)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
@@ -148,6 +149,24 @@ To run it you have two option:
 The core step both share is removing the quarantine flag due to the fact that the app is not signed.
 
 This version run only on Apple Silicon (ARM) processor on recent version of MacOS (tested on MacOS 15.3.1 on MacMini M4 with 16gb ram)
+
+**Files:**
+- Data (database, Redis, temp audio): `~/Library/AudioMuse-AI`
+- Log: `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+
+## Quick Start Deployment Linux
+Starting from release `v2.1.4` we provide a native Linux package (`.deb` and `.rpm`, x86_64 and arm64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
+
+- **Install as root** (writes to `/opt` and the system app/service dirs):
+  - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-x86_64.deb`
+  - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-x86_64.rpm`
+- **Run as your normal user** (never with `sudo`/root — it stores data in your home and will not start as root):
+  - `audiomuse-ai start`, then open http://127.0.0.1:8000
+  - Or auto-start on login: `systemctl --user enable --now audiomuse-ai`
+
+**Files** (under the launching user's home):
+- Data (database, Redis, temp audio): `~/.local/share/AudioMuse-AI`
+- Log: `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first — read the top)
 
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
