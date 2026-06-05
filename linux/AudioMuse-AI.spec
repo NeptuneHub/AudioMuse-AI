@@ -34,6 +34,12 @@ datas = [
     (os.path.join(ROOT, 'templates'), 'templates'),
     (os.path.join(ROOT, 'static'), 'static'),
     (os.path.join(ROOT, 'model'), 'model'),
+    # Root-level data file the app loads relative to config.py's __file__
+    # (config.MOOD_CENTROIDS_FILE). config.py freezes into _internal/, so this
+    # must land at the bundle root ('.', i.e. _internal/) or the mood-similarity
+    # path scoring and /api/mood_centroids fall back/fail. Without it the log
+    # shows "Could not load mood centroids from .../_internal/mood_centroids_real_080_clap.json".
+    (os.path.join(ROOT, 'mood_centroids_real_080_clap.json'), '.'),
 ]
 if USE_PGSERVER:
     datas += collect_data_files('pgserver')
