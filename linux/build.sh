@@ -94,6 +94,52 @@ if [ "$UNAME_ARCH" != "x86_64" ]; then
   else
     echo "::error::Expected bundled PostgreSQL (pgsql/bin) in $BUNDLE (aarch64 build)"; exit 1
   fi
+else
+  # x86_64: repair the bundled pgserver (pgserver wheel) PostgreSQL tree, which
+  # PyInstaller damages in two independent ways -- both confirmed to break
+  # startup, and both fixed by overlaying the pristine wheel tree below:
+  #
+  #   1. STRIPPED EXECUTABLES. The spec sets strip=True to shrink the unstripped
+  #      scipy/numpy/onnx/PyAV wheels (hundreds of MB). But pgserver's binaries
+  #      were already processed by auditwheel/patchelf (mangled libpq soname +
+  #      injected RPATH); running GNU `strip` over a patchelf-modified ELF
+  #      corrupts it, so the libpq-linked executables (initdb, psql, pg_dump,
+  #      pg_restore) SIGSEGV at load time -- initdb dies before it can create
+  #      the cluster and the whole supervisor startup fails.
+  #
+  #   2. MISSING LOADABLE MODULES. The spec pulls the tree in via
+  #      collect_data_files('pgserver'), but that helper excludes shared
+  #      libraries, so every loadable module under pginstall/lib/postgresql is
+  #      dropped: plpgsql.so, vector.so (pgvector), dict_snowball.so (initdb's
+  #      post-bootstrap text-search setup loads it -> initdb fails even once it
+  #      no longer segfaults), pgoutput, the encoding converters, etc.
+  #
+  # Overlay the COMPLETE, pristine pginstall tree from the installed wheel onto
+  # the bundle. cp merges: it overwrites the corrupted executables and adds the
+  # missing .so modules, while leaving the vendored unaccent/pg_trgm contrib the
+  # spec grafted in (those are not in the wheel). Also refresh the external libs
+  # (pgserver.libs/). Must run inside the build venv where pgserver is
+  # importable (the CI step and build.sh's own usage both activate it).
+  PG_PKG="$(python -c 'import os, pgserver; print(os.path.dirname(os.path.abspath(pgserver.__file__)))')"
+  PG_SITE="$(dirname "$PG_PKG")"
+  DST_PGINSTALL="$BUNDLE/_internal/pgserver/pginstall"
+  [ -d "$PG_PKG/pginstall/bin" ] && [ -d "$DST_PGINSTALL" ] || {
+    echo "::error::Cannot locate pgserver pginstall to restore (src=$PG_PKG/pginstall dst=$DST_PGINSTALL)"; exit 1; }
+  cp -af "$PG_PKG/pginstall/." "$DST_PGINSTALL/"
+  if [ -d "$PG_SITE/pgserver.libs" ] && [ -d "$BUNDLE/_internal/pgserver.libs" ]; then
+    cp -af "$PG_SITE/pgserver.libs/." "$BUNDLE/_internal/pgserver.libs/"
+  fi
+  echo "==> Restored complete unstripped pgserver tree into $DST_PGINSTALL"
+  # Smoke-test: a real initdb into a temp dir must succeed (catches a regression
+  # in this restore, a broken wheel, or a still-missing module like
+  # dict_snowball). Fail the build loudly rather than ship a package that cannot
+  # start.
+  _pgt="$(mktemp -d)"
+  if ! "$DST_PGINSTALL/bin/initdb" -D "$_pgt/d" --auth=trust --encoding=utf8 -U postgres >"$_pgt/log" 2>&1; then
+    echo "::error::Bundled initdb failed after restore:"; cat "$_pgt/log"; rm -rf "$_pgt"; exit 1
+  fi
+  echo "==> Verified bundled initdb creates a cluster ($("$DST_PGINSTALL/bin/initdb" --version))"
+  rm -rf "$_pgt"
 fi
 
 echo "==> Bundle size breakdown (to spot what dominates the package)"
