@@ -21,10 +21,11 @@ test/
 # Student CLAP training (not needed in production)
 student_clap/
 
-# macOS standalone app: source tree (PyInstaller spec, vendored redis/pg
-# binaries, assets) and build artifacts. None of it is used by the Linux
-# container, so keep it out of the image.
+# macOS and Linux standalone app: source trees (PyInstaller spec / nfpm config,
+# vendored redis/pg binaries, assets) and build artifacts. None of it is used by
+# the Linux container, so keep it out of the image.
 macos/
+linux/
 build/
 dist/
 
