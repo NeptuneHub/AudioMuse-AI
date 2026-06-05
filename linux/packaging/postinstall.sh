@@ -18,8 +18,16 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
 fi
 
-echo "AudioMuse-AI installed. Launch it from your application menu, or run:"
+echo "AudioMuse-AI installed."
+echo
+echo "It does not start on its own. Launch it from your application menu"
+echo "(search for 'AudioMuse-AI'), or from a terminal run:"
 echo "    audiomuse-ai start"
-echo "Then open http://127.0.0.1:8000"
+echo "then open http://127.0.0.1:8000 in your browser."
+echo
+echo "To start it automatically when you log in (optional):"
+echo "    systemctl --user enable --now audiomuse-ai"
+echo
+echo "If the menu entry does not appear immediately, log out and back in."
 
 exit 0

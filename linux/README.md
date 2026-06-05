@@ -33,7 +33,18 @@ sudo apt install ./AudioMuse-AI-x86_64.deb
 sudo dnf install ./AudioMuse-AI-x86_64.rpm
 ```
 
-Then launch **AudioMuse-AI** from your application menu, or from a terminal:
+> Use `apt install ./file.deb` (not `sudo dpkg -i file.deb`). `dpkg -i` does
+> **not** pull the two declared dependencies (`libgomp1`, `xdg-utils`) and leaves
+> the package half-configured if they are absent — its post-install step (which
+> refreshes the menu/icon caches) then never runs, so the launcher may not show
+> up. If you already used `dpkg -i`, finish it with `sudo apt-get -f install`.
+
+### Starting it
+
+**The app is started on demand — it is not a background daemon, so nothing
+listens on `http://127.0.0.1:8000` until you start it** (just like the macOS
+menu-bar app). Launch **AudioMuse-AI** from your application menu, or from a
+terminal:
 
 ```bash
 audiomuse-ai start     # start everything + open the browser (foreground)
@@ -45,6 +56,26 @@ audiomuse-ai open      # open the web UI (starting the stack first if needed)
 The web UI is at `http://127.0.0.1:8000`. After first launch, configure your
 media server (Jellyfin, Navidrome, Lyrion, Emby or MPD) exactly as for the
 container version.
+
+If the **AudioMuse-AI** launcher does not appear in your menu right after
+install, log out and back in (some desktops only rescan `/usr/share/applications`
+on session start).
+
+### Optional: start automatically at login
+
+The package ships a **systemd user service** (disabled by default). Enable it to
+have AudioMuse-AI start for your user on login and stay supervised in the
+background:
+
+```bash
+systemctl --user enable --now audiomuse-ai      # start now + on every login
+loginctl enable-linger "$USER"                  # also keep it running after logout
+systemctl --user status audiomuse-ai            # check it
+systemctl --user disable --now audiomuse-ai     # turn it back off
+```
+
+It runs as your user over the same per-user data dir (no root, no system
+service), and starts without opening a browser (`AUDIOMUSE_OPEN_BROWSER=0`).
 
 ### Where state lives
 
@@ -139,7 +170,7 @@ PKG_VERSION=1.0.0 bash linux/build.sh
 | `env.py` | The environment handed to each child (embedded DB/queue, model paths). |
 | `AudioMuse-AI.spec` | PyInstaller one-dir spec. |
 | `build.sh` | PyInstaller build + `nfpm` packaging into `.deb`/`.rpm`. |
-| `packaging/` | `nfpm` config template, `.desktop` entries, post-install/-remove scripts. |
+| `packaging/` | `nfpm` config template, `.desktop` entries, the systemd **user** service, the square app icons (`icons/`), post-install/-remove scripts. |
 | `vendor/` | Helper scripts that build `redis-server`, the x86_64 PG contrib modules, and the aarch64 from-source PostgreSQL in CI. |
 
 > **No shared code is modified by this build.** The `linux/` package only *adds*

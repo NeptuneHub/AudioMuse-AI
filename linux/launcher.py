@@ -244,7 +244,8 @@ def main():
 
     command = _command_from_argv()
     if command in (None, "start"):
-        sys.exit(_run_supervisor(open_browser=True))
+        open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"
+        sys.exit(_run_supervisor(open_browser=open_browser))
     elif command == "stop":
         sys.exit(_cmd_stop())
     elif command == "status":

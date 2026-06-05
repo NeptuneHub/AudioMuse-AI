@@ -101,7 +101,7 @@ jobs:
           # source (aarch64 leg). rpm: so nfpm can emit an .rpm.
           sudo apt-get install -y --no-install-recommends \
             build-essential curl ca-certificates pkg-config \
-            libreadline-dev zlib1g-dev bison flex rpm
+            libreadline-dev zlib1g-dev bison flex rpm desktop-file-utils
           # nfpm (builds both .deb and .rpm from one config).
           case "${ARCH}" in
             x86_64)  NFPM_ARCH=x86_64 ;;
@@ -110,6 +110,13 @@ jobs:
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz" \
             | sudo tar xz -C /usr/local/bin nfpm
           nfpm --version
+
+      - name: Validate the desktop entries
+        run: |
+          set -euo pipefail
+          desktop-file-validate linux/packaging/AudioMuse-AI.desktop
+          desktop-file-validate linux/packaging/AudioMuse-AI-stop.desktop
+          echo "Desktop entries are valid."
 
       - name: Install Python dependencies
         run: |
@@ -234,13 +241,18 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
 
-      - name: Upload packages as workflow artifacts
+      - name: Upload .deb as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-linux-${{ env.ARCH }}
-          path: |
-            dist/AudioMuse-AI-${{ env.ARCH }}.deb
-            dist/AudioMuse-AI-${{ env.ARCH }}.rpm
+          name: AudioMuse-AI-${{ env.ARCH }}-deb
+          path: dist/AudioMuse-AI-${{ env.ARCH }}.deb
+          if-no-files-found: error
+
+      - name: Upload .rpm as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}-rpm
+          path: dist/AudioMuse-AI-${{ env.ARCH }}.rpm
           if-no-files-found: error
 
       # NB: the PR-description "test build links" block is written by the

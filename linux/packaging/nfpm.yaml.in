@@ -57,8 +57,20 @@ contents:
 
   - src: "@STAGE@/usr/share/icons/hicolor/512x512/apps/audiomuse-ai.png"
     dst: /usr/share/icons/hicolor/512x512/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/256x256/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/256x256/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/128x128/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/128x128/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/64x64/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/64x64/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/48x48/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/48x48/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/32x32/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/32x32/apps/audiomuse-ai.png
 
-  # CLI entry point on PATH.
+  - src: "@STAGE@/usr/lib/systemd/user/audiomuse-ai.service"
+    dst: /usr/lib/systemd/user/audiomuse-ai.service
+
   - src: /opt/AudioMuse-AI/AudioMuse-AI
     dst: /usr/bin/audiomuse-ai
     type: symlink

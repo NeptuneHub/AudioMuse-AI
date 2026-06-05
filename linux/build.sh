@@ -109,11 +109,19 @@ echo "==> Staging package payload"
 STAGE="dist/_pkg"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/opt" "$STAGE/usr/share/applications" \
-         "$STAGE/usr/share/icons/hicolor/512x512/apps"
+         "$STAGE/usr/lib/systemd/user"
 cp -a "$BUNDLE" "$STAGE/opt/AudioMuse-AI"
 cp linux/packaging/AudioMuse-AI.desktop "$STAGE/usr/share/applications/AudioMuse-AI.desktop"
 cp linux/packaging/AudioMuse-AI-stop.desktop "$STAGE/usr/share/applications/AudioMuse-AI-stop.desktop"
-cp screenshot/audiomuseai.png "$STAGE/usr/share/icons/hicolor/512x512/apps/audiomuse-ai.png"
+cp linux/packaging/audiomuse-ai.service "$STAGE/usr/lib/systemd/user/audiomuse-ai.service"
+
+for size in 512 256 128 64 48 32; do
+  src="linux/packaging/icons/audiomuse-ai_${size}.png"
+  [ -s "$src" ] || { echo "::error::Missing square icon source: $src"; exit 1; }
+  dst="$STAGE/usr/share/icons/hicolor/${size}x${size}/apps"
+  mkdir -p "$dst"
+  cp "$src" "$dst/audiomuse-ai.png"
+done
 
 echo "==> Generating nfpm config"
 mkdir -p dist
