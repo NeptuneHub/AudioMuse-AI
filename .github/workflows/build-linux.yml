@@ -215,7 +215,12 @@ jobs:
           )
           missing=0
           for f in "${required[@]}"; do
-            if [ ! -e "$f" ]; then echo "::error::Missing or empty: $f"; missing=1; fi
+            # Flag a file that is missing OR a zero-byte/truncated download. The
+            # size test only applies to regular files (directory entries in the
+            # list pass on existence alone).
+            if [ ! -e "$f" ] || { [ -f "$f" ] && [ ! -s "$f" ]; }; then
+              echo "::error::Missing or empty: $f"; missing=1
+            fi
           done
           if [ -z "$(find model/huggingface/hub/models--roberta-base -name tokenizer.json -print -quit)" ]; then
             echo "::error::roberta-base tokenizer.json missing after HF-cache prune"; missing=1

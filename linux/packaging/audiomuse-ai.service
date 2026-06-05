@@ -1,7 +1,6 @@
 [Unit]
 Description=AudioMuse-AI (standalone music analysis + smart playlists)
 Documentation=https://github.com/NeptuneHub/AudioMuse-AI
-After=default.target
 
 [Service]
 Type=simple

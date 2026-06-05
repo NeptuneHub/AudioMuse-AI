@@ -173,17 +173,19 @@ def _run_supervisor(open_browser=True):
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    def _boot():
-        try:
-            supervisor.start_all()
-            print("AudioMuse-AI is running at %s" % WEB_URL)
-            if open_browser:
-                _open_browser()
-        except Exception as exc:  # startup already logged; surface a hint too
-            print("AudioMuse-AI failed to start: %s" % exc, file=sys.stderr)
-            stop_event.set()
+    def _on_ready():
+        print("AudioMuse-AI is running at %s" % WEB_URL)
+        if open_browser:
+            _open_browser()
 
-    threading.Thread(target=_boot, name="boot", daemon=True).start()
+    def _on_error(exc):  # startup already logged; surface a hint too
+        print("AudioMuse-AI failed to start: %s" % exc, file=sys.stderr)
+        stop_event.set()
+
+    # The supervisor owns the boot thread so stop_all() can join it before
+    # tearing down -- a SIGTERM racing an in-progress boot must not leave the
+    # boot thread spawning children after the teardown sweep.
+    supervisor.start_in_background(on_ready=_on_ready, on_error=_on_error)
 
     try:
         while not stop_event.wait(0.5):
@@ -230,8 +232,11 @@ def _cmd_open():
     from linux import paths
     if _running_supervisor_pid(paths) is None:
         # Not running yet: start it in the foreground (this call becomes the
-        # supervisor and opens the browser once it is up).
-        return _run_supervisor(open_browser=True)
+        # supervisor and opens the browser once it is up). Honor
+        # AUDIOMUSE_OPEN_BROWSER like `start` does, so a headless/service
+        # invocation does not try to spawn a browser.
+        open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"
+        return _run_supervisor(open_browser=open_browser)
     _open_browser()
     return 0
 

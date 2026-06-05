@@ -61,6 +61,12 @@ class ProcessSupervisor:
         self._control = ControlServer(paths.control_socket_path(), self.dispatch_control)
         self._health_thread = None
         self._health_stop = threading.Event()
+        # Set by stop_all() to tell an in-flight start_all() to stop spawning, and
+        # owned-thread handles so stop_all() can join the boot/health threads
+        # before tearing down (otherwise a stop racing a boot sweeps the child
+        # table before boot finished spawning and leaks the late children).
+        self._stop_requested = threading.Event()
+        self._boot_thread = None
         self._log = self._setup_logging()
 
     def _setup_logging(self):
@@ -79,26 +85,54 @@ class ProcessSupervisor:
     def state(self):
         return self._state
 
+    def start_in_background(self, on_ready=None, on_error=None):
+        """Boot the stack on a daemon thread, firing the callbacks on
+        success/failure. The supervisor owns this thread so ``stop_all`` can join
+        it before tearing down -- a stop racing an in-progress boot would
+        otherwise sweep the child table before boot finished spawning, leaking
+        the late children as detached (``start_new_session``) orphans."""
+        def _boot():
+            try:
+                self.start_all()
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+                return
+            if on_ready is not None and self.is_running():
+                on_ready()
+        self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
+        self._boot_thread.start()
+        return self._boot_thread
+
     def start_all(self):
         with self._lock:
             if self._state in ("running", "starting"):
                 return
             self._state = "starting"
+            self._stop_requested.clear()
         self._log.info("=== AudioMuse-AI starting ===")
         try:
             self._reap_orphans()
             self._control.start()
+            if self._stop_requested.is_set():
+                return  # stop arrived mid-boot; the stopper handles teardown
             self._database_url = db_backend.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
+            if self._stop_requested.is_set():
+                return
             self._start_redis()
             self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
+                if self._stop_requested.is_set():
+                    return
                 self.start_child(name)
                 if name == "flask":
                     self._wait_http(FLASK_URL, timeout=180)
-            self._write_pidfile()
             with self._lock:
+                if self._stop_requested.is_set():
+                    return
                 self._state = "running"
+            self._write_pidfile()
             self._start_health_loop()
             self._log.info("=== AudioMuse-AI running ===")
         except Exception:
@@ -109,11 +143,17 @@ class ProcessSupervisor:
 
     def stop_all(self):
         with self._lock:
-            if self._state == "stopped":
+            if self._state in ("stopping", "stopped"):
                 return
             self._state = "stopping"
+            self._stop_requested.set()
             self._desired.clear()
         self._health_stop.set()
+        # Wait for any in-flight boot/health work to stop spawning before we
+        # sweep: a child spawned after the sweep would survive as an orphan in
+        # its own session/process group. Joining guarantees everything they
+        # started is registered in ``_children`` and gets torn down below.
+        self._join_workers()
         for name in reversed(BOOT_ORDER):
             self._terminate_named(name)
         self._terminate_named("redis")
@@ -127,7 +167,17 @@ class ProcessSupervisor:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
 
-    def _start_redis(self):
+    def _join_workers(self):
+        """Wait for the boot and health threads to finish before teardown.
+
+        Skips the current thread so stop_all() called from within start_all()'s
+        failure handler (boot thread) or never deadlocks on itself."""
+        current = threading.current_thread()
+        for thread in (self._boot_thread, self._health_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=30)
+
+    def _start_redis(self, wait_timeout=60):
         argv, url = taskqueue.build_embedded_redis_argv(
             paths.redis_binary(), paths.redis_socket_path(), paths.redis_dir()
         )
@@ -139,7 +189,7 @@ class ProcessSupervisor:
         # re-exec the frozen binary, whose bootloader re-sets the path, so they
         # don't need this; redis is a plain external binary that does.
         self._spawn("redis", argv, env_builder.restore_native_lib_path(dict(os.environ)))
-        self._wait_redis(timeout=60)
+        self._wait_redis(timeout=wait_timeout)
 
     def _wait_redis(self, timeout):
         deadline = time.time() + timeout
@@ -157,11 +207,16 @@ class ProcessSupervisor:
         role = ROLE_OF.get(name)
         if role is None:
             return False
+        with self._lock:
+            # Refuse to spawn once a stop is in progress -- otherwise the boot
+            # loop or the health loop could create a child after stop_all's
+            # teardown sweep, leaking it as a detached orphan.
+            if self._state not in ("starting", "running"):
+                return False
+            self._desired.add(name)
         argv = [sys.executable, f"--role={role}"]
         child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
         self._spawn(name, argv, child_env)
-        with self._lock:
-            self._desired.add(name)
         return True
 
     def stop_child(self, name):
@@ -202,24 +257,38 @@ class ProcessSupervisor:
     def _terminate_named(self, name):
         with self._lock:
             proc = self._children.pop(name, None)
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except Exception:
-            logger.exception("SIGTERM failed for %s", name)
-        try:
-            proc.wait(timeout=10)
-            return
-        except Exception:
-            pass
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=5)  # reap so it doesn't linger as a zombie
-        except Exception:
-            pass
+            if proc.poll() is not None:
+                return
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            except Exception:
+                logger.exception("SIGTERM failed for %s", name)
+            try:
+                proc.wait(timeout=10)
+                return
+            except Exception:
+                pass
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=5)  # reap so it doesn't linger as a zombie
+            except Exception:
+                pass
+        finally:
+            # Close the read end of the pipe so _pump's blocking readline wakes
+            # up and the log thread exits. Without this, a grand-child (ffmpeg,
+            # onnx, ...) that inherited the stdout write fd keeps the pipe open
+            # after the worker dies, so _pump never sees EOF and the thread leaks
+            # on every restart.
+            if proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
 
     def _start_health_loop(self):
         self._health_stop.clear()
@@ -235,8 +304,12 @@ class ProcessSupervisor:
             # of either (crash, OOM, or a stale sibling unlinking Redis's shared
             # unix socket) leaves every worker crash-looping forever.
             self._ensure_postgres_healthy()
+            if self._health_stop.is_set():
+                return
             self._ensure_redis_healthy()
             for name in list(self._desired):
+                if self._health_stop.is_set():
+                    return
                 with self._lock:
                     proc = self._children.get(name)
                 if proc is not None and proc.poll() is not None:
@@ -283,7 +356,10 @@ class ProcessSupervisor:
                 pass  # alive but unreachable (e.g. socket unlinked) -> restart
         self._log.warning("Embedded Redis unhealthy; restarting it")
         try:
-            self._start_redis()
+            # Use a short readiness wait here (vs. 60s at boot): this runs on the
+            # single health thread, so a long block would starve Postgres and
+            # child-restart checks for the whole window.
+            self._start_redis(wait_timeout=15)
             self._log.info("Embedded Redis restarted")
         except Exception:
             self._log.exception("Failed to restart embedded Redis")
@@ -350,7 +426,8 @@ class ProcessSupervisor:
                 if psutil is not None:
                     proc = psutil.Process(pid)
                     cmdline = " ".join(proc.cmdline())
-                    if paths.APP_NAME in cmdline or "--role=" in cmdline or "redis-server" in cmdline:
+                    if (paths.APP_NAME in cmdline or "--role=" in cmdline
+                            or "redis-server" in cmdline or "postgres" in cmdline):
                         proc.terminate()
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:

@@ -149,6 +149,18 @@ jobs:
             // Upsert the managed block, leaving the author's text untouched.
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
             let body = pr.body || '';
+
+            // Strip any legacy block left by the old in-build step (it used a
+            // different marker), so renaming the markers does not orphan a stale,
+            // never-updated block on in-flight PRs.
+            const LEGACY_START = '<!-- macos-test-build:start -->';
+            const LEGACY_END = '<!-- macos-test-build:end -->';
+            const ls = body.indexOf(LEGACY_START);
+            const le = body.indexOf(LEGACY_END);
+            if (ls !== -1 && le !== -1 && le > ls) {
+              body = (body.slice(0, ls) + body.slice(le + LEGACY_END.length)).replace(/\s+$/, '');
+            }
+
             const s = body.indexOf(START);
             const e = body.indexOf(END);
             if (s !== -1 && e !== -1 && e > s) {

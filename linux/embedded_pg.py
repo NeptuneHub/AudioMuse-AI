@@ -18,6 +18,7 @@ like the pgserver/macOS setup.
 
 import logging
 import os
+import shutil
 import subprocess
 import threading
 
@@ -27,6 +28,12 @@ logger = logging.getLogger("audiomuse.embedded_pg")
 
 _lock = threading.RLock()
 _data_dir = None  # remembered so stop() can target the right cluster
+
+# Written only after initdb AND our config edits both succeed, so its presence
+# proves a *complete* cluster. PG_VERSION alone is not enough: initdb writes it
+# partway through, so a crash/SIGKILL mid-initdb leaves a half-built dir that
+# looks initialized forever and wedges every later start.
+_READY_MARKER = "audiomuse_initialized"
 
 
 def _pg_env():
@@ -56,8 +63,41 @@ def _bin(name):
 
 
 def _initialized(data_dir):
-    # PG_VERSION exists only after a successful initdb.
-    return os.path.exists(os.path.join(data_dir, "PG_VERSION"))
+    if os.path.exists(os.path.join(data_dir, _READY_MARKER)):
+        return True
+    # Legacy clusters created before the completion marker existed: adopt them if
+    # initdb actually finished. global/pg_control is written by initdb and is
+    # required for the server to start, so treat it as the completeness signal,
+    # then stamp the marker so future starts take the fast path.
+    if os.path.exists(os.path.join(data_dir, "global", "pg_control")):
+        try:
+            with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
+                fh.write("ok\n")
+        except OSError:
+            pass
+        return True
+    return False
+
+
+def _reset_data_dir(data_dir):
+    """Empty a partially-initialized data dir so initdb can retry.
+
+    initdb refuses a non-empty target, so a half-built cluster (interrupted
+    initdb, no completion marker) would otherwise wedge every start forever.
+    Only ever called when :func:`_initialized` is False, so a complete cluster's
+    data is never touched."""
+    if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
+        return
+    logger.warning("Clearing incomplete PostgreSQL data dir %s before re-init", data_dir)
+    for entry in os.listdir(data_dir):
+        target = os.path.join(data_dir, entry)
+        try:
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.unlink(target)
+        except OSError:
+            logger.exception("Could not remove %s", target)
 
 
 def _dsn(data_dir):
@@ -100,6 +140,11 @@ def _init_cluster(data_dir, env):
         fh.write("\n# --- AudioMuse-AI embedded overrides ---\n")
         fh.write(f"unix_socket_directories = '{data_dir}'\n")
         fh.write("listen_addresses = ''\n")
+    # Stamp the completion marker last: only now is the cluster fully usable, so
+    # an interruption before this point leaves _initialized() False and triggers
+    # a clean re-init on the next start.
+    with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
+        fh.write("ok\n")
 
 
 def start(data_dir):
@@ -109,6 +154,7 @@ def start(data_dir):
         env = _pg_env()
         if not _initialized(data_dir):
             logger.info("Initializing embedded PostgreSQL cluster at %s", data_dir)
+            _reset_data_dir(data_dir)  # clear any half-built cluster first
             _init_cluster(data_dir, env)
         if not _is_running(data_dir, env):
             _run_checked([_bin("pg_ctl"), "-D", data_dir, "-w", "start"], env)

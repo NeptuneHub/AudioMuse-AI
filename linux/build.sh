@@ -95,31 +95,29 @@ if [ "$UNAME_ARCH" != "x86_64" ]; then
     echo "::error::Expected bundled PostgreSQL (pgsql/bin) in $BUNDLE (aarch64 build)"; exit 1
   fi
 else
-  # x86_64: repair the bundled pgserver (pgserver wheel) PostgreSQL tree, which
-  # PyInstaller damages in two independent ways -- both confirmed to break
-  # startup, and both fixed by overlaying the pristine wheel tree below:
+  # x86_64: repair the bundled pgserver (pgserver wheel) PostgreSQL tree.
   #
-  #   1. STRIPPED EXECUTABLES. The spec sets strip=True to shrink the unstripped
-  #      scipy/numpy/onnx/PyAV wheels (hundreds of MB). But pgserver's binaries
-  #      were already processed by auditwheel/patchelf (mangled libpq soname +
-  #      injected RPATH); running GNU `strip` over a patchelf-modified ELF
-  #      corrupts it, so the libpq-linked executables (initdb, psql, pg_dump,
-  #      pg_restore) SIGSEGV at load time -- initdb dies before it can create
-  #      the cluster and the whole supervisor startup fails.
+  # The spec pulls the tree in via collect_data_files('pgserver'), but that
+  # helper EXCLUDES shared libraries, so every loadable module under
+  # pginstall/lib/postgresql is dropped: plpgsql.so, vector.so (pgvector),
+  # dict_snowball.so (initdb's post-bootstrap text-search setup loads it ->
+  # initdb fails without it), pgoutput, the encoding converters, etc. Without
+  # them initdb cannot create the cluster and supervisor startup fails.
   #
-  #   2. MISSING LOADABLE MODULES. The spec pulls the tree in via
-  #      collect_data_files('pgserver'), but that helper excludes shared
-  #      libraries, so every loadable module under pginstall/lib/postgresql is
-  #      dropped: plpgsql.so, vector.so (pgvector), dict_snowball.so (initdb's
-  #      post-bootstrap text-search setup loads it -> initdb fails even once it
-  #      no longer segfaults), pgoutput, the encoding converters, etc.
+  # NOTE: the executables themselves are fine -- the spec sets strip=False
+  # (stripping is disabled on Linux precisely because it corrupts pgserver's
+  # patchelf-modified ELFs; see AudioMuse-AI.spec), and collect_data_files
+  # copies binaries verbatim, so the only thing actually missing is the .so
+  # modules above. Do NOT re-enable strip=True to "shrink" the bundle: that is
+  # what would corrupt initdb/psql/pg_dump and make them SIGSEGV at load.
   #
   # Overlay the COMPLETE, pristine pginstall tree from the installed wheel onto
-  # the bundle. cp merges: it overwrites the corrupted executables and adds the
-  # missing .so modules, while leaving the vendored unaccent/pg_trgm contrib the
-  # spec grafted in (those are not in the wheel). Also refresh the external libs
-  # (pgserver.libs/). Must run inside the build venv where pgserver is
-  # importable (the CI step and build.sh's own usage both activate it).
+  # the bundle. cp merges: it adds the missing .so modules (and harmlessly
+  # re-copies the already-correct executables), while leaving the vendored
+  # unaccent/pg_trgm contrib the spec grafted in (those are not in the wheel).
+  # Also refresh the external libs (pgserver.libs/). Must run inside the build
+  # venv where pgserver is importable (the CI step and build.sh's own usage both
+  # activate it).
   PG_PKG="$(python -c 'import os, pgserver; print(os.path.dirname(os.path.abspath(pgserver.__file__)))')"
   PG_SITE="$(dirname "$PG_PKG")"
   DST_PGINSTALL="$BUNDLE/_internal/pgserver/pginstall"
