@@ -167,6 +167,8 @@ Starting from release `v2.1.4` we provide a native Linux package (`.deb` and `.r
 - Data (database, Redis, temp audio): `~/.local/share/AudioMuse-AI`
 - Log: `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first — read the top)
 
+> **Tested on:** the `.deb` has been verified on **Debian GNU/Linux 12 (bookworm)** (glibc 2.36). The `.rpm` is built from the exact same payload but has not yet been tested on a live RPM-based distribution; it is expected to work on a reasonably recent system (e.g. Fedora / RHEL 9), but older distributions such as RHEL/Rocky/Alma 8 (glibc 2.28) are too old for the bundled binaries. Feedback on RPM-based distros is welcome.
+
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
