@@ -113,11 +113,16 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# strip=True: unlike the macOS spec (where stripping is off because the bundle is
-# code-signed), on Linux we strip debug symbols from every bundled .so/binary.
-# Linux wheels (scipy/numpy/onnxruntime/llvmlite/PyAV) often ship unstripped, so
-# this removes hundreds of MB. It does NOT touch the bundled PostgreSQL/Redis
-# (those are added as data / pre-built binaries, stripped in their own build).
+# strip=False: stripping is DISABLED on Linux because it corrupts the bundle.
+# Most of our native deps are manylinux wheels whose shared libraries were
+# already rewritten by auditwheel/patchelf (mangled, hashed sonames such as
+# ``libscipy_openblas-b75cc656.so`` and pgserver's ``libpq-084d956f.so.5.16``,
+# plus injected RPATHs). Running GNU ``strip`` over a patchelf-modified ELF
+# breaks it -- the result either SIGSEGVs at load (pgserver's initdb/psql) or
+# fails to load with "ELF load command address/offset not page-aligned" (scipy's
+# OpenBLAS, which crashes the Flask/worker import of sklearn -> scipy). Stripping
+# would save a few hundred MB, but a corrupted bundle does not start at all, so
+# correctness wins. (The macOS spec also keeps stripping off.)
 exe = EXE(
     pyz,
     a.scripts,
@@ -126,7 +131,7 @@ exe = EXE(
     name='AudioMuse-AI',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=False,
     upx=False,
     console=True,
 )
@@ -135,7 +140,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=True,
+    strip=False,
     upx=False,
     name='AudioMuse-AI',
 )
