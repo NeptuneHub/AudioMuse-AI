@@ -67,11 +67,6 @@ def generate_text(
     out_tokens = 8000 if max_tokens is None else int(max_tokens)
 
     is_deepseek = "deepseek" in (model_name or "").lower()
-    deepseek_thinking_off_forms = [
-        {"thinking": {"type": "disabled"}},
-        {"thinking": "none"},
-        {"thinking_mode": "non_think"},
-    ]
 
     if is_openai_format:
         payload = {
@@ -80,11 +75,8 @@ def generate_text(
             "stream": True,
             "temperature": temp,
             "max_tokens": out_tokens,
+            "reasoning_effort": "low" if is_deepseek else "none",
         }
-        if is_deepseek:
-            payload.update(deepseek_thinking_off_forms[0])
-        else:
-            payload["reasoning_effort"] = "none"
     else:
         payload = {
             "model": model_name,
@@ -98,8 +90,6 @@ def generate_text(
     base_delay = 5
     tried_aggressive_fallback = False
     tried_ultra_minimal_fallback = False
-    deepseek_form_idx = 0
-    tried_deepseek_no_thinking = False
 
     for attempt in range(max_retries + 1):
         try:
@@ -208,22 +198,6 @@ def generate_text(
                     sleep_time = base_delay * (2 ** attempt)
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
-                    continue
-
-            if e.response.status_code == 400 and is_openai_format and is_deepseek:
-                payload.pop("reasoning_effort", None)
-                if deepseek_form_idx + 1 < len(deepseek_thinking_off_forms):
-                    deepseek_form_idx += 1
-                    payload.pop("thinking", None)
-                    payload.pop("thinking_mode", None)
-                    payload.update(deepseek_thinking_off_forms[deepseek_form_idx])
-                    logger.info("DeepSeek rejected the thinking-disable parameter; retrying with an alternate form")
-                    continue
-                if not tried_deepseek_no_thinking:
-                    payload.pop("thinking", None)
-                    payload.pop("thinking_mode", None)
-                    tried_deepseek_no_thinking = True
-                    logger.info("DeepSeek rejected all thinking-disable forms; retrying without them")
                     continue
 
             if e.response.status_code == 400 and is_openai_format:

@@ -37,6 +37,8 @@ __pycache__/
 *.pyd
 venv
 .venv
+.venv-windows
+.venv-*
 env
 .env*
 
