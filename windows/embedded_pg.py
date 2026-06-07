@@ -109,7 +109,6 @@ def start(data_dir):
 
 
 def ensure_running(data_dir):
-    global _running_proc
     if _running_proc is not None and _running_proc.poll() is None:
         return paths.database_url()
     return start(data_dir)
