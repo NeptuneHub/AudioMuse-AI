@@ -34,11 +34,11 @@ if exist dist rmdir /s /q dist
 echo ==^> Verifying vendored native build inputs are present
 set MISSING=0
 if not exist "windows\vendor\redis\%ARCH%\redis-server.exe" (
-    echo ::error::Missing vendored file: windows\vendor\redis\%ARCH%\redis-server.exe
+    echo [ERROR] Missing vendored file: windows\vendor\redis\%ARCH%\redis-server.exe
     set MISSING=1
 )
 if not exist "windows\vendor\pg-contrib\%ARCH%\lib\unaccent.dll" (
-    echo ::error::Missing vendored file: windows\vendor\pg-contrib\%ARCH%\lib\unaccent.dll
+    echo [ERROR] Missing vendored file: windows\vendor\pg-contrib\%ARCH%\lib\unaccent.dll
     set MISSING=1
 )
 if "%MISSING%"=="1" (
@@ -51,7 +51,7 @@ pyinstaller windows\AudioMuse-AI.spec --noconfirm
 
 set "BUNDLE=dist\AudioMuse-AI"
 if not exist "%BUNDLE%\AudioMuse-AI.exe" (
-    echo ::error::PyInstaller did not produce %BUNDLE%\AudioMuse-AI.exe
+    echo [ERROR] PyInstaller did not produce %BUNDLE%\AudioMuse-AI.exe
     exit /b 1
 )
 
@@ -78,7 +78,7 @@ REM a full WiX authoring with shortcuts, Add/Remove Programs entries, etc.
 REM should be added in a follow-up (see windows\packaging\AudioMuse-AI.wxs).
 if exist "%WXS%" (
     wix build -o "%MSI%" "%WXS%" || (
-        echo ::warning::WiX build failed -- zip fallback will be used instead
+        echo [WARNING] WiX build failed -- zip fallback will be used instead
         del "%MSI%" 2>nul
     )
 )

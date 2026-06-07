@@ -28,14 +28,14 @@ if exist "%DEST%\redis-server.exe" (
 echo Downloading Redis %REDIS_VERSION% for Windows...
 curl -fsSL -o "%TEMP%\%ZIP%" "%URL%"
 if errorlevel 1 (
-    echo ::error::Failed to download Redis for Windows from %URL%
+    echo [ERROR] Failed to download Redis for Windows from %URL%
     exit /b 1
 )
 
 echo Extracting redis-server.exe...
 powershell -Command "Expand-Archive -Path '%TEMP%\%ZIP%' -DestinationPath '%TEMP%\redis-extract' -Force"
 if errorlevel 1 (
-    echo ::error::Failed to extract Redis zip
+    echo [ERROR] Failed to extract Redis zip
     exit /b 1
 )
 
@@ -44,7 +44,7 @@ for /r "%TEMP%\redis-extract" %%f in (redis-server.exe) do (
     goto :found
 )
 
-echo ::error::redis-server.exe not found in extracted zip
+echo [ERROR] redis-server.exe not found in extracted zip
 exit /b 1
 
 :found
