@@ -1,0 +1,226 @@
+# Builds the standalone Windows zip for x86_64 and attaches it to the
+# GitHub release that triggered the run.
+#
+# Mirrors build-linux.yml and build-macos.yml. The package bundles EVERYTHING
+# (Python runtime, onnxruntime, PyAV/ffmpeg, the ONNX models, embedded
+# PostgreSQL via pgserver and embedded Redis), so an installed package needs no
+# Docker and no separately-installed database/broker.
+#
+# The small native build inputs (redis-server.exe, the unaccent/pg_trgm contrib
+# modules) are built or downloaded in this workflow, then baked into the bundle
+# by windows/AudioMuse-AI.spec.
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# same GitHub releases the Dockerfile/macOS/Linux builds use, INCLUDING the
+# HuggingFace cache (trimmed to just the roberta-base tokenizer the app actually
+# loads) so the release assets stay under GitHub's 2 GB per-file limit.
+
+name: Build standalone Windows zip
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag
+  pull_request:         # Build on PRs too, to catch bundle breakage early.
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+
+jobs:
+  build:
+    # Skip draft PRs and fork PRs -- the same guard the other build workflows use.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    env:
+      ARCH: amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture
+        shell: powershell
+        run: |
+          $got = (Get-WmiObject Win32_Processor).Architecture
+          Write-Host "CPU Architecture: $got (9=amd64, 12=arm64)"
+          if ($got -ne 9) {
+            Write-Error "Expected amd64 runner but got architecture $got"
+            exit 1
+          }
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m venv .venv-windows
+          .venv-windows\Scripts\activate
+          pip install --upgrade pip
+          pip install -r requirements/windows.txt
+
+      - name: Build vendored redis-server.exe
+        shell: cmd
+        run: windows\vendor\build-redis.bat
+
+      - name: Verify vendored PostgreSQL contrib is present
+        shell: powershell
+        run: |
+          $dest = "windows\vendor\pg-contrib\$env:ARCH"
+          $required = @("lib\unaccent.dll", "lib\pg_trgm.dll", "extension\unaccent.control", "extension\pg_trgm.control", "extension\unaccent--1.1.sql", "extension\pg_trgm--1.3.sql", "tsearch_data\unaccent.rules")
+          $bad = @()
+          foreach ($f in $required) {
+            $p = Join-Path $dest $f
+            if (-not (Test-Path $p) -or (Get-Item $p).Length -eq 0) { $bad += $f }
+          }
+          if ($bad.Count -ne 0) {
+            Write-Error "Missing or empty vendored pg-contrib files: $($bad -join ', '). Regenerate with windows/vendor/pg-contrib/build-pg-contrib-cross.sh -- never ship empty placeholders (they silently disable unaccent/pg_trgm search)."
+            exit 1
+          }
+          Write-Host "Vendored pg-contrib present and non-empty."
+
+      - name: Assemble ./model (mirrors the Dockerfile/macOS/Linux models stage)
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path model | Out-Null
+          $modelRelease = "$env:MODEL_RELEASE"
+          $dclapRelease = "$env:DCLAP_RELEASE"
+
+          Write-Host "==> musicnn + CLAP text models (from $modelRelease)"
+          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D model --clobber `
+            -p musicnn_embedding.onnx `
+            -p musicnn_prediction.onnx `
+            -p clap_text_model.onnx
+
+          Write-Host "==> DCLAP audio model (from $dclapRelease in the -DCLAP repo)"
+          gh release download $dclapRelease -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber `
+            -p model_epoch_36.onnx `
+            -p model_epoch_36.onnx.data
+
+          Write-Host "==> HuggingFace cache (roberta/bert/bart)"
+          $tmp_hf = Join-Path $env:RUNNER_TEMP "hf_models"
+          New-Item -ItemType Directory -Force -Path $tmp_hf | Out-Null
+          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp_hf --clobber `
+            -p huggingface_models.tar.gz
+          New-Item -ItemType Directory -Force -Path model\huggingface | Out-Null
+          tar -xzf "$tmp_hf\huggingface_models.tar.gz" -C model\huggingface
+          if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting huggingface models"; exit 1 }
+          Remove-Item -Recurse -Force $tmp_hf
+
+          Write-Host "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
+          $hf = "model\huggingface\hub"
+          if (Test-Path "$hf\models--bert-base-uncased") { Remove-Item -Recurse -Force "$hf\models--bert-base-uncased" }
+          if (Test-Path "$hf\models--facebook--bart-base") { Remove-Item -Recurse -Force "$hf\models--facebook--bart-base" }
+          $rb = "$hf\models--roberta-base"
+          if (Test-Path $rb) {
+            Get-ChildItem -Recurse -File "$rb\blobs" | Where-Object { $_.Length -gt 10MB } | Remove-Item -Force
+            Get-ChildItem -Recurse "$rb\snapshots" -Include "model.safetensors","pytorch_model.bin" | Remove-Item -Force
+          }
+
+          Write-Host "==> lyrics bundles (whisper / silero / gte)"
+          $tmp = Join-Path $env:RUNNER_TEMP "lyrics_models"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp --clobber `
+            -p lyrics_model_whisper.tar.gz `
+            -p lyrics_model_silero_vad.tar.gz `
+            -p lyrics_model_gte_vnni.tar.gz
+          foreach ($t in @("lyrics_model_whisper", "lyrics_model_silero_vad", "lyrics_model_gte_vnni")) {
+            tar -xzf "$tmp\$t.tar.gz" -C model
+            if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting $t"; exit 1 }
+          }
+          Remove-Item -Recurse -Force $tmp
+
+      - name: Verify the assembled model/ is complete
+        shell: powershell
+        run: |
+          $required = @(
+            "model\musicnn_embedding.onnx",
+            "model\musicnn_prediction.onnx",
+            "model\clap_text_model.onnx",
+            "model\model_epoch_36.onnx",
+            "model\model_epoch_36.onnx.data",
+            "model\huggingface\hub\models--roberta-base\snapshots",
+            "model\silero_vad.onnx",
+            "model\gte-multilingual-base-int8.onnx",
+            "model\whisper-small-onnx\encoder_model.onnx",
+            "model\whisper-small-onnx\decoder_model_merged.onnx",
+            "model\gte-multilingual-base\tokenizer.json"
+          )
+          $missing = 0
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) {
+              Write-Error "Missing or empty: $f"
+              $missing = 1
+            }
+          }
+          if ($missing -ne 0) { Write-Error "Refusing to build an incomplete bundle."; exit 1 }
+          Write-Host "Model assembly verified."
+
+      - name: Build the bundle
+        shell: powershell
+        run: |
+          .venv-windows\Scripts\activate
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $ver = "0.0.0"
+          }
+          $env:PKG_VERSION = $ver
+          cmd /c windows\build.bat
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+
+      - name: Upload zip as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}-windows-zip
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-windows.zip
+          if-no-files-found: error
+
+      # NB: the PR-description "test build links" block is written by the
+      # dedicated `pr-test-link.yml` workflow (which runs after this build,
+      # verifies the artifacts exist, and posts the consolidated link block).
+
+  # Attach the zip to the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach packages to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/AudioMuse-AI-*-windows.zip
+          fail_on_unmatched_files: true

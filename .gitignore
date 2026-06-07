@@ -9,12 +9,14 @@ venv/
 .venv/
 .venv-macos/
 .venv-linux/
+.venv-windows/
 env/
 
 # Linux native build inputs built fresh in CI (not committed; see linux/vendor/README.md)
 /linux/vendor/redis/
 /linux/vendor/pg-contrib/*/
 /linux/vendor/postgres/*/
+/windows/vendor/redis/
 
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!
@@ -80,3 +82,4 @@ analysis.md
 .claude/settings.local.json
 .claude/settings.local.json
 lyrics_model_gte_vnni.tar.gz
+windows/vendor/redis/amd64/redis-server.exe

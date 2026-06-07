@@ -15,7 +15,7 @@ jobs:
       - name: Scan for CRLF (\r)
         run: |
           # List files with \r, excluding the .git directory
-          BAD_FILES=$(grep -rIl $'\r' --exclude-dir=.git . || true)
+          BAD_FILES=$(grep -rIl $'\r' --exclude-dir=.git --exclude-dir=windows . || true)
           
           if [ -n "$BAD_FILES" ]; then
             echo "❌ ERROR: CRLF (Windows) line endings detected!"

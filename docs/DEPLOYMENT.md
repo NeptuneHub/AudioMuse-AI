@@ -9,6 +9,7 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
 - [Local Deployment with Docker Compose](#local-deployment-with-docker-compose)
 - [Local Deployment MacOS](#local-deployment-macos)
 - [Local Deployment Linux](#local-deployment-linux)
+- [Local Deployment Windows](#local-deployment-windows)
 - [Local Deployment with Podman Quadlets](#local-deployment-with-podman-quadlets)
 
 ## Quick Start Deployment on K3S WITH HELM
@@ -184,6 +185,41 @@ Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
 * Logs: `~/.local/state/AudioMuse-AI/logs/audiomuse.log`
 
 > **Tested on:** Debian GNU/Linux 12 (bookworm) with glibc 2.36. RPMs are expected to work on current Fedora/RHEL systems but may not support older distributions.
+
+## Local Deployment Windows
+
+The native Windows package is shipped as a release asset for x86_64 only: a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). It bundles the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
+
+**Prerequisites:**
+* Windows 10 or 11 (x86_64)
+
+**Install (ZIP):**
+1. Download the latest `AudioMuse-AI-amd64-windows.zip` from the GitHub releases page.
+2. Unzip it anywhere.
+3. Double-click `AudioMuse-AI.exe` (or run it from a terminal).
+4. Open the web UI at `http://127.0.0.1:8000`.
+
+**Control from a terminal:**
+* Start the stack and open the browser:
+  ```powershell
+  AudioMuse-AI.exe start
+  ```
+* Print whether it is running or stopped:
+  ```powershell
+  AudioMuse-AI.exe status
+  ```
+* Stop the app:
+  ```powershell
+  AudioMuse-AI.exe stop
+  ```
+
+**Important:**
+* The app is unsigned, so Windows SmartScreen may warn on first run — choose "More info" then "Run anyway".
+* The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
+
+**Data and logs:**
+* Data: `%LOCALAPPDATA%\AudioMuse-AI`
+* Logs: `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log`
 
 ## **Local Deployment with Podman Quadlets**
 

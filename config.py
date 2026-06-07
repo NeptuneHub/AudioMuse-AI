@@ -107,7 +107,7 @@ MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music"
 
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.1.3"
+APP_VERSION = "v2.1.4"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -306,6 +306,8 @@ QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()
 APP_DATA_DIR = os.environ.get("APP_DATA_DIR", "")
 AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
+AUDIOMUSE_CONTROL_HOST = os.environ.get("AUDIOMUSE_CONTROL_HOST", "")
+AUDIOMUSE_CONTROL_PORT = os.environ.get("AUDIOMUSE_CONTROL_PORT", "")
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")

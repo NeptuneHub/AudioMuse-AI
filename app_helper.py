@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import socket
+import sys
 import time
 from urllib.parse import urlparse
 
@@ -103,8 +104,18 @@ def init_db():
         cur.execute("SELECT pg_advisory_lock(726354821)")
         try:
             # Enable extensions to fix and assist in searches
-            cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
-            cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
+            if sys.platform == 'win32':
+                for ext in ('unaccent', 'pg_trgm'):
+                    cur.execute("SAVEPOINT ext_create")
+                    try:
+                        cur.execute(f'CREATE EXTENSION IF NOT EXISTS {ext}')
+                        cur.execute("RELEASE SAVEPOINT ext_create")
+                    except Exception:
+                        logger.warning("Extension %s not available -- skipping", ext)
+                        cur.execute("ROLLBACK TO SAVEPOINT ext_create")
+            else:
+                cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
+                cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
             # Create 'score' table
             cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
             # Add 'energy' column if not exists
@@ -161,34 +172,50 @@ def init_db():
                 cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
 
             # Create helper function for accent stripping (safe to run multiple times)
-            cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
-
-            # Create/replace trigger function to keep search_u in sync
-            cur.execute("""
-                CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN
-                    NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
-                    RETURN NEW;
-                END;
-                $$;
-            """)
-
-            # Attach trigger to update search_u on insert/update
-            # Note: Postgres doesn't support CREATE TRIGGER IF NOT EXISTS, so we drop and recreate.
-            cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
-            cur.execute("""
-                CREATE TRIGGER score_search_u_sync_trigger
-                BEFORE INSERT OR UPDATE ON score
-                FOR EACH ROW
-                EXECUTE FUNCTION score_search_u_sync();
-            """)
-
-            # Backfill existing rows (ensures proper value for pre-existing data)
-            # This is safe to run repeatedly.
-            cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
-
-            # Create index on 'score' to assist in searches
-            cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+            if sys.platform == 'win32':
+                cur.execute("SAVEPOINT search_setup")
+                try:
+                    cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                    cur.execute("""
+                        CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+                        BEGIN
+                            NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
+                            RETURN NEW;
+                        END;
+                        $$;
+                    """)
+                    cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
+                    cur.execute("""
+                        CREATE TRIGGER score_search_u_sync_trigger
+                        BEFORE INSERT OR UPDATE ON score
+                        FOR EACH ROW
+                        EXECUTE FUNCTION score_search_u_sync();
+                    """)
+                    cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
+                    cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                    cur.execute("RELEASE SAVEPOINT search_setup")
+                except Exception:
+                    logger.warning("unaccent/pg_trgm extensions not available -- accent-insensitive search disabled")
+                    cur.execute("ROLLBACK TO SAVEPOINT search_setup")
+            else:
+                cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                cur.execute("""
+                    CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+                    BEGIN
+                        NEW.search_u := lower(immutable_unaccent(concat_ws(' ', NEW.title, NEW.author, NEW.album)));
+                        RETURN NEW;
+                    END;
+                    $$;
+                """)
+                cur.execute("DROP TRIGGER IF EXISTS score_search_u_sync_trigger ON score")
+                cur.execute("""
+                    CREATE TRIGGER score_search_u_sync_trigger
+                    BEFORE INSERT OR UPDATE ON score
+                    FOR EACH ROW
+                    EXECUTE FUNCTION score_search_u_sync();
+                """)
+                cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
+                cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
             # Create 'playlist' table
             cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")

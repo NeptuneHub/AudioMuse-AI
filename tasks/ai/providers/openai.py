@@ -66,6 +66,8 @@ def generate_text(
     temp = 0.7 if temperature is None else float(temperature)
     out_tokens = 8000 if max_tokens is None else int(max_tokens)
 
+    is_deepseek = "deepseek" in (model_name or "").lower()
+
     if is_openai_format:
         payload = {
             "model": model_name,
@@ -73,10 +75,7 @@ def generate_text(
             "stream": True,
             "temperature": temp,
             "max_tokens": out_tokens,
-            # Disable reasoning (OpenAI-standard switch; OpenRouter honors it too)
-            # so reasoning models don't think unbounded. Dropped in the 400
-            # unsupported_parameter fallback below if a model rejects it.
-            "reasoning_effort": "none",
+            "reasoning_effort": "low" if is_deepseek else "none",
         }
     else:
         payload = {

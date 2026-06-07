@@ -28,6 +28,7 @@ on:
     workflows:
       - "Build standalone macOS app"
       - "Build standalone Linux packages"
+      - "Build standalone Windows zip"
       - "Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM"
       - "Build and Push AudioMuse AI Docker Image with NVIDIA support"
       - "Build and Push AudioMuse AI Docker Image (NOAVX2)"
@@ -102,6 +103,8 @@ jobs:
                 kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-linux-deb' },
               { label: 'Linux aarch64 (.rpm)', wf: 'build-linux.yml',
                 kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-linux-rpm' },
+              { label: 'Windows x86_64 (.zip)', wf: 'build-windows.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-amd64-windows-zip' },
               { label: 'Docker image', wf: 'build-arm-intel.yml',
                 kind: 'image', image: `${ghcr}:pr-${pull_number}` },
               { label: 'Docker image (nvidia)', wf: 'build-nvidia.yml',
