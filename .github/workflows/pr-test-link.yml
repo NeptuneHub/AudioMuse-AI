@@ -35,10 +35,11 @@ on:
       - completed
 
 # Serialize updates for a given PR head so two builds finishing at once cannot
-# clobber each other's edit. Do NOT cancel in progress -- every run must apply.
+# clobber each other's edit. Cancel stale queued runs — only the last one runs
+# and sees ALL completed builds, not just the one that triggered it.
 concurrency:
   group: pr-test-link-${{ github.event.workflow_run.head_branch }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
