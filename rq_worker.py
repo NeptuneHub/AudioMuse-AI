@@ -24,10 +24,6 @@ os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
 
 from rq import SimpleWorker, Worker
-# On Windows, SpawnWorker uses os.spawnv() with sys.executable -c "..."
-# which doesn't work with PyInstaller-frozen executables.  Use
-# SimpleWorker instead: it runs jobs in-process (no fork/spawn at all).
-# If a job crashes the worker, the supervisor auto-restarts it.
 WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 
 try:

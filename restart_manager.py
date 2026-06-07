@@ -51,28 +51,26 @@ def publish_start_request():
 def _send_control(arguments):
     """Forward an ``[action, *services]`` request to the standalone supervisor.
 
-    On macOS/Linux the supervisor listens on a **unix socket**
-    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on **TCP**
+    On macOS/Linux the supervisor listens on a unix socket
+    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on TCP
     (``AUDIOMUSE_CONTROL_HOST`` / ``AUDIOMUSE_CONTROL_PORT``) because
     ``AF_UNIX`` is not available.  The JSON-line protocol is identical.
     """
     if not arguments:
         return False
 
-    control_host = os.environ.get('AUDIOMUSE_CONTROL_HOST') or getattr(config, 'AUDIOMUSE_CONTROL_HOST', None)
-    control_port = os.environ.get('AUDIOMUSE_CONTROL_PORT') or getattr(config, 'AUDIOMUSE_CONTROL_PORT', None)
+    control_host = config.AUDIOMUSE_CONTROL_HOST
+    control_port = config.AUDIOMUSE_CONTROL_PORT
 
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
         if control_host and control_port:
-            # TCP (Windows)
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(15)
                 sock.connect((str(control_host), int(control_port)))
                 sock.sendall(payload + b'\n')
                 response = sock.recv(1024).strip()
         elif config.AUDIOMUSE_CONTROL_SOCKET:
-            # Unix socket (macOS/Linux)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(15)
                 sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)

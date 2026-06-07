@@ -103,16 +103,16 @@ def init_db():
         # so this lock can NEVER leak permanently even if init_db() raises.
         cur.execute("SELECT pg_advisory_lock(726354821)")
         try:
-            # Enable extensions to fix and assist in searches.
-            # On Windows these extensions may not be compiled yet; skip
-            # gracefully so the rest of init_db can proceed.
+            # Enable extensions to fix and assist in searches
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
+                    cur.execute("SAVEPOINT ext_create")
                     try:
                         cur.execute(f'CREATE EXTENSION IF NOT EXISTS {ext}')
+                        cur.execute("RELEASE SAVEPOINT ext_create")
                     except Exception:
                         logger.warning("Extension %s not available -- skipping", ext)
-                        cur.execute("ROLLBACK")
+                        cur.execute("ROLLBACK TO SAVEPOINT ext_create")
             else:
                 cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
                 cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
@@ -171,10 +171,9 @@ def init_db():
                 logger.info("Adding 'search_u' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
 
-            # Create helper function for accent stripping (safe to run multiple times).
-            # On Windows where unaccent/pg_trgm extensions may not be compiled,
-            # skip the entire accent/search block gracefully.
+            # Create helper function for accent stripping (safe to run multiple times)
             if sys.platform == 'win32':
+                cur.execute("SAVEPOINT search_setup")
                 try:
                     cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
                     cur.execute("""
@@ -194,9 +193,10 @@ def init_db():
                     """)
                     cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
                     cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                    cur.execute("RELEASE SAVEPOINT search_setup")
                 except Exception:
                     logger.warning("unaccent/pg_trgm extensions not available -- accent-insensitive search disabled")
-                    cur.execute("ROLLBACK")
+                    cur.execute("ROLLBACK TO SAVEPOINT search_setup")
             else:
                 cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
                 cur.execute("""

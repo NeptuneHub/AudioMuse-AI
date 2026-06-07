@@ -155,12 +155,9 @@ def _restore_config(original_config):
 
 def _test_media_server_connection(filtered_values):
     test_config = _merge_test_config(filtered_values)
-    media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
-    server_url = test_config.get(f'{media_type.upper()}_URL', test_config.get('JELLYFIN_URL', ''))
-    user_id = test_config.get(f'{media_type.upper()}_USER_ID', test_config.get('JELLYFIN_USER_ID', ''))
-    app.logger.info('Test connection: type=%s url=%s user_id=%s', media_type, server_url, user_id[:8] + '...' if len(user_id) > 8 else user_id)
     original_config = _patch_config_for_test(test_config)
     try:
+        media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
         probe_limit = getattr(config, 'PROBE_TOP_PLAYED_LIMIT', 1)
         items = mediaserver.get_top_played_songs(probe_limit)
         if not items:
@@ -173,7 +170,6 @@ def _test_media_server_connection(filtered_values):
     except AudioMuseError:
         raise
     except Exception as exc:
-        app.logger.error('Test connection failed for %s at %s: %s', media_type, server_url, exc, exc_info=True)
         raise AudioMuseError(error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc) from exc
     finally:
         _restore_config(original_config)

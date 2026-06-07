@@ -306,6 +306,8 @@ QUEUE_TYPE = os.environ.get("QUEUE_TYPE", "redis").lower()
 APP_DATA_DIR = os.environ.get("APP_DATA_DIR", "")
 AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
+AUDIOMUSE_CONTROL_HOST = os.environ.get("AUDIOMUSE_CONTROL_HOST", "")
+AUDIOMUSE_CONTROL_PORT = os.environ.get("AUDIOMUSE_CONTROL_PORT", "")
 
 # --- AI User for Chat SQL Execution ---
 AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
