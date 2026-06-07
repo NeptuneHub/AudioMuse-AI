@@ -18,6 +18,8 @@ import platform
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 arch = platform.machine().lower()  # 'amd64' on Windows, normalize to what the build expects
+if arch == 'x86_64':
+    arch = 'amd64'
 # pgserver ships a Windows wheel; if not available, the fallback embedded_pg is used.
 USE_PGSERVER = True  # will be checked at runtime by db_backend
 

@@ -245,7 +245,8 @@ class ProcessSupervisor:
             raise RuntimeError("Redis did not start within 30 seconds")
 
     def _ensure_redis_running(self):
-        if self._redis_url is None:
+        proc = getattr(self, "_redis_proc", None)
+        if self._redis_url is None or proc is None or proc.poll() is not None:
             self._start_redis()
         return self._redis_url
 

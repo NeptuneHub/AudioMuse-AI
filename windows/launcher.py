@@ -132,13 +132,16 @@ def _acquire_single_instance_lock(paths):
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     mutex_name = r"Global\AudioMuse-AI-Supervisor"
     handle = kernel32.CreateMutexW(None, False, mutex_name)
     if not handle:
         return False
-    last_error = kernel32.GetLastError()
-    if last_error == 183:  # ERROR_ALREADY_EXISTS
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         kernel32.CloseHandle(handle)
         return False
 
@@ -156,7 +159,10 @@ def _release_single_instance_lock():
     global _INSTANCE_LOCK
     if _INSTANCE_LOCK is not None:
         import ctypes
-        kernel32 = ctypes.windll.kernel32
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
         kernel32.CloseHandle(_INSTANCE_LOCK)
         _INSTANCE_LOCK = None
 
