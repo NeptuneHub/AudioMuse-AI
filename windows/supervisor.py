@@ -28,7 +28,6 @@ import urllib.request
 
 import redis as redis_lib
 
-import taskqueue
 from windows import db_backend
 from windows import env as env_builder
 from windows import paths

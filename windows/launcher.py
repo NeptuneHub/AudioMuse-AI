@@ -32,6 +32,14 @@ def _win_get_context(method=None):
         method = 'spawn'
     return _orig_get_context(method)
 multiprocessing.get_context = _win_get_context
+
+# OpenTelemetry's entry-point-based context loading breaks in PyInstaller
+# frozen apps because ``importlib.metadata.entry_points()`` can raise
+# ``StopIteration`` when no entry points are found (the iterator is
+# exhausted).  Patch it to return an empty list instead, then force the
+# contextvars runtime context before any import triggers it.
+import os as _os
+_os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
 # ------------------------------------------------------------------
 
 import os

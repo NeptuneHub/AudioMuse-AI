@@ -58,9 +58,9 @@ if USE_PGSERVER:
     _pg_contrib = os.path.join(ROOT, 'windows/vendor/pg-contrib', arch)
     _pg_dst = 'pgserver/pginstall'
     for _f in glob.glob(os.path.join(_pg_contrib, 'extension', '*')):
-        datas.append((_f, f'{_pg_dst}/share/extension'))
+        datas.append((_f, f'{_pg_dst}/share/postgresql/extension'))
     for _f in glob.glob(os.path.join(_pg_contrib, 'tsearch_data', '*')):
-        datas.append((_f, f'{_pg_dst}/share/tsearch_data'))
+        datas.append((_f, f'{_pg_dst}/share/postgresql/tsearch_data'))
     for _f in glob.glob(os.path.join(_pg_contrib, 'lib', '*.dll')):
         binaries.append((_f, f'{_pg_dst}/lib'))
 
