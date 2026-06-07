@@ -201,8 +201,8 @@ jobs:
       - name: Upload zip as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-${{ env.ARCH }}
-          path: dist/AudioMuse-AI-${{ env.ARCH }}.zip
+          name: AudioMuse-AI-${{ env.ARCH }}-macos
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-macos.zip
           if-no-files-found: error
 
       # NB: the PR-description "test build links" block is no longer written
