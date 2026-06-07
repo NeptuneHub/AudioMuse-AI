@@ -41,6 +41,10 @@ def _repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def tray_icon():
+    return os.path.join(resource_root(), "assets", "AudioMuse-AI.ico")
+
+
 def _ensure(path):
     os.makedirs(path, exist_ok=True)
     return path

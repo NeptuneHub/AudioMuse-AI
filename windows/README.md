@@ -46,7 +46,7 @@ windows\build.bat
 
 ## What the build produces
 
-* `dist/AudioMuse-AI/` — unzipped, runnable folder. Double-click `AudioMuse-AI.exe` or run from a terminal.
+* `dist/AudioMuse-AI/` — unzipped, runnable folder. Double-click `AudioMuse-AI.exe` to launch the tray app, or run from a terminal.
 * `dist/AudioMuse-AI-amd64-windows.msi` — MSI installer. Installs to `C:\Program Files\AudioMuse-AI\`, creates Start Menu shortcuts.
 * `dist/AudioMuse-AI-amd64-windows.zip` — portable zip archive (same content as the one-dir bundle).
 
@@ -55,7 +55,7 @@ windows\build.bat
 When installed via MSI:
 ```
 C:\Program Files\AudioMuse-AI\
-├── AudioMuse-AI.exe       # Launcher (start/stop/status/open)
+├── AudioMuse-AI.exe       # Launcher (tray app / start/stop/status/open)
 ├── _internal\             # PyInstaller bundle
 │   ├── python3.dll
 │   ├── model\             # ONNX models + HuggingFace cache
@@ -80,12 +80,28 @@ C:\Users\<user>\AppData\Local\AudioMuse-AI\
 └── supervisor_pids.json
 ```
 
+## Tray app
+
+Launching with no arguments (double-click, or the Start Menu / desktop shortcut)
+opens a notification-area (system tray) icon — the Windows counterpart of the
+macOS menu-bar agent. Right-click the icon for the menu:
+
+* **Status** — Running / Starting… / Stopped
+* **Open in Browser** — open the web UI (also the left-click action)
+* **Start** / **Stop** — boot or shut down the embedded stack
+* **Open Log** — open `audiomuse.log` in the default editor
+* **Quit** — stop everything and exit
+
+The console window is hidden automatically when launched by double-click (it stays
+visible when you run a command from an existing terminal).
+
 ## CLI commands
 
 ```
-AudioMuse-AI.exe              # Start the full stack + open browser
-AudioMuse-AI.exe start        # Same as above
-AudioMuse-AI.exe stop         # Gracefully shut down
+AudioMuse-AI.exe              # Open the tray app (default)
+AudioMuse-AI.exe tray         # Same as above
+AudioMuse-AI.exe start        # Run the supervisor in the foreground console (logs to the terminal)
+AudioMuse-AI.exe stop         # Gracefully shut down a running instance
 AudioMuse-AI.exe status       # Print running/stopped
 AudioMuse-AI.exe open         # Open web UI (auto-starts if stopped)
 ```
@@ -94,7 +110,7 @@ AudioMuse-AI.exe open         # Open web UI (auto-starts if stopped)
 
 * **No Unix sockets** — Windows uses TCP on 127.0.0.1 for Redis (6379), PostgreSQL (5432), and the control server (8001). The `restart_manager.py` shared code uses `AUDIOMUSE_PLATFORM=macos` (same as Linux) to select the socket-based restart path; `windows/control_server.py` provides the same JSON-line protocol over TCP.
 * **No `flock`** — single-instance enforcement uses a Windows named mutex (`CreateMutexW`).
-* **No `rumps`/`AppKit`** — the launcher is a console application, not a menu-bar agent.
+* **Tray app via `pystray`** (not `rumps`/`AppKit`) — the Windows counterpart of the macOS menu-bar agent: a notification-area icon with Start / Stop / Open Log / Open in Browser / Quit. The exe stays a console app (so the CLI subcommands and `CTRL_BREAK_EVENT` shutdown keep working); the console window is just hidden when launched by double-click.
 * **`CTRL_BREAK_EVENT`** instead of `SIGTERM` for child process termination.
 * **`waitress`** (not `gunicorn`) serves the Flask app — same as macOS and Linux builds.
 

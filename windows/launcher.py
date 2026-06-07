@@ -195,7 +195,9 @@ def main():
     _silence_supervisor_db_probe()
 
     cmd = _command_from_argv()
-    if cmd is None or cmd == "start":
+    if cmd is None or cmd == "tray":
+        _run_tray()
+    elif cmd == "start":
         _start_supervisor()
     elif cmd == "stop":
         _stop_supervisor()
@@ -205,7 +207,7 @@ def main():
         _open_or_start()
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
-        print("Usage: AudioMuse-AI.exe [start|stop|status|open]", file=sys.stderr)
+        print("Usage: AudioMuse-AI.exe [tray|start|stop|status|open]", file=sys.stderr)
         sys.exit(1)
 
 
@@ -238,6 +240,93 @@ def _start_supervisor():
         pass
     except Exception as exc:
         print(f"Startup failed: {exc}", file=sys.stderr)
+    finally:
+        supervisor.stop_all()
+        _release_single_instance_lock()
+
+
+def _hide_console_if_owned():
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        kernel32.GetConsoleWindow.restype = wintypes.HWND
+        kernel32.GetConsoleProcessList.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+        kernel32.GetConsoleProcessList.restype = wintypes.DWORD
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        buf = (wintypes.DWORD * 2)()
+        if kernel32.GetConsoleProcessList(buf, 2) == 1:
+            hwnd = kernel32.GetConsoleWindow()
+            if hwnd:
+                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
+def _run_tray():
+    """Run as a notification-area (tray) app: the Windows counterpart of the macOS menu bar."""
+    _hide_console_if_owned()
+
+    from windows import paths
+    from windows.supervisor import ProcessSupervisor
+    import pystray
+    from PIL import Image
+
+    if not _acquire_single_instance_lock(paths):
+        print("Another instance is already running. Opening browser...")
+        _open_browser(WEB_URL)
+        return
+
+    supervisor = ProcessSupervisor()
+    _labels = {"running": "Running", "starting": "Starting...", "stopping": "Stopping...", "stopped": "Stopped"}
+
+    def _status_title(_item):
+        return f"Status: {_labels.get(supervisor.state(), supervisor.state())}"
+
+    def _on_open_browser(icon, _item):
+        _open_browser(WEB_URL)
+
+    def _on_open_log(icon, _item):
+        try:
+            os.startfile(paths.log_file())
+        except Exception:
+            pass
+
+    def _on_start(icon, _item):
+        threading.Thread(target=supervisor.start_all, name="tray-start", daemon=True).start()
+
+    def _on_stop(icon, _item):
+        threading.Thread(target=supervisor.stop_all, name="tray-stop", daemon=True).start()
+
+    def _on_quit(icon, _item):
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem(_status_title, None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Open in Browser", _on_open_browser, default=True),
+        pystray.MenuItem("Start", _on_start, enabled=lambda _i: supervisor.state() == "stopped"),
+        pystray.MenuItem("Stop", _on_stop, enabled=lambda _i: supervisor.state() in ("running", "starting")),
+        pystray.MenuItem("Open Log", _on_open_log),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quit", _on_quit),
+    )
+
+    icon_path = paths.tray_icon()
+    image = Image.open(icon_path) if os.path.exists(icon_path) else None
+    icon = pystray.Icon("AudioMuse-AI", icon=image, title="AudioMuse-AI", menu=menu)
+
+    def _boot():
+        try:
+            supervisor.start_all()
+            _open_browser(WEB_URL)
+        except Exception as exc:
+            print(f"Startup failed: {exc}", file=sys.stderr)
+
+    threading.Thread(target=_boot, name="boot", daemon=True).start()
+    try:
+        icon.run()
     finally:
         supervisor.stop_all()
         _release_single_instance_lock()

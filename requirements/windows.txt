@@ -16,6 +16,11 @@ waitress
 # mcp 1.27.0 requires >=310 on Windows; pin to the minimum supported.
 pywin32>=310
 
+# Windows tray (notification-area) menu app -- the counterpart to the macOS
+# menu-bar agent. pystray needs Pillow to load the .ico.
+pystray==0.19.5
+Pillow
+
 # Build tooling.
 pyinstaller
 pyinstaller-hooks-contrib

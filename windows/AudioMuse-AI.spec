@@ -33,6 +33,8 @@ datas = [
     (os.path.join(ROOT, 'model'), 'model'),
     # Root-level data file the app loads relative to config.py's __file__
     (os.path.join(ROOT, 'mood_centroids_real_080_clap.json'), '.'),
+    # Tray-app icon, loaded at runtime via paths.tray_icon()
+    (os.path.join(ROOT, 'windows/assets/AudioMuse-AI.ico'), 'assets'),
 ]
 if USE_PGSERVER:
     try:
@@ -82,6 +84,8 @@ hiddenimports += collect_submodules('windows')
 hiddenimports += collect_submodules('tasks')
 hiddenimports += collect_submodules('lyrics')
 hiddenimports += collect_submodules('sklearn')
+hiddenimports += collect_submodules('pystray')
+hiddenimports += collect_submodules('PIL')
 
 # rumps/AppKit are macOS-only.
 excludes = ['rumps', 'AppKit', 'Foundation', 'objc']
