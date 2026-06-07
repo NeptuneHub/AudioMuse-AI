@@ -169,8 +169,30 @@ def redis_binary():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "redis", platform.machine().lower(), "redis-server.exe")
 
 
+def _pgserver_pginstall():
+    """Root of pgserver's bundled PostgreSQL install, or None when pgserver is absent.
+
+    pgserver (the default backend) ships the full PostgreSQL tree -- including the
+    client tools pg_dump/pg_restore/psql -- under ``pgserver/pginstall``. The
+    ``pgsql``/``vendor/postgres`` layout below is only used by the fallback
+    ``embedded_pg`` backend.
+    """
+    if getattr(sys, "frozen", False):
+        cand = os.path.join(resource_root(), "pgserver", "pginstall")
+        return cand if os.path.isdir(cand) else None
+    try:
+        import pgserver
+        cand = os.path.join(os.path.dirname(pgserver.__file__), "pginstall")
+        return cand if os.path.isdir(cand) else None
+    except Exception:
+        return None
+
+
 def pg_bin_dir():
     """Directory containing the bundled PostgreSQL client tools (pg_dump, psql, etc.)."""
+    pginstall = _pgserver_pginstall()
+    if pginstall:
+        return os.path.join(pginstall, "bin")
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgsql", "bin")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "postgres", platform.machine().lower(), "bin")
@@ -178,6 +200,9 @@ def pg_bin_dir():
 
 def pg_lib_dir():
     """Directory containing the bundled PostgreSQL shared libraries."""
+    pginstall = _pgserver_pginstall()
+    if pginstall:
+        return os.path.join(pginstall, "lib")
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgsql", "lib")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "postgres", platform.machine().lower(), "lib")
