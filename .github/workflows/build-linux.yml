@@ -249,15 +249,15 @@ jobs:
       - name: Upload .deb as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-${{ env.ARCH }}-Linux-deb
-          path: dist/AudioMuse-AI-${{ env.ARCH }}-Linux.deb
+          name: AudioMuse-AI-${{ env.ARCH }}-linux-deb
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.deb
           if-no-files-found: error
 
       - name: Upload .rpm as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-${{ env.ARCH }}-Linux-rpm
-          path: dist/AudioMuse-AI-${{ env.ARCH }}-Linux.rpm
+          name: AudioMuse-AI-${{ env.ARCH }}-linux-rpm
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.rpm
           if-no-files-found: error
 
       # NB: the PR-description "test build links" block is written by the

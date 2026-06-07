@@ -185,8 +185,8 @@ ls -lh dist/pkg/
 # Normalize the output names so the workflow can find them deterministically.
 DEB="$(ls dist/pkg/*.deb | head -n1)"
 RPM="$(ls dist/pkg/*.rpm | head -n1)"
-cp "$DEB" "dist/AudioMuse-AI-${UNAME_ARCH}-Linux.deb"
-cp "$RPM" "dist/AudioMuse-AI-${UNAME_ARCH}-Linux.rpm"
+cp "$DEB" "dist/AudioMuse-AI-${UNAME_ARCH}-linux.deb"
+cp "$RPM" "dist/AudioMuse-AI-${UNAME_ARCH}-linux.rpm"
 echo "==> Done:"
-echo "    dist/AudioMuse-AI-${UNAME_ARCH}-Linux.deb"
-echo "    dist/AudioMuse-AI-${UNAME_ARCH}-Linux.rpm"
+echo "    dist/AudioMuse-AI-${UNAME_ARCH}-linux.deb"
+echo "    dist/AudioMuse-AI-${UNAME_ARCH}-linux.rpm"
