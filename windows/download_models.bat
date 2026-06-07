@@ -59,6 +59,7 @@ echo ============================================================
 echo Extracting huggingface models...
 mkdir model\huggingface 2>nul
 tar -xzf model\huggingface_models.tar.gz -C model\huggingface
+if errorlevel 1 exit /b 1
 del model\huggingface_models.tar.gz
 
 echo Trimming HF cache to roberta-base tokenizer only...
@@ -67,14 +68,17 @@ if exist "model\huggingface\hub\models--facebook--bart-base" rmdir /s /q "model\
 
 echo Extracting whisper models...
 tar -xzf model\lyrics_model_whisper.tar.gz -C model
+if errorlevel 1 exit /b 1
 del model\lyrics_model_whisper.tar.gz
 
 echo Extracting silero VAD model...
 tar -xzf model\lyrics_model_silero_vad.tar.gz -C model
+if errorlevel 1 exit /b 1
 del model\lyrics_model_silero_vad.tar.gz
 
 echo Extracting GTE model...
 tar -xzf model\lyrics_model_gte_vnni.tar.gz -C model
+if errorlevel 1 exit /b 1
 del model\lyrics_model_gte_vnni.tar.gz
 
 echo.

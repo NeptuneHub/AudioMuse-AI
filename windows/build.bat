@@ -63,7 +63,7 @@ set "MSI=dist\AudioMuse-AI-%ARCH%-windows.msi"
 REM Create the WiX source file.
 (
 echo ^<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"^>
-echo   ^<Package Name="AudioMuse-AI" Manufacturer="AudioMuse-AI" Version="%VER%" UpgradeCode="PUT-GUID-HERE"^>
+echo   ^<Package Name="AudioMuse-AI" Manufacturer="AudioMuse-AI" Version="%VER%" UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890"^>
 echo     ^<MajorUpgrade DowngradeErrorMessage="A newer version is already installed." /^>
 echo     ^<MediaTemplate EmbedCab="yes" /^>
 echo     ^<Feature Id="Main" Title="AudioMuse-AI" Level="1"^>

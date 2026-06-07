@@ -239,13 +239,8 @@ def _stop_supervisor():
         try:
             with open(lock_path, "r") as fh:
                 pid = int(fh.read().strip())
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(1, False, pid)  # PROCESS_TERMINATE
-            if handle:
-                kernel32.TerminateProcess(handle, 0)
-                kernel32.CloseHandle(handle)
-                print("Supervisor terminated.")
+            os.kill(pid, signal.SIGTERM)
+            print("Supervisor terminated.")
         except Exception:
             print("Could not stop supervisor (not running?).", file=sys.stderr)
 

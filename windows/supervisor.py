@@ -271,6 +271,9 @@ class ProcessSupervisor:
             try:
                 urllib.request.urlopen(url, timeout=2)
                 return
+            except urllib.error.HTTPError:
+                # Server is up (returning 4xx/5xx counts as responding)
+                return
             except Exception:
                 time.sleep(1)
         raise RuntimeError(f"Timed out waiting for {url}")

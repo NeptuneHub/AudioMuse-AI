@@ -131,11 +131,13 @@ jobs:
             -p model_epoch_36.onnx.data
 
           Write-Host "==> HuggingFace cache (roberta/bert/bart)"
-          $tmp_hf = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_; $_.FullName }
+          $tmp_hf = Join-Path $env:RUNNER_TEMP "hf_models"
+          New-Item -ItemType Directory -Force -Path $tmp_hf | Out-Null
           gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp_hf --clobber `
             -p huggingface_models.tar.gz
           New-Item -ItemType Directory -Force -Path model\huggingface | Out-Null
           tar -xzf "$tmp_hf\huggingface_models.tar.gz" -C model\huggingface
+          if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting huggingface models"; exit 1 }
           Remove-Item -Recurse -Force $tmp_hf
 
           Write-Host "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
@@ -149,13 +151,15 @@ jobs:
           }
 
           Write-Host "==> lyrics bundles (whisper / silero / gte)"
-          $tmp = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_; $_.FullName }
+          $tmp = Join-Path $env:RUNNER_TEMP "lyrics_models"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
           gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp --clobber `
             -p lyrics_model_whisper.tar.gz `
             -p lyrics_model_silero_vad.tar.gz `
             -p lyrics_model_gte_vnni.tar.gz
           foreach ($t in @("lyrics_model_whisper", "lyrics_model_silero_vad", "lyrics_model_gte_vnni")) {
             tar -xzf "$tmp\$t.tar.gz" -C model
+            if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting $t"; exit 1 }
           }
           Remove-Item -Recurse -Force $tmp
 

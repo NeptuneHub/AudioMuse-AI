@@ -109,7 +109,13 @@ def start(data_dir):
 
 
 def ensure_running(data_dir):
-    if _running_proc is not None and _running_proc.poll() is None:
+    port = str(paths.pg_port())
+    result = subprocess.run(
+        [_bin("pg_isready"), "-h", "127.0.0.1", "-p", port, "-q"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode == 0:
         return paths.database_url()
     return start(data_dir)
 
