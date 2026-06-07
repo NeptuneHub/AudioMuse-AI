@@ -187,6 +187,11 @@ def _silence_supervisor_db_probe():
 
 
 def main():
+    if "--run-restore" in sys.argv:
+        i = sys.argv.index("--run-restore")
+        from app_backup import _run_restore_runner
+        sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
+
     role = _role_from_argv()
     if role:
         _run_role(role)
