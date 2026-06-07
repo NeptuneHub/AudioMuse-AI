@@ -42,7 +42,7 @@ if not exist "windows\vendor\pg-contrib\%ARCH%\lib\unaccent.dll" (
     set MISSING=1
 )
 if "%MISSING%"=="1" (
-    echo Vendored inputs missing (see windows\vendor\README.md).
+    echo Vendored inputs missing ^(see windows\vendor\README.md^).
     exit /b 1
 )
 

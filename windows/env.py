@@ -19,16 +19,22 @@ value is an internal "standalone embedded supervisor" signal, not a real OS chec
 
 import os
 import sys
+from urllib.parse import quote
 
 from windows import paths
 
 _WORKER_ROLES = {"worker-high", "worker-default", "janitor", "restart-listener"}
 
 
-def build_child_env(role, database_url, redis_url):
+def build_child_env(role, db_conn, redis_url):
     """Return an ``os.environ`` copy with the embedded-mode overrides for ``role``."""
     env = dict(os.environ)
     model_dir = paths.model_dir()
+    database_url = (
+        f"postgresql://{quote(db_conn['user'], safe='')}:"
+        f"{quote(db_conn['password'], safe='')}"
+        f"@{db_conn['host']}:{db_conn['port']}/{db_conn['dbname']}"
+    )
     env.update({
         # See module docstring: selects the control-socket restart path in the
         # shared restart_manager.py. Not a real OS check.
@@ -64,11 +70,11 @@ def build_child_env(role, database_url, redis_url):
         # Backup/restore. Repoint at the writable data dir.
         "BACKUP_DIR": paths.backup_dir(),
         "RESTORE_LOG_DIR": paths.backup_dir(),
-        "POSTGRES_HOST": "127.0.0.1",
-        "POSTGRES_PORT": str(paths.pg_port()),
-        "POSTGRES_USER": "postgres",
-        "POSTGRES_PASSWORD": "",
-        "POSTGRES_DB": "postgres",
+        "POSTGRES_HOST": db_conn["host"],
+        "POSTGRES_PORT": str(db_conn["port"]),
+        "POSTGRES_USER": db_conn["user"],
+        "POSTGRES_PASSWORD": db_conn["password"],
+        "POSTGRES_DB": db_conn["dbname"],
         # Put the bundled Postgres client tools on PATH.
         "PATH": paths.pg_bin_dir() + os.pathsep + os.environ.get("PATH", ""),
     })

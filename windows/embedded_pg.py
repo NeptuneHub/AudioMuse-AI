@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 from windows import paths
@@ -32,6 +33,11 @@ _READY_MARKER = "audiomuse_initialized"
 def _bin(name):
     ext = ".exe" if sys.platform == "win32" else ""
     return os.path.join(paths.pg_bin_dir(), name + ext)
+
+
+def _conn(password):
+    return {"host": "127.0.0.1", "port": paths.pg_port(), "user": "postgres",
+            "password": password, "dbname": "postgres"}
 
 
 def _initialized(data_dir):
@@ -62,7 +68,7 @@ def _reset_data_dir(data_dir):
             logger.exception("Could not remove %s", target)
 
 
-def start(data_dir):
+def start(data_dir, password):
     global _running_proc
     with _lock:
         os.makedirs(data_dir, exist_ok=True)
@@ -70,14 +76,28 @@ def start(data_dir):
         if not _initialized(data_dir):
             _reset_data_dir(data_dir)
             logger.info("Initializing PostgreSQL cluster at %s", data_dir)
-            subprocess.run(
-                [_bin("initdb"), "-D", data_dir, "--no-locale", "--encoding=UTF8"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            # Stamp the marker so we know initdb completed successfully.
+            pwfile = None
+            try:
+                fd, pwfile = tempfile.mkstemp(prefix="ampg_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(password)
+                subprocess.run(
+                    [_bin("initdb"), "-D", data_dir, "-U", "postgres",
+                     "--auth-host=scram-sha-256", "--auth-local=scram-sha-256",
+                     f"--pwfile={pwfile}", "--no-locale", "--encoding=UTF8"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            finally:
+                if pwfile and os.path.exists(pwfile):
+                    try:
+                        os.unlink(pwfile)
+                    except OSError:
+                        pass
+            with open(os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n") as fh:
+                fh.write("\npassword_encryption = scram-sha-256\n")
             with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
                 fh.write("ok\n")
 
@@ -105,10 +125,10 @@ def start(data_dir):
         else:
             raise RuntimeError("PostgreSQL did not start within 30 seconds")
 
-        return paths.database_url()
+        return _conn(password)
 
 
-def ensure_running(data_dir):
+def ensure_running(data_dir, password):
     port = str(paths.pg_port())
     result = subprocess.run(
         [_bin("pg_isready"), "-h", "127.0.0.1", "-p", port, "-q"],
@@ -116,8 +136,8 @@ def ensure_running(data_dir):
         stderr=subprocess.DEVNULL,
     )
     if result.returncode == 0:
-        return paths.database_url()
-    return start(data_dir)
+        return _conn(password)
+    return start(data_dir, password)
 
 
 def stop():

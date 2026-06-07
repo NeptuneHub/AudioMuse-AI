@@ -23,7 +23,9 @@ so the embedded cluster still starts.
 
 import os
 import platform
+import secrets
 import sys
+from urllib.parse import quote
 
 APP_NAME = "AudioMuse-AI"
 
@@ -84,6 +86,43 @@ def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
 
 
+def secrets_dir():
+    return _ensure(os.path.join(app_support_dir(), "secrets"))
+
+
+def _secret(name):
+    """Return a persisted random token, generating it on first use.
+
+    Windows has no AF_UNIX, so the embedded Postgres/Redis listen on loopback TCP
+    rather than the owner-only unix sockets used on macOS/Linux. A loopback port
+    is reachable by any local process, so each service is gated by a generated
+    per-install secret instead. The token lives under the user-private
+    ``%LOCALAPPDATA%`` profile (default Windows ACLs are owner-only).
+    """
+    path = os.path.join(secrets_dir(), name)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            value = fh.read().strip()
+        if value:
+            return value
+    except OSError:
+        pass
+    value = secrets.token_urlsafe(32)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(value)
+    return value
+
+
+def db_password():
+    """Generated superuser password for the embedded PostgreSQL."""
+    return _secret("pg_password")
+
+
+def redis_password():
+    """Generated password for the embedded Redis (``requirepass``)."""
+    return _secret("redis_password")
+
+
 def redis_port():
     """TCP port for the embedded Redis (no unix sockets on Windows)."""
     return 6379
@@ -95,12 +134,8 @@ def pg_port():
 
 
 def redis_url():
-    return f"redis://127.0.0.1:{redis_port()}/0"
-
-
-def database_url():
-    """libpq connection string for the embedded PostgreSQL (TCP, not unix socket)."""
-    return f"host=127.0.0.1 port={pg_port()} dbname=postgres user=postgres"
+    """Password-bearing URL for the embedded Redis (loopback TCP, scram-equivalent gate)."""
+    return f"redis://:{quote(redis_password(), safe='')}@127.0.0.1:{redis_port()}/0"
 
 
 def control_port():

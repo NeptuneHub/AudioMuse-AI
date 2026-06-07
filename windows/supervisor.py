@@ -56,7 +56,7 @@ class ProcessSupervisor:
         self._lock = threading.RLock()
         self._children = {}
         self._desired = set()
-        self._database_url = None
+        self._db_conn = None
         self._redis_url = None
         self._state = "stopped"
         self._control = ControlServer(
@@ -99,7 +99,7 @@ class ProcessSupervisor:
             self._control.start()
             if self._stop_requested.is_set():
                 return
-            self._database_url = db_backend.start_embedded(paths.pgdata_dir())
+            self._db_conn = db_backend.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
             self._start_redis()
             self._log.info("Embedded Redis ready")
@@ -139,9 +139,9 @@ class ProcessSupervisor:
     def start_child(self, name):
         role = ROLE_OF[name]
         self._log.info("Starting %s (role=%s)", name, role)
-        database_url = db_backend.ensure_embedded_running(paths.pgdata_dir())
+        db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
         redis_url = self._ensure_redis_running()
-        env = env_builder.build_child_env(role, database_url, redis_url)
+        env = env_builder.build_child_env(role, db_conn, redis_url)
         exe = sys.executable if not getattr(sys, "frozen", False) else sys.argv[0]
         cmd = [exe, f"--role={role}"]
         popen = subprocess.Popen(
@@ -214,10 +214,12 @@ class ProcessSupervisor:
         redis_bin = paths.redis_binary()
         redis_dir = paths.redis_dir()
         os.makedirs(redis_dir, exist_ok=True)
+        redis_password = paths.redis_password()
         cmd = [
             redis_bin,
             "--port", str(paths.redis_port()),
             "--bind", "127.0.0.1",
+            "--requirepass", redis_password,
             "--dir", redis_dir,
             "--save", "",
             "--appendonly", "no",
@@ -233,7 +235,8 @@ class ProcessSupervisor:
         # Wait for Redis to be ready.
         for _ in range(60):
             try:
-                r = redis_lib.Redis(host="127.0.0.1", port=paths.redis_port(), socket_connect_timeout=1)
+                r = redis_lib.Redis(host="127.0.0.1", port=paths.redis_port(),
+                                    password=redis_password, socket_connect_timeout=1)
                 r.ping()
                 break
             except Exception:
