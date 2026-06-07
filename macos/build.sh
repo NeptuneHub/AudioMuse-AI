@@ -29,7 +29,7 @@ codesign --verify --verbose "$APP" || true
 spctl -a -vv "$APP" || true
 
 ARCH="$(uname -m)"
-ZIP="dist/AudioMuse-AI-${ARCH}.zip"
+ZIP="dist/AudioMuse-AI-${ARCH}-macos.zip"
 echo "==> Packaging ${ZIP} (AudioMuse-AI.app + readme.md)"
 # Stage the app + a plain-text install note, then archive both at the zip root.
 # We archive with `ditto` (not `zip`): the bundle is >4 GB and needs ZIP64, which
