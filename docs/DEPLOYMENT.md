@@ -188,21 +188,16 @@ Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
 
 ## Local Deployment Windows
 
-The native Windows package is shipped as a release asset for x86_64 only. It is provided both as an MSI installer (`AudioMuse-AI-amd64-windows.msi`) and a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). Both bundle the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
+The native Windows package is shipped as a release asset for x86_64 only: a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). It bundles the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
 
 **Prerequisites:**
 * Windows 10 or 11 (x86_64)
 
-**Install (MSI):**
-1. Download the latest `AudioMuse-AI-amd64-windows.msi` from the GitHub releases page.
-2. Double-click the MSI and follow the wizard. It installs to `C:\Program Files\AudioMuse-AI\` and creates Start Menu shortcuts.
-3. Launch `AudioMuse-AI` from the Start Menu.
+**Install (ZIP):**
+1. Download the latest `AudioMuse-AI-amd64-windows.zip` from the GitHub releases page.
+2. Unzip it anywhere.
+3. Double-click `AudioMuse-AI.exe` (or run it from a terminal).
 4. Open the web UI at `http://127.0.0.1:8000`.
-
-**Alternative portable flow (ZIP):**
-* Download and unzip `AudioMuse-AI-amd64-windows.zip` anywhere.
-* Double-click `AudioMuse-AI.exe` (or run it from a terminal).
-* Open the web UI at `http://127.0.0.1:8000`.
 
 **Control from a terminal:**
 * Start the stack and open the browser:

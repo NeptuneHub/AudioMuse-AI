@@ -9,7 +9,6 @@
 *.txt text eol=lf
 *.spec text eol=lf
 *.ps1 text eol=lf
-*.wxs text eol=lf
 *.md text eol=lf
 Dockerfile* text eol=lf
 

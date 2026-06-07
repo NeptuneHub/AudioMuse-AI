@@ -9,8 +9,7 @@ bundle -- ``sys._MEIPASS`` when frozen, the repo root in dev. Every *writable*
 path (the Postgres data dir, the Redis working dir, transcode scratch, the numba
 cache, logs, the control socket and the supervisor pid file) lives under
 ``%LOCALAPPDATA%\\AudioMuse-AI``; nothing writable ever lands inside the
-read-only, system-installed bundle (``C:\\Program Files\\AudioMuse-AI`` on an
-installed MSI).
+read-only bundle directory (wherever the zip is extracted).
 
 The writable root is ``%LOCALAPPDATA%\\AudioMuse-AI`` (typically
 ``C:\\Users\\<user>\\AppData\\Local\\AudioMuse-AI``). Like the macOS/Linux builds,

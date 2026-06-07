@@ -1,4 +1,4 @@
-# Builds the standalone Windows MSI + zip for x86_64 and attaches them to the
+# Builds the standalone Windows zip for x86_64 and attaches it to the
 # GitHub release that triggered the run.
 #
 # Mirrors build-linux.yml and build-macos.yml. The package bundles EVERYTHING
@@ -15,7 +15,7 @@
 # HuggingFace cache (trimmed to just the roberta-base tokenizer the app actually
 # loads) so the release assets stay under GitHub's 2 GB per-file limit.
 
-name: Build standalone Windows MSI
+name: Build standalone Windows zip
 
 on:
   push:
@@ -200,18 +200,11 @@ jobs:
           path: dist/AudioMuse-AI-${{ env.ARCH }}-windows.zip
           if-no-files-found: error
 
-      - name: Upload MSI as a workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AudioMuse-AI-${{ env.ARCH }}-windows-msi
-          path: dist/AudioMuse-AI-${{ env.ARCH }}-windows.msi
-          if-no-files-found: warn
-
       # NB: the PR-description "test build links" block is written by the
       # dedicated `pr-test-link.yml` workflow (which runs after this build,
       # verifies the artifacts exist, and posts the consolidated link block).
 
-  # Attach the MSI + zip to the release. Runs only for tag pushes.
+  # Attach the zip to the release. Runs only for tag pushes.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -229,6 +222,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/AudioMuse-AI-*.msi
             artifacts/AudioMuse-AI-*-windows.zip
           fail_on_unmatched_files: true

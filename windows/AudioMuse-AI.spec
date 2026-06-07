@@ -4,8 +4,8 @@
 Run from the repo root: ``pyinstaller windows/AudioMuse-AI.spec --noconfirm``.
 Produces a one-dir bundle at ``dist/AudioMuse-AI/`` (the executable plus an
 ``_internal`` tree with Python, the libraries, the models and the embedded
-PostgreSQL/Redis). ``windows/build.bat`` then packages that tree into an MSI
-installer using WiX.
+PostgreSQL/Redis). ``windows/build.bat`` then packages that tree into a zip
+archive.
 
 Builds for the architecture of the running Python (CI builds on ``windows-latest``,
 which is x86_64/amd64).

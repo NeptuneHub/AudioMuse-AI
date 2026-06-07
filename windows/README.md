@@ -3,7 +3,8 @@
 Windows counterpart of the [`macos/`](../macos) and [`linux/`](../linux) builds.
 Packages the entire AudioMuse-AI stack (Python, ONNX models, embedded PostgreSQL
 via pgserver, embedded Redis, the Flask web UI, the RQ workers) into a single
-MSI installer — no Docker, no external database, no manual setup.
+self-contained folder, distributed as a zip — no Docker, no external database,
+no manual setup.
 
 > **x86_64 only** initially. ARM64 Windows support may be added later once
 > onnxruntime/pgserver/redis-server Windows arm64 builds are validated.
@@ -14,7 +15,6 @@ MSI installer — no Docker, no external database, no manual setup.
 * Windows 10/11 (x86_64)
 * Python 3.12
 * Visual Studio Build Tools (for compiling pg-contrib; or use pre-built vendor binaries)
-* [WiX Toolset v5](https://wixtoolset.org/) (optional; for `.msi` packaging)
 
 **Steps:**
 ```powershell
@@ -40,30 +40,27 @@ windows\build.bat
 
 # 6. Output
 #    dist\AudioMuse-AI\                — one-dir PyInstaller bundle
-#    dist\AudioMuse-AI-amd64-windows.msi — MSI installer (if WiX is installed)
-#    dist\AudioMuse-AI-amd64-windows.zip — ZIP archive (always produced)
+#    dist\AudioMuse-AI-amd64-windows.zip — ZIP archive (the shipped artifact)
 ```
 
 ## What the build produces
 
-* `dist/AudioMuse-AI/` — unzipped, runnable folder. Double-click `AudioMuse-AI.exe` to launch the tray app, or run from a terminal.
-* `dist/AudioMuse-AI-amd64-windows.msi` — MSI installer. Installs to `C:\Program Files\AudioMuse-AI\`, creates Start Menu shortcuts.
-* `dist/AudioMuse-AI-amd64-windows.zip` — portable zip archive (same content as the one-dir bundle).
+* `dist/AudioMuse-AI/` — runnable folder. Double-click `AudioMuse-AI.exe` to launch the tray app, or run from a terminal.
+* `dist/AudioMuse-AI-amd64-windows.zip` — the shipped artifact: a portable zip of the one-dir bundle. Unzip anywhere and run `AudioMuse-AI.exe`.
 
 ## Runtime layout
 
-When installed via MSI:
+The unzipped bundle (run it from wherever you extract it):
 ```
-C:\Program Files\AudioMuse-AI\
+AudioMuse-AI\
 ├── AudioMuse-AI.exe       # Launcher (tray app / start/stop/status/open)
-├── _internal\             # PyInstaller bundle
-│   ├── python3.dll
-│   ├── model\             # ONNX models + HuggingFace cache
-│   ├── templates\
-│   ├── static\
-│   ├── redis-server.exe   # Embedded Redis
-│   └── pgsql\             # Embedded PostgreSQL (if pgserver not used)
-└── uninstall.exe
+└── _internal\             # PyInstaller bundle
+    ├── python3.dll
+    ├── model\             # ONNX models + HuggingFace cache
+    ├── templates\
+    ├── static\
+    ├── redis-server.exe   # Embedded Redis
+    └── pgserver\          # Embedded PostgreSQL (pgserver wheel)
 ```
 
 Writable data lives in `%LOCALAPPDATA%\AudioMuse-AI\`:
