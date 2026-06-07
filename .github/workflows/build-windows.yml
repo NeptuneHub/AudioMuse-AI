@@ -83,32 +83,21 @@ jobs:
         shell: cmd
         run: windows\vendor\build-redis.bat
 
-      # Cross-compile PostgreSQL contrib from Linux (mingw-w64) or build on Windows.
-      # For CI simplicity, we cross-compile on the Windows runner using the
-      # pre-installed mingw tools (if available), or download pre-built binaries.
-      - name: Build vendored PostgreSQL contrib for Windows
+      - name: Verify vendored PostgreSQL contrib is present
         shell: powershell
         run: |
-          # Check if pre-built vendor files exist (committed).
           $dest = "windows\vendor\pg-contrib\$env:ARCH"
-          $missing = @()
-          foreach ($f in @("lib\unaccent.dll", "lib\pg_trgm.dll", "extension\unaccent.control", "extension\pg_trgm.control", "tsearch_data\unaccent.rules")) {
-            if (-not (Test-Path "$dest\$f")) { $missing += $f }
+          $required = @("lib\unaccent.dll", "lib\pg_trgm.dll", "extension\unaccent.control", "extension\pg_trgm.control", "extension\unaccent--1.1.sql", "extension\pg_trgm--1.3.sql", "tsearch_data\unaccent.rules")
+          $bad = @()
+          foreach ($f in $required) {
+            $p = Join-Path $dest $f
+            if (-not (Test-Path $p) -or (Get-Item $p).Length -eq 0) { $bad += $f }
           }
-          if ($missing.Count -eq 0) {
-            Write-Host "Vendor pg-contrib files already present -- skipping build"
-            exit 0
+          if ($bad.Count -ne 0) {
+            Write-Error "Missing or empty vendored pg-contrib files: $($bad -join ', '). Regenerate with windows/vendor/pg-contrib/build-pg-contrib-cross.sh -- never ship empty placeholders (they silently disable unaccent/pg_trgm search)."
+            exit 1
           }
-          Write-Host "Missing vendor files: $missing"
-          Write-Host "::warning::Pre-built pg-contrib for Windows not found."
-          Write-Host "::warning::For production builds, commit the vendor files or run the cross-compile"
-          Write-Host "::warning::build-pg-contrib-cross.sh on a Linux runner before the Windows build."
-          Write-Host "::warning::This PR build will continue but the MSI will lack unaccent/pg_trgm extensions."
-          # Create empty placeholders so the PyInstaller spec doesn't fail on missing files.
-          New-Item -ItemType Directory -Force -Path "$dest\lib", "$dest\extension", "$dest\tsearch_data" | Out-Null
-          # These empty files will cause pgserver to skip loading the extensions (non-fatal).
-          "" | Out-File -FilePath "$dest\lib\unaccent.dll" -Encoding ASCII
-          "" | Out-File -FilePath "$dest\lib\pg_trgm.dll" -Encoding ASCII
+          Write-Host "Vendored pg-contrib present and non-empty."
 
       - name: Assemble ./model (mirrors the Dockerfile/macOS/Linux models stage)
         shell: powershell

@@ -62,7 +62,7 @@ if USE_PGSERVER:
     for _f in glob.glob(os.path.join(_pg_contrib, 'tsearch_data', '*')):
         datas.append((_f, f'{_pg_dst}/share/postgresql/tsearch_data'))
     for _f in glob.glob(os.path.join(_pg_contrib, 'lib', '*.dll')):
-        binaries.append((_f, f'{_pg_dst}/lib'))
+        binaries.append((_f, f'{_pg_dst}/lib/postgresql'))
 
 hiddenimports = [
     'app',

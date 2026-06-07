@@ -144,12 +144,28 @@ def _harden_existing(data_dir, password, uri):
         logger.exception("Could not upgrade legacy PostgreSQL auth; leaving as-is")
 
 
+def _clear_stale_data_dir(data_dir):
+    """``initdb`` refuses to run against a non-empty target directory.
+
+    A crash mid-init -- or a partial cleanup of an earlier failed start -- can
+    leave an un-initialized data dir behind (e.g. just a ``log/`` subdir) that
+    has no ``PG_VERSION`` yet still makes the fresh ``initdb`` fail, bricking
+    every subsequent start. Wipe such leftovers before initializing.
+    """
+    if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
+        return
+    import shutil
+    logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)
+    shutil.rmtree(data_dir, ignore_errors=True)
+
+
 def start_embedded(data_dir):
     pw = paths.db_password()
     if _check_pgserver():
         import database
         fresh = not os.path.exists(os.path.join(data_dir, "PG_VERSION"))
         if fresh:
+            _clear_stale_data_dir(data_dir)
             _preinit_scram(data_dir, pw)
         try:
             uri = database.start_embedded(data_dir)

@@ -1,94 +1,52 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Cross-compile unaccent and pg_trgm PostgreSQL contrib extensions for Windows
-# from a Linux CI runner (mingw-w64).
-#
-# These are the same extensions that macOS/Linux build, just compiled for
-# Windows against the PostgreSQL 16.2 ABI that pgserver bundles.
-#
-# Prerequisites: mingw-w64, postgresql-server-dev-16 (for headers)
-# Output: windows/vendor/pg-contrib/amd64/
-# ============================================================================
+# Regenerate windows/vendor/pg-contrib/<arch>/ : run on Linux with gcc-mingw-w64-x86-64 + python3 + curl.
 set -euo pipefail
 
 ARCH="amd64"
-PG_MAJOR="16"
-DEST="windows/vendor/pg-contrib/${ARCH}"
+PG_VERSION="16.2"
+PGSERVER_VERSION="0.1.4"
 
-echo "==> Installing build dependencies"
-sudo apt-get update -qq
-sudo apt-get install -y --no-install-recommends \
-    gcc-mingw-w64-x86-64 \
-    postgresql-server-dev-${PG_MAJOR} \
-    make
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+DEST="${DEST:-${REPO_ROOT}/windows/vendor/pg-contrib/${ARCH}}"
 
-# PG's pg_config tells us where the headers live
-PG_INCLUDEDIR=$(pg_config --includedir-server)
-PG_PKGLIBDIR=$(pg_config --pkglibdir)
-PG_SHAREDIR=$(pg_config --sharedir)
+command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "Need gcc-mingw-w64-x86-64 (apt install gcc-mingw-w64-x86-64)"; exit 1; }
 
-echo "PG includedir-server: ${PG_INCLUDEDIR}"
-echo "PG pkglibdir:        ${PG_PKGLIBDIR}"
-echo "PG sharedir:          ${PG_SHAREDIR}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
 
-rm -rf "${DEST}"
+echo "==> Fetching pgserver ${PGSERVER_VERSION} Windows wheel (for its exact PG ${PG_VERSION} headers + libpostgres.a)"
+python3 -m pip download "pgserver==${PGSERVER_VERSION}" --no-deps \
+    --platform win_amd64 --python-version 312 --only-binary=:all: -d "${WORK}/wheel"
+python3 -m zipfile -e "${WORK}"/wheel/pgserver-*.whl "${WORK}/pgs"
+PGI="${WORK}/pgs/pgserver/pginstall"
+
+echo "==> Fetching PostgreSQL ${PG_VERSION} contrib source (unaccent + pg_trgm)"
+curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
+    | tar xz -C "${WORK}" "postgresql-${PG_VERSION}/contrib/unaccent" "postgresql-${PG_VERSION}/contrib/pg_trgm"
+SRC="${WORK}/postgresql-${PG_VERSION}/contrib"
+
 mkdir -p "${DEST}/lib" "${DEST}/extension" "${DEST}/tsearch_data"
 
-# Cross-compiler prefix for x86_64 Windows
 CC=x86_64-w64-mingw32-gcc
-CFLAGS="-O2 -Wall -fPIC -I${PG_INCLUDEDIR}"
+INC="-I${PGI}/include/postgresql/server -I${PGI}/include/postgresql/server/port/win32 -I${PGI}/include/postgresql/internal"
+LIBS="-L${PGI}/lib -lpostgres -lpgcommon -lpgport -lws2_32"
 
-# We need to compile the contrib modules without their Makefiles.
-# The simplest approach: compile the single .c files directly.
-# unaccent.c is part of the PostgreSQL contrib source.
+echo "==> Compiling unaccent.dll"
+"${CC}" -O2 -Wall -shared ${INC} -o "${DEST}/lib/unaccent.dll" "${SRC}/unaccent/unaccent.c" ${LIBS}
 
-# Download PostgreSQL 16.2 source (for the contrib .c files only)
-PG_SRC_DIR="/tmp/postgresql-windows-contrib"
-if [ ! -d "${PG_SRC_DIR}" ]; then
-    echo "==> Downloading PostgreSQL 16.2 source (contrib only)"
-    mkdir -p "${PG_SRC_DIR}"
-    curl -fsSL "https://ftp.postgresql.org/pub/source/v16.2/postgresql-16.2.tar.gz" \
-        | tar xz -C "${PG_SRC_DIR}" --strip-components=1
-fi
+echo "==> Compiling pg_trgm.dll"
+"${CC}" -O2 -Wall -shared ${INC} -I"${SRC}/pg_trgm" -o "${DEST}/lib/pg_trgm.dll" \
+    "${SRC}/pg_trgm/trgm_op.c" "${SRC}/pg_trgm/trgm_gist.c" \
+    "${SRC}/pg_trgm/trgm_gin.c" "${SRC}/pg_trgm/trgm_regexp.c" ${LIBS}
 
-# Build unaccent.dll
-echo "==> Building unaccent.dll"
-${CC} ${CFLAGS} -shared \
-    -o "${DEST}/lib/unaccent.dll" \
-    "${PG_SRC_DIR}/contrib/unaccent/unaccent.c" \
-    -lws2_32
+cp "${SRC}/unaccent/unaccent.control" "${SRC}/unaccent/unaccent--1.1.sql" "${SRC}/unaccent/unaccent--1.0--1.1.sql" "${DEST}/extension/"
+cp "${SRC}/unaccent/unaccent.rules" "${DEST}/tsearch_data/"
+cp "${SRC}/pg_trgm/pg_trgm.control" "${SRC}"/pg_trgm/pg_trgm--*.sql "${DEST}/extension/"
 
-# Build pg_trgm.dll
-echo "==> Building pg_trgm.dll"
-${CC} ${CFLAGS} -shared \
-    -o "${DEST}/lib/pg_trgm.dll" \
-    "${PG_SRC_DIR}/contrib/pg_trgm/trgm_op.c" \
-    "${PG_SRC_DIR}/contrib/pg_trgm/trgm_gist.c" \
-    "${PG_SRC_DIR}/contrib/pg_trgm/trgm_gin.c" \
-    "${PG_SRC_DIR}/contrib/pg_trgm/trgm_regexp.c" \
-    -lws2_32
-
-# Copy control files and data
-cp "${PG_SRC_DIR}/contrib/unaccent/unaccent.control"      "${DEST}/extension/"
-cp "${PG_SRC_DIR}/contrib/unaccent/unaccent--1.1.sql"     "${DEST}/extension/"
-cp "${PG_SRC_DIR}/contrib/unaccent/unaccent.rules"        "${DEST}/tsearch_data/"
-cp "${PG_SRC_DIR}/contrib/pg_trgm/pg_trgm.control"        "${DEST}/extension/"
-cp "${PG_SRC_DIR}/contrib/pg_trgm/pg_trgm--1.6.sql"       "${DEST}/extension/"
-
-echo "==> Verifying outputs"
-for f in \
-    "${DEST}/lib/unaccent.dll" \
-    "${DEST}/lib/pg_trgm.dll" \
-    "${DEST}/extension/unaccent.control" \
-    "${DEST}/extension/pg_trgm.control" \
-    "${DEST}/tsearch_data/unaccent.rules"
-do
-    if [ ! -s "$f" ]; then
-        echo "::error::Missing output: $f"
-        exit 1
-    fi
-    file "$f" 2>/dev/null || true
+for f in lib/unaccent.dll lib/pg_trgm.dll extension/unaccent.control extension/pg_trgm.control tsearch_data/unaccent.rules; do
+    test -s "${DEST}/${f}" || { echo "ERROR: missing/empty ${DEST}/${f}"; exit 1; }
 done
 
-echo "==> Done. Vendor files in ${DEST}/"
-du -sh "${DEST}"
+echo "==> Done. Built into ${DEST}"
+ls -la "${DEST}/lib"

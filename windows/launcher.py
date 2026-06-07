@@ -165,11 +165,28 @@ def _open_browser(url):
     webbrowser.open(url)
 
 
+def _silence_supervisor_db_probe():
+    """Quiet config.py's import-time setup_manager DB probe in the supervisor process.
+
+    The supervisor/CLI process never owns a database connection -- it only
+    orchestrates the embedded services -- but importing ``config`` (transitively,
+    via ``windows.paths``) runs ``SetupManager`` against the default container DB
+    host before the embedded PostgreSQL is up, logging spurious "could not
+    translate host name" warnings. Child processes set the embedded
+    ``DATABASE_URL`` and connect cleanly, so this only suppresses noise in the
+    supervisor's own console and leaves the children's logging untouched.
+    """
+    import logging
+    logging.getLogger("tasks.setup_manager").setLevel(logging.ERROR)
+
+
 def main():
     role = _role_from_argv()
     if role:
         _run_role(role)
         return
+
+    _silence_supervisor_db_probe()
 
     cmd = _command_from_argv()
     if cmd is None or cmd == "start":
