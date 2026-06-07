@@ -774,8 +774,10 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         def _alarm_handler(signum, frame):
             raise _AsrTimeout()
 
-        _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.alarm(_ASR_TIMEOUT_S)
+        _has_alarm = hasattr(signal, 'SIGALRM')
+        if _has_alarm:
+            _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(_ASR_TIMEOUT_S)
         try:
             transcription = _transcribe(audio_clip, sr, num_threads=threads)
         except _AsrTimeout:
@@ -785,8 +787,9 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             )
             transcription = {'text': '', 'language': '', 'duration': len(audio_clip) / sr}
         finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, _old_handler)
+            if _has_alarm:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, _old_handler)
 
         raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
         whisper_raw_len = len(raw_text)
