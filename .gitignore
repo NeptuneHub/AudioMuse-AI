@@ -9,6 +9,7 @@ venv/
 .venv/
 .venv-macos/
 .venv-linux/
+.venv-windows/
 env/
 
 # Linux native build inputs built fresh in CI (not committed; see linux/vendor/README.md)

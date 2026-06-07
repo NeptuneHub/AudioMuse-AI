@@ -1,0 +1,21 @@
+-r common.txt
+
+# onnxruntime is pinned in cpu.txt/gpu.txt (the container variants) but not in
+# common.txt, so the Windows build must request it explicitly.
+onnxruntime==1.19.2
+
+# pgserver ships a prebuilt PostgreSQL; 0.1.4 bundles PostgreSQL 16.2. Pinned
+# because contrib modules are NOT ABI-stable across PG minors -- the vendored
+# unaccent/pg_trgm in windows/vendor/pg-contrib/ are compiled against 16.2.
+pgserver==0.1.4
+
+# Served by waitress (same WSGI server the macOS/Linux builds use); not in common.txt.
+waitress
+
+# Windows-specific: pywin32 for process management and named mutex.
+# mcp 1.27.0 requires >=310 on Windows; pin to the minimum supported.
+pywin32>=310
+
+# Build tooling.
+pyinstaller
+pyinstaller-hooks-contrib

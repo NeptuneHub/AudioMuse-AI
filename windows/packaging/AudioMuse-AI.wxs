@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    WiX Toolset v4 source for the AudioMuse-AI Windows MSI installer.
+
+    Build (after PyInstaller produced dist/AudioMuse-AI/):
+        wix build -arch x64 -d BundleDir=dist\AudioMuse-AI -d Version=1.0.0 -o dist\AudioMuse-AI-amd64-windows.msi windows\packaging\AudioMuse-AI.wxs
+
+    Variables (set via -d on the wix command line):
+        BundleDir  – path to the PyInstaller one-dir bundle (dist\AudioMuse-AI\)
+        Version    – MAJOR.MINOR.PATCH (no leading 'v')
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+    <?define ProductName="AudioMuse-AI" ?>
+    <?define Manufacturer="AudioMuse-AI" ?>
+    <?define UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890" ?>
+
+    <Package
+        Name="$(ProductName)"
+        Manufacturer="$(Manufacturer)"
+        Version="$(Version)"
+        UpgradeCode="$(var.UpgradeCode)"
+        Scope="perMachine">
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of $(ProductName) is already installed." />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <!-- Target: C:\Program Files\AudioMuse-AI -->
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="AudioMuse-AI" />
+        </StandardDirectory>
+
+        <!-- Start Menu shortcut -->
+        <StandardDirectory Id="ProgramMenuFolder">
+            <Directory Id="StartMenuFolder" Name="AudioMuse-AI" />
+        </StandardDirectory>
+
+        <Feature Id="Main" Title="$(ProductName)" Level="1" AllowAdvertise="no">
+            <ComponentGroupRef Id="AppComponents" />
+            <ComponentRef Id="StartMenuShortcut" />
+            <ComponentRef Id="DesktopShortcut" />
+        </Feature>
+    </Package>
+</Wix>
