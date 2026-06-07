@@ -53,7 +53,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 2.1.5** introduces the Windows native version. Attached to each release you will find `AudioMuse-AI-amd64-windows.msi` and `AudioMuse-AI-amd64-windows.zip`.
+> * **Version 2.1.4** introduces the Windows native version. Attached to each release you will find `AudioMuse-AI-amd64-windows.msi` and `AudioMuse-AI-amd64-windows.zip`.
 > * **Version 2.1.3** introduces the Linux native version. Attached to each release you will find `.deb` and `.rpm` file.
 > * **Version 2.1.2** introduces the MacOS native version. Attached to each release you will find `AudioMuse-AI-arm64.zip`.
 > * **Version 2.1.0** re-exports the GTE lyrics model so it produces correct embeddings on **every CPU**. The only affected users are those who analyzed lyrics on an **older CPU without VNNI** (`avx512_vnni`/`avx_vnni`), where the previous model could produce degraded vectors, they should re-analyze the lyrics. To check if your CPU has VNNI, run on the host: `grep -oE 'avx512_vnni|avx_vnni' /proc/cpuinfo | head -1` , if it prints nothing, you have no VNNI and we suggest to re-analyze. Before re-analyzing, drop the old lyrics tables:
@@ -157,7 +157,7 @@ This version run only on Apple Silicon (ARM) processor on recent version of MacO
 - Log: `~/Library/Logs/AudioMuse-AI/audiomuse.log`
 
 ## Quick Start Deployment Linux
-Starting from release `v2.1.4` we provide a native Linux package (`.deb` and `.rpm`, x86_64 and arm64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
+Starting from release `v2.1.3` we provide a native Linux package (`.deb` and `.rpm`, x86_64 and arm64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
 
 - **Install as root** (writes to `/opt` and the system app/service dirs):
   - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-x86_64.deb`
@@ -174,7 +174,7 @@ Starting from release `v2.1.4` we provide a native Linux package (`.deb` and `.r
 > **Tested on:** the `.deb` has been verified on **Debian GNU/Linux 12 (bookworm)** (glibc 2.36). The `.rpm` is built from the exact same payload but has not yet been tested on a live RPM-based distribution; it is expected to work on a reasonably recent system (e.g. Fedora / RHEL 9), but older distributions such as RHEL/Rocky/Alma 8 (glibc 2.28) are too old for the bundled binaries. Feedback on RPM-based distros is welcome.
 
 ## Quick Start Deployment Windows
-Starting from release `v2.1.5` we provide a native Windows package (x86_64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases): the MSI installer `AudioMuse-AI-amd64-windows.msi` and the portable archive `AudioMuse-AI-amd64-windows.zip`. Both bundle the whole stack (embedded PostgreSQL, Redis, the web UI and the workers) so you do not need Docker or an external database.
+Starting from release `v2.1.4` we provide a native Windows package (x86_64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases): the MSI installer `AudioMuse-AI-amd64-windows.msi` and the portable archive `AudioMuse-AI-amd64-windows.zip`. Both bundle the whole stack (embedded PostgreSQL, Redis, the web UI and the workers) so you do not need Docker or an external database.
 
 To run it you have two option:
 
