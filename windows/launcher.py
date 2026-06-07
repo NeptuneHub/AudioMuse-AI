@@ -33,6 +33,22 @@ def _win_get_context(method=None):
     return _orig_get_context(method)
 multiprocessing.get_context = _win_get_context
 
+# RQ's SpawnWorker uses several ``os`` functions that only exist on POSIX.
+# Monkey-patch them all on Windows so the worker doesn't crash at runtime.
+if not hasattr(os, 'wait4'):
+    _os_waitpid = os.waitpid
+    def _win_wait4(pid, options):
+        return _os_waitpid(pid, options) + (None,)
+    os.wait4 = _win_wait4
+if not hasattr(os, 'WIFEXITED'):
+    os.WIFEXITED   = lambda status: True   # Windows: processes always exit, not signalled
+if not hasattr(os, 'WIFSIGNALED'):
+    os.WIFSIGNALED = lambda status: False  # Windows: no POSIX signals
+if not hasattr(os, 'WTERMSIG'):
+    os.WTERMSIG    = lambda status: 0      # never called (WIFSIGNALED is always False)
+if not hasattr(os, 'WEXITSTATUS'):
+    os.WEXITSTATUS = lambda status: status # exit code is already the raw number
+
 # OpenTelemetry's entry-point-based context loading breaks in PyInstaller
 # frozen apps because ``importlib.metadata.entry_points()`` can raise
 # ``StopIteration`` when no entry points are found (the iterator is

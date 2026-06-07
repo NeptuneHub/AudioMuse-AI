@@ -2,11 +2,9 @@
 REM ============================================================================
 REM Build/download the vendored redis-server.exe for Windows.
 REM
-REM Redis does not officially support Windows. We use the Microsoft Archive
-REM Redis for Windows (https://github.com/microsoftarchive/redis).
-REM
-REM This script downloads the MS Open Tech Redis release for Windows.
-REM If the download fails, check the URL and update the version as needed.
+REM Uses the tporadowski/redis fork (Redis 5.0 for Windows) which supports
+REM variadic HSET — required by the Python redis 7.x client. The Microsoft
+REM Archive Redis 3.2 is too old (HSET only accepts 3 arguments).
 REM ============================================================================
 setlocal enabledelayedexpansion
 
@@ -14,47 +12,42 @@ set "ARCH=amd64"
 if "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
 
 set "DEST=windows\vendor\redis\%ARCH%"
-set "REDIS_VERSION=3.2.100"
+set "REDIS_VERSION=5.0.14.1"
+set "ZIP=Redis-x64-%REDIS_VERSION%.zip"
+set "URL=https://github.com/tporadowski/redis/releases/download/v%REDIS_VERSION%/%ZIP%"
 
 if not exist "%DEST%" mkdir "%DEST%"
 
 if exist "%DEST%\redis-server.exe" (
-    echo redis-server.exe already exists at %DEST%\redis-server.exe -- skipping
-    exit /b 0
+    for %%A in ("%DEST%\redis-server.exe") do if %%~zA gtr 100000 (
+        echo redis-server.exe already exists at %DEST%\redis-server.exe -- skipping
+        exit /b 0
+    )
 )
-
-REM Microsoft Archive Redis for Windows (MSI-based):
-REM We download the MSI, extract redis-server.exe from it, and discard the rest.
-set "MSI=Redis-x64-%REDIS_VERSION%.msi"
-set "URL=https://github.com/microsoftarchive/redis/releases/download/win-%REDIS_VERSION%/%MSI%"
 
 echo Downloading Redis %REDIS_VERSION% for Windows...
-curl -fsSL -o "%TEMP%\%MSI%" "%URL%"
+curl -fsSL -o "%TEMP%\%ZIP%" "%URL%"
 if errorlevel 1 (
     echo ::error::Failed to download Redis for Windows from %URL%
-    echo ::notice::Download the MSI manually from https://github.com/microsoftarchive/redis/releases
-    echo ::notice::and extract redis-server.exe to %DEST%
     exit /b 1
 )
 
-REM Extract redis-server.exe from the MSI using msiexec admin install
 echo Extracting redis-server.exe...
-msiexec /a "%TEMP%\%MSI%" /qb TARGETDIR="%TEMP%\redis-extract"
+powershell -Command "Expand-Archive -Path '%TEMP%\%ZIP%' -DestinationPath '%TEMP%\redis-extract' -Force"
 if errorlevel 1 (
-    echo ::error::Failed to extract MSI
+    echo ::error::Failed to extract Redis zip
     exit /b 1
 )
 
-REM Find and copy redis-server.exe
 for /r "%TEMP%\redis-extract" %%f in (redis-server.exe) do (
-    copy /y "%%f" "%DEST%\redis-server.exe"
+    copy /y "%%f" "%DEST%\redis-server.exe" >nul
     goto :found
 )
 
-echo ::error::redis-server.exe not found in extracted MSI
+echo ::error::redis-server.exe not found in extracted zip
 exit /b 1
 
 :found
 echo ==^> redis-server.exe placed at %DEST%\redis-server.exe
-del "%TEMP%\%MSI%" 2>nul
+del "%TEMP%\%ZIP%" 2>nul
 rmdir /s /q "%TEMP%\redis-extract" 2>nul

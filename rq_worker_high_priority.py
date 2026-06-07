@@ -21,7 +21,8 @@ os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
 
-from rq import Worker
+from rq import SimpleWorker, Worker
+WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 
 try:
     from app_helper import redis_conn
@@ -42,13 +43,13 @@ configure_logging()
 queues_to_listen = ['high']
 
 if __name__ == '__main__':
-    print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
+    print(f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
     print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # High priority worker doesn't analyze songs, so no CLAP preload needed
     # Only rq_worker.py (default queue) handles song analysis tasks
 
-    worker = Worker(
+    worker = WorkerClass(
         queues_to_listen,
         connection=redis_conn,
         # --- Resilience Settings for Kubernetes ---

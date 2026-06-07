@@ -23,7 +23,12 @@ os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"Default worker CPU thread cap = {_max_lyrics_threads} (cpu_count // 2, min 2)")
 
-from rq import Worker
+from rq import SimpleWorker, Worker
+# On Windows, SpawnWorker uses os.spawnv() with sys.executable -c "..."
+# which doesn't work with PyInstaller-frozen executables.  Use
+# SimpleWorker instead: it runs jobs in-process (no fork/spawn at all).
+# If a job crashes the worker, the supervisor auto-restarts it.
+WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 
 try:
     from app_helper import redis_conn
@@ -68,7 +73,7 @@ if __name__ == '__main__':
     # if they need it. RQ's default job execution doesn't automatically push an app context.
     # Tasks should be designed to handle this, e.g., by calling `with app.app_context():`
     # or by using functions from app.py that manage their own context.
-    worker = Worker(
+    worker = WorkerClass(
         queues_to_listen,
         connection=redis_conn,
         # --- Resilience Settings for Kubernetes ---

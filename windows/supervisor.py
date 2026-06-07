@@ -46,10 +46,9 @@ ROLE_OF = {
     "restart-listener": "restart-listener",
 }
 
-# RQ workers use ``os.fork()`` which does not exist on Windows.  Only the
-# Flask web server is started; background analysis/sync jobs need a Linux
-# worker (Docker or a separate machine connected to the same Redis).
-BOOT_ORDER = ["flask"] if sys.platform == "win32" else ["flask", "rq-worker-high", "rq-worker-default", "rq-janitor", "restart-listener"]
+# On Windows, RQ's ``SpawnWorker`` uses ``os.spawnv()`` instead of ``os.fork()``.
+# Full worker pool is available on all platforms.
+BOOT_ORDER = ["flask", "rq-worker-high", "rq-worker-default", "rq-janitor", "restart-listener"]
 
 
 class ProcessSupervisor:

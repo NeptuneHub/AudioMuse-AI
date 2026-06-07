@@ -49,26 +49,41 @@ def publish_start_request():
 
 
 def _send_control(arguments):
-    """Forward an ``[action, *services]`` request to the standalone supervisor over a unix socket.
+    """Forward an ``[action, *services]`` request to the standalone supervisor.
 
-    Used on macOS where there is no supervisord: the menu-bar ProcessSupervisor
-    listens on ``config.AUDIOMUSE_CONTROL_SOCKET`` and applies the same
-    start/stop/restart semantics to its child processes that supervisorctl would.
+    On macOS/Linux the supervisor listens on a **unix socket**
+    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on **TCP**
+    (``AUDIOMUSE_CONTROL_HOST`` / ``AUDIOMUSE_CONTROL_PORT``) because
+    ``AF_UNIX`` is not available.  The JSON-line protocol is identical.
     """
     if not arguments:
         return False
-    if not config.AUDIOMUSE_CONTROL_SOCKET:
-        logger.error('AUDIOMUSE_CONTROL_SOCKET not set; cannot dispatch %s', arguments)
-        return False
+
+    control_host = os.environ.get('AUDIOMUSE_CONTROL_HOST') or getattr(config, 'AUDIOMUSE_CONTROL_HOST', None)
+    control_port = os.environ.get('AUDIOMUSE_CONTROL_PORT') or getattr(config, 'AUDIOMUSE_CONTROL_PORT', None)
+
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(15)
-            sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
-            sock.sendall(payload + b'\n')
-            response = sock.recv(1024).strip()
+        if control_host and control_port:
+            # TCP (Windows)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(15)
+                sock.connect((str(control_host), int(control_port)))
+                sock.sendall(payload + b'\n')
+                response = sock.recv(1024).strip()
+        elif config.AUDIOMUSE_CONTROL_SOCKET:
+            # Unix socket (macOS/Linux)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(15)
+                sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
+                sock.sendall(payload + b'\n')
+                response = sock.recv(1024).strip()
+        else:
+            logger.error('Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s', arguments)
+            return False
     except Exception:
-        logger.exception('Failed to send control command %s to %s', arguments, config.AUDIOMUSE_CONTROL_SOCKET)
+        target = f'{control_host}:{control_port}' if (control_host and control_port) else config.AUDIOMUSE_CONTROL_SOCKET
+        logger.exception('Failed to send control command %s to %s', arguments, target)
         return False
     if response == b'ok':
         logger.info('Control command succeeded: %s', arguments)

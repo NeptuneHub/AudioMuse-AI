@@ -26,6 +26,7 @@ student_clap/
 # the Linux container, so keep it out of the image.
 macos/
 linux/
+windows/
 build/
 dist/
 

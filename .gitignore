@@ -16,6 +16,7 @@ env/
 /linux/vendor/redis/
 /linux/vendor/pg-contrib/*/
 /linux/vendor/postgres/*/
+/windows/vendor/redis/
 
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!
