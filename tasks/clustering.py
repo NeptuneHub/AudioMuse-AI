@@ -19,7 +19,7 @@ from rq.exceptions import NoSuchJobError
 from psycopg2.extras import DictCursor
 
 # Import configuration
-from config import MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES, MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES
+from config import MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES, MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES, CLUSTERING_CLEANING
 
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
@@ -545,7 +545,10 @@ def run_clustering_task(
             )
 
             _log_and_update("Deleting existing automatic playlists...", 97)
-            delete_automatic_playlists()
+            if CLUSTERING_CLEANING:
+                delete_automatic_playlists()
+            else:
+                _log_and_update("CLUSTERING_CLEANING is disabled — skipping deletion of existing automatic playlists.", 97)
 
             # *** ABSOLUTE FINAL SHUFFLE: Guarantee random order right before database storage ***
             logger.info("=== ABSOLUTE FINAL SHUFFLE: Randomizing all playlists before database storage ===")
