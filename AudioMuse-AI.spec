@@ -18,6 +18,10 @@ cfg = _cfg.PLATFORMS[target]
 arch = _cfg.normalize_arch(platform.machine(), target)
 USE_PGSERVER = _cfg.use_pgserver(cfg["use_pgserver"], arch)
 
+_app_ver = _cfg.read_app_version(ROOT)
+if cfg["bundle"]:
+    cfg["bundle"]["info_plist"]["CFBundleShortVersionString"] = _app_ver or "0.0.0"
+
 datas = [
     (os.path.join(ROOT, "templates"), "templates"),
     (os.path.join(ROOT, "static"), "static"),

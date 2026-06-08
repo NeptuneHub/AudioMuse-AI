@@ -56,7 +56,9 @@ def main():
     target = args.platform
     cfg = config.PLATFORMS[target]
     arch = args.arch or config.normalize_arch(_platform.machine(), target)
-    version = sanitize_version(os.environ.get("PKG_VERSION"))
+
+    version = sanitize_version(config.read_app_version(ROOT))
+
     use_pgserver = config.use_pgserver(cfg["use_pgserver"], arch)
 
     dist_dir = ROOT / "dist"

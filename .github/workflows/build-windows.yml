@@ -111,17 +111,7 @@ jobs:
 
       - name: Build the bundle
         shell: powershell
-        run: |
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $ver = $env:GITHUB_REF_NAME -replace '^v', ''
-          } else {
-            $ver = "0.0.0"
-          }
-          $env:PKG_VERSION = $ver
-          .venv-windows\Scripts\python scripts\standalone\build.py --platform windows
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: .venv-windows\Scripts\python scripts\standalone\build.py --platform windows
 
       - name: Upload zip as a workflow artifact
         uses: actions/upload-artifact@v4

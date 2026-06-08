@@ -155,19 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           source .venv-linux/bin/activate
-          # Derive a package-manager-safe version. On a tag push github.ref_name
-          # is `vX.Y.Z` -> `X.Y.Z`; on a PR it is `<num>/merge` (and on dispatch a
-          # branch name), neither of which is a valid deb/rpm version, so use a
-          # placeholder for non-tag builds.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"
-          else
-            PKG_VERSION="0.0.0"
-          fi
-          PKG_VERSION="$PKG_VERSION" python scripts/standalone/build.py --platform linux
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          python scripts/standalone/build.py --platform linux
 
       - name: Upload .deb as a workflow artifact
         uses: actions/upload-artifact@v4

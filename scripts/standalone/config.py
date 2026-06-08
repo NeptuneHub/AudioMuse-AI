@@ -1,4 +1,28 @@
+import ast
+import os
 import sys
+
+
+def read_app_version(root):
+    """Return APP_VERSION from the app's config.py (leading 'v' stripped).
+
+    Parsed statically with ast -- config.py is never imported or executed, so
+    there are no import side effects and no dependency on __file__ or the
+    environment. build.py (deb/rpm version + banner) and the shared spec (macOS
+    CFBundleShortVersionString) both call this, so every platform stamps the same
+    manually-maintained version from config.py and no CI/tag value is used.
+    """
+    path = os.path.join(str(root), "config.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "APP_VERSION":
+                    value = str(node.value.value)
+                    return value[1:] if value.startswith("v") else value
+    return "0.0.0"
+
 
 PLATFORMS = {
     "windows": {
@@ -38,7 +62,6 @@ PLATFORMS = {
                 "NSHighResolutionCapable": True,
                 "CFBundleName": "AudioMuse-AI",
                 "CFBundleDisplayName": "AudioMuse-AI",
-                "CFBundleShortVersionString": "1.0.0",
             },
         },
     },
