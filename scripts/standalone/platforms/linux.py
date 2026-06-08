@@ -125,8 +125,12 @@ def package(ctx):
             cwd=str(ctx.root),
         )
 
-    deb = sorted(pkg.glob("*.deb"))[0]
-    rpm = sorted(pkg.glob("*.rpm"))[0]
+    debs = sorted(pkg.glob("*.deb"))
+    rpms = sorted(pkg.glob("*.rpm"))
+    if not debs or not rpms:
+        raise SystemExit("::error::nfpm did not produce the expected .deb/.rpm packages.")
+    deb = debs[0]
+    rpm = rpms[0]
     out_deb = ctx.dist_dir / f"AudioMuse-AI-{ctx.arch}-linux.deb"
     out_rpm = ctx.dist_dir / f"AudioMuse-AI-{ctx.arch}-linux.rpm"
     shutil.copy2(deb, out_deb)
