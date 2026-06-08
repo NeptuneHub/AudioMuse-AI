@@ -113,11 +113,11 @@ jobs:
         shell: powershell
         run: .venv-windows\Scripts\python scripts\standalone\build.py --platform windows
 
-      - name: Upload zip as a workflow artifact
+      - name: Upload bundle as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: AudioMuse-AI-${{ env.ARCH }}-windows-zip
-          path: dist/AudioMuse-AI-${{ env.ARCH }}-windows.zip
+          path: dist/AudioMuse-AI/
           if-no-files-found: error
 
       # NB: the PR-description "test build links" block is written by the
@@ -138,9 +138,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Create zip for release
+        run: |
+          python -c "
+          import zipfile, pathlib
+          src = pathlib.Path('artifacts/AudioMuse-AI')
+          out = 'AudioMuse-AI-amd64-windows.zip'
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+              for f in sorted(src.rglob('*')):
+                  if f.is_file():
+                      zf.write(f, f.relative_to(src.parent).as_posix())
+          print(f'Created {out}')
+          "
+
       - name: Attach packages to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/AudioMuse-AI-*-windows.zip
+          files: AudioMuse-AI-*-windows.zip
           fail_on_unmatched_files: true

@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
@@ -19,7 +18,6 @@ REQUIRED = [
     "model/clap_text_model.onnx",
     "model/model_epoch_36.onnx",
     "model/model_epoch_36.onnx.data",
-    "model/huggingface/hub/models--roberta-base/snapshots",
     "model/silero_vad.onnx",
     "model/gte-multilingual-base-int8.onnx",
     "model/whisper-small-onnx/encoder_model.onnx",
@@ -43,8 +41,7 @@ def _gh_download(tag, repo, dest, patterns):
 
 
 def _extract(tar_path, dest):
-    with tarfile.open(tar_path) as tf:
-        tf.extractall(dest, filter="data")
+    subprocess.run(["tar", "-xzf", str(tar_path), "-C", str(dest)], check=True)
 
 
 def _trim_hf_cache():
@@ -65,6 +62,22 @@ def _trim_hf_cache():
         for f in snapshots.rglob("*"):
             if f.name in ("model.safetensors", "pytorch_model.bin"):
                 f.unlink()
+
+
+def _materialize_hf_symlinks():
+    print("==> Materialize HF-cache symlinks into real files (PyInstaller/zip drop symlinks on Windows)")
+    hf = MODEL / "huggingface"
+    if not hf.is_dir():
+        return
+    for path in sorted(hf.rglob("*")):
+        if not path.is_symlink():
+            continue
+        target = path.resolve()
+        if not target.is_file():
+            continue
+        data = target.read_bytes()
+        path.unlink()
+        path.write_bytes(data)
 
 
 def assemble():
@@ -91,6 +104,7 @@ def assemble():
         shutil.rmtree(tmp_hf, ignore_errors=True)
 
     _trim_hf_cache()
+    _materialize_hf_symlinks()
 
     print("==> lyrics bundles (whisper / silero / gte)")
     tmp = Path(tempfile.mkdtemp())
@@ -110,8 +124,15 @@ def verify():
         if not p.exists() or (p.is_file() and p.stat().st_size == 0):
             missing.append(f)
     roberta = MODEL / "huggingface" / "hub" / "models--roberta-base"
-    if not any(roberta.rglob("tokenizer.json")):
-        missing.append("roberta-base tokenizer.json (after HF-cache prune)")
+    snapshots = roberta / "snapshots"
+    if not snapshots.is_dir() or not any(snapshots.iterdir()):
+        missing.append("roberta-base snapshots/ empty — symlinks not extracted (use tar, not tarfile)")
+    tokenizer_files = ("tokenizer.json", "vocab.json", "merges.txt", "config.json")
+    for name in tokenizer_files:
+        real = [p for p in roberta.rglob(name)
+                if p.is_file() and not p.is_symlink() and p.stat().st_size > 0]
+        if not real:
+            missing.append(f"roberta-base {name} must be a real non-symlink file (run _materialize_hf_symlinks)")
     if missing:
         for f in missing:
             print(f"::error::Missing or empty: {f}")
