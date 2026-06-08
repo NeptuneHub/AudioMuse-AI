@@ -1,45 +1,44 @@
-# When someone opens a new issue or starts a new discussion, leave a warm
-# thank-you comment. If they have already starred the repo we thank them for it;
-# if not, we gently let them know that a star helps the project grow and thank
-# them in advance. Bots and the project's own team (owner, members,
-# collaborators) are skipped so only genuine outside visitors get the message.
+# When an issue is closed as completed (resolved/fixed, not "not planned"),
+# leave a warm thank-you for raising it. If the author already starred the repo
+# we thank them for it; if not, we gently mention that a star helps the project
+# grow and thank them in advance. Bots and the project's own team (owner,
+# members, collaborators) are skipped so only genuine outside contributors get
+# the message.
 
-name: Thank issue and discussion authors
+name: Thank issue authors when resolved
 
 on:
   issues:
     types:
-      - opened
-  discussion:
-    types:
-      - created
+      - closed
 
 permissions:
   issues: write
-  discussions: write
 
 jobs:
   say-thanks:
     runs-on: ubuntu-latest
     steps:
-      - name: Post a kind welcome comment
+      - name: Post a kind thank-you comment
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
-            const isDiscussion = context.eventName === 'discussion';
-            const subject = isDiscussion
-              ? context.payload.discussion
-              : context.payload.issue;
+            const issue = context.payload.issue;
 
-            const author = subject.user.login;
+            if (issue.state_reason !== 'completed') {
+              console.log(`Issue #${issue.number} closed as "${issue.state_reason}", not completed. Skipping.`);
+              return;
+            }
 
-            if (subject.user.type === 'Bot' || author.endsWith('[bot]')) {
+            const author = issue.user.login;
+
+            if (issue.user.type === 'Bot' || author.endsWith('[bot]')) {
               console.log(`Skipping bot account ${author}.`);
               return;
             }
-            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(subject.author_association)) {
-              console.log(`Skipping team member ${author} (${subject.author_association}).`);
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(issue.author_association)) {
+              console.log(`Skipping team member ${author} (${issue.author_association}).`);
               return;
             }
 
@@ -51,40 +50,23 @@ jobs:
               (u) => u.login.toLowerCase() === author.toLowerCase(),
             );
 
-            const opened = isDiscussion ? 'starting this discussion' : 'opening this issue';
-
             const thanksForStar = [
-              `Hi @${author}, thank you so much for ${opened} and for taking the time to help us make AudioMuse-AI better.`,
+              `Hi @${author}, thank you so much for raising this issue. Taking the time to report something and help us see what could be better is a real contribution to the project, and we are genuinely grateful for it.`,
               ``,
-              `I also noticed that you already starred the project, and honestly that means a lot to us. Thank you for the support, it really keeps us motivated to keep improving things.`,
-              ``,
-              `We will take a good look as soon as we can. Thanks again for being part of this.`,
+              `We have now resolved it, but please do not hesitate to open another one if anything else comes up. It also means a lot that you already starred the project. Thank you for being part of this, it really keeps us going.`,
             ].join('\n');
 
             const pleaseStar = [
-              `Hi @${author}, thank you so much for ${opened} and for taking the time to help us make AudioMuse-AI better. We will take a good look as soon as we can.`,
+              `Hi @${author}, thank you so much for raising this issue. Taking the time to report something and help us see what could be better is a real contribution to the project, and we are genuinely grateful for it.`,
               ``,
-              `If you are finding the project useful, would you consider giving it a star? It really is a small thing, but it genuinely helps the project grow and reach more people who could enjoy it too.`,
+              `We have now resolved it, so please do not hesitate to open another one if anything else comes up. If the project has been useful to you, would you consider giving it a star? It is a small thing, but it genuinely helps the project grow and reach more people who could benefit from it.`,
               ``,
               `Thank you so much in advance, it truly makes a difference for a project like ours.`,
             ].join('\n');
 
-            const body = hasStarred ? thanksForStar : pleaseStar;
-
-            if (isDiscussion) {
-              await github.graphql(
-                `mutation($discussionId: ID!, $body: String!) {
-                  addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
-                    comment { id }
-                  }
-                }`,
-                { discussionId: subject.node_id, body },
-              );
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: subject.number,
-                body,
-              });
-            }
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: hasStarred ? thanksForStar : pleaseStar,
+            });

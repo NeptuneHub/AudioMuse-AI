@@ -1,5 +1,3 @@
-import zipfile
-
 from ._pgserver import verify_pgserver_bundle
 
 
@@ -21,21 +19,7 @@ def prepare(ctx):
         raise SystemExit("Vendored inputs missing (see windows/vendor/README.md).")
 
 
-def _zip_dir(src_dir, out_path):
-    base = src_dir.parent
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-        for path in sorted(src_dir.rglob("*")):
-            if path.is_file():
-                zf.write(path, path.relative_to(base).as_posix())
-
-
 def package(ctx):
     if ctx.use_pgserver:
         verify_pgserver_bundle(ctx, strict=False)
-    out = ctx.dist_dir / f"AudioMuse-AI-{ctx.arch}-windows.zip"
-    if out.exists():
-        out.unlink()
-    print(f"==> Packaging {out.name}")
-    _zip_dir(ctx.bundle_dir, out)
-    print(f"==> ZIP: {out}")
-    return [out]
+    return [ctx.bundle_dir]

@@ -123,11 +123,11 @@ jobs:
           source .venv-macos/bin/activate
           python scripts/standalone/build.py --platform macos
 
-      - name: Upload zip as a workflow artifact
+      - name: Upload app as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: AudioMuse-AI-${{ env.ARCH }}-macos
-          path: dist/AudioMuse-AI-${{ env.ARCH }}-macos.zip
+          path: dist/_pkg/
           if-no-files-found: error
 
       # NB: the PR-description "test build links" block is no longer written
@@ -143,14 +143,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download built zip
+      - name: Download built packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Create zip for release
+        run: |
+          python -c "
+          import zipfile, pathlib
+          src = pathlib.Path('artifacts/_pkg')
+          out = 'AudioMuse-AI-arm64-macos.zip'
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+              for f in sorted(src.rglob('*')):
+                  if f.is_file():
+                      zf.write(f, f.relative_to(src).as_posix())
+          print(f'Created {out}')
+          "
+
       - name: Attach zip to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/AudioMuse-AI-*.zip
+          files: AudioMuse-AI-*.zip
           fail_on_unmatched_files: true

@@ -48,8 +48,6 @@ def package(ctx):
     subprocess.run(["codesign", "--verify", "--verbose", str(app)])
     subprocess.run(["spctl", "-a", "-vv", str(app)])
 
-    out = ctx.dist_dir / f"AudioMuse-AI-{ctx.arch}-macos.zip"
-    print(f"==> Packaging {out.name} (AudioMuse-AI.app + readme.md)")
     stage = ctx.dist_dir / "_pkg"
     subprocess.run(["rm", "-rf", str(stage)], check=True)
     stage.mkdir(parents=True)
@@ -57,9 +55,5 @@ def package(ctx):
     if subprocess.run(["cp", "-cR", str(app), str(staged_app)], stderr=subprocess.DEVNULL).returncode != 0:
         subprocess.run(["ditto", str(app), str(staged_app)], check=True)
     (stage / "readme.md").write_text(_README)
-    if out.exists():
-        out.unlink()
-    subprocess.run(["ditto", "-c", "-k", str(stage), str(out)], check=True)
-    subprocess.run(["rm", "-rf", str(stage)], check=True)
-    print(f"==> Done: {out} (expands to AudioMuse-AI.app + readme.md)")
-    return [out]
+    print(f"==> Staged: {stage} (AudioMuse-AI.app + readme.md)")
+    return [stage]
