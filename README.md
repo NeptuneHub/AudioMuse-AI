@@ -168,8 +168,8 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 <details>
 <summary><b>Windows</b> — x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
 
-- Unzip the portable archive anywhere, then double-click `AudioMuse-AI.exe`.
-- From a terminal you can also control the stack with `AudioMuse-AI.exe start | stop | status | open`.
+- Unzip the portable archive anywhere.
+- From a terminal you can start with `AudioMuse-AI.exe start` and stop with `AudioMuse-AI.exe stop`.
 - Runs only on x86_64 (Intel/AMD) on Windows 10/11.
 
 **Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
