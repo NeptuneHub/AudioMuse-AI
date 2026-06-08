@@ -26,6 +26,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 from urllib.parse import urlparse
 
 from windows import paths
@@ -35,6 +36,7 @@ logger = logging.getLogger("audiomuse.db_backend")
 _USE_PGSERVER = None
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_patch_lock = threading.Lock()
 
 
 def _check_pgserver():
@@ -183,22 +185,26 @@ def _patch_pgserver_pg_ctl():
     import pgserver.postgres_server as ps
     if getattr(ps, "_audiomuse_pg_ctl_patched", False):
         return
-    original = ps.pg_ctl
-    timeout = paths.pg_start_timeout()
+    with _patch_lock:
+        if getattr(ps, "_audiomuse_pg_ctl_patched", False):
+            return
+        original = ps.pg_ctl
+        timeout = paths.pg_start_timeout()
 
-    def pg_ctl(args, **kwargs):
-        if "start" in args:
-            if kwargs.get("timeout") is None or kwargs["timeout"] < timeout:
-                kwargs["timeout"] = timeout
-            kwargs.setdefault("stdin", subprocess.DEVNULL)
-            kwargs["creationflags"] = kwargs.get("creationflags", 0) | _NO_WINDOW
-            env = dict(kwargs.get("env") or os.environ)
-            env.setdefault("PGCTLTIMEOUT", str(timeout))
-            kwargs["env"] = env
-        return original(args, **kwargs)
+        def pg_ctl(args, **kwargs):
+            if args and "start" in args:
+                if kwargs.get("timeout") is None or kwargs["timeout"] < timeout:
+                    kwargs["timeout"] = timeout
+                kwargs.setdefault("stdin", subprocess.DEVNULL)
+                kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | _NO_WINDOW
+                env = kwargs.get("env")
+                env = dict(os.environ if env is None else env)
+                env.setdefault("PGCTLTIMEOUT", str(timeout))
+                kwargs["env"] = env
+            return original(args, **kwargs)
 
-    ps.pg_ctl = pg_ctl
-    ps._audiomuse_pg_ctl_patched = True
+        ps.pg_ctl = pg_ctl
+        ps._audiomuse_pg_ctl_patched = True
 
 
 def start_embedded(data_dir):
