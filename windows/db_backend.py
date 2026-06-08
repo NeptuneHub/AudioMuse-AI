@@ -26,6 +26,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
 from urllib.parse import urlparse
 
 from windows import paths
@@ -33,6 +34,10 @@ from windows import paths
 logger = logging.getLogger("audiomuse.db_backend")
 
 _USE_PGSERVER = None
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_patch_lock = threading.Lock()
+_embedded_lock = threading.Lock()
 
 
 def _check_pgserver():
@@ -91,6 +96,7 @@ def _preinit_scram(data_dir, password):
              "--auth-host=scram-sha-256", "--auth-local=scram-sha-256",
              "--encoding=utf8", f"--pwfile={pwfile}"],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
     finally:
         if pwfile and os.path.exists(pwfile):
@@ -159,25 +165,69 @@ def _clear_stale_data_dir(data_dir):
     shutil.rmtree(data_dir, ignore_errors=True)
 
 
+def _patch_pgserver_pg_ctl():
+    """Make pgserver's ``pg_ctl start`` survive a double-click (tray) launch.
+
+    The bundled pgserver starts the cluster with ``pg_ctl -w start`` under a
+    hardcoded 10s :func:`subprocess.run` timeout and with no Windows creation
+    flags, so the spawned ``postgres`` inherits the launching console. That is
+    fine for ``AudioMuse-AI.exe start`` (supervisor on the main thread of a real
+    console), but not for a double-click, where the supervisor boots from a
+    daemon thread under a hidden console: the inherited console stalls
+    ``pg_ctl``'s readiness wait past 10s, the timeout fires, and the half-started
+    postgres is left orphaned holding the data dir -- bricking every later start.
+
+    Replace the ``pg_ctl`` symbol pgserver calls with a wrapper that runs every
+    ``start`` detached from any console and with a generous timeout. Idempotent;
+    a no-op off Windows.
+    """
+    if os.name != "nt":
+        return
+    import pgserver.postgres_server as ps
+    if getattr(ps, "_audiomuse_pg_ctl_patched", False):
+        return
+    with _patch_lock:
+        if getattr(ps, "_audiomuse_pg_ctl_patched", False):
+            return
+        original = ps.pg_ctl
+        timeout = paths.pg_start_timeout()
+
+        def pg_ctl(args, **kwargs):
+            if args and "start" in args:
+                if kwargs.get("timeout") is None or kwargs["timeout"] < timeout:
+                    kwargs["timeout"] = timeout
+                kwargs.setdefault("stdin", subprocess.DEVNULL)
+                kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | _NO_WINDOW
+                env = kwargs.get("env")
+                env = dict(os.environ if env is None else env)
+                env.setdefault("PGCTLTIMEOUT", str(timeout))
+                kwargs["env"] = env
+            return original(args, **kwargs)
+
+        ps.pg_ctl = pg_ctl
+        ps._audiomuse_pg_ctl_patched = True
+
+
 def start_embedded(data_dir):
     pw = paths.db_password()
     if _check_pgserver():
+        _patch_pgserver_pg_ctl()
         import database
         fresh = not os.path.exists(os.path.join(data_dir, "PG_VERSION"))
         if fresh:
             _clear_stale_data_dir(data_dir)
             _preinit_scram(data_dir, pw)
-        try:
-            uri = database.start_embedded(data_dir)
-        except Exception:
-            if os.path.isdir(data_dir):
-                logger.warning("PostgreSQL data dir stale after crash — clearing and retrying")
+        with _embedded_lock:
+            try:
+                uri = database.start_embedded(data_dir)
+            except Exception:
+                if not fresh:
+                    raise
+                logger.warning("Fresh PostgreSQL cluster failed to start — clearing and retrying once")
                 import shutil
                 shutil.rmtree(data_dir, ignore_errors=True)
                 _preinit_scram(data_dir, pw)
                 uri = database.start_embedded(data_dir)
-            else:
-                raise
         if not fresh:
             _harden_existing(data_dir, pw, uri)
         return _conn_from_uri(uri, pw)
@@ -188,15 +238,18 @@ def start_embedded(data_dir):
 def ensure_embedded_running(data_dir):
     pw = paths.db_password()
     if _check_pgserver():
+        _patch_pgserver_pg_ctl()
         import database
-        return _conn_from_uri(database.ensure_embedded_running(data_dir), pw)
+        with _embedded_lock:
+            return _conn_from_uri(database.ensure_embedded_running(data_dir), pw)
     from windows import embedded_pg
     return embedded_pg.ensure_running(data_dir, pw)
 
 
 def stop_embedded():
-    if _check_pgserver():
-        import database
-        return database.stop_embedded()
-    from windows import embedded_pg
-    return embedded_pg.stop()
+    with _embedded_lock:
+        if _check_pgserver():
+            import database
+            return database.stop_embedded()
+        from windows import embedded_pg
+        return embedded_pg.stop()
