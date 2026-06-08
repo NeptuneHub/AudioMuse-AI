@@ -64,6 +64,22 @@ def _trim_hf_cache():
                 f.unlink()
 
 
+def _materialize_hf_symlinks():
+    print("==> Materialize HF-cache symlinks into real files (PyInstaller/zip drop symlinks on Windows)")
+    hf = MODEL / "huggingface"
+    if not hf.is_dir():
+        return
+    for path in sorted(hf.rglob("*")):
+        if not path.is_symlink():
+            continue
+        target = path.resolve()
+        if not target.is_file():
+            continue
+        data = target.read_bytes()
+        path.unlink()
+        path.write_bytes(data)
+
+
 def assemble():
     model_release = _env("MODEL_RELEASE")
     dclap_release = _env("DCLAP_RELEASE")
@@ -88,6 +104,7 @@ def assemble():
         shutil.rmtree(tmp_hf, ignore_errors=True)
 
     _trim_hf_cache()
+    _materialize_hf_symlinks()
 
     print("==> lyrics bundles (whisper / silero / gte)")
     tmp = Path(tempfile.mkdtemp())
@@ -112,8 +129,10 @@ def verify():
         missing.append("roberta-base snapshots/ empty — symlinks not extracted (use tar, not tarfile)")
     tokenizer_files = ("tokenizer.json", "vocab.json", "merges.txt", "config.json")
     for name in tokenizer_files:
-        if not any(roberta.rglob(name)):
-            missing.append(f"roberta-base {name} (HF cache incomplete after prune)")
+        real = [p for p in roberta.rglob(name)
+                if p.is_file() and not p.is_symlink() and p.stat().st_size > 0]
+        if not real:
+            missing.append(f"roberta-base {name} must be a real non-symlink file (run _materialize_hf_symlinks)")
     if missing:
         for f in missing:
             print(f"::error::Missing or empty: {f}")
