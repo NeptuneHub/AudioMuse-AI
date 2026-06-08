@@ -1,0 +1,90 @@
+# When someone opens a new issue or starts a new discussion, leave a warm
+# thank-you comment. If they have already starred the repo we thank them for it;
+# if not, we gently let them know that a star helps the project grow and thank
+# them in advance. Bots and the project's own team (owner, members,
+# collaborators) are skipped so only genuine outside visitors get the message.
+
+name: Thank issue and discussion authors
+
+on:
+  issues:
+    types:
+      - opened
+  discussion:
+    types:
+      - created
+
+permissions:
+  issues: write
+  discussions: write
+
+jobs:
+  say-thanks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post a kind welcome comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const isDiscussion = context.eventName === 'discussion';
+            const subject = isDiscussion
+              ? context.payload.discussion
+              : context.payload.issue;
+
+            const author = subject.user.login;
+
+            if (subject.user.type === 'Bot' || author.endsWith('[bot]')) {
+              console.log(`Skipping bot account ${author}.`);
+              return;
+            }
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(subject.author_association)) {
+              console.log(`Skipping team member ${author} (${subject.author_association}).`);
+              return;
+            }
+
+            const stargazers = await github.paginate(
+              github.rest.activity.listStargazersForRepo,
+              { owner, repo, per_page: 100 },
+            );
+            const hasStarred = stargazers.some(
+              (u) => u.login.toLowerCase() === author.toLowerCase(),
+            );
+
+            const opened = isDiscussion ? 'starting this discussion' : 'opening this issue';
+
+            const thanksForStar = [
+              `Hi @${author}, thank you so much for ${opened} and for taking the time to help us make AudioMuse-AI better.`,
+              ``,
+              `I also noticed that you already starred the project, and honestly that means a lot to us. Thank you for the support, it really keeps us motivated to keep improving things.`,
+              ``,
+              `We will take a good look as soon as we can. Thanks again for being part of this.`,
+            ].join('\n');
+
+            const pleaseStar = [
+              `Hi @${author}, thank you so much for ${opened} and for taking the time to help us make AudioMuse-AI better. We will take a good look as soon as we can.`,
+              ``,
+              `If you are finding the project useful, would you consider giving it a star? It really is a small thing, but it genuinely helps the project grow and reach more people who could enjoy it too.`,
+              ``,
+              `Thank you so much in advance, it truly makes a difference for a project like ours.`,
+            ].join('\n');
+
+            const body = hasStarred ? thanksForStar : pleaseStar;
+
+            if (isDiscussion) {
+              await github.graphql(
+                `mutation($discussionId: ID!, $body: String!) {
+                  addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
+                    comment { id }
+                  }
+                }`,
+                { discussionId: subject.node_id, body },
+              );
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: subject.number,
+                body,
+              });
+            }
