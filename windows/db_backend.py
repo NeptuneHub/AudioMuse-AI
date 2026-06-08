@@ -37,6 +37,7 @@ _USE_PGSERVER = None
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _patch_lock = threading.Lock()
+_embedded_lock = threading.Lock()
 
 
 def _check_pgserver():
@@ -216,16 +217,17 @@ def start_embedded(data_dir):
         if fresh:
             _clear_stale_data_dir(data_dir)
             _preinit_scram(data_dir, pw)
-        try:
-            uri = database.start_embedded(data_dir)
-        except Exception:
-            if not fresh:
-                raise
-            logger.warning("Fresh PostgreSQL cluster failed to start — clearing and retrying once")
-            import shutil
-            shutil.rmtree(data_dir, ignore_errors=True)
-            _preinit_scram(data_dir, pw)
-            uri = database.start_embedded(data_dir)
+        with _embedded_lock:
+            try:
+                uri = database.start_embedded(data_dir)
+            except Exception:
+                if not fresh:
+                    raise
+                logger.warning("Fresh PostgreSQL cluster failed to start — clearing and retrying once")
+                import shutil
+                shutil.rmtree(data_dir, ignore_errors=True)
+                _preinit_scram(data_dir, pw)
+                uri = database.start_embedded(data_dir)
         if not fresh:
             _harden_existing(data_dir, pw, uri)
         return _conn_from_uri(uri, pw)
@@ -238,14 +240,16 @@ def ensure_embedded_running(data_dir):
     if _check_pgserver():
         _patch_pgserver_pg_ctl()
         import database
-        return _conn_from_uri(database.ensure_embedded_running(data_dir), pw)
+        with _embedded_lock:
+            return _conn_from_uri(database.ensure_embedded_running(data_dir), pw)
     from windows import embedded_pg
     return embedded_pg.ensure_running(data_dir, pw)
 
 
 def stop_embedded():
-    if _check_pgserver():
-        import database
-        return database.stop_embedded()
-    from windows import embedded_pg
-    return embedded_pg.stop()
+    with _embedded_lock:
+        if _check_pgserver():
+            import database
+            return database.stop_embedded()
+        from windows import embedded_pg
+        return embedded_pg.stop()
