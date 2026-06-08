@@ -149,7 +149,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
   - **No Terminal:** double-click and dismiss the warning, then System Settings → Privacy & Security → "Open Anyway", authenticate, and launch again.
 - Runs only on Apple Silicon (ARM) on recent macOS (tested on macOS 15.3.1, Mac Mini M4 / 16 GB).
 
-**Files:** data (database, Redis, temp audio) in `~/Library/AudioMuse-AI` · log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+**Files:** data (database, Redis, temp audio) in `~/Library/AudioMuse-AI`, log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
 </details>
 
 <details>
@@ -162,17 +162,17 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
   - `audiomuse-ai start` (stop with `audiomuse-ai stop`), or auto-start on login with `systemctl --user enable --now audiomuse-ai`.
 - Verified on **Debian 12 (bookworm)** (glibc 2.36). The `.rpm` is the same payload, expected to work on recent Fedora / RHEL 9, but too old for RHEL/Rocky/Alma 8 (glibc 2.28). Feedback on RPM-based distros is welcome.
 
-**Files** (under the launching user's home): data (database, Redis, temp audio) in `~/.local/share/AudioMuse-AI` · log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
+**Files** (under the launching user's home): data (database, Redis, temp audio) in `~/.local/share/AudioMuse-AI`, log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
 </details>
 
 <details>
 <summary><b>Windows</b> — x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
 
-- Unzip the portable archive anywhere, then double-click `AudioMuse-AI.exe`. On first run SmartScreen may warn to click "More info" then "Run anyway".
+- Unzip the portable archive anywhere, then double-click `AudioMuse-AI.exe`.
 - From a terminal you can also control the stack with `AudioMuse-AI.exe start | stop | status | open`.
-- Runs only on x86_64 (Intel/AMD) on Windows 10/11. ARM64 Windows is not supported yet.
+- Runs only on x86_64 (Intel/AMD) on Windows 10/11.
 
-**Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI` · log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
+**Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
 </details>
 
 ## **Hardware Requirements**
