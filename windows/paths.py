@@ -136,6 +136,18 @@ def pg_port():
     return 5432
 
 
+def pg_start_timeout():
+    """Seconds to wait for embedded PostgreSQL to report ready before giving up.
+
+    pgserver's built-in 10s is too short when the supervisor boots from the tray
+    app's daemon thread under a hidden console, and on a cold first start while
+    Windows Defender scans the freshly extracted binaries. A premature timeout
+    orphans postgres.exe holding the data dir and bricks the next start, so allow
+    a generous window.
+    """
+    return 120
+
+
 def redis_url():
     """Password-bearing URL for the embedded Redis (loopback TCP, scram-equivalent gate)."""
     return f"redis://:{quote(redis_password(), safe='')}@127.0.0.1:{redis_port()}/0"
