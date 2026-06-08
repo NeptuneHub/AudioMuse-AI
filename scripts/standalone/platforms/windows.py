@@ -1,11 +1,3 @@
-"""Windows packaging: verify vendored inputs, smoke-test the embedded PG, zip.
-
-Mirrors the old ``windows/build.bat`` (clean + PyInstaller live in ``build.py``).
-The bundle is zipped with the stdlib ``zipfile`` (ZIP64 enabled, automatic for the
->4 GB tree) instead of PowerShell ``Compress-Archive`` so the orchestrator stays
-pure Python.
-"""
-
 import zipfile
 
 from ._pgserver import verify_pgserver_bundle

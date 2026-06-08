@@ -1,21 +1,3 @@
-"""Single source of truth for the standalone (native) build.
-
-Both the shared PyInstaller spec (``AudioMuse-AI.spec`` at the repo root) and the
-orchestrator (``build.py``) import :data:`PLATFORMS` from here, so every
-per-platform difference between the macOS, Linux and Windows bundles lives in one
-table instead of being multiplied across three specs and three build scripts.
-
-The spec loads this module by file path via ``importlib.util`` (not
-``import scripts.standalone.config``) on purpose: ``scripts`` must never become an
-importable package that PyInstaller's analysis or ``collect_submodules`` could
-sweep the build tooling into the frozen app.
-
-Each entry captures only what genuinely differs per platform. Everything
-identical across all three (the templates/static/model datas, the
-``collect_data_files``/``collect_dynamic_libs`` calls, the common hidden imports,
-the PYZ/EXE/COLLECT skeleton with ``strip=False``) stays hardcoded in the spec.
-"""
-
 import sys
 
 PLATFORMS = {

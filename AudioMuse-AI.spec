@@ -1,48 +1,4 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Single parameterized PyInstaller spec for the standalone macOS/Linux/Windows builds.
-
-Run from the repo root, normally via the orchestrator:
-``python scripts/standalone/build.py --platform {macos,linux,windows}`` (which
-exports ``AUDIOMUSE_BUILD_TARGET`` and invokes
-``pyinstaller AudioMuse-AI.spec --noconfirm``). A bare
-``pyinstaller AudioMuse-AI.spec`` also works for a developer -- the target then
-falls back to the host OS (PyInstaller cannot cross-compile, so the host is the
-only valid target).
-
-This replaces the three near-identical per-platform specs. Everything that
-differs per platform lives in ``scripts/standalone/config.py`` (the ``PLATFORMS``
-table); everything identical is hardcoded below. The config module is loaded by
-file path via ``importlib`` so ``scripts`` never becomes an importable package
-that the analysis could pull into the frozen app.
-
-Rationale preserved from the old specs (do not regress):
-
-* ``strip=False`` in BOTH ``EXE`` and ``COLLECT``. Most native deps are manylinux
-  wheels whose shared libraries were already rewritten by auditwheel/patchelf
-  (mangled sonames, injected RPATHs); running ``strip`` over a patchelf-modified
-  ELF breaks it -- pgserver's initdb/psql SIGSEGV at load, scipy's OpenBLAS fails
-  with "ELF load command address/offset not page-aligned". On Windows stripping
-  ``.pyd`` files can break them too. Stripping would save a few hundred MB, but a
-  corrupted bundle does not start at all, so correctness wins.
-
-* Embedded PostgreSQL sourcing (``USE_PGSERVER``): the pgserver wheel on
-  Windows/macOS and Linux x86_64; a from-source PostgreSQL tree bundled under
-  ``pgsql/`` on Linux aarch64 (no arm64 wheel). Windows tries the wheel and falls
-  back to the from-source tree if the wheel is not importable at build time.
-
-* pgserver ships only plpgsql + pgvector; the schema needs ``unaccent`` and
-  ``pg_trgm``. Those contrib modules are vendored (compiled against pgserver's
-  exact PG ABI) and grafted into the bundled pgserver tree. ``collect_data_files``
-  EXCLUDES shared libraries, so the loadable modules under
-  ``pginstall/lib/postgresql`` are dropped from the wheel copy; the build's
-  ``verify_pgserver_bundle`` step restores the complete tree and smoke-tests
-  ``initdb`` before packaging.
-
-* The Windows tray-launch fix does a function-level ``import
-  pgserver.postgres_server`` (to patch ``pg_ctl``); it is listed as an explicit
-  hidden import for Windows so the frozen bundle keeps that submodule.
-"""
-
 import glob
 import importlib.util
 import os

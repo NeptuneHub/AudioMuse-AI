@@ -1,18 +1,3 @@
-"""Linux packaging: verify per-arch inputs, fix the embedded PG, build .deb/.rpm.
-
-Mirrors the old ``linux/build.sh`` (clean + PyInstaller live in ``build.py``).
-
-Embedded PostgreSQL differs by arch: x86_64 grafts the vendored unaccent/pg_trgm
-contrib into the pgserver wheel (and the shared :func:`verify_pgserver_bundle`
-restores the wheel's loadable modules + smoke-tests initdb); aarch64 bundles a
-whole from-source PostgreSQL tree under ``pgsql/`` (pgserver has no arm64 wheel),
-which is added as PyInstaller *data* and therefore loses the executable bit, so
-its ``pgsql/bin`` binaries get ``+x`` restored here (the server relocates via
-rpath; ``embedded_pg`` also sets ``LD_LIBRARY_PATH`` defensively).
-
-Only verifiable in CI (ubuntu x86_64 + ubuntu-arm aarch64).
-"""
-
 import shutil
 import subprocess
 

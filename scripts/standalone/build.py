@@ -1,21 +1,3 @@
-"""Cross-platform orchestrator for the standalone (native) build.
-
-Replaces the three per-platform build scripts (``windows/build.bat``,
-``macos/build.sh``, ``linux/build.sh``) with one parameterized entry point. Run
-from the repo root, inside the platform's build venv:
-
-    python scripts/standalone/build.py --platform {macos,linux,windows} [--arch ARCH]
-
-PyInstaller cannot cross-compile, so ``--platform`` must match the host OS; it is
-also exported as ``AUDIOMUSE_BUILD_TARGET`` for the shared spec. ``PKG_VERSION``
-is read from the environment (default ``0.0.0``) and sanitized here for every
-platform (deb/rpm-safe), so the CI workflows only need to derive the raw version.
-
-Shared steps (clean, version, arch, PyInstaller) live here; the genuinely
-platform-specific packaging lives in ``platforms/{windows,macos,linux}.py``, each
-exposing ``prepare(ctx)`` (pre-PyInstaller) and ``package(ctx)`` (post).
-"""
-
 import argparse
 import os
 import platform as _platform

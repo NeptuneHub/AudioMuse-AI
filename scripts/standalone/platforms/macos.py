@@ -1,21 +1,3 @@
-"""macOS packaging: generate icons, ad-hoc codesign, stage + ditto into a zip.
-
-Mirrors the old ``macos/build.sh`` (clean + PyInstaller live in ``build.py``).
-
-Two non-obvious choices preserved from the original, do not regress:
-
-* The bundle is archived with ``ditto -c -k``, NOT ``zip``/``zipfile``. The app is
-  >4 GB and needs ZIP64, which the legacy ``zip`` tool mishandles ("extra bytes" /
-  corrupt archive), and ditto also preserves the bundle's symlinks and the ad-hoc
-  signature.
-* Staging copies the app with ``cp -cR`` (APFS copy-on-write clone) so staging is
-  instant and costs no extra disk while preserving the signature and symlinks,
-  falling back to ``ditto`` on a non-APFS volume. ``shutil.copytree`` is avoided
-  (loses symlinks/signature, slow on >4 GB).
-
-Only verifiable in CI (macos-14, arm64) -- there is no local macOS build box.
-"""
-
 import os
 import subprocess
 

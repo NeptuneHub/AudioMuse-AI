@@ -1,25 +1,4 @@
-"""Assemble (and verify) ./model for the standalone CI builds.
 
-One script for all three runners (Windows/macOS/Linux), replacing the three
-near-identical "assemble ./model" blocks that were PowerShell on Windows and bash
-on macOS/Linux. The ``gh`` CLI is present on every runner, so the same Python
-runs everywhere.
-
-The ~5 GB of models are NOT in git. This downloads them from the same GitHub
-releases the Dockerfile uses, INCLUDING the HuggingFace cache, then trims the HF
-cache to just the roberta-base tokenizer the app actually loads (the app's only
-runtime HF dependency is ``AutoTokenizer.from_pretrained("roberta-base")``;
-bert-base-uncased and bart-base are never loaded, and a tokenizer needs no model
-weights), keeping release assets under GitHub's 2 GB per-file limit.
-
-Usage (from the repo root):
-    python scripts/standalone/assemble_model.py            # download + trim
-    python scripts/standalone/assemble_model.py --verify   # check completeness
-
-Reads ``MODEL_RELEASE``, ``DCLAP_RELEASE``, ``GITHUB_REPOSITORY`` (and ``GH_TOKEN``,
-which ``gh`` consumes) from the environment, kept in the workflow ``env:`` so the
-release tags are bumped in lockstep with the Dockerfile.
-"""
 
 import argparse
 import os

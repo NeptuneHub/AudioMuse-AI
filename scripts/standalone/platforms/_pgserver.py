@@ -1,33 +1,3 @@
-"""Shared embedded-PostgreSQL bundle guard for the pgserver-wheel targets.
-
-Both Linux x86_64 and Windows bundle PostgreSQL via the pgserver wheel, and both
-collect it with ``collect_data_files('pgserver')`` in the spec. That helper
-EXCLUDES shared libraries, so on Linux every loadable module under
-``pginstall/lib/postgresql`` is dropped from the bundled copy: plpgsql, pgvector,
-the encoding converters, and -- critically -- ``dict_snowball``, which initdb's
-post-bootstrap text-search setup loads. Without it initdb cannot create the
-cluster and the supervisor fails to start. (The executables themselves are fine:
-the spec keeps ``strip=False``, and ``collect_data_files`` copies binaries
-verbatim, so only the loadable modules are missing.)
-
-:func:`verify_pgserver_bundle` overlays the complete, pristine ``pginstall`` tree
-from the importable wheel back onto the bundle, then smoke-tests ``initdb`` into a
-throwaway data dir.
-
-Strictness differs by platform (the ``strict`` flag):
-
-* Linux x86_64 (strict=True): the from-wheel restore is REQUIRED, and a failed
-  initdb means a broken package, so any failure aborts the build.
-* Windows (strict=False): the old Windows build shipped a working bundle with NO
-  build-time restore or initdb check at all, so this must never turn a
-  previously-green build red. The restore + smoke test still run for their
-  diagnostic value, but any failure is logged as a warning and the build
-  continues.
-
-NOTE: do NOT "shrink" the bundle by re-enabling ``strip``; stripping pgserver's
-patchelf-modified ELFs corrupts initdb/psql/pg_dump so they SIGSEGV at load.
-"""
-
 import os
 import shutil
 import subprocess
@@ -97,13 +67,6 @@ def _restore_and_smoke_test(ctx, pgserver):
 
 
 def verify_pgserver_bundle(ctx, strict=True):
-    """Restore the bundled pginstall tree from the wheel and smoke-test initdb.
-
-    A no-op (with a log line) when pgserver is not importable -- in that case the
-    spec bundled a from-source PostgreSQL tree instead, which this guard does not
-    cover. With ``strict=False`` (Windows) a restore/initdb failure is downgraded
-    to a warning so it cannot block a build that the old pipeline shipped fine.
-    """
     try:
         import pgserver
     except Exception:
