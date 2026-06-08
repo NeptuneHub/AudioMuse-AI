@@ -2,6 +2,9 @@
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
+<p align="center">
+<strong>⭐ Leave a star on this project:</strong> One shines alone; together, they make it visible and keep it alive.
+</p>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
 
@@ -72,16 +75,14 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 ## **Table of Contents**
 
-- [Quick Start Deployment](#quick-start-deployment)
-- [Quick Start Deployment MacOS](#quick-start-deployment-macos)
-- [Quick Start Deployment Linux](#quick-start-deployment-linux)
-- [Quick Start Deployment Windows](#quick-start-deployment-windows)
+- [Quick Start Deployment (Containerized)](#quick-start-deployment-containerized)
+- [Native Deployment](#native-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
 - [Star History](#star-history)
 
-## Quick Start Deployment
+## Quick Start Deployment (Containerized)
 
 Get AudioMuse-AI running in minutes with Docker Compose.
 
@@ -133,63 +134,46 @@ docker compose -f deployment/docker-compose.yaml down
 ```
 > **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
-## Quick Start Deployment MacOS
-Starting from release `v2.1.2` we introduce a MacOS native version. You will find it as `AudioMuse-AI-arm64.zip` attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
+## Native Deployment
 
-To run it you have two option:
+Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows**, attached to each [release](https://github.com/NeptuneHub/AudioMuse-AI/releases). Each bundles the whole stack (embedded PostgreSQL, Redis, web UI and workers), so you don't need Docker or an external database. Once started, open **http://127.0.0.1:8000**.
 
-- **Option A - Terminal:**
-  - Unzip and move AudioMuse-AI.app to /Applications.
-  - Run in a terminal: `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`
-  - Double-click the app - the icon appears in your menu bar.
+> The apps are not signed, so your OS may warn you on first launch, see the per-platform notes below for how to allow them.
 
-- **Option B - no Terminal:**
-  - Move the app to /Applications, double-click, dismiss the warning.
-  - System Settings → Privacy & Security → Security → "Open Anyway" next to AudioMuse-AI, authenticate.
-  - Launch again.
+<details>
+<summary><b>macOS</b> — Apple Silicon, <code>AudioMuse-AI-arm64.zip</code> (from <code>v2.1.2</code>)</summary>
 
-The core step both share is removing the quarantine flag due to the fact that the app is not signed.
+- Unzip and move `AudioMuse-AI.app` to `/Applications`.
+- Remove the quarantine flag (the app is unsigned), either way:
+  - **Terminal:** `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then double-click — the icon appears in your menu bar.
+  - **No Terminal:** double-click and dismiss the warning, then System Settings → Privacy & Security → "Open Anyway", authenticate, and launch again.
+- Runs only on Apple Silicon (ARM) on recent macOS (tested on macOS 15.3.1, Mac Mini M4 / 16 GB).
 
-This version run only on Apple Silicon (ARM) processor on recent version of MacOS (tested on MacOS 15.3.1 on MacMini M4 with 16gb ram)
+**Files:** data (database, Redis, temp audio) in `~/Library/AudioMuse-AI`, log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+</details>
 
-**Files:**
-- Data (database, Redis, temp audio): `~/Library/AudioMuse-AI`
-- Log: `~/Library/Logs/AudioMuse-AI/audiomuse.log`
-
-## Quick Start Deployment Linux
-Starting from release `v2.1.3` we provide a native Linux package (`.deb` and `.rpm`, x86_64 and arm64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases).
+<details>
+<summary><b>Linux</b> — x86_64 / arm64, <code>.deb</code> or <code>.rpm</code> (from <code>v2.1.3</code>)</summary>
 
 - **Install as root** (writes to `/opt` and the system app/service dirs):
   - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-x86_64.deb`
   - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-x86_64.rpm`
-- **Run as your normal user** (never with `sudo`/root — it stores data in your home and will not start as root):
-  - `audiomuse-ai start`, then open http://127.0.0.1:8000
-  - Or auto-start on login: `systemctl --user enable --now audiomuse-ai`
-  - `audiomuse-ai stop` can be used to stop
+- **Run as your normal user** (never with `sudo`/root — it stores data in your home and won't start as root):
+  - `audiomuse-ai start` (stop with `audiomuse-ai stop`), or auto-start on login with `systemctl --user enable --now audiomuse-ai`.
+- Verified on **Debian 12 (bookworm)** (glibc 2.36). The `.rpm` is the same payload, expected to work on recent Fedora / RHEL 9, but too old for RHEL/Rocky/Alma 8 (glibc 2.28). Feedback on RPM-based distros is welcome.
 
-**Files** (under the launching user's home):
-- Data (database, Redis, temp audio): `~/.local/share/AudioMuse-AI`
-- Log: `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first — read the top)
+**Files** (under the launching user's home): data (database, Redis, temp audio) in `~/.local/share/AudioMuse-AI`, log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
+</details>
 
-> **Tested on:** the `.deb` has been verified on **Debian GNU/Linux 12 (bookworm)** (glibc 2.36). The `.rpm` is built from the exact same payload but has not yet been tested on a live RPM-based distribution; it is expected to work on a reasonably recent system (e.g. Fedora / RHEL 9), but older distributions such as RHEL/Rocky/Alma 8 (glibc 2.28) are too old for the bundled binaries. Feedback on RPM-based distros is welcome.
+<details>
+<summary><b>Windows</b> — x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
 
-## Quick Start Deployment Windows
-Starting from release `v2.1.4` we provide a native Windows package (x86_64) attached to the [release](https://github.com/NeptuneHub/AudioMuse-AI/releases): the portable archive `AudioMuse-AI-amd64-windows.zip`. It bundles the whole stack (embedded PostgreSQL, Redis, the web UI and the workers) so you do not need Docker or an external database.
+- Unzip the portable archive anywhere.
+- From a terminal you can start with `AudioMuse-AI.exe start` and stop with `AudioMuse-AI.exe stop`.
+- Runs only on x86_64 (Intel/AMD) on Windows 10/11.
 
-To run it:
-
-- Unzip `AudioMuse-AI-amd64-windows.zip` anywhere.
-- Double-click `AudioMuse-AI.exe` (or run it from a terminal), then open http://127.0.0.1:8000
-
-The app is not signed, so on first run Windows SmartScreen may show a warning, click "More info" then "Run anyway" to continue.
-
-From a terminal you can also control the stack with `AudioMuse-AI.exe start`, `AudioMuse-AI.exe stop`, `AudioMuse-AI.exe status` and `AudioMuse-AI.exe open`.
-
-This version run only on x86_64 (Intel/AMD) processor on Windows 10/11. ARM64 Windows is not supported yet.
-
-**Files:**
-- Data (database, Redis, temp audio): `%LOCALAPPDATA%\AudioMuse-AI`
-- Log: `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first — read the top)
+**Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
+</details>
 
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
