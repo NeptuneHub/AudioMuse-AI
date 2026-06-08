@@ -104,7 +104,7 @@ jobs:
               { label: 'Linux aarch64 (.rpm)', wf: 'build-linux.yml',
                 kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-linux-rpm' },
               { label: 'Windows x86_64 (.zip)', wf: 'build-windows.yml',
-                kind: 'artifact', artifact: 'AudioMuse-AI-amd64-windows' },
+                kind: 'artifact', artifact: 'AudioMuse-AI-amd64-windows-zip' },
               { label: 'Docker image', wf: 'build-arm-intel.yml',
                 kind: 'image', image: `${ghcr}:pr-${pull_number}` },
               { label: 'Docker image (nvidia)', wf: 'build-nvidia.yml',

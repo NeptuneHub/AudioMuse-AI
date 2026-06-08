@@ -116,7 +116,7 @@ jobs:
       - name: Upload bundle as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioMuse-AI-${{ env.ARCH }}-windows
+          name: AudioMuse-AI-${{ env.ARCH }}-windows-zip
           path: dist/AudioMuse-AI/
           if-no-files-found: error
 
