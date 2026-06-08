@@ -9,8 +9,8 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 ```
 
-So we vendor those two modules here and the PyInstaller spec
-(`macos/AudioMuse-AI.spec`) grafts them into the bundled `pgserver/pginstall`
+So we vendor those two modules here and the shared PyInstaller spec
+(`AudioMuse-AI.spec`) grafts them into the bundled `pgserver/pginstall`
 tree (`.dylib` → `lib/postgresql/`, `*.control`/`*--*.sql` →
 `share/postgresql/extension/`, `unaccent.rules` →
 `share/postgresql/tsearch_data/`).
@@ -57,5 +57,5 @@ cp contrib/unaccent/unaccent.rules "$DEST/tsearch_data/"
 ```
 
 Each `.dylib` should depend only on `/usr/lib/libSystem.B.dylib` (`otool -L`);
-server symbols resolve at load time via `-bundle_loader postgres`. `build.sh`
-ad-hoc signs them along with every other nested binary.
+server symbols resolve at load time via `-bundle_loader postgres`.
+`scripts/standalone/platforms/macos.py` ad-hoc signs them along with every other nested binary.

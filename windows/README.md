@@ -36,7 +36,7 @@ windows\vendor\build-redis.bat
 
 # 5. Build the app bundle
 set PKG_VERSION=0.0.0
-windows\build.bat
+.venv-windows\Scripts\python scripts\standalone\build.py --platform windows
 
 # 6. Output
 #    dist\AudioMuse-AI\                — one-dir PyInstaller bundle

@@ -135,7 +135,8 @@ attaches the `.deb`/`.rpm` to the release. For each arch it:
      source (`linux/vendor/postgres/build-postgres.sh`),
 4. assembles `./model` from the model releases (trimming the HF cache to the
    roberta tokenizer so the assets stay under GitHub's 2 GB limit),
-5. runs `linux/build.sh` → PyInstaller (`linux/AudioMuse-AI.spec`) → `nfpm`.
+5. runs `scripts/standalone/build.py --platform linux` → PyInstaller (the shared
+   `AudioMuse-AI.spec`) → `nfpm`.
 
 ## Building (developer machine)
 
@@ -154,8 +155,8 @@ bash linux/vendor/postgres/build-postgres.sh       # aarch64 (from source)
 # or copy an existing ./model tree into the repo root.
 
 # Package (needs nfpm on PATH: https://nfpm.goreleaser.com)
-PKG_VERSION=1.0.0 bash linux/build.sh
-# -> dist/AudioMuse-AI-<arch>.deb  and  dist/AudioMuse-AI-<arch>.rpm
+PKG_VERSION=1.0.0 python scripts/standalone/build.py --platform linux
+# -> dist/AudioMuse-AI-<arch>-linux.deb  and  dist/AudioMuse-AI-<arch>-linux.rpm
 ```
 
 ## Layout of this folder
@@ -168,8 +169,6 @@ PKG_VERSION=1.0.0 bash linux/build.sh
 | `embedded_pg.py` | `initdb`/`pg_ctl` manager for the from-source PostgreSQL bundled on aarch64. |
 | `paths.py` | XDG-based writable dirs + bundled-resource locations (incl. per-arch Postgres paths). |
 | `env.py` | The environment handed to each child (embedded DB/queue, model paths). |
-| `AudioMuse-AI.spec` | PyInstaller one-dir spec. |
-| `build.sh` | PyInstaller build + `nfpm` packaging into `.deb`/`.rpm`. |
 | `packaging/` | `nfpm` config template, `.desktop` entries, the systemd **user** service, the square app icons (`icons/`), post-install/-remove scripts. |
 | `vendor/` | Helper scripts that build `redis-server`, the x86_64 PG contrib modules, and the aarch64 from-source PostgreSQL in CI. |
 

@@ -74,14 +74,15 @@ python3.12 -m venv .venv-macos
 source .venv-macos/bin/activate
 pip install -r requirements/macos.txt
 
-bash macos/build.sh
+python scripts/standalone/build.py --platform macos
 ```
 
-`build.sh` will:
+The build (orchestrated by `scripts/standalone/build.py`, with the macOS-specific
+packaging in `scripts/standalone/platforms/macos.py`) will:
 1. Generate `AudioMuse-AI.icns` + the menu-bar icon from `screenshot/audiomuseai.png`.
-2. Run PyInstaller against `macos/AudioMuse-AI.spec`.
+2. Run PyInstaller against the shared `AudioMuse-AI.spec`.
 3. **Ad-hoc sign** every nested binary (Postgres, Redis, dylibs) and then the bundle.
-4. Produce `dist/AudioMuse-AI-<arch>.zip`.
+4. Produce `dist/AudioMuse-AI-<arch>-macos.zip`.
 
 The build is **not notarized and not Developer-ID signed** — we have no Apple
 Developer account. That is expected; see the next section for how users open it.
@@ -241,8 +242,9 @@ by `macos/control_ipc.ControlServer`, which calls
 ### Gotchas / where bugs will hide (ranked)
 
 1. **Unsigned nested binaries** (Postgres, Redis, dylibs) get killed by
-   Gatekeeper/quarantine. Mitigated by ad-hoc signing everything in `build.sh` +
-   the `xattr -dr com.apple.quarantine` user step. No hardened runtime, no
+   Gatekeeper/quarantine. Mitigated by ad-hoc signing everything in
+   `scripts/standalone/platforms/macos.py` + the `xattr -dr com.apple.quarantine`
+   user step. No hardened runtime, no
    notarization (we have no Apple Developer account).
 2. **RQ job funcs not importable when frozen** — RQ imports `tasks.foo.bar` by
    string at run time; static analysis misses them. Fixed by

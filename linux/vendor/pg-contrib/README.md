@@ -9,8 +9,8 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 ```
 
-So we build those two modules from PostgreSQL source and the PyInstaller spec
-(`linux/AudioMuse-AI.spec`) grafts them into the bundled `pgserver/pginstall`
+So we build those two modules from PostgreSQL source and the shared PyInstaller spec
+(`AudioMuse-AI.spec`) grafts them into the bundled `pgserver/pginstall`
 tree (`.so` → `lib/postgresql/`, `*.control`/`*--*.sql` →
 `share/postgresql/extension/`, `unaccent.rules` →
 `share/postgresql/tsearch_data/`).

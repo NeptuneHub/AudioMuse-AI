@@ -2,7 +2,7 @@
 
 The standalone macOS app embeds Redis (RQ broker + pub/sub). The binary is
 committed here per architecture and copied into the bundle as-is by
-`macos/AudioMuse-AI.spec` — the build never downloads or compiles Redis, so the
+the shared `AudioMuse-AI.spec` — the build never downloads or compiles Redis, so the
 bundled binary is byte-identical to what was tested.
 
 ```
@@ -36,4 +36,4 @@ cp src/redis-server ../macos/vendor/redis/arm64/redis-server
 chmod +x ../macos/vendor/redis/arm64/redis-server
 ```
 
-`build.sh` ad-hoc signs the binary along with every other nested executable.
+`scripts/standalone/platforms/macos.py` ad-hoc signs the binary along with every other nested executable.

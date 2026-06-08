@@ -3,7 +3,7 @@
 The native Linux bundle embeds Redis and two PostgreSQL contrib extensions that
 `pgserver`'s minimal PostgreSQL does not ship. Both are **built fresh in CI**
 (not committed to git) by the helper scripts here, then copied into the bundle
-by `linux/AudioMuse-AI.spec`.
+by the shared `AudioMuse-AI.spec`.
 
 ```
 linux/vendor/build-redis.sh                 # -> redis/<arch>/redis-server

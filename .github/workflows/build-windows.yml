@@ -8,7 +8,7 @@
 #
 # The small native build inputs (redis-server.exe, the unaccent/pg_trgm contrib
 # modules) are built or downloaded in this workflow, then baked into the bundle
-# by windows/AudioMuse-AI.spec.
+# by the shared AudioMuse-AI.spec.
 #
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
 # same GitHub releases the Dockerfile/macOS/Linux builds use, INCLUDING the
@@ -103,92 +103,22 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          New-Item -ItemType Directory -Force -Path model | Out-Null
-          $modelRelease = "$env:MODEL_RELEASE"
-          $dclapRelease = "$env:DCLAP_RELEASE"
-
-          Write-Host "==> musicnn + CLAP text models (from $modelRelease)"
-          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D model --clobber `
-            -p musicnn_embedding.onnx `
-            -p musicnn_prediction.onnx `
-            -p clap_text_model.onnx
-
-          Write-Host "==> DCLAP audio model (from $dclapRelease in the -DCLAP repo)"
-          gh release download $dclapRelease -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber `
-            -p model_epoch_36.onnx `
-            -p model_epoch_36.onnx.data
-
-          Write-Host "==> HuggingFace cache (roberta/bert/bart)"
-          $tmp_hf = Join-Path $env:RUNNER_TEMP "hf_models"
-          New-Item -ItemType Directory -Force -Path $tmp_hf | Out-Null
-          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp_hf --clobber `
-            -p huggingface_models.tar.gz
-          New-Item -ItemType Directory -Force -Path model\huggingface | Out-Null
-          tar -xzf "$tmp_hf\huggingface_models.tar.gz" -C model\huggingface
-          if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting huggingface models"; exit 1 }
-          Remove-Item -Recurse -Force $tmp_hf
-
-          Write-Host "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
-          $hf = "model\huggingface\hub"
-          if (Test-Path "$hf\models--bert-base-uncased") { Remove-Item -Recurse -Force "$hf\models--bert-base-uncased" }
-          if (Test-Path "$hf\models--facebook--bart-base") { Remove-Item -Recurse -Force "$hf\models--facebook--bart-base" }
-          $rb = "$hf\models--roberta-base"
-          if (Test-Path $rb) {
-            Get-ChildItem -Recurse -File "$rb\blobs" | Where-Object { $_.Length -gt 10MB } | Remove-Item -Force
-            Get-ChildItem -Recurse "$rb\snapshots" -Include "model.safetensors","pytorch_model.bin" | Remove-Item -Force
-          }
-
-          Write-Host "==> lyrics bundles (whisper / silero / gte)"
-          $tmp = Join-Path $env:RUNNER_TEMP "lyrics_models"
-          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-          gh release download $modelRelease -R $env:GITHUB_REPOSITORY -D $tmp --clobber `
-            -p lyrics_model_whisper.tar.gz `
-            -p lyrics_model_silero_vad.tar.gz `
-            -p lyrics_model_gte_vnni.tar.gz
-          foreach ($t in @("lyrics_model_whisper", "lyrics_model_silero_vad", "lyrics_model_gte_vnni")) {
-            tar -xzf "$tmp\$t.tar.gz" -C model
-            if ($LASTEXITCODE -ne 0) { Write-Error "tar failed extracting $t"; exit 1 }
-          }
-          Remove-Item -Recurse -Force $tmp
+        run: python scripts/standalone/assemble_model.py
 
       - name: Verify the assembled model/ is complete
         shell: powershell
-        run: |
-          $required = @(
-            "model\musicnn_embedding.onnx",
-            "model\musicnn_prediction.onnx",
-            "model\clap_text_model.onnx",
-            "model\model_epoch_36.onnx",
-            "model\model_epoch_36.onnx.data",
-            "model\huggingface\hub\models--roberta-base\snapshots",
-            "model\silero_vad.onnx",
-            "model\gte-multilingual-base-int8.onnx",
-            "model\whisper-small-onnx\encoder_model.onnx",
-            "model\whisper-small-onnx\decoder_model_merged.onnx",
-            "model\gte-multilingual-base\tokenizer.json"
-          )
-          $missing = 0
-          foreach ($f in $required) {
-            if (-not (Test-Path $f)) {
-              Write-Error "Missing or empty: $f"
-              $missing = 1
-            }
-          }
-          if ($missing -ne 0) { Write-Error "Refusing to build an incomplete bundle."; exit 1 }
-          Write-Host "Model assembly verified."
+        run: python scripts/standalone/assemble_model.py --verify
 
       - name: Build the bundle
         shell: powershell
         run: |
-          .venv-windows\Scripts\activate
           if ($env:GITHUB_REF_TYPE -eq "tag") {
             $ver = $env:GITHUB_REF_NAME -replace '^v', ''
           } else {
             $ver = "0.0.0"
           }
           $env:PKG_VERSION = $ver
-          cmd /c windows\build.bat
+          .venv-windows\Scripts\python scripts\standalone\build.py --platform windows
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_REF_TYPE: ${{ github.ref_type }}
