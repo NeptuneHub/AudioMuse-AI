@@ -1,5 +1,5 @@
 # nfpm config template for the AudioMuse-AI native Linux package.
-# linux/build.sh expands @VERSION@ / @ARCH@ / @STAGE@ and runs:
+# scripts/standalone/platforms/linux.py expands @VERSION@ / @ARCH@ / @STAGE@ and runs:
 #   nfpm package --packager deb ...
 #   nfpm package --packager rpm ...
 # See https://nfpm.goreleaser.com/configuration/

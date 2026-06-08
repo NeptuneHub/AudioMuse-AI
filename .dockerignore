@@ -21,12 +21,15 @@ test/
 # Student CLAP training (not needed in production)
 student_clap/
 
-# macOS and Linux standalone app: source trees (PyInstaller spec / nfpm config,
-# vendored redis/pg binaries, assets) and build artifacts. None of it is used by
-# the Linux container, so keep it out of the image.
+# Native standalone app (macOS/Linux/Windows): the per-platform source trees
+# (vendored redis/pg binaries, assets, nfpm config, runtime launchers), the shared
+# PyInstaller spec + build tooling, and build artifacts. None of it is used by the
+# Linux container, so keep it out of the image.
 macos/
 linux/
 windows/
+AudioMuse-AI.spec
+scripts/standalone/
 build/
 dist/
 

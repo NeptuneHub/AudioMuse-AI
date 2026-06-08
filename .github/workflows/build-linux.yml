@@ -14,7 +14,7 @@
 #
 # The small native build inputs (redis-server, the unaccent/pg_trgm contrib
 # modules) are built from source in this workflow (linux/vendor/*) rather than
-# committed, then baked into the bundle by linux/AudioMuse-AI.spec.
+# committed, then baked into the bundle by the shared AudioMuse-AI.spec.
 #
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
 # same GitHub releases the Dockerfile/macOS build use, INCLUDING the HuggingFace
@@ -146,105 +146,16 @@ jobs:
       - name: Assemble ./model (mirrors the Dockerfile/macOS models stage)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p model
-
-          echo "==> musicnn + CLAP text models (from ${MODEL_RELEASE})"
-          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D model --clobber \
-            -p musicnn_embedding.onnx \
-            -p musicnn_prediction.onnx \
-            -p clap_text_model.onnx
-
-          echo "==> DCLAP audio model (from ${DCLAP_RELEASE} in the -DCLAP repo)"
-          gh release download "$DCLAP_RELEASE" -R NeptuneHub/AudioMuse-AI-DCLAP -D model --clobber \
-            -p model_epoch_36.onnx \
-            -p model_epoch_36.onnx.data
-
-          echo "==> HuggingFace cache (roberta/bert/bart) -- HF_HOME points at model/huggingface"
-          tmp_hf="$(mktemp -d)"
-          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp_hf" --clobber \
-            -p huggingface_models.tar.gz
-          mkdir -p model/huggingface
-          tar -xzf "$tmp_hf/huggingface_models.tar.gz" -C model/huggingface
-          rm -rf "$tmp_hf"
-
-          echo "==> Trim HF cache to just the roberta-base tokenizer (~1.4 GB saved)"
-          # The app's ONLY runtime HF dependency is the roberta-base *tokenizer*
-          # (tasks/clap_analyzer.py: AutoTokenizer.from_pretrained("roberta-base")).
-          # bert-base-uncased and bart-base are never loaded by the app, and a
-          # tokenizer does not need model weights. Dropping them keeps the release
-          # assets under the 2 GB GitHub limit without removing any model the app
-          # uses. (This prunes only this bundle copy -- the shared release tarball
-          # and the Docker build are unaffected.)
-          hf="model/huggingface/hub"
-          rm -rf "$hf/models--bert-base-uncased" "$hf/models--facebook--bart-base"
-          rb="$hf/models--roberta-base"
-          if [ -d "$rb" ]; then
-            find "$rb/blobs" -type f -size +10M -delete
-            find "$rb/snapshots" \( -name "model.safetensors" -o -name "pytorch_model.bin" \) -delete
-            du -sh "$rb"
-          fi
-
-          echo "==> lyrics bundles (whisper / silero / gte)"
-          tmp="$(mktemp -d)"
-          gh release download "$MODEL_RELEASE" -R "$GITHUB_REPOSITORY" -D "$tmp" --clobber \
-            -p lyrics_model_whisper.tar.gz \
-            -p lyrics_model_silero_vad.tar.gz \
-            -p lyrics_model_gte_vnni.tar.gz
-          for t in lyrics_model_whisper lyrics_model_silero_vad lyrics_model_gte_vnni; do
-            tar -xzf "$tmp/$t.tar.gz" -C model
-          done
-          rm -rf "$tmp"
+        run: python3 scripts/standalone/assemble_model.py
 
       - name: Verify the assembled model/ is complete
-        run: |
-          set -euo pipefail
-          required=(
-            model/musicnn_embedding.onnx
-            model/musicnn_prediction.onnx
-            model/clap_text_model.onnx
-            model/model_epoch_36.onnx
-            model/model_epoch_36.onnx.data
-            model/huggingface/hub/models--roberta-base/snapshots
-            model/silero_vad.onnx
-            model/gte-multilingual-base-int8.onnx
-            model/whisper-small-onnx/encoder_model.onnx
-            model/whisper-small-onnx/decoder_model_merged.onnx
-            model/gte-multilingual-base/tokenizer.json
-          )
-          missing=0
-          for f in "${required[@]}"; do
-            # Flag a file that is missing OR a zero-byte/truncated download. The
-            # size test only applies to regular files (directory entries in the
-            # list pass on existence alone).
-            if [ ! -e "$f" ] || { [ -f "$f" ] && [ ! -s "$f" ]; }; then
-              echo "::error::Missing or empty: $f"; missing=1
-            fi
-          done
-          if [ -z "$(find model/huggingface/hub/models--roberta-base -name tokenizer.json -print -quit)" ]; then
-            echo "::error::roberta-base tokenizer.json missing after HF-cache prune"; missing=1
-          fi
-          [ "$missing" -eq 0 ] || { echo "::error::Refusing to build an incomplete bundle."; exit 1; }
-          du -sh model
+        run: python3 scripts/standalone/assemble_model.py --verify
 
       - name: Build the packages (.deb + .rpm)
         run: |
           set -euo pipefail
           source .venv-linux/bin/activate
-          # Derive a package-manager-safe version. On a tag push github.ref_name
-          # is `vX.Y.Z` -> `X.Y.Z`; on a PR it is `<num>/merge` (and on dispatch a
-          # branch name), neither of which is a valid deb/rpm version, so use a
-          # placeholder for non-tag builds.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"
-          else
-            PKG_VERSION="0.0.0"
-          fi
-          PKG_VERSION="$PKG_VERSION" bash linux/build.sh
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          python scripts/standalone/build.py --platform linux
 
       - name: Upload .deb as a workflow artifact
         uses: actions/upload-artifact@v4
