@@ -544,8 +544,8 @@ def run_clustering_task(
                 enable_clustering_embeddings_param
             )
 
-            _log_and_update("Deleting existing automatic playlists...", 97)
             if CLUSTERING_CLEANING:
+                _log_and_update("Deleting existing automatic playlists...", 97)
                 delete_automatic_playlists()
             else:
                 _log_and_update("CLUSTERING_CLEANING is disabled — skipping deletion of existing automatic playlists.", 97)
