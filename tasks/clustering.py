@@ -537,8 +537,7 @@ def run_clustering_task(
                 ollama_model_name_param,
                 openai_server_url_param, openai_model_name_param, openai_api_key_param,
                 gemini_api_key_param, gemini_model_name_param,
-                mistral_api_key_param, mistral_model_name_param,
-                enable_clustering_embeddings_param
+                mistral_api_key_param, mistral_model_name_param
             )
 
             if CLUSTERING_CLEANING:
@@ -905,7 +904,7 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 
-def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used):
+def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model):
     """
     Uses AI to name playlists and formats them for creation.
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
