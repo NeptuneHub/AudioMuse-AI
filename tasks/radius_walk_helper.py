@@ -47,16 +47,215 @@ def _normalize_string(text: str) -> str:
 def _default_distance_fn(v1: np.ndarray, v2: np.ndarray) -> float:
     """Default Euclidean distance between two float32 vectors."""
     try:
-        return float(np.linalg.norm(
-            v1.astype(np.float32) - v2.astype(np.float32)
-        ))
+        return float(np.linalg.norm(v1 - v2))
     except Exception:
         return float("inf")
 
 
 # ---------------------------------------------------------------------------
+# Internal: single-bucket walk (extracted to reduce cognitive complexity)
+# ---------------------------------------------------------------------------
+
+def _walk_single_bucket(
+    bucket_index: int,
+    start_item_id: Optional[str],
+    buckets: List[Dict],
+    n: int,
+    get_distance_fn: Callable,
+    cap_active: bool,
+    max_songs_per_artist: Optional[int],
+    walk_state: Dict,
+) -> None:
+    """
+    Greedy walk constrained to one bucket's items.
+
+    Parameters
+    ----------
+    walk_state : dict
+        Mutable shared state with keys:
+        - ``playlist_ids`` (List[str])
+        - ``used_ids`` (set[str])
+        - ``selected_vectors`` (Dict[str, np.ndarray])
+        - ``artist_counts`` (Dict[str, int])
+        - ``artist_bucket_counts`` (Dict[str, int])
+    """
+    bucket = buckets[bucket_index]
+    items = bucket["items"]
+    if not items:
+        return
+
+    playlist_ids: List[str] = walk_state["playlist_ids"]
+    used_ids: set = walk_state["used_ids"]
+    selected_vectors: Dict[str, np.ndarray] = walk_state["selected_vectors"]
+    artist_counts: Dict[str, int] = walk_state["artist_counts"]
+    artist_bucket_counts: Dict[str, int] = walk_state["artist_bucket_counts"]
+
+    cand_ids: List[str] = bucket["ids"]
+    cand_vecs = bucket["vecs"]
+    cand_anchor = bucket["dist_anchor"]
+    remaining = [True] * len(cand_ids)
+    bucket_artist_set: set = set()
+
+    def _find_start_index() -> Optional[int]:
+        if start_item_id:
+            try:
+                si = cand_ids.index(start_item_id)
+                if remaining[si] and cand_ids[si] not in used_ids:
+                    return si
+            except ValueError:
+                pass
+        for i, cid in enumerate(cand_ids):
+            if remaining[i] and cid not in used_ids:
+                return i
+        return None
+
+    def _accept_at_index(i: int) -> bool:
+        cid = cand_ids[i]
+        if cid in used_ids:
+            return False
+        if cap_active:
+            author = items[i].get("author")
+            if author and author in bucket_artist_set:
+                return False
+            if author:
+                if (
+                    artist_bucket_counts.get(author, 0) >= 2
+                    and artist_counts.get(author, 0) < max_songs_per_artist
+                ):
+                    return False
+                if artist_counts.get(author, 0) >= max_songs_per_artist:
+                    return False
+        return True
+
+    cur_idx = _find_start_index()
+    if cur_idx is None:
+        return
+
+    if _accept_at_index(cur_idx):
+        remaining[cur_idx] = False
+        cid = cand_ids[cur_idx]
+        used_ids.add(cid)
+        if len(playlist_ids) < n:
+            playlist_ids.append(cid)
+        try:
+            v = np.asarray(items[cur_idx]["vector"], dtype=np.float32)
+        except Exception:
+            v = np.array(items[cur_idx]["vector"], dtype=np.float32)
+        selected_vectors[cid] = v
+        if cap_active:
+            a = items[cur_idx].get("author")
+            if a:
+                artist_counts[a] = artist_counts.get(a, 0) + 1
+                if a not in bucket_artist_set:
+                    bucket_artist_set.add(a)
+                    artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+    else:
+        remaining[cur_idx] = False
+
+    # ---- Greedy selection loop ----
+    while True:
+        if len(playlist_ids) >= n:
+            break
+        avail_idxs = [
+            i for i, r in enumerate(remaining)
+            if r and cand_ids[i] not in used_ids
+        ]
+        if not avail_idxs:
+            break
+
+        try:
+            cur_vec = selected_vectors[playlist_ids[-1]]
+        except Exception:
+            break
+
+        best_i: Optional[int] = None
+        best_score = float("inf")
+
+        for i in avail_idxs:
+            cid = cand_ids[i]
+            if cid in used_ids:
+                continue
+
+            if cap_active:
+                auth = items[i].get("author")
+                if auth and auth in bucket_artist_set:
+                    if INSTRUMENT_BUCKET_SKIPS:
+                        logger.debug(
+                            "Bucket %d: skip idx=%d bucket-artist-limit",
+                            bucket_index, i,
+                        )
+                    continue
+                if auth:
+                    if (
+                        artist_bucket_counts.get(auth, 0) >= 2
+                        and artist_counts.get(auth, 0) < max_songs_per_artist
+                    ):
+                        if INSTRUMENT_BUCKET_SKIPS:
+                            logger.debug(
+                                "Bucket %d: skip idx=%d bucket-count-limit",
+                                bucket_index, i,
+                            )
+                        continue
+                    if artist_counts.get(auth, 0) >= max_songs_per_artist:
+                        if INSTRUMENT_BUCKET_SKIPS:
+                            logger.debug(
+                                "Bucket %d: skip idx=%d artist-cap",
+                                bucket_index, i,
+                            )
+                        continue
+
+            try:
+                dist_prev = get_distance_fn(cand_vecs[i], cur_vec)
+            except Exception:
+                dist_prev = float("inf")
+
+            score = 0.7 * dist_prev + 0.3 * float(cand_anchor[i])
+            if score < best_score:
+                best_score = score
+                best_i = i
+
+        if best_i is None:
+            break
+
+        # Accept best candidate
+        remaining[best_i] = False
+        cid = cand_ids[best_i]
+        used_ids.add(cid)
+        if len(playlist_ids) < n:
+            playlist_ids.append(cid)
+        try:
+            v = np.asarray(items[best_i]["vector"], dtype=np.float32)
+        except Exception:
+            v = np.array(items[best_i]["vector"], dtype=np.float32)
+        selected_vectors[cid] = v
+        if cap_active:
+            a = items[best_i].get("author")
+            if a:
+                artist_counts[a] = artist_counts.get(a, 0) + 1
+                if a not in bucket_artist_set:
+                    bucket_artist_set.add(a)
+                    artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
+
+        if INSTRUMENT_BUCKET_SKIPS:
+            logger.debug(
+                "Bucket %d: accepted idx=%d",
+                bucket_index, best_i,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def _swap_out_artist(ids: List[str], i: int, bad_artist: str, id_to_author: Dict[str, Optional[str]]) -> bool:
+    """Try to swap ids[i+2] or ids[i+1] with a later item whose artist differs."""
+    for target in (i + 2, i + 1):
+        for j in range(i + 3, len(ids)):
+            if id_to_author.get(ids[j]) != bad_artist:
+                ids[target], ids[j] = ids[j], ids[target]
+                return True
+    return False
+
 
 def avoid_triple_adjacent(
     ids: List[str],
@@ -72,28 +271,10 @@ def avoid_triple_adjacent(
     i = 0
     while i <= len(ids) - 3:
         a1 = id_to_author.get(ids[i])
-        a2 = id_to_author.get(ids[i + 1])
-        a3 = id_to_author.get(ids[i + 2])
-        if a1 and a1 == a2 == a3:
-            swapped = False
-            # Try swapping the 3rd element first
-            for j in range(i + 3, len(ids)):
-                if id_to_author.get(ids[j]) != a1:
-                    ids[i + 2], ids[j] = ids[j], ids[i + 2]
-                    swapped = True
-                    break
-            # If not found, try swapping the middle element
-            if not swapped:
-                for j in range(i + 3, len(ids)):
-                    if id_to_author.get(ids[j]) != a1:
-                        ids[i + 1], ids[j] = ids[j], ids[i + 1]
-                        swapped = True
-                        break
-            if not swapped:
+        if a1 and a1 == id_to_author.get(ids[i + 1]) == id_to_author.get(ids[i + 2]):
+            if not _swap_out_artist(ids, i, a1, id_to_author):
                 i += 1
-            else:
-                # Re-evaluate current window — the swap may have introduced a new triple
-                continue
+            # If swapped, re-evaluate current window (don't increment i)
         else:
             i += 1
     return ids
@@ -190,7 +371,7 @@ def execute_radius_walk(
         first_song = candidate_data[0]
         playlist_ids.append(first_song["item_id"])
         used_ids.add(first_song["item_id"])
-        logger.info("Radius walk: Starting walk with song %s.", first_song["item_id"])
+        logger.info("Radius walk: Starting walk with first candidate.")
     except IndexError:
         logger.warning("Radius walk: Candidate data empty, cannot start.")
         return []
@@ -212,6 +393,7 @@ def execute_radius_walk(
         fa = first_song.get("author")
         if fa:
             artist_counts[fa] = 1
+            artist_bucket_counts[fa] = 1
     except Exception:
         pass
 
@@ -219,165 +401,15 @@ def execute_radius_walk(
     buckets_to_check = min(num_buckets, buckets_to_scan)
 
     # ------------------------------------------------------------------
-    # Internal helper: walk a single bucket
+    # Internal helper: walk a single bucket (delegates to module-level)
     # ------------------------------------------------------------------
-    def _walk_single_bucket(bucket_index: int, start_item_id: Optional[str] = None) -> None:
-        bucket = buckets[bucket_index]
-        items = bucket["items"]
-        if not items:
-            return
-
-        cand_ids: List[str] = bucket["ids"]
-        cand_vecs = bucket["vecs"]
-        cand_anchor = bucket["dist_anchor"]
-        remaining = [True] * len(cand_ids)
-        bucket_artist_set: set = set()
-
-        # ---- Find the first available candidate in this bucket ----
-        def _find_start_index() -> Optional[int]:
-            if start_item_id:
-                try:
-                    si = cand_ids.index(start_item_id)
-                    if remaining[si] and cand_ids[si] not in used_ids:
-                        return si
-                except ValueError:
-                    pass
-            for i, cid in enumerate(cand_ids):
-                if remaining[i] and cid not in used_ids:
-                    return i
-            return None
-
-        # ---- Check whether candidate at index i can be accepted ----
-        def _accept_at_index(i: int) -> bool:
-            cid = cand_ids[i]
-            if cid in used_ids:
-                return False
-            if cap_active:
-                author = items[i].get("author")
-                if author and author in bucket_artist_set:
-                    return False
-                if author:
-                    if (
-                        artist_bucket_counts.get(author, 0) >= 2
-                        and artist_counts.get(author, 0) < max_songs_per_artist
-                    ):
-                        return False
-                    if artist_counts.get(author, 0) >= max_songs_per_artist:
-                        return False
-            return True
-
-        cur_idx = _find_start_index()
-        if cur_idx is None:
-            return
-
-        if _accept_at_index(cur_idx):
-            remaining[cur_idx] = False
-            cid = cand_ids[cur_idx]
-            used_ids.add(cid)
-            if len(playlist_ids) < n:
-                playlist_ids.append(cid)
-            try:
-                v = items[cur_idx]["vector"].astype(np.float32)
-            except Exception:
-                v = np.array(items[cur_idx]["vector"], dtype=np.float32)
-            selected_vectors[cid] = v
-            if cap_active:
-                a = items[cur_idx].get("author")
-                if a:
-                    artist_counts[a] = artist_counts.get(a, 0) + 1
-                    if a not in bucket_artist_set:
-                        bucket_artist_set.add(a)
-                        artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
-        else:
-            remaining[cur_idx] = False
-
-        # ---- Greedy selection loop ----
-        while True:
-            avail_idxs = [
-                i for i, r in enumerate(remaining)
-                if r and cand_ids[i] not in used_ids
-            ]
-            if not avail_idxs:
-                break
-
-            try:
-                cur_vec = selected_vectors[playlist_ids[-1]]
-            except Exception:
-                break
-
-            best_i: Optional[int] = None
-            best_score = float("inf")
-
-            for i in avail_idxs:
-                cid = cand_ids[i]
-                if cid in used_ids:
-                    continue
-
-                if cap_active:
-                    auth = items[i].get("author")
-                    if auth and auth in bucket_artist_set:
-                        if INSTRUMENT_BUCKET_SKIPS:
-                            logger.debug(
-                                "Bucket %d: skip idx=%d bucket-artist-limit %s",
-                                bucket_index, i, auth,
-                            )
-                        continue
-                    if auth:
-                        if (
-                            artist_bucket_counts.get(auth, 0) >= 2
-                            and artist_counts.get(auth, 0) < max_songs_per_artist
-                        ):
-                            if INSTRUMENT_BUCKET_SKIPS:
-                                logger.debug(
-                                    "Bucket %d: skip idx=%d bucket-count-limit %s",
-                                    bucket_index, i, auth,
-                                )
-                            continue
-                        if artist_counts.get(auth, 0) >= max_songs_per_artist:
-                            if INSTRUMENT_BUCKET_SKIPS:
-                                logger.debug(
-                                    "Bucket %d: skip idx=%d artist-cap %s",
-                                    bucket_index, i, auth,
-                                )
-                            continue
-
-                try:
-                    dist_prev = get_distance_fn(cand_vecs[i], cur_vec)
-                except Exception:
-                    dist_prev = float("inf")
-
-                score = 0.7 * dist_prev + 0.3 * float(cand_anchor[i])
-                if score < best_score:
-                    best_score = score
-                    best_i = i
-
-            if best_i is None:
-                break
-
-            # Accept best candidate
-            remaining[best_i] = False
-            cid = cand_ids[best_i]
-            used_ids.add(cid)
-            if len(playlist_ids) < n:
-                playlist_ids.append(cid)
-            try:
-                v = items[best_i]["vector"].astype(np.float32)
-            except Exception:
-                v = np.array(items[best_i]["vector"], dtype=np.float32)
-            selected_vectors[cid] = v
-            if cap_active:
-                a = items[best_i].get("author")
-                if a:
-                    artist_counts[a] = artist_counts.get(a, 0) + 1
-                    if a not in bucket_artist_set:
-                        bucket_artist_set.add(a)
-                        artist_bucket_counts[a] = artist_bucket_counts.get(a, 0) + 1
-
-            if INSTRUMENT_BUCKET_SKIPS:
-                logger.debug(
-                    "Bucket %d: accepted idx=%d item_id=%s",
-                    bucket_index, best_i, cid,
-                )
+    walk_state = {
+        "playlist_ids":        playlist_ids,
+        "used_ids":            used_ids,
+        "selected_vectors":    selected_vectors,
+        "artist_counts":       artist_counts,
+        "artist_bucket_counts": artist_bucket_counts,
+    }
 
     # ------------------------------------------------------------------
     # Process buckets sequentially, expanding window if needed
@@ -389,7 +421,16 @@ def execute_radius_walk(
             start_id: Optional[str] = None
             if bi == 0:
                 start_id = playlist_ids[0] if playlist_ids else None
-            _walk_single_bucket(bi, start_item_id=start_id)
+            _walk_single_bucket(
+                bucket_index=bi,
+                start_item_id=start_id,
+                buckets=buckets,
+                n=n,
+                get_distance_fn=get_distance_fn,
+                cap_active=cap_active,
+                max_songs_per_artist=max_songs_per_artist,
+                walk_state=walk_state,
+            )
             processed_buckets += 1
             if len(playlist_ids) >= n:
                 break

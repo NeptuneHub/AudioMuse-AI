@@ -789,9 +789,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
 
                     def _cosine_dist(v1, v2):
                         try:
-                            dot = np.dot(
-                                v1.astype(np.float32), v2.astype(np.float32)
-                            )
+                            dot = np.dot(v1, v2)
                             return float(np.clip(1.0 - dot, 0.0, 2.0))
                         except Exception:
                             return float("inf")

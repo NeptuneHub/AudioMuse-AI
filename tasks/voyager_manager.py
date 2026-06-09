@@ -839,10 +839,8 @@ def _radius_walk_get_candidates(
 
 
 def _execute_radius_walk(
-    target_item_id: str,
     n: int,
     candidate_data: list,
-    original_song_details: dict | None = None,
     eliminate_duplicates: bool = False
 ) -> list:
     """
@@ -972,10 +970,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         # 2. Execute the bucketed greedy walk
         # The walk itself will return exactly n items (or fewer if the pool is too small)
         final_results = _execute_radius_walk(
-            target_item_id=target_item_id,
             n=n,
             candidate_data=candidate_data,
-            original_song_details=target_song_details,
             eliminate_duplicates=eliminate_duplicates
         )
         
