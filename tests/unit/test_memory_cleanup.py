@@ -115,7 +115,7 @@ class TestAnalyzeTrackMemoryCleanup:
         
         # Call with pre-loaded sessions
         with patch('tasks.analysis.cleanup_onnx_session') as mock_cleanup:
-            result = analyze_track(
+            analyze_track(
                 "/tmp/test.mp3",
                 ["happy", "sad"],
                 {
@@ -209,7 +209,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_clap_loaded.return_value = True
 
         # Call function (should complete successfully)
-        result = analyze_album_task("album_123", "Empty Album", 5, None)
+        analyze_album_task("album_123", "Empty Album", 5, None)
 
         # Verify all cleanup functions were called
         assert mock_memory_cleanup.called
@@ -277,7 +277,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         
         # Call function
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
-            result = analyze_album_task("album_123", "Test Album", 5, None)
+            analyze_album_task("album_123", "Test Album", 5, None)
         
         # Verify session cleanup was called for all loaded sessions
         # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)

@@ -1481,7 +1481,6 @@ def matched_albums(session_id):
 
     dry = state.get('dry_run') or {}
     auto_matches     = dry.get('matches') or {}
-    match_tiers      = dry.get('match_tiers') or {}
     manual_matches   = state.get('manual_matches') or {}
     manual_unmatches = set(state.get('manual_unmatches') or [])
     new_meta         = state.get('new_meta') or {}

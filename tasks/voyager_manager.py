@@ -1077,7 +1077,6 @@ def _execute_radius_walk(
 
             best_i = None
             best_score = float('inf')
-            best_d = None
 
             for i in avail_idxs:
                 meta = items[i]
@@ -1123,7 +1122,6 @@ def _execute_radius_walk(
                 if score < best_score:
                     best_score = score
                     best_i = i
-                    best_d = dist_prev
 
             if best_i is None:
                 break
@@ -1168,7 +1166,7 @@ def _execute_radius_walk(
             start_id = None
             if bi == 0:
                 start_id = playlist_ids[0] if playlist_ids else None
-            sub = _walk_single_bucket(bi, start_item_id=start_id)
+            _walk_single_bucket(bi, start_item_id=start_id)
             processed_buckets += 1
             if len(playlist_ids) >= n:
                 break

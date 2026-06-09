@@ -711,22 +711,16 @@ def get_all_songs(user_creds=None):
             # Prioritize track artist over album artist to avoid "Various Artists"
             if song.get('trackartist'):
                 track_artist = song.get('trackartist')
-                used_field = 'trackartist'
             elif song.get('contributor'):
                 track_artist = song.get('contributor')
-                used_field = 'contributor'
             elif song.get('artist'):
                 track_artist = song.get('artist')
-                used_field = 'artist'
             elif song.get('albumartist'):
                 track_artist = song.get('albumartist')
-                used_field = 'albumartist'
             elif song.get('band'):
                 track_artist = song.get('band')
-                used_field = 'band'
             else:
                 track_artist = 'Unknown Artist'
-                used_field = 'fallback'
             
             mapped_song = {
                 'Id': song.get('id'),
@@ -1058,22 +1052,16 @@ def get_tracks_from_album(album_id, user_creds=None):
         # Prioritize track artist over album artist to avoid "Various Artists"
         if s.get('trackartist'):
             artist = s.get('trackartist')
-            used_field = 'trackartist'
         elif s.get('contributor'):
             artist = s.get('contributor')
-            used_field = 'contributor'
         elif s.get('artist'):
             artist = s.get('artist')
-            used_field = 'artist'
         elif s.get('albumartist'):
             artist = s.get('albumartist')
-            used_field = 'albumartist'
         elif s.get('band'):
             artist = s.get('band')
-            used_field = 'band'
         else:
             artist = 'Unknown Artist'
-            used_field = 'fallback'
         
         path = s.get('url') or s.get('Path') or s.get('path') or ''
         mapped.append({
@@ -1109,22 +1097,16 @@ def get_top_played_songs(limit):
             # Prioritize track artist over album artist to avoid "Various Artists"
             if s.get('trackartist'):
                 track_artist = s.get('trackartist')
-                used_field = 'trackartist'
             elif s.get('contributor'):
                 track_artist = s.get('contributor')
-                used_field = 'contributor'
             elif s.get('artist'):
                 track_artist = s.get('artist')
-                used_field = 'artist'
             elif s.get('albumartist'):
                 track_artist = s.get('albumartist')
-                used_field = 'albumartist'
             elif s.get('band'):
                 track_artist = s.get('band')
-                used_field = 'band'
             else:
                 track_artist = 'Unknown Artist'
-                used_field = 'fallback'
             
             mapped_songs.append({
                 'Id': s.get('id'),

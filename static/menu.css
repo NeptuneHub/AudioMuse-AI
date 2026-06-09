@@ -85,7 +85,6 @@ html.sidebar-open .sidebar {
     color: #d1d5db;
     text-decoration: none;
     padding: 0.75rem 0;
-    font-size: 1rem;
     white-space: nowrap;
     transition: background-color 0.2s, color 0.2s;
     border-radius: 0.375rem;

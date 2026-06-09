@@ -16,7 +16,6 @@ class TestPreValidation:
         # This test validates the logic without calling the full endpoint
         # It tests the rejection criteria: title must be non-empty
         title = ""
-        artist = "Artist"
 
         # Check if title passes validation
         is_valid = bool(title.strip())
@@ -24,7 +23,6 @@ class TestPreValidation:
 
     def test_song_similarity_empty_artist_rejected(self):
         """song_similarity with empty artist should be skipped."""
-        title = "Song"
         artist = ""
 
         # Check if artist passes validation

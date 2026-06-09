@@ -314,10 +314,6 @@ class TestExecuteProviderMigration:
         # The migration should have issued an UPDATE voyager_index_data after rewriting
         # (we can't easily verify the exact JSON written without capturing params, but
         #  we can verify the statement was executed)
-        executed_upper = '\n'.join(
-            s.upper() for s in mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
-            if isinstance(s, str)
-        )
         # Fallback: walk the call_args_list and check sql strings
         calls = mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
         sqls = [c[0][0] for c in calls]

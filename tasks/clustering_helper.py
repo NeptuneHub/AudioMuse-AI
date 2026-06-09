@@ -3,6 +3,7 @@
 import json
 import random
 import logging
+import time
 import numpy as np
 from collections import defaultdict
 # time, re, and cdist imports moved to clustering_postprocessing.py
@@ -37,6 +38,65 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
                     USE_GPU_CLUSTERING)
 from .commons import score_vector
+
+# Import AI naming for playlist helpers
+from tasks.ai.api import get_ai_playlist_name
+from tasks.ai.prompts import creative_prompt_template
+
+
+# --- Playlist Naming & Shuffling Helpers ---
+
+def _shuffle_playlist_songs(songs, playlist_name):
+    """Fisher-Yates shuffle a list of song tuples; log the result."""
+    final_songs = songs.copy()
+    n = len(final_songs)
+    if n <= 1:
+        logger.info("FINAL: '%s' has only %d songs - no shuffling needed", playlist_name, n)
+        return final_songs
+
+    current_time_seed = int(time.time() * 1000000) % 1000000
+    for i in range(n - 1, 0, -1):
+        j = (random.randint(0, i) + current_time_seed + i * 7) % (i + 1)
+        final_songs[i], final_songs[j] = final_songs[j], final_songs[i]
+        current_time_seed = (current_time_seed * 1103515245 + 12345) % (2 ** 31)
+
+    logger.info("FINAL FISHER-YATES SHUFFLE applied to '%s': %d songs", playlist_name, len(final_songs))
+    logger.info("FINAL ORDER: First song = '%s', Last song = '%s'", final_songs[0][1], final_songs[-1][1])
+    return final_songs
+
+
+def _assign_playlist_chunks(final_songs, max_songs, base_name, final_playlists):
+    """Chunk oversized playlists or store the list as-is."""
+    if max_songs > 0 and len(final_songs) > max_songs:
+        chunks = [final_songs[i:i + max_songs] for i in range(0, len(final_songs), max_songs)]
+        for idx, chunk in enumerate(chunks, 1):
+            final_playlists[f"{base_name} ({idx})"] = chunk
+    else:
+        final_playlists[base_name] = final_songs
+
+
+def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
+                          ollama_url, ollama_model, openai_url, openai_model, openai_key,
+                          gemini_key, gemini_model, mistral_key, mistral_model):
+    """Attempt AI naming; return the original name on failure."""
+    ai_config = {
+        'provider': ai_provider,
+        'ollama_url': ollama_url, 'ollama_model': ollama_model,
+        'openai_url': openai_url, 'openai_model': openai_model, 'openai_key': openai_key,
+        'gemini_key': gemini_key, 'gemini_model': gemini_model,
+        'mistral_key': mistral_key, 'mistral_model': mistral_model,
+    }
+    ai_name = get_ai_playlist_name(
+        creative_prompt_template,
+        [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
+        centroids.get(original_name, {}),
+        ai_config,
+    )
+    if ai_name and "Error" not in ai_name:
+        return ai_name.strip().replace("\n", " ")
+    logger.warning("AI naming failed for '%s': %s. Using original name.", original_name, ai_name)
+    return original_name
+
 
 # --- Main Orchestrator for a Single Iteration ---
 

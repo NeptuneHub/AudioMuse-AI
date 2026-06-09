@@ -510,7 +510,6 @@ class TestSemGroveRoundTrip:
         whitening_json = whitening_row[1]  # id_map_json column holds whitening stats
         index_binary   = index_row[0]
         index_idmap    = index_row[1]
-        index_dim      = index_row[2]
 
         # Patch _load_sem_grove_index_from_db to use stored bytes directly
         def fake_load():
@@ -525,7 +524,6 @@ class TestSemGroveRoundTrip:
             w_a        = float(whitening["w_audio"])
             ld_        = int(whitening["lyrics_dim"])
             ad_        = int(whitening["audio_dim"])
-            merged     = ld_ + ad_
 
             stream = io.BytesIO(index_binary)
             loaded = _voyager.Index.load(stream)

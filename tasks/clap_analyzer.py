@@ -265,7 +265,6 @@ def _load_text_model():
             provider_options=[p[1] for p in provider_options]
         )
         
-        active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
             
     except Exception as e:
@@ -694,9 +693,7 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         # Get text-only model for text search
         session = get_clap_text_model()
         tokenizer = get_tokenizer()
-        
-        batch_size = len(query_texts)
-        
+
         # Tokenize all texts at once (max_length=77 for CLAP)
         encoded = tokenizer(
             query_texts,

@@ -304,8 +304,6 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
     # Final garbage collection + return the freed heap to the OS so RSS drops
     results['malloc_trim'] = release_memory_to_os()
 
-    successful_cleanups = sum(results.values())
-    total_methods = len([k for k, v in {'cuda': force_cuda, 'onnx_pool': reset_onnx_pool, 'gc': True, 'malloc_trim': True}.items() if v])
     
     return results
 

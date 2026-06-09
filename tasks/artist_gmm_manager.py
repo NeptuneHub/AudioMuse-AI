@@ -149,9 +149,6 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
         if n_samples < 5:
             logger.info(f"Artist '{artist_name}' has {n_samples} tracks - using each song as a GMM component with equal weights")
             
-            # Use a small fixed covariance for numerical stability
-            # This acts like narrow Gaussians centered on each actual song
-            fixed_variance = 0.01
             
             # Each song becomes one component with equal weight
             n_components = n_samples

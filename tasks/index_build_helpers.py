@@ -880,7 +880,7 @@ def load_segmented_blob(
         row = cur.fetchone()
         if row and row[0]:
             data = row[0]
-            return bytes(data) if not isinstance(data, (bytes, bytearray)) else bytes(data)
+            return bytes(data)
 
         cur.execute(select_segments_sql, (like_pattern,))
         rows = cur.fetchall()
