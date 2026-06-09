@@ -33,7 +33,10 @@ from .mediaserver import create_playlist, delete_automatic_playlists
 from .clustering_helper import (
     _get_stratified_song_subset,
     get_job_result_safely,
-    _perform_single_clustering_iteration
+    _perform_single_clustering_iteration,
+    _shuffle_playlist_songs,
+    _assign_playlist_chunks,
+    _try_ai_name_playlist,
 )
 # Import post-processing functions from dedicated module
 from .clustering_postprocessing import (
@@ -910,7 +913,6 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
     """
     final_playlists = {}
-    centroids = best_result.get("playlist_centroids", {})
     named_playlists = best_result.get("named_playlists", {})
     max_songs = best_result.get("parameters", {}).get("max_songs_per_cluster", MAX_SONGS_PER_CLUSTER)
 
@@ -918,29 +920,22 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
         if not songs:
             continue
 
-        final_name = original_name
-        if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL"]:
+        if ai_provider in ("OLLAMA", "OPENAI", "GEMINI", "MISTRAL"):
             try:
-
-                ai_config = {
-                    'provider': ai_provider,
-                    'ollama_url': ollama_url, 'ollama_model': ollama_model,
-                    'openai_url': openai_url, 'openai_model': openai_model, 'openai_key': openai_key,
-                    'gemini_key': gemini_key, 'gemini_model': gemini_model,
-                    'mistral_key': mistral_key, 'mistral_model': mistral_model,
-                }
-                ai_name = get_ai_playlist_name(
-                    creative_prompt_template,
-                    [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
-                    centroids.get(original_name, {}),
-                    ai_config,
+                final_name = _try_ai_name_playlist(
+                    original_name, songs,
+                    best_result.get("playlist_centroids", {}),
+                    ai_provider,
+                    ollama_url, ollama_model,
+                    openai_url, openai_model, openai_key,
+                    gemini_key, gemini_model,
+                    mistral_key, mistral_model,
                 )
-                if ai_name and "Error" not in ai_name:
-                    final_name = ai_name.strip().replace("\n", " ")
-                else:
-                    logger.warning(f"AI naming failed for '{original_name}': {ai_name}. Using original name.")
             except Exception as e:
                 logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
+                final_name = original_name
+        else:
+            final_name = original_name
 
         # Ensure unique names
         temp_name = final_name
@@ -950,34 +945,9 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
             temp_name = f"{final_name} ({suffix})"
         final_name = temp_name
 
-        # Add suffix and handle chunking
-        base_name_with_suffix = f"{final_name}_automatic"
-        
-        # The 'songs' variable is already the list of tuples: [(item_id, title, author), ...]
-        # *** FINAL SAFETY SHUFFLE: Ensure songs are randomized in final playlists ***
-        final_songs = songs.copy()
-        n = len(final_songs)
-        
-        if n > 1:
-            # FISHER-YATES MANUAL SHUFFLE - GUARANTEED TO RANDOMIZE
-            current_time_seed = int(time.time() * 1000000) % 1000000
-            
-            for i in range(n - 1, 0, -1):
-                j = (random.randint(0, i) + current_time_seed + i * 7) % (i + 1)
-                final_songs[i], final_songs[j] = final_songs[j], final_songs[i]
-                current_time_seed = (current_time_seed * 1103515245 + 12345) % (2**31)
-            
-            logger.info(f"FINAL FISHER-YATES SHUFFLE applied to '{base_name_with_suffix}': {len(final_songs)} songs")
-            logger.info(f"FINAL ORDER: First song = '{final_songs[0][1]}', Last song = '{final_songs[-1][1]}'")
-        else:
-            logger.info(f"FINAL: '{base_name_with_suffix}' has only {n} songs - no shuffling needed")
-        
-        if max_songs > 0 and len(final_songs) > max_songs:
-             chunks = [final_songs[i:i+max_songs] for i in range(0, len(final_songs), max_songs)]
-             for idx, chunk in enumerate(chunks, 1):
-                 final_playlists[f"{base_name_with_suffix} ({idx})"] = chunk # Store the chunk of tuples
-        else:
-            final_playlists[base_name_with_suffix] = final_songs # Store the list of tuples
+        base_name = f"{final_name}_automatic"
+        shuffled = _shuffle_playlist_songs(songs, base_name)
+        _assign_playlist_chunks(shuffled, max_songs, base_name, final_playlists)
 
     return final_playlists
 
