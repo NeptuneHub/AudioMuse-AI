@@ -45,13 +45,14 @@ git tag. The workflow:
 2. waits for `GET /api/health`, then runs `howto_capture.py --mock-all` — which
    logs in and **fabricates every page's data in the browser**, so an empty
    database still yields fully-populated screenshots.
-3. renders `howto.md`, validates the folder, and **uploads
-   `docs/howto/<version>/` as a build artifact**.
+3. renders `howto.md`, validates the folder, and **commits the refreshed
+   `docs/howto/<version>/` to the PR branch** (also uploaded as a build artifact).
 
-It deliberately does **not** commit anything and never pushes to `main`:
-download the artifact from the run, review the screenshots and `howto.md`, and
-if you like the result commit the folder yourself (or just run option B locally
-and commit). The app image defaults to
+The push goes to the **PR branch only — never `main`** — and is authenticated
+with `GITHUB_TOKEN`, so it does not trigger another run; it commits only when
+something actually changed. Review the screenshots + `howto.md` in the PR diff
+and **merge when you like the result**. (Fork PRs can't be pushed to — use a
+same-repo branch.) The app image defaults to
 `ghcr.io/neptunehub/audiomuse-ai:<version>`, falling back to `:latest`; if that
 image is private, add a `docker/login-action` step before "Start app stack".
 

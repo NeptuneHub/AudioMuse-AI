@@ -22,15 +22,18 @@ on:
         required: false
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 jobs:
   capture:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (PR head branch, so refreshed docs can be pushed back)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -97,6 +100,22 @@ jobs:
         run: |
           python docs/howto/_tooling/render_howto.py
           python docs/howto/_tooling/validate_howto.py
+
+      # Push the regenerated docs back to the PR branch (never main). Authenticated
+      # with GITHUB_TOKEN, so this push does NOT trigger another workflow run.
+      # Only commits when something actually changed.
+      - name: Commit refreshed docs to the PR branch
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/howto/${{ steps.ver.outputs.num }}
+          if git diff --cached --quiet; then
+            echo "No documentation changes to commit."
+          else
+            git commit -m "docs(howto): refresh guide for ${{ steps.ver.outputs.version }}"
+            git push origin "HEAD:${{ github.head_ref }}"
+          fi
 
       - name: Tear down stack
         if: ${{ always() }}
