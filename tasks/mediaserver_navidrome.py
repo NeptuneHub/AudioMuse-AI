@@ -278,15 +278,12 @@ def _select_best_artist(song_item, title="Unknown"):
     if song_item.get('artist'):
         track_artist = song_item['artist']
         artist_id = song_item.get('artistId')
-        used_field = 'artist'
     elif song_item.get('albumArtist'):
         track_artist = song_item['albumArtist']
         artist_id = song_item.get('albumArtistId')
-        used_field = 'albumArtist'
     else:
         track_artist = 'Unknown Artist'
         artist_id = None
-        used_field = 'fallback'
     
     return track_artist, artist_id
 

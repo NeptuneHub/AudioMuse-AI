@@ -339,7 +339,7 @@ class TestEndpointErrorHandling:
 
         # Should raise exception (Flask will handle with 500)
         with pytest.raises(Exception):
-            response = client.post('/api/analysis/start', json={})
+            client.post('/api/analysis/start', json={})
 
     @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
     @patch('app_helper.rq_queue_high')
@@ -369,7 +369,7 @@ class TestEndpointErrorHandling:
 
         # Should raise exception (Flask will handle with 500)
         with pytest.raises(Exception):
-            response = client.post('/api/cleaning/start')
+            client.post('/api/cleaning/start')
 
 
 class TestBlueprintIntegration:

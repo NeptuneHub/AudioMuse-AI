@@ -85,7 +85,7 @@ def test_onnx_runtime():
         if has_cuda:
             try:
                 # Create a minimal test to verify CUDA actually works
-                sess_options = ort.SessionOptions()
+                ort.SessionOptions()
                 # Just check that we can request CUDA without error
                 print_result("CUDA EP available", True, "CUDAExecutionProvider ready")
             except Exception as e:

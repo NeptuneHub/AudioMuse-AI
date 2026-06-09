@@ -614,11 +614,6 @@ class TestExecuteMcpToolEnergyConversion:
                     "energy_max": 0.8
                 }, {})
 
-            # Check the raw energy values passed to the query function
-            if mock_query.called:
-                kwargs = mock_query.call_args[1] if mock_query.call_args[1] else {}
-                args = mock_query.call_args[0] if mock_query.call_args[0] else ()
-                # energy should have been converted from 0-1 to raw
         finally:
             cfg.ENERGY_MIN = orig_min
             cfg.ENERGY_MAX = orig_max
@@ -657,7 +652,7 @@ class TestSongSimilarityLookup:
         mock_voyager.find_nearest_neighbors_by_id = mock_nn
         with patch.object(mod, 'get_db_connection', return_value=conn), \
              patch.dict(sys.modules, {'tasks.voyager_manager': mock_voyager}):
-            result = mod._song_similarity_api_sync("bohemian rhapsody", "queen", 10)
+            mod._song_similarity_api_sync("bohemian rhapsody", "queen", 10)
 
         # Should have tried a DB lookup
         assert cur.execute.called
@@ -893,7 +888,7 @@ class TestArtistSimilarityApiSync:
 
         with patch.object(mod, 'get_db_connection', return_value=conn), \
              patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
-            result = mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
+            mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
 
         execute_calls = cur.execute.call_args_list
         for c in execute_calls:

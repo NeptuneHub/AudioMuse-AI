@@ -112,7 +112,7 @@ class TestOrderPlaylist:
 
     def test_minimum_songs_no_ordering(self):
         """3+ songs with len <= 2 orderable → return input unchanged."""
-        mod = _load_playlist_ordering()
+        _load_playlist_ordering()
         # This simulates the case where we have 3 songs but fewer than 3 with DB data
         # Since the function checks if len(orderable_ids) <= 2 and returns early,
         # we verify this behavior by checking the algorithm logic itself.

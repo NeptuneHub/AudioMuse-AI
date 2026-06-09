@@ -146,7 +146,6 @@ def stop():
         if _running_proc is None:
             return
         data_dir = paths.pgdata_dir()
-        port = str(paths.pg_port())
         logger.info("Stopping PostgreSQL")
         try:
             subprocess.run(

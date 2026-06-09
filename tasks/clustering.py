@@ -399,15 +399,12 @@ def run_clustering_task(
             # --- 2. Batch Job Orchestration ---
             num_total_batches = (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB if ITERATIONS_PER_BATCH_JOB > 0 else 0
             next_batch_to_launch = 0
-            batches_completed_count = 0
 
             # STATE RECOVERY
             child_tasks_from_db = get_child_tasks_from_db(current_task_id)
             if child_tasks_from_db:
                 logger.info(f"Found {len(child_tasks_from_db)} existing child tasks. Attempting state recovery.")
                 _monitor_and_process_batches(_main_task_accumulated_details, current_task_id, initial_check=True)
-                # Count batches processed during recovery (these are now in processed_job_ids)
-                batches_completed_count = len(_main_task_accumulated_details.get('processed_job_ids', set()))
                 
                 # Determine next batch to launch based on total runs accounted for
                 runs_accounted_for = _main_task_accumulated_details["runs_completed"]
@@ -925,13 +922,6 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
         final_name = original_name
         if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL"]:
             try:
-                # Simplified feature extraction for AI prompt
-                name_parts = original_name.split('_')
-                feature1 = name_parts[0] if len(name_parts) > 0 else "Music"
-                feature2 = name_parts[1] if len(name_parts) > 1 else "Vibes"
-                feature3 = name_parts[2] if len(name_parts) > 2 else "Collection"
-                if embeddings_used:
-                    feature1, feature2, feature3 = "Vibe", "Focused", "Collection"
 
                 ai_config = {
                     'provider': ai_provider,

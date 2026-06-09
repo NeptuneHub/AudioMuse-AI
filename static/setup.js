@@ -315,7 +315,7 @@ function renderAdvancedFields(fields) {
             label: field.name,
             placeholder: field.default ? field.default : '',
             type: field.type === 'bool' ? 'boolean' : field.type,
-            inputType: field.type === 'boolean' ? 'text' : 'text',
+            inputType: 'text',
             secret: secret,
             has_value: field.has_value,
             options: Array.isArray(field.options) ? field.options : null,

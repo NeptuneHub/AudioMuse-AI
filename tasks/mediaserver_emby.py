@@ -541,19 +541,15 @@ def _select_best_artist(item, title="Unknown"):
     if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
         track_artist = item['ArtistItems'][0].get('Name', 'Unknown Artist')
         artist_id = item['ArtistItems'][0].get('Id')
-        used_field = 'ArtistItems[0]'
     elif item.get('Artists') and len(item['Artists']) > 0:
         track_artist = item['Artists'][0]  # Take first artist if multiple
         artist_id = None
-        used_field = 'Artists[0]'
     elif item.get('AlbumArtist'):
         track_artist = item['AlbumArtist']
         artist_id = None
-        used_field = 'AlbumArtist'
     else:
         track_artist = 'Unknown Artist'
         artist_id = None
-        used_field = 'fallback'
     
     return track_artist, artist_id
 

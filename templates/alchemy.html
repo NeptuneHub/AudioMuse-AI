@@ -729,8 +729,7 @@
                 if (isNaN(temperature) && cfg && cfg.alchemy_temperature) temperature = cfg.alchemy_temperature;
 
                 const payload = { items: valid, n, temperature };
-                if (metric === 'angular') payload.subtract_distance = parseFloat(subtractSlider.value);
-                else payload.subtract_distance = parseFloat(subtractSlider.value);
+                payload.subtract_distance = parseFloat(subtractSlider.value);
 
                 const resp = await fetch("{{ url_for('alchemy_bp.alchemy_api') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await resp.json();

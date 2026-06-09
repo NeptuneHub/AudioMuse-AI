@@ -1597,8 +1597,8 @@ class TestLyrionDeletePlaylist:
         
         mock_request.return_value = {'count': 1}
         
-        result = delete_playlist('playlist-123')
-        
+        delete_playlist('playlist-123')
+
         call_args = mock_request.call_args
         # First arg is command
         assert call_args[0][0] == 'playlists', \
@@ -1998,7 +1998,7 @@ class TestEmbyGetTracksFromAlbum:
         mock_get.return_value = mock_response
         
         # Call with pseudo-album ID
-        tracks = get_tracks_from_album('standalone_real-track-id')
+        get_tracks_from_album('standalone_real-track-id')
         
         # Should fetch the track directly, not list children
         call_url = mock_get.call_args[0][0]
