@@ -51,7 +51,7 @@ def _shuffle_playlist_songs(songs, playlist_name):
     final_songs = songs.copy()
     n = len(final_songs)
     if n <= 1:
-        logger.info(f"FINAL: '{playlist_name}' has only {n} songs - no shuffling needed")
+        logger.info("FINAL: '%s' has only %d songs - no shuffling needed", playlist_name, n)
         return final_songs
 
     current_time_seed = int(time.time() * 1000000) % 1000000
@@ -60,8 +60,8 @@ def _shuffle_playlist_songs(songs, playlist_name):
         final_songs[i], final_songs[j] = final_songs[j], final_songs[i]
         current_time_seed = (current_time_seed * 1103515245 + 12345) % (2 ** 31)
 
-    logger.info(f"FINAL FISHER-YATES SHUFFLE applied to '{playlist_name}': {len(final_songs)} songs")
-    logger.info(f"FINAL ORDER: First song = '{final_songs[0][1]}', Last song = '{final_songs[-1][1]}'")
+    logger.info("FINAL FISHER-YATES SHUFFLE applied to '%s': %d songs", playlist_name, len(final_songs))
+    logger.info("FINAL ORDER: First song = '%s', Last song = '%s'", final_songs[0][1], final_songs[-1][1])
     return final_songs
 
 
@@ -94,7 +94,7 @@ def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
     )
     if ai_name and "Error" not in ai_name:
         return ai_name.strip().replace("\n", " ")
-    logger.warning(f"AI naming failed for '{original_name}': {ai_name}. Using original name.")
+    logger.warning("AI naming failed for '%s': %s. Using original name.", original_name, ai_name)
     return original_name
 
 

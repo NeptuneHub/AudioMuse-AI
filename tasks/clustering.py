@@ -25,8 +25,7 @@ from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
 
 # Import AI naming function and prompt template
-from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.prompts import creative_prompt_template
+# (used by clustering_helper._try_ai_name_playlist, imported there)
 # Import media server functions
 from .mediaserver import create_playlist, delete_automatic_playlists
 # Import refactored clustering helpers
