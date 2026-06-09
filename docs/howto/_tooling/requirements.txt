@@ -1,0 +1,3 @@
+# Only needed for the local screenshot capture (howto_capture.py / make_howto.py).
+# render_howto.py and validate_howto.py are pure stdlib and need nothing here.
+playwright>=1.40

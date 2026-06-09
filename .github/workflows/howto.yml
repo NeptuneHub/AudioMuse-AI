@@ -1,0 +1,111 @@
+name: How-To docs
+
+# Runs on every pull request (open + each push) and on manual dispatch.
+# It stands up a throwaway AudioMuse-AI stack (prebuilt image + empty Postgres +
+# Redis), drives a headless browser over every page with all data mocked in the
+# browser, renders the version-stamped howto.md, validates it, and uploads the
+# whole docs/howto/<version>/ folder as a build artifact for review.
+#
+# It does NOT commit anything and never touches main: you download the artifact,
+# and if you like the result you commit it yourself.
+#
+# The version (and therefore the docs/howto/<version> folder, with the leading
+# "v" stripped) is read from APP_VERSION in config.py — not from any git tag.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Override the app image (default ghcr.io/neptunehub/audiomuse-ai:<version>, falls back to :latest)'
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve version from config.py
+        id: ver
+        run: |
+          OUT=$(python docs/howto/_tooling/_version.py)
+          V=$(echo "$OUT" | awk '{print $1}')
+          NUM=$(echo "$OUT" | awk '{print $2}')
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "num=$NUM"   >> "$GITHUB_OUTPUT"
+          echo "config.py APP_VERSION: $V -> docs/howto/$NUM"
+
+      - name: Pick app image (version tag, else latest)
+        id: img
+        run: |
+          OVERRIDE="${{ github.event.inputs.image }}"
+          if [ -n "$OVERRIDE" ]; then
+            IMG="$OVERRIDE"
+          else
+            IMG="ghcr.io/neptunehub/audiomuse-ai:${{ steps.ver.outputs.version }}"
+            if ! docker manifest inspect "$IMG" >/dev/null 2>&1; then
+              echo "::warning::$IMG not found, falling back to :latest"
+              IMG="ghcr.io/neptunehub/audiomuse-ai:latest"
+            fi
+          fi
+          echo "image=$IMG" >> "$GITHUB_OUTPUT"
+          echo "Using image: $IMG"
+
+      - name: Start app stack
+        env:
+          HOWTO_IMAGE: ${{ steps.img.outputs.image }}
+        run: docker compose -f docs/howto/_tooling/docker-compose.howto.yml up -d
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              echo "App is up after ${i} tries."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "App did not become healthy in time."
+          docker compose -f docs/howto/_tooling/docker-compose.howto.yml logs --tail=200 flask
+          exit 1
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install -r docs/howto/_tooling/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Capture screenshots (all data mocked in the browser)
+        run: |
+          python docs/howto/_tooling/howto_capture.py \
+            --base-url http://localhost:8000 \
+            --user admin --password adminpass \
+            --mock-all --browser-channel ""
+
+      - name: Render + validate howto.md
+        run: |
+          python docs/howto/_tooling/render_howto.py
+          python docs/howto/_tooling/validate_howto.py
+
+      - name: Tear down stack
+        if: ${{ always() }}
+        run: docker compose -f docs/howto/_tooling/docker-compose.howto.yml down -v
+
+      - name: Upload how-to bundle for review
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: howto-${{ steps.ver.outputs.num }}
+          path: docs/howto/${{ steps.ver.outputs.num }}/
+          if-no-files-found: error

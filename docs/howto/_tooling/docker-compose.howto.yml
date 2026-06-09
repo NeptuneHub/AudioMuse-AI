@@ -1,0 +1,59 @@
+# Throwaway AudioMuse-AI stack for capturing how-to screenshots in CI.
+#
+# Boots the app from the prebuilt release image against an EMPTY Postgres + Redis.
+# Env vars clear the setup/auth barrier (no real media server is ever contacted)
+# and seed an admin on boot, so the capture can log in. All page DATA is mocked
+# in the browser by howto_capture.py --mock-all, so no real library is needed.
+#
+# Image tag is parameterised: HOWTO_IMAGE=ghcr.io/neptunehub/audiomuse-ai:v2.2.0
+# (defaults to :latest). Bring up with:
+#   HOWTO_IMAGE=... docker compose -f docs/howto/_tooling/docker-compose.howto.yml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: audiomuse
+      POSTGRES_PASSWORD: audiomusepassword
+      POSTGRES_DB: audiomusedb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audiomuse -d audiomusedb"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  flask:
+    image: ${HOWTO_IMAGE:-ghcr.io/neptunehub/audiomuse-ai:latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      SERVICE_TYPE: "flask"
+      TZ: "UTC"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "audiomuse"
+      POSTGRES_PASSWORD: "audiomusepassword"
+      POSTGRES_DB: "audiomusedb"
+      REDIS_URL: "redis://redis:6379/0"
+      TEMP_DIR: "/app/temp_audio"
+      # --- clear the setup barrier (values are never contacted, just validated) ---
+      MEDIASERVER_TYPE: "jellyfin"
+      JELLYFIN_URL: "http://media.example.com"
+      JELLYFIN_USER_ID: "ci-user"
+      JELLYFIN_TOKEN: "ci-token"
+      # --- auth: seed an admin on boot so the capture can log in ---
+      AUTH_ENABLED: "true"
+      AUDIOMUSE_USER: "admin"
+      AUDIOMUSE_PASSWORD: "adminpass"
+      # CLAP_ENABLED / LYRICS_ENABLED default true → all nav links appear
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
