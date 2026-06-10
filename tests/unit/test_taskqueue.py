@@ -36,11 +36,11 @@ def test_redis_socket_options_tls_url_keeps_keepalive():
 
 def test_build_embedded_redis_argv_binary_flags_and_url():
     argv, url = taskqueue.build_embedded_redis_argv(
-        '/usr/bin/redis-server', '/tmp/r.sock', '/data'
+        '/usr/bin/redis-server', '/var/lib/audiomuse/redis.sock', '/data'
     )
     assert argv[0] == '/usr/bin/redis-server'
     for flag, value in (
-        ('--unixsocket', '/tmp/r.sock'),
+        ('--unixsocket', '/var/lib/audiomuse/redis.sock'),
         ('--unixsocketperm', '700'),
         ('--port', '0'),
         ('--save', ''),
@@ -49,7 +49,7 @@ def test_build_embedded_redis_argv_binary_flags_and_url():
     ):
         idx = argv.index(flag)
         assert argv[idx + 1] == value
-    assert url == 'unix:///tmp/r.sock?db=0'
+    assert url == 'unix:///var/lib/audiomuse/redis.sock?db=0'
 
 
 def test_redis_conn_connection_kwargs():

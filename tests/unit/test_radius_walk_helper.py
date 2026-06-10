@@ -19,7 +19,7 @@ class TestAvoidTripleAdjacent:
     def test_triple_swapped_with_later_different_artist(self):
         ids = ['a1', 'a2', 'a3', 'b1']
         id_to_author = {'a1': 'A', 'a2': 'A', 'a3': 'A', 'b1': 'B'}
-        original = list(ids)
+        original = ids.copy()
 
         result = avoid_triple_adjacent(ids, id_to_author)
 

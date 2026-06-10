@@ -222,7 +222,7 @@ class TestHandleOnnxMemoryError:
 
     def test_memory_error_triggers_cleanup_and_returns_retry_result(self):
         """A BFCArena error calls cleanup once and returns the retry result."""
-        err = Exception("BFCArena failed")
+        err = RuntimeError("BFCArena failed")
         cleanup = Mock()
         retry = Mock(return_value="retried")
 
@@ -236,7 +236,7 @@ class TestHandleOnnxMemoryError:
 
     def test_cpu_fallback_returns_result_session_provider_tuple(self):
         """CPU fallback returns (result, new_session, provider)."""
-        err = Exception("BFCArena failed")
+        err = RuntimeError("BFCArena failed")
         session_mock = MagicMock()
         creator = Mock(return_value=(session_mock, "CPUExecutionProvider"))
         retry = Mock(return_value="r")
@@ -255,7 +255,7 @@ class TestHandleOnnxMemoryError:
 
     def test_retry_failure_propagates_retry_exception(self):
         """If the retry itself fails, that exception propagates."""
-        err = Exception("Failed to allocate memory for requested buffer")
+        err = RuntimeError("Failed to allocate memory for requested buffer")
         retry_err = RuntimeError("still failing")
         retry = Mock(side_effect=retry_err)
 
@@ -266,9 +266,9 @@ class TestHandleOnnxMemoryError:
 
     def test_memory_error_without_retry_or_fallback_reraises_original(self):
         """A memory error with no retry and no fallback re-raises the original."""
-        err = Exception("out of memory")
+        err = RuntimeError("out of memory")
 
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(RuntimeError) as excinfo:
             handle_onnx_memory_error(err, "test context")
 
         assert excinfo.value is err
