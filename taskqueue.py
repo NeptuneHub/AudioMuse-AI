@@ -11,6 +11,14 @@ genuine server is required. The only difference is who starts it: with ``embedde
 the macOS supervisor launches the bundled ``redis-server`` binary (see
 :func:`build_embedded_redis_argv`) and exports its socket URL as ``REDIS_URL``
 before the app and workers boot.
+
+``rq`` hardcodes ``UnixSignalDeathPenalty`` as every job registry's default, so
+on Windows (no ``signal.SIGALRM``) registry cleanup -- the janitor loop and the
+workers' periodic maintenance -- raises ``AttributeError`` whenever an abandoned
+job carries an ``on_failure`` callback, and the job is never removed.
+``BaseRegistry`` is therefore re-pointed at RQ's own platform dispatcher and
+the queues below are built with the same class: a no-op on POSIX, the
+timer-based penalty (what RQ's workers already use) on Windows.
 """
 
 from redis import Redis
@@ -18,8 +26,13 @@ from rq import Queue, get_current_job
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 from rq.command import send_stop_job_command
+from rq.registry import BaseRegistry
+from rq.timeouts import get_default_death_penalty_class
 
 import config
+
+_death_penalty_class = get_default_death_penalty_class()
+BaseRegistry.death_penalty_class = _death_penalty_class
 
 __all__ = [
     "redis_conn",
@@ -54,8 +67,8 @@ redis_conn = Redis.from_url(
     **redis_socket_options(config.REDIS_URL),
 )
 
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1)
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1)
+rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
+rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
 
 
 def build_embedded_redis_argv(server_binary, socket_path, data_dir):
