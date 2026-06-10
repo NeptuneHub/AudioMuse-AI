@@ -1,3 +1,4 @@
+import config
 import taskqueue
 from rq.registry import BaseRegistry
 from rq.timeouts import get_default_death_penalty_class
@@ -19,3 +20,58 @@ def test_registries_built_from_queues_inherit_platform_death_penalty():
         assert queue.started_job_registry.death_penalty_class is expected
         assert queue.finished_job_registry.death_penalty_class is expected
         assert queue.failed_job_registry.death_penalty_class is expected
+
+
+def test_redis_socket_options_unix_url_omits_keepalive():
+    assert taskqueue.redis_socket_options('unix:///tmp/r.sock') == {}
+
+
+def test_redis_socket_options_tcp_url_keeps_keepalive():
+    assert taskqueue.redis_socket_options('redis://h:6379/0') == {'socket_keepalive': True}
+
+
+def test_redis_socket_options_tls_url_keeps_keepalive():
+    assert taskqueue.redis_socket_options('rediss://h:6380/0') == {'socket_keepalive': True}
+
+
+def test_build_embedded_redis_argv_binary_flags_and_url():
+    argv, url = taskqueue.build_embedded_redis_argv(
+        '/usr/bin/redis-server', '/tmp/r.sock', '/data'
+    )
+    assert argv[0] == '/usr/bin/redis-server'
+    for flag, value in (
+        ('--unixsocket', '/tmp/r.sock'),
+        ('--unixsocketperm', '700'),
+        ('--port', '0'),
+        ('--save', ''),
+        ('--appendonly', 'no'),
+        ('--dir', '/data'),
+    ):
+        idx = argv.index(flag)
+        assert argv[idx + 1] == value
+    assert url == 'unix:///tmp/r.sock?db=0'
+
+
+def test_redis_conn_connection_kwargs():
+    kwargs = taskqueue.redis_conn.connection_pool.connection_kwargs
+    assert kwargs['socket_connect_timeout'] == 30
+    assert kwargs['socket_timeout'] == 60
+    assert kwargs['health_check_interval'] == 30
+    assert kwargs['retry_on_timeout'] is True
+    expected_keepalive = not str(config.REDIS_URL).startswith('unix://')
+    assert ('socket_keepalive' in kwargs) == expected_keepalive
+
+
+def test_queue_names_connection_and_default_timeout():
+    assert taskqueue.rq_queue_high.name == 'high'
+    assert taskqueue.rq_queue_default.name == 'default'
+    for queue in (taskqueue.rq_queue_high, taskqueue.rq_queue_default):
+        assert queue.connection is taskqueue.redis_conn
+        assert queue._default_timeout == -1
+
+
+def test_app_helper_reexports_taskqueue_handles():
+    import app_helper
+    assert app_helper.redis_conn is taskqueue.redis_conn
+    assert app_helper.rq_queue_high is taskqueue.rq_queue_high
+    assert app_helper.rq_queue_default is taskqueue.rq_queue_default

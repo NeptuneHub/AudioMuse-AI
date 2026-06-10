@@ -3,10 +3,16 @@ Unit tests for tasks/memory_utils.py
 Tests the memory management and data sanitization utilities.
 """
 
+import pytest
+from unittest.mock import Mock, MagicMock
+
 from tasks.memory_utils import (
     sanitize_string_for_db,
+    sanitize_json_for_db,
     cleanup_cuda_memory,
     cleanup_onnx_session,
+    comprehensive_memory_cleanup,
+    handle_onnx_memory_error,
     SessionRecycler
 )
 
@@ -192,6 +198,132 @@ class TestSessionRecycler:
         for i in range(3):
             assert not recycler.should_recycle()
             recycler.increment()
-        
+
         assert recycler.should_recycle()
+
+
+class TestHandleOnnxMemoryError:
+    """Test ONNX memory error handling with cleanup, retry and CPU fallback."""
+
+    def test_non_memory_error_reraises_same_object(self):
+        """A non-memory error is re-raised as the same exception object."""
+        err = ValueError("boom")
+        cleanup = Mock()
+        retry = Mock()
+
+        with pytest.raises(ValueError) as excinfo:
+            handle_onnx_memory_error(
+                err, "test context", cleanup_func=cleanup, retry_func=retry
+            )
+
+        assert excinfo.value is err
+        cleanup.assert_not_called()
+        retry.assert_not_called()
+
+    def test_memory_error_triggers_cleanup_and_returns_retry_result(self):
+        """A BFCArena error calls cleanup once and returns the retry result."""
+        err = Exception("BFCArena failed")
+        cleanup = Mock()
+        retry = Mock(return_value="retried")
+
+        result = handle_onnx_memory_error(
+            err, "test context", cleanup_func=cleanup, retry_func=retry
+        )
+
+        assert result == "retried"
+        cleanup.assert_called_once()
+        retry.assert_called_once()
+
+    def test_cpu_fallback_returns_result_session_provider_tuple(self):
+        """CPU fallback returns (result, new_session, provider)."""
+        err = Exception("BFCArena failed")
+        session_mock = MagicMock()
+        creator = Mock(return_value=(session_mock, "CPUExecutionProvider"))
+        retry = Mock(return_value="r")
+
+        result = handle_onnx_memory_error(
+            err,
+            "test context",
+            retry_func=retry,
+            fallback_to_cpu=True,
+            session_creator=creator,
+        )
+
+        assert result == ("r", session_mock, "CPUExecutionProvider")
+        creator.assert_called_once()
+        retry.assert_called_once()
+
+    def test_retry_failure_propagates_retry_exception(self):
+        """If the retry itself fails, that exception propagates."""
+        err = Exception("Failed to allocate memory for requested buffer")
+        retry_err = RuntimeError("still failing")
+        retry = Mock(side_effect=retry_err)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            handle_onnx_memory_error(err, "test context", retry_func=retry)
+
+        assert excinfo.value is retry_err
+
+    def test_memory_error_without_retry_or_fallback_reraises_original(self):
+        """A memory error with no retry and no fallback re-raises the original."""
+        err = Exception("out of memory")
+
+        with pytest.raises(Exception) as excinfo:
+            handle_onnx_memory_error(err, "test context")
+
+        assert excinfo.value is err
+
+
+class TestComprehensiveMemoryCleanup:
+    """Test combined memory cleanup result dictionary."""
+
+    def test_returns_expected_keys_with_bool_values(self):
+        """Result dict has exactly the four expected keys, all booleans."""
+        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+
+        assert set(results.keys()) == {"cuda", "onnx_pool", "gc", "malloc_trim"}
+        assert all(isinstance(v, bool) for v in results.values())
+
+    def test_gc_is_always_true(self):
+        """Garbage collection is always reported as successful."""
+        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+        assert results["gc"] is True
+
+    def test_force_cuda_false_reports_cuda_false(self):
+        """Disabling CUDA cleanup leaves the cuda flag False."""
+        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+        assert results["cuda"] is False
+
+    def test_reset_onnx_pool_false_reports_onnx_pool_false(self):
+        """Disabling pool reset leaves the onnx_pool flag False."""
+        results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+        assert results["onnx_pool"] is False
+
+
+class TestSanitizeJsonForDB:
+    """Test recursive JSON sanitization for jsonb writes."""
+
+    def test_nested_structures_are_cleaned_recursively(self):
+        """Strings at every depth are cleaned; containers keep their types."""
+        data = {
+            "a": {"b": "Va\x00l"},
+            "l": [1, "S\x01tr", {"n": "B\x00ad"}],
+            "t": ("x\x00y",),
+        }
+
+        result = sanitize_json_for_db(data)
+
+        assert result == {
+            "a": {"b": "Val"},
+            "l": [1, "Str", {"n": "Bad"}],
+            "t": ("xy",),
+        }
+        assert isinstance(result["t"], tuple)
+        assert isinstance(result["l"], list)
+        assert result["l"][0] == 1
+
+    def test_non_string_scalars_pass_through(self):
+        """Non-string scalars are returned unchanged."""
+        assert sanitize_json_for_db(123) == 123
+        assert sanitize_json_for_db(None) is None
 
