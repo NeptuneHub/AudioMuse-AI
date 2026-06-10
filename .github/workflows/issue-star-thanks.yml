@@ -1,25 +1,29 @@
-# When an issue is closed as completed (resolved/fixed, not "not planned"),
-# leave a warm thank-you for raising it. If the author already starred the repo
-# we thank them for it; if not, we gently mention that a star helps the project
-# grow and thank them in advance. Bots and the project's own team (owner,
-# members, collaborators) are skipped so only genuine outside contributors get
-# the message.
+# When an issue is closed as completed or a discussion is marked as answered
+# (GitHub Actions has no "discussion closed" trigger), post a short automated
+# message: a thank-you if the author already starred the repo, otherwise an
+# invitation to star it. Bots and the project's own team (owner, members,
+# collaborators) are skipped.
 
-name: Thank issue authors when resolved
+name: Thank issue and discussion authors when resolved
 
 on:
   issues:
     types:
       - closed
+  discussion:
+    types:
+      - answered
 
-permissions:
-  issues: write
+permissions: {}
 
 jobs:
-  say-thanks:
+  thank-on-issue:
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
-      - name: Post a kind thank-you comment
+      - name: Post a short thank-you comment
         uses: actions/github-script@v7
         with:
           script: |
@@ -50,19 +54,9 @@ jobs:
               (u) => u.login.toLowerCase() === author.toLowerCase(),
             );
 
-            const thanksForStar = [
-              `Hi @${author}, thank you so much for raising this issue. Taking the time to report something and help us see what could be better is a real contribution to the project, and we are genuinely grateful for it.`,
-              ``,
-              `We have now resolved it, but please do not hesitate to open another one if anything else comes up. It also means a lot that you already starred the project. Thank you for being part of this, it really keeps us going.`,
-            ].join('\n');
+            const thanksForStar = `We've closed the issue now — thanks for having starred AudioMuse and supporting self-hosted music here on GitHub! It really helps the project grow!`;
 
-            const pleaseStar = [
-              `Hi @${author}, thank you so much for raising this issue. Taking the time to report something and help us see what could be better is a real contribution to the project, and we are genuinely grateful for it.`,
-              ``,
-              `We have now resolved it, so please do not hesitate to open another one if anything else comes up. If the project has been useful to you, would you consider giving it a star? It is a small thing, but it genuinely helps the project grow and reach more people who could benefit from it.`,
-              ``,
-              `Thank you so much in advance, it truly makes a difference for a project like ours.`,
-            ].join('\n');
+            const pleaseStar = `We've closed the issue now, so if you like AudioMuse and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
 
             await github.rest.issues.createComment({
               owner,
@@ -70,3 +64,48 @@ jobs:
               issue_number: issue.number,
               body: hasStarred ? thanksForStar : pleaseStar,
             });
+
+  thank-on-discussion:
+    if: github.event_name == 'discussion'
+    runs-on: ubuntu-latest
+    permissions:
+      discussions: write
+    steps:
+      - name: Post a short thank-you comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const discussion = context.payload.discussion;
+
+            const author = discussion.user.login;
+
+            if (discussion.user.type === 'Bot' || author.endsWith('[bot]')) {
+              console.log(`Skipping bot account ${author}.`);
+              return;
+            }
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(discussion.author_association)) {
+              console.log(`Skipping team member ${author} (${discussion.author_association}).`);
+              return;
+            }
+
+            const stargazers = await github.paginate(
+              github.rest.activity.listStargazersForRepo,
+              { owner, repo, per_page: 100 },
+            );
+            const hasStarred = stargazers.some(
+              (u) => u.login.toLowerCase() === author.toLowerCase(),
+            );
+
+            const thanksForStar = `Your discussion has its answer now — thanks for having starred AudioMuse and supporting self-hosted music here on GitHub! It really helps the project grow!`;
+
+            const pleaseStar = `Your discussion has its answer now, so if you like AudioMuse and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
+
+            await github.graphql(
+              `mutation($discussionId: ID!, $body: String!) {
+                addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
+                  comment { id }
+                }
+              }`,
+              { discussionId: discussion.node_id, body: hasStarred ? thanksForStar : pleaseStar },
+            );
