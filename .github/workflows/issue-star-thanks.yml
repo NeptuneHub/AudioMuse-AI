@@ -14,14 +14,14 @@ on:
     types:
       - answered
 
-permissions:
-  issues: write
-  discussions: write
+permissions: {}
 
 jobs:
   thank-on-issue:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
       - name: Post a short thank-you comment
         uses: actions/github-script@v7
@@ -68,6 +68,8 @@ jobs:
   thank-on-discussion:
     if: github.event_name == 'discussion'
     runs-on: ubuntu-latest
+    permissions:
+      discussions: write
     steps:
       - name: Post a short thank-you comment
         uses: actions/github-script@v7
