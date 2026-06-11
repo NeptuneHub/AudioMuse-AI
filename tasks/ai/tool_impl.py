@@ -101,6 +101,26 @@ _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
 _FUZZY_PREFIX_LEN = 3
 
+# Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
+_MOOD_VECTOR_GE_SQL = (
+    "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+)
+_MOOD_VECTOR_LT_SQL = (
+    "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) < %s"
+)
+_MOOD_VECTOR_SCORE_SQL = """\
+COALESCE(
+    CAST(
+        NULLIF(
+            SUBSTRING(mood_vector FROM %s),
+            ''
+        ) AS NUMERIC
+    ),
+    0
+)"""
+# Canonical regex for the instrumental label in mood_vector (musicnn output).
+_INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
+
 
 def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
     """Fetch the scoring columns for a set of item_ids via the PK fast-path.
@@ -686,9 +706,7 @@ def _database_genre_query_sync(
             if genres:
                 genre_conditions = []
                 for genre in genres:
-                    genre_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
+                    genre_conditions.append(_MOOD_VECTOR_GE_SQL)
                     params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                     params.append(mood_vector_threshold)
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
@@ -698,9 +716,7 @@ def _database_genre_query_sync(
             if voices:
                 voice_conditions = []
                 for voice in voices:
-                    voice_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
+                    voice_conditions.append(_MOOD_VECTOR_GE_SQL)
                     params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
                     params.append(mood_vector_threshold)
                 if len(voice_conditions) == 1:
@@ -712,19 +728,13 @@ def _database_genre_query_sync(
             has_instrumental_filter = False
             if instrumental is not None:
                 if instrumental:
-                    # Filter: only tracks where musicnn flagged instrumental in mood_vector
-                    conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
-                    params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
+                    conditions.append(_MOOD_VECTOR_GE_SQL)
+                    params.append(_INSTRUMENTAL_REGEX)
                     params.append(mood_vector_threshold)
                     has_instrumental_filter = True
                 else:
-                    # Filter: exclude tracks flagged as instrumental (score below threshold or absent)
-                    conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) < %s"
-                    )
-                    params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
+                    conditions.append(_MOOD_VECTOR_LT_SQL)
+                    params.append(_INSTRUMENTAL_REGEX)
                     params.append(mood_vector_threshold)
 
             has_other_filter = False
@@ -797,45 +807,15 @@ def _database_genre_query_sync(
                 score_params = []
                 if has_genre_filter:
                     for genre in genres:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
+                        score_parts.append(_MOOD_VECTOR_SCORE_SQL)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                 if has_voice_filter:
                     for voice in voices:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
+                        score_parts.append(_MOOD_VECTOR_SCORE_SQL)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
                 if has_instrumental_filter:
-                    score_parts.append("""
-                        COALESCE(
-                            CAST(
-                                NULLIF(
-                                    SUBSTRING(mood_vector FROM %s),
-                                    ''
-                                ) AS NUMERIC
-                            ),
-                            0
-                        )
-                    """)
-                    score_params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
+                    score_parts.append(_MOOD_VECTOR_SCORE_SQL)
+                    score_params.append(_INSTRUMENTAL_REGEX)
                 if has_other_filter:
                     for of in other_features:
                         score_parts.append("""
