@@ -118,8 +118,8 @@ def clap_search_api():
         if not query:
             return jsonify({'error': 'Query cannot be empty'}), 400
         
-        if len(query) < 3:
-            return jsonify({'error': 'Query must be at least 3 characters'}), 400
+        if len(query) < 2:
+            return jsonify({'error': 'Query must be at least 2 characters'}), 400
         
         # Validate limit
         limit = min(max(1, int(limit)), 500)  # Between 1 and 500

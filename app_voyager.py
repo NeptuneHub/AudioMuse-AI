@@ -122,7 +122,7 @@ def search_tracks_endpoint():
     if not search_query:
         return jsonify([])
 
-    if len(search_query) < 3:
+    if len(search_query) < 2:
         return jsonify([])
 
     # Optional index filter: 'musicnn' (default) or 'sem_grove'

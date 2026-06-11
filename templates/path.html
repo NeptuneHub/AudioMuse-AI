@@ -373,7 +373,7 @@
                     clearTimeout(debounceTimer);
                     debounceTimer = setTimeout(async () => {
                         const searchQuery = searchInputEl.value.trim();
-                        if (searchQuery.length < 3) {
+                        if (searchQuery.length < 2) {
                             resultsEl.classList.add('hidden');
                             return;
                         }
