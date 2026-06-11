@@ -54,9 +54,9 @@ jobs:
               (u) => u.login.toLowerCase() === author.toLowerCase(),
             );
 
-            const thanksForStar = `We've closed the issue now — thanks for having starred AudioMuse and supporting self-hosted music here on GitHub! It really helps the project grow!`;
+            const thanksForStar = `We've closed the issue now, thanks for having starred AudioMuse-AI and supporting self-hosted music here on GitHub! It really helps the project grow!`;
 
-            const pleaseStar = `We've closed the issue now, so if you like AudioMuse and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
+            const pleaseStar = `We've closed the issue now, so if you like AudioMuse-AI and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
 
             await github.rest.issues.createComment({
               owner,
@@ -97,9 +97,9 @@ jobs:
               (u) => u.login.toLowerCase() === author.toLowerCase(),
             );
 
-            const thanksForStar = `Your discussion has its answer now — thanks for having starred AudioMuse and supporting self-hosted music here on GitHub! It really helps the project grow!`;
+            const thanksForStar = `Your discussion has its answer now — thanks for having starred AudioMuse-AI and supporting self-hosted music here on GitHub! It really helps the project grow!`;
 
-            const pleaseStar = `Your discussion has its answer now, so if you like AudioMuse and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
+            const pleaseStar = `Your discussion has its answer now, so if you like AudioMuse-AI and want to improve self-hosted music, why not consider giving us a star here on GitHub? It helps the project grow!`;
 
             await github.graphql(
               `mutation($discussionId: ID!, $body: String!) {
