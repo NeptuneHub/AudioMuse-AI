@@ -5,10 +5,11 @@ import traceback
 
 from redis import Redis
 import config
+from app_logging import configure_logging
 from restart_manager import RESTART_CHANNEL, restart_supervisor_workers, stop_supervisor_workers, start_supervisor_workers
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s %(message)s')
+configure_logging()
 
 
 def main():
