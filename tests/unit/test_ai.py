@@ -145,9 +145,9 @@ class TestCleanPlaylistName:
 
     def test_removes_special_characters(self):
         """Test removal of special unicode characters"""
-        name = "Rock★Classics★"
+        name = "RockClassics"
         result = clean_playlist_name(name)
-        assert "★" not in result
+        assert "" not in result
         assert result == "RockClassics"
 
     def test_preserves_allowed_punctuation(self):

@@ -77,9 +77,9 @@ class TestPreValidation:
     def test_song_similarity_both_title_and_artist_required(self):
         """song_similarity requires BOTH title AND artist non-empty."""
         test_cases = [
-            {"title": "Song", "artist": ""},       # Only title → invalid
-            {"title": "", "artist": "Artist"},     # Only artist → invalid
-            {"title": "Song", "artist": "Artist"}, # Both → valid
+            {"title": "Song", "artist": ""},       # Only title -> invalid
+            {"title": "", "artist": "Artist"},     # Only artist -> invalid
+            {"title": "Song", "artist": "Artist"}, # Both -> valid
         ]
 
         for tc in test_cases:

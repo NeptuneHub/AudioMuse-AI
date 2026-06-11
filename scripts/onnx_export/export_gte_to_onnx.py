@@ -83,7 +83,7 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
             do_constant_folding=True,
         )
 
-    print(f'Quantizing to INT8 → {output_path}...', flush=True)
+    print(f'Quantizing to INT8 -> {output_path}...', flush=True)
     from onnxruntime.quantization import quantize_dynamic, QuantType
     quantize_dynamic(
         model_input=fp32_path,

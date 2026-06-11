@@ -893,7 +893,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
         headers = {"X-Emby-Token": token}
 
-        # ✅ 5. No JSON body should be sent — Emby expects query parameters only
+        #  5. No JSON body should be sent — Emby expects query parameters only
         r = requests.post(url, headers=headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
 
@@ -1022,7 +1022,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         if rest and not _add_items_to_playlist(new_id, rest, user_id, headers):
             logger.error(f"Emby create_or_replace_playlist: created '{playlist_name}' but failed to add overflow tracks")
 
-        logger.info(f"✅ Emby: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+        logger.info(f" Emby: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
         return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
 
     playlist_id = existing.get("Id")
@@ -1042,6 +1042,6 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         logger.error(f"Emby create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
         return None
 
-    logger.info(f"✅ Emby: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
+    logger.info(f" Emby: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
     return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
 

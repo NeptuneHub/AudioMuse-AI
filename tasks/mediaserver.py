@@ -107,11 +107,11 @@ def resolve_emby_jellyfin_user(identifier, token):
     if config.MEDIASERVER_TYPE == 'emby': return emby_resolve_user(identifier, token)
     return []
 
-def delete_automatic_playlists():
-    """Deletes all playlists ending with '_automatic' using admin credentials."""
-    logger.info("Starting deletion of all '_automatic' playlists.")
+def delete_playlists_by_suffix(suffix):
+    """Deletes all playlists whose name ends with the given suffix using admin credentials."""
+    logger.info(f"Starting deletion of all '{suffix}' playlists.")
     deleted_count = 0
-    
+
     playlists_to_check = []
     delete_function = None
 
@@ -135,10 +135,14 @@ def delete_automatic_playlists():
         for p in playlists_to_check:
             # Navidrome uses 'id', others use 'Id'. Check for both.
             playlist_id = p.get('Id') or p.get('id')
-            if p.get('Name', '').endswith('_automatic') and delete_function(playlist_id):
+            if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
                 deleted_count += 1
-                
+
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
+
+def delete_automatic_playlists():
+    """Deletes all playlists ending with '_automatic' using admin credentials."""
+    delete_playlists_by_suffix('_automatic')
 
 def get_recent_albums(limit):
     """Fetches recently added albums using admin credentials."""

@@ -17,7 +17,7 @@ except ImportError as e:
 configure_logging()
 
 if __name__ == '__main__':
-    logging.info("🧹 RQ Janitor process starting. Cleaning registries every 10 seconds.")
+    logging.info(" RQ Janitor process starting. Cleaning registries every 10 seconds.")
     queues_to_clean = [rq_queue_high, rq_queue_default]
     while True:
         try:

@@ -1,7 +1,7 @@
 """TCP control server for the standalone Windows supervisor.
 
 Replaces the Unix-domain-socket ``macos/control_ipc.py`` on Windows, where
-``AF_UNIX`` is not available. The protocol is identical (JSON line → response),
+``AF_UNIX`` is not available. The protocol is identical (JSON line -> response),
 just the transport is TCP on localhost.
 
 The web UI's "save config -> restart workers" flow publishes to Redis;

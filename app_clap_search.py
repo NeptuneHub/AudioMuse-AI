@@ -18,7 +18,7 @@ def clap_search_page():
     ---
     tags:
       - CLAP Search
-    summary: HTML page for natural-language music search powered by CLAP audio↔text embeddings.
+    summary: HTML page for natural-language music search powered by CLAP audio<->text embeddings.
     responses:
       200:
         description: HTML page rendered.

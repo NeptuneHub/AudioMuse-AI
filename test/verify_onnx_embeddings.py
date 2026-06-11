@@ -66,7 +66,7 @@ def compare_pytorch_vs_onnx():
                 break
         
         if not pt_model_path:
-            print(f"✗ PyTorch .pt model not found in any of these paths:")
+            print(f" PyTorch .pt model not found in any of these paths:")
             for path in pt_model_paths:
                 print(f"  - {path}")
             print("\nPlease download the model first or provide the path.")
@@ -79,14 +79,14 @@ def compare_pytorch_vs_onnx():
         pt_model.load_ckpt(pt_model_path)
         pt_model.eval()
         
-        print("✓ PyTorch model loaded successfully")
+        print(" PyTorch model loaded successfully")
         
     except ImportError as e:
-        print(f"✗ PyTorch/CLAP not installed: {e}")
+        print(f" PyTorch/CLAP not installed: {e}")
         print("Install with: pip install torch laion-clap")
         return False
     except Exception as e:
-        print(f"✗ Failed to load PyTorch model: {e}")
+        print(f" Failed to load PyTorch model: {e}")
         return False
     
     # =========================================================================
@@ -128,7 +128,7 @@ def compare_pytorch_vs_onnx():
                 break
         
         if not onnx_audio_model_path or not onnx_text_model_path:
-            print(f"✗ ONNX models not found:")
+            print(f" ONNX models not found:")
             if not onnx_audio_model_path:
                 print(f"  Audio model - tried:")
                 for path in onnx_audio_model_paths:
@@ -151,10 +151,10 @@ def compare_pytorch_vs_onnx():
         # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained("roberta-base")
         
-        print("✓ ONNX model loaded successfully")
+        print(" ONNX model loaded successfully")
         
     except Exception as e:
-        print(f"✗ Failed to load ONNX model: {e}")
+        print(f" Failed to load ONNX model: {e}")
         return False
     
     # =========================================================================
@@ -217,7 +217,7 @@ def compare_pytorch_vs_onnx():
         
         # Pass criteria: max diff < 1e-5 and cosine similarity > 0.9999
         passed = max_diff < 1e-5 and cosine_sim > 0.9999
-        print(f"  Status: {'✓ PASS' if passed else '✗ FAIL'}")
+        print(f"  Status: {' PASS' if passed else ' FAIL'}")
         
         text_results.append({
             'query': query,
@@ -393,7 +393,7 @@ def compare_pytorch_vs_onnx():
                 # Note: Small differences (0.97-0.99) are expected due to librosa vs torchlibrosa
                 # numerical precision differences. This is acceptable for production use.
                 audio_passed = cosine_sim >= 0.97
-                print(f"  Status: {'✓ PASS' if audio_passed else '✗ FAIL'}")
+                print(f"  Status: {' PASS' if audio_passed else ' FAIL'}")
                 
                 audio_results.append({
                     'file': os.path.basename(test_audio),
@@ -407,7 +407,7 @@ def compare_pytorch_vs_onnx():
                 })
                 
             except Exception as e:
-                print(f"  ✗ ERROR: {e}")
+                print(f"   ERROR: {e}")
                 audio_results.append({
                     'file': os.path.basename(test_audio),
                     'error': str(e),
@@ -427,19 +427,19 @@ def compare_pytorch_vs_onnx():
     
     all_text_passed = all(r['passed'] for r in text_results)
     
-    print(f"\nText embeddings: {'✓ ALL PASS' if all_text_passed else '✗ SOME FAILED'} ({len(text_results)} queries)")
+    print(f"\nText embeddings: {' ALL PASS' if all_text_passed else ' SOME FAILED'} ({len(text_results)} queries)")
     for r in text_results:
-        status = "✓" if r['passed'] else "✗"
+        status = "" if r['passed'] else ""
         print(f"  {status} '{r['query']}' - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
     
     if audio_results:
         all_audio_passed = all(r['passed'] for r in audio_results)
-        print(f"\nAudio embeddings: {'✓ ALL PASS' if all_audio_passed else '✗ SOME FAILED'} ({len(audio_results)} files)")
+        print(f"\nAudio embeddings: {' ALL PASS' if all_audio_passed else ' SOME FAILED'} ({len(audio_results)} files)")
         for r in audio_results:
             if 'error' in r:
-                print(f"  ✗ {r['file']} - ERROR: {r['error']}")
+                print(f"   {r['file']} - ERROR: {r['error']}")
             else:
-                status = "✓" if r['passed'] else "✗"
+                status = "" if r['passed'] else ""
                 print(f"  {status} {r['file']} - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
     else:
         all_audio_passed = True
@@ -447,12 +447,12 @@ def compare_pytorch_vs_onnx():
     
     print("\n" + "=" * 80)
     if all_text_passed and all_audio_passed:
-        print("✓✓✓ VERIFICATION SUCCESSFUL ✓✓✓")
+        print(" VERIFICATION SUCCESSFUL ")
         print("The ONNX model produces IDENTICAL embeddings to PyTorch!")
         print("=" * 80)
         return True
     else:
-        print("✗✗✗ VERIFICATION FAILED ✗✗✗")
+        print(" VERIFICATION FAILED ")
         print("The embeddings differ! Check model export.")
         print("=" * 80)
         return False

@@ -187,7 +187,7 @@ def test_clap_analysis_runs_and_shows_output():
                     diff = abs(cosine_sim - expected_sim)
                     tolerance = 0.001
                     passed = diff <= tolerance
-                    status = "✓" if passed else "✗"
+                    status = "" if passed else ""
                     
                     print(f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (expected: {expected_sim:.6f}) {status}')
                     
@@ -201,10 +201,10 @@ def test_clap_analysis_runs_and_shows_output():
             if not all_passed:
                 pytest.fail(f'{track_name}: One or more cosine similarities differ from expected values')
             
-            print(f'\n{track_name}: ✓ CLAP analysis completed successfully')
+            print(f'\n{track_name}:  CLAP analysis completed successfully')
             
         except Exception as e:
-            print(f'\n{track_name}: ✗ CLAP analysis failed with error:')
+            print(f'\n{track_name}:  CLAP analysis failed with error:')
             print(f'  {type(e).__name__}: {e}')
             import traceback
             traceback.print_exc()

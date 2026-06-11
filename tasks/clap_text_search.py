@@ -387,9 +387,9 @@ def refresh_clap_cache():
     result = load_clap_cache_from_db()
     new_count = get_clap_cache_size()
     if result:
-        logger.info(f"✓ CLAP cache refreshed: {old_count} → {new_count} songs ({new_count - old_count:+d})")
+        logger.info(f" CLAP cache refreshed: {old_count} -> {new_count} songs ({new_count - old_count:+d})")
     else:
-        logger.error(f"✗ CLAP cache refresh failed! Still at {new_count} songs")
+        logger.error(f" CLAP cache refresh failed! Still at {new_count} songs")
     return result
 
 

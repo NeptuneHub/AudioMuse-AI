@@ -75,7 +75,7 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
     """Centralized ONNX provider selection.
 
     Returns an ordered ``[(provider_name, options), ...]`` chain following the
-    priority NVIDIA CUDA → Apple CoreML (M1-M4) → CPU. Providers that are not
+    priority NVIDIA CUDA -> Apple CoreML (M1-M4) -> CPU. Providers that are not
     available on the current machine are skipped, and CPU is always appended
     last as the universal fallback.
 
@@ -160,7 +160,7 @@ def load_musicnn_sessions(model_paths):
     opts = resolve_providers(allow_coreml=False)
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
-        logger.info(f"✓ Loaded {len(sessions)} MusiCNN models for album reuse")
+        logger.info(f" Loaded {len(sessions)} MusiCNN models for album reuse")
         return sessions
     except Exception as e:
         logger.error(f"Failed to load MusiCNN models: {e}")
@@ -417,7 +417,7 @@ def refresh_track_metadata(item, album_name):
 
 
 def upsert_artist_mappings_for_tracks(tracks, album_name=None):
-    """Bulk-store artist_name → artist_id for a list of tracks. Errors are logged, never raised."""
+    """Bulk-store artist_name -> artist_id for a list of tracks. Errors are logged, never raised."""
     for t in tracks:
         name, aid = t.get('AlbumArtist'), t.get('ArtistId')
         if name and aid:
@@ -427,7 +427,7 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
                 logger.error(f"Failed to upsert artist mapping for '{name}': {e}")
         elif name:
             scope = f" in album '{album_name}'" if album_name else ""
-            logger.warning(f"✗ No artist_id for '{name}'{scope}")
+            logger.warning(f" No artist_id for '{name}'{scope}")
 
 
 # --- Per-track decision / status --------------------------------------------
@@ -461,7 +461,7 @@ def build_feature_status_parts(clap_available, lyrics_enabled, include_check_mar
     if lyrics_enabled:
         parts.append("Lyrics")
     if include_check_marks:
-        return [f"{p}: ✓" for p in parts]
+        return [f"{p}: " for p in parts]
     return parts
 
 
@@ -539,7 +539,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                          top_moods=None, download_fn=None):
     """Run lyrics analysis and persist embeddings. Returns True on save.
 
-    ``top_moods`` is the MusicNN top-N moods dict (label → score). When it
+    ``top_moods`` is the MusicNN top-N moods dict (label -> score). When it
     includes 'instrumental', analyze_lyrics short-circuits the entire pipeline
     (skips Whisper-small ASR + gte embedding) and writes the instrumental
     sentinel directly. When it includes 'female vocalists' / 'male vocalists'

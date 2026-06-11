@@ -246,7 +246,7 @@ def get_waveform_endpoint():
             }
         
         fetch_time = time.time() - start_time
-        logger.info(f"⏱️  Fetched track metadata in {fetch_time:.2f}s")
+        logger.info(f"  Fetched track metadata in {fetch_time:.2f}s")
         
         # Create a temporary directory for this download
         temp_dir = tempfile.mkdtemp(prefix='waveform_')
@@ -255,13 +255,13 @@ def get_waveform_endpoint():
         download_start = time.time()
         temp_file = download_track(temp_dir, item)
         download_time = time.time() - download_start
-        logger.info(f"⏱️  Downloaded track in {download_time:.2f}s")
+        logger.info(f"  Downloaded track in {download_time:.2f}s")
         
         if not temp_file or not os.path.exists(temp_file):
             return jsonify({"error": "Failed to download track from media server"}), 500
         
         # Generate waveform peaks in a thread pool with timeout
-        logger.info(f"🌊 Generating waveform with librosa for song={title}, item_id={item_id}")
+        logger.info(f" Generating waveform with librosa for song={title}, item_id={item_id}")
         
         waveform_start = time.time()
         # Submit to thread pool for parallel execution
@@ -276,7 +276,7 @@ def get_waveform_endpoint():
         
         waveform_time = time.time() - waveform_start
         total_time = time.time() - start_time
-        logger.info(f"✅ Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
+        logger.info(f" Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
         
         response = {
             "peaks": peaks,

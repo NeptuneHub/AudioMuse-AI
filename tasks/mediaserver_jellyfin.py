@@ -461,7 +461,7 @@ def create_playlist(base_name, item_ids):
     body = {"Name": base_name, "Ids": item_ids, "UserId": config.JELLYFIN_USER_ID}
     try:
         r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok: logger.info("✅ Created Jellyfin playlist '%s'", base_name)
+        if r.ok: logger.info(" Created Jellyfin playlist '%s'", base_name)
     except Exception as e:
         logger.error("Exception creating Jellyfin playlist '%s': %s", base_name, e, exc_info=True)
 
@@ -669,7 +669,7 @@ def _create_fresh_playlist(playlist_name, item_ids):
     if rest and not _add_items_to_playlist(new_id, rest):
         logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks")
 
-    logger.info(f"✅ Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+    logger.info(f" Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
     return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
 
 
@@ -720,6 +720,6 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         logger.error(f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
         return None
 
-    logger.info(f"✅ Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
+    logger.info(f" Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
     return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
 

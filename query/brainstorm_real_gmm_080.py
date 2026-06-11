@@ -259,7 +259,7 @@ def main():
 
         print(f"\n  Centroid MSD tag profiles (top-8 tags):")
         print(f"  {'#':>3}  {'songs':>5}  {'mood_score':>10}  top MSD tags")
-        print(f"  {'─'*75}")
+        print(f"  {''*75}")
 
         centroid_data = []
         for c in range(best_k):
