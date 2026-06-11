@@ -1247,8 +1247,8 @@ def get_alchemy_radios():
         )
         rows = cur.fetchall()
         return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Failed to load alchemy radios: {e}")
+    except Exception:
+        logger.exception("Failed to load alchemy radios")
         return []
     finally:
         cur.close()
@@ -1266,9 +1266,9 @@ def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
         row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to create alchemy radio for anchor_id={anchor_id}: {e}")
+        logger.exception(f"Failed to create alchemy radio for anchor_id={anchor_id}")
         return None
     finally:
         cur.close()
@@ -1286,9 +1286,9 @@ def update_alchemy_radio(radio_id, temperature, n_results, enabled):
         row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to update alchemy radio id={radio_id}: {e}")
+        logger.exception(f"Failed to update alchemy radio id={radio_id}")
         return None
     finally:
         cur.close()
@@ -1301,9 +1301,9 @@ def delete_alchemy_radio(radio_id):
         cur.execute("DELETE FROM alchemy_radios WHERE id = %s", (radio_id,))
         conn.commit()
         return cur.rowcount > 0
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to delete alchemy radio id={radio_id}: {e}")
+        logger.exception(f"Failed to delete alchemy radio id={radio_id}")
         return False
     finally:
         cur.close()

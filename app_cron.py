@@ -309,8 +309,8 @@ def run_due_cron_jobs():
                     try:
                         summary = run_radio_playlists()
                         logger.info(f"Cron: ran radio playlists synchronously (job_id={job_id}, summary={summary})")
-                    except Exception as e:
-                        logger.error(f"Cron: error running radio playlists: {e}")
+                    except Exception:
+                        logger.exception("Cron: error running radio playlists")
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))
