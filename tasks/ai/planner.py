@@ -401,7 +401,7 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
 FILTER_LIST_KEYS = ('genres', 'voices', 'moods', 'other_features')
 FILTER_MIN_KEYS = ('tempo_min', 'energy_min', 'year_min', 'min_rating')
 FILTER_MAX_KEYS = ('tempo_max', 'energy_max', 'year_max')
-FILTER_SCALAR_KEYS = ('key', 'scale', 'album', 'artist')
+FILTER_SCALAR_KEYS = ('key', 'scale', 'album', 'artist', 'instrumental')
 FILTER_ALL_KEYS = (
     FILTER_LIST_KEYS + FILTER_MIN_KEYS + FILTER_MAX_KEYS + FILTER_SCALAR_KEYS
 )
@@ -486,6 +486,16 @@ def extract_hints(text: str) -> Dict:
         except ValueError:
             pass
 
+    # Instrumental detection: keyword-based, same pattern as tempo/energy above.
+    _INSTRUMENTAL_RE = re.compile(
+        r'\b(?:instrumentals?|no\s+(?:vocals?|lyrics|singing|voice)|'
+        r'without\s+(?:vocals?|lyrics|singing|voice))\b',
+        re.IGNORECASE,
+    )
+    if _INSTRUMENTAL_RE.search(text):
+        hints['instrumental'] = True
+        notes.append("instrumental requested")
+
     if notes:
         hints['notes'] = notes
     return hints
@@ -510,6 +520,8 @@ def format_hints_block(hints: Optional[Dict]) -> str:
         lines.append(
             f"  energy: {hints.get('energy_min', '?')}..{hints.get('energy_max', '?')}"
         )
+    if hints.get('instrumental') is True:
+        lines.append("  instrumental: true (use instrumental=true in search_database)")
     if not lines:
         return ""
     return "EXTRACTED_HINTS (use these values directly in search_database if relevant):\n" + "\n".join(lines)

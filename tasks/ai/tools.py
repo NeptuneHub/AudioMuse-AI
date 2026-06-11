@@ -202,6 +202,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
                 candidate_item_ids=tool_args.get("candidate_item_ids"),
                 voices=tool_args.get("voices"),
                 score_threshold=tool_args.get("score_threshold"),
+                instrumental=tool_args.get("instrumental"),
             )
 
         return {"error": f"Unknown tool: {tool_name}"}
@@ -278,9 +279,9 @@ def get_mcp_tools() -> List[Dict]:
     if text_match_modes:
         mode_desc_parts = []
         if "audio" in text_match_modes:
-            mode_desc_parts.append("'audio' (default): match sound/instruments/textures ('calm piano', 'energetic guitar', 'romantic strings')")
+            mode_desc_parts.append("'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental').")
         if "lyrics" in text_match_modes:
-            mode_desc_parts.append("'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom')")
+            mode_desc_parts.append("'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom').")
         mode_desc = ". ".join(mode_desc_parts)
 
         tools.append(
@@ -349,8 +350,10 @@ def get_mcp_tools() -> List[Dict]:
         {
             "name": "search_database",
             "description": (
-                "Filter the library by metadata. Use when the user names genres, moods, vocals, "
-                "year/decade, tempo, energy, scale, key, rating, album, or a single artist. "
+                "Filter the library by metadata. Use when the user names genres, vocals, "
+                "year/decade, tempo, energy, scale, key, rating, album, artist, or instrumental. "
+                "For instrumental tracks, set instrumental=true (queries musicnn score). "
+                "For non-instrumental, set instrumental=false. "
                 "Can stand alone OR refine a seed_search/text_match/knowledge_lookup pool."
             ),
             "inputSchema": {
@@ -393,6 +396,10 @@ def get_mcp_tools() -> List[Dict]:
                     "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
                     "album": {"type": "string", "description": "Album name to filter by"},
                     "artist": {"type": "string", "description": "Single artist name (use seed_search for multiple)"},
+                    "instrumental": {
+                        "type": "boolean",
+                        "description": "true = only instrumental tracks. false = only tracks with vocals.",
+                    },
                     "get_songs": {"type": "integer", "default": 200},
                 },
             },

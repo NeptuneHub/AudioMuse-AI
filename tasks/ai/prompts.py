@@ -221,6 +221,8 @@ EXAMPLES:
 "top pop radio songs of 2025" -> {{"primaries": ["knowledge"], "needs_filter": true}}
 "sad jazz from the 90s" -> {{"primaries": [], "needs_filter": true}}
 "upbeat pop roadtrip songs about summer with female vocals" -> {{"primaries": ["text"], "needs_filter": true}}
+"pop instrumental" -> {{"primaries": [], "needs_filter": true}}
+"instrumental jazz" -> {{"primaries": [], "needs_filter": true}}
 
 Request: "{user_message}"
 JSON:"""

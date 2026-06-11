@@ -643,6 +643,7 @@ def _database_genre_query_sync(
     candidate_item_ids: Optional[List[str]] = None,
     voices: Optional[List[str]] = None,
     score_threshold: Optional[float] = None,
+    instrumental: Optional[bool] = None,
 ) -> Dict:
     get_songs = int(get_songs) if get_songs is not None else 100
 
@@ -707,6 +708,24 @@ def _database_genre_query_sync(
                 else:
                     conditions.append("(" + " OR ".join(voice_conditions) + ")")
                 has_voice_filter = True
+
+            has_instrumental_filter = False
+            if instrumental is not None:
+                if instrumental:
+                    # Filter: only tracks where musicnn flagged instrumental in mood_vector
+                    conditions.append(
+                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+                    )
+                    params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
+                    params.append(mood_vector_threshold)
+                    has_instrumental_filter = True
+                else:
+                    # Filter: exclude tracks flagged as instrumental (score below threshold or absent)
+                    conditions.append(
+                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) < %s"
+                    )
+                    params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
+                    params.append(mood_vector_threshold)
 
             has_other_filter = False
             other_confidence_threshold = other_features_threshold
@@ -773,7 +792,7 @@ def _database_genre_query_sync(
 
             order_clause = "ORDER BY RANDOM()" if pool_order_index is None else ""
 
-            if has_genre_filter or has_voice_filter or has_other_filter:
+            if has_genre_filter or has_voice_filter or has_other_filter or has_instrumental_filter:
                 score_parts = []
                 score_params = []
                 if has_genre_filter:
@@ -804,6 +823,19 @@ def _database_genre_query_sync(
                             )
                         """)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
+                if has_instrumental_filter:
+                    score_parts.append("""
+                        COALESCE(
+                            CAST(
+                                NULLIF(
+                                    SUBSTRING(mood_vector FROM %s),
+                                    ''
+                                ) AS NUMERIC
+                            ),
+                            0
+                        )
+                    """)
+                    score_params.append(r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)")
                 if has_other_filter:
                     for of in other_features:
                         score_parts.append("""
@@ -880,6 +912,8 @@ def _database_genre_query_sync(
             filters.append(f"album: {album}")
         if artist:
             filters.append(f"artist: {artist}")
+        if instrumental is not None:
+            filters.append(f"instrumental: {instrumental}")
 
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
 
