@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,13 +39,14 @@ except ImportError as e:
 # logger.info(...) from task modules falls through to Python's lastResort handler
 # and gets silently dropped during long-running jobs.
 configure_logging()
+logger = logging.getLogger(__name__)
 
 # This worker ONLY listens to the 'high' queue.
 queues_to_listen = ['high']
 
 if __name__ == '__main__':
-    print(f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
-    print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
+    logger.info(f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
+    logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # High priority worker doesn't analyze songs, so no CLAP preload needed
     # Only rq_worker.py (default queue) handles song analysis tasks
@@ -62,12 +64,12 @@ if __name__ == '__main__':
     max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
 
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
-    print(f"RQ Worker logging level set to: {logging_level}")
-    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
+    logger.info(f"RQ Worker logging level set to: {logging_level}")
+    logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The job function itself is responsible for creating an app context if needed.
         worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
-        print(f"High Priority RQ Worker failed to start or encountered an error: {e}")
+        logger.error(f"High Priority RQ Worker failed to start or encountered an error: {e}", exc_info=True)
         sys.exit(1)

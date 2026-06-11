@@ -1,7 +1,6 @@
 import logging
 import os
 import time
-import traceback
 
 from redis import Redis
 import config
@@ -61,8 +60,7 @@ def main():
                     else:
                         logger.warning('Worker start failed; will continue listening')
         except Exception:
-            logger.error('Restart listener connection error, retrying in 5 seconds')
-            traceback.print_exc()
+            logger.exception('Restart listener connection error, retrying in 5 seconds')
             time.sleep(5)
 
 
