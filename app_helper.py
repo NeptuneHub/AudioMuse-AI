@@ -318,6 +318,7 @@ def init_db():
                 )
             # Create 'alchemy_anchors' table to persist named user anchors for reuse
             cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Provider migration tool: wizard session state (one row per migration attempt)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS migration_session (
@@ -1231,6 +1232,79 @@ def update_alchemy_anchor_name(anchor_id, name):
         conn.rollback()
         logger.error(f"Failed to rename alchemy anchor id={anchor_id}: {e}")
         return None
+    finally:
+        cur.close()
+
+
+def get_alchemy_radios():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT r.id, r.anchor_id, a.name, r.temperature, r.n_results, r.enabled "
+            "FROM alchemy_radios r JOIN alchemy_anchors a ON a.id = r.anchor_id "
+            "ORDER BY a.name"
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to load alchemy radios: {e}")
+        return []
+    finally:
+        cur.close()
+
+
+def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "INSERT INTO alchemy_radios (anchor_id, temperature, n_results, enabled) "
+            "VALUES (%s, %s, %s, %s) RETURNING id, anchor_id, temperature, n_results, enabled",
+            (anchor_id, temperature, n_results, bool(enabled))
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to create alchemy radio for anchor_id={anchor_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def update_alchemy_radio(radio_id, temperature, n_results, enabled):
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "UPDATE alchemy_radios SET temperature = %s, n_results = %s, enabled = %s "
+            "WHERE id = %s RETURNING id, anchor_id, temperature, n_results, enabled",
+            (temperature, n_results, bool(enabled), radio_id)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to update alchemy radio id={radio_id}: {e}")
+        return None
+    finally:
+        cur.close()
+
+
+def delete_alchemy_radio(radio_id):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM alchemy_radios WHERE id = %s", (radio_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Failed to delete alchemy radio id={radio_id}: {e}")
+        return False
     finally:
         cur.close()
 

@@ -60,37 +60,31 @@
 
     /* Mobile-friendly anchor manager actions */
     @media (max-width: 768px) {
-        #anchor-manager table,
-        #anchor-manager table tbody,
-        #anchor-manager table tr,
-        #anchor-manager table td {
-            display: block;
-            width: 100%;
-        }
-        #anchor-manager table tr {
-            margin-bottom: 0.75rem;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.75rem;
-        }
-        #anchor-manager table td {
-            text-align: left;
-            padding: 0.35rem 0;
-        }
-        #anchor-manager table td:last-child button {
-            display: block;
-            width: 100%;
-            margin: 0.25rem 0;
-        }
-
         #anchor-manager > div {
             flex-wrap: wrap;
             gap: 0.5rem;
         }
-        #back-to-alchemy-btn,
-        #anchor-manager .btn {
+        #back-to-alchemy-btn {
             width: 100%;
             box-sizing: border-box;
         }
+    }
+
+    #radio-manager table { width: 100%; border-collapse: collapse; }
+    #radio-manager th { text-align: left; }
+    #radio-manager th, #radio-manager td { padding: 0.4rem 0.3rem; vertical-align: middle; }
+    #radio-manager .radio-name { overflow-wrap: anywhere; }
+    #radio-manager .radio-temperature,
+    #radio-manager .radio-n-results { width: 6.5rem; box-sizing: border-box; }
+    #radio-manager .radio-anchor-select { width: 100%; }
+    #add-radio-btn { width: 100%; border-style: dashed; }
+    @media (max-width: 768px) {
+        #radio-manager table { font-size: 0.85rem; }
+        #radio-manager th, #radio-manager td { padding: 0.3rem 0.15rem; }
+        #radio-manager .radio-temperature { width: 3.6rem; }
+        #radio-manager .radio-n-results { width: 4.8rem; min-width: 4.8rem; }
+        #radio-manager > div { flex-wrap: wrap; gap: 0.5rem; }
+        #radio-back-to-alchemy-btn { width: 100%; box-sizing: border-box; }
     }
 </style>
 <style>
@@ -107,6 +101,7 @@
         <div class="alchemy-tabs" style="margin-top:1rem; display:flex; gap:0.5rem; justify-content:flex-end;">
             <button type="button" id="tab-alchemy" class="tab-btn active">Alchemy</button>
             <button type="button" id="tab-anchors" class="tab-btn">Anchors</button>
+            <button type="button" id="tab-radio" class="tab-btn">Radio</button>
         </div>
     </header>
 
@@ -206,10 +201,33 @@
         <h2>Saved Anchors</h2>
         <button type="button" id="back-to-alchemy-btn" class="btn btn-ghost btn-sm">← Back to Alchemy</button>
     </div>
-    <table style="width:100%;border-collapse:collapse; margin-top: 0.7rem;">
-        <thead><tr><th>Name</th><th>Actions</th></tr></thead>
-        <tbody id="saved-anchors-table-body"></tbody>
-    </table>
+    <div class="responsive-table-wrapper" style="margin-top: 0.7rem;">
+        <table>
+            <thead><tr><th>Name</th><th>Actions</th></tr></thead>
+            <tbody id="saved-anchors-table-body"></tbody>
+        </table>
+    </div>
+</section>
+
+<section id="radio-manager" class="hidden" style="margin-top: 1.5rem;">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h2>Radios</h2>
+        <button type="button" id="radio-back-to-alchemy-btn" class="btn btn-ghost btn-sm">← Back to Alchemy</button>
+    </div>
+    <p style="font-size:0.9rem; color:var(--text-muted); margin-top:0.3rem;">A radio is a saved anchor plus a temperature and a number of results. "Create Radio Playlists" deletes every old <em>_radio</em> playlist on the media server and creates a fresh one per enabled radio, named after its anchor.</p>
+    <div class="responsive-table-wrapper" style="margin-top: 0.7rem;">
+        <table>
+            <thead><tr><th style="text-align:center;">Enabled</th><th>Name</th><th>Temp (τ)</th><th title="Number of results">Results</th><th></th></tr></thead>
+            <tbody id="radios-table-body"></tbody>
+            <tfoot><tr><td colspan="5" style="padding-top:0.6rem;">
+                <button type="button" id="add-radio-btn" class="btn btn-ghost">+ Add Radio</button>
+            </td></tr></tfoot>
+        </table>
+    </div>
+    <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+        <button type="button" id="save-radios-btn" class="btn btn-primary" style="flex:1;">Save</button>
+        <button type="button" id="create-radio-playlists-btn" class="btn" style="flex:1; background-color: var(--color-success);">Create Radio Playlists</button>
+    </div>
 </section>
 
 {% endblock %}
@@ -221,12 +239,14 @@
         // Fetch config to get ALCHEMY defaults
         let defaultN = 100;
         let maxN = 200;
+        let defaultTemp = 1.0;
         let cfg = {};
         try {
             const resp = await fetch("{{ url_for('get_config_endpoint') }}");
             cfg = await resp.json();
             if (cfg.alchemy_default_n_results) defaultN = cfg.alchemy_default_n_results;
             if (cfg.alchemy_max_n_results) maxN = cfg.alchemy_max_n_results;
+            if (cfg.alchemy_temperature !== undefined && cfg.alchemy_temperature !== null) defaultTemp = cfg.alchemy_temperature;
         } catch (e) { console.warn('Failed to fetch config for alchemy, using defaults', e); }
 
         // Dark mode helper for chart colors
@@ -1124,7 +1144,9 @@
         // Hooks for anchor manager & tabs
         const tabAlchemy = document.getElementById('tab-alchemy');
         const tabAnchors = document.getElementById('tab-anchors');
+        const tabRadio = document.getElementById('tab-radio');
         const anchorManagerSection = document.getElementById('anchor-manager');
+        const radioManagerSection = document.getElementById('radio-manager');
         const resultsSection = document.getElementById('results');
         const playlistSection = document.getElementById('playlist-creator');
         const saveAnchorPanel = document.getElementById('save-anchor-panel');
@@ -1132,33 +1154,195 @@
         let alchemyHasRun = false;
 
         const setTab = (tab) => {
-            if (tab === 'alchemy') {
-                tabAlchemy.classList.add('active');
-                tabAnchors.classList.remove('active');
-                anchorManagerSection.classList.add('hidden');
-                document.getElementById('alchemy-form').classList.remove('hidden');
-                if (alchemyHasRun) {
-                    resultsSection.classList.remove('hidden');
-                    playlistSection.classList.remove('hidden');
-                    saveAnchorPanel.classList.remove('hidden');
-                } else {
-                    resultsSection.classList.add('hidden');
-                    playlistSection.classList.add('hidden');
-                    saveAnchorPanel.classList.add('hidden');
-                }
-            } else {
-                tabAlchemy.classList.remove('active');
-                tabAnchors.classList.add('active');
-                resultsSection.classList.add('hidden');
-                playlistSection.classList.add('hidden');
-                saveAnchorPanel.classList.add('hidden');
-                anchorManagerSection.classList.remove('hidden');
-                document.getElementById('alchemy-form').classList.add('hidden');
-            }
+            tabAlchemy.classList.toggle('active', tab === 'alchemy');
+            tabAnchors.classList.toggle('active', tab === 'anchors');
+            tabRadio.classList.toggle('active', tab === 'radio');
+            anchorManagerSection.classList.toggle('hidden', tab !== 'anchors');
+            radioManagerSection.classList.toggle('hidden', tab !== 'radio');
+            document.getElementById('alchemy-form').classList.toggle('hidden', tab !== 'alchemy');
+            const showResults = tab === 'alchemy' && alchemyHasRun;
+            resultsSection.classList.toggle('hidden', !showResults);
+            playlistSection.classList.toggle('hidden', !showResults);
+            saveAnchorPanel.classList.toggle('hidden', !showResults);
+            if (tab === 'radio') refreshRadioTab();
         };
 
         tabAlchemy.addEventListener('click', () => setTab('alchemy'));
         tabAnchors.addEventListener('click', () => setTab('anchors'));
+        tabRadio.addEventListener('click', () => setTab('radio'));
+
+        let _radiosCache = [];
+        const radiosTableBody = document.getElementById('radios-table-body');
+
+        const buildRadioRow = (radio) => {
+            const tr = document.createElement('tr');
+            tr.dataset.id = radio.id;
+            tr.innerHTML = `
+                <td style="text-align:center;"><input type="checkbox" class="radio-enabled" ${radio.enabled ? 'checked' : ''}></td>
+                <td class="radio-name"></td>
+                <td><input type="number" class="radio-temperature" step="0.1" min="0" max="10" value="${radio.temperature}"></td>
+                <td><input type="number" class="radio-n-results" min="1" max="${maxN}" value="${radio.n_results}"></td>
+                <td style="text-align:right;"><button type="button" class="btn btn-sm btn-danger btn-delete-radio" title="Delete radio">✕</button></td>
+            `;
+            tr.querySelector('.radio-name').textContent = radio.name;
+            return tr;
+        };
+
+        const loadRadios = async () => {
+            try {
+                const response = await fetch('/api/radios');
+                const payload = await response.json();
+                _radiosCache = Array.isArray(payload.radios) ? payload.radios : [];
+                radiosTableBody.innerHTML = '';
+                _radiosCache.forEach(radio => radiosTableBody.appendChild(buildRadioRow(radio)));
+            } catch (err) {
+                console.warn('Failed to load radios:', err);
+            }
+        };
+
+        const refreshRadioTab = () => {
+            refreshAnchors().catch(() => {}).then(loadRadios);
+        };
+
+        document.getElementById('add-radio-btn').addEventListener('click', () => {
+            if (radiosTableBody.querySelector('.radio-new-row')) return;
+            const usedAnchorIds = new Set(_radiosCache.map(r => r.anchor_id));
+            const availableAnchors = _alchemyAnchorsCache.filter(a => !usedAnchorIds.has(a.id));
+            if (availableAnchors.length === 0) {
+                showMessageBox('Radio', 'No anchors available. Save an anchor first (every anchor can have one radio).');
+                return;
+            }
+            const tr = document.createElement('tr');
+            tr.className = 'radio-new-row';
+            tr.innerHTML = `
+                <td style="text-align:center;"><input type="checkbox" class="radio-enabled" checked></td>
+                <td><select class="radio-anchor-select"><option value="">-- Select anchor --</option></select></td>
+                <td><input type="number" class="radio-temperature" step="0.1" min="0" max="10" value="${defaultTemp}"></td>
+                <td><input type="number" class="radio-n-results" min="1" max="${maxN}" value="${defaultN}"></td>
+                <td style="text-align:right;"><button type="button" class="btn btn-sm btn-ghost btn-cancel-radio" title="Cancel">✕</button></td>
+            `;
+            const select = tr.querySelector('.radio-anchor-select');
+            availableAnchors.forEach(anchor => {
+                const opt = document.createElement('option');
+                opt.value = anchor.id;
+                opt.textContent = anchor.name;
+                select.appendChild(opt);
+            });
+            radiosTableBody.appendChild(tr);
+        });
+
+        const readRadioRowSettings = (tr) => {
+            const temperature = tr.querySelector('.radio-temperature').value;
+            const nResults = tr.querySelector('.radio-n-results').value;
+            const enabled = tr.querySelector('.radio-enabled').checked;
+            if (temperature === '' || nResults === '') return null;
+            return { temperature: parseFloat(temperature), n_results: parseInt(nResults, 10), enabled };
+        };
+
+        const saveRadioRow = async (tr) => {
+            const settings = readRadioRowSettings(tr);
+            if (!settings) throw new Error('Temperature and number of results are required');
+            let resp;
+            if (tr.classList.contains('radio-new-row')) {
+                const anchorId = tr.querySelector('.radio-anchor-select').value;
+                if (!anchorId) throw new Error('Select an anchor');
+                resp = await fetch('/api/radios', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ anchor_id: parseInt(anchorId, 10), ...settings }),
+                });
+            } else {
+                resp = await fetch(`/api/radios/${tr.dataset.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+            }
+            const body = await resp.json();
+            if (!resp.ok || body.error) throw new Error(body.error || 'Failed to save radio');
+            return settings;
+        };
+
+        radiosTableBody.addEventListener('click', async (event) => {
+            const target = event.target;
+            const tr = target.closest('tr');
+            if (!tr) return;
+            if (target.matches('.btn-cancel-radio')) {
+                tr.remove();
+                return;
+            }
+            if (target.matches('.btn-delete-radio')) {
+                try {
+                    const resp = await fetch(`/api/radios/${tr.dataset.id}`, { method: 'DELETE' });
+                    if (!resp.ok) throw new Error('Failed to delete radio');
+                    showMessageBox('Deleted', 'Radio deleted successfully.');
+                    await loadRadios();
+                } catch (e) {
+                    console.error('delete radio', e);
+                    showMessageBox('Error', 'Failed to delete radio.');
+                }
+                return;
+            }
+        });
+
+        const saveRadiosBtn = document.getElementById('save-radios-btn');
+        saveRadiosBtn.addEventListener('click', async () => {
+            if (saveRadiosBtn.disabled) return;
+            saveRadiosBtn.disabled = true;
+            try {
+                const rows = Array.from(radiosTableBody.querySelectorAll('tr'));
+                if (!rows.length) {
+                    showMessageBox('Radio', 'Nothing to save.');
+                    return;
+                }
+                const problems = [];
+                let saved = 0;
+                for (const tr of rows) {
+                    const label = tr.classList.contains('radio-new-row')
+                        ? (tr.querySelector('.radio-anchor-select option:checked')?.textContent || 'new radio')
+                        : (tr.querySelector('.radio-name')?.textContent || `radio ${tr.dataset.id}`);
+                    try {
+                        await saveRadioRow(tr);
+                        saved += 1;
+                    } catch (e) {
+                        problems.push(`${label}: ${e.message || e}`);
+                    }
+                }
+                if (problems.length === 0) {
+                    await loadRadios();
+                    showMessageBox('Radio Saved', `Saved ${saved} radio(s).`);
+                } else {
+                    if (saved > 0) await loadRadios();
+                    showMessageBox('Radio', `Saved ${saved} radio(s). Problems — ${problems.join('; ')}`);
+                }
+            } finally {
+                saveRadiosBtn.disabled = false;
+            }
+        });
+
+        const createRadioPlaylistsBtn = document.getElementById('create-radio-playlists-btn');
+        createRadioPlaylistsBtn.addEventListener('click', async () => {
+            if (createRadioPlaylistsBtn.disabled) return;
+            createRadioPlaylistsBtn.disabled = true;
+            const originalLabel = createRadioPlaylistsBtn.textContent;
+            createRadioPlaylistsBtn.textContent = 'Creating playlists...';
+            try {
+                const resp = await fetch('/api/radios/run', { method: 'POST' });
+                const body = await resp.json();
+                if (!resp.ok || body.error) {
+                    throw new Error(body.error || 'Failed to create radio playlists');
+                }
+                showMessageBox('Radio Playlists', body.message || 'Radio playlists created.');
+            } catch (e) {
+                console.error('run radio playlists', e);
+                showMessageBox('Error', String(e));
+            } finally {
+                createRadioPlaylistsBtn.disabled = false;
+                createRadioPlaylistsBtn.textContent = originalLabel;
+            }
+        });
+
+        document.getElementById('radio-back-to-alchemy-btn').addEventListener('click', () => setTab('alchemy'));
 
         const saveAnchorBtn = document.getElementById('save-anchor-btn');
         const anchorNameInput = document.getElementById('anchor_name_input');
