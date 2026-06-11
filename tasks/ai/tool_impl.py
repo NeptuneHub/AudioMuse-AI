@@ -99,7 +99,27 @@ def _reroute_mood_labels_from_genres(genres, moods):
 
 _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
-_FUZZY_PREFIX_LEN = 3
+_FUZZY_PREFIX_LEN = 1
+
+# Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
+_MOOD_VECTOR_GE_SQL = (
+    "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
+)
+_MOOD_VECTOR_LT_SQL = (
+    "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) < %s"
+)
+_MOOD_VECTOR_SCORE_SQL = """\
+COALESCE(
+    CAST(
+        NULLIF(
+            SUBSTRING(mood_vector FROM %s),
+            ''
+        ) AS NUMERIC
+    ),
+    0
+)"""
+# Canonical regex for the instrumental label in mood_vector (musicnn output).
+_INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
 
 
 def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
@@ -175,12 +195,12 @@ def _fuzzy_match_author_title(
     prefix_params: List = []
     if author_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') LIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
         )
         prefix_params.append(f"{author_prefix}%")
     if title_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') LIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
         )
         prefix_params.append(f"{title_prefix}%")
     if not prefix_conditions:
@@ -643,6 +663,7 @@ def _database_genre_query_sync(
     candidate_item_ids: Optional[List[str]] = None,
     voices: Optional[List[str]] = None,
     score_threshold: Optional[float] = None,
+    instrumental: Optional[bool] = None,
 ) -> Dict:
     get_songs = int(get_songs) if get_songs is not None else 100
 
@@ -685,9 +706,7 @@ def _database_genre_query_sync(
             if genres:
                 genre_conditions = []
                 for genre in genres:
-                    genre_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
+                    genre_conditions.append(_MOOD_VECTOR_GE_SQL)
                     params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                     params.append(mood_vector_threshold)
                 conditions.append("(" + " OR ".join(genre_conditions) + ")")
@@ -697,9 +716,7 @@ def _database_genre_query_sync(
             if voices:
                 voice_conditions = []
                 for voice in voices:
-                    voice_conditions.append(
-                        "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
-                    )
+                    voice_conditions.append(_MOOD_VECTOR_GE_SQL)
                     params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
                     params.append(mood_vector_threshold)
                 if len(voice_conditions) == 1:
@@ -707,6 +724,22 @@ def _database_genre_query_sync(
                 else:
                     conditions.append("(" + " OR ".join(voice_conditions) + ")")
                 has_voice_filter = True
+
+            has_instrumental_filter = False
+            if instrumental is not None:
+                # Coerce string values (AI models sometimes pass 'true'/'false' as strings).
+                if isinstance(instrumental, str):
+                    instrumental = instrumental.strip().lower() in ('true', '1', 'yes')
+                instrumental = bool(instrumental)
+                if instrumental:
+                    conditions.append(_MOOD_VECTOR_GE_SQL)
+                    params.append(_INSTRUMENTAL_REGEX)
+                    params.append(mood_vector_threshold)
+                    has_instrumental_filter = True
+                else:
+                    conditions.append(_MOOD_VECTOR_LT_SQL)
+                    params.append(_INSTRUMENTAL_REGEX)
+                    params.append(mood_vector_threshold)
 
             has_other_filter = False
             other_confidence_threshold = other_features_threshold
@@ -773,37 +806,20 @@ def _database_genre_query_sync(
 
             order_clause = "ORDER BY RANDOM()" if pool_order_index is None else ""
 
-            if has_genre_filter or has_voice_filter or has_other_filter:
+            if has_genre_filter or has_voice_filter or has_other_filter or has_instrumental_filter:
                 score_parts = []
                 score_params = []
                 if has_genre_filter:
                     for genre in genres:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
+                        score_parts.append(_MOOD_VECTOR_SCORE_SQL)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)")
                 if has_voice_filter:
                     for voice in voices:
-                        score_parts.append("""
-                            COALESCE(
-                                CAST(
-                                    NULLIF(
-                                        SUBSTRING(mood_vector FROM %s),
-                                        ''
-                                    ) AS NUMERIC
-                                ),
-                                0
-                            )
-                        """)
+                        score_parts.append(_MOOD_VECTOR_SCORE_SQL)
                         score_params.append(f"(?i)(?:^|,)\\s*{re.escape(voice)}:(\\d+\\.?\\d*)")
+                if has_instrumental_filter:
+                    score_parts.append(_MOOD_VECTOR_SCORE_SQL)
+                    score_params.append(_INSTRUMENTAL_REGEX)
                 if has_other_filter:
                     for of in other_features:
                         score_parts.append("""
@@ -880,6 +896,8 @@ def _database_genre_query_sync(
             filters.append(f"album: {album}")
         if artist:
             filters.append(f"artist: {artist}")
+        if instrumental is not None:
+            filters.append(f"instrumental: {instrumental}")
 
         log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
 

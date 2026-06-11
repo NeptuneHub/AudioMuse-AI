@@ -460,7 +460,7 @@ document.addEventListener('DOMContentLoaded', function () {
             clearTimeout(sgTimeout);
             sgTimeout = setTimeout(async () => {
                 const q = sgInput.value.trim();
-                if (q.length < 3) { sgHide(); return; }
+                if (q.length < 1) { sgHide(); return; }
                 sgQuery = q; sgOffset = 0;
                 try {
                     const p = new URLSearchParams({ search_query: q, start: 0, end: PAGE_SIZE, index: 'sem_grove' });
@@ -498,8 +498,8 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('search-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         const query = document.getElementById('search-query').value.trim();
-        if (!query || query.length < 3) {
-            alert('Please enter at least 3 characters.');
+        if (!query || query.length < 1) {
+            alert('Please enter at least 1 character.');
             return;
         }
         const limit = parseInt(document.getElementById('text-limit').value, 10) || 50;

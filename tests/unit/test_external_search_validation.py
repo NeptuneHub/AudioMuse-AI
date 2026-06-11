@@ -53,12 +53,13 @@ class TestSearchQueryValidation:
         assert resp.get_json() == []
         backend.assert_not_called()
 
-    def test_two_char_query_returns_400(self, ext, client):
-        with patch.object(ext, 'search_tracks_unified') as backend:
-            resp = client.get('/search', query_string={'search_query': 'ab'})
-        assert resp.status_code == 400
-        assert resp.get_json() == {"error": "Query must be at least 3 characters long"}
-        backend.assert_not_called()
+    def test_one_char_query_reaches_backend(self, ext, client):
+        results = [{'item_id': 'id-1', 'title': 'Song', 'author': 'Artist'}]
+        with patch.object(ext, 'search_tracks_unified', return_value=results) as backend:
+            resp = client.get('/search', query_string={'search_query': 'a'})
+        assert resp.status_code == 200
+        assert resp.get_json() == results
+        backend.assert_called_once_with('a')
 
     def test_valid_query_reaches_backend_and_returns_its_value(self, ext, client):
         results = [{'item_id': 'id-1', 'title': 'Song', 'author': 'Artist'}]
