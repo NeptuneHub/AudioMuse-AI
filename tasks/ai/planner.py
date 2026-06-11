@@ -420,6 +420,11 @@ _BPM_RE = re.compile(r"\b(\d{2,3})\s*bpm\b", re.IGNORECASE)
 _ENERGY_NUM_RE = re.compile(
     r"\benergy\s*(?:above|>=?|over|min(?:imum)?)\s*([0-9]*\.[0-9]+|[0-9]+)\b", re.IGNORECASE
 )
+_INSTRUMENTAL_RE = re.compile(
+    r'\b(?:instrumentals?|no\s+(?:vocals?|lyrics|singing|voice)|'
+    r'without\s+(?:vocals?|lyrics|singing|voice))\b',
+    re.IGNORECASE,
+)
 
 
 def _normalize_decade(prefix: str) -> int:
@@ -487,11 +492,6 @@ def extract_hints(text: str) -> Dict:
             pass
 
     # Instrumental detection: keyword-based, same pattern as tempo/energy above.
-    _INSTRUMENTAL_RE = re.compile(
-        r'\b(?:instrumentals?|no\s+(?:vocals?|lyrics|singing|voice)|'
-        r'without\s+(?:vocals?|lyrics|singing|voice))\b',
-        re.IGNORECASE,
-    )
     if _INSTRUMENTAL_RE.search(text):
         hints['instrumental'] = True
         notes.append("instrumental requested")

@@ -99,7 +99,7 @@ def _reroute_mood_labels_from_genres(genres, moods):
 
 _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
-_FUZZY_PREFIX_LEN = 3
+_FUZZY_PREFIX_LEN = 2
 
 # Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
 _MOOD_VECTOR_GE_SQL = (
@@ -195,12 +195,12 @@ def _fuzzy_match_author_title(
     prefix_params: List = []
     if author_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') LIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
         )
         prefix_params.append(f"{author_prefix}%")
     if title_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') LIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
         )
         prefix_params.append(f"{title_prefix}%")
     if not prefix_conditions:
@@ -727,6 +727,10 @@ def _database_genre_query_sync(
 
             has_instrumental_filter = False
             if instrumental is not None:
+                # Coerce string values (AI models sometimes pass 'true'/'false' as strings).
+                if isinstance(instrumental, str):
+                    instrumental = instrumental.strip().lower() in ('true', '1', 'yes')
+                instrumental = bool(instrumental)
                 if instrumental:
                     conditions.append(_MOOD_VECTOR_GE_SQL)
                     params.append(_INSTRUMENTAL_REGEX)
