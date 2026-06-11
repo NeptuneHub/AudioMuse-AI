@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
+import math
 
 from tasks.song_alchemy import song_alchemy
 from app_helper import attach_song_features
@@ -319,6 +320,8 @@ def _parse_radio_settings(payload):
         temperature = float(temperature)
     except (TypeError, ValueError):
         return None, None, 'Radio temperature must be a number'
+    if not math.isfinite(temperature):
+        return None, None, 'Radio temperature must be a finite number'
     try:
         n_results = int(n_results)
     except (TypeError, ValueError):

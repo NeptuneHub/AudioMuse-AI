@@ -40,7 +40,10 @@ def run_radio_playlists():
             failed.append(playlist_name)
             logger.exception(f"Radio '{radio['name']}' failed; skipping playlist creation.")
 
-    delete_playlists_by_suffix(RADIO_PLAYLIST_SUFFIX)
+    try:
+        delete_playlists_by_suffix(RADIO_PLAYLIST_SUFFIX)
+    except Exception:
+        logger.exception(f"Failed to delete old '{RADIO_PLAYLIST_SUFFIX}' playlists; continuing with playlist creation.")
 
     created = 0
     for playlist_name, item_ids in generated:

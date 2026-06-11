@@ -135,8 +135,11 @@ def delete_playlists_by_suffix(suffix):
         for p in playlists_to_check:
             # Navidrome uses 'id', others use 'Id'. Check for both.
             playlist_id = p.get('Id') or p.get('id')
-            if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
-                deleted_count += 1
+            try:
+                if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
+                    deleted_count += 1
+            except Exception:
+                logger.exception(f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists.")
 
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
 

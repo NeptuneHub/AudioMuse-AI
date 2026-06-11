@@ -72,6 +72,16 @@ class TestCreateRadioValidation:
         mock_create.assert_not_called()
 
     @patch('app_helper.create_alchemy_radio')
+    def test_non_finite_temperature_returns_400(self, mock_create, client):
+        for bad_value in ('NaN', 'Infinity', 'inf'):
+            response = client.post('/api/radios',
+                                   data='{"anchor_id": 5, "temperature": ' + ('"' + bad_value + '"' if bad_value == 'inf' else bad_value) + ', "n_results": 100}',
+                                   content_type='application/json')
+            assert response.status_code == 400
+            assert response.get_json() == {'error': 'Radio temperature must be a finite number'}
+        mock_create.assert_not_called()
+
+    @patch('app_helper.create_alchemy_radio')
     def test_n_results_out_of_range_returns_400(self, mock_create, client):
         for bad_value in (0, config.ALCHEMY_MAX_N_RESULTS + 1):
             response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': bad_value})

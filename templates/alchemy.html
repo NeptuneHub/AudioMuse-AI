@@ -1318,6 +1318,7 @@
                 const problems = [];
                 let saved = 0;
                 for (const tr of rows) {
+                    if (!radioRowIsDirty(tr)) continue;
                     const label = tr.classList.contains('radio-new-row')
                         ? (tr.querySelector('.radio-anchor-select option:checked')?.textContent || 'new radio')
                         : (tr.querySelector('.radio-name')?.textContent || `radio ${tr.dataset.id}`);
