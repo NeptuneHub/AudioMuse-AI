@@ -60,7 +60,7 @@ def get_cron_entries():
                     type: string
                   task_type:
                     type: string
-                    enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                    enum: [analysis, clustering, sonic_fingerprint]
                   cron_expr:
                     type: string
                     description: 5-field cron expression "min hour day month dow".
@@ -109,7 +109,7 @@ def save_cron_entry():
                 type: string
               task_type:
                 type: string
-                enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                enum: [analysis, clustering, sonic_fingerprint]
               cron_expr:
                 type: string
                 description: 5-field cron expression "min hour day month dow".
@@ -304,13 +304,6 @@ def run_due_cron_jobs():
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception as e:
                         logger.error(f"Cron: error running sonic fingerprint: {e}")
-                elif task_type == 'alchemy_radio':
-                    from tasks.radio_manager import run_radio_playlists
-                    try:
-                        summary = run_radio_playlists()
-                        logger.info(f"Cron: ran radio playlists synchronously (job_id={job_id}, summary={summary})")
-                    except Exception as e:
-                        logger.error(f"Cron: error running radio playlists: {e}")
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))

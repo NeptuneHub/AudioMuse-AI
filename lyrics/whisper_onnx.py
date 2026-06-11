@@ -544,7 +544,7 @@ class _OnnxWhisperPipeline:
                 dropped_by_compression = True
             preview = (cleaned[:80] + '…') if len(cleaned) > 80 else cleaned
             logger.info(
-                "Whisper-small: chunk %d/%d (%.2fs, %d samples) -> "
+                "Whisper-small: chunk %d/%d (%.2fs, %d samples) → "
                 "%d chars, avg_logprob=%s%s | %r",
                 chunk_idx + 1, len(encoder_outputs), chunk_seconds, chunk_samples,
                 len(cleaned),

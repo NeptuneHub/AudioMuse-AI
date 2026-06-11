@@ -1287,7 +1287,7 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
-        # Final param list order must mirror SQL: WHERE tokens -> WHERE id filter -> ORDER BY scores -> LIMIT/OFFSET
+        # Final param list order must mirror SQL: WHERE tokens → WHERE id filter → ORDER BY scores → LIMIT/OFFSET
         all_params = params[:len(tokens)] + id_filter_params + params[len(tokens):]
 
         query = f"""

@@ -219,7 +219,7 @@ class TestFormatValue:
 
 
 # ============================================================================
-# cast_value <-> format_value round-trip
+# cast_value ↔ format_value round-trip
 # ============================================================================
 
 class TestCastFormatRoundTrip:
@@ -429,7 +429,7 @@ class TestIsValidAuthConfig:
         assert self.mgr._is_valid_auth_config(cfg) is True
 
     def test_auth_not_set_defaults_to_enabled(self):
-        """If AUTH_ENABLED is absent, defaults to True -> needs credentials."""
+        """If AUTH_ENABLED is absent, defaults to True → needs credentials."""
         cfg = _cfg(AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
         assert self.mgr._is_valid_auth_config(cfg) is False
 

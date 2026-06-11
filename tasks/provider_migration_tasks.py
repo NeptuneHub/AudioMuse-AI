@@ -52,7 +52,7 @@ _DRAIN_TIMEOUT_SECONDS = 60
 # enforces PRIMARY KEY / UNIQUE row-by-row during UPDATE, so a single-pass
 # UPDATE blows up if any mapping new_id happens to already exist in the table
 # as another row's old_id (common when both providers use small integer IDs,
-# e.g., Emby <-> Emby). Pass 1 stages every row at <prefix>||new_id (unique per
+# e.g., Emby ↔ Emby). Pass 1 stages every row at <prefix>||new_id (unique per
 # new_id) and Pass 2 strips the prefix to land the final new_id. The prefix is
 # deliberately long and unusual so it can never collide with a real item_id.
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
@@ -432,8 +432,8 @@ def _run_migration_transaction(cur, mapping, new_meta,
     #    deferrable by default). A single-pass UPDATE would fail with
     #    "duplicate key" whenever a mapping's new_id equals another row's
     #    current item_id — very common when both providers issue small
-    #    integer IDs that happen to overlap (e.g., migrating Emby->Emby or
-    #    Jellyfin->Emby where both servers use "25" for different tracks).
+    #    integer IDs that happen to overlap (e.g., migrating Emby→Emby or
+    #    Jellyfin→Emby where both servers use "25" for different tracks).
     #
     #    Pass 1 stages every row at (_MIG_TMP_PREFIX || new_id), which is
     #    guaranteed unique (new_id is UNIQUE in the map) and cannot collide
@@ -593,10 +593,10 @@ def _write_provider_to_app_config(cur, target_type, target_creds, selected_libra
     pattern the setup wizard uses via ``MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE``).
 
     ``selected_libraries`` — the checkbox selection from the migration wizard:
-      * ``None`` or empty -> DELETE the ``MUSIC_LIBRARIES`` row (scan everything,
+      * ``None`` or empty → DELETE the ``MUSIC_LIBRARIES`` row (scan everything,
         and implicitly wipes the source provider's old filter since the key is
         shared across providers).
-      * non-empty list -> UPSERT ``MUSIC_LIBRARIES`` with the comma-joined names.
+      * non-empty list → UPSERT ``MUSIC_LIBRARIES`` with the comma-joined names.
     """
     import config as cfg
 
@@ -621,7 +621,7 @@ def _write_provider_to_app_config(cur, target_type, target_creds, selected_libra
     finally:
         cur.execute("SELECT pg_advisory_unlock(726354821)")
 
-    # Build the key->value pairs to upsert
+    # Build the key→value pairs to upsert
     values = {'MEDIASERVER_TYPE': target_type}
     key_map = _CREDS_TO_CONFIG.get(target_type, {})
     for cred_key, config_key in key_map.items():

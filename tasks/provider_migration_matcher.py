@@ -178,7 +178,7 @@ _OPT_TIER_TITLE_ARTIST = 'title_artist'
 def _best_artist_old(row):
     """Track-level artist for a source (``score``) row.
 
-    Precedence: ``author`` -> ``artist`` -> ``album_artist``.
+    Precedence: ``author`` → ``artist`` → ``album_artist``.
     ``score.author`` holds the track performer that mediaserver_*.py picked via
     ``_select_best_artist``, while ``score.album_artist`` preserves the
     album-level artist (often "Various Artists" on compilations). Preferring
@@ -192,9 +192,9 @@ def _best_artist_old(row):
 def _best_artist_new(row):
     """Track-level artist for a target (probe) track.
 
-    Precedence: ``artist`` -> ``album_artist``. ``provider_probe.py`` already
+    Precedence: ``artist`` → ``album_artist``. ``provider_probe.py`` already
     collapses the provider-specific hierarchy (e.g. Jellyfin's
-    ``ArtistItems[0].Name`` -> ``Artists[0]`` -> ``AlbumArtist``) into the
+    ``ArtistItems[0].Name`` → ``Artists[0]`` → ``AlbumArtist``) into the
     unified ``artist`` field, so ``album_artist`` is only consulted when the
     probe couldn't resolve a track artist at all.
     """
@@ -363,7 +363,7 @@ def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
         if not matched:
             proposals.append((None, old, None))
 
-    # Second pass: resolve collisions (multiple old rows -> same new_id).
+    # Second pass: resolve collisions (multiple old rows → same new_id).
     # The proposal with the best (lowest-rank) tier keeps the match.
     best_for_new = {}  # new_id -> (tier, old_row)
     for tier, old, new_id in proposals:

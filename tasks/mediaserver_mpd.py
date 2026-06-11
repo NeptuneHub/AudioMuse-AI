@@ -246,7 +246,7 @@ def create_playlist(base_name, item_ids):
 
         for item_path in item_ids:
             client.playlistadd(base_name, item_path)
-        logger.info(f" Created/updated MPD playlist '{base_name}' with {len(item_ids)} songs.")
+        logger.info(f"✅ Created/updated MPD playlist '{base_name}' with {len(item_ids)} songs.")
     except Exception as e:
         logger.error(f"Exception creating MPD playlist '{base_name}': {e}", exc_info=True)
     finally:
@@ -277,7 +277,7 @@ def delete_playlist(playlist_id):
     success = False
     try:
         client.rm(playlist_id)
-        logger.info(f" Deleted MPD playlist: {playlist_id}")
+        logger.info(f"🗑️ Deleted MPD playlist: {playlist_id}")
         success = True
     except Exception as e:
         logger.error(f"Exception deleting MPD playlist '{playlist_id}': {e}", exc_info=True)

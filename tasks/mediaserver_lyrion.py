@@ -835,7 +835,7 @@ def _add_to_playlist(playlist_id, item_ids):
             return False
         
         # Method: Load playlist to player, add tracks, then use playlists edit to update
-        logger.info(f"Using method: Load -> Add -> Update original playlist via edit command")
+        logger.info(f"Using method: Load → Add → Update original playlist via edit command")
         
         # Step 1: Load the saved playlist into the player's current playlist
         logger.debug(f"Step 1: Loading playlist {playlist_id} to player {player_id}")
@@ -894,7 +894,7 @@ def _add_to_playlist(playlist_id, item_ids):
         if save_response and "__playlist_id" in save_response:
             final_playlist_id = save_response["__playlist_id"]
             if str(final_playlist_id) == str(playlist_id):
-                logger.info(f" Successfully updated original playlist {playlist_id} with {total_added} tracks")
+                logger.info(f"✅ Successfully updated original playlist {playlist_id} with {total_added} tracks")
                 return True
             else:
                 logger.warning(f"Created new playlist {final_playlist_id} instead of updating {playlist_id}")
@@ -907,7 +907,7 @@ def _add_to_playlist(playlist_id, item_ids):
                     logger.error(f"Error handling new playlist: {e}")
                     return False
         elif total_added > 0:
-            logger.info(f" Successfully added {total_added} tracks (save response: {save_response})")
+            logger.info(f"✅ Successfully added {total_added} tracks (save response: {save_response})")
             return True
         else:
             logger.warning("No tracks were added to the playlist")
@@ -933,12 +933,12 @@ def _create_playlist_batched(playlist_name, item_ids):
             )
             
             if playlist_id:
-                logger.info(f" Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
+                logger.info(f"✅ Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
                 
                 # Step 2: Add tracks using the web interface method
                 if item_ids:
                     if _add_to_playlist(playlist_id, item_ids):
-                        logger.info(f" Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'.")
+                        logger.info(f"✅ Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'.")
                     else:
                         logger.warning(f"Playlist '{playlist_name}' created but some tracks may not have been added.")
                 
@@ -973,7 +973,7 @@ def delete_playlist(playlist_id):
     # used to mis-treat as failure.
     response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
     if response is not None:
-        logger.info(f" Deleted Lyrion playlist ID: {playlist_id}")
+        logger.info(f"🗑️ Deleted Lyrion playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Lyrion")
     return False

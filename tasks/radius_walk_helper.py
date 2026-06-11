@@ -376,7 +376,7 @@ def execute_radius_walk(
         logger.warning("Radius walk: Candidate data empty, cannot start.")
         return []
 
-    # Dict of selected item_id -> vector for distance checks
+    # Dict of selected item_id → vector for distance checks
     selected_vectors: Dict[str, np.ndarray] = {
         playlist_ids[0]: first_song["vector"].astype(np.float32)
     }

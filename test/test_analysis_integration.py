@@ -411,4 +411,4 @@ def test_real_analysis_runs_and_returns_expected_shape():
         
         # Validate exact values
         _validate_analysis_result(result, expected, track_name, tol)
-        print(f'{track_name}:  All validations passed')
+        print(f'{track_name}: ✓ All validations passed')

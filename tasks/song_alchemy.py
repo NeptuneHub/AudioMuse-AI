@@ -52,7 +52,7 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
             if _normalize(gmm_artist) == query_norm:
                 gmm = artist_gmm_params.get(gmm_artist)
                 if gmm:
-                    logger.info(f"Fuzzy GMM match: '{artist_name}' -> '{gmm_artist}'")
+                    logger.info(f"Fuzzy GMM match: '{artist_name}' → '{gmm_artist}'")
                     artist_name = gmm_artist
                     break
 

@@ -247,15 +247,15 @@ _NON_TEXT_UNICODE_RE = re.compile(
     "\U0001E000-\U0001E02F"
     "\U0001F000-\U0001F02F"
     "\U0001F0A0-\U0001F0FF"
-    "-"
-    "-"
-    "-"
-    "<--<->"
-    "-"
-    "-"
-    "-"
+    "☀-⛿"
+    "✀-➿"
+    "⌀-⏿"
+    "←-⇿"
+    "─-╿"
+    "▀-▟"
+    "■-◿"
     "\U0001F1E6-\U0001F1FF"
-    "︎"
+    "‍️︎"
     "]",
     flags=re.UNICODE,
 )
@@ -802,7 +802,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         logger.info('STEP 5 raw ASR output: %s', raw_text or '<empty>')
         _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, asr_lang)
         if _script and _script != asr_lang:
-            logger.info('STEP 5: CJK script override %r -> %r', asr_lang, _script)
+            logger.info('STEP 5: CJK script override %r → %r', asr_lang, _script)
         if _resolved:
             detected_lang = _resolved
         if _reject:
@@ -819,12 +819,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         except Exception as exc:
             logger.warning('STEP 6: langdetect failed (%s)', exc)
             text_lang, text_conf = '', 0.0
-        logger.info('STEP 6: langdetect (%s chars) -> %r (conf=%.2f)',
+        logger.info('STEP 6: langdetect (%s chars) → %r (conf=%.2f)',
                     len(raw_text), text_lang, text_conf)
         _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, text_lang)
         if _script:
             if _script != text_lang:
-                logger.info('STEP 6: CJK script override %r -> %r (langdetect conf=%.2f)',
+                logger.info('STEP 6: CJK script override %r → %r (langdetect conf=%.2f)',
                             text_lang, _script, text_conf)
             text_lang = _resolved
             if _reject:

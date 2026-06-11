@@ -23,7 +23,7 @@ import librosa
 import warnings
 warnings.filterwarnings('ignore')
 
-print(" All imports successful!")
+print("✓ All imports successful!")
 
 
 # =============================================================================
@@ -87,7 +87,7 @@ class CLaMP3AudioEncoder(nn.Module):
         print(f"  - Audio proj params: {len(audio_proj_dict)}")
         
         if len(audio_model_dict) == 0 or len(text_model_dict) == 0:
-            print("    WARNING: Model weights appear to be missing or incorrectly formatted!")
+            print("  ⚠️  WARNING: Model weights appear to be missing or incorrectly formatted!")
             print("  Available keys in checkpoint:", list(state_dict.keys())[:10])
         
         self.text_model.load_state_dict(text_model_dict, strict=False)
@@ -96,7 +96,7 @@ class CLaMP3AudioEncoder(nn.Module):
         self.audio_proj.load_state_dict(audio_proj_dict)
         
         self.eval()
-        print(" CLAMP3 model loaded successfully")
+        print("✓ CLAMP3 model loaded successfully")
     
     def avg_pooling(self, features, masks):
         """Average pooling with mask."""
@@ -163,7 +163,7 @@ class MERTFeatureExtractor:
             return_attention_mask=True,
             do_normalize=True,
         )
-        print(" MERT model loaded")
+        print("✓ MERT model loaded")
     
     def load_audio(self, audio_path):
         """Load audio file and resample to target sample rate."""
@@ -228,7 +228,7 @@ class MERTFeatureExtractor:
         
         # Stack: (num_windows, hidden_dim)
         all_features = torch.stack(all_features)
-        print(f"-> {len(all_features)} windows")
+        print(f"→ {len(all_features)} windows")
         
         return all_features.numpy()
 
@@ -386,7 +386,7 @@ class CLAMP3Searcher:
             process_as_npy = True
         elif raw_audio:
             if self.mert_extractor is None:
-                print(f"  Found {len(raw_audio)} audio file(s) but MERT extractor not initialized")
+                print(f"⚠️  Found {len(raw_audio)} audio file(s) but MERT extractor not initialized")
                 print(f"    Re-run with extract_mert_on_fly=True to enable on-the-fly extraction")
                 return
             print(f"Found {len(raw_audio)} audio file(s) - will extract MERT features on-the-fly")
@@ -418,7 +418,7 @@ class CLAMP3Searcher:
                     self.audio_files.append(audio_file)
         
         print()
-        print(f" Analyzed {len(self.audio_embeddings)} audio files successfully")
+        print(f"✓ Analyzed {len(self.audio_embeddings)} audio files successfully")
     
     def search(self, query_text, top_k=5):
         """Search audio files using a text query."""
@@ -509,16 +509,16 @@ def main():
     
     # Check if MERT features exist, otherwise process raw audio
     if mert_folder.exists():
-        print(f" Found MERT features folder: {mert_folder}")
+        print(f"✓ Found MERT features folder: {mert_folder}")
         searcher.analyze_folder(mert_folder)
     else:
-        print(f"  MERT features folder not found: {mert_folder}")
+        print(f"⚠️  MERT features folder not found: {mert_folder}")
         print(f"    Will extract MERT features on-the-fly from audio files in: {audio_folder}")
         
         if audio_folder.exists():
             searcher.analyze_folder(audio_folder)
         else:
-            print(f"  Audio folder not found: {audio_folder}")
+            print(f"⚠️  Audio folder not found: {audio_folder}")
             sys.exit(1)
     
     # Search queries

@@ -90,7 +90,7 @@ class TestPathTailKey:
         assert matcher.path_tail_key('x/y/z.mp3') == 'x/y/z.mp3'
 
     def test_two_components(self, matcher):
-        # Fewer than 3 but at least 2 -> join all
+        # Fewer than 3 but at least 2 → join all
         assert matcher.path_tail_key('album/song.flac') == 'album/song.flac'
 
     def test_single_component_returns_none(self, matcher):

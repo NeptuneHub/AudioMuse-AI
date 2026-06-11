@@ -625,7 +625,6 @@ def get_config_endpoint():
         "path_distance_metric": config.PATH_DISTANCE_METRIC
       ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
       ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
-      ,"alchemy_temperature": config.ALCHEMY_TEMPERATURE
       ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
       ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
     })
@@ -640,7 +639,7 @@ def get_playlists_endpoint():
     summary: Return every saved playlist with its tracks, grouped by playlist name.
     responses:
       200:
-        description: Playlist map (playlist_name -> list of tracks).
+        description: Playlist map (playlist_name → list of tracks).
         content:
           application/json:
             schema:
@@ -740,7 +739,7 @@ def listen_for_index_reloads():
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
-            logger.info(f"In-memory reload complete: Voyager , Artist , Maps , CLAP {'' if clap_success else ''}, Lyrics {'' if lyrics_success else ''}, SemGrove {'' if sg_success else ''}")
+            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':

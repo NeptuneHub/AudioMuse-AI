@@ -570,8 +570,8 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     """
     Voyager nearest-neighbor search over the binary axis vector.
 
-    targets: {axis_name: label_str} — at most ONE label per axis. Selected -> 1.0,
-             everything else -> 0.0. Axes the user did not pick contribute 0 across
+    targets: {axis_name: label_str} — at most ONE label per axis. Selected → 1.0,
+             everything else → 0.0. Axes the user did not pick contribute 0 across
              all their labels.
     """
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
