@@ -145,9 +145,7 @@ def clap_search_api():
         logger.warning(f"ValueError in DCLAP search API: {e}")
         return jsonify({'error': 'Invalid or missing request parameter.'}), 400
     except Exception as e:
-        logger.error(f"DCLAP search API error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"DCLAP search API error: {e}")
         return jsonify({'error': 'An internal server error occurred during DCLAP search.'}), 500
 
 

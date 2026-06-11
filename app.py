@@ -625,6 +625,7 @@ def get_config_endpoint():
         "path_distance_metric": config.PATH_DISTANCE_METRIC
       ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
       ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
+      ,"alchemy_temperature": config.ALCHEMY_TEMPERATURE
       ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
       ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
     })

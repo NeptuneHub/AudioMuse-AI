@@ -48,7 +48,19 @@
             <input id="sonic-fingerprint-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 1 * * 6)">
             <div style="margin-top:.5rem;"><input id="sonic-fingerprint-enabled" type="checkbox"> Enable</div>
 
-            <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00.</p>
+            <hr style="margin:1rem 0;">
+
+            <label for="alchemy-radio-cron" style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                Radio Playlists
+                <span class="info-tooltip" tabindex="0">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text">Schedule automatic creation of the Radio playlists defined in the Alchemy page (Radio tab). Old "_radio" playlists are deleted and recreated for every enabled radio. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 3 * * 6" = 3:00 AM every Saturday.</span>
+                </span>
+            </label>
+            <input id="alchemy-radio-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * 6)">
+            <div style="margin-top:.5rem;"><input id="alchemy-radio-enabled" type="checkbox"> Enable</div>
+
+            <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00. Radio Playlists default: Saturday at 3:00.</p>
 
             <div style="margin-top:1rem;">
                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
@@ -80,12 +92,15 @@
                 const a = rows.find(r=>r.task_type==='analysis');
                 const c = rows.find(r=>r.task_type==='clustering');
                 const s = rows.find(r=>r.task_type==='sonic_fingerprint');
+                const radio = rows.find(r=>r.task_type==='alchemy_radio');
                 if(a){ document.getElementById('analysis-cron').value = a.cron_expr; document.getElementById('analysis-enabled').checked = a.enabled }
                 else { document.getElementById('analysis-cron').value = '0 2 * * 0-5'; document.getElementById('analysis-enabled').checked = false }
                 if(c){ document.getElementById('clustering-cron').value = c.cron_expr; document.getElementById('clustering-enabled').checked = c.enabled }
                 else { document.getElementById('clustering-cron').value = '0 2 * * 6'; document.getElementById('clustering-enabled').checked = false }
                 if(s){ document.getElementById('sonic-fingerprint-cron').value = s.cron_expr; document.getElementById('sonic-fingerprint-enabled').checked = s.enabled }
                 else { document.getElementById('sonic-fingerprint-cron').value = '0 1 * * 6'; document.getElementById('sonic-fingerprint-enabled').checked = false }
+                if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled }
+                else { document.getElementById('alchemy-radio-cron').value = '0 3 * * 6'; document.getElementById('alchemy-radio-enabled').checked = false }
             }catch(e){ console.error(e) }
         }
 
@@ -103,6 +118,7 @@
             const an = rows.find(r=>r.task_type==='analysis');
             const cn = rows.find(r=>r.task_type==='clustering');
             const sn = rows.find(r=>r.task_type==='sonic_fingerprint');
+            const rn = rows.find(r=>r.task_type==='alchemy_radio');
 
             try{
                 if (an) {
@@ -123,6 +139,14 @@
                     saveCron({id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
                 } else {
                     saveCron({name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
+                }
+
+                const rexpr = document.getElementById('alchemy-radio-cron').value;
+                const ren = document.getElementById('alchemy-radio-enabled').checked;
+                if (rn) {
+                    saveCron({id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
+                } else {
+                    saveCron({name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
                 }
 
                 // refresh cached rows after saving

@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 # Ensure the /app directory (where app.py and tasks.py are) is in the Python path
 # This is important if rq_worker.py is in the root and app.py/tasks.py are in /app
@@ -42,6 +43,7 @@ except OSError as e:
     print("Note: This may be expected in some test/CI environments, but could lead to task failures in production.")
 
 configure_logging()
+logger = logging.getLogger(__name__)
 
 # The queues the worker will listen on.
 # The order is important! Workers will always check 'high' before 'default'.
@@ -61,8 +63,8 @@ if __name__ == '__main__':
     # The queues_to_listen are already configured with this connection.
 
     # Use the list of names directly for the log message
-    print(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
-    print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
+    logger.info(f"DEFAULT RQ Worker starting. Version: {APP_VERSION}. Listening on queues: {queues_to_listen}")
+    logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # Create a worker instance, explicitly passing the connection.
     # The 'app' object is passed to `with app.app_context():` within the tasks themselves
@@ -86,8 +88,8 @@ if __name__ == '__main__':
     # You can set logging_level for more verbose output.
     # Common levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
-    print(f"RQ Worker logging level set to: {logging_level}")
-    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
+    logger.info(f"RQ Worker logging level set to: {logging_level}")
+    logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The `with app.app_context():` here is generally NOT how RQ workers are run.
@@ -106,5 +108,5 @@ if __name__ == '__main__':
 
         worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
-        print(f"RQ Worker failed to start or encountered an error: {e}")
+        logger.exception(f"RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)
