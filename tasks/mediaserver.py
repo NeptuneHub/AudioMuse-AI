@@ -107,6 +107,19 @@ def resolve_emby_jellyfin_user(identifier, token):
     if config.MEDIASERVER_TYPE == 'emby': return emby_resolve_user(identifier, token)
     return []
 
+def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
+    """Deletes every playlist whose name ends with the suffix; keeps going if one deletion fails."""
+    deleted_count = 0
+    for p in playlists_to_check:
+        # Navidrome uses 'id', others use 'Id'. Check for both.
+        playlist_id = p.get('Id') or p.get('id')
+        try:
+            if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
+                deleted_count += 1
+        except Exception:
+            logger.exception(f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists.")
+    return deleted_count
+
 def delete_playlists_by_suffix(suffix):
     """Deletes all playlists whose name ends with the given suffix using admin credentials."""
     logger.info(f"Starting deletion of all '{suffix}' playlists.")
@@ -132,14 +145,7 @@ def delete_playlists_by_suffix(suffix):
         delete_function = emby_delete_playlist
 
     if delete_function:
-        for p in playlists_to_check:
-            # Navidrome uses 'id', others use 'Id'. Check for both.
-            playlist_id = p.get('Id') or p.get('id')
-            try:
-                if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
-                    deleted_count += 1
-            except Exception:
-                logger.exception(f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists.")
+        deleted_count = _delete_matching_playlists(playlists_to_check, delete_function, suffix)
 
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
 
