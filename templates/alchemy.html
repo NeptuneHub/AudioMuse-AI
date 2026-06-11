@@ -225,7 +225,7 @@
         </table>
     </div>
     <div style="display:flex; gap:0.5rem; margin-top:1rem;">
-        <button type="button" id="save-radios-btn" class="btn btn-primary" style="flex:1;">Save</button>
+        <button type="button" id="save-radios-btn" class="btn btn-primary" style="flex:1;" disabled>Save</button>
         <button type="button" id="create-radio-playlists-btn" class="btn" style="flex:1; background-color: var(--color-success);">Create Radio Playlists</button>
     </div>
 </section>
@@ -239,7 +239,7 @@
         // Fetch config to get ALCHEMY defaults
         let defaultN = 100;
         let maxN = 200;
-        let defaultTemp = 1.0;
+        let defaultTemp = 1;
         let cfg = {};
         try {
             const resp = await fetch("{{ url_for('get_config_endpoint') }}");
@@ -1195,6 +1195,7 @@
                 _radiosCache = Array.isArray(payload.radios) ? payload.radios : [];
                 radiosTableBody.innerHTML = '';
                 _radiosCache.forEach(radio => radiosTableBody.appendChild(buildRadioRow(radio)));
+                updateSaveRadiosState();
             } catch (err) {
                 console.warn('Failed to load radios:', err);
             }
@@ -1229,6 +1230,7 @@
                 select.appendChild(opt);
             });
             radiosTableBody.appendChild(tr);
+            updateSaveRadiosState();
         });
 
         const readRadioRowSettings = (tr) => {
@@ -1236,7 +1238,7 @@
             const nResults = tr.querySelector('.radio-n-results').value;
             const enabled = tr.querySelector('.radio-enabled').checked;
             if (temperature === '' || nResults === '') return null;
-            return { temperature: parseFloat(temperature), n_results: parseInt(nResults, 10), enabled };
+            return { temperature: Number.parseFloat(temperature), n_results: Number.parseInt(nResults, 10), enabled };
         };
 
         const saveRadioRow = async (tr) => {
@@ -1249,7 +1251,7 @@
                 resp = await fetch('/api/radios', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ anchor_id: parseInt(anchorId, 10), ...settings }),
+                    body: JSON.stringify({ anchor_id: Number.parseInt(anchorId, 10), ...settings }),
                 });
             } else {
                 resp = await fetch(`/api/radios/${tr.dataset.id}`, {
@@ -1269,6 +1271,7 @@
             if (!tr) return;
             if (target.matches('.btn-cancel-radio')) {
                 tr.remove();
+                updateSaveRadiosState();
                 return;
             }
             if (target.matches('.btn-delete-radio')) {
@@ -1281,11 +1284,28 @@
                     console.error('delete radio', e);
                     showMessageBox('Error', 'Failed to delete radio.');
                 }
-                return;
             }
         });
 
         const saveRadiosBtn = document.getElementById('save-radios-btn');
+
+        const radioRowIsDirty = (tr) => {
+            if (tr.classList.contains('radio-new-row')) return true;
+            const cached = _radiosCache.find(r => String(r.id) === tr.dataset.id);
+            if (!cached) return true;
+            const settings = readRadioRowSettings(tr);
+            if (!settings) return true;
+            return settings.temperature !== Number(cached.temperature)
+                || settings.n_results !== Number(cached.n_results)
+                || settings.enabled !== Boolean(cached.enabled);
+        };
+
+        const updateSaveRadiosState = () => {
+            saveRadiosBtn.disabled = !Array.from(radiosTableBody.querySelectorAll('tr')).some(radioRowIsDirty);
+        };
+
+        radiosTableBody.addEventListener('input', updateSaveRadiosState);
+        radiosTableBody.addEventListener('change', updateSaveRadiosState);
         saveRadiosBtn.addEventListener('click', async () => {
             if (saveRadiosBtn.disabled) return;
             saveRadiosBtn.disabled = true;
@@ -1316,7 +1336,7 @@
                     showMessageBox('Radio', `Saved ${saved} radio(s). Problems — ${problems.join('; ')}`);
                 }
             } finally {
-                saveRadiosBtn.disabled = false;
+                updateSaveRadiosState();
             }
         });
 
