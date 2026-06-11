@@ -51,7 +51,7 @@ if __name__ == '__main__':
                 if failed_cleaned > 0:
                     logger.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
         except Exception as e:
-            logger.error("Error in RQ Janitor loop: %s", e, exc_info=True)
+            logger.exception("Error in RQ Janitor loop: %s", e)
         
         # Sleep for the desired monitoring interval.
         time.sleep(10)

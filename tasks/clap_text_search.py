@@ -491,7 +491,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             return results
         
     except Exception as e:
-        logger.error(f"Text search failed for '{query_text}': {e}", exc_info=True)
+        logger.exception(f"Text search failed for '{query_text}': {e}")
         return []
 
 

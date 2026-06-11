@@ -71,5 +71,5 @@ if __name__ == '__main__':
         # The job function itself is responsible for creating an app context if needed.
         worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
-        logger.error(f"High Priority RQ Worker failed to start or encountered an error: {e}", exc_info=True)
+        logger.exception(f"High Priority RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)
