@@ -198,8 +198,8 @@ def lyrics_search_text_api():
         query = (data.get('query') or '').strip()
         if not query:
             return jsonify({'error': 'Missing "query".'}), 400
-        if len(query) < 2:
-            return jsonify({'error': 'Query must be at least 2 characters.'}), 400
+        if len(query) < 1:
+            return jsonify({'error': 'Query must be at least 1 character.'}), 400
 
         try:
             limit = int(data.get('limit', 50))

@@ -297,8 +297,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const query = searchQuery.value.trim();
         const limit = parseInt(document.getElementById('limit').value);
         
-        if (!query || query.length < 2) {
-            alert('Please enter at least 2 characters');
+        if (!query || query.length < 1) {
+            alert('Please enter at least 1 character');
             return;
         }
         

@@ -99,7 +99,7 @@ def _reroute_mood_labels_from_genres(genres, moods):
 
 _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
-_FUZZY_PREFIX_LEN = 2
+_FUZZY_PREFIX_LEN = 1
 
 # Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
 _MOOD_VECTOR_GE_SQL = (
