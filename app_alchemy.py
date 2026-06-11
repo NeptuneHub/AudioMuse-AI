@@ -516,7 +516,7 @@ def run_radio_playlists_endpoint():
     ---
     tags:
       - Alchemy
-    summary: Delete old '_radio' playlists, then create one playlist per enabled radio on the media server.
+    summary: Upsert one playlist per enabled radio (reuses existing playlist by name, preserving its server-side ID).
     responses:
       200:
         description: Run summary.

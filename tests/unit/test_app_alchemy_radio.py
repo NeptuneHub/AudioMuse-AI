@@ -166,10 +166,9 @@ class TestRunRadioPlaylists:
                 'temperature': temperature, 'n_results': n_results, 'enabled': enabled}
 
     @patch('app_helper.get_alchemy_radios')
-    @patch('tasks.radio_manager.create_playlist')
-    @patch('tasks.radio_manager.delete_playlists_by_suffix')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_creates_playlists_for_enabled_radios_only(self, mock_alchemy, mock_delete, mock_create,
+    def test_creates_playlists_for_enabled_radios_only(self, mock_alchemy, mock_upsert,
                                                        mock_get_radios):
         from tasks.radio_manager import run_radio_playlists
 
@@ -183,36 +182,32 @@ class TestRunRadioPlaylists:
 
         mock_alchemy.assert_called_once_with(
             add_items=[{'type': 'anchor', 'id': 10}], n_results=30, temperature=0.5)
-        mock_delete.assert_called_once_with('_radio')
-        mock_create.assert_called_once_with('Chill_radio', ['a', 'b'])
+        mock_upsert.assert_called_once_with('Chill', ['a', 'b'])
         assert summary['playlists_created'] == 1
         assert summary['radios_enabled'] == 1
 
     @patch('app_helper.get_alchemy_radios')
-    @patch('tasks.radio_manager.create_playlist')
-    @patch('tasks.radio_manager.delete_playlists_by_suffix')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_deletes_old_radio_playlists_after_generation(self, mock_alchemy, mock_delete, mock_create,
-                                                          mock_get_radios):
+    def test_upserts_after_generation(self, mock_alchemy, mock_upsert,
+                                       mock_get_radios):
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
         mock_alchemy.return_value = {'results': [{'item_id': 'a'}]}
         order_tracker = MagicMock()
         order_tracker.attach_mock(mock_alchemy, 'alchemy')
-        order_tracker.attach_mock(mock_delete, 'delete')
-        order_tracker.attach_mock(mock_create, 'create')
+        order_tracker.attach_mock(mock_upsert, 'upsert')
 
         run_radio_playlists()
 
         names = [c[0] for c in order_tracker.mock_calls]
-        assert names.index('alchemy') < names.index('delete') < names.index('create')
+        assert names.index('alchemy') < names.index('upsert')
 
     @patch('app_helper.get_alchemy_radios')
-    @patch('tasks.radio_manager.create_playlist')
-    @patch('tasks.radio_manager.delete_playlists_by_suffix')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_one_failing_radio_does_not_block_others(self, mock_alchemy, mock_delete, mock_create,
+    def test_one_failing_radio_does_not_block_others(self, mock_alchemy, mock_upsert,
                                                      mock_get_radios):
         from tasks.radio_manager import run_radio_playlists
 
@@ -224,15 +219,14 @@ class TestRunRadioPlaylists:
 
         summary = run_radio_playlists()
 
-        mock_create.assert_called_once_with('Chill_radio', ['x'])
+        mock_upsert.assert_called_once_with('Chill', ['x'])
         assert summary['playlists_created'] == 1
-        assert summary['failed'] == ['Broken_radio']
+        assert summary['failed'] == ['Broken']
 
     @patch('app_helper.get_alchemy_radios')
-    @patch('tasks.radio_manager.create_playlist')
-    @patch('tasks.radio_manager.delete_playlists_by_suffix')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_radio_with_no_results_creates_no_playlist(self, mock_alchemy, mock_delete, mock_create,
+    def test_radio_with_no_results_creates_no_playlist(self, mock_alchemy, mock_upsert,
                                                        mock_get_radios):
         from tasks.radio_manager import run_radio_playlists
 
@@ -241,10 +235,9 @@ class TestRunRadioPlaylists:
 
         summary = run_radio_playlists()
 
-        mock_delete.assert_called_once_with('_radio')
-        mock_create.assert_not_called()
+        mock_upsert.assert_not_called()
         assert summary['playlists_created'] == 0
-        assert summary['failed'] == ['Empty_radio']
+        assert summary['failed'] == ['Empty']
 
 
 class TestDeletePlaylistsBySuffix:

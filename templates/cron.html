@@ -54,7 +54,7 @@
                 Radio Playlists
                 <span class="info-tooltip" tabindex="0">
                     <span class="info-icon"></span>
-                    <span class="tooltip-text">Schedule automatic creation of the Radio playlists defined in the Alchemy page (Radio tab). Old "_radio" playlists are deleted and recreated for every enabled radio. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 3 * * 6" = 3:00 AM every Saturday.</span>
+                    <span class="tooltip-text">Schedule automatic creation of the Radio playlists defined in the Alchemy page (Radio tab). Each radio's existing playlist is updated in-place (preserving its server-side ID) to avoid duplicates on sync clients. Uses cron notation: 5 fields (minute hour day month weekday). Example: "0 3 * * 6" = 3:00 AM every Saturday.</span>
                 </span>
             </label>
             <input id="alchemy-radio-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * 6)">

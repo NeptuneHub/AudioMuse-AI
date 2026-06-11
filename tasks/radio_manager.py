@@ -1,19 +1,20 @@
 import logging
 
 from .song_alchemy import song_alchemy
-from .mediaserver import create_playlist, delete_playlists_by_suffix
+from .mediaserver import create_or_replace_playlist, create_playlist
 
 logger = logging.getLogger(__name__)
-
-RADIO_PLAYLIST_SUFFIX = '_radio'
 
 
 def run_radio_playlists():
     """Generate one playlist per enabled radio (anchor + temperature + number of results).
 
-    Runs synchronously, like the sonic fingerprint cron flow: compute all
-    playlists first, then delete every existing playlist ending with '_radio',
-    then create the new ones on the media server.
+    Uses create_or_replace_playlist so the same server-side playlist (and ID,
+    where the backend allows) gets reused across runs — avoiding duplicate
+    playlists on online-first sync clients (e.g. Symfonium on Navidrome)
+    that track playlists by ID.
+
+    Falls back to create_playlist for MPD and other unsupported backends.
     """
     from app_helper import get_alchemy_radios
 
@@ -23,7 +24,7 @@ def run_radio_playlists():
     generated = []
     failed = []
     for radio in radios:
-        playlist_name = f"{radio['name']}{RADIO_PLAYLIST_SUFFIX}"
+        playlist_name = radio['name']
         try:
             outcome = song_alchemy(
                 add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],
@@ -40,19 +41,19 @@ def run_radio_playlists():
             failed.append(playlist_name)
             logger.exception(f"Radio '{radio['name']}' failed; skipping playlist creation.")
 
-    try:
-        delete_playlists_by_suffix(RADIO_PLAYLIST_SUFFIX)
-    except Exception:
-        logger.exception(f"Failed to delete old '{RADIO_PLAYLIST_SUFFIX}' playlists; continuing with playlist creation.")
-
     created = 0
     for playlist_name, item_ids in generated:
         try:
-            create_playlist(playlist_name, item_ids)
+            try:
+                create_or_replace_playlist(playlist_name, item_ids)
+            except NotImplementedError:
+                # MPD or unsupported backend: fall back to plain create.
+                create_playlist(playlist_name, item_ids)
             created += 1
+            logger.info(f"Radio playlist '{playlist_name}' upserted with {len(item_ids)} tracks.")
         except Exception:
             failed.append(playlist_name)
-            logger.exception(f"Failed to create playlist '{playlist_name}' on the media server.")
+            logger.exception(f"Failed to upsert playlist '{playlist_name}' on the media server.")
 
     summary = {
         "message": f"Created {created} radio playlist(s) from {len(radios)} enabled radio(s).",
