@@ -43,7 +43,7 @@ Database selection (in priority order):
 
 Run locally:
     pip install pgserver
-    pytest test/test_provider_migration_integration.py -s -v --tb=short
+    pytest test/integration/test_provider_migration_integration.py -s -v --tb=short
 """
 import importlib.util
 import json
@@ -68,7 +68,7 @@ def _load_module(mod_name, *rel_parts):
     if mod_name in sys.modules:
         return sys.modules[mod_name]
     repo_root = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)

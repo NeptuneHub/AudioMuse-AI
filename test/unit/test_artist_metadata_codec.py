@@ -1,4 +1,4 @@
-# tests/unit/test_artist_metadata_codec.py
+# test/unit/test_artist_metadata_codec.py
 """
 Unit tests for the artist metadata storage helpers in
 ``tasks/index_build_helpers.py``:

@@ -213,7 +213,7 @@ class TestSourcePathsRefreshRoute:
 
     def test_rejects_unsupported_current_provider(self, bp_mod, client):
         import config
-        config.MEDIASERVER_TYPE = 'mpd'
+        config.MEDIASERVER_TYPE = 'plex'
         resp = client.post('/api/migration/source-paths/refresh',
                            json={'session_id': 1})
         assert resp.status_code == 400
@@ -389,8 +389,8 @@ class TestProbeUrlValidation:
         assert isinstance(reason, str) and reason  # a human-readable reason
 
     @pytest.mark.parametrize('creds', [{}, {'url': ''}, {'url': None}])
-    def test_missing_url_is_allowed_for_mpd(self, bp_mod, creds):
-        # MPD targets carry no URL; the wrapper lets the downstream probe handle it.
+    def test_missing_url_is_allowed(self, bp_mod, creds):
+        # The wrapper lets the downstream probe handle a missing URL.
         ok, reason = bp_mod._validate_probe_url(creds)
         assert ok is True
         assert reason is None

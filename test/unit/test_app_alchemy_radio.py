@@ -242,8 +242,8 @@ class TestRunRadioPlaylists:
 
 class TestDeletePlaylistsBySuffix:
     @patch('tasks.mediaserver.config')
-    @patch('tasks.mediaserver.jellyfin_get_all_playlists')
-    @patch('tasks.mediaserver.jellyfin_delete_playlist')
+    @patch('tasks.mediaserver.jellyfin.get_all_playlists')
+    @patch('tasks.mediaserver.jellyfin.delete_playlist')
     def test_only_deletes_radio_suffix_playlists(self, mock_delete, mock_get, mock_config):
         from tasks.mediaserver import delete_playlists_by_suffix
 

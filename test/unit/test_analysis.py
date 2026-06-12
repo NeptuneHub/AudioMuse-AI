@@ -7,7 +7,7 @@
 # 3. Install requirements:
 #      pip install -r test/requirements.txt
 # 4. Run this script:
-#      python -m pytest tests/unit/test_analysis.py --tb=short
+#      python -m pytest test/unit/test_analysis.py --tb=short
 
 """Unit tests for tasks/analysis.py"""
 import numpy as np

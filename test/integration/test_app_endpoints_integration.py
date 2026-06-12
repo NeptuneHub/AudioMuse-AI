@@ -13,7 +13,7 @@ Database selection mirrors test_provider_migration_integration.py:
 
 Run locally:
     pip install pgserver
-    pytest test/test_app_endpoints_integration.py -m integration -s -v --tb=short
+    pytest test/integration/test_app_endpoints_integration.py -m integration -s -v --tb=short
 """
 import os
 import sys
@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 from flask import Flask
 
-_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 

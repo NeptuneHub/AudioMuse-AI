@@ -134,7 +134,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     and checks the gte-multilingual-base embedding + axis vector against
     pre-recorded values via cosine similarity (threshold = 0.98).
     """
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     expected_path = project_root / 'test' / 'lyrics_expected_gte_512.json'
 

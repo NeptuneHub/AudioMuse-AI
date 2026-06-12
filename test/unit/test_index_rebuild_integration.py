@@ -1,4 +1,4 @@
-# tests/unit/test_index_rebuild_integration.py
+# test/unit/test_index_rebuild_integration.py
 """
 Integration-level tests for the index rebuild/load glue that the helper-level
 unit tests don't reach:
@@ -25,9 +25,10 @@ value over the codec/storage tests in test_artist_metadata_codec.py.
 import json
 import sys
 import types
+from contextlib import ExitStack, contextmanager
 
 import pytest
-from unittest.mock import MagicMock, patch, DEFAULT
+from unittest.mock import MagicMock, patch
 
 
 # artist_gmm_manager imports voyager + sklearn at module load; skip cleanly if absent.
@@ -184,6 +185,10 @@ class TestLoadArtistIndexForQuerying:
 analysis_mod = None
 try:
     import tasks.analysis as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
+    import tasks.voyager_manager  # noqa: F401  (builder modules patched in _patched)
+    import tasks.clap_text_search  # noqa: F401
+    import tasks.lyrics_manager  # noqa: F401
+    import tasks.sem_grove_manager  # noqa: F401
 except Exception:
     analysis_mod = None
 
@@ -199,18 +204,38 @@ _BUILDER_NAMES = [
     "build_and_store_artist_projection",
 ]
 
+_BUILDER_SOURCE_MODULES = {
+    "build_and_store_voyager_index": "tasks.voyager_manager",
+    "build_and_store_clap_index": "tasks.clap_text_search",
+    "build_and_store_lyrics_index": "tasks.lyrics_manager",
+    "build_and_store_lyrics_axes_index": "tasks.lyrics_manager",
+    "build_and_store_sem_grove_index": "tasks.sem_grove_manager",
+    "build_and_store_artist_index": "tasks.artist_gmm_manager",
+    "build_and_store_map_projection": "tasks.analysis",
+    "build_and_store_artist_projection": "tasks.analysis",
+}
+
 
 @pytest.mark.skipif(analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env")
 class TestRunAllIndexBuilds:
     """The single rebuild entry point shared by analysis, cleaning, collection_manager."""
 
+    @contextmanager
     def _patched(self):
-        """patch.multiple over the orchestrator's module-level deps + all 8 builders."""
-        targets = {name: DEFAULT for name in _BUILDER_NAMES}
-        targets["get_db"] = DEFAULT
-        targets["redis_conn"] = DEFAULT
-        targets["_release_freed_ram_to_os"] = DEFAULT
-        return patch.multiple(analysis_mod, **targets)
+        """Patch the orchestrator's deps and yield {name: mock}.
+
+        The six index builders are patched at their defining modules because
+        ``_run_all_index_builds`` imports them at call time; the projection
+        builders and DB/Redis deps remain module-level names on
+        ``tasks.analysis``.
+        """
+        with ExitStack() as stack:
+            mocks = {}
+            for name, module in _BUILDER_SOURCE_MODULES.items():
+                mocks[name] = stack.enter_context(patch(f"{module}.{name}"))
+            for name in ("get_db", "redis_conn", "_release_freed_ram_to_os"):
+                mocks[name] = stack.enter_context(patch.object(analysis_mod, name))
+            yield mocks
 
     def test_all_eight_builders_run_with_log_fn_none(self):
         with self._patched() as mocks:

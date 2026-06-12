@@ -162,19 +162,6 @@ def _setup_ids(cur, tracks=None):
 
 
 # --------------------------------------------------------------------------- #
-# Entry gate
-# --------------------------------------------------------------------------- #
-
-class TestMpdGate:
-    def test_mpd_returns_501(self, bp_mod, client):
-        import config
-        config.MEDIASERVER_TYPE = 'mpd'
-        resp = client.get('/api/sync?limit=1')
-        assert resp.status_code == 501
-        assert 'mpd' in resp.get_json()['error'].lower()
-
-
-# --------------------------------------------------------------------------- #
 # Envelope (payload)
 # --------------------------------------------------------------------------- #
 

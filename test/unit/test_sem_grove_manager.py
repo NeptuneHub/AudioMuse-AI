@@ -1,4 +1,4 @@
-# tests/unit/test_sem_grove_manager.py
+# test/unit/test_sem_grove_manager.py
 """
 Unit tests for tasks/sem_grove_manager.py
 

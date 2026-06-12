@@ -1,4 +1,4 @@
-# tests/unit/test_voyager_manager.py
+# test/unit/test_voyager_manager.py
 """
 Unit tests for tasks/voyager_manager.py
 
@@ -479,7 +479,7 @@ class TestFindNearestNeighborsByVector:
 class TestCreatePlaylistFromIds:
     """Test playlist creation functionality"""
 
-    @patch('tasks.voyager_manager.create_instant_playlist')
+    @patch('tasks.mediaserver.create_instant_playlist')
     def test_calls_mediaserver_create_playlist(self, mock_create):
         """Should call mediaserver create_instant_playlist"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -491,7 +491,7 @@ class TestCreatePlaylistFromIds:
         assert result == 'playlist-123'
         mock_create.assert_called_once_with('Test Playlist', ['track-1', 'track-2'], user_creds=None)
 
-    @patch('tasks.voyager_manager.create_instant_playlist')
+    @patch('tasks.mediaserver.create_instant_playlist')
     def test_raises_on_creation_failure(self, mock_create):
         """Should raise exception if playlist creation fails"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -501,7 +501,7 @@ class TestCreatePlaylistFromIds:
         with pytest.raises(Exception, match="Playlist creation failed"):
             create_playlist_from_ids('Test Playlist', ['track-1'])
 
-    @patch('tasks.voyager_manager.create_instant_playlist')
+    @patch('tasks.mediaserver.create_instant_playlist')
     def test_raises_on_missing_playlist_id(self, mock_create):
         """Should raise exception if response has no Id"""
         from tasks.voyager_manager import create_playlist_from_ids
@@ -511,7 +511,7 @@ class TestCreatePlaylistFromIds:
         with pytest.raises(Exception, match="did not include a playlist ID"):
             create_playlist_from_ids('Test Playlist', ['track-1'])
 
-    @patch('tasks.voyager_manager.create_instant_playlist')
+    @patch('tasks.mediaserver.create_instant_playlist')
     def test_passes_user_credentials(self, mock_create):
         """Should pass user credentials to mediaserver"""
         from tasks.voyager_manager import create_playlist_from_ids

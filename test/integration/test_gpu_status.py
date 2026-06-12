@@ -8,7 +8,7 @@ Tests that all GPU-accelerated components are properly configured:
 3. cuML/cupy for clustering
 
 Usage:
-    docker exec audiomuse-ai-worker-instance-dev python3 /app/test/test_gpu_status.py
+    docker exec audiomuse-ai-worker-instance-dev python3 /app/test/integration/test_gpu_status.py
 """
 
 import sys

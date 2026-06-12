@@ -2,7 +2,7 @@
 
 Centralises duplicated helpers across test files:
 - importlib bypass loader (avoids tasks/__init__.py -> pydub -> audioop chain)
-- Session-scoped module fixtures for mcp_server, ai_mcp_client, mediaserver_localfiles
+- Session-scoped module fixtures for mcp_server, ai_mcp_client
 - FakeRow / mock-connection helpers
 - Autouse config restoration fixture
 """
@@ -27,7 +27,7 @@ def _import_module(mod_name: str, relative_path: str):
                        (e.g. 'tasks/mcp_helper.py').
     """
     repo_root = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
     mod_path = os.path.normpath(os.path.join(repo_root, relative_path))
 
@@ -51,15 +51,6 @@ def mcp_server_mod():
     underlying module is now ``tasks.mcp_helper``.
     """
     return _import_module('tasks.mcp_helper', 'tasks/mcp_helper.py')
-
-
-@pytest.fixture(scope='session')
-def localfiles_mod():
-    """Load tasks.mediaserver_localfiles directly (session-scoped)."""
-    return _import_module(
-        'tasks.mediaserver_localfiles',
-        'tasks/mediaserver_localfiles.py',
-    )
 
 
 # ---------------------------------------------------------------------------

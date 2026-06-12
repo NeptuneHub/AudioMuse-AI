@@ -9,7 +9,7 @@ Tests verify:
 - Handling of songs missing from database
 """
 
-from tests.conftest import _import_module
+from test.unit.conftest import _import_module
 
 
 def _load_playlist_ordering():

@@ -11,7 +11,7 @@ import librosa
 import librosa.feature
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 def compare_pytorch_vs_onnx():
     """Compare embeddings from PyTorch .pt model vs ONNX model"""
@@ -21,7 +21,7 @@ def compare_pytorch_vs_onnx():
     print("=" * 80)
     
     # Find all test audio files
-    test_songs_dir = os.path.join(os.path.dirname(__file__), "songs")
+    test_songs_dir = os.path.join(os.path.dirname(__file__), "..", "songs")
     test_audio_files = []
     
     if os.path.exists(test_songs_dir):

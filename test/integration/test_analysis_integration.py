@@ -8,7 +8,7 @@
 # 3. Install requirements:
 #      pip install -r test/requirements.txt
 # 4. Run this script:
-#      pytest test/test_analysis_integration.py -s -q
+#      pytest test/integration/test_analysis_integration.py -s -q
 #
 # Note: Test audio files should be in test/songs/
 #       ONNX models should be in test/models/
@@ -128,7 +128,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
     importable in the environment. It injects lightweight stubs for optional
     AI/voyager libraries so module import succeeds.
     """
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     required = [
         'musicnn_embedding.onnx', 'musicnn_prediction.onnx',

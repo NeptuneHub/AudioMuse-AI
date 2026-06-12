@@ -1,4 +1,4 @@
-# tests/unit/test_index_build_helpers.py
+# test/unit/test_index_build_helpers.py
 """
 Unit tests for tasks/index_build_helpers.py
 

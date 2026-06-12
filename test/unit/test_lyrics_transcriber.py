@@ -9,7 +9,7 @@ Focus on the deterministic, dependency-free pieces:
 
 These tests do NOT load whisper, transformers, or torch heavyweights. The
 embedding integration is covered separately by
-``test/test_lyrics_analysis_integration.py``.
+``test/integration/test_lyrics_analysis_integration.py``.
 """
 from __future__ import annotations
 

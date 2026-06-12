@@ -8,7 +8,7 @@
 # 3. Install requirements:
 #      pip install -r test/requirements.txt
 # 4. Run this script:
-#      pytest test/test_clap_analysis_integration.py -s -q
+#      pytest test/integration/test_clap_analysis_integration.py -s -q
 #
 # Note: Test audio files should be in test/songs/
 #       CLAP ONNX models:
@@ -62,7 +62,7 @@ def test_clap_analysis_runs_and_shows_output():
             'acoustic': 0.116278,
         },
     }
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     clap_audio_model = models_dir / 'model_epoch_36.onnx'
     clap_text_model = models_dir / 'clap_text_model.onnx'
@@ -212,5 +212,5 @@ def test_clap_analysis_runs_and_shows_output():
 
 
 if __name__ == '__main__':
-    # Allow running directly with: python test/test_clap_analysis_integration.py
+    # Allow running directly with: python test/integration/test_clap_analysis_integration.py
     pytest.main([__file__, '-s', '-v'])

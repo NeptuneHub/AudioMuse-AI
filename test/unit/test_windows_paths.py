@@ -1,11 +1,11 @@
 import os
 from unittest.mock import patch
 
-from tests.conftest import _import_module
+from test.unit.conftest import _import_module
 
 
 def _load_paths():
-    return _import_module('windows.paths', 'windows/paths.py')
+    return _import_module('windows.paths', 'native-build/windows/paths.py')
 
 
 def _norm(path):

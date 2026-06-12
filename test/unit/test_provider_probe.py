@@ -116,7 +116,7 @@ class TestNormalizeProviderType:
 
     def test_unsupported_provider_raises(self, probe):
         with pytest.raises(ValueError) as ei:
-            probe._normalize_provider_type('mpd')
+            probe._normalize_provider_type('plex')
         assert 'not supported' in str(ei.value)
 
     def test_empty_or_none_raises(self, probe):
@@ -158,7 +158,7 @@ class TestFetchAllTracks:
     def test_unsupported_provider_raises_before_call(self, probe):
         with patch.object(probe.mediaserver, 'get_all_songs') as m:
             with pytest.raises(ValueError):
-                probe.fetch_all_tracks('mpd', self.CREDS)
+                probe.fetch_all_tracks('plex', self.CREDS)
         m.assert_not_called()
 
 
@@ -179,7 +179,7 @@ class TestSearchAlbums:
     def test_unsupported_provider_raises(self, probe):
         with patch.object(probe.mediaserver, 'search_albums') as m:
             with pytest.raises(ValueError):
-                probe.search_albums('mpd', self.CREDS, 'q')
+                probe.search_albums('plex', self.CREDS, 'q')
         m.assert_not_called()
 
 
@@ -224,5 +224,5 @@ class TestTestConnection:
     def test_unsupported_provider_raises(self, probe):
         with patch.object(probe.mediaserver, 'test_connection') as m:
             with pytest.raises(ValueError):
-                probe.test_connection('mpd', self.CREDS)
+                probe.test_connection('plex', self.CREDS)
         m.assert_not_called()
