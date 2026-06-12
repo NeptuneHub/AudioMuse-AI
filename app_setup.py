@@ -709,7 +709,7 @@ def setup_lyrics_api_analyze():
             ctx = None
         import time as _time
         _t0 = _time.monotonic()
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
             raw_bytes = resp.read(512 * 1024)
         elapsed_ms = (_time.monotonic() - _t0) * 1000
         raw_text = raw_bytes.decode('utf-8', errors='replace')
