@@ -222,6 +222,14 @@ Contributions, issues, and feature requests are welcome\!
 
 For more details on how to contribute please follow the [Contributing Guidelines](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/CONTRIBUTING.md)
 
+## **Code Mirror**
+
+This repository code is mirrored here:
+- https://codeberg.org/NeptuneHub/AudioMuse-AI
+- https://gitea.com/NeptuneHub/AudioMuse-AI
+
+DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=NeptuneHub/AudioMuse-AI&type=Timeline)](https://www.star-history.com/#NeptuneHub/AudioMuse-AI&Timeline)
