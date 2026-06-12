@@ -11,7 +11,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 import numpy as np
 
-from database import get_db
+from database import get_db, close_db
 from taskqueue import (
     redis_conn,
     rq_queue_high,
