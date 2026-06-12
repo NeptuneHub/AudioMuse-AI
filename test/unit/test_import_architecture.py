@@ -186,7 +186,7 @@ def test_foundation_modules_are_leaves():
 
 
 def test_no_module_level_import_cycles():
-    modules, graph = _graph()
+    _, graph = _graph()
     cycles = [set(c) for c in _find_cycles(graph, modules) if c not in ALLOWED_CYCLES]
     assert not cycles, (
         f"Module-level import cycles detected (break them with a function-level "
