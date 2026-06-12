@@ -580,8 +580,6 @@ _CREDS_TO_CONFIG = {
     'emby':      {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
     'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
     'lyrion':    {'url': 'LYRION_URL'},
-    'mpd':       {'host': 'MPD_HOST', 'port': 'MPD_PORT', 'password': 'MPD_PASSWORD',
-                  'music_directory': 'MPD_MUSIC_DIRECTORY'},
 }
 
 

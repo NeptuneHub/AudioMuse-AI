@@ -86,7 +86,7 @@ Core components and responsibilities:
 
 - ONNX Models & Audio Stack: Analysis uses ONNX Runtime to run embedding and prediction models. Audio loading uses `librosa` with a `pydub`/ffmpeg fallback for resilient decoding. The Docker image pre-fetches ONNX model files and pins runtime libs to ensure consistent behavior across environments.
 
-- Media Server Adapters: `mediaserver.py` provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
+- Media Server Adapters: the `tasks/mediaserver/` package provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
 
 Deployment considerations (informed by `Dockerfile`):
 
@@ -624,7 +624,7 @@ This feature primarily interacts with the pre-built Voyager index for fast simil
 #### **Stage 4: Playlist Creation**
 
 1. **Route:** Clicking "Create Playlist" (similarity.html) sends a POST request to /api/create\_playlist (app\_voyager.py). The payload contains the desired playlist\_name and the list of track\_ids (seed song \+ similar songs).  
-2. **Backend Logic:** The endpoint calls create\_playlist\_from\_ids (voyager\_manager.py), which in turn calls create\_instant\_playlist (mediaserver.py). This function uses the configured MEDIASERVER\_TYPE and credentials to interact with the media server's API and create the actual playlist.
+2. **Backend Logic:** The endpoint calls create\_playlist\_from\_ids (voyager\_manager.py), which in turn calls create\_instant\_playlist (tasks/mediaserver/). This function uses the configured MEDIASERVER\_TYPE and credentials to interact with the media server's API and create the actual playlist.
 
 ### **3.3. Environment Variable Configuration**
 
@@ -1009,11 +1009,11 @@ This feature combines media server interaction for user history with vector anal
 
 #### **Stage 2: Fingerprint Generation (generate\_sonic\_fingerprint in sonic\_fingerprint\_manager.py)**
 
-1. **Fetch Top Songs:** Calls get\_top\_played\_songs (from mediaserver.py), passing the user\_creds. This function interacts with the media server API (based on MEDIASERVER\_TYPE) to retrieve the user's top SONIC\_FINGERPRINT\_TOP\_N\_SONGS most played tracks.  
+1. **Fetch Top Songs:** Calls get\_top\_played\_songs (from tasks/mediaserver/), passing the user\_creds. This function interacts with the media server API (based on MEDIASERVER\_TYPE) to retrieve the user's top SONIC\_FINGERPRINT\_TOP\_N\_SONGS most played tracks.  
 2. **Fetch Embeddings:** Retrieves the embedding vectors (embedding\_vector) for these top songs from the application's PostgreSQL database (embedding table) using get\_tracks\_by\_ids.  
 3. **Calculate Recency Weights:**  
    * Iterates through the top songs (for which embeddings were found).  
-   * For each song, calls get\_last\_played\_time (from mediaserver.py), passing user\_creds, to get the timestamp of the last play.  
+   * For each song, calls get\_last\_played\_time (from tasks/mediaserver/), passing user\_creds, to get the timestamp of the last play.  
    * Calculates days\_since\_played.  
    * Applies an **exponential decay function** (weight \= exp(-decay\_rate \* days\_since\_played)) to calculate a weight. The half\_life (set to 30 days) determines how quickly the weight decreases for older plays. Songs without a valid last played time receive a fixed lower weight.  
 4. **Weighted Average:** Calculates the weighted average of the embedding vectors (average\_vector). This vector represents the user's "sonic fingerprint".  
@@ -1120,7 +1120,7 @@ Stage 5: Execute Query & Post-process Results
 
 Stage 6: Optional Playlist Creation on Media Server
 
-1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `mediaserver.py`.
+1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `tasks/mediaserver/`.
 2. Return the media server response (success, playlist id, or error) to the frontend and display it in the UI.
 
 Safety & Fallbacks

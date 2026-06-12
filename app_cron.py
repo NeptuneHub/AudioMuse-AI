@@ -292,7 +292,7 @@ def run_due_cron_jobs():
                                         f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
                                     )
                                 except NotImplementedError:
-                                    # MPD or unsupported backend: keep the legacy date-suffixed behavior.
+                                    # Unsupported backend: keep the legacy date-suffixed behavior.
                                     legacy_name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
                                     playlist_id = create_playlist_from_ids(legacy_name, track_ids)
                                     logger.info(

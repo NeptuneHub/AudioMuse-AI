@@ -14,7 +14,7 @@ def run_radio_playlists():
     playlists on online-first sync clients (e.g. Symfonium on Navidrome)
     that track playlists by ID.
 
-    Falls back to create_playlist for MPD and other unsupported backends.
+    Falls back to create_playlist for unsupported backends.
     """
     from app_helper import get_alchemy_radios
 
@@ -47,7 +47,7 @@ def run_radio_playlists():
             try:
                 create_or_replace_playlist(playlist_name, item_ids)
             except NotImplementedError:
-                # MPD or unsupported backend: fall back to plain create.
+                # Unsupported backend: fall back to plain create.
                 create_playlist(playlist_name, item_ids)
             created += 1
             logger.info(f"Radio playlist '{playlist_name}' upserted with {len(item_ids)} tracks.")

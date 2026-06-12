@@ -2,7 +2,7 @@
 import os
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, mpd, emby
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -97,14 +97,6 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'LYRICS_INSTRUMENTAL_EMBEDDING',
     'LYRICS_INSTRUMENTAL_AXIS_FILL',
 }
-
-# --- MPD (Music Player Daemon) Constants ---
-# These are used only if MEDIASERVER_TYPE is "mpd".
-MPD_HOST = os.environ.get("MPD_HOST", "localhost")
-MPD_PORT = int(os.environ.get("MPD_PORT", "6600"))
-MPD_PASSWORD = os.environ.get("MPD_PASSWORD", "")  # Optional password, leave empty if none
-MPD_MUSIC_DIRECTORY = os.environ.get("MPD_MUSIC_DIRECTORY", "/var/lib/mpd/music")  # Path to MPD's music directory for file access
-
 
 # --- General Constants (Read from Environment Variables where applicable) ---
 APP_VERSION = "v2.1.5"

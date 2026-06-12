@@ -28,7 +28,7 @@ The following table details the most important paths in the repository, their pu
 | :---- | :---- |
 | app.py, app_*.py | The main entry point for the Flask web application. It handles the initialization of the Flask app, database connections, and the registration of API routes and blueprints. |
 | tasks/ | **The Core Logic Hub.** This is where the most intensive computations occur. Each API or async task then point to an specific implementation in this directory|
-| tasks/mediaserver.py | In this fail the generic method to interact with the mediaservers are specialized to call the specific one |
+| tasks/mediaserver/ | In this package the generic methods to interact with the mediaservers (`__init__.py`) dispatch to the specific backend (`jellyfin.py`, `navidrome.py`, `emby.py`, `lyrion.py`, `mpd.py`) |
 | tasks/ai/ | All AI / MCP code. `tasks/ai/api.py` is the provider dispatcher (called via `tasks.ai.api.call_with_tools()`), with backends in `tasks/ai/providers/{openai,gemini,mistral,ollama}.py`. Prompts are in `tasks/ai/prompts.py`. MCP tool schemas + dispatcher in `tasks/ai/tools.py`; tool bodies in `tasks/ai/tool_impl.py`. Two-stage planner (intent classifier + plan validation + execution) in `tasks/ai/planner.py`. Vocabulary normalization helpers in `tasks/ai/vocab.py`. |
 | config.py | Contains the application's default, non-sensitive configuration parameters. These values serve as fallbacks and can be easily overridden by environment variables, providing a flexible and secure configuration system. |
 | Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` and `app_helepr.py` functionality |
