@@ -224,9 +224,8 @@ For more details on how to contribute please follow the [Contributing Guidelines
 
 ## **Code Mirror**
 
-This repository code is mirrored here:
+[AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI) repository code is mirrored here:
 - https://codeberg.org/NeptuneHub/AudioMuse-AI
-- https://gitea.com/NeptuneHub/AudioMuse-AI
 
 DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
 
