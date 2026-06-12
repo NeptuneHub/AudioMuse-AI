@@ -113,7 +113,7 @@ def _perform_single_clustering_iteration(
     """
     try:
         # Local import to prevent circular dependency
-        from app import app
+        from flask_app import app
 
         if not item_ids_for_subset:
             logger.warning(f"{log_prefix} Iteration {run_idx}: Received empty item ID subset. Skipping.")
@@ -717,7 +717,8 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     'final_subset_track_ids') so the caller can use a single code path, or None on failure.
     """
     # Local imports to prevent circular dependency
-    from app import app, JobStatus
+    from flask_app import app
+    from rq.job import JobStatus
     from app_helper import redis_conn, get_task_info_from_db, TASK_STATUS_SUCCESS
 
     try:

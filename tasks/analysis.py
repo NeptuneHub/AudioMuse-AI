@@ -33,11 +33,6 @@ from config import (
 
 
 # Import other project modules
-from .voyager_manager import build_and_store_voyager_index
-from .clap_text_search import build_and_store_clap_index
-from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
-from .sem_grove_manager import build_and_store_sem_grove_index
-from .artist_gmm_manager import build_and_store_artist_index
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
 from .memory_utils import (
     cleanup_cuda_memory,
@@ -132,7 +127,18 @@ def _run_all_index_builds(log_fn=None):
     shows which builder is currently active (otherwise users see "Building
     CLAP text search index..." for the entire 95–97 % window even while the
     lyrics or SemGrove builds are running).
+
+    The index-builder modules are imported here rather than at module top so
+    that importing ``tasks.analysis`` does not pull in the voyager / CLAP /
+    lyrics / SemGrove / artist-GMM subsystems; they are only needed when a
+    rebuild actually runs.
     """
+    from .voyager_manager import build_and_store_voyager_index
+    from .clap_text_search import build_and_store_clap_index
+    from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
+    from .sem_grove_manager import build_and_store_sem_grove_index
+    from .artist_gmm_manager import build_and_store_artist_index
+
     def _step(label, fn, progress=None, banner=None, fatal=False):
         if log_fn and progress is not None and banner is not None:
             try:

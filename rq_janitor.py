@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     # We need the queue objects to get their registries
-    from app_helper import redis_conn, rq_queue_high, rq_queue_default
+    from app_helper import rq_queue_high, rq_queue_default
     from app_logging import configure_logging
 except ImportError as e:
     print(f"Error importing from app.py: {e}")

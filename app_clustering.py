@@ -21,7 +21,7 @@ clustering_bp = Blueprint('clustering_bp', __name__)
 
 def clustering_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the main clustering task, executed by the worker."""
-    from app import app
+    from flask_app import app
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
@@ -247,7 +247,7 @@ def start_clustering_endpoint():
     """
     # Local imports to prevent circular dependency at startup
     from app_helper import rq_queue_high, get_active_main_task
-    from app_helper import clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, TASK_STATUS_FAILURE
+    from app_helper import clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING
 
     # Check for any existing active main task to prevent parallel batch runs
     active_task = get_active_main_task()

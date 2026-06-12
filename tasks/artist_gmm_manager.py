@@ -536,7 +536,7 @@ def build_and_store_artist_index(db_conn=None):
                 num_parts = len(parts)
                 logger.info(f"Artist index size {len(index_bytes)} exceeds {ARTIST_INDEX_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
 
-                insert_q = "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at) VALUES (%s, %s, %s, %s, NOW())"
+                insert_q = "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (index_name) DO UPDATE SET index_data = EXCLUDED.index_data, artist_map_json = EXCLUDED.artist_map_json, gmm_params_json = EXCLUDED.gmm_params_json, created_at = EXCLUDED.created_at"
                 for idx, part in enumerate(parts, start=1):
                     part_name = f"{ARTIST_INDEX_NAME}_{idx}_{num_parts}"
                     cur.execute(insert_q, (part_name, part, '', ''))

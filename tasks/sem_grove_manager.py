@@ -31,9 +31,7 @@ import gc
 import json
 import logging
 import math
-import re
 import sys
-import tempfile
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -122,22 +120,8 @@ def _make_merged_vector(
 
 
 def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
-    if not item_ids:
-        return {}
-    from app_helper import get_score_data_by_ids
-    try:
-        rows = get_score_data_by_ids(item_ids)
-        return {
-            r["item_id"]: {
-                "title":  r.get("title",  "") or "",
-                "author": r.get("author", "") or "",
-                "album":  r.get("album",  "") or "",
-            }
-            for r in rows
-        }
-    except Exception as exc:
-        logger.warning("SemGrove metadata fetch failed: %s", exc)
-        return {}
+    from .commons import fetch_track_metadata_map
+    return fetch_track_metadata_map(item_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -386,109 +370,33 @@ def _load_sem_grove_index_from_db() -> bool:
             audio_dim   = int(whitening["audio_dim"])
             merged_dim  = lyrics_dim + audio_dim
 
-            # ---- Index binary ----
-            cur.execute(
-                "SELECT index_data, id_map_json, embedding_dimension "
-                "FROM lyrics_index_data WHERE index_name = %s",
-                (SEM_GROVE_INDEX_NAME,),
-            )
-            row = cur.fetchone()
+        from .index_build_helpers import load_voyager_index_from_db
+        loaded = load_voyager_index_from_db(
+            conn, 'lyrics_index_data', SEM_GROVE_INDEX_NAME,
+            merged_dim, VOYAGER_QUERY_EF, label='SemGrove',
+        )
+        if loaded is None:
+            return False
+        loaded_index, id_map, reverse_id_map = loaded
 
-            index_stream = None
-            id_map_json  = None
-            db_dim       = None
-            try:
-                if row:
-                    binary, id_map_json, db_dim = row
-                    index_stream = tempfile.TemporaryFile()
-                    index_stream.write(binary)
-                    index_stream.seek(0)
-                else:
-                    seg_pattern       = re.compile(r"^sem_grove_index_(\d+)_(\d+)$")
-                    parts             = []
-                    total_expected    = None
+        _SEM_GROVE_CACHE.update({
+            "index":          loaded_index,
+            "id_map":         id_map,
+            "reverse_id_map": reverse_id_map,
+            "std_lyrics":     std_lyrics,
+            "std_audio":      std_audio,
+            "lyrics_dim":     lyrics_dim,
+            "audio_dim":      audio_dim,
+            "w_lyrics":       w_lyrics,
+            "w_audio":        w_audio,
+            "loaded":         True,
+            "song_count":     len(id_map),
+        })
 
-                    with conn.cursor(name="sem_grove_index_segments") as seg_cur:
-                        seg_cur.itersize = 50
-                        seg_cur.execute(
-                            "SELECT index_name, index_data, id_map_json, embedding_dimension "
-                            "FROM lyrics_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                            (r"sem_grove_index\_%\_%",),
-                        )
-                        for name, part_data, part_id_map, part_dim in seg_cur:
-                            m = seg_pattern.match(name)
-                            if not m:
-                                continue
-                            part_no = int(m.group(1))
-                            total   = int(m.group(2))
-                            if total_expected is None:
-                                total_expected = total
-                            elif total_expected != total:
-                                logger.error("SemGrove: segment total mismatch.")
-                                return False
-                            parts.append((part_no, part_data, part_id_map, part_dim))
-
-                    if total_expected is None or len(parts) != total_expected:
-                        logger.info(
-                            "SemGrove: no complete index found in DB "
-                            "(expected=%s, got=%d).", total_expected, len(parts)
-                        )
-                        return False
-
-                    parts.sort(key=lambda p: p[0])
-                    from .index_build_helpers import reassemble_segmented_id_map
-                    db_dim       = parts[0][3]
-                    id_map_json  = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-                    index_stream = tempfile.TemporaryFile()
-                    for _, part_data, _, _ in parts:
-                        index_stream.write(part_data)
-                    index_stream.seek(0)
-
-                if index_stream is None or not id_map_json:
-                    return False
-
-                if db_dim != merged_dim:
-                    logger.error(
-                        "SemGrove: dimension mismatch (db=%d, expected=%d).",
-                        db_dim, merged_dim,
-                    )
-                    return False
-
-                loaded_index    = voyager.Index.load(index_stream)
-                loaded_index.ef = VOYAGER_QUERY_EF
-
-            finally:
-                if index_stream is not None:
-                    try:
-                        index_stream.close()
-                    except Exception:
-                        pass
-
-            id_map         = {int(k): v for k, v in json.loads(id_map_json).items()}
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            if not id_map:
-                logger.warning("SemGrove: id_map is empty after load.")
-                return False
-
-            _SEM_GROVE_CACHE.update({
-                "index":          loaded_index,
-                "id_map":         id_map,
-                "reverse_id_map": reverse_id_map,
-                "std_lyrics":     std_lyrics,
-                "std_audio":      std_audio,
-                "lyrics_dim":     lyrics_dim,
-                "audio_dim":      audio_dim,
-                "w_lyrics":       w_lyrics,
-                "w_audio":        w_audio,
-                "loaded":         True,
-                "song_count":     len(id_map),
-            })
-
-            logger.info(
-                "SemGrove index loaded: %d items, dim=%d.", len(id_map), merged_dim
-            )
-            return True
+        logger.info(
+            "SemGrove index loaded: %d items, dim=%d.", len(id_map), merged_dim
+        )
+        return True
 
     except Exception as exc:
         logger.error("SemGrove index load failed: %s", exc, exc_info=True)

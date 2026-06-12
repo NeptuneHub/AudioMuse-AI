@@ -19,7 +19,6 @@ google-genai==1.57.0
 mistralai>=1.11.1,<2.0.0
 umap-learn
 av==13.1.0
-python-mpd2
 psutil
 PyJWT==2.12.1
 argon2-cffi==25.1.0

@@ -25,9 +25,7 @@ student_clap/
 # (vendored redis/pg binaries, assets, nfpm config, runtime launchers), the shared
 # PyInstaller spec + build tooling, and build artifacts. None of it is used by the
 # Linux container, so keep it out of the image.
-macos/
-linux/
-windows/
+native-build/
 AudioMuse-AI.spec
 scripts/standalone/
 build/
@@ -67,7 +65,5 @@ model/
 *.bin
 *.h5
 *.pb
-CLAMP3/weights_*.pth
-CLAMP3/*.npy
 .cache/
 *.tar.gz

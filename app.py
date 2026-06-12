@@ -10,7 +10,7 @@ import config
 # RQ imports
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
-from tasks.setup_manager import SetupManager
+from tasks.setup_manager import setup_manager
 
 # Redis client
 from redis import Redis
@@ -29,7 +29,6 @@ if ENABLE_PROXY_FIX:
 # The Flask instance lives in `flask_app` so RQ task modules can import it
 # without creating a circular import back into this file.
 from flask_app import app
-setup_manager = SetupManager()
 
 # Import helper functions
 from app_helper import (
@@ -760,11 +759,6 @@ def listen_for_index_reloads():
 
 # --- Import and Register Blueprints ---
 # This is the original, working structure.
-# Import tasks modules to ensure they're available to RQ workers
-import tasks.clustering
-import tasks.analysis
-
-
 from app_chat import chat_bp
 from app_clustering import clustering_bp
 from app_analysis import analysis_bp

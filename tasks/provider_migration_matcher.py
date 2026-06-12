@@ -179,7 +179,7 @@ def _best_artist_old(row):
     """Track-level artist for a source (``score``) row.
 
     Precedence: ``author`` → ``artist`` → ``album_artist``.
-    ``score.author`` holds the track performer that mediaserver_*.py picked via
+    ``score.author`` holds the track performer that the tasks/mediaserver backends picked via
     ``_select_best_artist``, while ``score.album_artist`` preserves the
     album-level artist (often "Various Artists" on compilations). Preferring
     ``author`` keeps compilation tracks matchable to their real performer on

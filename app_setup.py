@@ -2,8 +2,10 @@ import re
 import types
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager
-from app_helper import check_setup_needed, validate_outbound_url
+from flask_app import app
+from tasks.setup_manager import setup_manager
+from app_auth import check_setup_needed
+from app_helper import validate_outbound_url
 import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager
@@ -74,10 +76,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY',
     'PROBE_TOP_PLAYED_LIMIT',
     'MOOD_CENTROIDS_FILE',
-    'MPD_HOST',
-    'MPD_MUSIC_DIRECTORY',
-    'MPD_PASSWORD',
-    'MPD_PORT',
     'OTHER_FEATURE_LABELS',
     'STRATIFIED_GENRES',
     'TEMPO_MAX_BPM',
@@ -219,7 +217,7 @@ def _get_allowed_setup_keys():
 def _has_admin_user():
     """Return True if at least one admin exists in audiomuse_users."""
     try:
-        from app_helper import count_admin_users
+        from app_auth import count_admin_users
         return count_admin_users() > 0
     except Exception as exc:
         app.logger.error(
@@ -426,7 +424,8 @@ def setup_api():
         # If auth will remain enabled we need an admin after the save. That
         # admin must either already exist in audiomuse_users or be provided
         # via the form (new_admin_user + new_admin_password).
-        from app_helper import count_admin_users, upsert_admin_user, get_db
+        from app_auth import count_admin_users, upsert_admin_user
+        from database import get_db
         auth_will_be_enabled = not auth_being_disabled
         if isinstance(simulated.AUTH_ENABLED, str):
             auth_will_be_enabled = simulated.AUTH_ENABLED.strip().lower() == 'true'
@@ -710,7 +709,7 @@ def setup_lyrics_api_analyze():
             ctx = None
         import time as _time
         _t0 = _time.monotonic()
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
             raw_bytes = resp.read(512 * 1024)
         elapsed_ms = (_time.monotonic() - _t0) * 1000
         raw_text = raw_bytes.decode('utf-8', errors='replace')

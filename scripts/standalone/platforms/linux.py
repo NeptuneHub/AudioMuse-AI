@@ -13,7 +13,7 @@ def _present(path):
 
 def prepare(ctx):
     arch = ctx.arch
-    vendor = ctx.root / "linux" / "vendor"
+    vendor = ctx.root / "native-build" / "linux" / "vendor"
     if ctx.use_pgserver:
         required = [
             vendor / "redis" / arch / "redis-server",
@@ -39,7 +39,7 @@ def prepare(ctx):
     if missing:
         for m in missing:
             print(f"::error::Missing vendored file: {m}")
-        raise SystemExit("Vendored inputs missing (see linux/vendor/*/README.md).")
+        raise SystemExit("Vendored inputs missing (see native-build/linux/vendor/*/README.md).")
     (vendor / "redis" / arch / "redis-server").chmod(0o755)
 
 
@@ -66,7 +66,7 @@ def _stage(ctx):
     (stage / "usr" / "lib" / "systemd" / "user").mkdir(parents=True)
     subprocess.run(["cp", "-a", str(ctx.bundle_dir), str(stage / "opt" / "AudioMuse-AI")], check=True)
 
-    pkg = ctx.root / "linux" / "packaging"
+    pkg = ctx.root / "native-build" / "linux" / "packaging"
     shutil.copy2(pkg / "AudioMuse-AI.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI.desktop")
     shutil.copy2(pkg / "AudioMuse-AI-stop.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI-stop.desktop")
     shutil.copy2(pkg / "audiomuse-ai.service", stage / "usr" / "lib" / "systemd" / "user" / "audiomuse-ai.service")
@@ -91,7 +91,7 @@ def package(ctx):
     nfpm_arch = _NFPM_ARCH[ctx.arch]
 
     print("==> Generating nfpm config")
-    template = (ctx.root / "linux" / "packaging" / "nfpm.yaml.in").read_text()
+    template = (ctx.root / "native-build" / "linux" / "packaging" / "nfpm.yaml.in").read_text()
     content = (
         template.replace("@VERSION@", ctx.version)
         .replace("@ARCH@", nfpm_arch)

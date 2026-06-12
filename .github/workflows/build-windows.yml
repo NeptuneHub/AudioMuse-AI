@@ -81,12 +81,12 @@ jobs:
 
       - name: Build vendored redis-server.exe
         shell: cmd
-        run: windows\vendor\build-redis.bat
+        run: native-build\windows\vendor\build-redis.bat
 
       - name: Verify vendored PostgreSQL contrib is present
         shell: powershell
         run: |
-          $dest = "windows\vendor\pg-contrib\$env:ARCH"
+          $dest = "native-build\windows\vendor\pg-contrib\$env:ARCH"
           $required = @("lib\unaccent.dll", "lib\pg_trgm.dll", "extension\unaccent.control", "extension\pg_trgm.control", "extension\unaccent--1.1.sql", "extension\pg_trgm--1.3.sql", "tsearch_data\unaccent.rules")
           $bad = @()
           foreach ($f in $required) {
@@ -94,7 +94,7 @@ jobs:
             if (-not (Test-Path $p) -or (Get-Item $p).Length -eq 0) { $bad += $f }
           }
           if ($bad.Count -ne 0) {
-            Write-Error "Missing or empty vendored pg-contrib files: $($bad -join ', '). Regenerate with windows/vendor/pg-contrib/build-pg-contrib-cross.sh -- never ship empty placeholders (they silently disable unaccent/pg_trgm search)."
+            Write-Error "Missing or empty vendored pg-contrib files: $($bad -join ', '). Regenerate with native-build/windows/vendor/pg-contrib/build-pg-contrib-cross.sh -- never ship empty placeholders (they silently disable unaccent/pg_trgm search)."
             exit 1
           }
           Write-Host "Vendored pg-contrib present and non-empty."

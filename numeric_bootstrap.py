@@ -15,9 +15,9 @@ Pinning ``LC_NUMERIC`` to ``"C"`` makes ``strtold`` deterministic and removes th
 locale transition there is to race against. It is kept narrow -- only the numeric
 category, so ``LC_CTYPE``/UTF-8 (accented file paths) is untouched.
 
-This module is imported ONLY by the macOS launcher (``macos/launcher.py``); it is
+This module is imported ONLY by the macOS launcher (``native-build/macos/launcher.py``); it is
 never referenced by the Linux/Docker worker entrypoints, so the container images
-are entirely unaffected. The matching env-level pin lives in ``macos/env.py``.
+are entirely unaffected. The matching env-level pin lives in ``native-build/macos/env.py``.
 """
 import os
 

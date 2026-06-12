@@ -3,10 +3,13 @@ import glob
 import importlib.util
 import os
 import platform
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = SPECPATH
+NATIVE = os.path.join(ROOT, "native-build")
+sys.path.insert(0, NATIVE)
 
 _cfg_path = os.path.join(ROOT, "scripts", "standalone", "config.py")
 _cfg_spec = importlib.util.spec_from_file_location("_amai_build_config", _cfg_path)
@@ -80,11 +83,11 @@ if not USE_PGSERVER:
 
 a = Analysis(
     [os.path.join(ROOT, cfg["launcher"])],
-    pathex=[ROOT],
+    pathex=[ROOT, NATIVE],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[os.path.join(ROOT, "macos/hooks")],
+    hookspath=[os.path.join(NATIVE, "macos", "hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=excludes,

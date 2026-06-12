@@ -1,6 +1,12 @@
 # AudioMuse-AI Developer Tests
 
-These integration tests are for developer purposes to verify the functionality of the AudioMuse-AI API endpoints. They are not included in the production Docker container and should be run from a local development machine.
+This folder contains the whole test suite:
+
+- `unit/` — fast, mock-based unit tests (run in CI by `.github/workflows/tests.yml` with `pytest test/unit/`)
+- `integration/` — integration tests and developer scripts that exercise the real models, database or a running AudioMuse-AI instance (run in CI by `.github/workflows/test.yml`)
+- support assets shared by the integration tests: `songs/`, `models/` (downloaded by CI), `lyrics_expected*.json`, `requirements.txt`, `docker-compose.yaml`, `nginx-confd/`, `provider_testing_stack/`
+
+The API endpoint tests below are for developer purposes to verify the functionality of the AudioMuse-AI API endpoints. They are not included in the production Docker container and should be run from a local development machine.
 
 ## Prerequisites
 
@@ -50,9 +56,9 @@ Once you are inside the `test` directory, follow these steps:
     ```
 
 3.  **Configure the API endpoint:**
-    Open the `test.py` file and update the `BASE_URL` to point to your running AudioMuse-AI instance.
+    Open the `integration/test.py` file and update the `BASE_URL` to point to your running AudioMuse-AI instance.
     ```python
-    # test/test.py
+    # test/integration/test.py
     BASE_URL = 'http://YOUR_AUDIOMUSE_IP:8000'
     ```
 
@@ -61,7 +67,7 @@ Once you are inside the `test` directory, follow these steps:
 To run all tests, execute the following command from your terminal (while in the `test` directory with the virtual environment activated):
 
 ```bash
-python test.py
+python integration/test.py
 ```
 
 ## Succesfull result example
@@ -111,5 +117,5 @@ See `./nginx-confd/reverse-proxy.conf` and the line with `proxy_pass http://audi
 Do run the tests against it you have to start execute: `docker compose up`.
 Set the base url to `BASE_URL = 'http://localhost:7777/am'`
 Your audiomuse instance should have set the following configuration to true `ENABLE_PROXY_FIX`.
-And run the test by executing: `python test.py`.
+And run the test by executing: `python integration/test.py`.
 

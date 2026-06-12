@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 import psycopg2
 from psycopg2.extras import DictCursor
 import numpy as np
-from flask import g
 
 from database import get_db, close_db
 from taskqueue import (
@@ -1419,7 +1418,7 @@ def build_and_store_map_projection(index_name='main_map'):
     """
     # Import local projection helpers to avoid circular imports
     try:
-        from tasks.song_alchemy import _project_with_umap, _project_to_2d
+        from tasks.alchemy_projections import _project_with_umap, _project_to_2d
     except Exception:
         _project_with_umap = None
         _project_to_2d = None
@@ -1540,7 +1539,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     Returns True on success.
     """
     from tasks.artist_gmm_manager import load_artist_index_for_querying
-    from tasks.song_alchemy import _project_with_umap, _project_to_2d
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d
     
     # Always reload artist GMM params from database (force reload to ensure fresh data)
     load_artist_index_for_querying(force_reload=True)
@@ -1768,25 +1767,3 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
 
     return cancelled_count
-
-
-# --- Auth / user-management helpers ---
-# All auth logic (setup/auth/admin barriers, user CRUD, password hashing,
-# JWT handling, the Flask routes) lives in ``app_auth``. The re-exports
-# below keep the legacy ``from app_helper import ...`` paths working.
-from app_auth import (  # noqa: E402  (intentional late import to avoid cycles)
-    USER_ROLE_USER,
-    USER_ROLE_ADMIN,
-    check_setup_needed,
-    check_auth_needed,
-    check_admin_needed,
-    is_admin_path,
-    list_additional_users,
-    count_admin_users,
-    get_additional_user_by_id,
-    create_additional_user,
-    delete_additional_user_safe,
-    verify_additional_user,
-    upsert_admin_user,
-    seed_admin_from_env,
-)

@@ -15,7 +15,7 @@ After this you can just open it like any other application.
 
 def prepare(ctx):
     print("==> Generating icons from screenshot/audiomuseai.png")
-    subprocess.run(["bash", "macos/make_icns.sh"], check=True, cwd=str(ctx.root))
+    subprocess.run(["bash", "native-build/macos/make_icns.sh"], check=True, cwd=str(ctx.root))
 
 
 def _sign_nested(app, entitlements):
@@ -33,7 +33,7 @@ def _sign_nested(app, entitlements):
 
 def package(ctx):
     app = ctx.app_path
-    entitlements = str(ctx.root / "macos" / "entitlements.plist")
+    entitlements = str(ctx.root / "native-build" / "macos" / "entitlements.plist")
 
     _sign_nested(app, entitlements)
 

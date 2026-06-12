@@ -20,7 +20,8 @@ from flask import Blueprint, request, jsonify
 from flasgger import swag_from
 
 import config
-from app_helper import get_db, load_map_projection
+from database import get_db
+from app_helper import load_map_projection
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ _FP_SQL = (
         'Three modes: `?fields=index` returns a lightweight {id, fp} manifest '
         '(<=1000/page) for client-side change detection; `?ids=a,b,c` returns full '
         'payloads for a specific id set (<=500); default returns the full library '
-        'page by page (<=500). Not supported for the `mpd` media server (501).'
+        'page by page (<=500).'
     ),
     'parameters': [
         {'name': 'fields', 'in': 'query', 'required': False,
@@ -79,13 +80,9 @@ _FP_SQL = (
     'responses': {
         '200': {'description': 'A page of the manifest or the full payload.'},
         '500': {'description': 'Internal server error.'},
-        '501': {'description': 'Media server type not supported (e.g. `mpd`).'},
     },
 })
 def sync_endpoint():
-    if config.MEDIASERVER_TYPE == 'mpd':
-        return jsonify({"error": "mpd is not yet supported by the mobile sync endpoint"}), 501
-
     manifest_mode = request.args.get('fields') == 'index'
     page = max(1, request.args.get('page', 1, type=int))
     max_limit = _MAX_MANIFEST_LIMIT if manifest_mode else _MAX_PAYLOAD_LIMIT
