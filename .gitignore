@@ -12,11 +12,11 @@ venv/
 .venv-windows/
 env/
 
-# Linux native build inputs built fresh in CI (not committed; see linux/vendor/README.md)
-/linux/vendor/redis/
-/linux/vendor/pg-contrib/*/
-/linux/vendor/postgres/*/
-/windows/vendor/redis/
+# Linux native build inputs built fresh in CI (not committed; see native-build/linux/vendor/README.md)
+/native-build/linux/vendor/redis/
+/native-build/linux/vendor/pg-contrib/*/
+/native-build/linux/vendor/postgres/*/
+/native-build/windows/vendor/redis/
 
 # Local environment variables
 # IMPORTANT: Never commit your .env file with secrets!
@@ -51,11 +51,6 @@ nul
 /query/*.onnx
 
 
-# CLAMP3 weight files (large model files)
-/CLAMP3/weights_*.pth
-/CLAMP3/*.pth
-
-
 # Downloaded ONNX models (from run_worker_macos.sh or similar)
 /model/
 
@@ -82,4 +77,4 @@ analysis.md
 .claude/settings.local.json
 .claude/settings.local.json
 lyrics_model_gte_vnni.tar.gz
-windows/vendor/redis/amd64/redis-server.exe
+native-build/windows/vendor/redis/amd64/redis-server.exe

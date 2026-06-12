@@ -55,7 +55,7 @@ def start_embedded(data_dir):
     ``embedded``. The data directory must live outside the read-only app bundle
     and its path must not contain spaces (pgserver doubles it as the unix-socket
     dir, which ``postgres`` receives via ``pg_ctl -o '-k <dir>'`` and re-splits on
-    whitespace); see ``macos/paths.py::app_support_dir``. Initializes the cluster
+    whitespace); see ``native-build/macos/paths.py::app_support_dir``. Initializes the cluster
     on first run, idempotent afterwards.
     """
     global _embedded_server

@@ -6,16 +6,17 @@
 # reliably universal2, so we build natively on an arm64 runner (macos-14).
 #
 # Reproducibility: the small, exact-version native build inputs are committed in
-# git (macos/vendor/redis/arm64/redis-server and macos/vendor/pg-contrib/arm64/*),
+# git (native-build/macos/vendor/redis/arm64/redis-server and
+# native-build/macos/vendor/pg-contrib/arm64/*),
 # NOT regenerated at build time, so the bundle's embedded Redis and the Postgres
 # unaccent/pg_trgm contrib extensions are byte-identical to the tested local build.
 #
 # The app is ad-hoc signed only (no Apple Developer account); end users clear
-# quarantine with `xattr -dr ...` after download (see macos/README.md).
+# quarantine with `xattr -dr ...` after download (see native-build/macos/README.md).
 #
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
 # GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
-# (huggingface_models.tar.gz) — macos/env.py points HF_HOME at model/huggingface
+# (huggingface_models.tar.gz) — native-build/macos/env.py points HF_HOME at model/huggingface
 # for the CLAP RoBERTa tokenizer, so the bundle needs it. The HF cache is then
 # trimmed to just that tokenizer (bert/bart and the roberta weights are unused by
 # the app, ~1.4 GB) so the release zip stays under GitHub's 2 GB asset limit.
@@ -86,20 +87,20 @@ jobs:
           # These are committed in git (not regenerated here) so the bundle is
           # reproducible. If a fresh checkout is missing them, fail loudly.
           required=(
-            macos/vendor/redis/arm64/redis-server
-            macos/vendor/pg-contrib/arm64/lib/unaccent.dylib
-            macos/vendor/pg-contrib/arm64/lib/pg_trgm.dylib
-            macos/vendor/pg-contrib/arm64/extension/unaccent.control
-            macos/vendor/pg-contrib/arm64/extension/pg_trgm.control
-            macos/vendor/pg-contrib/arm64/tsearch_data/unaccent.rules
+            native-build/macos/vendor/redis/arm64/redis-server
+            native-build/macos/vendor/pg-contrib/arm64/lib/unaccent.dylib
+            native-build/macos/vendor/pg-contrib/arm64/lib/pg_trgm.dylib
+            native-build/macos/vendor/pg-contrib/arm64/extension/unaccent.control
+            native-build/macos/vendor/pg-contrib/arm64/extension/pg_trgm.control
+            native-build/macos/vendor/pg-contrib/arm64/tsearch_data/unaccent.rules
           )
           missing=0
           for f in "${required[@]}"; do
             if [ ! -s "$f" ]; then echo "::error::Missing committed vendor file: $f"; missing=1; fi
           done
-          [ "$missing" -eq 0 ] || { echo "::error::macos/vendor/ must be committed (see macos/vendor/pg-contrib/README.md)."; exit 1; }
-          chmod +x macos/vendor/redis/arm64/redis-server
-          file macos/vendor/redis/arm64/redis-server
+          [ "$missing" -eq 0 ] || { echo "::error::native-build/macos/vendor/ must be committed (see native-build/macos/vendor/pg-contrib/README.md)."; exit 1; }
+          chmod +x native-build/macos/vendor/redis/arm64/redis-server
+          file native-build/macos/vendor/redis/arm64/redis-server
 
       - name: Assemble ./model (mirrors the Dockerfile models stage)
         env:

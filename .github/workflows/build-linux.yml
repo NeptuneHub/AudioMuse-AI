@@ -7,13 +7,13 @@
 # Mirrors build-macos.yml. The package bundles EVERYTHING (Python runtime,
 # onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver
 # and an embedded Redis), so an installed package needs no Docker and no
-# separately-installed database/broker. See linux/README.md for why Postgres and
+# separately-installed database/broker. See native-build/linux/README.md for why Postgres and
 # Redis are bundled rather than declared as system dependencies (pgvector +
 # unaccent/pg_trgm against an exact PG minor, plus the per-distro package-name /
 # version skew, make a portable single .deb/.rpm "hard dependency" infeasible).
 #
 # The small native build inputs (redis-server, the unaccent/pg_trgm contrib
-# modules) are built from source in this workflow (linux/vendor/*) rather than
+# modules) are built from source in this workflow (native-build/linux/vendor/*) rather than
 # committed, then baked into the bundle by the shared AudioMuse-AI.spec.
 #
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
@@ -59,7 +59,7 @@ jobs:
     #   * x86_64  -> pgserver wheel (+ vendored unaccent/pg_trgm grafted in).
     #   * aarch64 -> a from-source PostgreSQL (server + the two contrib modules)
     #                built here and bundled wholesale; managed by
-    #                linux/embedded_pg.py at runtime.
+    #                native-build/linux/embedded_pg.py at runtime.
     strategy:
       fail-fast: false
       matrix:
@@ -114,8 +114,8 @@ jobs:
       - name: Validate the desktop entries
         run: |
           set -euo pipefail
-          desktop-file-validate linux/packaging/AudioMuse-AI.desktop
-          desktop-file-validate linux/packaging/AudioMuse-AI-stop.desktop
+          desktop-file-validate native-build/linux/packaging/AudioMuse-AI.desktop
+          desktop-file-validate native-build/linux/packaging/AudioMuse-AI-stop.desktop
           echo "Desktop entries are valid."
 
       - name: Install Python dependencies
@@ -127,7 +127,7 @@ jobs:
           pip install -r requirements/linux.txt
 
       - name: Build vendored redis-server
-        run: bash linux/vendor/build-redis.sh
+        run: bash native-build/linux/vendor/build-redis.sh
 
       # x86_64: compile unaccent/pg_trgm against the installed pgserver's PG.
       - name: Build vendored PostgreSQL contrib (x86_64, against pgserver)
@@ -135,13 +135,13 @@ jobs:
         run: |
           set -euo pipefail
           source .venv-linux/bin/activate   # pgserver must be importable
-          bash linux/vendor/pg-contrib/build-pg-contrib.sh
+          bash native-build/linux/vendor/pg-contrib/build-pg-contrib.sh
 
       # aarch64: no pgserver wheel -> build a relocatable PostgreSQL (server +
       # unaccent/pg_trgm) from source and bundle the whole tree.
       - name: Build vendored PostgreSQL from source (aarch64)
         if: matrix.arch == 'aarch64'
-        run: bash linux/vendor/postgres/build-postgres.sh
+        run: bash native-build/linux/vendor/postgres/build-postgres.sh
 
       - name: Assemble ./model (mirrors the Dockerfile/macOS models stage)
         env:

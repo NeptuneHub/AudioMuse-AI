@@ -3,9 +3,9 @@ from ._pgserver import verify_pgserver_bundle
 
 def prepare(ctx):
     arch = ctx.arch
-    pg_contrib = ctx.root / "windows" / "vendor" / "pg-contrib" / arch
+    pg_contrib = ctx.root / "native-build" / "windows" / "vendor" / "pg-contrib" / arch
     required = [
-        ctx.root / "windows" / "vendor" / "redis" / arch / "redis-server.exe",
+        ctx.root / "native-build" / "windows" / "vendor" / "redis" / arch / "redis-server.exe",
         pg_contrib / "lib" / "unaccent.dll",
         pg_contrib / "lib" / "pg_trgm.dll",
         pg_contrib / "extension" / "unaccent.control",
@@ -16,7 +16,7 @@ def prepare(ctx):
     if missing:
         for m in missing:
             print(f"[ERROR] Missing vendored file: {m}")
-        raise SystemExit("Vendored inputs missing (see windows/vendor/README.md).")
+        raise SystemExit("Vendored inputs missing (see native-build/windows/vendor/README.md).")
 
 
 def package(ctx):

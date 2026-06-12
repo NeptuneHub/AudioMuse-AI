@@ -7,11 +7,11 @@ onnxruntime==1.19.2
 
 # pgserver ships a prebuilt PostgreSQL; 0.1.4 bundles PostgreSQL 16.2. Pinned
 # because contrib modules are NOT ABI-stable across PG minors -- the vendored
-# unaccent/pg_trgm in linux/vendor/pg-contrib/ are compiled against 16.2 and a
+# unaccent/pg_trgm in native-build/linux/vendor/pg-contrib/ are compiled against 16.2 and a
 # pgserver bump to a newer PG would break them at load time (see that README).
 #
 # x86_64 ONLY: pgserver publishes no Linux/aarch64 wheel, so on arm64 we bundle a
-# from-source PostgreSQL instead (linux/vendor/postgres/build-postgres.sh) and
+# from-source PostgreSQL instead (native-build/linux/vendor/postgres/build-postgres.sh) and
 # this requirement is skipped. The marker makes `pip install -r` succeed on both.
 pgserver==0.1.4; platform_machine == "x86_64"
 
