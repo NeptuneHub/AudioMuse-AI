@@ -2,6 +2,7 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
+import threading
 import numpy as np
 
 # Import the new config option
@@ -18,9 +19,10 @@ from tasks.voyager_manager import (
 
 logger = logging.getLogger(__name__)
 
-# --- Load mood centroids at module level ---
 _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
 _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)} for API
+_mood_centroids_loaded = False
+_mood_centroids_lock = threading.Lock()
 
 def _load_mood_centroids_for_similarity():
     try:
@@ -45,7 +47,22 @@ def _load_mood_centroids_for_similarity():
     except Exception as e:
         logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
 
-_load_mood_centroids_for_similarity()
+def _ensure_mood_centroids_loaded():
+    """Parse the mood-centroids JSON on first use instead of at import.
+
+    The file is ~1MB; loading it lazily keeps module import (and therefore
+    web/worker startup) free of the parse cost. A single attempt is made,
+    matching the old import-time behavior where a failed load left the
+    dicts empty without retrying.
+    """
+    global _mood_centroids_loaded
+    if _mood_centroids_loaded:
+        return
+    with _mood_centroids_lock:
+        if _mood_centroids_loaded:
+            return
+        _load_mood_centroids_for_similarity()
+        _mood_centroids_loaded = True
 
 # Create a Blueprint for Voyager (similarity) related routes
 voyager_bp = Blueprint('voyager_bp', __name__, template_folder='../templates')
@@ -190,6 +207,7 @@ def get_mood_centroids_endpoint():
       200:
         description: Dictionary of mood names to lists of centroid metadata.
     """
+    _ensure_mood_centroids_loaded()
     mood_filter = request.args.get('mood', '', type=str).strip().lower()
     if mood_filter:
         if mood_filter not in _MOOD_CENTROIDS_META:
@@ -300,6 +318,7 @@ def get_similar_tracks_endpoint():
 
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
+        _ensure_mood_centroids_loaded()
         if mood_param not in _MOOD_CENTROIDS_DATA:
             return jsonify({"error": f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}"}), 400
         centroids = _MOOD_CENTROIDS_DATA[mood_param]

@@ -1,12 +1,12 @@
-# tasks/mediaserver_lyrion.py
+# tasks/mediaserver/lyrion.py
 
-from tasks import mediaserver_http as requests
+from . import http as requests
 import logging
 import os
 from urllib.parse import unquote, urlparse
 import config
 
-from tasks.mediaserver_helper import detect_path_format
+from .helper import detect_path_format
 
 logger = logging.getLogger(__name__)
 

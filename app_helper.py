@@ -1419,7 +1419,7 @@ def build_and_store_map_projection(index_name='main_map'):
     """
     # Import local projection helpers to avoid circular imports
     try:
-        from tasks.song_alchemy import _project_with_umap, _project_to_2d
+        from tasks.alchemy_projections import _project_with_umap, _project_to_2d
     except Exception:
         _project_with_umap = None
         _project_to_2d = None
@@ -1540,7 +1540,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     Returns True on success.
     """
     from tasks.artist_gmm_manager import load_artist_index_for_querying
-    from tasks.song_alchemy import _project_with_umap, _project_to_2d
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d
     
     # Always reload artist GMM params from database (force reload to ensure fresh data)
     load_artist_index_for_querying(force_reload=True)

@@ -1,4 +1,4 @@
-# tasks/mediaserver_http.py
+# tasks/mediaserver/http.py
 """Centralized HTTP layer for the media-server clients.
 
 Drop-in stand-in for the parts of ``requests`` the media-server modules use.
@@ -6,7 +6,7 @@ Adopt it with a one-line import swap and nothing else:
 
     import requests
     ->
-    from tasks import mediaserver_http as requests
+    from . import http as requests
 
 Every existing ``requests.get(...)`` / ``requests.post(...)`` / etc. call then
 gains a *connection-only* retry, and any other attribute

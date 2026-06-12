@@ -2,7 +2,8 @@ import re
 import types
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
-from app import app, setup_manager
+from flask_app import app
+from tasks.setup_manager import setup_manager
 from app_helper import check_setup_needed, validate_outbound_url
 import restart_manager
 import tasks.mediaserver as mediaserver
@@ -74,10 +75,6 @@ HIDDEN_ADVANCED_FIELDS = {
     'OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY',
     'PROBE_TOP_PLAYED_LIMIT',
     'MOOD_CENTROIDS_FILE',
-    'MPD_HOST',
-    'MPD_MUSIC_DIRECTORY',
-    'MPD_PASSWORD',
-    'MPD_PORT',
     'OTHER_FEATURE_LABELS',
     'STRATIFIED_GENRES',
     'TEMPO_MAX_BPM',

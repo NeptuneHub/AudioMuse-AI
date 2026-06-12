@@ -24,8 +24,6 @@ import threading
 import math # Import math for ceiling function
 
 from config import EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE
-# Import from other project modules
-from .mediaserver import create_instant_playlist
 
 logger = logging.getLogger(__name__)
 
@@ -1322,8 +1320,7 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
     Creates a new playlist on the configured media server with the provided name and track IDs.
     """
     try:
-        # Use the mediaserver dispatcher (imported at module top) to create the playlist.
-        # This avoids importing app_external which may not export the helper.
+        from .mediaserver import create_instant_playlist
         created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
         
         if not created_playlist:

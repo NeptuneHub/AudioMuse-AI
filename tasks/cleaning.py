@@ -28,7 +28,7 @@ def identify_and_clean_orphaned_albums_task():
     Main RQ task to identify and automatically clean orphaned albums from the database.
     This combines identification and deletion into a single automated process.
     """
-    from app import app
+    from flask_app import app
     from app_helper import redis_conn, get_db, save_task_status, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
 
     current_job = get_current_job(redis_conn)
@@ -276,7 +276,7 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
     Returns:
         dict: Result summary with deletion statistics
     """
-    from app import get_db
+    from app_helper import get_db
     
     if not orphaned_track_ids:
         return {"status": "SUCCESS", "message": "No tracks to delete", "deleted_count": 0}

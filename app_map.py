@@ -8,9 +8,9 @@ import gzip
 
 from app_helper import get_db, load_map_projection
 
-# Try to reuse projection helpers from song_alchemy
+# Try to reuse the shared projection helpers
 try:
-    from tasks.song_alchemy import _project_with_umap, _project_to_2d, _project_aligned_add_sub, _project_with_discriminant
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d, _project_aligned_add_sub, _project_with_discriminant
 except Exception:
     # Fallbacks will be used if import fails
     _project_with_umap = None

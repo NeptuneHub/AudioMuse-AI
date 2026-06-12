@@ -301,3 +301,6 @@ class SetupManager:
                 "overridden": overridden,
             })
         return fields
+
+
+setup_manager = SetupManager()

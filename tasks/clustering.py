@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 def batch_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the clustering batch sub-task, executed by the worker."""
-    from app import app
+    from flask_app import app
     from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
@@ -133,7 +133,7 @@ def run_clustering_batch_task(
     Executes a batch of clustering iterations. This task is enqueued by the main clustering task.
     """
     # --- Local imports to prevent circular dependency ---
-    from app import app
+    from flask_app import app
     from app_helper import (redis_conn, save_task_status, get_task_info_from_db,
                      TASK_STATUS_PROGRESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE,
                      TASK_STATUS_SUCCESS)
@@ -275,7 +275,7 @@ def run_clustering_task(
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
     """
     # --- Local imports to prevent circular dependency ---
-    from app import app
+    from flask_app import app
     from app_helper import redis_conn, get_db, save_task_status, get_task_info_from_db, update_playlist_table, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 
     current_job = get_current_job(redis_conn)
