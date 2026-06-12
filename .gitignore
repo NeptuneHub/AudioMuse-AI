@@ -46,11 +46,6 @@ env/
 htmlcov/
 nul
 
-# Large model files in query folder
-/query/*.pt
-/query/*.onnx
-
-
 # Downloaded ONNX models (from run_worker_macos.sh or similar)
 /model/
 
