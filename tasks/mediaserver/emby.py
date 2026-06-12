@@ -5,7 +5,8 @@ import logging
 import os
 import config
 
-from .helper import detect_path_format
+from .helper import detect_path_format, detect_download_extension
+from .helper import select_best_artist as _select_best_artist
 
 logger = logging.getLogger(__name__)
 
@@ -502,22 +503,7 @@ def download_track(temp_dir, item):
     # https://dev.emby.media/reference/RestAPI/LibraryService/getItemsByIdDownload.html
     try:
         track_id = item['Id']
-        
-        # Try to get format from Container field first (most reliable)
-        file_extension = '.tmp'
-        try:
-            container = item.get('Container')
-            if container and isinstance(container, str) and container.strip():
-                # Ensure container value is safe (no path separators, etc.)
-                safe_container = container.strip().replace('/', '').replace('\\', '')
-                if safe_container:
-                    file_extension = f".{safe_container}"
-                    logger.debug(f"Using Container field for format: {file_extension}")
-            elif item.get('Path'):
-                file_extension = os.path.splitext(item['Path'])[1] or '.tmp'
-        except Exception as e:
-            logger.debug(f"Error getting format from Container/Path, using .tmp: {e}")
-        
+        file_extension = detect_download_extension(item)
         download_url = f"{config.EMBY_URL}/emby/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
         with requests.get(download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT) as r:
@@ -529,29 +515,6 @@ def download_track(temp_dir, item):
     except Exception as e:
         logger.error(f"Failed to download track {item.get('Name', 'Unknown')}: {e}", exc_info=True)
         return None
-
-def _select_best_artist(item, title="Unknown"):
-    """
-    Selects the best artist field from Emby item, prioritizing track artists over album artists.
-    This helps avoid "Various Artists" issues in compilation albums.
-    Returns tuple: (artist_name, artist_id)
-    """
-    # Priority: Artists array (track artists) > AlbumArtist > fallback
-    # Emby provides ArtistItems array with Id and Name
-    if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
-        track_artist = item['ArtistItems'][0].get('Name', 'Unknown Artist')
-        artist_id = item['ArtistItems'][0].get('Id')
-    elif item.get('Artists') and len(item['Artists']) > 0:
-        track_artist = item['Artists'][0]  # Take first artist if multiple
-        artist_id = None
-    elif item.get('AlbumArtist'):
-        track_artist = item['AlbumArtist']
-        artist_id = None
-    else:
-        track_artist = 'Unknown Artist'
-        artist_id = None
-    
-    return track_artist, artist_id
 
 def get_all_songs(user_creds=None):
     # Emby might have a maximum number of items returned per request.

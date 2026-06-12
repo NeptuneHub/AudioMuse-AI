@@ -3,12 +3,8 @@ CLAP Text Search Manager
 Provides in-memory caching and fast text-based music search using CLAP embeddings.
 """
 
-import gc
-import json
 import logging
-import re
 import sys
-import tempfile
 import threading
 import time
 
@@ -60,25 +56,8 @@ def get_clap_cache_size() -> int:
 
 
 def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
-    """Fetch metadata for CLAP result item_ids from the database."""
-    metadata_map: Dict[str, Dict[str, str]] = {}
-    if not item_ids:
-        return metadata_map
-
-    from app_helper import get_score_data_by_ids
-    try:
-        track_details_list = get_score_data_by_ids(item_ids)
-        for row in track_details_list:
-            item_id = row['item_id']
-            metadata_map[item_id] = {
-                'title': row.get('title', ''),
-                'author': row.get('author', ''),
-                'album': row.get('album', ''),
-            }
-    except Exception:
-        pass
-
-    return metadata_map
+    from .commons import fetch_track_metadata_map
+    return fetch_track_metadata_map(item_ids)
 
 
 def _load_clap_index_from_db() -> bool:
@@ -86,119 +65,26 @@ def _load_clap_index_from_db() -> bool:
 
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
+    from .index_build_helpers import load_voyager_index_from_db
 
     try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = 0")
-            cur.execute(
-                "SELECT index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name = %s",
-                ('clap_index',)
-            )
-            row = cur.fetchone()
+        loaded = load_voyager_index_from_db(
+            get_db(), 'clap_index_data', 'clap_index',
+            CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, label='CLAP',
+        )
+        if loaded is None:
+            return False
+        loaded_index, id_map, reverse_id_map = loaded
 
-            index_stream = None
-            try:
-                if row:
-                    index_binary_data, id_map_json, db_embedding_dim = row
-                    index_stream = tempfile.TemporaryFile()
-                    index_stream.write(index_binary_data)
-                    index_stream.seek(0)
-                else:
-                    seg_pattern = re.compile(r'^clap_index_(\d+)_(\d+)$')
-                    parts = []
-                    total_expected = None
-                    with conn.cursor(name='clap_index_segments') as seg_cur:
-                        seg_cur.itersize = 50
-                        seg_cur.execute(
-                            "SELECT index_name, index_data, id_map_json, embedding_dimension FROM clap_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                            (r'clap_index\_%\_%',)
-                        )
-                        for name, part_data, part_id_map_json, part_dim in seg_cur:
-                            m = seg_pattern.match(name)
-                            if not m:
-                                continue
-                            part_no = int(m.group(1))
-                            total = int(m.group(2))
-                            if total_expected is None:
-                                total_expected = total
-                            elif total_expected != total:
-                                logger.error(f"Segment total mismatch for CLAP index parts ({total_expected} vs {total}).")
-                                return False
-                            parts.append((part_no, part_data, part_id_map_json, part_dim))
+        _CLAP_CACHE['loaded'] = True
 
-                    if total_expected is None or len(parts) != total_expected:
-                        logger.error(f"Incomplete CLAP index segments: expected {total_expected}, found {len(parts)}.")
-                        return False
+        _CLAP_INDEX_CACHE['index'] = loaded_index
+        _CLAP_INDEX_CACHE['id_map'] = id_map
+        _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
+        _CLAP_INDEX_CACHE['loaded'] = True
 
-                    parts.sort(key=lambda p: p[0])
-                    from .index_build_helpers import reassemble_segmented_id_map
-                    id_map_json_candidate = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-                    for _, _, _, part_dim in parts:
-                        if part_dim != CLAP_EMBEDDING_DIMENSION:
-                            logger.error(f"CLAP index embedding_dimension mismatch in segmented parts: expected {CLAP_EMBEDDING_DIMENSION}, got {part_dim}.")
-                            return False
-
-                    if not id_map_json_candidate:
-                        logger.error("No id_map_json found in segmented CLAP index rows.")
-                        return False
-
-                    db_embedding_dim = parts[0][3]
-                    index_stream = tempfile.TemporaryFile()
-                    for _, part_data, _, _ in parts:
-                        index_stream.write(part_data)
-                    index_stream.seek(0)
-                    id_map_json = id_map_json_candidate
-
-                if index_stream is None:
-                    logger.error("CLAP index binary data was empty.")
-                    return False
-
-                if db_embedding_dim != CLAP_EMBEDDING_DIMENSION:
-                    logger.error(f"CLAP index dimension mismatch: db={db_embedding_dim} expected={CLAP_EMBEDDING_DIMENSION}")
-                    index_stream.close()
-                    return False
-
-                try:
-                    try:
-                        import voyager  # type: ignore
-                    except ImportError:
-                        logger.warning("Voyager library is unavailable; cannot load persisted CLAP index.")
-                        return False
-
-                    loaded_index = voyager.Index.load(index_stream)
-                    loaded_index.ef = VOYAGER_QUERY_EF
-                finally:
-                    if index_stream is not None:
-                        try:
-                            index_stream.close()
-                        except Exception as close_error:
-                            logger.warning("Failed to close CLAP index stream: %s", close_error, exc_info=True)
-
-            except Exception:
-                if index_stream is not None:
-                    try:
-                        index_stream.close()
-                    except Exception:
-                        pass
-                raise
-
-            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            if not id_map:
-                logger.error("CLAP index id_map is empty.")
-                return False
-
-            _CLAP_CACHE['loaded'] = True
-
-            _CLAP_INDEX_CACHE['index'] = loaded_index
-            _CLAP_INDEX_CACHE['id_map'] = id_map
-            _CLAP_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-            _CLAP_INDEX_CACHE['loaded'] = True
-
-            logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
-            return True
+        logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
+        return True
     except Exception as e:
         logger.error(f"Failed to load CLAP index from DB: {e}", exc_info=True)
         return False
@@ -208,63 +94,21 @@ def build_and_store_clap_index(db_conn=None):
     """Build a CLAP text search voyager index from stored CLAP embeddings and save it to the DB."""
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC
-    from .index_build_helpers import (
-        iter_embedding_batches,
-        build_voyager_index_bytes_streaming,
-        store_voyager_index_segmented,
-        build_id_map,
-        EmptyIndexError,
-    )
-
-    try:
-        import voyager  # type: ignore  # noqa: F401
-    except ImportError:
-        logger.warning("Voyager library is unavailable; cannot build CLAP index.")
-        return False
+    from .index_build_helpers import build_and_store_index_streaming
 
     if db_conn is None:
         db_conn = get_db()
 
-    try:
-        logger.info("Building CLAP voyager index (streaming)...")
-        batches = iter_embedding_batches(
-            table="clap_embedding",
-            column="embedding",
-            dim=CLAP_EMBEDDING_DIMENSION,
-        )
-        try:
-            index_bytes, item_ids = build_voyager_index_bytes_streaming(
-                batches, CLAP_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-            )
-        except EmptyIndexError as ve:
-            logger.warning(f"No valid CLAP embedding vectors found for CLAP index build: {ve}")
-            return False
-        gc.collect()
-
-        if not index_bytes:
-            logger.error("Generated CLAP index binary is empty. Aborting storage.")
-            return False
-
-        id_map = build_id_map(item_ids)
-        store_voyager_index_segmented(
-            db_conn,
-            target_table="clap_index_data",
-            index_name="clap_index",
-            index_bytes=index_bytes,
-            id_map=id_map,
-            embedding_dimension=CLAP_EMBEDDING_DIMENSION,
-        )
-
-        db_conn.commit()
-        logger.info("CLAP text search index build successful.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to build and store CLAP index: {e}", exc_info=True)
-        try:
-            db_conn.rollback()
-        except Exception:
-            pass
-        return False
+    return build_and_store_index_streaming(
+        db_conn,
+        source_table="clap_embedding",
+        source_column="embedding",
+        dim=CLAP_EMBEDDING_DIMENSION,
+        target_table="clap_index_data",
+        index_name="clap_index",
+        metric=VOYAGER_METRIC,
+        label="CLAP",
+    )
 
 
 def _unload_timer_worker():
@@ -360,9 +204,8 @@ def load_clap_cache_from_db():
     Returns True if successful, False otherwise.
     """
     
-    from app_helper import get_db
     from config import CLAP_ENABLED
-    
+
     if not CLAP_ENABLED:
         logger.info("CLAP is disabled, skipping cache load.")
         return False

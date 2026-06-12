@@ -6,8 +6,6 @@ Covers the centralized helpers used by every Voyager index builder:
 - stream_embeddings_to_buffer: side-connection streaming into a pre-allocated
   numpy buffer; identifier validation; NULL/wrong-dim skipping; buffer
   growth when the COUNT hint under-estimates due to concurrent writes.
-- build_voyager_index_bytes: rejects empty/wrong-shape buffers, coerces
-  non-float32 input, round-trips through voyager.Index.load.
 - store_voyager_index_segmented: single-row vs segmented persistence,
   identifier validation, empty-bytes guard.
 - build_id_map / _split_bytes / _resolve_voyager_space / _validate_sql_identifier.
@@ -267,65 +265,6 @@ class TestResolveVoyagerSpace:
         except ImportError:
             pytest.skip("voyager not installed")
         assert _helpers._resolve_voyager_space(None) == voyager.Space.Cosine
-
-
-class TestBuildVoyagerIndexBytes:
-    def test_rejects_empty_buffer(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        with pytest.raises(ValueError, match="empty"):
-            _helpers.build_voyager_index_bytes(
-                np.empty((0, 8), dtype=np.float32), 8,
-            )
-
-    def test_rejects_dim_mismatch(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        with pytest.raises(ValueError, match="dim"):
-            _helpers.build_voyager_index_bytes(
-                np.zeros((3, 7), dtype=np.float32), 8,
-            )
-
-    def test_rejects_one_dim_buffer(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        with pytest.raises(ValueError, match="2-D"):
-            _helpers.build_voyager_index_bytes(
-                np.zeros(8, dtype=np.float32), 8,
-            )
-
-    def test_round_trip_load(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-
-        rng = np.random.default_rng(42)
-        buf = rng.standard_normal((10, 16)).astype(np.float32)
-
-        index_bytes = _helpers.build_voyager_index_bytes(buf, 16, metric="angular")
-        assert isinstance(index_bytes, (bytes, bytearray)) and len(index_bytes) > 0
-
-        import io
-        loaded = voyager.Index.load(io.BytesIO(index_bytes))
-        assert len(loaded) == 10
-        neighbour_ids, _ = loaded.query(buf[3], k=1)
-        assert int(neighbour_ids[0]) == 3
-
-    def test_coerces_non_float32_input(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        buf64 = np.random.default_rng(0).standard_normal((4, 8)).astype(np.float64)
-        out = _helpers.build_voyager_index_bytes(buf64, 8, metric="angular")
-        assert len(out) > 0
 
 
 class TestStoreVoyagerIndexSegmented:

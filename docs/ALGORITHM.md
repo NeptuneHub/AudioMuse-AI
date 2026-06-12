@@ -266,13 +266,12 @@ The Song Analysis functionality is configured by the following environment varia
 
 #### **Media Server**
 
-* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., jellyfin, navidrome, emby, lyrion, mpd).  
+* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., jellyfin, navidrome, emby, lyrion).  
 * MUSIC\_LIBRARIES: (Optional) A comma-separated list of library names to scan. If empty, all music libraries are scanned.  
 * JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Credentials for Jellyfin (if MEDIASERVER\_TYPE="jellyfin").  
 * EMBY\_URL, EMBY\_USER\_ID, EMBY\_TOKEN: Credentials for Emby (if MEDIASERVER\_TYPE="emby").  
 * NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
-* LYRION\_URL: Credentials for Lyrion (if MEDIASERVER\_TYPE="lyrion").  
-* MPD\_HOST, MPD\_PORT, MPD\_PASSWORD, MPD\_MUSIC\_DIRECTORY: Credentials for MPD (if MEDIASERVER\_TYPE="mpd").
+* LYRION\_URL: Credentials for Lyrion (if MEDIASERVER\_TYPE="lyrion").
 
 #### **Task & Performance Tuning**
 

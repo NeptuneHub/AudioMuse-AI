@@ -10,9 +10,8 @@ from urllib.parse import urlparse
 import psycopg2
 from psycopg2.extras import DictCursor
 import numpy as np
-from flask import g
 
-from database import get_db, close_db
+from database import get_db
 from taskqueue import (
     redis_conn,
     rq_queue_high,
@@ -1775,18 +1774,7 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
 # JWT handling, the Flask routes) lives in ``app_auth``. The re-exports
 # below keep the legacy ``from app_helper import ...`` paths working.
 from app_auth import (  # noqa: E402  (intentional late import to avoid cycles)
-    USER_ROLE_USER,
-    USER_ROLE_ADMIN,
     check_setup_needed,
-    check_auth_needed,
-    check_admin_needed,
-    is_admin_path,
-    list_additional_users,
     count_admin_users,
-    get_additional_user_by_id,
-    create_additional_user,
-    delete_additional_user_safe,
-    verify_additional_user,
     upsert_admin_user,
-    seed_admin_from_env,
 )

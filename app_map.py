@@ -10,12 +10,11 @@ from app_helper import get_db, load_map_projection
 
 # Try to reuse the shared projection helpers
 try:
-    from tasks.alchemy_projections import _project_with_umap, _project_to_2d, _project_aligned_add_sub, _project_with_discriminant
+    from tasks.alchemy_projections import _project_with_umap, _project_to_2d, _project_with_discriminant
 except Exception:
     # Fallbacks will be used if import fails
     _project_with_umap = None
     _project_to_2d = None
-    _project_aligned_add_sub = None
     _project_with_discriminant = None
 
 logger = logging.getLogger(__name__)

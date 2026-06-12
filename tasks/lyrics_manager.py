@@ -14,12 +14,8 @@ Mirrors the architecture of tasks/clap_text_search.py:
     * search_by_text(query, limit) for the open free-form text tab
 """
 
-import gc
-import json
 import logging
-import re
 import sys
-import tempfile
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -52,21 +48,8 @@ _LYRICS_AXIS_CACHE = {
 # ---------------------------------------------------------------------------
 
 def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
-    metadata_map: Dict[str, Dict[str, str]] = {}
-    if not item_ids:
-        return metadata_map
-    from app_helper import get_score_data_by_ids
-    try:
-        track_details = get_score_data_by_ids(item_ids)
-        for row in track_details:
-            metadata_map[row['item_id']] = {
-                'title': row.get('title', '') or '',
-                'author': row.get('author', '') or '',
-                'album': row.get('album', '') or '',
-            }
-    except Exception as e:
-        logger.warning(f"Failed to fetch lyrics metadata: {e}")
-    return metadata_map
+    from .commons import fetch_track_metadata_map
+    return fetch_track_metadata_map(item_ids)
 
 
 def _axis_columns_from_axes() -> List[tuple]:
@@ -83,68 +66,26 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
     """Build a voyager index from stored lyrics embeddings and persist it."""
     from app_helper import get_db
     from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, VOYAGER_METRIC
-    from .index_build_helpers import (
-        iter_embedding_batches,
-        build_voyager_index_bytes_streaming,
-        store_voyager_index_segmented,
-        build_id_map,
-        EmptyIndexError,
-    )
+    from .index_build_helpers import build_and_store_index_streaming
 
     if not LYRICS_ENABLED:
         logger.info("Lyrics analysis is disabled; skipping lyrics index build.")
         return False
 
-    try:
-        import voyager  # type: ignore  # noqa: F401
-    except ImportError:
-        logger.warning("Voyager library is unavailable; cannot build lyrics index.")
-        return False
-
     if db_conn is None:
         db_conn = get_db()
 
-    try:
-        logger.info("Building lyrics voyager index (streaming)...")
-        batches = iter_embedding_batches(
-            table="lyrics_embedding",
-            column="embedding",
-            dim=LYRICS_EMBEDDING_DIMENSION,
-            where_clause="embedding IS NOT NULL",
-        )
-        try:
-            index_bytes, item_ids = build_voyager_index_bytes_streaming(
-                batches, LYRICS_EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-            )
-        except EmptyIndexError as ve:
-            logger.warning(f"No valid lyrics embedding vectors for index build: {ve}")
-            return False
-        gc.collect()
-
-        if not index_bytes:
-            logger.error("Generated lyrics index binary is empty; aborting storage.")
-            return False
-
-        id_map = build_id_map(item_ids)
-        store_voyager_index_segmented(
-            db_conn,
-            target_table="lyrics_index_data",
-            index_name="lyrics_index",
-            index_bytes=index_bytes,
-            id_map=id_map,
-            embedding_dimension=LYRICS_EMBEDDING_DIMENSION,
-        )
-
-        db_conn.commit()
-        logger.info("Lyrics search index build successful.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to build/store lyrics index: {e}", exc_info=True)
-        try:
-            db_conn.rollback()
-        except Exception:
-            pass
-        return False
+    return build_and_store_index_streaming(
+        db_conn,
+        source_table="lyrics_embedding",
+        source_column="embedding",
+        dim=LYRICS_EMBEDDING_DIMENSION,
+        target_table="lyrics_index_data",
+        index_name="lyrics_index",
+        metric=VOYAGER_METRIC,
+        where_clause="embedding IS NOT NULL",
+        label="lyrics",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,22 +96,10 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     """Build a voyager index from the per-song axis_scores flattened to a fixed-order vector."""
     from app_helper import get_db
     from config import LYRICS_ENABLED
-    from .index_build_helpers import (
-        iter_embedding_batches,
-        build_voyager_index_bytes_streaming,
-        store_voyager_index_segmented,
-        build_id_map,
-        EmptyIndexError,
-    )
+    from .index_build_helpers import build_and_store_index_streaming
 
     if not LYRICS_ENABLED:
         logger.info("Lyrics analysis is disabled; skipping lyrics axes index build.")
-        return False
-
-    try:
-        import voyager  # type: ignore  # noqa: F401
-    except ImportError:
-        logger.warning("Voyager library is unavailable; cannot build lyrics axes index.")
         return False
 
     if db_conn is None:
@@ -182,47 +111,17 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
         return False
     dim = len(columns)
 
-    try:
-        logger.info(f"Building lyrics axes voyager index (streaming, dim={dim})...")
-        batches = iter_embedding_batches(
-            table="lyrics_embedding",
-            column="axis_vector",
-            dim=dim,
-            where_clause="axis_vector IS NOT NULL",
-        )
-        try:
-            index_bytes, item_ids = build_voyager_index_bytes_streaming(
-                batches, dim, metric="angular",
-            )
-        except EmptyIndexError as ve:
-            logger.warning(f"No usable axis_vector rows; aborting axes index build: {ve}")
-            return False
-        gc.collect()
-
-        if not index_bytes:
-            logger.error("Generated lyrics axes index binary is empty; aborting storage.")
-            return False
-
-        id_map = build_id_map(item_ids)
-        store_voyager_index_segmented(
-            db_conn,
-            target_table="lyrics_axes_index_data",
-            index_name="lyrics_axes_index",
-            index_bytes=index_bytes,
-            id_map=id_map,
-            embedding_dimension=dim,
-        )
-
-        db_conn.commit()
-        logger.info("Lyrics axes index build successful.")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to build/store lyrics axes index: {e}", exc_info=True)
-        try:
-            db_conn.rollback()
-        except Exception:
-            pass
-        return False
+    return build_and_store_index_streaming(
+        db_conn,
+        source_table="lyrics_embedding",
+        source_column="axis_vector",
+        dim=dim,
+        target_table="lyrics_axes_index_data",
+        index_name="lyrics_axes_index",
+        metric="angular",
+        where_clause="axis_vector IS NOT NULL",
+        label="lyrics axes",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -233,105 +132,24 @@ def _load_lyrics_index_from_db() -> bool:
     """Load persisted voyager index for lyrics from the DB into the global cache."""
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
+    from .index_build_helpers import load_voyager_index_from_db
 
     try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = 0")
-            cur.execute(
-                "SELECT index_data, id_map_json, embedding_dimension FROM lyrics_index_data "
-                "WHERE index_name = %s",
-                ('lyrics_index',),
-            )
-            row = cur.fetchone()
+        loaded = load_voyager_index_from_db(
+            get_db(), 'lyrics_index_data', 'lyrics_index',
+            LYRICS_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, label='lyrics',
+        )
+        if loaded is None:
+            return False
+        loaded_index, id_map, reverse_id_map = loaded
 
-            index_stream = None
-            try:
-                if row:
-                    binary, id_map_json, db_dim = row
-                    index_stream = tempfile.TemporaryFile()
-                    index_stream.write(binary)
-                    index_stream.seek(0)
-                else:
-                    seg_pattern = re.compile(r'^lyrics_index_(\d+)_(\d+)$')
-                    parts = []
-                    total_expected = None
-                    with conn.cursor(name='lyrics_index_segments') as seg_cur:
-                        seg_cur.itersize = 50
-                        seg_cur.execute(
-                            "SELECT index_name, index_data, id_map_json, embedding_dimension "
-                            "FROM lyrics_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                            (r'lyrics_index\_%\_%',),
-                        )
-                        for name, part_data, part_id_map, part_dim in seg_cur:
-                            m = seg_pattern.match(name)
-                            if not m:
-                                continue
-                            part_no = int(m.group(1))
-                            total = int(m.group(2))
-                            if total_expected is None:
-                                total_expected = total
-                            elif total_expected != total:
-                                logger.error(
-                                    f"Lyrics index segment total mismatch: {total_expected} vs {total}"
-                                )
-                                return False
-                            parts.append((part_no, part_data, part_id_map, part_dim))
+        _LYRICS_INDEX_CACHE['index'] = loaded_index
+        _LYRICS_INDEX_CACHE['id_map'] = id_map
+        _LYRICS_INDEX_CACHE['reverse_id_map'] = reverse_id_map
+        _LYRICS_INDEX_CACHE['loaded'] = True
 
-                    if total_expected is None or len(parts) != total_expected:
-                        logger.info(
-                            f"No complete persisted lyrics index found (expected {total_expected}, "
-                            f"have {len(parts)})."
-                        )
-                        return False
-
-                    parts.sort(key=lambda p: p[0])
-                    from .index_build_helpers import reassemble_segmented_id_map
-                    db_dim = parts[0][3]
-                    index_stream = tempfile.TemporaryFile()
-                    for _, part_data, _, _ in parts:
-                        index_stream.write(part_data)
-                    index_stream.seek(0)
-                    id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-
-                if index_stream is None:
-                    return False
-                if db_dim != LYRICS_EMBEDDING_DIMENSION:
-                    logger.error(
-                        f"Lyrics index dimension mismatch: db={db_dim} expected={LYRICS_EMBEDDING_DIMENSION}"
-                    )
-                    index_stream.close()
-                    return False
-
-                try:
-                    import voyager  # type: ignore
-                except ImportError:
-                    logger.warning("Voyager library is unavailable; cannot load lyrics index.")
-                    return False
-
-                loaded_index = voyager.Index.load(index_stream)
-                loaded_index.ef = VOYAGER_QUERY_EF
-            finally:
-                if index_stream is not None:
-                    try:
-                        index_stream.close()
-                    except Exception:
-                        pass
-
-            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            if not id_map:
-                logger.warning("Lyrics index id_map is empty.")
-                return False
-
-            _LYRICS_INDEX_CACHE['index'] = loaded_index
-            _LYRICS_INDEX_CACHE['id_map'] = id_map
-            _LYRICS_INDEX_CACHE['reverse_id_map'] = reverse_id_map
-            _LYRICS_INDEX_CACHE['loaded'] = True
-
-            logger.info(f"Lyrics index loaded from database with {len(id_map)} items.")
-            return True
+        logger.info(f"Lyrics index loaded from database with {len(id_map)} items.")
+        return True
     except Exception as e:
         logger.error(f"Failed to load lyrics index from DB: {e}", exc_info=True)
         return False
@@ -345,112 +163,31 @@ def _load_lyrics_axes_index_from_db() -> bool:
     """Load persisted voyager index for the lyrics axis vectors."""
     from app_helper import get_db
     from config import VOYAGER_QUERY_EF
+    from .index_build_helpers import load_voyager_index_from_db
 
     columns = _axis_columns_from_axes()
     expected_dim = len(columns)
 
     try:
-        conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = 0")
-            cur.execute(
-                "SELECT index_data, id_map_json, embedding_dimension FROM lyrics_axes_index_data "
-                "WHERE index_name = %s",
-                ('lyrics_axes_index',),
-            )
-            row = cur.fetchone()
+        loaded = load_voyager_index_from_db(
+            get_db(), 'lyrics_axes_index_data', 'lyrics_axes_index',
+            expected_dim, VOYAGER_QUERY_EF, label='lyrics axes',
+        )
+        if loaded is None:
+            return False
+        loaded_index, id_map, reverse_id_map = loaded
 
-            index_stream = None
-            try:
-                if row:
-                    binary, id_map_json, db_dim = row
-                    index_stream = tempfile.TemporaryFile()
-                    index_stream.write(binary)
-                    index_stream.seek(0)
-                else:
-                    seg_pattern = re.compile(r'^lyrics_axes_index_(\d+)_(\d+)$')
-                    parts = []
-                    total_expected = None
-                    with conn.cursor(name='lyrics_axes_index_segments') as seg_cur:
-                        seg_cur.itersize = 50
-                        seg_cur.execute(
-                            "SELECT index_name, index_data, id_map_json, embedding_dimension "
-                            "FROM lyrics_axes_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                            (r'lyrics_axes_index\_%\_%',),
-                        )
-                        for name, part_data, part_id_map, part_dim in seg_cur:
-                            m = seg_pattern.match(name)
-                            if not m:
-                                continue
-                            part_no = int(m.group(1))
-                            total = int(m.group(2))
-                            if total_expected is None:
-                                total_expected = total
-                            elif total_expected != total:
-                                logger.error(
-                                    f"Lyrics axes index segment total mismatch: {total_expected} vs {total}"
-                                )
-                                return False
-                            parts.append((part_no, part_data, part_id_map, part_dim))
+        metadata_map = _fetch_lyrics_metadata(list(id_map.values()))
 
-                    if total_expected is None or len(parts) != total_expected:
-                        logger.info(
-                            f"No complete persisted lyrics axes index found (expected {total_expected}, "
-                            f"have {len(parts)})."
-                        )
-                        return False
+        _LYRICS_AXIS_CACHE['index'] = loaded_index
+        _LYRICS_AXIS_CACHE['id_map'] = id_map
+        _LYRICS_AXIS_CACHE['reverse_id_map'] = reverse_id_map
+        _LYRICS_AXIS_CACHE['axis_columns'] = columns
+        _LYRICS_AXIS_CACHE['metadata'] = metadata_map
+        _LYRICS_AXIS_CACHE['loaded'] = True
 
-                    parts.sort(key=lambda p: p[0])
-                    from .index_build_helpers import reassemble_segmented_id_map
-                    db_dim = parts[0][3]
-                    index_stream = tempfile.TemporaryFile()
-                    for _, part_data, _, _ in parts:
-                        index_stream.write(part_data)
-                    index_stream.seek(0)
-                    id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-
-                if index_stream is None:
-                    return False
-                if db_dim != expected_dim:
-                    logger.error(
-                        f"Lyrics axes index dimension mismatch: db={db_dim} expected={expected_dim}"
-                    )
-                    index_stream.close()
-                    return False
-
-                try:
-                    import voyager  # type: ignore
-                except ImportError:
-                    logger.warning("Voyager library is unavailable; cannot load lyrics axes index.")
-                    return False
-
-                loaded_index = voyager.Index.load(index_stream)
-                loaded_index.ef = VOYAGER_QUERY_EF
-            finally:
-                if index_stream is not None:
-                    try:
-                        index_stream.close()
-                    except Exception:
-                        pass
-
-            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            if not id_map:
-                logger.warning("Lyrics axes index id_map is empty.")
-                return False
-
-            metadata_map = _fetch_lyrics_metadata(list(id_map.values()))
-
-            _LYRICS_AXIS_CACHE['index'] = loaded_index
-            _LYRICS_AXIS_CACHE['id_map'] = id_map
-            _LYRICS_AXIS_CACHE['reverse_id_map'] = reverse_id_map
-            _LYRICS_AXIS_CACHE['axis_columns'] = columns
-            _LYRICS_AXIS_CACHE['metadata'] = metadata_map
-            _LYRICS_AXIS_CACHE['loaded'] = True
-
-            logger.info(f"Lyrics axes index loaded from database with {len(id_map)} items.")
-            return True
+        logger.info(f"Lyrics axes index loaded from database with {len(id_map)} items.")
+        return True
     except Exception as e:
         logger.error(f"Failed to load lyrics axes index from DB: {e}", exc_info=True)
         return False

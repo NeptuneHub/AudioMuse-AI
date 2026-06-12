@@ -5,8 +5,6 @@ import numpy as np
 from .voyager_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
 from .alchemy_projections import (
     _project_to_2d,
-    _project_aligned_add_sub,
-    _project_with_umap,
     _project_with_discriminant,
 )
 from app_helper import get_score_data_by_ids, load_map_projection

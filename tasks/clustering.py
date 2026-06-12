@@ -668,7 +668,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-    from app_helper import redis_conn, get_child_tasks_from_db, get_task_info_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS
+    from app_helper import redis_conn, get_child_tasks_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED
 
     current_time = time.time()
     timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60

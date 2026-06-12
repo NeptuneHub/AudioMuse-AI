@@ -367,81 +367,6 @@ def _resolve_voyager_space(metric: str):
     return voyager.Space.Cosine
 
 
-def build_voyager_index_bytes(
-    buf: np.ndarray,
-    dim: int,
-    metric: str = "angular",
-    m: Optional[int] = None,
-    ef_construction: Optional[int] = None,
-) -> bytes:
-    """Build a Voyager HNSW index over ``buf`` and serialize it to bytes.
-
-    Item ids are assigned densely as ``0..N-1``; callers persist their own
-    ``{voyager_id: item_id}`` map alongside the index bytes (see
-    ``store_voyager_index_segmented``).
-
-    Args:
-        buf: contiguous ``np.ndarray`` of shape ``(N, dim)`` and dtype
-            ``float32``. N must be >= 1.
-        dim: number of dimensions, must equal ``buf.shape[1]``.
-        metric: ``"angular"`` (cosine), ``"euclidean"``, or ``"dot"``.
-        m, ef_construction: HNSW graph parameters. Default to the values in
-            ``config.VOYAGER_M`` / ``config.VOYAGER_EF_CONSTRUCTION``.
-
-    Returns:
-        Serialized index bytes.
-
-    Raises:
-        ImportError: if the ``voyager`` library is not installed.
-        ValueError: if ``buf`` is empty or has the wrong shape/dtype.
-    """
-    import voyager
-
-    if not isinstance(buf, np.ndarray) or buf.ndim != 2:
-        raise ValueError("buf must be a 2-D numpy array")
-    if buf.shape[0] == 0:
-        raise ValueError("buf is empty; refusing to build an empty index")
-    if buf.shape[1] != dim:
-        raise ValueError(
-            f"buf has dim={buf.shape[1]} but caller declared dim={dim}"
-        )
-    if buf.dtype != np.float32:
-        buf = buf.astype(np.float32, copy=False)
-    if not buf.flags["C_CONTIGUOUS"]:
-        buf = np.ascontiguousarray(buf)
-
-    m_val = config.VOYAGER_M if m is None else int(m)
-    ef_val = config.VOYAGER_EF_CONSTRUCTION if ef_construction is None else int(ef_construction)
-
-    space = _resolve_voyager_space(metric)
-    builder = voyager.Index(
-        space=space,
-        num_dimensions=dim,
-        M=m_val,
-        ef_construction=ef_val,
-    )
-
-    n = buf.shape[0]
-    ids = np.arange(n, dtype=np.int64)
-    builder.add_items(buf, ids=ids)
-
-    temp_file_path: Optional[str] = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-            temp_file_path = tmp.name
-        builder.save(temp_file_path)
-        del builder
-        gc.collect()
-        with open(temp_file_path, "rb") as f:
-            return f.read()
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
-
-
 def build_voyager_index_bytes_streaming(
     batch_iter: Iterable[Tuple[np.ndarray, List[str]]],
     dim: int,
@@ -568,6 +493,188 @@ def reassemble_segmented_id_map(fragments: Iterable[Tuple[int, Optional[str]]]) 
     return "".join(frag or "" for _, frag in sorted(fragments, key=lambda p: p[0]))
 
 
+def build_and_store_index_streaming(
+    db_conn,
+    source_table: str,
+    source_column: str,
+    dim: int,
+    target_table: str,
+    index_name: str,
+    metric: str,
+    where_clause: Optional[str] = None,
+    label: Optional[str] = None,
+) -> bool:
+    """Stream embeddings, build a Voyager index, and persist it.
+
+    Wraps the canonical build pipeline shared by the CLAP, lyrics, and
+    lyrics-axes builders: ``iter_embedding_batches`` ->
+    ``build_voyager_index_bytes_streaming`` -> ``store_voyager_index_segmented``.
+    Commits on success and rolls back on failure using the caller's
+    ``db_conn``. Returns True on success, False when the source table has no
+    usable vectors or the build/store fails.
+    """
+    label = label or index_name
+    try:
+        import voyager  # type: ignore  # noqa: F401
+    except ImportError:
+        logger.warning("Voyager library is unavailable; cannot build %s index.", label)
+        return False
+
+    try:
+        logger.info("Building %s voyager index (streaming)...", label)
+        batches = iter_embedding_batches(
+            table=source_table,
+            column=source_column,
+            dim=dim,
+            where_clause=where_clause,
+        )
+        try:
+            index_bytes, item_ids = build_voyager_index_bytes_streaming(
+                batches, dim, metric=metric,
+            )
+        except EmptyIndexError as ve:
+            logger.warning("No valid %s vectors found for index build: %s", label, ve)
+            return False
+        gc.collect()
+
+        if not index_bytes:
+            logger.error("Generated %s index binary is empty; aborting storage.", label)
+            return False
+
+        id_map = build_id_map(item_ids)
+        store_voyager_index_segmented(
+            db_conn,
+            target_table=target_table,
+            index_name=index_name,
+            index_bytes=index_bytes,
+            id_map=id_map,
+            embedding_dimension=dim,
+        )
+
+        db_conn.commit()
+        logger.info("%s index build successful.", label)
+        return True
+    except Exception as e:
+        logger.error("Failed to build/store %s index: %s", label, e, exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def load_voyager_index_from_db(
+    conn,
+    table: str,
+    index_name: str,
+    expected_dim: int,
+    query_ef: int,
+    label: Optional[str] = None,
+):
+    """Load a Voyager index persisted by ``store_voyager_index_segmented``.
+
+    Tries the classic single-row layout first, then the segmented
+    ``<index_name>_<part>_<total>`` layout. Returns ``(index, id_map,
+    reverse_id_map)`` on success or ``None`` when the index is missing,
+    incomplete, or fails validation. DB and deserialization exceptions
+    propagate to the caller, which is expected to log and treat the load
+    as failed (the historical per-manager behavior).
+    """
+    label = label or index_name
+    _validate_sql_identifier(table, "table")
+    _validate_sql_identifier(index_name, "index_name")
+
+    try:
+        import voyager  # type: ignore
+    except ImportError:
+        logger.warning("Voyager library is unavailable; cannot load %s index.", label)
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL statement_timeout = 0")
+        cur.execute(
+            f"SELECT index_data, id_map_json, embedding_dimension FROM {table} "
+            f"WHERE index_name = %s",
+            (index_name,),
+        )
+        row = cur.fetchone()
+
+        index_stream = None
+        try:
+            if row:
+                binary, id_map_json, db_dim = row
+                index_stream = tempfile.TemporaryFile()
+                index_stream.write(binary)
+                index_stream.seek(0)
+            else:
+                seg_pattern = re.compile(rf'^{re.escape(index_name)}_(\d+)_(\d+)$')
+                parts = []
+                total_expected = None
+                with conn.cursor(name=f'{index_name}_segments') as seg_cur:
+                    seg_cur.itersize = 50
+                    seg_cur.execute(
+                        f"SELECT index_name, index_data, id_map_json, embedding_dimension "
+                        f"FROM {table} WHERE index_name LIKE %s ESCAPE '\\'",
+                        (index_name.replace('_', r'\_') + r'\_%\_%',),
+                    )
+                    for name, part_data, part_id_map, part_dim in seg_cur:
+                        m = seg_pattern.match(name)
+                        if not m:
+                            continue
+                        part_no = int(m.group(1))
+                        total = int(m.group(2))
+                        if total_expected is None:
+                            total_expected = total
+                        elif total_expected != total:
+                            logger.error(
+                                "%s index segment total mismatch: %s vs %s",
+                                label, total_expected, total,
+                            )
+                            return None
+                        parts.append((part_no, part_data, part_id_map, part_dim))
+
+                if total_expected is None or len(parts) != total_expected:
+                    logger.info(
+                        "No complete persisted %s index found (expected %s, have %d).",
+                        label, total_expected, len(parts),
+                    )
+                    return None
+
+                parts.sort(key=lambda p: p[0])
+                db_dim = parts[0][3]
+                index_stream = tempfile.TemporaryFile()
+                for _, part_data, _, _ in parts:
+                    index_stream.write(part_data)
+                index_stream.seek(0)
+                id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
+
+            if index_stream is None or not id_map_json:
+                logger.info("%s index not found or empty in the database.", label)
+                return None
+            if db_dim != expected_dim:
+                logger.error(
+                    "%s index dimension mismatch: db=%s expected=%s",
+                    label, db_dim, expected_dim,
+                )
+                return None
+
+            loaded_index = voyager.Index.load(index_stream)
+            loaded_index.ef = query_ef
+        finally:
+            if index_stream is not None:
+                try:
+                    index_stream.close()
+                except Exception:
+                    pass
+
+    id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
+    if not id_map:
+        logger.warning("%s index id_map is empty.", label)
+        return None
+    reverse_id_map = {v: k for k, v in id_map.items()}
+    return loaded_index, id_map, reverse_id_map
+
+
 def store_voyager_index_segmented(
     db_conn,
     target_table: str,
@@ -602,7 +709,7 @@ def store_voyager_index_segmented(
         index_name: logical index name (e.g. ``"clap_index"``). Must be a
             bare SQL identifier so the LIKE-escape pattern is unambiguous.
         index_bytes: serialized index payload (from
-            ``build_voyager_index_bytes``).
+            ``build_voyager_index_bytes_streaming``).
         id_map: ``{voyager_id_int: item_id_str}`` mapping. Serialized to
             JSON for the first row.
         embedding_dimension: stored alongside the index for validation on
