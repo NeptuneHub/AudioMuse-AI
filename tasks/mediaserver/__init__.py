@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 _PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby')
 
+_PLAYLIST_NAME_REQUIRED = "Playlist name is required."
+_TRACK_IDS_REQUIRED = "Track IDs are required."
+
 
 def _provider(provider_type=None):
     """Return the backend module for the given (or configured) provider type.
@@ -197,7 +200,7 @@ def test_connection(user_creds=None, provider_type=None):
 
 def get_playlist_by_name(playlist_name):
     """Finds a playlist by name using admin credentials."""
-    if not playlist_name: raise ValueError("Playlist name is required.")
+    if not playlist_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
     provider = _provider()
     if provider is None:
         return None
@@ -205,16 +208,16 @@ def get_playlist_by_name(playlist_name):
 
 def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
-    if not base_name: raise ValueError("Playlist name is required.")
-    if not item_ids: raise ValueError("Track IDs are required.")
+    if not base_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
+    if not item_ids: raise ValueError(_TRACK_IDS_REQUIRED)
     provider = _provider()
     if provider is not None:
         provider.create_playlist(base_name, item_ids)
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     """Creates an instant playlist. Uses user_creds if provided, otherwise admin."""
-    if not playlist_name: raise ValueError("Playlist name is required.")
-    if not item_ids: raise ValueError("Track IDs are required.")
+    if not playlist_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
+    if not item_ids: raise ValueError(_TRACK_IDS_REQUIRED)
 
     provider = _provider()
     if provider is None:
@@ -233,9 +236,9 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
     date-suffixed playlist creation.
     """
     if not playlist_name:
-        raise ValueError("Playlist name is required.")
+        raise ValueError(_PLAYLIST_NAME_REQUIRED)
     if not item_ids:
-        raise ValueError("Track IDs are required.")
+        raise ValueError(_TRACK_IDS_REQUIRED)
 
     provider = _provider()
     if provider is None:

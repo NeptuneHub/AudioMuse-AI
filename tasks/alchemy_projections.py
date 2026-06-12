@@ -35,7 +35,7 @@ def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
     mat_c = mat - mean
     # SVD
     try:
-        u, s, vh = np.linalg.svd(mat_c, full_matrices=False)
+        _, _, vh = np.linalg.svd(mat_c, full_matrices=False)
     except Exception:
         # Fallback: return zeros
         return [(0.0, 0.0) for _ in vectors]
@@ -85,11 +85,8 @@ def _project_aligned_add_sub(vectors: List[np.ndarray], add_centroid: np.ndarray
     # Find leading direction in residuals via SVD
     try:
         # If residuals are all near-zero, SVD will still succeed but produce small values
-        u, s, vh = np.linalg.svd(residuals, full_matrices=False)
-        if vh.shape[0] >= 1:
-            y_u = vh[0]
-        else:
-            y_u = None
+        _, _, vh = np.linalg.svd(residuals, full_matrices=False)
+        y_u = vh[0]
     except Exception:
         y_u = None
 
@@ -165,16 +162,16 @@ def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[
         raise RuntimeError('Not enough samples for discriminant PCA')
 
     pca = PCA(n_components=max_components, random_state=42)
-    Xp = pca.fit_transform(X_train)
+    x_pca = pca.fit_transform(X_train)
 
     # Fit logistic regression with regularization for robustness
     try:
         clf = LogisticRegression(l1_ratio=0, C=1.0, solver='saga', max_iter=1000)
-        clf.fit(Xp, y_train)
+        clf.fit(x_pca, y_train)
     except Exception:
         # Fallback with less regularization if solver fails
         clf = LogisticRegression(l1_ratio=0, C=0.1, solver='saga', max_iter=1000)
-        clf.fit(Xp, y_train)
+        clf.fit(x_pca, y_train)
 
     # direction in PCA space
     coef = clf.coef_.ravel()
@@ -193,11 +190,8 @@ def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[
     residuals = all_pca - proj_on_dir
     # y direction: leading PC of residuals
     try:
-        u, s, vh = np.linalg.svd(residuals, full_matrices=False)
-        if vh.shape[0] >= 1:
-            y_u = vh[0]
-        else:
-            y_u = None
+        _, _, vh = np.linalg.svd(residuals, full_matrices=False)
+        y_u = vh[0]
     except Exception:
         y_u = None
 

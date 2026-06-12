@@ -835,7 +835,7 @@ def _add_to_playlist(playlist_id, item_ids):
             return False
         
         # Method: Load playlist to player, add tracks, then use playlists edit to update
-        logger.info(f"Using method: Load → Add → Update original playlist via edit command")
+        logger.info("Using method: Load -> Add -> Update original playlist via edit command")
         
         # Step 1: Load the saved playlist into the player's current playlist
         logger.debug(f"Step 1: Loading playlist {playlist_id} to player {player_id}")

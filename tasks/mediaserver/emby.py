@@ -219,7 +219,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                                 # If parent is not a MusicAlbum, treat track as standalone
                                 if parent_info.get('Type') != 'MusicAlbum':
                                     standalone_tracks.append(track)
-                        except:
+                        except Exception:
                             # If we can't check parent, assume it's standalone to be safe
                             standalone_tracks.append(track)
 
@@ -274,7 +274,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                                     parent_info = parent_r.json()
                                     if parent_info.get('Type') != 'MusicAlbum':
                                         standalone_tracks.append(track)
-                            except:
+                            except Exception:
                                 standalone_tracks.append(track)
 
                     all_tracks.extend(standalone_tracks)
