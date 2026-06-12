@@ -15,7 +15,7 @@ except ImportError:
     logger.warning("librosa not available. Waveform generation will not work. Install with: pip install librosa")
 
 from config import MEDIASERVER_TYPE
-from app_helper import get_db
+from database import get_db
 
 logger = logging.getLogger(__name__)
 

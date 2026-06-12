@@ -6,6 +6,12 @@ Centralises duplicated helpers across test files:
 - FakeRow / mock-connection helpers
 - Autouse config restoration fixture
 """
+import sys as _sys
+if _sys.platform == 'win32':
+    import multiprocessing as _mp
+    _o = _mp.get_context
+    _mp.get_context = lambda m=None: _o('spawn') if m == 'fork' else _o(m)
+
 import os
 import sys
 import importlib.util

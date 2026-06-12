@@ -9,6 +9,7 @@ import config
 logger = logging.getLogger(__name__)
 
 _PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby')
+_warned_unsupported = set()
 
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."
 _TRACK_IDS_REQUIRED = "Track IDs are required."
@@ -24,6 +25,11 @@ def _provider(provider_type=None):
     """
     name = provider_type or config.MEDIASERVER_TYPE
     if name not in _PROVIDER_NAMES:
+        if name not in _warned_unsupported:
+            _warned_unsupported.add(name)
+            logger.warning(
+                "Unsupported MEDIASERVER_TYPE %r (supported: %s); media-server operations are no-ops.",
+                name, ', '.join(_PROVIDER_NAMES))
         return None
     return import_module('.' + name, __name__)
 

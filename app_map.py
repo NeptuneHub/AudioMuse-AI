@@ -6,7 +6,8 @@ from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
-from app_helper import get_db, load_map_projection
+from database import get_db
+from app_helper import load_map_projection
 
 # Try to reuse the shared projection helpers
 try:

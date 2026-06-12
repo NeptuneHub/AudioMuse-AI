@@ -21,7 +21,9 @@ from flask import Blueprint, jsonify, render_template, request
 # App-level singletons (DB connection, Redis, RQ queues). Importing here keeps
 # the blueprint file self-contained — the rest of the app doesn't need to hand
 # anything in.
-from app_helper import get_db, redis_conn, rq_queue_high, validate_outbound_url
+from database import get_db
+from taskqueue import redis_conn, rq_queue_high
+from app_helper import validate_outbound_url
 from tasks.mediaserver.helper import detect_path_format as _detect_path_format
 
 logger = logging.getLogger(__name__)

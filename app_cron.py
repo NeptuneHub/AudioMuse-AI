@@ -1,6 +1,8 @@
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
-from app_helper import get_db, rq_queue_high, save_task_status, TASK_STATUS_PENDING
+from database import get_db
+from taskqueue import rq_queue_high
+from app_helper import save_task_status, TASK_STATUS_PENDING
 import uuid, time, logging
 from config import (
     TOP_N_MOODS,

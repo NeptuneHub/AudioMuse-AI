@@ -759,11 +759,6 @@ def listen_for_index_reloads():
 
 # --- Import and Register Blueprints ---
 # This is the original, working structure.
-# Import tasks modules to ensure they're available to RQ workers
-import tasks.clustering
-import tasks.analysis
-
-
 from app_chat import chat_bp
 from app_clustering import clustering_bp
 from app_analysis import analysis_bp

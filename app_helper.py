@@ -1767,14 +1767,3 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
 
     return cancelled_count
-
-
-# --- Auth / user-management helpers ---
-# All auth logic (setup/auth/admin barriers, user CRUD, password hashing,
-# JWT handling, the Flask routes) lives in ``app_auth``. The re-exports
-# below keep the legacy ``from app_helper import ...`` paths working.
-from app_auth import (  # noqa: E402  (intentional late import to avoid cycles)
-    check_setup_needed,
-    count_admin_users,
-    upsert_admin_user,
-)

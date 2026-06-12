@@ -20,7 +20,8 @@ from flask import Blueprint, request, jsonify
 from flasgger import swag_from
 
 import config
-from app_helper import get_db, load_map_projection
+from database import get_db
+from app_helper import load_map_projection
 
 
 logger = logging.getLogger(__name__)

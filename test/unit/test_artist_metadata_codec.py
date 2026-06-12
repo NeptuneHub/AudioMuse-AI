@@ -267,7 +267,7 @@ class TestStoreLoadSegmentedBlob:
         n_parts = len(inserts)
         for idx, (sql, params) in enumerate(inserts, start=1):
             assert "INSERT INTO artist_metadata_data" in sql
-            assert "ON CONFLICT" not in sql
+            assert "ON CONFLICT" in sql  # segmented inserts are now idempotent (ON CONFLICT DO UPDATE)
             assert params[0] == f"artist_metadata_{idx}_{n_parts}"
 
     def test_load_returns_none_when_no_rows(self):

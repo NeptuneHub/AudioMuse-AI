@@ -4,7 +4,8 @@ from flask import request, jsonify, render_template, make_response, after_this_r
 import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
-from app_helper import check_setup_needed, validate_outbound_url
+from app_auth import check_setup_needed
+from app_helper import validate_outbound_url
 import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager
@@ -216,7 +217,7 @@ def _get_allowed_setup_keys():
 def _has_admin_user():
     """Return True if at least one admin exists in audiomuse_users."""
     try:
-        from app_helper import count_admin_users
+        from app_auth import count_admin_users
         return count_admin_users() > 0
     except Exception as exc:
         app.logger.error(
@@ -423,7 +424,8 @@ def setup_api():
         # If auth will remain enabled we need an admin after the save. That
         # admin must either already exist in audiomuse_users or be provided
         # via the form (new_admin_user + new_admin_password).
-        from app_helper import count_admin_users, upsert_admin_user, get_db
+        from app_auth import count_admin_users, upsert_admin_user
+        from database import get_db
         auth_will_be_enabled = not auth_being_disabled
         if isinstance(simulated.AUTH_ENABLED, str):
             auth_will_be_enabled = simulated.AUTH_ENABLED.strip().lower() == 'true'

@@ -99,7 +99,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.1.5"
+APP_VERSION = "v2.2.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -659,36 +659,41 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
-try:
-    from tasks.setup_manager import SetupManager
-    _setup_manager = SetupManager()
-    worker_mode = os.environ.get('AUDIOMUSE_ROLE', '').lower() == 'worker'
-    if worker_mode:
-        if _setup_manager.config_table_exists():
-            _overrides = _setup_manager.get_raw_overrides(ensure_table=False)
+def _apply_db_overrides():
+    global HEADERS, refresh_config
+    try:
+        from tasks.setup_manager import SetupManager
+        _setup_manager = SetupManager()
+        worker_mode = os.environ.get('AUDIOMUSE_ROLE', '').lower() == 'worker'
+        if worker_mode:
+            if _setup_manager.config_table_exists():
+                _overrides = _setup_manager.get_raw_overrides(ensure_table=False)
+            else:
+                _overrides = {}
         else:
-            _overrides = {}
-    else:
-        _setup_manager.ensure_table()
-        _overrides = _setup_manager.get_raw_overrides()
-    _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
-    for _key, _value in _overrides.items():
-        # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
-        if _key in _excluded_override_keys:
-            continue
-        # Read the value from the db and override the variable
-        if _key in globals():
-            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+            _setup_manager.ensure_table()
+            _overrides = _setup_manager.get_raw_overrides()
+        _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        for _key, _value in _overrides.items():
+            # Skip any keys that are explicitly excluded from overrides (Redis and Postgres)
+            if _key in _excluded_override_keys:
+                continue
+            # Read the value from the db and override the variable
+            if _key in globals():
+                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
 
-    HEADERS = _compute_headers()
+        HEADERS = _compute_headers()
 
-    def refresh_config():
-        """Reload the config module from the current database and environment."""
-        import importlib
-        import sys
-        importlib.reload(sys.modules[__name__])
-except Exception as _exc:
-    import logging
-    logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
-    def refresh_config():
-        pass
+        def refresh_config():
+            """Reload the config module from the current database and environment."""
+            import importlib
+            import sys
+            importlib.reload(sys.modules[__name__])
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not load config overrides from DB: {_exc}")
+        def refresh_config():
+            pass
+
+
+_apply_db_overrides()

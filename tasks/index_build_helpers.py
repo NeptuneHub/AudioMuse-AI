@@ -745,7 +745,12 @@ def store_voyager_index_segmented(
     insert_sql = (
         f"INSERT INTO {target_table} "
         f"(index_name, {binary_column}, id_map_json, embedding_dimension, created_at) "
-        f"VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
+        f"VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
+        f"ON CONFLICT (index_name) DO UPDATE SET "
+        f"{binary_column} = EXCLUDED.{binary_column}, "
+        f"id_map_json = EXCLUDED.id_map_json, "
+        f"embedding_dimension = EXCLUDED.embedding_dimension, "
+        f"created_at = EXCLUDED.created_at"
     )
 
     id_map_fits = len(id_map_json.encode("utf-8")) <= max_part_size
@@ -927,7 +932,10 @@ def store_segmented_blob(
     )
     insert_sql = (
         f"INSERT INTO {target_table} (name, blob_data, created_at) "
-        f"VALUES (%s, %s, CURRENT_TIMESTAMP)"
+        f"VALUES (%s, %s, CURRENT_TIMESTAMP) "
+        f"ON CONFLICT (name) DO UPDATE SET "
+        f"blob_data = EXCLUDED.blob_data, "
+        f"created_at = EXCLUDED.created_at"
     )
 
     with db_conn.cursor() as cur:

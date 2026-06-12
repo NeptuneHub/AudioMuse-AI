@@ -14,7 +14,8 @@ import psycopg2
 from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
-from app_helper import get_db, redis_conn
+from database import get_db
+from taskqueue import redis_conn
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
