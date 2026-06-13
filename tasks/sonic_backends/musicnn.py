@@ -110,7 +110,7 @@ def _run_musicnn(
     try:
         final_patches = _ah.prepare_spectrogram_patches(audio, sr)
     except Exception as e:
-        logger.error("Spectrogram creation failed for %s: %s", file_basename, e, exc_info=True)
+        logger.exception("Spectrogram creation failed for %s: %s", file_basename, e)
         return None
     if final_patches is None:
         logger.warning("Track too short to create spectrogram patches: %s", file_basename)

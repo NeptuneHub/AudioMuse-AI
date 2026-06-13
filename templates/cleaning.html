@@ -636,12 +636,7 @@
                     body: JSON.stringify({backend, confirm: true}),
                 });
                 const data = await res.json();
-                if (!res.ok) {
-                    sonicStateResult.innerHTML = `
-                        <h3>❌ Clear failed</h3>
-                        <p>${escapeHtml(data.error || 'Unknown error')}</p>
-                    `;
-                } else {
+                if (res.ok) {
                     const s = data.summary;
                     sonicStateResult.innerHTML = `
                         <h3>✅ Backend <code>${escapeHtml(s.backend)}</code> cleared</h3>
@@ -650,6 +645,11 @@
                         <p><strong>Mood centroid rows deleted:</strong> ${s.deleted_mood_centroids ?? 0}</p>
                     `;
                     renderSonicState(data.state);
+                } else {
+                    sonicStateResult.innerHTML = `
+                        <h3>❌ Clear failed</h3>
+                        <p>${escapeHtml(data.error || 'Unknown error')}</p>
+                    `;
                 }
                 sonicStateResult.style.display = 'block';
             } catch (e) {

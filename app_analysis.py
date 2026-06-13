@@ -234,7 +234,7 @@ def sonic_state_clear_endpoint():
     backend = (data.get('backend') or '').strip()
     if not backend:
         return jsonify({"error": "Missing 'backend' field."}), 400
-    if not data.get('confirm') is True:
+    if data.get('confirm') is not True:
         return jsonify({
             "error": "Refusing to clear without explicit confirmation.",
             "hint": 'POST {"backend": "<name>", "confirm": true} to proceed.',
@@ -246,6 +246,6 @@ def sonic_state_clear_endpoint():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error("clear_inactive_backend_data failed: %s", e, exc_info=True)
+        logger.exception("clear_inactive_backend_data failed: %s", e)
         return jsonify({"error": str(e)}), 500
     return jsonify({"summary": summary, "state": inspect_sonic_state()}), 200

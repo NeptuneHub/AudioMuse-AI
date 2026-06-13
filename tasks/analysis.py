@@ -289,7 +289,7 @@ def _analyze_track_via_backend(*, file_path, mood_labels_list, sessions, return_
             file_basename=name, mood_labels=mood_labels_list,
         )
     except Exception as e:
-        logger.error(f"Backend '{backend.name}' inference failed for {name}: {e}", exc_info=True)
+        logger.exception("Backend '%s' inference failed for %s: %s", backend.name, name, e)
         return (None, None, None, None) if return_audio else (None, None)
 
     if result is None:

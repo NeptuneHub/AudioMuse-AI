@@ -109,7 +109,6 @@ class MERTBackend(SonicBackend):
 
     def load_sessions(self) -> Dict[str, Any]:
         _lazy_imports()
-        torch = _torch
         device = self._resolve_device()
         logger.info(
             "Loading MERT model '%s' on %s (layer=%s)",

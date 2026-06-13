@@ -184,7 +184,7 @@ def build_and_store_mood_centroids(db_conn=None) -> bool:
             try:
                 centroids = _cluster_one_mood(rows, EMBEDDING_DIMENSION, MOOD_CENTROIDS_K)
             except Exception as e:
-                logger.error("Failed to cluster mood '%s': %s", mood, e, exc_info=True)
+                logger.exception("Failed to cluster mood '%s': %s", mood, e)
                 continue
             payload = {
                 "best_k": len(centroids),
