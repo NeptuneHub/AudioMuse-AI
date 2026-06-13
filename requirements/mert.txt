@@ -1,0 +1,19 @@
+# Optional deps for SONIC_BACKEND=mert.
+#
+# Installed on top of common.txt + cpu.txt / gpu.txt when the Dockerfile
+# is built with --build-arg INSTALL_MERT=1, OR manually via:
+#
+#   uv pip install --system --no-cache --index-strategy unsafe-best-match \
+#       -r requirements/mert.txt
+#
+# MERT (m-a-p/MERT-v1-95M / -330M) ships custom Python code on
+# HuggingFace and is loaded via transformers.AutoModel with
+# trust_remote_code=True. ``transformers`` and ``huggingface-hub`` are
+# already in common.txt so only torch is added here.
+#
+# CPU-only wheels by default — for GPU inference, install a CUDA build
+# of torch from https://pytorch.org/get-started/locally/ matching the
+# CUDA version of the base image.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1
+torchaudio==2.5.1

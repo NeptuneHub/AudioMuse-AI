@@ -413,6 +413,9 @@ RUN set -ux; \
 FROM base AS libraries
 
 ARG BASE_IMAGE
+# Set to 1 to bundle PyTorch + MERT-backend dependencies into the image.
+# Required when SONIC_BACKEND=mert at runtime. Adds ~700 MB on CPU.
+ARG INSTALL_MERT=0
 
 WORKDIR /app
 
@@ -429,6 +432,10 @@ RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/cpu.txt -r /app/requirements/common.txt || exit 1; \
+    fi \
+    && if [ "$INSTALL_MERT" = "1" ]; then \
+        echo "INSTALL_MERT=1: adding torch + MERT runtime deps"; \
+        uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/mert.txt || exit 1; \
     fi \
     && echo "Verifying psycopg2 installation..." \
     && python3 -c "import psycopg2; print('psycopg2 OK')" \

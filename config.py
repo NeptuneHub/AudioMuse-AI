@@ -322,7 +322,51 @@ MOOD_LABELS = [
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
-EMBEDDING_DIMENSION = 200
+
+# --- Pluggable Sonic Backend ---
+# Which model produces the per-track similarity embedding stored in the
+# ``embedding`` table and indexed by Voyager. ``musicnn`` is the
+# historical default (200-dim, ONNX, behaves bit-for-bit like prior
+# releases). ``mert`` uses the self-supervised MERT music foundation
+# model (768-dim @ MERT-95M / 1024-dim @ MERT-330M, via HF transformers)
+# and keeps the MusiCNN-prediction ONNX head for mood/genre tags so
+# mood_vector rows stay schema-compatible.
+#
+# Switching backends is a destructive operation for the Voyager / audio
+# embedding tables — embedding dimensions differ — so a full
+# re-analysis is required after toggling. See tasks/sonic_backends/.
+SONIC_BACKEND = os.environ.get("SONIC_BACKEND", "musicnn").lower()
+MERT_MODEL_ID = os.environ.get("MERT_MODEL_ID", "m-a-p/MERT-v1-95M")
+# Which transformer layer to mean-pool. ``-1`` = last hidden layer (a
+# safe default across MERT variants). Music-tagging downstream tasks
+# often peak around layers 5–7 for MERT-95M; tune if you have a
+# labeled eval set.
+MERT_LAYER = int(os.environ.get("MERT_LAYER", "-1"))
+# ``auto`` picks CUDA when torch reports it available, else CPU.
+MERT_DEVICE = os.environ.get("MERT_DEVICE", "auto").lower()
+MERT_TARGET_SR = int(os.environ.get("MERT_TARGET_SR", "24000"))
+# Override the Hugging Face cache location when, e.g., the default
+# ~/.cache/huggingface path is not writable inside the worker
+# container. Empty string = use HF default.
+MERT_HF_CACHE_DIR = os.environ.get("MERT_HF_CACHE_DIR", "")
+
+# Resolved per-backend embedding dim. Voyager builders / persistence
+# code import ``EMBEDDING_DIMENSION`` directly as a scalar, so we
+# resolve at import time. We deliberately do NOT import the backend
+# registry here — that pulls in ``tasks.analysis_helper`` ➜
+# ``app_helper`` ➜ Flask machinery, which is not safe at config import
+# time. The dim lookup table below mirrors the ``embedding_dim`` class
+# attributes on the shipped backends; adding a new backend means
+# adding a row here too. The unit test in
+# ``test/unit/test_sonic_backends.py`` enforces parity.
+_BACKEND_EMBEDDING_DIMS = {
+    "musicnn": 200,
+    "mert": {
+        "m-a-p/MERT-v1-95M": 768,
+        "m-a-p/MERT-v1-330M": 1024,
+    }.get(MERT_MODEL_ID, 768),
+}
+EMBEDDING_DIMENSION = _BACKEND_EMBEDDING_DIMS.get(SONIC_BACKEND, 200)
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"

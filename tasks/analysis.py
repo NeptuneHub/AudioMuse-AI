@@ -28,7 +28,7 @@ from config import (
     TEMP_DIR, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH,
     OTHER_FEATURE_LABELS,
     REBUILD_INDEX_BATCH_SIZE, MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
-    AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED,
+    AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED, SONIC_BACKEND,
 )
 
 
@@ -249,6 +249,89 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.error(f"PyAV fallback loading also failed for {name}: {e}")
         return None, None
 
+def _get_sonic_backend():
+    """Return the configured :class:`SonicBackend` singleton.
+
+    Imported lazily so a missing optional dependency (e.g. transformers
+    when ``SONIC_BACKEND=mert``) raises at the first analysis call rather
+    than at module import — keeping the rest of the app bootable.
+    """
+    from .sonic_backends import get_backend
+    return get_backend(SONIC_BACKEND)
+
+
+def _analyze_track_via_backend(*, file_path, mood_labels_list, sessions, return_audio):
+    """Backend-routed equivalent of :func:`analyze_track`.
+
+    Mirrors the legacy return shape:
+      * ``(analysis_dict, embedding)`` when ``return_audio`` is False
+      * ``(analysis_dict, embedding, audio, sr)`` when True
+      * ``(None, None[, None, None])`` on per-track failure
+    """
+    backend = _get_sonic_backend()
+    name = os.path.basename(file_path)
+    logger.info(f"Starting analysis for: {name} (backend={backend.name})")
+
+    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=backend.target_sr)
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning(f"Could not load a valid audio signal for {name}. Skipping track.")
+        return (None, None, None, None) if return_audio else (None, None)
+
+    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
+
+    try:
+        result = backend.analyze(
+            audio, sr, sessions,
+            file_basename=name, mood_labels=mood_labels_list,
+        )
+    except Exception as e:
+        logger.error(f"Backend '{backend.name}' inference failed for {name}: {e}", exc_info=True)
+        return (None, None, None, None) if return_audio else (None, None)
+
+    if result is None:
+        return (None, None, None, None) if return_audio else (None, None)
+
+    processed_embeddings, moods = result
+    analysis_result = {
+        "tempo": tempo,
+        "key": musical_key,
+        "scale": scale,
+        "moods": moods,
+        "energy": average_energy,
+    }
+
+    return_values = (analysis_result, processed_embeddings, audio, sr) if return_audio else (analysis_result, processed_embeddings)
+    try:
+        if not return_audio:
+            del audio, sr
+        gc.collect()
+        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+    except Exception as cleanup_error:
+        logger.warning(f"Error during final tensor cleanup: {cleanup_error}")
+    return return_values
+
+
+def _backend_load_sessions():
+    """Backend-aware replacement for ``load_musicnn_sessions(model_paths)``.
+
+    Routes session allocation through the configured backend so the
+    MusiCNN path (default) keeps using the existing ONNX session pair
+    and alternative backends (MERT, …) can stash whatever they need
+    behind the same opaque dict the rest of ``analyze_album_task``
+    treats as black-box state.
+    """
+    return _get_sonic_backend().load_sessions()
+
+
+def _backend_cleanup_sessions(sessions, context=""):
+    if sessions is None:
+        return
+    try:
+        _get_sonic_backend().cleanup_sessions(sessions, context=context)
+    except Exception as e:
+        logger.warning(f"Error during backend session cleanup: {e}")
+
+
 def rebuild_all_indexes_task():
     """Rebuild all indexes as a standalone RQ task (enqueued on default queue)."""
     logger.info("🔨 Starting index rebuild task (enqueued as subtask)...")
@@ -263,15 +346,30 @@ def rebuild_all_indexes_task():
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
     """
-    Analyzes a single track using ONNX Runtime for inference.
-    
+    Analyzes a single track using the configured sonic backend.
+
+    The MusiCNN code path below is preserved bit-for-bit so unit tests
+    that patch ``tasks.analysis.ort`` etc. keep exercising the original
+    flow when ``SONIC_BACKEND=musicnn`` (the default). For any other
+    backend the call is dispatched to
+    :func:`_analyze_track_via_backend`, which routes through
+    ``tasks.sonic_backends`` and returns the same tuple shape.
+
     Args:
         file_path: Path to audio file
         mood_labels_list: List of mood labels
         model_paths: Dict of model paths
-        onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
+        onnx_sessions: Optional dict of pre-loaded sessions (album-level reuse)
         return_audio: If True, return the loaded audio array and sample rate as part of the result.
     """
+    if SONIC_BACKEND != "musicnn":
+        return _analyze_track_via_backend(
+            file_path=file_path,
+            mood_labels_list=mood_labels_list,
+            sessions=onnx_sessions,
+            return_audio=return_audio,
+        )
+
     logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
 
     # --- 1. Load Audio and Compute Basic Features ---
@@ -548,12 +646,12 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if needs_musicnn:
                         if onnx_sessions is None:
                             logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
-                            onnx_sessions = load_musicnn_sessions(model_paths)
+                            onnx_sessions = _backend_load_sessions()
                         elif session_recycler.should_recycle():
                             logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
-                            cleanup_musicnn_sessions(onnx_sessions, context="recycle")
+                            _backend_cleanup_sessions(onnx_sessions, context="recycle")
                             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                            onnx_sessions = load_musicnn_sessions(model_paths)
+                            onnx_sessions = _backend_load_sessions()
                             if onnx_sessions:
                                 logger.info(f"✓ Recycled {len(onnx_sessions)} MusiCNN model sessions")
                             session_recycler.mark_recycled()
@@ -616,7 +714,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if path and os.path.exists(path):
                         os.remove(path)
 
-            cleanup_musicnn_sessions(onnx_sessions, context="album end")
+            _backend_cleanup_sessions(onnx_sessions, context="album end")
             onnx_sessions = None
             cleanup_optional_models(context="album end")
             logger.info("Performing final comprehensive cleanup after album analysis")
@@ -637,7 +735,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         finally:
-            cleanup_musicnn_sessions(onnx_sessions, context="finally")
+            _backend_cleanup_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
