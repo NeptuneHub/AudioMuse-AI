@@ -115,3 +115,18 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 > * If issues occur, check logs in the Flask container under `/app/backup`.
 
 </details>
+
+<details>
+<summary>What happens if my music server IDs change ?</summary>
+
+> AudioMuse-AI depends on stable track IDs provided by the music server. If an action causes IDs to change (e.g. database reset, migration, reinstall, or major update), existing mappings may break and tracks may appear missing, duplicated, or mismatched.
+>
+> If this happens, the recommended recovery steps are:
+> 1. Restore a previous backup of the music server to recover the original track IDs.
+> 2. If restore is not possible, try a provider migration to preserve as much identity mapping as possible.
+> 3. If the change is partial (e.g. albums moved or deleted), use `Administration > Cleaning` to remove stale entries and just run a new analysis
+> 4. If none of the above works, as a last resort, reset the AudioMuse-AI database and run a full new analysis (this will rebuild all mappings from scratch).
+>
+> **Always create backups of both the music server and AudioMuse-AI database after the first analysis and possible on weekly basis**
+
+</details>
