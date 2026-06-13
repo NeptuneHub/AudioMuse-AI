@@ -6,27 +6,44 @@ This document provides answers to frequently asked questions (FAQs) about **depl
 
 Find answers to common questions about setting up, configuring, and deploying AudioMuse-AI in different environments.
 
-### Which is the HW requirements?
+<details>
+<summary>Which is the HW requirements?</summary>
 
-AudioMuse-AI work on both ARM and INTEL architecture. The suggested requirements are 4core and 8gb of ram with SSD. Some very old processor could have issue due to not supported command.
-If you want to use the -nvidia version we suggest a GPU with 8gb VRAM.
+> AudioMuse-AI work on both ARM and INTEL architecture. The suggested requirements are 4core and 8gb of ram with SSD. Some very old processor could have issue due to not supported command.  
+> If you want to use the -nvidia version we suggest a GPU with 8gb VRAM.
 
-### How to deploy AudioMuse-AI?
+</details>
 
-The [readme](../README.md) section has the explanation and multiple examples can be found in the [deployment folder](../deployment/). If you're not able to reach the front-end on **[http://YOUR-IP:8000](http://YOUR-IP:8000)** or the analysis seems to finish without analyzing anything, it usually means that some parameters are missing in your `.env`.
+<details>
+<summary>How to deploy AudioMuse-AI?</summary>
 
-From v1.0.0, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
+> The [readme](../README.md) section has the explanation and multiple examples can be found in the [deployment folder](../deployment/). If you're not able to reach the front-end on **http://YOUR-IP:8000** or the analysis seems to finish without analyzing anything, it usually means that some parameters are missing in your `.env`.
+>
+> From v1.0.0, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as landing page and is also available later from the menu under Administration > Setup Wizard.
 
-### Can AudioMuse-AI support multiple music libraries?
-Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time. 
+</details>
 
-The parameters `MUSIC_LIBRARIES` can be used for match multiple music library on the same music server. Is a Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.	"" (empty - scan all)
+<details>
+<summary>Can AudioMuse-AI support multiple music libraries?</summary>
 
-### The analysis takes to long, can I speed up it?
-The time needed for the analysis really depends from your HW and how big is your music collection. For big collection (100k+ songs) or old HW 1week+ of analysis can be totally normal.
-If you want to have a faster analysis you can also disable the text search functionality by putting parameters `CLAP_ENABLED` to false. This will run the analysis only for the Musicnn model skipping the CLAP model.
-Alternatives could also be run multiple worker container in parallel, learn more by taking a look to the [ARCHITECTURE](ARCHITECTURE.md) page and to the different example of deployment in `deployment/` folder.
-GPU analysis is also supported but still experimental. Take a look to [GPU DEPLOYMENT](GPU.md) page.
+> Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time.
+>
+> The parameters `MUSIC_LIBRARIES` can be used for matching multiple music libraries on the same music server. It is a comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.
+
+</details>
+
+<details>
+<summary>The analysis takes too long, can I speed it up?</summary>
+
+> The time needed for the analysis really depends on your HW and how big your music collection is. For big collections (100k+ songs) or old HW, 1 week+ of analysis can be totally normal.
+>
+> If you want faster analysis, you can disable the text search functionality by setting `CLAP_ENABLED` to false. This will run only the Musicnn model, skipping the CLAP model.
+>
+> Alternatives include running multiple worker containers in parallel (see the [ARCHITECTURE](ARCHITECTURE.md) page and deployment examples in the `deployment/` folder). GPU analysis is also supported but still experimental (see [GPU DEPLOYMENT](GPU.md)).
+
+</details>
+
+---
 
 ## User Guide FAQs
 
@@ -34,41 +51,55 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 
 * **NOTE**: Most front-end parameters default value can be configured in the Setup Wizard functionality. See the parameter table in the [README.md](../README.md) for a complete list.
 
-### How do I start using AudioMuse-AI?
+<details>
+<summary>How do I start using AudioMuse-AI?</summary>
 
-After deployment, the first thing to do is access the AudioMuse-AI frontend, which is available at **[http://YOUR-IP:8000](http://YOUR-IP:8000)**.
-From there, run the **Analysis**. This process collects information about your songs and stores it in your local database.
-Running the analysis is **mandatory** before you can use any other features.
+> After deployment, the first thing to do is access the AudioMuse-AI frontend, available at **http://YOUR-IP:8000**.
+>
+> From there, run the **Analysis**, which collects information about your songs and stores it in the local database.
+>
+> Running the analysis is **mandatory** before you can use any other features.
 
-### How long does the analysis take? What if I interrupt it midway?
+</details>
 
-The time required for the analysis depends on several factors, such as the number of songs to analyze and the hardware on which AudioMuse-AI is running.
-Depending on these factors, it can take anywhere from a few hours to several days.
+<details>
+<summary>How long does the analysis take? What if I interrupt it midway?</summary>
 
-The good news is that analyzed songs are stored in the database, so if the process is interrupted, you can restart it and only the missing songs will be analyzed.
+> The time required depends on the number of songs and hardware performance. It can take from a few hours to several days.
+>
+> If interrupted, you can safely restart the process — already analyzed songs are stored in the database, so only missing songs will be processed.
 
+</details>
 
-### Clustering returns empty playlist or with only a few songs. How can I fix this?
+<details>
+<summary>Clustering returns empty playlist or with only a few songs. How can I fix this?</summary>
 
-The default clustering parameters are fine-tuned for music collections of around **50,000–100,000 songs**.
-If your clusters are too small or is empty, you can adjust the following values in the **Advanced Parameters** view:
+> The default clustering parameters are tuned for collections of around **50,000–100,000 songs**.
+>
+> If clusters are too small or empty, adjust these Advanced Parameters:
+>
+> - **Stratified Sampling Target Percentile**: increases number of songs included in clustering (set up to 100 for more coverage)
+> - **min clusters / max clusters**: reduce or increase number of clusters and adjust cluster size
 
-* **`Stratified Sampling Target Percentile`**:
-  Defines the percentile of songs sampled per genre for clustering.
-  The higher this value, the more songs will be clustered. You can set it to **100** to include more songs.
+</details>
 
-* **`min clusters` and `max clusters`**:
-  By default, AudioMuse-AI creates between **40 and 100 clusters (playlists)**.
-  Lowering these numbers will result in fewer clusters, each containing more songs.
+<details>
+<summary>Clustering returns clusters with big number of songs. How can I fix this?</summary>
 
-### Clustering returns clusters with big number of songs. How can I fix this?
+> Increase the `Stratified Sampling Target Percentile`, `min clusters`, and `max clusters` values in the advanced parameter view.
 
-In contrast to cluster with few song, you can just raise the `Stratified Sampling Target Percentile`, `min clusters` and `max clusters` values in the advanced parameter view. 
+</details>
 
-### Clustering takes a lot of time, how can I run it faster?
+<details>
+<summary>Clustering takes a lot of time, how can I run it faster?</summary>
 
-Clusterign algorithm by default do 5000 run. This means that multiple run are executed and the best is kept. You can lower this number in the front-end in the `Clustering Runs:` to do less run. For example with 1000 run the result should still be good enough and take a reasonable amount of time.
+> By default, clustering runs 5000 iterations. You can reduce the **Clustering Runs** value (e.g., 1000) to speed up execution while keeping acceptable quality.
 
-### How to reset the Admin password?
+</details>
 
-From AudioMsue-AI v1.0.0 the Admin password is stored encrypted on the database. The only way to reset is access to the postgresql database and delete it. You can read more in the [AUTHENTICATION](./AUTH.md) docs.
+<details>
+<summary>How to reset the Admin password?</summary>
+
+> From AudioMuse-AI v1.0.0, the Admin password is stored encrypted in the database. The only way to reset it is by accessing the PostgreSQL database and deleting it. See the [AUTHENTICATION](./AUTH.md) docs for more details.
+
+</details>
