@@ -345,6 +345,18 @@ MERT_LAYER = int(os.environ.get("MERT_LAYER", "-1"))
 # ``auto`` picks CUDA when torch reports it available, else CPU.
 MERT_DEVICE = os.environ.get("MERT_DEVICE", "auto").lower()
 MERT_TARGET_SR = int(os.environ.get("MERT_TARGET_SR", "24000"))
+# Long tracks are processed in fixed-length windows and the per-window
+# embeddings are mean-pooled. This matches the way MusiCNN's
+# prepare_spectrogram_patches already chunks input, keeps MERT inside
+# its short-clip pretraining distribution, and bounds per-track
+# latency to ``ceil(track_seconds / chunk_seconds)`` forward passes.
+# 30 s is the sweet spot — long enough to capture rhythm + timbre +
+# arrangement, short enough that an 8-minute track is 16 cheap passes
+# instead of one ruinously expensive one.
+MERT_CHUNK_SECONDS = float(os.environ.get("MERT_CHUNK_SECONDS", "30"))
+# Trailing audio shorter than this is discarded — it's noise from the
+# tail-end split and wouldn't contribute meaningfully to the mean.
+MERT_MIN_CHUNK_SECONDS = float(os.environ.get("MERT_MIN_CHUNK_SECONDS", "5"))
 # Override the Hugging Face cache location when, e.g., the default
 # ~/.cache/huggingface path is not writable inside the worker
 # container. Empty string = use HF default.

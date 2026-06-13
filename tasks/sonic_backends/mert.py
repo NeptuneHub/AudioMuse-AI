@@ -80,6 +80,7 @@ class MERTBackend(SonicBackend):
             EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH,
             MERT_MODEL_ID, MERT_LAYER, MERT_DEVICE,
             MERT_HF_CACHE_DIR, MERT_TARGET_SR,
+            MERT_CHUNK_SECONDS, MERT_MIN_CHUNK_SECONDS,
         )
         self._musicnn_paths = {
             "embedding": EMBEDDING_MODEL_PATH,
@@ -90,6 +91,8 @@ class MERTBackend(SonicBackend):
         self._device_pref = MERT_DEVICE
         self._cache_dir = MERT_HF_CACHE_DIR or None
         self.target_sr = int(MERT_TARGET_SR)
+        self._chunk_seconds = float(MERT_CHUNK_SECONDS)
+        self._min_chunk_seconds = float(MERT_MIN_CHUNK_SECONDS)
         if self._model_id in _KNOWN_DIMS:
             self.embedding_dim = _KNOWN_DIMS[self._model_id]
         else:
@@ -261,21 +264,50 @@ class MERTBackend(SonicBackend):
             logger.warning("MERT got empty audio for %s", file_basename)
             return None
 
-        inputs = processor(
-            audio, sampling_rate=target_sr, return_tensors="pt",
-        )
-        # Move tensor inputs to the model's device. ``processor`` returns
-        # a BatchFeature dict-like.
-        inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
-
-        with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
-        hidden_states = outputs.hidden_states  # tuple of (B, T, D), len = num_layers+1
+        # Chunk the audio into fixed-length windows and mean-pool the
+        # per-chunk track embeddings. MERT was pretrained on short
+        # clips (HuBERT-style), so chunking keeps inference in
+        # distribution and bounds per-track latency to a constant
+        # ``ceil(track_seconds / chunk_seconds)`` forward passes. A
+        # trailing chunk shorter than ``min_chunk_samples`` is dropped
+        # rather than padded, since its mean would just be noise from
+        # the tail end. If the whole track is shorter than the min
+        # chunk threshold, we still embed it as one short pass so
+        # very short clips don't silently fail to produce a vector.
+        chunk_samples = int(self._chunk_seconds * target_sr)
+        min_chunk_samples = int(self._min_chunk_seconds * target_sr)
         layer = self._layer if isinstance(self._layer, int) else -1
-        layer_out = hidden_states[layer]  # (1, T, D)
-        # Mean-pool over the time axis to get a single fixed-dim vector.
-        track_vec = layer_out.mean(dim=1).squeeze(0)
-        return track_vec.detach().cpu().numpy()
+
+        if audio.size <= chunk_samples:
+            chunks = [audio]
+        else:
+            chunks = [
+                audio[i:i + chunk_samples]
+                for i in range(0, audio.size, chunk_samples)
+            ]
+            if len(chunks) > 1 and chunks[-1].size < min_chunk_samples:
+                chunks.pop()
+
+        chunk_vecs = []
+        for chunk in chunks:
+            inputs = processor(
+                chunk, sampling_rate=target_sr, return_tensors="pt",
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
+            with torch.no_grad():
+                outputs = model(**inputs, output_hidden_states=True)
+            layer_out = outputs.hidden_states[layer]  # (1, T, D)
+            chunk_vecs.append(
+                layer_out.mean(dim=1).squeeze(0).detach().cpu().numpy()
+            )
+
+        if not chunk_vecs:
+            return None
+        # Mean-pool across chunks. Equal weighting is the standard
+        # MIR choice — both volume-weighted and energy-weighted
+        # variants exist but don't measurably help similarity recall
+        # in the published benchmarks.
+        return np.mean(np.stack(chunk_vecs, axis=0), axis=0)
 
 
 register(MERTBackend())
