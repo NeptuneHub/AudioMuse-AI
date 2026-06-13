@@ -67,7 +67,7 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 
 > The time required depends on the number of songs and hardware performance. It can take from a few hours to several days.
 >
-> If interrupted, you can safely restart the process — already analyzed songs are stored in the database, so only missing songs will be processed.
+> If interrupted, you can safely restart the process, already analyzed songs are stored in the database, so only missing songs will be processed.
 
 </details>
 
@@ -101,5 +101,17 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 <summary>How to reset the Admin password?</summary>
 
 > From AudioMuse-AI v1.0.0, the Admin password is stored encrypted in the database. The only way to reset it is by accessing the PostgreSQL database and deleting it. See the [AUTHENTICATION](./AUTH.md) docs for more details.
+
+</details>
+
+<details>
+<summary>How to backup and restore the database?</summary>
+
+> Backup and restore are available under `Administration > Backup and Restore`.
+>
+> Important notes:
+> * Ensure the PostgreSQL version matches the deployment example (e.g., up to v2.1.5 uses `postgres:15-alpine`). Version mismatches may break backup/restore compatibility.
+> * Backups may not be interchangeable across different OS/container setups (Linux, Windows, macOS) due to PostgreSQL version differences.
+> * If issues occur, check logs in the Flask container under `/app/backup`.
 
 </details>
