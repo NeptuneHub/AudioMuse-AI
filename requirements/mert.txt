@@ -15,5 +15,12 @@
 # of torch from https://pytorch.org/get-started/locally/ matching the
 # CUDA version of the base image.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1
-torchaudio==2.5.1
+# torch >= 2.6 required by transformers' CVE-mitigated torch.load gate.
+# MERT-v1-95M/-330M ship their HF checkpoints as pickle .bin (not
+# safetensors) and load via trust_remote_code=True, which routes
+# through torch.load. transformers refuses that path under torch < 2.6
+# with a hard ValueError, so the worker dies before producing any
+# embeddings. Keep this floor in sync with whatever transformers
+# version is in requirements/common.txt.
+torch==2.6.0
+torchaudio==2.6.0
