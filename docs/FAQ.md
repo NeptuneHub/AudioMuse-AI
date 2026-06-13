@@ -43,6 +43,17 @@ Find answers to common questions about setting up, configuring, and deploying Au
 
 </details>
 
+<details>
+<summary>Setup Wizard connection test fails when using Jellyfin</summary>
+
+> During the initial setup, the Setup Wizard may fail the connection test when configuring Jellyfin.
+>
+> This is most commonly caused by incorrect credentials. In Jellyfin, you must use the **User ID (UID)** instead of the username.
+>
+> You can find instructions on how to retrieve the Jellyfin User ID here: [PARAMETERS](PARAMETERS.md).
+
+</details>
+
 ---
 
 ## User Guide FAQs
