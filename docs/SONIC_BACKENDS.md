@@ -30,22 +30,17 @@ The trade-offs:
   (~1–3 s/track on an i9-14900K). MERT-330M is meaningfully better but
   effectively requires a GPU.
 * **Image size**. Pulling in `torch` adds ~700 MB.
-* **Switching is destructive**. Embedding dimensions differ (200 vs
-  768/1024), so the Voyager index and the `embedding` table must be
-  rebuilt from scratch — exactly like the v2.0.0 lyrics-model swap.
+* **Switching is non-destructive.** Each backend stores its embeddings
+  and Voyager index under its own namespace (composite
+  `(item_id, backend)` PK on `embedding`; namespaced Voyager
+  `INDEX_NAME`), so flipping `SONIC_BACKEND` preserves the outgoing
+  backend's data — you can switch back later without re-analyzing.
+  When you no longer want the outgoing backend's data, drop it from
+  the Admin → Cleaning → Sonic Backend Storage panel.
 
 ## Switching backends
 
-1. Drop the audio embedding tables (Voyager picks up the new
-   dimensionality from `EMBEDDING_DIMENSION` automatically):
-
-   ```bash
-   docker compose exec -e PGPASSWORD=audiomusepassword postgres \
-     psql -U audiomuse -d audiomusedb \
-     -c "TRUNCATE embedding; DELETE FROM voyager_index_data;"
-   ```
-
-2. Rebuild the image with MERT deps and set the backend env vars:
+1. Rebuild the image with MERT deps and set the backend env vars:
 
    ```yaml
    # compose snippet
@@ -61,8 +56,17 @@ The trade-offs:
        MERT_LAYER: "-1"                     # last hidden layer; tune if desired
    ```
 
-3. Restart the stack and run a full analysis (the Admin → Analysis
-   page). Voyager rebuild happens automatically at the end of the run.
+2. Restart the stack and run a full analysis (Admin → Analysis). Tracks
+   that already have the previous backend's embedding stay tagged as
+   "needs analysis under the active backend" until their new row is
+   written. Voyager rebuild for the active backend happens
+   automatically at the end of the run.
+
+3. Once you're happy with the new backend, go to Admin → Cleaning →
+   **Sonic Backend Storage**, find the previous backend in the table
+   and click "Clear this backend" to free the disk space. The active
+   backend is read-only there — switching `SONIC_BACKEND` is the only
+   way to free the active backend's data.
 
 ## Configuration reference
 

@@ -94,34 +94,28 @@
 
     <!-- Sonic Backend State Section -->
     <section id="sonic-state-section" style="margin-top: 2rem;">
-        <h2>Sonic Backend State</h2>
+        <h2>Sonic Backend Storage</h2>
         <p>
-            The audio similarity embedding stored per track is produced by
-            the configured <code>SONIC_BACKEND</code>. Different backends
-            emit different-dimensioned vectors (MusiCNN: 200; MERT-95M:
-            768; MERT-330M: 1024), and the Voyager index needs every row
-            to share the active dimension. After switching backends, use
-            the button below to drop stale audio embeddings + the audio
-            Voyager index so a fresh re-analysis can produce a clean,
-            consistent index.
+            Each sonic backend (<code>musicnn</code>, <code>mert</code>, …)
+            stores its audio embeddings and Voyager index under its own
+            namespace, so the data from any backend you've run survives
+            switching to a different one. Use this panel to inspect what
+            each backend has on disk and to free space by dropping a
+            backend you're no longer using.
         </p>
         <p style="font-size: 0.9em; color: var(--muted, #888);">
-            Untouched: CLAP embeddings, lyrics analysis, artist data,
-            playlists, app config, task history. Cleared: every row in
-            <code>embedding</code>, the audio Voyager index rows, and
-            the backend-derived columns on <code>score</code>
-            (tempo / key / scale / energy / mood_vector / other_features).
+            The active backend is read-only here — to clear its data,
+            switch <code>SONIC_BACKEND</code> in your compose / env first
+            and reload. CLAP, lyrics, artist data, score, playlists,
+            app config and task history are never touched by this panel.
         </p>
 
-        <div id="sonic-state-display" class="cleaning-summary" style="margin-bottom: 1rem;">
+        <div id="sonic-state-display" style="margin-bottom: 1rem;">
             <p>Loading current state...</p>
         </div>
 
-        <div class="task-buttons">
+        <div class="task-buttons" style="margin-bottom: 1rem;">
             <button id="refresh-sonic-state-btn">Refresh State</button>
-            <button id="clear-sonic-state-btn" class="danger-button" disabled>
-                Clear stale audio embeddings
-            </button>
         </div>
 
         <div id="sonic-state-result" style="display: none; margin-top: 1rem;" class="cleaning-summary">
@@ -541,105 +535,129 @@
             console.log('UI completely reset - all timers and intervals cleared');
         }
 
-        // --- Sonic Backend State panel -------------------------------------
+        // --- Sonic Backend Storage panel -----------------------------------
 
         const sonicStateDisplay = document.getElementById('sonic-state-display');
         const refreshSonicStateBtn = document.getElementById('refresh-sonic-state-btn');
-        const clearSonicStateBtn = document.getElementById('clear-sonic-state-btn');
         const sonicStateResult = document.getElementById('sonic-state-result');
 
-        function fmtDim(d) {
-            return (d === null || d === undefined) ? '—' : String(d);
+        function fmtNum(n) { return n === null || n === undefined ? '—' : String(n); }
+        function fmtDim(d) { return d === null || d === undefined ? '—' : String(d); }
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            }[c]));
         }
 
         function renderSonicState(state) {
             if (state.error) {
                 sonicStateDisplay.innerHTML = `
-                    <p style="color: var(--color-failure, #c33);"><strong>Failed to inspect state:</strong> ${state.error}</p>
+                    <p style="color: var(--color-failure, #c33);"><strong>Failed to inspect state:</strong> ${escapeHtml(state.error)}</p>
                 `;
-                clearSonicStateBtn.disabled = true;
                 return;
             }
-            const mismatchBadge = state.mismatch
-                ? `<span style="color: var(--color-failure, #c33); font-weight: bold;">⚠ MISMATCH</span>`
-                : `<span style="color: var(--color-success, #2a8); font-weight: bold;">✓ consistent</span>`;
+            const rows = (state.backends || []).map(b => {
+                const backendName = escapeHtml(b.backend);
+                const activeBadge = b.is_active
+                    ? `<span style="color: var(--color-success, #2a8); font-weight: bold;">active</span>`
+                    : '';
+                const dimMismatch =
+                    b.is_active &&
+                    ((b.sample_stored_dim !== null && b.sample_stored_dim !== state.active_dim) ||
+                     (b.stored_voyager_dim !== null && b.stored_voyager_dim !== state.active_dim));
+                const mismatchNote = dimMismatch
+                    ? ` <span style="color: var(--color-failure, #c33); font-weight: bold;">⚠ dim mismatch</span>`
+                    : '';
+                const clearBtn = b.is_active
+                    ? `<button class="sonic-clear-btn" disabled title="Switch SONIC_BACKEND first to clear the active backend">Clear (active)</button>`
+                    : `<button class="sonic-clear-btn danger-button" data-backend="${backendName}">Clear this backend</button>`;
+                return `
+                    <tr>
+                        <td><code>${backendName}</code> ${activeBadge}${mismatchNote}</td>
+                        <td style="text-align: right;">${fmtNum(b.embedding_row_count)}</td>
+                        <td style="text-align: right;">${fmtDim(b.sample_stored_dim)}</td>
+                        <td style="text-align: right;">${fmtNum(b.voyager_row_count)}</td>
+                        <td style="text-align: right;">${fmtDim(b.stored_voyager_dim)}</td>
+                        <td>${clearBtn}</td>
+                    </tr>
+                `;
+            }).join('');
+
             sonicStateDisplay.innerHTML = `
-                <p><strong>Active backend:</strong> <code>${state.current_backend}</code>
-                   &nbsp;·&nbsp; <strong>writes dim:</strong> ${state.current_dim}
-                   &nbsp;·&nbsp; ${mismatchBadge}</p>
-                <p><strong>embedding rows:</strong> ${state.embedding_row_count}
-                   &nbsp;·&nbsp; <strong>sampled stored dim:</strong> ${fmtDim(state.sample_stored_dim)}</p>
-                <p><strong>voyager_index_data rows:</strong> ${state.voyager_row_count}
-                   &nbsp;·&nbsp; <strong>stored voyager dim:</strong> ${fmtDim(state.stored_voyager_dim)}</p>
+                <p>
+                    <strong>Active backend:</strong> <code>${escapeHtml(state.active_backend)}</code>
+                    &nbsp;·&nbsp; <strong>writes dim:</strong> ${state.active_dim}
+                </p>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr style="border-bottom: 1px solid var(--border, #444);">
+                            <th style="text-align: left; padding: 0.4em 0.6em;">Backend</th>
+                            <th style="text-align: right; padding: 0.4em 0.6em;">embedding rows</th>
+                            <th style="text-align: right; padding: 0.4em 0.6em;">sampled dim</th>
+                            <th style="text-align: right; padding: 0.4em 0.6em;">voyager rows</th>
+                            <th style="text-align: right; padding: 0.4em 0.6em;">voyager dim</th>
+                            <th style="padding: 0.4em 0.6em;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
             `;
-            // Enable the clear button whenever there are any audio-embedding
-            // rows to drop — the user might want to wipe even without a
-            // dimension mismatch (e.g. forcing a re-analysis on the same
-            // backend after a model upgrade).
-            const hasRows = state.embedding_row_count > 0 || state.voyager_row_count > 0;
-            clearSonicStateBtn.disabled = !hasRows;
-            if (state.mismatch) {
-                clearSonicStateBtn.classList.add('active-button');
-            } else {
-                clearSonicStateBtn.classList.remove('active-button');
-            }
+            // Re-bind clear buttons after re-render.
+            sonicStateDisplay.querySelectorAll('.sonic-clear-btn[data-backend]').forEach(btn => {
+                btn.addEventListener('click', () => clearBackend(btn.dataset.backend));
+            });
         }
 
         async function loadSonicState() {
             sonicStateDisplay.innerHTML = '<p>Loading current state...</p>';
-            clearSonicStateBtn.disabled = true;
             try {
                 const res = await fetch('/api/cleaning/sonic_state');
                 const data = await res.json();
                 renderSonicState(data);
             } catch (e) {
                 sonicStateDisplay.innerHTML =
-                    `<p style="color: var(--color-failure, #c33);">Failed to load: ${e}</p>`;
+                    `<p style="color: var(--color-failure, #c33);">Failed to load: ${escapeHtml(String(e))}</p>`;
             }
         }
 
-        async function clearSonicState() {
+        async function clearBackend(backend) {
             if (!confirm(
-                'This will DELETE every row in `embedding`, drop the audio Voyager index rows, ' +
-                'and NULL the backend-derived columns on `score`. A full re-analysis is required ' +
-                'afterwards. Continue?'
+                `This will DELETE every embedding row for backend "${backend}" and drop its ` +
+                `Voyager index rows. The score / CLAP / lyrics / artist tables are untouched. ` +
+                `Continue?`
             )) {
                 return;
             }
-            clearSonicStateBtn.disabled = true;
             sonicStateResult.style.display = 'none';
             try {
                 const res = await fetch('/api/cleaning/sonic_state/clear', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({confirm: true}),
+                    body: JSON.stringify({backend, confirm: true}),
                 });
                 const data = await res.json();
                 if (!res.ok) {
                     sonicStateResult.innerHTML = `
                         <h3>❌ Clear failed</h3>
-                        <p>${data.error || 'Unknown error'}</p>
+                        <p>${escapeHtml(data.error || 'Unknown error')}</p>
                     `;
                 } else {
                     const s = data.summary;
                     sonicStateResult.innerHTML = `
-                        <h3>✅ Sonic audio state cleared</h3>
+                        <h3>✅ Backend <code>${escapeHtml(s.backend)}</code> cleared</h3>
                         <p><strong>Embeddings deleted:</strong> ${s.deleted_embeddings}</p>
                         <p><strong>Voyager rows deleted:</strong> ${s.deleted_voyager_rows}</p>
-                        <p><strong>Score rows nulled:</strong> ${s.score_audio_fields_cleared}</p>
-                        <p>Re-run analysis to populate the new backend's index.</p>
                     `;
                     renderSonicState(data.state);
                 }
                 sonicStateResult.style.display = 'block';
             } catch (e) {
-                sonicStateResult.innerHTML = `<p style="color: var(--color-failure, #c33);">Clear failed: ${e}</p>`;
+                sonicStateResult.innerHTML = `<p style="color: var(--color-failure, #c33);">Clear failed: ${escapeHtml(String(e))}</p>`;
                 sonicStateResult.style.display = 'block';
             }
         }
 
         refreshSonicStateBtn.addEventListener('click', loadSonicState);
-        clearSonicStateBtn.addEventListener('click', clearSonicState);
         document.addEventListener('DOMContentLoaded', loadSonicState);
 </script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>

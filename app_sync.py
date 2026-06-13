@@ -133,9 +133,14 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
     clap_on = include_embeddings and config.CLAP_ENABLED
     select_extra = ""
     join_extra = ""
+    embedding_params = ()
     if include_embeddings:
+        from tasks.sonic_backends import active_backend_name
+        # ``musicnn_blob`` alias kept for sync-protocol back-compat —
+        # the consumer just sees "the active backend's embedding".
         select_extra += ", e.embedding AS musicnn_blob"
-        join_extra += " LEFT JOIN embedding e ON e.item_id = s.item_id"
+        join_extra += " LEFT JOIN embedding e ON e.item_id = s.item_id AND e.backend = %s"
+        embedding_params = (active_backend_name(),)
     if clap_on:
         select_extra += ", c.embedding AS clap_blob"
         join_extra += " LEFT JOIN clap_embedding c ON c.item_id = s.item_id"
@@ -155,7 +160,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
             placeholders = ",".join(["%s"] * len(id_filter))
             cur.execute(
                 base_select + " WHERE s.item_id IN (" + placeholders + ") ORDER BY s.item_id ASC",
-                tuple(id_filter),
+                embedding_params + tuple(id_filter),
             )
             rows = cur.fetchall()
             total_tracks = len(rows)
@@ -167,7 +172,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
         offset = (page - 1) * limit
         cur.execute(
             base_select + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
-            (limit, offset),
+            embedding_params + (limit, offset),
         )
         rows = cur.fetchall()
         has_more = (offset + len(rows)) < total_tracks

@@ -9,6 +9,29 @@ backend does not need.
 
 from .base import SonicBackend, available_backends, get_backend, register
 
+
+def active_backend_name() -> str:
+    """Return the currently configured backend name.
+
+    Read lazily from :mod:`config` so reloading the module (e.g. during
+    tests that monkeypatch ``SONIC_BACKEND``) picks up the new value.
+    """
+    from config import SONIC_BACKEND
+    return SONIC_BACKEND
+
+
+def voyager_index_name(backend: str | None = None) -> str:
+    """Per-backend Voyager primary key in ``voyager_index_data``.
+
+    Always namespaced: legacy bare-named ``music_library`` rows are
+    migrated to ``music_library_musicnn`` at ``init_db`` time so every
+    row has an unambiguous backend tag. When ``backend`` is None, the
+    active backend is used.
+    """
+    from config import INDEX_NAME
+    name = backend or active_backend_name()
+    return f"{INDEX_NAME}_{name}"
+
 _LOADED = False
 
 
@@ -44,4 +67,7 @@ def _ensure_loaded() -> None:
             )
 
 
-__all__ = ["SonicBackend", "available_backends", "get_backend", "register"]
+__all__ = [
+    "SonicBackend", "active_backend_name", "available_backends",
+    "get_backend", "register", "voyager_index_name",
+]

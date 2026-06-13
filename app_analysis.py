@@ -176,42 +176,37 @@ def start_cleaning_endpoint():
 
 @analysis_bp.route('/api/cleaning/sonic_state', methods=['GET'])
 def sonic_state_endpoint():
-    """Report current vs stored sonic-backend embedding state.
+    """Report per-backend embedding + Voyager state for the Cleaning UI.
 
-    Used by the Cleaning UI to surface a "stale audio embeddings" panel
-    after a ``SONIC_BACKEND`` change. The body is exactly whatever
-    ``tasks.cleaning.inspect_sonic_state`` returns:
-    ``current_backend``, ``current_dim``, ``embedding_row_count``,
-    ``sample_stored_dim``, ``voyager_row_count``, ``stored_voyager_dim``,
-    ``mismatch``.
+    Body shape (see ``tasks.cleaning.inspect_sonic_state``):
+    ``active_backend``, ``active_dim``, and a ``backends`` list with
+    one row per backend that has stored data (plus the active one).
+    Each row carries ``embedding_row_count``, ``sample_stored_dim``,
+    ``voyager_row_count``, ``stored_voyager_dim``, and ``is_active``.
     ---
     tags:
       - Cleaning
     responses:
       200:
-        description: Sonic state snapshot.
-      500:
-        description: Database error while inspecting state.
+        description: Per-backend sonic state snapshot.
     """
     from tasks.cleaning import inspect_sonic_state
-    state = inspect_sonic_state()
-    return jsonify(state), 200
+    return jsonify(inspect_sonic_state()), 200
 
 
 @analysis_bp.route('/api/cleaning/sonic_state/clear', methods=['POST'])
 def sonic_state_clear_endpoint():
-    """Wipe stored audio embeddings + Voyager audio index rows.
+    """Drop one inactive backend's audio embeddings + Voyager index.
 
-    Destructive: every row in ``embedding`` is deleted, the audio
-    Voyager index rows are dropped, and the backend-derived columns on
-    ``score`` (tempo / key / scale / energy / mood_vector /
-    other_features) are nulled. CLAP embeddings, lyrics, artist data,
-    playlists, config and task history are untouched.
+    Removes only the ``embedding`` rows whose ``backend`` column equals
+    the supplied value and the matching ``voyager_index_data`` rows
+    (single or segmented). The active ``SONIC_BACKEND`` is protected —
+    switching ``SONIC_BACKEND`` first is required to clear it.
+    Untouched: CLAP / lyrics / artist data, playlists, app_config,
+    task history, score rows.
 
-    Requires the body to include ``{"confirm": true}`` so a stray
-    fetch can't drop the table. Runs synchronously — the operation is
-    one DELETE + one UPDATE and finishes in seconds even on a 100k+
-    track library.
+    Body: ``{"backend": "musicnn", "confirm": true}``. The confirm flag
+    is required so a stray fetch can't drop the table.
     ---
     tags:
       - Cleaning
@@ -222,27 +217,35 @@ def sonic_state_clear_endpoint():
           schema:
             type: object
             properties:
+              backend:
+                type: string
               confirm:
                 type: boolean
     responses:
       200:
-        description: Cleared. Body lists the row counts removed/nulled.
+        description: Cleared. Body returns the summary + refreshed state.
       400:
-        description: Missing/false confirmation flag.
+        description: Missing/invalid backend, missing confirmation, or
+                     attempt to clear the active backend.
       500:
         description: Database error during cleanup.
     """
     data = request.json or {}
+    backend = (data.get('backend') or '').strip()
+    if not backend:
+        return jsonify({"error": "Missing 'backend' field."}), 400
     if not data.get('confirm') is True:
         return jsonify({
             "error": "Refusing to clear without explicit confirmation.",
-            "hint": 'POST {"confirm": true} to proceed.',
+            "hint": 'POST {"backend": "<name>", "confirm": true} to proceed.',
         }), 400
 
-    from tasks.cleaning import clear_sonic_audio_state, inspect_sonic_state
+    from tasks.cleaning import clear_inactive_backend_data, inspect_sonic_state
     try:
-        summary = clear_sonic_audio_state()
+        summary = clear_inactive_backend_data(backend)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error("clear_sonic_audio_state failed: %s", e, exc_info=True)
+        logger.error("clear_inactive_backend_data failed: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 500
     return jsonify({"summary": summary, "state": inspect_sonic_state()}), 200

@@ -312,16 +312,27 @@ def _str_ids(ids):
 
 
 def get_existing_track_ids(track_ids):
-    """Return the subset of track_ids already fully analyzed by MusiCNN."""
+    """Return the subset of track_ids already fully analyzed under the
+    *active* sonic backend.
+
+    A track is considered "done" only if there is an ``embedding`` row
+    for the currently-configured backend AND the score columns are
+    populated. After a ``SONIC_BACKEND`` switch, tracks that have only
+    the outgoing backend's embedding row will fall back into the queue
+    and get the active backend's embedding written alongside the
+    existing one (composite ``(item_id, backend)`` PK).
+    """
     if not track_ids:
         return set()
+    from .sonic_backends import active_backend_name
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
+            "SELECT s.item_id FROM score s "
+            "JOIN embedding e ON s.item_id = e.item_id AND e.backend = %s "
             "WHERE s.item_id IN %s AND s.other_features IS NOT NULL "
             "AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL "
             "AND s.tempo IS NOT NULL",
-            (tuple(_str_ids(track_ids)),),
+            (active_backend_name(), tuple(_str_ids(track_ids))),
         )
         return {row[0] for row in cur.fetchall()}
 

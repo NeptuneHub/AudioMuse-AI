@@ -184,11 +184,12 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             return False
 
         logger.info("SemGrove: streaming audio embeddings…")
+        from .voyager_manager import _backend_sql_literal
         audio_buf, audio_ids = stream_embeddings_to_buffer(
             table="embedding",
             column="embedding",
             dim=audio_dim,
-            where_clause="embedding IS NOT NULL",
+            where_clause=f"embedding IS NOT NULL AND backend = {_backend_sql_literal()}",
         )
         if audio_buf.shape[0] == 0:
             logger.warning("SemGrove: no audio embeddings found; aborting.")

@@ -42,7 +42,12 @@ def get_vectors_from_database(item_ids: list, db_conn):
     vectors_map = {}
     
     with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s)", (item_ids,))
+        from .sonic_backends import active_backend_name
+        cur.execute(
+            "SELECT item_id, embedding FROM embedding "
+            "WHERE item_id = ANY(%s) AND backend = %s",
+            (item_ids, active_backend_name()),
+        )
         rows = cur.fetchall()
         
         for row in rows:

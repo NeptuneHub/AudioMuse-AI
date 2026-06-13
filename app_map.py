@@ -88,11 +88,12 @@ def build_map_cache():
     conn = get_db()
     cur = conn.cursor()
     try:
+        from tasks.sonic_backends import active_backend_name
         cur.execute("""
             SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
             FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
-        """)
+            JOIN embedding e ON s.item_id = e.item_id AND e.backend = %s
+        """, (active_backend_name(),))
         rows = cur.fetchall()
     finally:
         cur.close()

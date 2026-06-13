@@ -22,15 +22,43 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import threading
 
-from config import EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE
+from config import EMBEDDING_DIMENSION, VOYAGER_METRIC, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE
+from .sonic_backends import active_backend_name, voyager_index_name
 
 logger = logging.getLogger(__name__)
+
+
+def _backend_sql_literal() -> str:
+    """Active backend as a SQL string literal, validated for identifier shape.
+
+    The result is interpolated directly into the WHERE clauses passed
+    to :func:`iter_embedding_batches` (which doesn't accept parameter
+    binding). Backend names come from the controlled ``SONIC_BACKEND``
+    env var; we still gate on ``^[a-z_][a-z0-9_]*$`` so a typo doesn't
+    silently turn into a SQL injection vector.
+    """
+    name = active_backend_name()
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+        raise ValueError(f"Invalid SONIC_BACKEND name {name!r}")
+    return f"'{name}'"
+
+
+# Active Voyager index primary key. Always namespaced per backend; legacy
+# bare ``music_library`` rows are migrated to the musicnn namespace at
+# init_db time.
+def __getattr__(name):
+    # Lazy attribute so external callers that ``from tasks.voyager_manager
+    # import INDEX_NAME`` keep working AND pick up SONIC_BACKEND changes
+    # without needing the module reloaded.
+    if name == "INDEX_NAME":
+        return voyager_index_name()
+    raise AttributeError(name)
 
 # Optional instrumentation: enable with RADIUS_INSTRUMENTATION=True in env
 INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 
 # When the serialized Voyager index exceeds this threshold the index
-# will be written into multiple rows as: <INDEX_NAME>_<part_no>_<total_parts>
+# will be written into multiple rows as: <voyager_index_name()>_<part_no>_<total_parts>
 # Configurable via `VOYAGER_MAX_PART_SIZE_MB` in `config.py` (default 50 MB).
 VOYAGER_MAX_PART_SIZE = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
 
@@ -149,14 +177,14 @@ def load_voyager_index_for_querying(force_reload=False):
     cur = conn.cursor()
     try:
         # 1) Try the classic single-row index first (backwards compatible)
-        cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (INDEX_NAME,))
+        cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (voyager_index_name(),))
         record = cur.fetchone()
 
         if record:
             index_binary_data, id_map_json, db_embedding_dim = record
 
             if not index_binary_data:
-                logger.error(f"Voyager index '{INDEX_NAME}' data in database is empty.")
+                logger.error(f"Voyager index '{voyager_index_name()}' data in database is empty.")
                 voyager_index, id_map, reverse_id_map = None, None, None
                 return
 
@@ -175,20 +203,20 @@ def load_voyager_index_for_querying(force_reload=False):
             logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
             return
 
-        # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
+        # 2) If not found, look for segmented rows named voyager_index_name()_<part>_<total>
         cur.execute(
             "SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-            (INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
+            (voyager_index_name().replace('_', r'\_') + r"\_%\_%",)
         )
         candidates = cur.fetchall()
 
         if not candidates:
-            logger.warning(f"Voyager index '{INDEX_NAME}' not found in the database (single or segmented). Cache will be empty.")
+            logger.warning(f"Voyager index '{voyager_index_name()}' not found in the database (single or segmented). Cache will be empty.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
         # Filter and parse segment suffixes (expect format: name_<part_no>_<total_parts>)
-        seg_pattern = re.compile(rf"^{re.escape(INDEX_NAME)}_(\d+)_(\d+)$")
+        seg_pattern = re.compile(rf"^{re.escape(voyager_index_name())}_(\d+)_(\d+)$")
         parts = []
         total_expected = None
         for row in candidates:
@@ -207,7 +235,7 @@ def load_voyager_index_for_querying(force_reload=False):
             parts.append((part_no, part_data, part_id_map_json, part_dim))
 
         if not parts:
-            logger.error(f"No valid segmented Voyager index rows found for prefix '{INDEX_NAME}'.")
+            logger.error(f"No valid segmented Voyager index rows found for prefix '{voyager_index_name()}'.")
             voyager_index, id_map, reverse_id_map = None, None, None
             return
 
@@ -311,6 +339,7 @@ def build_and_store_voyager_index(db_conn=None):
             table="embedding",
             column="embedding",
             dim=EMBEDDING_DIMENSION,
+            where_clause=f"backend = {_backend_sql_literal()}",
         )
         try:
             index_binary_data, item_ids = build_voyager_index_bytes_streaming(
@@ -329,12 +358,12 @@ def build_and_store_voyager_index(db_conn=None):
 
         local_id_map = build_id_map(item_ids)
 
-        logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
+        logger.info(f"Storing Voyager index '{voyager_index_name()}' in the database...")
         try:
             store_voyager_index_segmented(
                 db_conn,
                 target_table="voyager_index_data",
-                index_name=INDEX_NAME,
+                index_name=voyager_index_name(),
                 index_bytes=index_binary_data,
                 id_map=local_id_map,
                 embedding_dimension=EMBEDDING_DIMENSION,

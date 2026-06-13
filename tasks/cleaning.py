@@ -23,118 +23,156 @@ from psycopg2 import OperationalError
 logger = logging.getLogger(__name__)
 
 
-# --- Sonic-backend-switch cleanup -------------------------------------------
+# --- Sonic-backend storage inspection / cleanup -----------------------------
+#
+# Per-backend storage means every backend's embedding rows and Voyager
+# index live alongside each other (composite (item_id, backend) PK on
+# ``embedding``; namespaced ``voyager_index_data.index_name``). The
+# admin "Cleaning" panel uses these helpers to:
+#   * report per-backend row counts so users can see what's on disk;
+#   * drop a specific backend's audio data. The active backend is
+#     protected — switching away first is required to clear it.
+
+
+def _voyager_rows_for(cur, backend: str):
+    """Return (row_count, embedding_dim) for ``backend``'s Voyager rows.
+
+    Matches both the single-row form (``music_library_<backend>``) and
+    the segmented form (``music_library_<backend>_<part>_<total>``).
+    """
+    from config import INDEX_NAME
+    main = f"{INDEX_NAME}_{backend}"
+    seg_pattern = main.replace("_", r"\_") + r"\_%\_%"
+    cur.execute(
+        "SELECT COUNT(*), MIN(embedding_dimension) FROM voyager_index_data "
+        "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+        (main, seg_pattern),
+    )
+    row = cur.fetchone() or (0, None)
+    return int(row[0] or 0), (int(row[1]) if row[1] is not None else None)
+
+
+def _embedding_rows_for(cur, backend: str):
+    """Return (row_count, sampled_dim) for ``backend``'s embedding rows."""
+    cur.execute("SELECT COUNT(*) FROM embedding WHERE backend = %s", (backend,))
+    count = int((cur.fetchone() or (0,))[0] or 0)
+    sample_dim = None
+    if count > 0:
+        cur.execute(
+            "SELECT embedding FROM embedding "
+            "WHERE backend = %s AND embedding IS NOT NULL LIMIT 1",
+            (backend,),
+        )
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            raw = bytes(row[0])
+            if len(raw) % 4 == 0:
+                sample_dim = len(raw) // 4
+    return count, sample_dim
+
 
 def inspect_sonic_state():
-    """Return a dict describing the current vs stored sonic embedding state.
+    """Return per-backend embedding + Voyager state for the Cleaning UI.
 
-    Used by the Admin "Cleaning" panel to decide whether stale audio
-    embeddings need to be wiped after a ``SONIC_BACKEND`` change. Shape
-    is intentionally small and JSON-safe so
-    ``GET /api/cleaning/sonic_state`` can return it verbatim.
+    Shape (JSON-safe; returned by ``GET /api/cleaning/sonic_state``):
+      * ``active_backend``: the SONIC_BACKEND currently writing data.
+      * ``active_dim``: the embedding dim that backend produces.
+      * ``backends``: list of ``{backend, embedding_row_count,
+        sample_stored_dim, voyager_row_count, stored_voyager_dim,
+        is_active}`` rows — one per backend with any stored audio data,
+        plus the active backend even if it currently has none.
+
+    Stored backends are detected by SELECT DISTINCT on ``embedding`` +
+    parsing ``voyager_index_data.index_name`` so the panel surfaces
+    legacy backends the user no longer has registered, not just the
+    backends shipped in this image.
     """
     from app_helper import get_db
+    from config import INDEX_NAME
 
-    state = {
-        "current_backend": SONIC_BACKEND,
-        "current_dim": int(EMBEDDING_DIMENSION),
-        "embedding_row_count": 0,
-        "sample_stored_dim": None,
-        "voyager_row_count": 0,
-        "stored_voyager_dim": None,
-        "mismatch": False,
+    snapshot = {
+        "active_backend": SONIC_BACKEND,
+        "active_dim": int(EMBEDDING_DIMENSION),
+        "backends": [],
     }
 
-    seg_pattern = INDEX_NAME.replace("_", r"\_") + r"\_%\_%"
     try:
         with get_db() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM embedding")
-            state["embedding_row_count"] = int(cur.fetchone()[0] or 0)
-            if state["embedding_row_count"] > 0:
-                cur.execute("SELECT embedding FROM embedding WHERE embedding IS NOT NULL LIMIT 1")
-                row = cur.fetchone()
-                if row and row[0] is not None:
-                    raw = bytes(row[0])
-                    if len(raw) % 4 == 0:
-                        state["sample_stored_dim"] = len(raw) // 4
+            cur.execute("SELECT DISTINCT backend FROM embedding")
+            backends_with_emb = {r[0] for r in cur.fetchall() if r[0]}
 
             cur.execute(
-                "SELECT COUNT(*) FROM voyager_index_data "
-                "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                (INDEX_NAME, seg_pattern),
+                "SELECT DISTINCT regexp_replace("
+                "  regexp_replace(index_name, '_[0-9]+_[0-9]+$', ''), "
+                "  %s, '') AS backend "
+                "FROM voyager_index_data "
+                "WHERE index_name LIKE %s ESCAPE '\\'",
+                (f"^{INDEX_NAME}_", INDEX_NAME.replace("_", r"\_") + r"\_%"),
             )
-            state["voyager_row_count"] = int(cur.fetchone()[0] or 0)
-            if state["voyager_row_count"] > 0:
-                cur.execute(
-                    "SELECT embedding_dimension FROM voyager_index_data "
-                    "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\' "
-                    "ORDER BY index_name LIMIT 1",
-                    (INDEX_NAME, seg_pattern),
-                )
-                row = cur.fetchone()
-                if row and row[0] is not None:
-                    state["stored_voyager_dim"] = int(row[0])
+            backends_with_voy = {r[0] for r in cur.fetchall() if r[0]}
+
+            backend_set = backends_with_emb | backends_with_voy | {SONIC_BACKEND}
+            for backend in sorted(backend_set):
+                emb_count, emb_dim = _embedding_rows_for(cur, backend)
+                voy_count, voy_dim = _voyager_rows_for(cur, backend)
+                snapshot["backends"].append({
+                    "backend": backend,
+                    "embedding_row_count": emb_count,
+                    "sample_stored_dim": emb_dim,
+                    "voyager_row_count": voy_count,
+                    "stored_voyager_dim": voy_dim,
+                    "is_active": backend == SONIC_BACKEND,
+                })
     except Exception as e:
         logger.warning(f"Failed to inspect sonic embedding state: {e}", exc_info=True)
-        state["error"] = str(e)
-        return state
-
-    state["mismatch"] = (
-        (state["sample_stored_dim"] is not None and state["sample_stored_dim"] != state["current_dim"])
-        or (state["stored_voyager_dim"] is not None and state["stored_voyager_dim"] != state["current_dim"])
-    )
-    return state
+        snapshot["error"] = str(e)
+    return snapshot
 
 
-def clear_sonic_audio_state():
-    """Wipe stored audio similarity embeddings + Voyager audio index rows.
+def clear_inactive_backend_data(backend: str):
+    """Drop one inactive backend's embedding rows + Voyager index.
 
-    Intended for use after switching ``SONIC_BACKEND`` to a model with a
-    different embedding dimension (e.g. MusiCNN 200 → MERT 768). Removes
-    only what depends on the audio embedding dim — the CLAP embedding
-    (512-dim, fixed), lyrics embedding, artist index, app_config,
-    playlists, and task history are all preserved. Score rows are kept
-    but their backend-derived columns (tempo / key / scale / energy /
-    mood_vector / other_features) are nulled so the next analysis pass
-    treats every track as needing a fresh run.
+    Refuses to operate on ``SONIC_BACKEND`` (a configuration swap must
+    happen first; otherwise the next analysis pass would simply repopulate
+    the rows). Only touches ``embedding`` rows where ``backend = X`` and
+    ``voyager_index_data`` rows under that backend's namespace. The
+    CLAP / lyrics / artist / score / playlist / config tables are
+    untouched.
 
-    Returns a summary dict for the API response.
+    Returns a small summary dict for the API response.
     """
+    if not backend or not isinstance(backend, str):
+        raise ValueError("backend must be a non-empty string")
+    if backend == SONIC_BACKEND:
+        raise ValueError(
+            f"Refusing to clear the active backend ({backend!r}). Set "
+            "SONIC_BACKEND to a different backend first, then come back "
+            "to this panel."
+        )
+
     from app_helper import get_db
+    from config import INDEX_NAME
+    main = f"{INDEX_NAME}_{backend}"
+    seg_pattern = main.replace("_", r"\_") + r"\_%\_%"
 
-    summary = {
-        "deleted_embeddings": 0,
-        "deleted_voyager_rows": 0,
-        "score_audio_fields_cleared": 0,
-    }
-
-    seg_pattern = INDEX_NAME.replace("_", r"\_") + r"\_%\_%"
+    summary = {"backend": backend, "deleted_embeddings": 0, "deleted_voyager_rows": 0}
     with get_db() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM embedding")
+        cur.execute("DELETE FROM embedding WHERE backend = %s", (backend,))
         summary["deleted_embeddings"] = cur.rowcount or 0
 
         cur.execute(
             "DELETE FROM voyager_index_data "
             "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-            (INDEX_NAME, seg_pattern),
+            (main, seg_pattern),
         )
         summary["deleted_voyager_rows"] = cur.rowcount or 0
-
-        cur.execute(
-            "UPDATE score SET tempo = NULL, energy = NULL, "
-            "mood_vector = NULL, other_features = NULL, "
-            "\"key\" = NULL, scale = NULL"
-        )
-        summary["score_audio_fields_cleared"] = cur.rowcount or 0
 
         conn.commit()
 
     logger.info(
-        "Sonic audio state cleared: %d embeddings, %d voyager rows, "
-        "%d score rows nulled (current backend=%s, dim=%d)",
-        summary["deleted_embeddings"],
-        summary["deleted_voyager_rows"],
-        summary["score_audio_fields_cleared"],
+        "Cleared inactive backend %r: %d embeddings, %d voyager rows. "
+        "(active backend remains %s/%d-dim.)",
+        backend, summary["deleted_embeddings"], summary["deleted_voyager_rows"],
         SONIC_BACKEND, EMBEDDING_DIMENSION,
     )
     return summary

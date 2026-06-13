@@ -370,12 +370,13 @@ def build_and_store_artist_index(db_conn=None):
             item_ids = [track['item_id'] for track in tracks]
 
             try:
-                # Batch fetch embeddings from database
+                # Batch fetch embeddings from database (active backend only)
+                from .sonic_backends import active_backend_name
                 cur.execute("""
                     SELECT item_id, embedding
                     FROM embedding
-                    WHERE item_id = ANY(%s) AND embedding IS NOT NULL
-                """, (item_ids,))
+                    WHERE item_id = ANY(%s) AND embedding IS NOT NULL AND backend = %s
+                """, (item_ids, active_backend_name()))
 
                 embedding_rows = cur.fetchall()
 
@@ -803,13 +804,14 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
     cur = conn.cursor()
     
     try:
+        from .sonic_backends import active_backend_name
         cur.execute("""
             SELECT s.item_id, s.title, e.embedding
             FROM score s
-            JOIN embedding e ON s.item_id = e.item_id
+            JOIN embedding e ON s.item_id = e.item_id AND e.backend = %s
             WHERE s.author = %s AND e.embedding IS NOT NULL
             ORDER BY s.title
-        """, (artist_name,))
+        """, (active_backend_name(), artist_name))
         
         rows = cur.fetchall()
         

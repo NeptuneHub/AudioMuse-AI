@@ -238,10 +238,33 @@ def init_db():
                     note TEXT
                 )
             """)
-            # Create 'embedding' table
-            cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            # Create 'embedding' table. Composite (item_id, backend) primary
+            # key so each sonic backend stores its own embedding alongside
+            # the others — switching SONIC_BACKEND no longer destroys the
+            # outgoing backend's data.
+            cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # backend column: pre-existing rows were all written by MusiCNN
+            # (the only backend before this column existed), so backfill with
+            # 'musicnn'. New rows always carry the producing backend name.
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'backend')")
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE embedding ADD COLUMN backend TEXT NOT NULL DEFAULT 'musicnn'")
+                logger.info("Added 'backend' column to embedding table (backfilled to 'musicnn')")
+            # Composite PK on (item_id, backend). If the legacy single-column
+            # PK is still in place, swap it.
+            cur.execute("""
+                SELECT a.attname FROM pg_index i
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE i.indrelid = 'embedding'::regclass AND i.indisprimary
+                ORDER BY a.attname
+            """)
+            pk_cols = sorted(r[0] for r in cur.fetchall())
+            if pk_cols == ['item_id']:
+                cur.execute("ALTER TABLE embedding DROP CONSTRAINT IF EXISTS embedding_pkey")
+                cur.execute("ALTER TABLE embedding ADD PRIMARY KEY (item_id, backend)")
+                logger.info("Migrated embedding PK from (item_id) to (item_id, backend)")
             # Create 'lyrics_embedding' table for lyrics similarity and axis scores
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
@@ -257,6 +280,34 @@ def init_db():
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
             # Create 'voyager_index_data' table
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Voyager index names are now namespaced per sonic backend
+            # (e.g. ``music_library_musicnn``, ``music_library_mert``).
+            # Rename any legacy bare-named rows ('music_library' and its
+            # segmented form 'music_library_<part>_<total>') to the musicnn
+            # namespace so existing data is preserved without colliding with
+            # a freshly-built index from a different backend.
+            from config import INDEX_NAME as _LEGACY_INDEX_NAME
+            cur.execute(
+                "UPDATE voyager_index_data SET index_name = %s "
+                "WHERE index_name = %s",
+                (f"{_LEGACY_INDEX_NAME}_musicnn", _LEGACY_INDEX_NAME),
+            )
+            if cur.rowcount:
+                logger.info(
+                    "Renamed legacy bare voyager index '%s' to '%s_musicnn'",
+                    _LEGACY_INDEX_NAME, _LEGACY_INDEX_NAME,
+                )
+            cur.execute(
+                "UPDATE voyager_index_data SET index_name = %s || regexp_replace(index_name, %s, '') "
+                "WHERE index_name ~ %s",
+                (
+                    f"{_LEGACY_INDEX_NAME}_musicnn",
+                    f"^{_LEGACY_INDEX_NAME}",
+                    f"^{_LEGACY_INDEX_NAME}_[0-9]+_[0-9]+$",
+                ),
+            )
+            if cur.rowcount:
+                logger.info("Renamed legacy segmented voyager rows under musicnn namespace")
             # Create 'clap_index_data' table for stored CLAP text search indexes
             cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'lyrics_index_data' table for stored Lyrics voyager indexes (mirrors clap_index_data; supports chunked storage).
@@ -942,13 +993,17 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 file_path = EXCLUDED.file_path
         """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
 
-        # Save embedding
+        # Save embedding under the active sonic backend's namespace.
+        # Composite (item_id, backend) PK lets every backend keep its
+        # own embedding row alongside the others, so switching
+        # SONIC_BACKEND does not destroy the previous backend's data.
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
+            from tasks.sonic_backends import active_backend_name
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
             cur.execute("""
-                INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
-                ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-            """, (item_id, psycopg2.Binary(embedding_blob)))
+                INSERT INTO embedding (item_id, backend, embedding) VALUES (%s, %s, %s)
+                ON CONFLICT (item_id, backend) DO UPDATE SET embedding = EXCLUDED.embedding
+            """, (item_id, active_backend_name(), psycopg2.Binary(embedding_blob)))
 
         conn.commit()
     except Exception as e:
@@ -1043,13 +1098,14 @@ def get_tracks_by_ids(item_ids_list):
     # Convert item_ids to strings to match the text type in database
     item_ids_str = [str(item_id) for item_id in item_ids_list]
     
+    from tasks.sonic_backends import active_backend_name
     query = """
         SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
         FROM score s
-        LEFT JOIN embedding e ON s.item_id = e.item_id
+        LEFT JOIN embedding e ON s.item_id = e.item_id AND e.backend = %s
         WHERE s.item_id IN %s
     """
-    cur.execute(query, (tuple(item_ids_str),))
+    cur.execute(query, (active_backend_name(), tuple(item_ids_str)))
     rows = cur.fetchall()
     cur.close()
 

@@ -100,7 +100,11 @@ def get_embedding_endpoint():
     try:
         db = get_db()
         cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
+        from tasks.sonic_backends import active_backend_name
+        cur.execute(
+            "SELECT * FROM embedding WHERE item_id = %s AND backend = %s",
+            (item_id, active_backend_name()),
+        )
         embedding_data = cur.fetchone()
         cur.close()
 
