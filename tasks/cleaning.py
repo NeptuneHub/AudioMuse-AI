@@ -155,7 +155,12 @@ def clear_inactive_backend_data(backend: str):
     main = f"{INDEX_NAME}_{backend}"
     seg_pattern = main.replace("_", r"\_") + r"\_%\_%"
 
-    summary = {"backend": backend, "deleted_embeddings": 0, "deleted_voyager_rows": 0}
+    summary = {
+        "backend": backend,
+        "deleted_embeddings": 0,
+        "deleted_voyager_rows": 0,
+        "deleted_mood_centroids": 0,
+    }
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM embedding WHERE backend = %s", (backend,))
         summary["deleted_embeddings"] = cur.rowcount or 0
@@ -166,6 +171,15 @@ def clear_inactive_backend_data(backend: str):
             (main, seg_pattern),
         )
         summary["deleted_voyager_rows"] = cur.rowcount or 0
+
+        # mood_centroids_data is per-(backend, mood) — drop every mood
+        # row for the cleared backend so stale centroids don't linger.
+        # Table may not exist on a partial install; ignore the miss.
+        try:
+            cur.execute("DELETE FROM mood_centroids_data WHERE backend = %s", (backend,))
+            summary["deleted_mood_centroids"] = cur.rowcount or 0
+        except Exception as e:
+            logger.info("mood_centroids_data not cleared (%s); skipping.", e)
 
         conn.commit()
 

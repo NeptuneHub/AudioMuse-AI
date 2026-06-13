@@ -647,6 +647,7 @@
                         <h3>✅ Backend <code>${escapeHtml(s.backend)}</code> cleared</h3>
                         <p><strong>Embeddings deleted:</strong> ${s.deleted_embeddings}</p>
                         <p><strong>Voyager rows deleted:</strong> ${s.deleted_voyager_rows}</p>
+                        <p><strong>Mood centroid rows deleted:</strong> ${s.deleted_mood_centroids ?? 0}</p>
                     `;
                     renderSonicState(data.state);
                 }

@@ -350,6 +350,17 @@ MERT_TARGET_SR = int(os.environ.get("MERT_TARGET_SR", "24000"))
 # container. Empty string = use HF default.
 MERT_HF_CACHE_DIR = os.environ.get("MERT_HF_CACHE_DIR", "")
 
+# --- Mood centroids (per-backend derivation) ---
+# Number of KMeans clusters built per ``OTHER_FEATURE_LABELS`` mood. The
+# legacy frozen JSON used a BIC sweep to pick k; a fixed 4 hits the
+# typical sweet spot for the available label volume and keeps the rebuild
+# cheap. Override per deployment if you have a much larger library.
+MOOD_CENTROIDS_K = int(os.environ.get("MOOD_CENTROIDS_K", "4"))
+# Minimum CLAP "other_features" score for a track to count toward a
+# mood's cluster pool. 0.4 mirrors the heuristic the legacy JSON
+# implicitly used (tracks with a clear-enough mood signal).
+MOOD_CENTROIDS_MIN_SCORE = float(os.environ.get("MOOD_CENTROIDS_MIN_SCORE", "0.4"))
+
 # Resolved per-backend embedding dim. Voyager builders / persistence
 # code import ``EMBEDDING_DIMENSION`` directly as a scalar, so we
 # resolve at import time. We deliberately do NOT import the backend

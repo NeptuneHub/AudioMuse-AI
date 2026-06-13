@@ -739,6 +739,17 @@ def listen_for_index_reloads():
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
+            # Invalidate the per-backend mood centroid cache so the next
+            # request picks up the freshly-rebuilt rows from
+            # mood_centroids_data. Cheap rebuild — handful of JSONB rows.
+            try:
+              import app_voyager as _av
+              _av._mood_centroids_loaded = False
+              _av._MOOD_CENTROIDS_DATA.clear()
+              _av._MOOD_CENTROIDS_META.clear()
+            except Exception as e:
+              logger.warning(f"Mood centroid cache invalidation failed: {e}")
+
             logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)

@@ -280,6 +280,21 @@ def init_db():
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
             # Create 'voyager_index_data' table
             cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Per-backend mood centroids derived from each backend's own
+            # embeddings + score.other_features. Replaces the static
+            # mood_centroids_real_080_clap.json — which was frozen against
+            # 200-dim MusiCNN — so the Similarity/Alchemy/Path features
+            # work for any active SONIC_BACKEND.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS mood_centroids_data (
+                    backend       TEXT NOT NULL,
+                    mood          TEXT NOT NULL,
+                    centroids     JSONB NOT NULL,
+                    embedding_dim INTEGER NOT NULL,
+                    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (backend, mood)
+                )
+            """)
             # Voyager index names are now namespaced per sonic backend
             # (e.g. ``music_library_musicnn``, ``music_library_mert``).
             # Rename any legacy bare-named rows ('music_library' and its

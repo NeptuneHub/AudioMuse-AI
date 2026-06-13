@@ -25,27 +25,46 @@ _mood_centroids_loaded = False
 _mood_centroids_lock = threading.Lock()
 
 def _load_mood_centroids_for_similarity():
+    """Populate the in-memory centroid caches from the active backend.
+
+    The legacy bundled JSON (200-dim MusiCNN) is now only consulted as a
+    fallback for the very first boot under SONIC_BACKEND=musicnn when
+    no analysis has yet produced ``mood_centroids_data`` rows. Other
+    backends rely entirely on the per-backend table.
+
+    The ``top_tags`` field changed shape over time: the legacy JSON
+    encoded it as ``{label: count}`` while the new builder emits a flat
+    ``[label, ...]`` list ordered by representativeness. The loader
+    handles both so old JSON installs and new DB-backed installs render
+    identically in the Similarity / Alchemy pickers.
+    """
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
-            data = json.load(f)
+        from tasks.mood_centroids_manager import load_mood_centroids
+        data = load_mood_centroids()
         for mood, info in data.items():
             centroids = info.get('centroids', [])
             _MOOD_CENTROIDS_DATA[mood] = centroids
             meta_list = []
             for i, c in enumerate(centroids):
-                tags = c.get('top_tags', {})
-                top5 = sorted(tags.items(), key=lambda x: -x[1])[:5]
+                tags = c.get('top_tags', [])
+                if isinstance(tags, dict):
+                    top5 = [t[0] for t in sorted(tags.items(), key=lambda x: -x[1])[:5]]
+                else:
+                    top5 = list(tags)[:5]
                 meta_list.append({
                     'index': i,
-                    'top_tags': [t[0] for t in top5],
+                    'top_tags': top5,
                     'n_songs': c.get('n_songs', 0),
                     'mood_score': c.get('mood_score', 0),
                     'cluster_id': c.get('cluster_id', i),
                 })
             _MOOD_CENTROIDS_META[mood] = meta_list
-        logger.info(f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}")
+        logger.info(
+            "Loaded mood centroids for similarity (backend-aware): %s",
+            ', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items()) or '(none)',
+        )
     except Exception as e:
-        logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+        logger.warning(f"Could not load mood centroids: {e}", exc_info=True)
 
 def _ensure_mood_centroids_loaded():
     """Parse the mood-centroids JSON on first use instead of at import.

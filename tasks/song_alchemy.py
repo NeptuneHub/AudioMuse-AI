@@ -74,15 +74,13 @@ def _get_mood_centroid_vector(item_id: str):
     mood_name, idx_str = parts[0].strip().lower(), parts[1].strip()
     try:
         cidx = int(idx_str)
-        import json as _json
-        with open(config.MOOD_CENTROIDS_FILE) as _f:
-            _mcdata = _json.load(_f)
-        centroids_list = _mcdata.get(mood_name, {}).get('centroids', [])
+        from .mood_centroids_manager import load_mood_centroids
+        centroids_list = load_mood_centroids().get(mood_name, {}).get('centroids', [])
         if 0 <= cidx < len(centroids_list):
             vec = centroids_list[cidx].get('centroid')
             if vec:
                 return np.array(vec, dtype=float)
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, KeyError) as exc:
         logger.warning(f"Failed to load mood centroid from '{item_id}': {exc}")
     return None
 

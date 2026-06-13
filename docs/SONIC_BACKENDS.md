@@ -68,6 +68,32 @@ The trade-offs:
    backend is read-only there — switching `SONIC_BACKEND` is the only
    way to free the active backend's data.
 
+## Mood centroids
+
+The Similarity / Song Alchemy / Path features expose mood-centroid
+discovery ("give me tracks near the 'happy' #3 cluster"). The shipped
+`mood_centroids_real_080_clap.json` is frozen against 200-dim MusiCNN,
+so it can't be used directly under a different backend.
+
+To make those features work for any backend, the centroids are
+recomputed at the end of every analysis run (after the Voyager
+rebuild) and stored in `mood_centroids_data` keyed by `(backend, mood)`.
+The loader (`tasks.mood_centroids_manager.load_mood_centroids`)
+returns the active backend's centroids automatically; the legacy JSON
+is only consulted as a first-boot fallback under
+`SONIC_BACKEND=musicnn`.
+
+The two knobs:
+
+| Variable                    | Default | Notes                                                       |
+| --------------------------- | ------- | ----------------------------------------------------------- |
+| `MOOD_CENTROIDS_K`          | `4`     | KMeans clusters per `OTHER_FEATURE_LABELS` mood             |
+| `MOOD_CENTROIDS_MIN_SCORE`  | `0.4`   | Min CLAP `other_features` score for a track to qualify      |
+
+When you clear a backend from the Cleaning panel, the matching
+`mood_centroids_data` rows are dropped alongside the embeddings and
+Voyager rows.
+
 ## Configuration reference
 
 | Variable             | Default               | Notes                                             |

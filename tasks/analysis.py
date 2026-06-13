@@ -138,6 +138,7 @@ def _run_all_index_builds(log_fn=None):
     from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from .sem_grove_manager import build_and_store_sem_grove_index
     from .artist_gmm_manager import build_and_store_artist_index
+    from .mood_centroids_manager import build_and_store_mood_centroids
 
     def _step(label, fn, progress=None, banner=None, fatal=False):
         if log_fn and progress is not None and banner is not None:
@@ -161,6 +162,9 @@ def _run_all_index_builds(log_fn=None):
           lambda: build_and_store_voyager_index(get_db()),
           progress=95, banner="Building Voyager audio index...",
           fatal=True)
+    _step("Mood centroids rebuilt",
+          lambda: build_and_store_mood_centroids(get_db()),
+          progress=95, banner="Building per-backend mood centroids...")
     _step("CLAP text search index",
           lambda: build_and_store_clap_index(get_db()),
           progress=96, banner="Building CLAP text search index...")

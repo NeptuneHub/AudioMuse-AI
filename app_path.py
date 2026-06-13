@@ -16,15 +16,25 @@ _MOOD_CENTROIDS = {}  # mood_name -> list of np.array centroids
 
 def _load_mood_centroids():
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
-            data = json.load(f)
+        from tasks.mood_centroids_manager import load_mood_centroids
+        data = load_mood_centroids()
+        _MOOD_CENTROIDS.clear()
         for mood, info in data.items():
             _MOOD_CENTROIDS[mood] = [np.array(c['centroid'], dtype=np.float32) for c in info['centroids']]
-        logger.info(f"Loaded mood centroids: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS.items())}")
+        logger.info(
+            "Loaded mood centroids (backend-aware): %s",
+            ', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS.items()) or '(none)',
+        )
     except Exception as e:
-        logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+        logger.warning(f"Could not load mood centroids: {e}", exc_info=True)
 
-_load_mood_centroids()
+# Import-time load is best-effort (DB may not be reachable yet during
+# tests); the in-memory cache is cleared and re-populated on each
+# 'index-updates' reload broadcast (see app.py).
+try:
+    _load_mood_centroids()
+except Exception:
+    pass
 
 VALID_MOODS = {'happy', 'sad', 'aggressive', 'relaxed', 'danceable'}
 
