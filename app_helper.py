@@ -252,8 +252,9 @@ def init_db():
             if not cur.fetchone()[0]:
                 cur.execute("ALTER TABLE embedding ADD COLUMN backend TEXT NOT NULL DEFAULT 'musicnn'")
                 logger.info("Added 'backend' column to embedding table (backfilled to 'musicnn')")
-            # Composite PK on (item_id, backend). If the legacy single-column
-            # PK is still in place, swap it.
+            # Composite PK on (item_id, backend). Covers both fresh installs
+            # (no PK on the CREATE TABLE above) and legacy upgrades where the
+            # single-column (item_id) PK still exists.
             cur.execute("""
                 SELECT a.attname FROM pg_index i
                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
@@ -261,10 +262,10 @@ def init_db():
                 ORDER BY a.attname
             """)
             pk_cols = sorted(r[0] for r in cur.fetchall())
-            if pk_cols == ['item_id']:
+            if pk_cols != ['backend', 'item_id']:
                 cur.execute("ALTER TABLE embedding DROP CONSTRAINT IF EXISTS embedding_pkey")
                 cur.execute("ALTER TABLE embedding ADD PRIMARY KEY (item_id, backend)")
-                logger.info("Migrated embedding PK from (item_id) to (item_id, backend)")
+                logger.info("Set embedding PK to (item_id, backend)")
             # Create 'lyrics_embedding' table for lyrics similarity and axis scores
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")

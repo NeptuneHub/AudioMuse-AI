@@ -181,7 +181,11 @@ def build_and_store_mood_centroids(db_conn=None) -> bool:
     with db_conn.cursor() as cur:
         for mood in OTHER_FEATURE_LABELS:
             rows = _fetch_tracks_for_mood(cur, mood, backend, MOOD_CENTROIDS_MIN_SCORE)
-            centroids = _cluster_one_mood(rows, EMBEDDING_DIMENSION, MOOD_CENTROIDS_K)
+            try:
+                centroids = _cluster_one_mood(rows, EMBEDDING_DIMENSION, MOOD_CENTROIDS_K)
+            except Exception as e:
+                logger.error("Failed to cluster mood '%s': %s", mood, e, exc_info=True)
+                continue
             payload = {
                 "best_k": len(centroids),
                 "bic_values": None,  # informational; original JSON had BIC sweep

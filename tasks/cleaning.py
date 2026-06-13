@@ -174,11 +174,15 @@ def clear_inactive_backend_data(backend: str):
 
         # mood_centroids_data is per-(backend, mood) — drop every mood
         # row for the cleared backend so stale centroids don't linger.
-        # Table may not exist on a partial install; ignore the miss.
+        # Table may not exist on a partial install; the SAVEPOINT lets us
+        # swallow the miss without aborting the surrounding transaction.
+        cur.execute("SAVEPOINT mood_centroids_delete")
         try:
             cur.execute("DELETE FROM mood_centroids_data WHERE backend = %s", (backend,))
             summary["deleted_mood_centroids"] = cur.rowcount or 0
+            cur.execute("RELEASE SAVEPOINT mood_centroids_delete")
         except Exception as e:
+            cur.execute("ROLLBACK TO SAVEPOINT mood_centroids_delete")
             logger.info("mood_centroids_data not cleared (%s); skipping.", e)
 
         conn.commit()
