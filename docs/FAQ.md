@@ -49,7 +49,7 @@ Find answers to common questions about setting up, configuring, and deploying Au
 
 Learn how to use AudioMuse-AI effectively, from basic features to advanced functionality.
 
-* **NOTE**: Most front-end parameters default value can be configured in the Setup Wizard functionality. See the parameter table in the [PARAMETERS](docs/PARAMETERS.md) page for a complete list.
+* **NOTE**: Most front-end parameters default value can be configured in the Setup Wizard functionality. See the parameter table in the [PARAMETERS](PARAMETERS.md) page for a complete list.
 
 <details>
 <summary>How do I start using AudioMuse-AI?</summary>
