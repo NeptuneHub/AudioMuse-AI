@@ -6,6 +6,7 @@ labels: bug
 assignees: ''
 
 ---
+- [ ] I confirm that I have reviewed the [FAQ](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/FAQ.md), [issues](https://github.com/NeptuneHub/AudioMuse-AI/issues?q=is%3Aissue), and [discussions](https://github.com/NeptuneHub/AudioMuse-AI/discussions?discussions_q=), and found no existing solution.
 
 **Describe the bug**
 A clear and concise description of what the bug is.
