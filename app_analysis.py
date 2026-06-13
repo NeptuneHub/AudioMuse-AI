@@ -172,3 +172,77 @@ def start_cleaning_endpoint():
         job_timeout=-1 # No timeout
     )
     return jsonify({"task_id": job.id, "task_type": "cleaning", "status": job.get_status()}), 202
+
+
+@analysis_bp.route('/api/cleaning/sonic_state', methods=['GET'])
+def sonic_state_endpoint():
+    """Report current vs stored sonic-backend embedding state.
+
+    Used by the Cleaning UI to surface a "stale audio embeddings" panel
+    after a ``SONIC_BACKEND`` change. The body is exactly whatever
+    ``tasks.cleaning.inspect_sonic_state`` returns:
+    ``current_backend``, ``current_dim``, ``embedding_row_count``,
+    ``sample_stored_dim``, ``voyager_row_count``, ``stored_voyager_dim``,
+    ``mismatch``.
+    ---
+    tags:
+      - Cleaning
+    responses:
+      200:
+        description: Sonic state snapshot.
+      500:
+        description: Database error while inspecting state.
+    """
+    from tasks.cleaning import inspect_sonic_state
+    state = inspect_sonic_state()
+    return jsonify(state), 200
+
+
+@analysis_bp.route('/api/cleaning/sonic_state/clear', methods=['POST'])
+def sonic_state_clear_endpoint():
+    """Wipe stored audio embeddings + Voyager audio index rows.
+
+    Destructive: every row in ``embedding`` is deleted, the audio
+    Voyager index rows are dropped, and the backend-derived columns on
+    ``score`` (tempo / key / scale / energy / mood_vector /
+    other_features) are nulled. CLAP embeddings, lyrics, artist data,
+    playlists, config and task history are untouched.
+
+    Requires the body to include ``{"confirm": true}`` so a stray
+    fetch can't drop the table. Runs synchronously — the operation is
+    one DELETE + one UPDATE and finishes in seconds even on a 100k+
+    track library.
+    ---
+    tags:
+      - Cleaning
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              confirm:
+                type: boolean
+    responses:
+      200:
+        description: Cleared. Body lists the row counts removed/nulled.
+      400:
+        description: Missing/false confirmation flag.
+      500:
+        description: Database error during cleanup.
+    """
+    data = request.json or {}
+    if not data.get('confirm') is True:
+        return jsonify({
+            "error": "Refusing to clear without explicit confirmation.",
+            "hint": 'POST {"confirm": true} to proceed.',
+        }), 400
+
+    from tasks.cleaning import clear_sonic_audio_state, inspect_sonic_state
+    try:
+        summary = clear_sonic_audio_state()
+    except Exception as e:
+        logger.error("clear_sonic_audio_state failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"summary": summary, "state": inspect_sonic_state()}), 200

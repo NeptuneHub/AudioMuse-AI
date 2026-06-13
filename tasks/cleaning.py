@@ -10,7 +10,7 @@ from collections import defaultdict
 from rq import get_current_job
 
 # Import configuration
-from config import CLEANING_SAFETY_LIMIT
+from config import CLEANING_SAFETY_LIMIT, EMBEDDING_DIMENSION, INDEX_NAME, SONIC_BACKEND
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
@@ -21,6 +21,123 @@ from .mediaserver import get_recent_albums, get_tracks_from_album
 from psycopg2 import OperationalError
 
 logger = logging.getLogger(__name__)
+
+
+# --- Sonic-backend-switch cleanup -------------------------------------------
+
+def inspect_sonic_state():
+    """Return a dict describing the current vs stored sonic embedding state.
+
+    Used by the Admin "Cleaning" panel to decide whether stale audio
+    embeddings need to be wiped after a ``SONIC_BACKEND`` change. Shape
+    is intentionally small and JSON-safe so
+    ``GET /api/cleaning/sonic_state`` can return it verbatim.
+    """
+    from app_helper import get_db
+
+    state = {
+        "current_backend": SONIC_BACKEND,
+        "current_dim": int(EMBEDDING_DIMENSION),
+        "embedding_row_count": 0,
+        "sample_stored_dim": None,
+        "voyager_row_count": 0,
+        "stored_voyager_dim": None,
+        "mismatch": False,
+    }
+
+    seg_pattern = INDEX_NAME.replace("_", r"\_") + r"\_%\_%"
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM embedding")
+            state["embedding_row_count"] = int(cur.fetchone()[0] or 0)
+            if state["embedding_row_count"] > 0:
+                cur.execute("SELECT embedding FROM embedding WHERE embedding IS NOT NULL LIMIT 1")
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    raw = bytes(row[0])
+                    if len(raw) % 4 == 0:
+                        state["sample_stored_dim"] = len(raw) // 4
+
+            cur.execute(
+                "SELECT COUNT(*) FROM voyager_index_data "
+                "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+                (INDEX_NAME, seg_pattern),
+            )
+            state["voyager_row_count"] = int(cur.fetchone()[0] or 0)
+            if state["voyager_row_count"] > 0:
+                cur.execute(
+                    "SELECT embedding_dimension FROM voyager_index_data "
+                    "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\' "
+                    "ORDER BY index_name LIMIT 1",
+                    (INDEX_NAME, seg_pattern),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    state["stored_voyager_dim"] = int(row[0])
+    except Exception as e:
+        logger.warning(f"Failed to inspect sonic embedding state: {e}", exc_info=True)
+        state["error"] = str(e)
+        return state
+
+    state["mismatch"] = (
+        (state["sample_stored_dim"] is not None and state["sample_stored_dim"] != state["current_dim"])
+        or (state["stored_voyager_dim"] is not None and state["stored_voyager_dim"] != state["current_dim"])
+    )
+    return state
+
+
+def clear_sonic_audio_state():
+    """Wipe stored audio similarity embeddings + Voyager audio index rows.
+
+    Intended for use after switching ``SONIC_BACKEND`` to a model with a
+    different embedding dimension (e.g. MusiCNN 200 → MERT 768). Removes
+    only what depends on the audio embedding dim — the CLAP embedding
+    (512-dim, fixed), lyrics embedding, artist index, app_config,
+    playlists, and task history are all preserved. Score rows are kept
+    but their backend-derived columns (tempo / key / scale / energy /
+    mood_vector / other_features) are nulled so the next analysis pass
+    treats every track as needing a fresh run.
+
+    Returns a summary dict for the API response.
+    """
+    from app_helper import get_db
+
+    summary = {
+        "deleted_embeddings": 0,
+        "deleted_voyager_rows": 0,
+        "score_audio_fields_cleared": 0,
+    }
+
+    seg_pattern = INDEX_NAME.replace("_", r"\_") + r"\_%\_%"
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM embedding")
+        summary["deleted_embeddings"] = cur.rowcount or 0
+
+        cur.execute(
+            "DELETE FROM voyager_index_data "
+            "WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
+            (INDEX_NAME, seg_pattern),
+        )
+        summary["deleted_voyager_rows"] = cur.rowcount or 0
+
+        cur.execute(
+            "UPDATE score SET tempo = NULL, energy = NULL, "
+            "mood_vector = NULL, other_features = NULL, "
+            "\"key\" = NULL, scale = NULL"
+        )
+        summary["score_audio_fields_cleared"] = cur.rowcount or 0
+
+        conn.commit()
+
+    logger.info(
+        "Sonic audio state cleared: %d embeddings, %d voyager rows, "
+        "%d score rows nulled (current backend=%s, dim=%d)",
+        summary["deleted_embeddings"],
+        summary["deleted_voyager_rows"],
+        summary["score_audio_fields_cleared"],
+        SONIC_BACKEND, EMBEDDING_DIMENSION,
+    )
+    return summary
 
 
 def identify_and_clean_orphaned_albums_task():
