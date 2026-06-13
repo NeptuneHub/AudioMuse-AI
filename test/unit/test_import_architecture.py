@@ -36,7 +36,7 @@ ALLOWED_CYCLES = {
     frozenset({"error", "error.error_manager"}),
 }
 
-MAX_CHAIN = 6  # allows for package __init__.py → submodule edges adding 1-2 phantom hops
+MAX_CHAIN = 5  # ollama+openai merged; prompts import is function-level
 
 
 def _collect_modules():
@@ -85,15 +85,20 @@ def _build_eager_graph(modules):
                 targets = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
                 base = _resolve_relative(node.module or "", node.level, name, is_package) if node.level else (node.module or "")
-                targets = [base] + [f"{base}.{alias.name}" for alias in node.names if base]
+                # Only track the actual imported names, not the base module.
+                # "from error import error_manager" adds error.error_manager,
+                # not error — the package is just a namespace.
+                targets = [f"{base}.{alias.name}" for alias in node.names if base] if base else [alias.name for alias in node.names]
             else:
                 continue
             for target in targets:
                 parts = target.split(".")
-                for i in range(1, len(parts) + 1):
+                # Only add the deepest matching module, not intermediate packages.
+                for i in range(len(parts), 0, -1):
                     candidate = ".".join(parts[:i])
                     if candidate in modules and candidate != name:
                         graph[name].add(candidate)
+                        break  # deepest match only
     return graph
 
 

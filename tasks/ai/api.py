@@ -38,7 +38,6 @@ from config import MAX_SONGS_IN_AI_PROMPT
 from tasks.ai.providers import (
     gemini as ai_api_gemini,
     mistral as ai_api_mistral,
-    ollama as ai_api_ollama,
     openai as ai_api_openai,
 )
 from tasks.ai.prompts import build_mcp_system_prompt
@@ -174,10 +173,11 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
     if provider == "NONE":
         return "AI Naming Skipped"
     if provider == "OLLAMA":
-        return ai_api_ollama.generate_text(
+        return ai_api_openai.generate_text(
             ai_config["ollama_url"],
             ai_config["ollama_model"],
             prompt,
+            api_key="no-key-needed",
             skip_delay=skip_delay,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -250,7 +250,7 @@ def call_with_tools(
     if provider == "OLLAMA":
         # Ollama builds its own JSON-output prompt internally; system_prompt is
         # ignored because the Ollama prompt contains the system text already.
-        return ai_api_ollama.call_with_tools(
+        return ai_api_openai.call_with_tools_ollama(
             ai_config["ollama_url"],
             ai_config["ollama_model"],
             user_message,

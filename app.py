@@ -46,8 +46,6 @@ from app_auth import (
     resolve_jwt_secret,
 )
 
-from app_provider_migration import migration_bp
-
 from error import error_manager
 from error.error_manager import AudioMuseError
 from error.error_dictionary import UNKNOWN_ERROR_CODE
@@ -757,48 +755,57 @@ def listen_for_index_reloads():
 
 
 
-# --- Import and Register Blueprints ---
-# This is the original, working structure.
-from app_chat import chat_bp
-from app_clustering import clustering_bp
-from app_analysis import analysis_bp
-from app_cron import cron_bp, run_due_cron_jobs
-from app_voyager import voyager_bp
-from app_sonic_fingerprint import sonic_fingerprint_bp
-from app_path import path_bp
-from app_external import external_bp # --- NEW: Import the external blueprint ---
-from app_alchemy import alchemy_bp
-from app_map import map_bp
-from app_waveform import waveform_bp
-from app_artist_similarity import artist_similarity_bp
-from app_clap_search import clap_search_bp
-from app_lyrics import lyrics_search_bp
-from app_sem_grove import sem_grove_bp
-from app_backup import backup_bp
-from app_dashboard import dashboard_bp
-from app_users import users_bp
-from app_sync import sync_bp
+# --- Blueprint Registration ---
+# Standard Flask factory pattern: blueprint imports are inside
+# this function so the eager import graph stays flat.
+from app_cron import run_due_cron_jobs
 
-app.register_blueprint(chat_bp, url_prefix='/chat')
-app.register_blueprint(clustering_bp)
-app.register_blueprint(analysis_bp)
-app.register_blueprint(cron_bp)
-app.register_blueprint(voyager_bp)
-app.register_blueprint(sonic_fingerprint_bp)
-app.register_blueprint(path_bp)
-app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
-app.register_blueprint(alchemy_bp)
-app.register_blueprint(map_bp)
-app.register_blueprint(waveform_bp)
-app.register_blueprint(artist_similarity_bp)
-app.register_blueprint(clap_search_bp)
-app.register_blueprint(lyrics_search_bp)
-app.register_blueprint(sem_grove_bp)
-app.register_blueprint(backup_bp)
-app.register_blueprint(migration_bp)
-app.register_blueprint(dashboard_bp)
-app.register_blueprint(users_bp)
-app.register_blueprint(sync_bp)
+
+def _register_blueprints(flask_app):
+    from app_chat import chat_bp
+    from app_clustering import clustering_bp
+    from app_analysis import analysis_bp
+    from app_cron import cron_bp
+    from app_voyager import voyager_bp
+    from app_sonic_fingerprint import sonic_fingerprint_bp
+    from app_path import path_bp
+    from app_external import external_bp
+    from app_alchemy import alchemy_bp
+    from app_map import map_bp
+    from app_waveform import waveform_bp
+    from app_artist_similarity import artist_similarity_bp
+    from app_clap_search import clap_search_bp
+    from app_lyrics import lyrics_search_bp
+    from app_sem_grove import sem_grove_bp
+    from app_backup import backup_bp
+    from app_provider_migration import migration_bp
+    from app_dashboard import dashboard_bp
+    from app_users import users_bp
+    from app_sync import sync_bp
+
+    flask_app.register_blueprint(chat_bp, url_prefix='/chat')
+    flask_app.register_blueprint(clustering_bp)
+    flask_app.register_blueprint(analysis_bp)
+    flask_app.register_blueprint(cron_bp)
+    flask_app.register_blueprint(voyager_bp)
+    flask_app.register_blueprint(sonic_fingerprint_bp)
+    flask_app.register_blueprint(path_bp)
+    flask_app.register_blueprint(external_bp, url_prefix='/external')
+    flask_app.register_blueprint(alchemy_bp)
+    flask_app.register_blueprint(map_bp)
+    flask_app.register_blueprint(waveform_bp)
+    flask_app.register_blueprint(artist_similarity_bp)
+    flask_app.register_blueprint(clap_search_bp)
+    flask_app.register_blueprint(lyrics_search_bp)
+    flask_app.register_blueprint(sem_grove_bp)
+    flask_app.register_blueprint(backup_bp)
+    flask_app.register_blueprint(migration_bp)
+    flask_app.register_blueprint(dashboard_bp)
+    flask_app.register_blueprint(users_bp)
+    flask_app.register_blueprint(sync_bp)
+
+
+_register_blueprints(app)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
