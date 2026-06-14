@@ -589,8 +589,8 @@ class TestClampRecipe:
 
     def test_energy_clamped_then_swapped(self):
         out = self._fn()({"filters": {"energy_min": 2.0, "energy_max": -1.0}})
-        assert out["filters"]["energy_min"] == 0.0
-        assert out["filters"]["energy_max"] == 1.0
+        assert out["filters"]["energy_min"] == pytest.approx(0.0)
+        assert out["filters"]["energy_max"] == pytest.approx(1.0)
 
     def test_lists_deduped_and_capped(self):
         import config as cfg
