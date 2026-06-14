@@ -36,7 +36,7 @@ import logging
 import re
 import time
 
-from tasks.memory_utils import sanitize_string_for_db as _sanitize_text
+from sanitization import sanitize_string_for_db as _sanitize_text
 
 logger = logging.getLogger(__name__)
 

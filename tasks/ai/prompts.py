@@ -14,14 +14,14 @@ Public entry points:
     build_ollama_tool_calling_prompt  -- Ollama-specific JSON-output framing
     build_tool_calls_schema(tools)    -- shared JSON Schema for tool_calls (used by every transport)
     build_ai_brainstorm_prompt(...)   -- ai_brainstorm MCP tool prompt
-    get_dynamic_genres                -- helper, exposed for tests
+    _get_dynamic_genres               -- helper, exposed for tests
 """
 from typing import Dict, List, Optional
 
 import config
 
 
-# --- Clustering / playlist naming ---------------------------------------------
+# --- Clustering / playlist naming prompt --------------------------------------
 
 creative_prompt_template = (
     "You are an expert music collector and MUST give a title to this playlist.\n"
@@ -31,35 +31,33 @@ creative_prompt_template = (
     "No special fonts or emojis.\n"
     "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
     "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
-    "* BAD EXAMPLES: '\U0001D5DD\U0001D5C2\U0001D5C8 \U0001D5C2\U0001D5CB\U0001D5C8\U0001D5C7\U0001D5C2 \U0001D5C9\U0001D5CB\U0001D5C8\U0001D5C7\U0001D5C2' (Non-standard characters)\n\n"
+    "* BAD EXAMPLES: '\\U0001D5DD\\U0001D5C2\\U0001D5C8 \\U0001D5C2\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2 \\U0001D5C9\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2' (Non-standard characters)\n\n"
     "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n\n"
     "This is the playlist:\n{song_list_sample}\n\n"
 )
 
 
-# --- MCP system prompt (used by all providers when calling with tools) --------
-
-_FALLBACK_GENRES = (
-    "rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, "
-    "hard rock, heavy metal, hip-hop, funk, country, soul"
-)
-
-
-def get_dynamic_genres(library_context: Optional[Dict]) -> str:
-    """Return genre list from library context, falling back to defaults."""
-    if library_context and library_context.get('top_genres'):
-        return ', '.join(library_context['top_genres'][:10])
-    return _FALLBACK_GENRES
-
-
-VOICE_VOCAB = ["female vocalists", "female vocalist", "male vocalists"]
+# --- Constants shared with the rest of the AI subsystem -----------------------
 
 INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
 
 PRIMARY_INTENTS = ["seed", "text", "knowledge"]
 
 
-def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] = None) -> str:
+# --- MCP system prompt --------------------------------------------------------
+
+
+def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
+    """Return genre list from library context, falling back to defaults."""
+    if library_context and library_context.get('top_genres'):
+        return ', '.join(library_context['top_genres'][:10])
+    return config.AI_FALLBACK_GENRES
+
+
+def build_mcp_system_prompt(
+    tools: List[Dict],
+    library_context: Optional[Dict] = None,
+) -> str:
     """Build the canonical MCP system prompt used by ALL providers."""
     tool_names = {t['name'] for t in tools}
     has_seed = 'seed_search' in tool_names
@@ -91,8 +89,8 @@ def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] =
     )
     tools_block = "\n".join(tool_lines)
 
-    genres_line = get_dynamic_genres(library_context)
-    voices_line = ", ".join(VOICE_VOCAB)
+    genres_line = _get_dynamic_genres(library_context)
+    voices_line = ", ".join(config.VOICE_VOCAB)
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
 
     prompt = f"""You are a music playlist router. Return ONLY a JSON object with one or more tool calls. Put EVERY intent in this one response.

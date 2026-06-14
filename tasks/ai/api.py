@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Tuple
 
 import ftfy
 
-from config import MAX_SONGS_IN_AI_PROMPT
+import config
 from tasks.ai.providers import (
     gemini as ai_api_gemini,
     mistral as ai_api_mistral,
@@ -45,6 +45,9 @@ from tasks.ai.prompts import build_mcp_system_prompt
 logger = logging.getLogger(__name__)
 
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
+
+
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +251,6 @@ def call_with_tools(
         system_prompt = build_mcp_system_prompt(tools, library_context)
 
     if provider == "OLLAMA":
-        # Ollama builds its own JSON-output prompt internally; system_prompt is
-        # ignored because the Ollama prompt contains the system text already.
         return ai_api_openai.call_with_tools_ollama(
             ai_config["ollama_url"],
             ai_config["ollama_model"],
@@ -322,18 +323,19 @@ def get_ai_playlist_name(
     MAX_LENGTH = 40
 
     # Truncate song list to avoid token-limit issues
-    songs_for_prompt = song_list[:MAX_SONGS_IN_AI_PROMPT]
+    max_songs = config.MAX_SONGS_IN_AI_PROMPT
+    songs_for_prompt = song_list[:max_songs]
     formatted_song_list = "\n".join(
         [
             f"- {song.get('title', 'Unknown Title')} by {song.get('author', 'Unknown Artist')}"
             for song in songs_for_prompt
         ]
     )
-    if len(song_list) > MAX_SONGS_IN_AI_PROMPT:
+    if len(song_list) > max_songs:
         logger.info(
             "Truncated song list from %d to %d songs for AI prompt to avoid token limits",
             len(song_list),
-            MAX_SONGS_IN_AI_PROMPT,
+            max_songs,
         )
 
     full_prompt = prompt_template.format(song_list_sample=formatted_song_list)

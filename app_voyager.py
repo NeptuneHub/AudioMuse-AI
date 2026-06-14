@@ -367,7 +367,7 @@ def get_similar_tracks_endpoint():
 
     # --- Anchor mode: use anchor's centroid vector ---
     if anchor_id_param is not None:
-        from app_helper import get_alchemy_anchor_by_id
+        from database import get_alchemy_anchor_by_id
         anchor = get_alchemy_anchor_by_id(anchor_id_param)
         if not anchor or not anchor.get('centroid'):
             return jsonify({"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}), 404

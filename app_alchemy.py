@@ -185,7 +185,7 @@ def list_anchors():
       500:
         description: Database error.
     """
-    from app_helper import get_alchemy_anchors
+    from database import get_alchemy_anchors
     try:
         anchors = get_alchemy_anchors()
         # no centroid returned here (name-only list)
@@ -227,7 +227,7 @@ def create_anchor():
       500:
         description: Database failure.
     """
-    from app_helper import save_alchemy_anchor
+    from database import save_alchemy_anchor
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
     centroid = payload.get('centroid')
@@ -260,7 +260,7 @@ def remove_anchor(anchor_id):
       404:
         description: Anchor not found.
     """
-    from app_helper import delete_alchemy_anchor
+    from database import delete_alchemy_anchor
     ok = delete_alchemy_anchor(anchor_id)
     if not ok:
         return jsonify({'error': 'Anchor not found'}), 404
@@ -298,7 +298,7 @@ def rename_anchor(anchor_id):
       404:
         description: Anchor not found.
     """
-    from app_helper import update_alchemy_anchor_name
+    from database import update_alchemy_anchor_name
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
     if not name:
@@ -371,7 +371,7 @@ def list_radios():
       500:
         description: Database error.
     """
-    from app_helper import get_alchemy_radios
+    from database import get_alchemy_radios
     try:
         radios = get_alchemy_radios()
         return jsonify({'radios': [{
@@ -418,7 +418,7 @@ def create_radio():
       500:
         description: Database failure.
     """
-    from app_helper import create_alchemy_radio
+    from database import create_alchemy_radio
     payload = request.get_json() or {}
     anchor_id = payload.get('anchor_id')
     try:
@@ -471,7 +471,7 @@ def update_radio(radio_id):
       404:
         description: Radio not found.
     """
-    from app_helper import update_alchemy_radio
+    from database import update_alchemy_radio
     payload = request.get_json() or {}
     temperature, n_results, error = _parse_radio_settings(payload)
     if error:
@@ -502,7 +502,7 @@ def remove_radio(radio_id):
       404:
         description: Radio not found.
     """
-    from app_helper import delete_alchemy_radio
+    from database import delete_alchemy_radio
     ok = delete_alchemy_radio(radio_id)
     if not ok:
         return jsonify({'error': 'Radio not found'}), 404
@@ -588,7 +588,7 @@ def artist_projections_api():
       500:
         description: Failure to read cache.
     """
-    from app_helper import ARTIST_PROJECTION_CACHE
+    from database import ARTIST_PROJECTION_CACHE
     
     try:
         if not ARTIST_PROJECTION_CACHE:

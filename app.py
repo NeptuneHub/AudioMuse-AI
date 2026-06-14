@@ -32,10 +32,13 @@ from flask_app import app
 
 # Import helper functions
 from app_helper import (
-    init_db, get_db, close_db,
+    get_db, close_db,
     redis_conn,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+)
+from database import init_db
+from config import (
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -703,7 +706,7 @@ def listen_for_index_reloads():
             load_voyager_index_for_querying(force_reload=True)
             from tasks.artist_gmm_manager import load_artist_index_for_querying
             load_artist_index_for_querying(force_reload=True)
-            from app_helper import load_map_projection, load_artist_projection
+            from database import load_map_projection, load_artist_projection
             load_map_projection('main_map', force_reload=True)
             load_artist_projection('artist_map', force_reload=True)
             # Rebuild the map JSON cache used by the /api/map endpoint
@@ -835,7 +838,7 @@ if not _is_worker:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
     # Also try to load artist component projection into memory
     try:
-      from app_helper import load_artist_projection
+      from database import load_artist_projection
       load_artist_projection('artist_map')
       logger.info("In-memory artist component projection loaded at startup.")
     except Exception as e:

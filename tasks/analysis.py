@@ -48,11 +48,12 @@ from .memory_utils import (
 from flask_app import app
 from app_helper import (
     redis_conn, rq_queue_default, get_db, save_task_status,
-    get_task_info_from_db, get_child_tasks_from_db,
+    get_task_info_from_db,
     build_and_store_map_projection, build_and_store_artist_projection,
     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
 )
+from database import get_child_tasks_from_db
 
 from error import error_manager
 from error.error_dictionary import (

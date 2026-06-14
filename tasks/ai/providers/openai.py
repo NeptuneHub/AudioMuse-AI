@@ -56,8 +56,8 @@ def generate_text(
     max_completion_tokens, then drop max_completion_tokens), and content
     extraction-before-finish-reason ordering for OpenRouter compatibility.
 
-    NOTE: Detects Ollama vs OpenAI from the URL for backward compatibility with
-    `tasks/ai_api_ollama.generate_text` which delegates here.
+    NOTE: Detects Ollama vs OpenAI from the URL; the Ollama branch in
+    tasks/ai/api.py calls this directly (Ollama has no separate transport).
     """
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format

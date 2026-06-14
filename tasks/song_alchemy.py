@@ -7,7 +7,7 @@ from .alchemy_projections import (
     _project_to_2d,
     _project_with_discriminant,
 )
-from app_helper import get_score_data_by_ids, load_map_projection
+from database import get_score_data_by_ids, load_map_projection
 import config
 
 logger = logging.getLogger(__name__)
@@ -124,7 +124,7 @@ def _compute_centroid_from_items(items: List[dict]) -> np.ndarray:
                 weights.append(weight)
 
         elif item_type == 'anchor':
-            from app_helper import get_alchemy_anchor_by_id
+            from database import get_alchemy_anchor_by_id
             anchor = get_alchemy_anchor_by_id(item_id)
             if anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list):
                 vectors.append(np.array(anchor['centroid'], dtype=float))
@@ -293,7 +293,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         # Add anchors as individual points
         add_anchor_items = [item for item in add_items if item.get('type') == 'anchor']
         if add_anchor_items:
-            from app_helper import get_alchemy_anchor_by_id
+            from database import get_alchemy_anchor_by_id
             for item in add_anchor_items:
                 anchor_id = item['id']
                 anchor = get_alchemy_anchor_by_id(anchor_id)
@@ -355,7 +355,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         # Add anchors as individual points
         subtract_anchor_items = [item for item in subtract_items if item.get('type') == 'anchor']
         if subtract_anchor_items:
-            from app_helper import get_alchemy_anchor_by_id
+            from database import get_alchemy_anchor_by_id
             for item in subtract_anchor_items:
                 anchor_id = item['id']
                 anchor = get_alchemy_anchor_by_id(anchor_id)
@@ -444,7 +444,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     # Load precomputed artist component projections
     artist_comp_to_coord = {}
     try:
-        from app_helper import ARTIST_PROJECTION_CACHE
+        from database import ARTIST_PROJECTION_CACHE
         if ARTIST_PROJECTION_CACHE:
             component_map = ARTIST_PROJECTION_CACHE.get('component_map', [])
             projection = ARTIST_PROJECTION_CACHE.get('projection')
@@ -600,7 +600,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             vec = get_vector_by_id(item_id)
         elif isinstance(pid, str) and pid.startswith('__add_anchor__'):
             anchor_id = pid.replace('__add_anchor__', '')
-            from app_helper import get_alchemy_anchor_by_id
+            from database import get_alchemy_anchor_by_id
             anchor = get_alchemy_anchor_by_id(anchor_id)
             if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
                 vec = np.array(anchor['centroid'], dtype=float)
@@ -608,7 +608,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 vec = None
         elif isinstance(pid, str) and pid.startswith('__sub_anchor__'):
             anchor_id = pid.replace('__sub_anchor__', '')
-            from app_helper import get_alchemy_anchor_by_id
+            from database import get_alchemy_anchor_by_id
             anchor = get_alchemy_anchor_by_id(anchor_id)
             if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
                 vec = np.array(anchor['centroid'], dtype=float)

@@ -11,12 +11,13 @@ import onnxruntime as ort
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
-# `app_helper` and `app_helper_artist` are safe at module top: they have no
-# import cycle back into this module. Optional ML modules
-# (.clap_analyzer / lyrics.lyrics_transcriber) stay inline inside the
-# per-feature helpers so workers without those models can still import this
-# module.
-from app_helper import (
+# `database` and `app_helper_artist` are safe at module top: they have no
+# import cycle back into this module, and importing the DB primitives directly
+# (rather than via the app_helper facade) keeps this helper decoupled from the
+# blueprint layer. Optional ML modules (.clap_analyzer / lyrics.lyrics_transcriber)
+# stay inline inside the per-feature helpers so workers without those models can
+# still import this module.
+from database import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,

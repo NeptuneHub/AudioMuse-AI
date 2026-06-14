@@ -5,7 +5,7 @@ import config
 from flask_app import app
 from tasks.setup_manager import setup_manager
 from app_auth import check_setup_needed
-from app_helper import validate_outbound_url
+from ssrf_guard import validate_outbound_url
 import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager

@@ -19,10 +19,30 @@ from rq.exceptions import NoSuchJobError
 from psycopg2.extras import DictCursor
 
 # Import configuration
-from config import MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES, MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES, CLUSTERING_CLEANING
+from config import (
+    MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
+    MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA,
+    MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION,
+    EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
+    ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS,
+    MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES,
+    CLUSTERING_MAX_FAILED_BATCHES, CLUSTERING_CLEANING,
+    TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+)
 
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
+
+# App helper functions
+from app_helper import (
+    save_task_status, redis_conn, get_task_info_from_db,
+    get_db, rq_queue_default,
+)
+from database import update_playlist_table, get_child_tasks_from_db
+
+# JSON sanitization (numpy scalars/arrays -> native types) shared project-wide
+from sanitization import sanitize_for_json
 
 # Import AI naming function and prompt template
 # (used by clustering_helper._try_ai_name_playlist, imported there)
@@ -55,7 +75,6 @@ logger = logging.getLogger(__name__)
 def batch_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the clustering batch sub-task, executed by the worker."""
     from flask_app import app
-    from app_helper import save_task_status, TASK_STATUS_FAILURE
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         parent_id = job.kwargs.get('parent_task_id')
@@ -86,28 +105,6 @@ def batch_task_failure_handler(job, connection, type, value, tb):
         )
         app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}")
 
-def _sanitize_for_json(obj):
-    """
-    Recursively converts numpy arrays and numpy numeric types to native Python types
-    to ensure the object is JSON serializable.
-    """
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_sanitize_for_json(elem) for elem in obj]
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    # Handle numpy numeric types which are not JSON serializable by default
-    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
-        return int(obj)
-    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-        return float(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    else:
-        return obj
-
-
 def run_clustering_batch_task(
     batch_id_str, start_run_idx, num_iterations_in_batch,
     genre_to_lightweight_track_data_map_json,
@@ -134,9 +131,6 @@ def run_clustering_batch_task(
     """
     # --- Local imports to prevent circular dependency ---
     from flask_app import app
-    from app_helper import (redis_conn, save_task_status, get_task_info_from_db,
-                     TASK_STATUS_PROGRESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE,
-                     TASK_STATUS_SUCCESS)
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -227,7 +221,7 @@ def run_clustering_batch_task(
 
             # *** FIX: Sanitize the result to make it JSON-serializable before logging/returning ***
             if best_result_in_batch:
-                best_result_in_batch = _sanitize_for_json(best_result_in_batch)
+                best_result_in_batch = sanitize_for_json(best_result_in_batch)
 
             final_details = {
                 "best_score_in_batch": best_score_in_batch,
@@ -276,7 +270,6 @@ def run_clustering_task(
     """
     # --- Local imports to prevent circular dependency ---
     from flask_app import app
-    from app_helper import redis_conn, get_db, save_task_status, get_task_info_from_db, update_playlist_table, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -668,8 +661,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-    from app_helper import redis_conn, get_child_tasks_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED
-
     current_time = time.time()
     timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
     processed_jobs = state_dict.get("processed_job_ids", set())
@@ -833,7 +824,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
 
 def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_map, target_per_genre, *args):
     """Constructs and enqueues a single batch job."""
-    from app_helper import rq_queue_default # Local import to avoid circular dependency issues at top-level
 
     # Unpack all the parameters passed via *args
     (
