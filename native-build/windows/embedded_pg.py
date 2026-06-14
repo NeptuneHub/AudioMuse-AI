@@ -54,12 +54,14 @@ def _initialized(data_dir):
 
 
 def _has_cluster_data(data_dir):
-    """True if data_dir holds a real PostgreSQL cluster that must never be auto-deleted."""
-    return (
-        os.path.exists(os.path.join(data_dir, "PG_VERSION"))
-        or os.path.exists(os.path.join(data_dir, "global", "pg_control"))
-        or os.path.isdir(os.path.join(data_dir, "base"))
-    )
+    """True if data_dir holds an initialized PostgreSQL cluster (never auto-delete it).
+
+    Keyed on ``global/pg_control``: written at the END of initdb and required for
+    the server to start, so its presence proves a complete cluster with real data.
+    A half-built dir (interrupted initdb, no pg_control) holds no usable data and
+    is still cleared normally, so this guard never blocks first-run self-heal.
+    """
+    return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
 
 
 def _reset_data_dir(data_dir):
@@ -68,7 +70,7 @@ def _reset_data_dir(data_dir):
     if _has_cluster_data(data_dir):
         raise RuntimeError(
             f"Refusing to wipe {data_dir}: it contains an existing PostgreSQL "
-            "cluster (PG_VERSION/pg_control/base present). Back it up or remove it "
+            "cluster (global/pg_control present). Back it up or remove it "
             "manually if you really want a fresh start."
         )
     logger.warning("Clearing incomplete PostgreSQL data dir %s before re-init", data_dir)
