@@ -1,5 +1,3 @@
-import pytest
-
 from app_map import _pick_top_mood, _round_coord, _sample_items
 
 

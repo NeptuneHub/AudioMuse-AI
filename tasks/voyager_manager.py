@@ -1037,7 +1037,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     if voyager_index is None or id_map is None:
         raise RuntimeError("Voyager index is not loaded in memory.")
 
-    from app_helper import get_db, get_score_data_by_ids
+    from app_helper import get_db
     db_conn = get_db()
 
     # If caller didn't supply eliminate_duplicates explicitly (None), use configured default

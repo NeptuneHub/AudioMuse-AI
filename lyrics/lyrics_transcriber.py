@@ -379,7 +379,6 @@ def _fetch_from_configured_api(
             url,
             headers={'Accept': 'application/json'},
         )
-        import socket
         ctx = None
         try:
             import ssl

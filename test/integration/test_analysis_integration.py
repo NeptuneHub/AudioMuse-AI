@@ -15,7 +15,6 @@
 import sys
 import types
 from pathlib import Path
-import importlib
 import json
 import pytest
 

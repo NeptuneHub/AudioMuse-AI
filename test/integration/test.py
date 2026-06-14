@@ -255,8 +255,6 @@ def test_map_visualization():
     elapsed = time.time() - start_time
     print(f"[TIMING] Map Visualization test completed in {elapsed:.2f} seconds")
 
-import pytest
-
 #pytest -v -s test.py -k test_annoy_similarity_and_playlist
 def test_annoy_similarity_and_playlist():
     start_time = time.time()

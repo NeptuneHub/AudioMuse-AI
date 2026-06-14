@@ -3,7 +3,6 @@
 import time
 import logging
 import uuid
-import traceback
 from collections import defaultdict
 
 # RQ import

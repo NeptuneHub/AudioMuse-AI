@@ -81,7 +81,6 @@ def _ensure_google_genai_stub():
         google_mod.__path__ = []
         sys.modules['google'] = google_mod
     from unittest.mock import MagicMock as _MM
-    from unittest.mock import MagicMock as _MM
     genai_mod = types.ModuleType('google.genai')
     genai_mod.Client = _MM
     genai_types = types.ModuleType('google.genai.types')
@@ -123,7 +122,7 @@ for _name, _relpath in (
     _load_submodule(_name, _relpath)
 
 
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, patch
 import requests
 import json
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name

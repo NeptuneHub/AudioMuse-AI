@@ -29,7 +29,7 @@ class TestCleaningPage:
 
     def test_cleaning_page_returns_html(self, client):
         """Test that /cleaning returns HTML content"""
-        with patch('flask.render_template') as mock_render:
+        with patch('app_analysis.render_template') as mock_render:
             mock_render.return_value = "<html>Cleaning Page</html>"
 
             response = client.get('/cleaning')

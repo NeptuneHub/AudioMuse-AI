@@ -30,7 +30,6 @@ WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 try:
     from app_helper import redis_conn
     from app_logging import configure_logging
-    import config
     from config import APP_VERSION, TEMP_DIR
 except ImportError as e:
     print(f"Error importing worker dependencies: {e}")
