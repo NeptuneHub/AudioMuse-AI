@@ -116,7 +116,6 @@ _ensure_mistralai_stub()
 for _name, _relpath in (
     ('tasks.ai.prompts',            'tasks/ai/prompts.py'),
     ('tasks.ai.providers.openai',   'tasks/ai/providers/openai.py'),
-    ('tasks.ai.providers.ollama',   'tasks/ai/providers/ollama.py'),
     ('tasks.ai.providers.gemini',   'tasks/ai/providers/gemini.py'),
     ('tasks.ai.providers.mistral',  'tasks/ai/providers/mistral.py'),
     ('tasks.ai.api',                'tasks/ai/api.py'),
@@ -129,7 +128,6 @@ import requests
 import json
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
-from tasks.ai.providers.ollama import generate_text as get_ollama_playlist_name
 from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
 from tasks.ai.providers.mistral import generate_text as get_mistral_playlist_name
 from tasks.ai.prompts import creative_prompt_template
@@ -833,28 +831,26 @@ class TestGetOpenAICompatiblePlaylistName:
 
 
 class TestGetOllamaPlaylistName:
-    """Tests for Ollama-specific wrapper function"""
+    """Tests for Ollama-format generate_text (now handled directly by openai.py)"""
 
-    @patch('tasks.ai.providers.openai.generate_text')
-    def test_calls_openai_compatible_with_correct_params(self, mock_func):
-        """Test that Ollama wrapper calls underlying function correctly"""
-        mock_func.return_value = "Test Playlist"
+    @patch('tasks.ai.providers.openai.requests.post')
+    def test_calls_with_ollama_format_url(self, mock_post):
+        """Test that generate_text handles Ollama /api/generate URLs correctly"""
+        # Simulate a successful streaming response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = [
+            b'{"response":"Test Playlist","done":true}'
+        ]
+        mock_post.return_value = mock_response
 
-        result = get_ollama_playlist_name(
-            ollama_url="http://localhost:11434/api/generate",
+        result = get_openai_compatible_playlist_name(
+            server_url="http://localhost:11434/api/generate",
             model_name="deepseek-r1:1.5b",
-            full_prompt="test prompt"
+            full_prompt="test prompt",
+            api_key="no-key-needed",
         )
 
-        mock_func.assert_called_once_with(
-            "http://localhost:11434/api/generate",
-            "deepseek-r1:1.5b",
-            "test prompt",
-            api_key="no-key-needed",
-            skip_delay=False,
-            temperature=None,
-            max_tokens=None
-        )
         assert result == "Test Playlist"
 
 

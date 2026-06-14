@@ -1,6 +1,16 @@
 #AudioMuse-AI/config.py
 import os
 
+# --- Task Status Constants ---
+# These are used across the application for task tracking. Placed here so they're
+# available everywhere without creating import chains.
+TASK_STATUS_PENDING = 'PENDING'
+TASK_STATUS_STARTED = 'STARTED'
+TASK_STATUS_PROGRESS = 'PROGRESS'
+TASK_STATUS_SUCCESS = 'SUCCESS'
+TASK_STATUS_FAILURE = 'FAILURE'
+TASK_STATUS_REVOKED = 'REVOKED'
+
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby
 
@@ -573,7 +583,16 @@ TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
 OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
 
-# Redis cache key for CLAP text embeddings of OTHER_FEATURE_LABELS
+# Voice vocabulary used in MCP system prompts
+VOICE_VOCAB = ["female vocalists", "female vocalist", "male vocalists"]
+
+# Fallback genre list used when library context has no top genres
+AI_FALLBACK_GENRES = (
+    "rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, "
+    "hard rock, heavy metal, hip-hop, funk, country, soul"
+)
+
+# Redis cache key for CLAP text embeddings
 CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", "audiomuse:clap_other_feature_text_embeddings")
 
 # --- Sonic Fingerprint Constants ---

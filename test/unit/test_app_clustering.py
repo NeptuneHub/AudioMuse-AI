@@ -20,10 +20,10 @@ def client(app):
 
 
 class TestStartClusteringEndpoint:
-    @patch('app_helper.get_active_main_task', return_value=None)
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_clustering.get_active_main_task', return_value=None)
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
     def test_successful_clustering_start_with_no_active_task(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
@@ -42,10 +42,10 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_called_once()
         mock_save_status.assert_called_once()
 
-    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'})
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'})
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
     def test_clustering_blocks_when_active_task_exists(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
@@ -58,10 +58,10 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
 
-    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch('app_clustering.rq_queue_high')
+    @patch('app_clustering.clean_up_previous_main_tasks')
+    @patch('app_clustering.save_task_status')
     def test_clustering_blocks_when_another_batch_is_active(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):

@@ -73,7 +73,7 @@ def _resolve_mood_to_song_id(mood, other_song_id, pct=100):
 
 
 def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
-    from app_helper import get_alchemy_anchor_by_id
+    from database import get_alchemy_anchor_by_id
     try:
         anchor = get_alchemy_anchor_by_id(int(anchor_id))
     except Exception:

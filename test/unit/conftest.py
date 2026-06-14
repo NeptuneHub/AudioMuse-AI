@@ -114,3 +114,42 @@ def config_restore():
     yield
     for attr, val in saved.items():
         setattr(cfg, attr, val)
+
+
+# ---------------------------------------------------------------------------
+# Import-architecture report (terminal summary)
+# ---------------------------------------------------------------------------
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Print the import-architecture report (layer table, max-chain confirmation,
+    and the recap of chains at the ceiling) whenever the architecture gate ran.
+
+    Uses the terminal reporter so the report shows on every run -- pass or fail --
+    without needing ``-s``. A PR that deepens the eager import graph will see the
+    new chains listed here (and the depth test will fail with the same recap).
+    """
+    # The gate may be imported bare ("test_import_architecture") or
+    # package-qualified ("test.unit.test_import_architecture") depending on the
+    # presence of __init__.py files, so match by suffix.
+    mod = next(
+        (m for name, m in list(sys.modules.items())
+         if name == "test_import_architecture" or name.endswith(".test_import_architecture")),
+        None,
+    )
+    if mod is None:
+        return
+    ran = any(
+        "test_import_architecture" in getattr(rep, "nodeid", "")
+        for key in ("passed", "failed", "error")
+        for rep in terminalreporter.stats.get(key, [])
+    )
+    if not ran:
+        return
+    try:
+        lines = mod.architecture_report()
+    except Exception as exc:  # never let the report break the run
+        terminalreporter.write_line(f"[architecture] report unavailable: {exc}")
+        return
+    terminalreporter.section("Import-architecture report", "=")
+    for line in lines:
+        terminalreporter.write_line(line)

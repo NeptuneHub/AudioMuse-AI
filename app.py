@@ -32,10 +32,13 @@ from flask_app import app
 
 # Import helper functions
 from app_helper import (
-    init_db, get_db, close_db,
+    get_db, close_db,
     redis_conn,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+)
+from database import init_db
+from config import (
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
 )
@@ -45,8 +48,6 @@ from app_auth import (
     seed_admin_from_env,
     resolve_jwt_secret,
 )
-
-from app_provider_migration import migration_bp
 
 from error import error_manager
 from error.error_manager import AudioMuseError
@@ -705,7 +706,7 @@ def listen_for_index_reloads():
             load_voyager_index_for_querying(force_reload=True)
             from tasks.artist_gmm_manager import load_artist_index_for_querying
             load_artist_index_for_querying(force_reload=True)
-            from app_helper import load_map_projection, load_artist_projection
+            from database import load_map_projection, load_artist_projection
             load_map_projection('main_map', force_reload=True)
             load_artist_projection('artist_map', force_reload=True)
             # Rebuild the map JSON cache used by the /api/map endpoint
@@ -757,48 +758,57 @@ def listen_for_index_reloads():
 
 
 
-# --- Import and Register Blueprints ---
-# This is the original, working structure.
-from app_chat import chat_bp
-from app_clustering import clustering_bp
-from app_analysis import analysis_bp
-from app_cron import cron_bp, run_due_cron_jobs
-from app_voyager import voyager_bp
-from app_sonic_fingerprint import sonic_fingerprint_bp
-from app_path import path_bp
-from app_external import external_bp # --- NEW: Import the external blueprint ---
-from app_alchemy import alchemy_bp
-from app_map import map_bp
-from app_waveform import waveform_bp
-from app_artist_similarity import artist_similarity_bp
-from app_clap_search import clap_search_bp
-from app_lyrics import lyrics_search_bp
-from app_sem_grove import sem_grove_bp
-from app_backup import backup_bp
-from app_dashboard import dashboard_bp
-from app_users import users_bp
-from app_sync import sync_bp
+# --- Blueprint Registration ---
+# Standard Flask factory pattern: blueprint imports are inside
+# this function so the eager import graph stays flat.
+from app_cron import run_due_cron_jobs
 
-app.register_blueprint(chat_bp, url_prefix='/chat')
-app.register_blueprint(clustering_bp)
-app.register_blueprint(analysis_bp)
-app.register_blueprint(cron_bp)
-app.register_blueprint(voyager_bp)
-app.register_blueprint(sonic_fingerprint_bp)
-app.register_blueprint(path_bp)
-app.register_blueprint(external_bp, url_prefix='/external') # --- NEW: Register the external blueprint ---
-app.register_blueprint(alchemy_bp)
-app.register_blueprint(map_bp)
-app.register_blueprint(waveform_bp)
-app.register_blueprint(artist_similarity_bp)
-app.register_blueprint(clap_search_bp)
-app.register_blueprint(lyrics_search_bp)
-app.register_blueprint(sem_grove_bp)
-app.register_blueprint(backup_bp)
-app.register_blueprint(migration_bp)
-app.register_blueprint(dashboard_bp)
-app.register_blueprint(users_bp)
-app.register_blueprint(sync_bp)
+
+def _register_blueprints(flask_app):
+    from app_chat import chat_bp
+    from app_clustering import clustering_bp
+    from app_analysis import analysis_bp
+    from app_cron import cron_bp
+    from app_voyager import voyager_bp
+    from app_sonic_fingerprint import sonic_fingerprint_bp
+    from app_path import path_bp
+    from app_external import external_bp
+    from app_alchemy import alchemy_bp
+    from app_map import map_bp
+    from app_waveform import waveform_bp
+    from app_artist_similarity import artist_similarity_bp
+    from app_clap_search import clap_search_bp
+    from app_lyrics import lyrics_search_bp
+    from app_sem_grove import sem_grove_bp
+    from app_backup import backup_bp
+    from app_provider_migration import migration_bp
+    from app_dashboard import dashboard_bp
+    from app_users import users_bp
+    from app_sync import sync_bp
+
+    flask_app.register_blueprint(chat_bp, url_prefix='/chat')
+    flask_app.register_blueprint(clustering_bp)
+    flask_app.register_blueprint(analysis_bp)
+    flask_app.register_blueprint(cron_bp)
+    flask_app.register_blueprint(voyager_bp)
+    flask_app.register_blueprint(sonic_fingerprint_bp)
+    flask_app.register_blueprint(path_bp)
+    flask_app.register_blueprint(external_bp, url_prefix='/external')
+    flask_app.register_blueprint(alchemy_bp)
+    flask_app.register_blueprint(map_bp)
+    flask_app.register_blueprint(waveform_bp)
+    flask_app.register_blueprint(artist_similarity_bp)
+    flask_app.register_blueprint(clap_search_bp)
+    flask_app.register_blueprint(lyrics_search_bp)
+    flask_app.register_blueprint(sem_grove_bp)
+    flask_app.register_blueprint(backup_bp)
+    flask_app.register_blueprint(migration_bp)
+    flask_app.register_blueprint(dashboard_bp)
+    flask_app.register_blueprint(users_bp)
+    flask_app.register_blueprint(sync_bp)
+
+
+_register_blueprints(app)
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
@@ -828,7 +838,7 @@ if not _is_worker:
       logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
     # Also try to load artist component projection into memory
     try:
-      from app_helper import load_artist_projection
+      from database import load_artist_projection
       load_artist_projection('artist_map')
       logger.info("In-memory artist component projection loaded at startup.")
     except Exception as e:

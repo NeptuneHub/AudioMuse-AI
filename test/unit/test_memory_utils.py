@@ -6,9 +6,11 @@ Tests the memory management and data sanitization utilities.
 import pytest
 from unittest.mock import Mock, MagicMock
 
-from tasks.memory_utils import (
+from sanitization import (
     sanitize_string_for_db,
     sanitize_json_for_db,
+)
+from tasks.memory_utils import (
     cleanup_cuda_memory,
     cleanup_onnx_session,
     comprehensive_memory_cleanup,

@@ -143,7 +143,7 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
-    @patch('app_helper.get_db')
+    @patch('tasks.analysis_helper.get_db')
     @patch('tasks.analysis.ort')
     @patch('tasks.analysis.cleanup_onnx_session')
     @patch('tasks.memory_utils.cleanup_cuda_memory')
@@ -167,10 +167,10 @@ class TestAnalyzeAlbumMemoryCleanup:
         ]
         mock_download.return_value = "/tmp/track.mp3"
         
-        # Mock database to raise error
-        mock_conn = MagicMock()
-        mock_get_db.return_value = mock_conn
-        mock_conn.cursor.side_effect = OperationalError("Connection failed")
+        # Mock the database connection used during album analysis (the first DB
+        # touch is analysis_helper.get_existing_track_ids) to fail like a real
+        # connection error, so the OperationalError propagates.
+        mock_get_db.side_effect = OperationalError("Connection failed")
         
         # Mock ONNX sessions
         mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
