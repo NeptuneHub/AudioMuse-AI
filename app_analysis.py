@@ -1,13 +1,17 @@
 # app_analysis.py
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, render_template
 import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS
+from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING
 
 # RQ import
 from rq import Retry
+
+# App helper functions
+from app_helper import rq_queue_high, save_task_status
+from database import clean_up_previous_main_tasks, get_active_main_task
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +33,6 @@ def cleaning_page():
             schema:
               type: string
     """
-    from flask import render_template
     return render_template('cleaning.html', title = 'AudioMuse-AI - Database Cleaning', active='cleaning')
 
 @analysis_bp.route('/api/analysis/start', methods=['POST'])
@@ -80,9 +83,6 @@ def start_analysis_endpoint():
       500:
         description: Server error during task enqueue.
     """
-    # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
-
     # Check for any existing active main task to prevent parallel batch runs.
     active_task = get_active_main_task()
     if active_task:
@@ -146,9 +146,6 @@ def start_cleaning_endpoint():
       500:
         description: Server error during task enqueue.
     """
-    # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, get_active_main_task
-
     active_task = get_active_main_task()
     if active_task:
         return jsonify({

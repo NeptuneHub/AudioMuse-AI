@@ -62,7 +62,6 @@ _os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
 import os
 import runpy
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -90,7 +89,7 @@ def _run_flask():
     import app as app_module
     waitress.serve(
         app_module.app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=8000,
         threads=8,
         max_request_body_size=6 * 1024 * 1024 * 1024,

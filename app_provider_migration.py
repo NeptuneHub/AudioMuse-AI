@@ -23,7 +23,7 @@ from flask import Blueprint, jsonify, render_template, request
 # anything in.
 from database import get_db
 from taskqueue import redis_conn, rq_queue_high
-from app_helper import validate_outbound_url
+from ssrf_guard import validate_outbound_url
 from tasks.mediaserver.helper import detect_path_format as _detect_path_format
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion'})
 
 # ---------------------------------------------------------------------------
 # SSRF guard for the user-supplied media-server URL. Delegates to the shared
-# ``app_helper.validate_outbound_url`` (allows LAN/loopback, blocks non-HTTP(S)
+# ``ssrf_guard.validate_outbound_url`` (allows LAN/loopback, blocks non-HTTP(S)
 # schemes and link-local/cloud-metadata). A missing url is allowed and left to
 # the downstream probe.
 # ---------------------------------------------------------------------------
@@ -1672,10 +1672,8 @@ def _load_state(session_id):
 
 
 def _sanitize_json_value(value):
-    """Wrapper kept for backward compatibility — delegates to the shared
-    sanitizer in :mod:`tasks.memory_utils`.
-    """
-    from tasks.memory_utils import sanitize_json_for_db
+    """Local alias for the shared JSON sanitizer in :mod:`sanitization`."""
+    from sanitization import sanitize_json_for_db
     return sanitize_json_for_db(value)
 
 

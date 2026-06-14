@@ -373,7 +373,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_numpy_array(self):
         """Test numpy array conversion to list"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = np.array([1.0, 2.0, 3.0])
         result = _sanitize_for_json(obj)
@@ -383,7 +383,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_numpy_integers(self):
         """Test numpy integer conversion"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = {
             'int8': np.int8(42),
@@ -400,7 +400,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_numpy_floats(self):
         """Test numpy float conversion"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = {
             'float32': np.float32(3.14),
@@ -415,7 +415,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_numpy_bool(self):
         """Test numpy bool conversion"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = {'flag': np.bool_(True)}
         result = _sanitize_for_json(obj)
@@ -425,7 +425,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_nested_structures(self):
         """Test sanitization of nested dictionaries and lists"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = {
             'array': np.array([1, 2, 3]),
@@ -443,7 +443,7 @@ class TestSanitizeForJson:
 
     def test_sanitize_preserves_native_types(self):
         """Test that native Python types are preserved"""
-        from tasks.clustering import _sanitize_for_json
+        from sanitization import sanitize_for_json as _sanitize_for_json
         
         obj = {
             'string': 'hello',

@@ -22,6 +22,7 @@ same "no unauthenticated local access" guarantee, the cluster is initialized wit
 is never reachable without the password and there is no trust window.
 """
 
+import importlib
 import logging
 import os
 import subprocess
@@ -45,7 +46,7 @@ def _check_pgserver():
     global _USE_PGSERVER
     if _USE_PGSERVER is None:
         try:
-            import pgserver
+            importlib.import_module("pgserver")
             _USE_PGSERVER = True
             logger.info("Using pgserver for embedded PostgreSQL")
         except ImportError:
@@ -150,16 +151,34 @@ def _harden_existing(data_dir, password, uri):
         logger.exception("Could not upgrade legacy PostgreSQL auth; leaving as-is")
 
 
+def _has_cluster_data(data_dir):
+    """True if data_dir holds an initialized PostgreSQL cluster (never auto-delete it).
+
+    Keyed on ``global/pg_control``: written at the END of initdb and required for
+    the server to start, so its presence proves a complete cluster with real data.
+    A half-built dir (interrupted initdb, no pg_control) holds no usable data and
+    is still cleared normally, so this guard never blocks first-run self-heal.
+    """
+    return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
+
+
 def _clear_stale_data_dir(data_dir):
     """``initdb`` refuses to run against a non-empty target directory.
 
     A crash mid-init -- or a partial cleanup of an earlier failed start -- can
     leave an un-initialized data dir behind (e.g. just a ``log/`` subdir) that
     has no ``PG_VERSION`` yet still makes the fresh ``initdb`` fail, bricking
-    every subsequent start. Wipe such leftovers before initializing.
+    every subsequent start. Wipe such leftovers before initializing -- but never
+    a dir that still holds a real cluster: surface an error instead of deleting.
     """
     if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
         return
+    if _has_cluster_data(data_dir):
+        raise RuntimeError(
+            f"Refusing to wipe {data_dir}: it contains an existing PostgreSQL "
+            "cluster (global/pg_control present). Back it up or remove it "
+            "manually if you really want a fresh start."
+        )
     import shutil
     logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)
     shutil.rmtree(data_dir, ignore_errors=True)

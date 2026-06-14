@@ -1,8 +1,8 @@
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
-from database import get_db
+from database import get_db, save_task_status
 from taskqueue import rq_queue_high
-from app_helper import save_task_status, TASK_STATUS_PENDING
+from config import TASK_STATUS_PENDING
 import uuid, time, logging
 from config import (
     TOP_N_MOODS,
@@ -240,8 +240,6 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        "gmm_n_components_min": int(GMM_N_COMPONENTS_MIN),
-                        "gmm_n_components_max": int(GMM_N_COMPONENTS_MAX),
                         "top_n_playlists_param": int(TOP_N_PLAYLISTS),
                         "min_songs_per_genre_for_stratification_param": int(MIN_SONGS_PER_GENRE_FOR_STRATIFICATION),
                         "stratified_sampling_target_percentile_param": int(STRATIFIED_SAMPLING_TARGET_PERCENTILE),

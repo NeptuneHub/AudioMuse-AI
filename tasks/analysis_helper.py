@@ -11,12 +11,13 @@ import onnxruntime as ort
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
-# `app_helper` and `app_helper_artist` are safe at module top: they have no
-# import cycle back into this module. Optional ML modules
-# (.clap_analyzer / lyrics.lyrics_transcriber) stay inline inside the
-# per-feature helpers so workers without those models can still import this
-# module.
-from app_helper import (
+# `database` and `app_helper_artist` are safe at module top: they have no
+# import cycle back into this module, and importing the DB primitives directly
+# (rather than via the app_helper facade) keeps this helper decoupled from the
+# blueprint layer. Optional ML modules (.clap_analyzer / lyrics.lyrics_transcriber)
+# stay inline inside the per-feature helpers so workers without those models can
+# still import this module.
+from database import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
@@ -565,7 +566,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                 if track_audio is None or track_audio.size == 0 or track_sr is None:
                     raise RuntimeError("Failed to load audio for lyrics analysis")
             else:
-                def audio_loader():
+                def audio_loader():  # noqa: F811
                     p = download_fn() if download_fn is not None else None
                     if not p:
                         raise RuntimeError("Failed to download audio for lyrics ASR")

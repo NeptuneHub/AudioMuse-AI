@@ -11,12 +11,11 @@ import json
 import time
 import logging
 import uuid
-import traceback
 import gc
 import platform
 
 import librosa
-import onnxruntime as ort  # re-exported: tests patch `tasks.analysis.ort.InferenceSession`
+import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
 # RQ import
 from rq import get_current_job, Retry
@@ -48,11 +47,12 @@ from .memory_utils import (
 from flask_app import app
 from app_helper import (
     redis_conn, rq_queue_default, get_db, save_task_status,
-    get_task_info_from_db, get_child_tasks_from_db,
+    get_task_info_from_db,
     build_and_store_map_projection, build_and_store_artist_projection,
     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
 )
+from database import get_child_tasks_from_db
 
 from error import error_manager
 from error.error_dictionary import (
@@ -69,7 +69,7 @@ from error.error_dictionary import (
 # tests depend on (``run_inference``, ``_find_onnx_name``, ``sigmoid``).
 # Helpers consumed only inside this file go through ``_ah.<name>`` instead.
 from . import analysis_helper as _ah
-from .analysis_helper import (
+from .analysis_helper import (  # noqa: F401
     DEFINED_TENSOR_NAMES,
     _find_onnx_name,           # re-export: tests do `from tasks.analysis import _find_onnx_name`
     run_inference,             # re-export: tests do `from tasks.analysis import run_inference`

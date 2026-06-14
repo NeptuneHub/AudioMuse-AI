@@ -18,7 +18,6 @@ value is an internal "standalone embedded supervisor" signal, not a real OS chec
 """
 
 import os
-import sys
 from urllib.parse import quote
 
 from windows import paths

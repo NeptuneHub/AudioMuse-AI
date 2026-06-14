@@ -29,7 +29,7 @@ class TestCleaningPage:
 
     def test_cleaning_page_returns_html(self, client):
         """Test that /cleaning returns HTML content"""
-        with patch('flask.render_template') as mock_render:
+        with patch('app_analysis.render_template') as mock_render:
             mock_render.return_value = "<html>Cleaning Page</html>"
 
             response = client.get('/cleaning')
@@ -47,12 +47,12 @@ class TestStartAnalysisEndpoint:
 
     @pytest.fixture(autouse=True)
     def patch_active_analysis_task(self):
-        with patch('app_helper.get_active_main_task', return_value=None) as mock_active_task:
+        with patch('app_analysis.get_active_main_task', return_value=None) as mock_active_task:
             yield mock_active_task
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_successful_analysis_start_with_defaults(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -81,9 +81,9 @@ class TestStartAnalysisEndpoint:
         save_call_args = mock_save_status.call_args[0]
         assert save_call_args[1] == "main_analysis"
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     @patch('app_analysis.NUM_RECENT_ALBUMS', 5)
     @patch('app_analysis.TOP_N_MOODS', 10)
     def test_analysis_start_uses_config_defaults(
@@ -108,9 +108,9 @@ class TestStartAnalysisEndpoint:
         # Check that args tuple contains (num_recent_albums, top_n_moods)
         assert call_kwargs['args'] == (5, 10)
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_start_with_custom_params(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -136,9 +136,9 @@ class TestStartAnalysisEndpoint:
         call_kwargs = mock_queue.enqueue.call_args[1]
         assert call_kwargs['args'] == (10, 15)
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_enqueue_task_parameters(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -162,9 +162,9 @@ class TestStartAnalysisEndpoint:
         assert call_args[1]['description'] == "Main Music Analysis"
         assert call_args[1]['job_timeout'] == -1  # No timeout
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_handles_missing_json(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -183,9 +183,9 @@ class TestStartAnalysisEndpoint:
         # Should still work with defaults
         assert response.status_code == 202
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_saves_pending_status(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -215,12 +215,12 @@ class TestStartCleaningEndpoint:
 
     @pytest.fixture(autouse=True)
     def patch_active_cleaning_task(self):
-        with patch('app_helper.get_active_main_task', return_value=None) as mock_active_task:
+        with patch('app_analysis.get_active_main_task', return_value=None) as mock_active_task:
             yield mock_active_task
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_successful_cleaning_start(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -244,9 +244,9 @@ class TestStartCleaningEndpoint:
         # Verify task status was saved
         mock_save_status.assert_called_once()
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_cleaning_enqueue_task_parameters(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -267,9 +267,9 @@ class TestStartCleaningEndpoint:
         assert call_args[1]['description'] == "Database Cleaning (Identify and Delete Orphaned Albums)"
         assert call_args[1]['job_timeout'] == -1  # No timeout
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_cleaning_saves_pending_status(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -288,9 +288,9 @@ class TestStartCleaningEndpoint:
         call_args = mock_save_status.call_args[0]
         assert call_args[1] == "cleaning"
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_cleaning_cleans_up_previous_tasks(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):
@@ -307,10 +307,10 @@ class TestStartCleaningEndpoint:
         # Verify cleanup was called before enqueueing new task
         mock_cleanup.assert_called_once()
 
-    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED'})
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED'})
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_cleaning_blocks_when_active_task_exists(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
@@ -327,10 +327,10 @@ class TestStartCleaningEndpoint:
 class TestEndpointErrorHandling:
     """Tests for error handling in endpoints"""
 
-    @patch('app_helper.get_active_main_task', return_value=None)
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.get_active_main_task', return_value=None)
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_handles_enqueue_failure(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
@@ -341,10 +341,10 @@ class TestEndpointErrorHandling:
         with pytest.raises(Exception):
             client.post('/api/analysis/start', json={})
 
-    @patch('app_helper.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_analysis_blocks_when_another_batch_is_active(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
@@ -358,9 +358,9 @@ class TestEndpointErrorHandling:
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
 
-    @patch('app_helper.rq_queue_high')
-    @patch('app_helper.clean_up_previous_main_tasks')
-    @patch('app_helper.save_task_status')
+    @patch('app_analysis.rq_queue_high')
+    @patch('app_analysis.clean_up_previous_main_tasks')
+    @patch('app_analysis.save_task_status')
     def test_cleaning_handles_enqueue_failure(
         self, mock_save_status, mock_cleanup, mock_queue, client
     ):

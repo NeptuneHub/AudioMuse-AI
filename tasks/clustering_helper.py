@@ -26,7 +26,7 @@ except ImportError:
     logger.debug("GPU clustering module not available, using CPU only")
 
 # RQ imports for safe result fetching
-from rq.job import Job
+from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
 from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
@@ -36,12 +36,17 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
                     LN_OTHER_FEATURES_PURITY_STATS,
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING)
+                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS)
 from .commons import score_vector
 
 # Import AI naming for playlist helpers
 from tasks.ai.api import get_ai_playlist_name
 from tasks.ai.prompts import creative_prompt_template
+
+# Low-level DB / queue primitives, imported directly rather than via the
+# app_helper facade (keeps this helper decoupled from the blueprint layer).
+from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
+from taskqueue import redis_conn
 
 
 # --- Playlist Naming & Shuffling Helpers ---
@@ -175,8 +180,6 @@ def _perform_single_clustering_iteration(
 
 def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx):
     """Fetches track data, creates feature/embedding vectors, and ensures alignment."""
-    # Local imports to prevent circular dependency
-    from app_helper import get_tracks_by_ids, get_score_data_by_ids
 
     logger.info(f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}")
     rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids) # These functions are now imported locally
@@ -718,8 +721,6 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     """
     # Local imports to prevent circular dependency
     from flask_app import app
-    from rq.job import JobStatus
-    from app_helper import redis_conn, get_task_info_from_db, TASK_STATUS_SUCCESS
 
     try:
         job = Job.fetch(job_id, connection=redis_conn)

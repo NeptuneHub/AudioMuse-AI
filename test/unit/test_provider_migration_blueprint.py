@@ -345,7 +345,7 @@ class TestExecuteGate:
 
 # ---------------------------------------------------------------------------
 # SSRF guard on the user-supplied media-server URL (_validate_probe_url ->
-# app_helper.validate_outbound_url). Self-hosted servers live on the LAN /
+# ssrf_guard.validate_outbound_url). Self-hosted servers live on the LAN /
 # loopback, so those are accepted; cloud-metadata, link-local, multicast,
 # unspecified and non-HTTP(S) schemes are rejected. IP literals are used so the
 # checks never depend on DNS resolution.

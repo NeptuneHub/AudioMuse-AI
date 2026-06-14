@@ -16,7 +16,7 @@ def run_radio_playlists():
 
     Falls back to create_playlist for unsupported backends.
     """
-    from app_helper import get_alchemy_radios
+    from database import get_alchemy_radios
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
     logger.info(f"Radio playlist run started for {len(radios)} enabled radios.")

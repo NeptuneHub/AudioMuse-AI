@@ -115,7 +115,7 @@ def test_cuml_clustering():
     # Test cuML KMeans
     cuml_ok = False
     try:
-        from cuml.cluster import KMeans as cuKMeans
+        from cuml.cluster import KMeans as cuKMeans  # noqa: F401
         print_result("cuML KMeans", True, "Import successful")
         cuml_ok = True
     except Exception as e:
@@ -123,14 +123,14 @@ def test_cuml_clustering():
 
     # Test cuML DBSCAN
     try:
-        from cuml.cluster import DBSCAN as cuDBSCAN
+        from cuml.cluster import DBSCAN as cuDBSCAN  # noqa: F401
         print_result("cuML DBSCAN", True, "Import successful")
     except Exception as e:
         print_result("cuML DBSCAN", False, str(e))
 
     # Test cuML PCA
     try:
-        from cuml.decomposition import PCA as cuPCA
+        from cuml.decomposition import PCA as cuPCA  # noqa: F401
         print_result("cuML PCA", True, "Import successful")
     except Exception as e:
         print_result("cuML PCA", False, str(e))

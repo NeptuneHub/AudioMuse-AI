@@ -109,7 +109,7 @@ class TestClusterNote:
             'num_playlists_created': 8,
         }
         result = _build_task_note('main_clustering', details, MagicMock())
-        assert result == 'sampled: 500 • clusters: 8'
+        assert result == 'sampled: 500 | clusters: 8'
 
     def test_non_dict_best_params_falls_back_to_sampled_songs(self):
         details = {'best_params': 'oops', 'sampled_songs': 100}

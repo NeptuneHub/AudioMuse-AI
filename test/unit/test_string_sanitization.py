@@ -10,7 +10,7 @@ import numpy as np
 class TestSaveTrackStringSanitization:
     """Test string sanitization in save_track_analysis_and_embedding."""
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_removes_nul_bytes(self, mock_get_db):
         """Test that NUL bytes are removed from all string fields."""
         from app_helper import save_track_analysis_and_embedding
@@ -54,7 +54,7 @@ class TestSaveTrackStringSanitization:
         assert values[2] == "ArtistName"
         assert values[9] == "AlbumName"
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_removes_control_characters(self, mock_get_db):
         """Test that control characters are removed."""
         from app_helper import save_track_analysis_and_embedding
@@ -79,7 +79,7 @@ class TestSaveTrackStringSanitization:
         assert values[1] == "SongTitle"
         assert values[2] == "ArtistName"
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_handles_none_values(self, mock_get_db):
         """Test that None values are handled correctly."""
         from app_helper import save_track_analysis_and_embedding
@@ -105,7 +105,7 @@ class TestSaveTrackStringSanitization:
         assert values[5] is None  # scale
         assert values[8] is None  # other_features
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_truncates_long_strings(self, mock_get_db):
         """Test that overly long strings are truncated."""
         from app_helper import save_track_analysis_and_embedding
@@ -134,7 +134,7 @@ class TestSaveTrackStringSanitization:
         assert len(values[2]) == 200  # author
         assert len(values[8]) == 2000  # other_features
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_strips_whitespace(self, mock_get_db):
         """Test that leading/trailing whitespace is stripped."""
         from app_helper import save_track_analysis_and_embedding
@@ -158,7 +158,7 @@ class TestSaveTrackStringSanitization:
         assert values[4] == "C"
         assert values[5] == "major"
     
-    @patch('app_helper.get_db')
+    @patch('database.get_db')
     def test_sanitize_preserves_unicode(self, mock_get_db):
         """Test that Unicode characters are preserved."""
         from app_helper import save_track_analysis_and_embedding

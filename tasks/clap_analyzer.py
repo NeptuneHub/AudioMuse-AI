@@ -733,7 +733,7 @@ def is_clap_available() -> bool:
 # --- CLAP-based Other Features (replaces mood-specific ONNX models) ---
 
 def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
-    """Return CLAP text embeddings for OTHER_FEATURE_LABELS, cached in Redis.
+    """Return CLAP text embeddings for config.OTHER_FEATURE_LABELS, cached in Redis.
 
     This function now includes the same optimised caching strategy used in
     devel‑DCLAP:
@@ -780,7 +780,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
     
     # Compute text embeddings for each label
-    logger.info(f"Computing CLAP text embeddings for OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
+    logger.info(f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
     try:
         embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
         if embeddings is None:

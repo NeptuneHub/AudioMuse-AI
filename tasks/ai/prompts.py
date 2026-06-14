@@ -14,14 +14,14 @@ Public entry points:
     build_ollama_tool_calling_prompt  -- Ollama-specific JSON-output framing
     build_tool_calls_schema(tools)    -- shared JSON Schema for tool_calls (used by every transport)
     build_ai_brainstorm_prompt(...)   -- ai_brainstorm MCP tool prompt
-    get_dynamic_genres                -- helper, exposed for tests
+    _get_dynamic_genres               -- helper, exposed for tests
 """
 from typing import Dict, List, Optional
 
 import config
 
 
-# --- Clustering / playlist naming ---------------------------------------------
+# --- Clustering / playlist naming prompt --------------------------------------
 
 creative_prompt_template = (
     "You are an expert music collector and MUST give a title to this playlist.\n"
@@ -31,35 +31,33 @@ creative_prompt_template = (
     "No special fonts or emojis.\n"
     "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
     "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
-    "* BAD EXAMPLES: '\U0001D5DD\U0001D5C2\U0001D5C8 \U0001D5C2\U0001D5CB\U0001D5C8\U0001D5C7\U0001D5C2 \U0001D5C9\U0001D5CB\U0001D5C8\U0001D5C7\U0001D5C2' (Non-standard characters)\n\n"
+    "* BAD EXAMPLES: '\\U0001D5DD\\U0001D5C2\\U0001D5C8 \\U0001D5C2\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2 \\U0001D5C9\\U0001D5CB\\U0001D5C8\\U0001D5C7\\U0001D5C2' (Non-standard characters)\n\n"
     "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n\n"
     "This is the playlist:\n{song_list_sample}\n\n"
 )
 
 
-# --- MCP system prompt (used by all providers when calling with tools) --------
-
-_FALLBACK_GENRES = (
-    "rock, pop, metal, jazz, electronic, dance, alternative, indie, punk, blues, "
-    "hard rock, heavy metal, hip-hop, funk, country, soul"
-)
-
-
-def get_dynamic_genres(library_context: Optional[Dict]) -> str:
-    """Return genre list from library context, falling back to defaults."""
-    if library_context and library_context.get('top_genres'):
-        return ', '.join(library_context['top_genres'][:10])
-    return _FALLBACK_GENRES
-
-
-VOICE_VOCAB = ["female vocalists", "female vocalist", "male vocalists"]
+# --- Constants shared with the rest of the AI subsystem -----------------------
 
 INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
 
 PRIMARY_INTENTS = ["seed", "text", "knowledge"]
 
 
-def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] = None) -> str:
+# --- MCP system prompt --------------------------------------------------------
+
+
+def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
+    """Return genre list from library context, falling back to defaults."""
+    if library_context and library_context.get('top_genres'):
+        return ', '.join(library_context['top_genres'][:10])
+    return config.AI_FALLBACK_GENRES
+
+
+def build_mcp_system_prompt(
+    tools: List[Dict],
+    library_context: Optional[Dict] = None,
+) -> str:
     """Build the canonical MCP system prompt used by ALL providers."""
     tool_names = {t['name'] for t in tools}
     has_seed = 'seed_search' in tool_names
@@ -81,8 +79,10 @@ def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] =
         )
     if has_knowledge:
         tool_lines.append(
-            "- knowledge_lookup(user_request): cultural/historical world-knowledge fallback "
-            "('Grammy winners 2020', 'songs sampled by Daft Punk'). LAST RESORT."
+            "- knowledge_lookup(user_request): popularity / 'best of' / cultural requests "
+            "('best rap of the 90s', 'top festival anthems', 'Grammy winners 2020'). Turns the "
+            "request into a grounded library search (genre/year/energy + sound descriptions + "
+            "seed artists); never invents song titles."
         )
     tool_lines.append(
         "- search_database(genres?, voices?, moods?, year_min?, year_max?, min_rating?, scale?, "
@@ -91,8 +91,8 @@ def build_mcp_system_prompt(tools: List[Dict], library_context: Optional[Dict] =
     )
     tools_block = "\n".join(tool_lines)
 
-    genres_line = get_dynamic_genres(library_context)
-    voices_line = ", ".join(VOICE_VOCAB)
+    genres_line = _get_dynamic_genres(library_context)
+    voices_line = ", ".join(config.VOICE_VOCAB)
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
 
     prompt = f"""You are a music playlist router. Return ONLY a JSON object with one or more tool calls. Put EVERY intent in this one response.
@@ -263,32 +263,42 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
 # --- Free-text MCP prompts (brainstorm) ---------------------------------------
 
 def build_ai_brainstorm_prompt(user_request: str) -> str:
-    return f"""You are a music expert with extensive knowledge of songs, artists, and music history. 
+    """Build the grounded-recipe prompt for the knowledge_lookup tool.
+
+    The model does NOT know the library, so it must not name songs. It translates
+    the request into a search RECIPE -- metadata filters, "how it should sound"
+    descriptions (for audio similarity search), and a few seed artists -- which
+    the tool then runs against the real library and fuses. This trades the small
+    model's weak song recall for its strong understanding/categorisation.
+    """
+    genres_line = ", ".join(config.STRATIFIED_GENRES)
+    moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
+    voices_line = ", ".join(config.VOICE_VOCAB)
+    return f"""You are a music expert. Turn the request into a RECIPE used to search a music library.
+You do NOT know which songs are in the library, so you MUST NOT name any songs. Describe and categorise only; the library does the finding.
 
 User request: "{user_request}"
 
-TASK: Use your knowledge to suggest 25-35 specific songs (with exact artist names) that match this request.
+Return ONE JSON object with EXACTLY this shape:
+{{"filters": {{"genres": [], "moods": [], "voices": [], "year_min": null, "year_max": null, "energy_min": null, "energy_max": null, "tempo_min": null, "tempo_max": null}}, "sound_descriptions": [], "seed_artists": [], "lyric_themes": []}}
 
-Think about:
-- If they want songs similar to an artist \u2192 suggest songs by that artist AND similar artists
-- If they want a genre/mood \u2192 suggest famous songs in that genre/mood
-- If they want popular/radio hits \u2192 suggest well-known mainstream songs
-- If they want a time period \u2192 suggest songs from that era
-- If they want a vibe \u2192 suggest songs that match that feeling
+FIELD GUIDE (leave a field empty/null when the request does not imply it -- never invent constraints):
+- filters.genres: 0+ values, chosen ONLY from: {genres_line}
+- filters.moods: 0+ values, chosen ONLY from: {moods_line}
+- filters.voices: 0+ values, chosen ONLY from: {voices_line}
+- filters.year_min / year_max: 4-digit years. A decade like "90s" -> 1990 and 1999. "90s and 2000s" -> 1990 and 2009.
+- filters.energy_min / energy_max: numbers 0.0 (calm) to 1.0 (intense).
+- filters.tempo_min / tempo_max: BPM, 40 to 200.
+- sound_descriptions: 2 to {config.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX} vivid phrases describing HOW the ideal songs SOUND (instruments, production, era, energy, vibe). This is the most important field. NOT song names.
+- seed_artists: up to {config.AI_BRAINSTORM_SEED_ARTISTS_MAX} well-known ARTISTS that exemplify the request. Artists ONLY, never songs. Omit if none are obvious.
+- lyric_themes: 0 to {config.AI_BRAINSTORM_LYRIC_THEMES_MAX} short phrases ONLY when the request is about a TOPIC the lyrics should cover (e.g. "heartbreak", "summer roadtrip").
 
-CRITICAL REQUIREMENTS:
-1. Return ONLY a JSON array of objects
-2. Each object MUST have "title" and "artist" fields
-3. Be specific with exact song titles and artist names (as they appear in databases)
-4. Include variety - different artists when possible
-5. Format: [{{"title": "Song Name", "artist": "Artist Name"}}, ...]
-6. NO explanations, NO numbering, ONLY the JSON array
+RULES:
+- NEVER output a song title anywhere.
+- genres / moods / voices MUST come from the lists above, or be left empty.
+- Output ONLY the JSON object. No markdown fences, no comments, no extra text.
 
-Example format:
-[
-  {{"title": "All the Small Things", "artist": "blink-182"}},
-  {{"title": "Basket Case", "artist": "Green Day"}},
-  {{"title": "American Idiot", "artist": "Green Day"}}
-]
+EXAMPLE -- request "100 of the best rap songs from the 90s and 2000s":
+{{"filters": {{"genres": ["Hip-Hop"], "moods": [], "voices": [], "year_min": 1990, "year_max": 2009, "energy_min": 0.5, "energy_max": 1.0, "tempo_min": null, "tempo_max": null}}, "sound_descriptions": ["gritty 90s east coast boom bap hip hop with hard-hitting drums and jazzy samples", "glossy early 2000s mainstream rap with heavy bass and crossover hooks"], "seed_artists": ["Nas", "Jay-Z", "2Pac", "Eminem"], "lyric_themes": []}}
 
-Suggest songs for "{user_request}" now:"""
+Now produce the JSON recipe for "{user_request}":"""

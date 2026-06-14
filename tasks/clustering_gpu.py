@@ -64,7 +64,7 @@ def check_gpu_available():
 
     try:
         import cupy as cp
-        import cuml
+        import cuml  # noqa: F401
         # Try to create a small array on GPU to verify it works
         test_array = cp.array([1, 2, 3])
         _ = test_array.sum()
