@@ -11,12 +11,11 @@ import json
 import time
 import logging
 import uuid
-import traceback
 import gc
 import platform
 
 import librosa
-import onnxruntime as ort  # re-exported: tests patch `tasks.analysis.ort.InferenceSession`
+import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
 # RQ import
 from rq import get_current_job, Retry
@@ -70,7 +69,7 @@ from error.error_dictionary import (
 # tests depend on (``run_inference``, ``_find_onnx_name``, ``sigmoid``).
 # Helpers consumed only inside this file go through ``_ah.<name>`` instead.
 from . import analysis_helper as _ah
-from .analysis_helper import (
+from .analysis_helper import (  # noqa: F401
     DEFINED_TENSOR_NAMES,
     _find_onnx_name,           # re-export: tests do `from tasks.analysis import _find_onnx_name`
     run_inference,             # re-export: tests do `from tasks.analysis import run_inference`

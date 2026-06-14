@@ -566,7 +566,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                 if track_audio is None or track_audio.size == 0 or track_sr is None:
                     raise RuntimeError("Failed to load audio for lyrics analysis")
             else:
-                def audio_loader():
+                def audio_loader():  # noqa: F811
                     p = download_fn() if download_fn is not None else None
                     if not p:
                         raise RuntimeError("Failed to download audio for lyrics ASR")

@@ -173,7 +173,8 @@ if not _is_worker:
 else:
     app.logger.info("RQ worker mode: skipping startup database schema bootstrap.")
 
-import app_setup
+import importlib
+importlib.import_module('app_setup')
 
 # --- API Endpoints ---
 

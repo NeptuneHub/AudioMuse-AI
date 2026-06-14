@@ -21,7 +21,7 @@ from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
-from database import (
+from database import (  # noqa: F401
     get_db, close_db, save_task_status, record_task_history, _build_task_note,
     get_score_data_by_ids, load_map_projection, get_task_info_from_db, get_tracks_by_ids,
     save_track_analysis_and_embedding, save_clap_embedding, get_clap_embedding, save_lyrics_embedding,
@@ -37,7 +37,7 @@ from taskqueue import (
     send_stop_job_command,
 )
 
-from config import (
+from config import (  # noqa: F401
     STRATIFIED_GENRES,
     TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,

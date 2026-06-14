@@ -338,7 +338,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 def _load_sem_grove_index_from_db() -> bool:
     """Load the SemGrove merged Voyager index from the DB into the global cache."""
     try:
-        import voyager  # type: ignore
+        import voyager  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("Voyager unavailable; cannot load SemGrove index.")
         return False

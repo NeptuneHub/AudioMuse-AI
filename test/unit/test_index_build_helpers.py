@@ -759,7 +759,7 @@ class TestBuildVoyagerIndexBytesStreaming:
 
     def test_skips_empty_batches_silently(self):
         try:
-            import voyager
+            import voyager  # noqa: F401
         except ImportError:
             pytest.skip("voyager not installed")
         rng = np.random.default_rng(5)
