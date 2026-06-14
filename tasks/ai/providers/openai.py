@@ -22,6 +22,8 @@ import config
 
 logger = logging.getLogger(__name__)
 
+THINK_END_TAG = "</think>"
+
 
 def _is_ollama_format_url(server_url: str) -> bool:
     """Detect Ollama endpoints from the URL path (issue #467 fix preserved)."""
@@ -162,7 +164,7 @@ def generate_text(
                     logger.debug("Could not decode JSON line from stream: %s", line_str)
                     continue
 
-            thought_enders = ["</think>", "[/INST]", "[/THOUGHT]"]
+            thought_enders = [THINK_END_TAG, "[/INST]", "[/THOUGHT]"]
             extracted_text = full_raw_response_content.strip()
             for end_tag in thought_enders:
                 if end_tag in extracted_text:
@@ -458,8 +460,8 @@ def call_with_tools_ollama(
             cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
             if "<think>" in cleaned:
                 cleaned = (
-                    cleaned.split("</think>")[-1].strip()
-                    if "</think>" in cleaned
+                    cleaned.split(THINK_END_TAG)[-1].strip()
+                    if THINK_END_TAG in cleaned
                     else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
                 )
 
@@ -510,14 +512,14 @@ def call_with_tools_ollama(
             valid_calls = []
             for tc in tool_calls:
                 if isinstance(tc, dict) and "name" in tc:
-                    if "arguments" not in tc:
+                    if "arguments" not in tc or not isinstance(tc["arguments"], dict):
                         tc["arguments"] = {}
                     args = tc["arguments"]
                     keys_to_remove = []
                     for k, v in args.items():
-                        if v is None or v == "" or v == [] or v == {}:
-                            keys_to_remove.append(k)
-                        elif k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0:
+                        if (v is None or v == "" or v == [] or v == {}) or (
+                            k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0
+                        ):
                             keys_to_remove.append(k)
                     for k in keys_to_remove:
                         log_messages.append(

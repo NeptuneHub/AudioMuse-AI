@@ -157,6 +157,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
     Returns list of song detail dicts (using get_score_data_by_ids mapping)
     """
+    from app_helper_artist import get_artist_name_by_id
+
     if n_results is None:
         n_results = config.ALCHEMY_DEFAULT_N_RESULTS
     n_results = min(n_results, config.ALCHEMY_MAX_N_RESULTS)
@@ -322,7 +324,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
             for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 # Store metadata for artist component
-                from app_helper_artist import get_artist_name_by_id
                 artist_name = artist_id
                 resolved = get_artist_name_by_id(artist_id)
                 if resolved:
@@ -384,7 +385,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             logger.info(f"Retrieved {len(gmm_vecs)} GMM components for artist {artist_id}")
             for comp_idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
                 # Store metadata for artist component
-                from app_helper_artist import get_artist_name_by_id
                 artist_name = artist_id
                 resolved = get_artist_name_by_id(artist_id)
                 if resolved:

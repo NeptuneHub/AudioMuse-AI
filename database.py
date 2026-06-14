@@ -304,13 +304,13 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
                            END
         """, (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details_json, current_unix_time, status, current_unix_time, current_unix_time, current_unix_time))
         db.commit()
-    except psycopg2.Error as e:
-        logger.error(f"DB Error saving task status for {task_id}: {e}")
+    except psycopg2.Error:
+        logger.exception(f"DB Error saving task status for {task_id}")
         try:
             db.rollback()
             logger.info(f"DB transaction rolled back for task status update of {task_id}.")
-        except psycopg2.Error as rb_e:
-            logger.error(f"DB Error during rollback for task status {task_id}: {rb_e}")
+        except psycopg2.Error:
+            logger.exception(f"DB Error during rollback for task status {task_id}")
     finally:
         cur.close()
 
@@ -394,8 +394,8 @@ def get_score_data_by_ids(item_ids_list):
     try:
         cur.execute(query, (tuple(item_ids_list),))
         rows = cur.fetchall()
-    except Exception as e:
-        logger.error(f"Error fetching score data by IDs: {e}")
+    except Exception:
+        logger.exception("Error fetching score data by IDs")
         rows = []
     finally:
         cur.close()
@@ -491,8 +491,8 @@ def load_map_projection(index_name, force_reload=False):
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
         logger.info(f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory.")
         return id_map, proj
-    except Exception as e:
-        logger.error(f"Failed to load map projection: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to load map projection")
         return None, None
     finally:
         cur.close()
@@ -611,9 +611,9 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
             """, (item_id, psycopg2.Binary(embedding_blob)))
 
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error("Error saving track analysis and embedding for %s: %s", item_id, e)
+        logger.exception("Error saving track analysis and embedding for %s", item_id)
         raise
     finally:
         cur.close()
@@ -633,9 +633,9 @@ def save_clap_embedding(item_id, clap_embedding_vector):
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
         """, (item_id, psycopg2.Binary(embedding_blob)))
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Error saving CLAP embedding for {item_id}: {e}")
+        logger.exception(f"Error saving CLAP embedding for {item_id}")
         raise
     finally:
         cur.close()
@@ -655,8 +655,8 @@ def get_clap_embedding(item_id):
         if row and row[0]:
             return np.frombuffer(row[0], dtype=np.float32)
         return None
-    except Exception as e:
-        logger.error(f"Error loading CLAP embedding for {item_id}: {e}")
+    except Exception:
+        logger.exception(f"Error loading CLAP embedding for {item_id}")
         return None
     finally:
         cur.close()
@@ -686,9 +686,9 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
         """, (item_id, psycopg2.Binary(embedding_blob),
               psycopg2.Binary(axis_blob) if axis_blob is not None else None))
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Error saving lyrics embedding for {item_id}: {e}")
+        logger.exception(f"Error saving lyrics embedding for {item_id}")
         raise
     finally:
         cur.close()
@@ -1121,9 +1121,9 @@ def clean_up_previous_main_tasks():
             logger.info(f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks.")
         else:
             logger.info("No previous main tasks found to clean up.")
-    except Exception as e_main_clean:
+    except Exception:
         db.rollback()
-        logger.error(f"Error during the main task cleanup process: {e_main_clean}")
+        logger.exception("Error during the main task cleanup process")
     finally:
         cur.close()
 
@@ -1192,9 +1192,9 @@ def save_alchemy_anchor(name, centroid):
         row = cur.fetchone()
         conn.commit()
         return dict(row) if row else None
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to save alchemy anchor '{name}': {e}")
+        logger.exception(f"Failed to save alchemy anchor '{name}'")
         return None
     finally:
         cur.close()
@@ -1206,8 +1206,8 @@ def get_alchemy_anchors():
         cur.execute("SELECT id, name, created_at FROM alchemy_anchors ORDER BY created_at DESC")
         rows = cur.fetchall()
         return [dict(row) for row in rows]
-    except Exception as e:
-        logger.error(f"Failed to load alchemy anchors: {e}")
+    except Exception:
+        logger.exception("Failed to load alchemy anchors")
         return []
     finally:
         cur.close()
@@ -1219,9 +1219,9 @@ def delete_alchemy_anchor(anchor_id):
         cur.execute("DELETE FROM alchemy_anchors WHERE id = %s", (anchor_id,))
         conn.commit()
         return cur.rowcount > 0
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to delete alchemy anchor id={anchor_id}: {e}")
+        logger.exception(f"Failed to delete alchemy anchor id={anchor_id}")
         return False
     finally:
         cur.close()
@@ -1241,8 +1241,8 @@ def get_alchemy_anchor_by_id(anchor_id):
             except Exception:
                 anchor['centroid'] = None
         return anchor
-    except Exception as e:
-        logger.error(f"Failed to fetch alchemy anchor id={anchor_id}: {e}")
+    except Exception:
+        logger.exception(f"Failed to fetch alchemy anchor id={anchor_id}")
         return None
     finally:
         cur.close()
@@ -1262,9 +1262,9 @@ def update_alchemy_anchor_name(anchor_id, name):
         if not row:
             return None
         return dict(row)
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to rename alchemy anchor id={anchor_id}: {e}")
+        logger.exception(f"Failed to rename alchemy anchor id={anchor_id}")
         return None
     finally:
         cur.close()
@@ -1379,9 +1379,9 @@ def save_map_projection(index_name, id_map, projection_array):
             logger.info(f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}")
         except Exception:
             logger.debug("Saved map projection but failed to compute size/id_count for log.")
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to save map projection: {e}")
+        logger.exception("Failed to save map projection")
         raise
 
 def load_artist_projection(index_name='artist_map', force_reload=False):
@@ -1413,8 +1413,8 @@ def load_artist_projection(index_name='artist_map', force_reload=False):
         ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': proj}
         logger.info(f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory.")
         return component_map, proj
-    except Exception as e:
-        logger.error(f"Failed to load artist projection: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to load artist projection")
         return None, None
     finally:
         cur.close()
@@ -1432,9 +1432,9 @@ def save_artist_projection(index_name, component_map, projections):
         cur.execute("INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP", (index_name, proj_blob, component_map_json))
         conn.commit()
         logger.info(f"Saved artist projection '{index_name}' with {len(component_map)} components to database.")
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error(f"Failed to save artist projection: {e}", exc_info=True)
+        logger.exception("Failed to save artist projection")
     finally:
         cur.close()
 
@@ -1454,8 +1454,8 @@ def update_playlist_table(playlists): # Removed db_path
             for item_id, title, author in cluster:
                 cur.execute("INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING", (name, item_id, title, author))
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logger.error("Error updating playlist table: %s", e)
+        logger.exception("Error updating playlist table")
     finally:
         cur.close()

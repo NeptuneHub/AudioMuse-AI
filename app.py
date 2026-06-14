@@ -761,7 +761,6 @@ def listen_for_index_reloads():
 # --- Blueprint Registration ---
 # Standard Flask factory pattern: blueprint imports are inside
 # this function so the eager import graph stays flat.
-from app_cron import run_due_cron_jobs
 
 
 def _register_blueprints(flask_app):
@@ -905,6 +904,7 @@ if not _is_worker:
   def _cron_manager_loop():
     try:
       from time import sleep
+      from app_cron import run_due_cron_jobs
       while True:
         try:
           with app.app_context():
