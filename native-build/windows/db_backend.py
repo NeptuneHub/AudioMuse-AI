@@ -151,16 +151,32 @@ def _harden_existing(data_dir, password, uri):
         logger.exception("Could not upgrade legacy PostgreSQL auth; leaving as-is")
 
 
+def _has_cluster_data(data_dir):
+    """True if data_dir holds a real PostgreSQL cluster that must never be auto-deleted."""
+    return (
+        os.path.exists(os.path.join(data_dir, "PG_VERSION"))
+        or os.path.exists(os.path.join(data_dir, "global", "pg_control"))
+        or os.path.isdir(os.path.join(data_dir, "base"))
+    )
+
+
 def _clear_stale_data_dir(data_dir):
     """``initdb`` refuses to run against a non-empty target directory.
 
     A crash mid-init -- or a partial cleanup of an earlier failed start -- can
     leave an un-initialized data dir behind (e.g. just a ``log/`` subdir) that
     has no ``PG_VERSION`` yet still makes the fresh ``initdb`` fail, bricking
-    every subsequent start. Wipe such leftovers before initializing.
+    every subsequent start. Wipe such leftovers before initializing -- but never
+    a dir that still holds a real cluster: surface an error instead of deleting.
     """
     if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
         return
+    if _has_cluster_data(data_dir):
+        raise RuntimeError(
+            f"Refusing to wipe {data_dir}: it contains an existing PostgreSQL "
+            "cluster (PG_VERSION/pg_control/base present). Back it up or remove it "
+            "manually if you really want a fresh start."
+        )
     import shutil
     logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)
     shutil.rmtree(data_dir, ignore_errors=True)
