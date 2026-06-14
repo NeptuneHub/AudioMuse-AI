@@ -22,6 +22,7 @@ same "no unauthenticated local access" guarantee, the cluster is initialized wit
 is never reachable without the password and there is no trust window.
 """
 
+import importlib
 import logging
 import os
 import subprocess
@@ -45,7 +46,7 @@ def _check_pgserver():
     global _USE_PGSERVER
     if _USE_PGSERVER is None:
         try:
-            import pgserver
+            importlib.import_module("pgserver")
             _USE_PGSERVER = True
             logger.info("Using pgserver for embedded PostgreSQL")
         except ImportError:

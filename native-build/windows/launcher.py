@@ -62,7 +62,6 @@ _os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
 import os
 import runpy
 import signal
-import subprocess
 import sys
 import threading
 import time

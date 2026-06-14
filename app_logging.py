@@ -26,6 +26,7 @@ it after filtering, so the full error is always visible in the log).
 
 import logging
 import re
+from typing import Any
 
 LOG_FORMAT = "[%(levelname)s]-[%(asctime)s]-%(message)s"
 LOG_DATEFMT = "%d-%m-%Y %H-%M-%S"
@@ -55,12 +56,13 @@ _EMOJI_RE = re.compile(
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0A-\x1F\x7F]")
 
 
-def _sanitize_log_text(text: str) -> str:
+def _sanitize_log_text(text: Any) -> Any:
     """Make *text* safe for a single console log line.
 
     Strips emoji/symbol characters (Windows code-page safety) and replaces CR/LF
     and other C0 control codes with a space so an attacker-controlled value
-    cannot forge or split log lines (CWE-117). Tabs are preserved.
+    cannot forge or split log lines (CWE-117). Tabs are preserved. Non-string
+    values (e.g. numeric ``logging`` args) are returned unchanged.
     """
     if not isinstance(text, str):
         return text
