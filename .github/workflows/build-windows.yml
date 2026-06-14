@@ -141,14 +141,18 @@ jobs:
       - name: Create zip for release
         run: |
           python -c "
-          import zipfile, pathlib
-          src = pathlib.Path('artifacts/AudioMuse-AI')
+          import zipfile, pathlib, sys
+          # upload-artifact strips the directory pointed at by 'path:', so the
+          # bundle's files land directly under artifacts/ (not artifacts/AudioMuse-AI/).
+          src = pathlib.Path('artifacts')
           out = 'AudioMuse-AI-amd64-windows.zip'
+          files = [f for f in sorted(src.rglob('*')) if f.is_file()]
+          if not files:
+              sys.exit('No files found under artifacts/ -- the build artifact is missing or empty; refusing to ship an empty zip')
           with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-              for f in sorted(src.rglob('*')):
-                  if f.is_file():
-                      zf.write(f, f.relative_to(src.parent).as_posix())
-          print(f'Created {out}')
+              for f in files:
+                  zf.write(f, 'AudioMuse-AI/' + f.relative_to(src).as_posix())
+          print(f'Created {out} with {len(files)} files')
           "
 
       - name: Attach packages to the release
