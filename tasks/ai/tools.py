@@ -327,10 +327,11 @@ def get_mcp_tools() -> List[Dict]:
         {
             "name": "knowledge_lookup",
             "description": (
-                "World-knowledge fallback. USE ONLY when the library can't surface the answer "
-                "via seed_search or search_database. Good for: 'Grammy winners 2020', "
-                "'#1 hits of 1985', 'songs sampled by Daft Punk', 'best festival anthems'. "
-                "Returns AI-suggested songs that are then matched against the library."
+                "Popularity / 'best of' / cultural requests that need world knowledge to "
+                "interpret: 'best rap of the 90s', '#1 hits of 1985', 'best festival anthems', "
+                "'Grammy winners 2020'. The model turns the request into a grounded search "
+                "recipe (genre/year/energy filters + 'how it sounds' descriptions + seed "
+                "artists) that is run against THIS library and fused. It never invents song titles."
             ),
             "inputSchema": {
                 "type": "object",

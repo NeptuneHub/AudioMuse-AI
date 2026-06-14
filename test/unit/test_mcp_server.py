@@ -3,7 +3,8 @@
 Tests cover MCP helper + tool functions:
 - get_library_context(): Library statistics with caching
 - _database_genre_query_sync(): Genre regex matching, filters, relevance scoring
-- _ai_brainstorm_sync(): Two-stage matching (exact + fuzzy normalized)
+- _extract_json_object() / _clamp_recipe(): brainstorm recipe parse + vocab clamp
+- _ai_brainstorm_sync(): grounded recipe -> fused retrieval channels (#643)
 - _song_similarity_api_sync(): Song lookup with exact/fuzzy fallback
 - Energy normalization in execute_mcp_tool()
 - Pre-execution validation (filterless search_database rejection)
@@ -533,60 +534,94 @@ class TestRerouteMoodLabelsFromGenres:
 
 
 # ---------------------------------------------------------------------------
-# ai_brainstorm normalization patterns (unit-testable without DB)
+# brainstorm recipe helpers (pure, no DB)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
-class TestBrainstormNormalization:
-    """Test the normalization logic used in _ai_brainstorm_sync."""
+class TestExtractJsonObject:
+    """_extract_json_object: recover ONE JSON object from messy model output."""
 
-    def _normalize(self, text):
-        """Reproduce the normalization from mcp_server."""
-        return (text.lower()
-                .replace(' ', '')
-                .replace('-', '')
-                .replace("'", '')
-                .replace('.', '')
-                .replace(',', ''))
+    def _fn(self):
+        return _import_mcp_impl()._extract_json_object
 
-    def test_lowercase(self):
-        assert self._normalize("Hello") == "hello"
+    def test_plain_object(self):
+        assert self._fn()('{"a": 1}') == {"a": 1}
 
-    def test_remove_spaces(self):
-        assert self._normalize("The Beatles") == "thebeatles"
+    def test_fenced_object(self):
+        assert self._fn()('```json\n{"a": 1}\n```') == {"a": 1}
 
-    def test_remove_dashes(self):
-        assert self._normalize("up-beat") == "upbeat"
+    def test_think_preamble_stripped(self):
+        assert self._fn()('<think>reasoning...</think>\n{"a": 2}') == {"a": 2}
 
-    def test_remove_apostrophes(self):
-        assert self._normalize("Don't Stop") == "dontstop"
+    def test_object_embedded_in_prose(self):
+        assert self._fn()('Sure, here: {"a": 3} hope it helps') == {"a": 3}
 
-    def test_remove_periods(self):
-        assert self._normalize("Mr. Jones") == "mrjones"
+    def test_array_is_rejected(self):
+        assert self._fn()('[{"a": 1}]') is None
 
-    def test_remove_commas(self):
-        assert self._normalize("Hello, World") == "helloworld"
+    def test_garbage_returns_none(self):
+        assert self._fn()('no json here at all') is None
 
-    def test_ac_dc_normalization(self):
-        """AC/DC normalizes consistently (slash not removed but spaces/dots are)."""
-        result = self._normalize("AC DC")
-        assert result == "acdc"
+    def test_empty_returns_none(self):
+        assert self._fn()('') is None
 
-    def test_complex_normalization(self):
-        assert self._normalize("Don't Stop Me Now") == "dontstopmenow"
 
-    def test_both_title_and_artist_required(self):
-        """Demonstrate that matching requires BOTH title and artist."""
-        title_norm = self._normalize("Bohemian Rhapsody")
-        artist_norm = self._normalize("Queen")
-        assert title_norm == "bohemianrhapsody"
-        assert artist_norm == "queen"
+@pytest.mark.unit
+class TestClampRecipe:
+    """_clamp_recipe: normalise a raw recipe to library-valid, bounded values."""
 
-    def test_same_title_different_artist_not_equal(self):
-        """Same title with different artist should not be considered same."""
-        t1 = self._normalize("Yesterday") + "|" + self._normalize("The Beatles")
-        t2 = self._normalize("Yesterday") + "|" + self._normalize("Some Cover Artist")
-        assert t1 != t2
+    def _fn(self):
+        return _import_mcp_impl()._clamp_recipe
+
+    def test_genres_clamped_to_vocab_case_and_punct_insensitive(self):
+        out = self._fn()({"filters": {"genres": ["hip hop", "ROCK", "not-a-genre"]}})
+        assert out["filters"]["genres"] == ["Hip-Hop", "rock"]
+
+    def test_moods_and_voices_clamped(self):
+        out = self._fn()({"filters": {"moods": ["Party", "bogus"], "voices": ["female vocalist"]}})
+        assert out["filters"]["moods"] == ["party"]
+        assert out["filters"]["voices"] == ["female vocalist"]
+
+    def test_year_range_reversed_is_swapped(self):
+        out = self._fn()({"filters": {"year_min": 2009, "year_max": 1990}})
+        assert out["filters"]["year_min"] == 1990
+        assert out["filters"]["year_max"] == 2009
+
+    def test_energy_clamped_then_swapped(self):
+        out = self._fn()({"filters": {"energy_min": 2.0, "energy_max": -1.0}})
+        assert out["filters"]["energy_min"] == 0.0
+        assert out["filters"]["energy_max"] == 1.0
+
+    def test_lists_deduped_and_capped(self):
+        import config as cfg
+        out = self._fn()({
+            "sound_descriptions": ["a", "a", "b", "c", "d", "e"],
+            "seed_artists": ["X", "x", "Y", "Z", "W", "V"],
+            "lyric_themes": ["t1", "t2", "t3"],
+        })
+        assert out["sound_descriptions"][:2] == ["a", "b"]
+        assert len(out["sound_descriptions"]) <= cfg.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX
+        assert len(out["seed_artists"]) <= cfg.AI_BRAINSTORM_SEED_ARTISTS_MAX
+        assert len(out["lyric_themes"]) <= cfg.AI_BRAINSTORM_LYRIC_THEMES_MAX
+
+    def test_missing_filters_yields_empty_defaults(self):
+        out = self._fn()({})
+        f = out["filters"]
+        assert f["genres"] == [] and f["moods"] == [] and f["voices"] == []
+        assert f["year_min"] is None and f["energy_max"] is None
+        assert out["sound_descriptions"] == [] and out["seed_artists"] == []
+
+    def test_non_list_fields_are_coerced(self):
+        out = self._fn()({"sound_descriptions": "just one", "filters": {"genres": "rock"}})
+        assert out["sound_descriptions"] == ["just one"]
+        assert out["filters"]["genres"] == ["rock"]
+
+    def test_seed_artists_suppressed_when_disabled(self):
+        mod = _import_mcp_impl()
+        import config as cfg
+        with patch.object(cfg, "AI_BRAINSTORM_USE_ARTIST_SEEDS", False):
+            out = mod._clamp_recipe({"seed_artists": ["Nas", "Jay-Z"]})
+        assert out["seed_artists"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -986,222 +1021,130 @@ class TestSongAlchemySync:
 
 @pytest.mark.unit
 class TestAiBrainstormSync:
-    """Tests for _ai_brainstorm_sync - AI knowledge brainstorming with two-stage matching."""
+    """_ai_brainstorm_sync emits a grounded recipe and fuses retrieval channels (#643)."""
 
-    def _make_ai_module(self, response="[]"):
+    def _make_ai_module(self, response):
         mock_mod = MagicMock()
         mock_mod.generate_text = Mock(return_value=response)
         return mock_mod
 
     def _make_ai_config(self):
-        return {
-            "provider": "gemini",
-            "gemini_key": "fake-key",
-            "gemini_model": "gemini-pro",
+        return {"provider": "gemini", "gemini_key": "fake-key", "gemini_model": "gemini-pro"}
+
+    def _recipe(self, **over):
+        base = {
+            "filters": {"genres": ["rock"]},
+            "sound_descriptions": ["driving guitar rock"],
+            "seed_artists": [],
+            "lyric_themes": [],
         }
+        base.update(over)
+        return json.dumps(base)
 
-    def _setup_cursor(self):
-        cur = MagicMock()
-        cur.__enter__ = Mock(return_value=cur)
-        cur.__exit__ = Mock(return_value=False)
-        cur.fetchall = Mock(return_value=[])
-        return cur
+    def _patch_channels(self, mod, audio=None, artist=None, lyrics=None, filt=None):
+        empty = {"songs": []}
+        return (
+            patch.object(mod, '_text_search_sync', return_value=audio if audio is not None else empty),
+            patch.object(mod, '_artist_similarity_api_sync', return_value=artist if artist is not None else empty),
+            patch.object(mod, '_lyrics_search_sync', return_value=lyrics if lyrics is not None else empty),
+            patch.object(mod, '_database_genre_query_sync', return_value=filt if filt is not None else empty),
+        )
 
-    def test_ai_error_response_returns_empty(self):
-        """AI returns 'Error: ...' -> result has empty songs."""
+    def test_ai_error_returns_empty(self):
+        """AI transport error -> empty songs, no channels touched."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
         ai_mod = self._make_ai_module("Error: API rate limit exceeded")
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
             result = mod._ai_brainstorm_sync("rock classics", self._make_ai_config(), 10)
-
         assert result["songs"] == []
-        assert "Error" in result["message"]
 
-    def test_valid_json_array_parsed(self):
-        """AI returns valid JSON array, DB finds matching rows."""
+    def test_unparseable_returns_empty_without_traceback(self):
+        """No JSON object recoverable -> empty + generic message (never a traceback)."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
+        ai_mod = self._make_ai_module("here are some great rock songs, but no json")
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
+            result = mod._ai_brainstorm_sync("rock", self._make_ai_config(), 10)
+        assert result["songs"] == []
+        assert "Traceback" not in result["message"]
 
-        ai_response = json.dumps([
-            {"title": "Bohemian Rhapsody", "artist": "Queen"},
-            {"title": "Stairway to Heaven", "artist": "Led Zeppelin"},
-        ])
-        ai_mod = self._make_ai_module(ai_response)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "100", "title": "Bohemian Rhapsody", "author": "Queen"}),
-            _make_dict_row({"item_id": "101", "title": "Stairway to Heaven", "author": "Led Zeppelin"}),
-        ])
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("classic rock", self._make_ai_config(), 10)
-
-        assert len(result["songs"]) == 2
-        titles = [s["title"] for s in result["songs"]]
-        assert "Bohemian Rhapsody" in titles
-
-    def test_markdown_code_blocks_stripped(self):
-        """AI response wrapped in ```json...``` is still parsed correctly."""
+    def test_recipe_drives_channels_and_fuses(self):
+        """Recipe runs audio + artist + filter channels and unions their results."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
+        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Nirvana"]))
+        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(
+            mod,
+            audio={"songs": [{"item_id": "1", "title": "A", "artist": "X"}]},
+            artist={"songs": [{"item_id": "2", "title": "B", "artist": "Nirvana"}]},
+            filt={"songs": [{"item_id": "3", "title": "C", "artist": "Z"}]},
+        )
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), \
+             p_audio as a, p_artist as ar, p_lyrics, p_filt as f:
+            result = mod._ai_brainstorm_sync("90s rock like Nirvana", self._make_ai_config(), 50)
+        ids = sorted(s["item_id"] for s in result["songs"])
+        assert ids == ["1", "2", "3"]
+        assert a.called and ar.called and f.called
 
-        ai_response = '```json\n[{"title": "Hey Jude", "artist": "The Beatles"}]\n```'
-        ai_mod = self._make_ai_module(ai_response)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "200", "title": "Hey Jude", "author": "The Beatles"}),
-        ])
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("beatles hits", self._make_ai_config(), 10)
-
+    def test_dedup_across_channels(self):
+        """The same item returned by several channels appears once."""
+        mod = _import_mcp_impl()
+        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Nirvana"]))
+        dup = {"songs": [{"item_id": "1", "title": "A", "artist": "X"}]}
+        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(mod, audio=dup, artist=dup, filt=dup)
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), p_audio, p_artist, p_lyrics, p_filt:
+            result = mod._ai_brainstorm_sync("x", self._make_ai_config(), 50)
         assert len(result["songs"]) == 1
-        assert result["songs"][0]["title"] == "Hey Jude"
 
-    def test_stage1_exact_match(self):
-        """AI suggests song in DB with exact title+artist -> found via stage 1."""
+    def test_get_songs_cap_respected(self):
+        """The fused pool never exceeds get_songs."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
+        ai_mod = self._make_ai_module(self._recipe())
+        many = {"songs": [{"item_id": str(i), "title": f"T{i}", "artist": f"A{i}"} for i in range(100)]}
+        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(mod, audio=many)
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), p_audio, p_artist, p_lyrics, p_filt:
+            result = mod._ai_brainstorm_sync("x", self._make_ai_config(), 10)
+        assert len(result["songs"]) == 10
 
-        ai_response = json.dumps([{"title": "Creep", "artist": "Radiohead"}])
-        ai_mod = self._make_ai_module(ai_response)
-
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "300", "title": "Creep", "author": "Radiohead"}),
-        ])
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("90s alternative", self._make_ai_config(), 10)
-
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "300"
-
-    def test_stage2_fuzzy_normalized_match(self):
-        """AI suggests 'Don't Stop Me Now' by 'Queen', DB has 'Dont Stop Me Now' -> fuzzy match."""
+    def test_float_get_songs_does_not_raise(self):
+        """Providers may send get_songs as a float (e.g. 50.0)."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
-
-        ai_response = json.dumps([{"title": "Don't Stop Me Now", "artist": "Queen"}])
-        ai_mod = self._make_ai_module(ai_response)
-
-        call_count = [0]
-
-        def _fetchall_side_effect():
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return []
-            else:
-                return [_make_dict_row({
-                    "item_id": "400",
-                    "title": "Dont Stop Me Now",
-                    "author": "Queen"
-                })]
-
-        cur.fetchall = Mock(side_effect=_fetchall_side_effect)
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("fun queen songs", self._make_ai_config(), 10)
-
-        assert len(result["songs"]) == 1
-        assert result["songs"][0]["item_id"] == "400"
-
-    def test_normalize_logic(self):
-        """Verify _normalize strips spaces, dashes, apostrophes, periods, commas."""
-        # Reproduce the normalization regex from _ai_brainstorm_sync
-        def _normalize(s):
-            return re.sub(r"[\s\-\u2010\u2011\u2012\u2013\u2014/'\".,!?()]", '', s).lower()
-
-        assert _normalize("Don't Stop Me Now") == "dontstopmenow"
-        assert _normalize("Mr. Jones") == "mrjones"
-        assert _normalize("Hello, World") == "helloworld"
-        assert _normalize("up-beat") == "upbeat"
-        assert _normalize("rock & roll") == "rock&roll"
-
-    def test_escape_like(self):
-        """_escape_like escapes % and _ characters."""
-        def _escape_like(s):
-            return s.replace('%', r'\%').replace('_', r'\_')
-
-        assert _escape_like("100%") == r"100\%"
-        assert _escape_like("under_score") == r"under\_score"
-        assert _escape_like("normal") == "normal"
-
-    def test_float_get_songs_converted_to_int(self):
-        """Passing get_songs=50.0 (Gemini float) should not raise."""
-        mod = _import_mcp_impl()
-        cur = self._setup_cursor()
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        ai_response = json.dumps([{"title": "Song", "artist": "Artist"}])
-        ai_mod = self._make_ai_module(ai_response)
-
-        cur.fetchall = Mock(return_value=[])
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
+        ai_mod = self._make_ai_module(self._recipe())
+        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(mod)
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), p_audio, p_artist, p_lyrics, p_filt:
             result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 50.0)
-
         assert "songs" in result
 
-    def test_invalid_json_returns_empty(self):
-        """AI returns non-JSON text -> result has empty songs."""
+    def test_year_gate_excludes_out_of_era_sound_results(self):
+        """A year in the recipe gates the sound channel: CLAP can surface any-era
+        songs, but only in-era ones survive (the #643 'best rap of the 90s' fix)."""
         mod = _import_mcp_impl()
-        cur = self._setup_cursor()
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
+        ai_mod = self._make_ai_module(json.dumps({
+            "filters": {"genres": ["rock"], "year_min": 1990, "year_max": 1999},
+            "sound_descriptions": ["driving guitar rock"],
+            "seed_artists": [],
+            "lyric_themes": [],
+        }))
+        audio = {"songs": [
+            {"item_id": "in", "title": "In Era", "artist": "X"},
+            {"item_id": "out", "title": "Out Era", "artist": "Y"},
+        ]}
+        in_era = {"in"}
 
-        ai_mod = self._make_ai_module("Here are some great rock songs that you might enjoy!")
+        def _db(*args, **kwargs):
+            cids = kwargs.get("candidate_item_ids")
+            if cids:
+                return {"songs": [s for s in audio["songs"] if s["item_id"] in cids and s["item_id"] in in_era]}
+            return {"songs": []}
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("rock", self._make_ai_config(), 10)
+        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), \
+             patch.object(mod, '_text_search_sync', return_value=audio), \
+             patch.object(mod, '_artist_similarity_api_sync', return_value={"songs": []}), \
+             patch.object(mod, '_lyrics_search_sync', return_value={"songs": []}), \
+             patch.object(mod, '_database_genre_query_sync', side_effect=_db):
+            result = mod._ai_brainstorm_sync("best rock of the 90s", self._make_ai_config(), 50)
 
-        assert result["songs"] == []
-        assert "parse" in result["message"].lower() or "Failed" in result["message"]
-
-    def test_results_trimmed_to_get_songs(self):
-        """AI suggests 30 songs, get_songs=10 -> only 10 returned."""
-        mod = _import_mcp_impl()
-        cur = self._setup_cursor()
-
-        suggestions = [
-            {"title": f"Song {i}", "artist": f"Artist {i}"} for i in range(30)
-        ]
-        ai_response = json.dumps(suggestions)
-        ai_mod = self._make_ai_module(ai_response)
-
-        exact_rows = [
-            _make_dict_row({"item_id": str(i), "title": f"Song {i}", "author": f"Artist {i}"})
-            for i in range(30)
-        ]
-        cur.fetchall = Mock(return_value=exact_rows)
-        conn = _make_connection(cur)
-        conn.cursor = Mock(return_value=cur)
-
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ai.api': ai_mod}):
-            result = mod._ai_brainstorm_sync("test", self._make_ai_config(), 10)
-
-        assert len(result["songs"]) <= 10
+        ids = {s["item_id"] for s in result["songs"]}
+        assert "in" in ids
+        assert "out" not in ids
 
 
 # ---------------------------------------------------------------------------

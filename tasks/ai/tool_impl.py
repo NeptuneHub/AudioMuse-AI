@@ -949,149 +949,304 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
         return {"songs": [], "message": f"lyrics_search error: {str(e)[:200]}"}
 
 
+def _extract_json_object(raw: str) -> Optional[Dict]:
+    """Best-effort recovery of a single JSON object from a model response.
+
+    Strips markdown code fences and any leading ``<think>...</think>`` preamble,
+    then parses the outermost ``{...}`` span. Returns the parsed dict, or ``None``
+    when no JSON object can be recovered.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if "</think>" in text:
+        text = text.split("</think>")[-1]
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0]
+    text = text.strip()
+    try:
+        whole = json.loads(text)
+        return whole if isinstance(whole, dict) else None
+    except (ValueError, TypeError):
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start:end + 1])
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _clamp_recipe(recipe: Dict) -> Dict:
+    """Normalise a raw brainstorm recipe to safe, library-valid values.
+
+    Clamps genres/moods/voices to the known vocab (case/punctuation-insensitive),
+    coerces numeric ranges into bounds and repairs reversed min/max, and caps the
+    list fields by their config limits. Always returns the full set of keys so the
+    executor never has to defend against missing fields.
+    """
+    import config
+
+    def _norm(s):
+        return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+    def _clamp_to_vocab(values, vocab):
+        canon = {_norm(v): v for v in vocab}
+        out, seen = [], set()
+        for v in values or []:
+            key = _norm(v)
+            if key and key in canon and key not in seen:
+                out.append(canon[key])
+                seen.add(key)
+        return out
+
+    def _as_list(v):
+        if isinstance(v, list):
+            return v
+        if v in (None, ""):
+            return []
+        return [v]
+
+    def _num(v, lo, hi):
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return None
+        return max(lo, min(hi, n))
+
+    def _clean_strings(values, cap):
+        out, seen = [], set()
+        for v in values or []:
+            s = str(v).strip()
+            key = s.lower()
+            if s and key not in seen:
+                out.append(s)
+                seen.add(key)
+            if len(out) >= cap:
+                break
+        return out
+
+    raw_filters = recipe.get("filters") if isinstance(recipe.get("filters"), dict) else {}
+
+    year_min = _num(raw_filters.get("year_min"), 1900, 2100)
+    year_max = _num(raw_filters.get("year_max"), 1900, 2100)
+    year_min = int(year_min) if year_min is not None else None
+    year_max = int(year_max) if year_max is not None else None
+    if year_min is not None and year_max is not None and year_min > year_max:
+        year_min, year_max = year_max, year_min
+
+    energy_min = _num(raw_filters.get("energy_min"), 0.0, 1.0)
+    energy_max = _num(raw_filters.get("energy_max"), 0.0, 1.0)
+    if energy_min is not None and energy_max is not None and energy_min > energy_max:
+        energy_min, energy_max = energy_max, energy_min
+
+    tempo_min = _num(raw_filters.get("tempo_min"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
+    tempo_max = _num(raw_filters.get("tempo_max"), config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM)
+    if tempo_min is not None and tempo_max is not None and tempo_min > tempo_max:
+        tempo_min, tempo_max = tempo_max, tempo_min
+
+    seed_artists = (
+        _clean_strings(_as_list(recipe.get("seed_artists")), config.AI_BRAINSTORM_SEED_ARTISTS_MAX)
+        if config.AI_BRAINSTORM_USE_ARTIST_SEEDS else []
+    )
+
+    return {
+        "filters": {
+            "genres": _clamp_to_vocab(_as_list(raw_filters.get("genres")), config.STRATIFIED_GENRES),
+            "moods": _clamp_to_vocab(_as_list(raw_filters.get("moods")), config.OTHER_FEATURE_LABELS),
+            "voices": _clamp_to_vocab(_as_list(raw_filters.get("voices")), config.VOICE_VOCAB),
+            "year_min": year_min,
+            "year_max": year_max,
+            "energy_min": energy_min,
+            "energy_max": energy_max,
+            "tempo_min": tempo_min,
+            "tempo_max": tempo_max,
+        },
+        "sound_descriptions": _clean_strings(
+            _as_list(recipe.get("sound_descriptions")), config.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX),
+        "seed_artists": seed_artists,
+        "lyric_themes": _clean_strings(
+            _as_list(recipe.get("lyric_themes")), config.AI_BRAINSTORM_LYRIC_THEMES_MAX),
+    }
+
+
 def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> Dict:
-    """Use AI to brainstorm songs from world knowledge for any free-form request."""
+    """Grounded brainstorm: the model emits a search RECIPE, not song titles.
+
+    The recipe (metadata filters + "how it sounds" descriptions + seed artists +
+    lyric themes) is executed against the real library through the existing
+    grounded channels (CLAP audio search, artist similarity, lyrics search,
+    metadata filter) and the results are fused. Small models recall specific songs
+    poorly but understand and categorise requests well, so this keeps the catalog
+    external to the model's weights (issue #643). Grounding happens inside this
+    tool, so the planner still returns the result as-is.
+    """
+    import config
     from tasks.ai.api import generate_text as _ai_generate_text
     from tasks.ai.prompts import build_ai_brainstorm_prompt
 
-    get_songs = int(get_songs) if get_songs is not None else 100
+    get_songs = int(get_songs) if get_songs is not None else 200
+    log_messages = [f"Brainstorming a grounded search recipe for: {user_request}"]
 
-    db_conn = get_db_connection()
-    log_messages = []
+    prompt = build_ai_brainstorm_prompt(user_request)
+    raw_response = _ai_generate_text(prompt, ai_config, skip_delay=True, max_tokens=1500)
+
+    if raw_response.startswith("Error:"):
+        logger.warning("Brainstorm AI call failed: %s", raw_response)
+        return {"songs": [], "message": "AI brainstorm failed; check the container logs."}
+
+    parsed = _extract_json_object(raw_response)
+    if parsed is None:
+        logger.warning("Brainstorm recipe parse failed. Raw response (first 2000 chars): %s", raw_response[:2000])
+        return {"songs": [], "message": "AI brainstorm could not produce a recipe; check the container logs."}
+
+    recipe = _clamp_recipe(parsed)
+    filt = recipe["filters"]
+
+    log_messages.append(
+        "Recipe: genres={g} moods={m} voices={v} year={y0}-{y1} energy={e0}-{e1} | "
+        "descriptions={nd} artists={na} lyric_themes={nl}".format(
+            g=filt["genres"] or "-", m=filt["moods"] or "-", v=filt["voices"] or "-",
+            y0=filt["year_min"] if filt["year_min"] is not None else "any",
+            y1=filt["year_max"] if filt["year_max"] is not None else "any",
+            e0=filt["energy_min"] if filt["energy_min"] is not None else "any",
+            e1=filt["energy_max"] if filt["energy_max"] is not None else "any",
+            nd=len(recipe["sound_descriptions"]), na=len(recipe["seed_artists"]),
+            nl=len(recipe["lyric_themes"]),
+        )
+    )
+
+    found_songs: List[Dict] = []
+    seen_ids: set = set()
+    seen_keys: set = set()
+
+    def _add_one(s):
+        iid = s.get("item_id")
+        if not iid or iid in seen_ids:
+            return False
+        key = (s.get("title", "").strip().lower(), s.get("artist", "").strip().lower())
+        if key in seen_keys:
+            return False
+        found_songs.append({
+            "item_id": iid,
+            "title": s.get("title", ""),
+            "artist": s.get("artist", ""),
+            "album": s.get("album", ""),
+        })
+        seen_ids.add(iid)
+        seen_keys.add(key)
+        return True
+
+    def _add_batch(songs, channel):
+        added = 0
+        for s in songs or []:
+            if len(found_songs) >= get_songs:
+                break
+            if _add_one(s):
+                added += 1
+        if added:
+            log_messages.append(f"   {channel}: +{added} (pool {len(found_songs)})")
+        return added
+
+    def _energy_to_raw(value):
+        return config.ENERGY_MIN + float(value) * (config.ENERGY_MAX - config.ENERGY_MIN)
+
+    def _year_gate(songs, year_min, year_max):
+        """Keep only songs whose release year is in range. Sound/artist channels
+        match on audio/similarity and cannot honor a release-year constraint, so a
+        request like '90s rap' would otherwise leak any-era songs. No-op when no
+        year is set."""
+        if year_min is None and year_max is None:
+            return songs or []
+        ids = [s.get("item_id") for s in (songs or []) if s.get("item_id")]
+        if not ids:
+            return []
+        gated = _database_genre_query_sync(
+            get_songs=len(ids), year_min=year_min, year_max=year_max, candidate_item_ids=ids,
+        )
+        return gated.get("songs") or []
+
+    def _run_filter(year_min, year_max, use_scored):
+        return _database_genre_query_sync(
+            genres=filt["genres"] or None,
+            get_songs=get_songs,
+            moods=(filt["moods"] or None) if use_scored else None,
+            tempo_min=filt["tempo_min"] if use_scored else None,
+            tempo_max=filt["tempo_max"] if use_scored else None,
+            energy_min=_energy_to_raw(filt["energy_min"]) if (use_scored and filt["energy_min"] is not None) else None,
+            energy_max=_energy_to_raw(filt["energy_max"]) if (use_scored and filt["energy_max"] is not None) else None,
+            year_min=year_min,
+            year_max=year_max,
+            voices=filt["voices"] or None,
+            score_threshold=config.AI_BRAINSTORM_GENRE_SCORE_THRESHOLD,
+        ).get("songs") or []
+
+    has_filter = bool(
+        filt["genres"] or filt["moods"] or filt["voices"]
+        or filt["year_min"] is not None or filt["year_max"] is not None
+        or filt["energy_min"] is not None or filt["energy_max"] is not None
+        or filt["tempo_min"] is not None or filt["tempo_max"] is not None
+    )
+    relax_anchor = bool(filt["genres"] or filt["year_min"] is not None or filt["year_max"] is not None)
+    ymin, ymax = filt["year_min"], filt["year_max"]
 
     try:
-        log_messages.append(f"Using AI knowledge to brainstorm songs for: {user_request}")
+        channels = []
+        for i, desc in enumerate(recipe["sound_descriptions"]):
+            songs = _year_gate(_text_search_sync(desc, None, None, get_songs).get("songs"), ymin, ymax)
+            if songs:
+                channels.append((f"audio#{i + 1}", songs))
+        for art in recipe["seed_artists"]:
+            raw = _artist_similarity_api_sync(art, config.AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED, get_songs)
+            songs = _year_gate(raw.get("songs"), ymin, ymax)
+            if songs:
+                channels.append((f"artist:{art}", songs))
+        for i, theme in enumerate(recipe["lyric_themes"]):
+            songs = _year_gate(_lyrics_search_sync(theme, get_songs).get("songs"), ymin, ymax)
+            if songs:
+                channels.append((f"lyrics#{i + 1}", songs))
+        if has_filter:
+            fsongs = _run_filter(ymin, ymax, use_scored=True)
+            if fsongs:
+                channels.append(("filter", fsongs))
 
-        prompt = build_ai_brainstorm_prompt(user_request)
+        cursors = [0] * len(channels)
+        added_per = [0] * len(channels)
+        progressing = True
+        while len(found_songs) < get_songs and progressing:
+            progressing = False
+            for ci, (_label, songs) in enumerate(channels):
+                while cursors[ci] < len(songs):
+                    s = songs[cursors[ci]]
+                    cursors[ci] += 1
+                    if _add_one(s):
+                        added_per[ci] += 1
+                        progressing = True
+                        break
+                if len(found_songs) >= get_songs:
+                    break
+        for ci, (label, _songs) in enumerate(channels):
+            if added_per[ci]:
+                log_messages.append(f"   {label}: +{added_per[ci]}")
 
-        raw_response = _ai_generate_text(prompt, ai_config, skip_delay=True)
+        floor = min(get_songs, config.AI_BRAINSTORM_POOL_FLOOR)
+        if len(found_songs) < floor and relax_anchor:
+            log_messages.append(f"   pool under floor ({len(found_songs)} < {floor}); relaxing")
+            pad = config.AI_BRAINSTORM_RELAX_YEAR_PAD
+            rmin = (ymin - pad) if ymin is not None else None
+            rmax = (ymax + pad) if ymax is not None else None
+            _add_batch(_run_filter(rmin, rmax, use_scored=False), "relax:filter")
+            if len(found_songs) < floor and filt["genres"]:
+                relaxed = _text_search_sync(", ".join(filt["genres"]) + " music", None, None, get_songs).get("songs")
+                _add_batch(_year_gate(relaxed, rmin, rmax), "relax:audio")
+    except Exception:
+        logger.exception("Brainstorm channel execution failed")
 
-        if raw_response.startswith("Error:"):
-            return {"songs": [], "message": f"AI Error: {raw_response}"}
-
-        try:
-            cleaned = raw_response.strip()
-
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json")[1].split("```")[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```")[1].split("```")[0]
-
-            cleaned = cleaned.strip()
-
-            if "[" in cleaned and "]" in cleaned:
-                start = cleaned.find("[")
-                end = cleaned.rfind("]") + 1
-                cleaned = cleaned[start:end]
-
-            cleaned = cleaned.replace("'\'", '"')
-
-            song_list = json.loads(cleaned)
-
-            if not isinstance(song_list, list):
-                raise ValueError("Response is not a JSON array")
-
-            log_messages.append(f"AI suggested {len(song_list)} songs")
-        except Exception as e:
-            log_messages.append(f"Failed to parse AI response: {str(e)}")
-            log_messages.append(f"Raw AI response (first 500 chars): {raw_response[:500]}")
-            return {"songs": [], "message": "\n".join(log_messages)}
-
-        found_songs = []
-        seen_ids = set()
-
-        def _normalize(s: str) -> str:
-            return re.sub(r"[\s\-\u2010\u2011\u2012\u2013\u2014/'\".,!?()]", '', s).lower()
-
-        def _escape_like(s: str) -> str:
-            return s.replace('%', r'\%').replace('_', r'\_')
-
-        valid_items = [(item.get('title', ''), item.get('artist', ''))
-                       for item in song_list
-                       if item.get('title') and item.get('artist')]
-
-        stage2_items = []
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            if valid_items:
-                values_params = []
-                for title, artist in valid_items:
-                    values_params.extend([title.lower(), artist.lower()])
-                values_clause = ', '.join(['(%s, %s)'] * len(valid_items))
-                cur.execute(f"""
-                    SELECT item_id, title, author, album
-                    FROM public.score
-                    WHERE (LOWER(title), LOWER(author)) IN (VALUES {values_clause})
-                """, values_params)
-                exact_rows = cur.fetchall()
-
-                exact_match_map = {}
-                for row in exact_rows:
-                    key = (row['title'].lower(), row['author'].lower())
-                    if key not in exact_match_map:
-                        exact_match_map[key] = row
-
-                stage2_items = []
-                for title, artist in valid_items:
-                    key = (title.lower(), artist.lower())
-                    result = exact_match_map.get(key)
-                    if result and result['item_id'] not in seen_ids:
-                        found_songs.append({
-                            "item_id": result['item_id'],
-                            "title": result['title'],
-                            "artist": result['author'],
-                            "album": result.get('album', '')
-                        })
-                        seen_ids.add(result['item_id'])
-                    elif not result:
-                        stage2_items.append((title, artist))
-
-            if stage2_items:
-                or_conditions = []
-                fuzzy_params = []
-                fuzzy_lookup_order = []
-                for title, artist in stage2_items:
-                    title_norm = _normalize(title)
-                    artist_norm = _normalize(artist)
-                    if title_norm and artist_norm:
-                        or_conditions.append("""(
-                            LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
-                                LIKE LOWER(%s)
-                            AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '''', ''), '.', ''), ',', ''))
-                                LIKE LOWER(%s)
-                        )""")
-                        fuzzy_params.extend([f"%{_escape_like(title_norm)}%", f"%{_escape_like(artist_norm)}%"])
-                        fuzzy_lookup_order.append((title_norm, artist_norm))
-
-                if or_conditions:
-                    where_clause = ' OR '.join(or_conditions)
-                    cur.execute(f"""
-                        SELECT item_id, title, author, album
-                        FROM public.score
-                        WHERE {where_clause}
-                        ORDER BY LENGTH(title) + LENGTH(author)
-                    """, fuzzy_params)
-                    fuzzy_rows = cur.fetchall()
-
-                    for row in fuzzy_rows:
-                        if row['item_id'] not in seen_ids:
-                            db_title_norm = _normalize(row['title'])
-                            db_artist_norm = _normalize(row['author'])
-                            for t_norm, a_norm in fuzzy_lookup_order:
-                                if t_norm in db_title_norm and a_norm in db_artist_norm:
-                                    found_songs.append({
-                                        "item_id": row['item_id'],
-                                        "title": row['title'],
-                                        "artist": row['author'],
-                                        "album": row.get('album', '')
-                                    })
-                                    seen_ids.add(row['item_id'])
-                                    fuzzy_lookup_order.remove((t_norm, a_norm))
-                                    break
-
-        found_songs = found_songs[:get_songs]
-
-        log_messages.append(f"Found {len(found_songs)} songs in database (from {len(song_list)} AI suggestions)")
-
-        return {"songs": found_songs, "ai_suggestions": len(song_list), "message": "\n".join(log_messages)}
-    finally:
-        db_conn.close()
+    found_songs = found_songs[:get_songs]
+    log_messages.append(f"Brainstorm fused {len(found_songs)} library songs")
+    return {"songs": found_songs, "message": "\n".join(log_messages)}

@@ -664,6 +664,17 @@ ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
 PLAYLIST_ENERGY_ARC = os.environ.get("PLAYLIST_ENERGY_ARC", "False").lower() == "true"
+
+# --- Instant Playlist AI Brainstorm ---
+AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX = int(os.environ.get("AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX", "3"))
+AI_BRAINSTORM_SEED_ARTISTS_MAX = int(os.environ.get("AI_BRAINSTORM_SEED_ARTISTS_MAX", "4"))
+AI_BRAINSTORM_USE_ARTIST_SEEDS = os.environ.get("AI_BRAINSTORM_USE_ARTIST_SEEDS", "true").lower() == "true"
+AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED = int(os.environ.get("AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED", "8"))
+AI_BRAINSTORM_LYRIC_THEMES_MAX = int(os.environ.get("AI_BRAINSTORM_LYRIC_THEMES_MAX", "2"))
+AI_BRAINSTORM_GENRE_SCORE_THRESHOLD = float(os.environ.get("AI_BRAINSTORM_GENRE_SCORE_THRESHOLD", "0.3"))
+AI_BRAINSTORM_POOL_FLOOR = int(os.environ.get("AI_BRAINSTORM_POOL_FLOOR", "40"))
+AI_BRAINSTORM_RELAX_YEAR_PAD = int(os.environ.get("AI_BRAINSTORM_RELAX_YEAR_PAD", "5"))
+
 # --- Authentication ---
 # Set all three to enable authentication. Leave any blank to disable (legacy mode).
 AUDIOMUSE_USER = os.environ.get("AUDIOMUSE_USER", "")
