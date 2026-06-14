@@ -512,7 +512,12 @@ def call_with_tools_ollama(
             valid_calls = []
             for tc in tool_calls:
                 if isinstance(tc, dict) and "name" in tc:
-                    if "arguments" not in tc or not isinstance(tc["arguments"], dict):
+                    if "arguments" not in tc:
+                        tc["arguments"] = {}
+                    elif not isinstance(tc["arguments"], dict):
+                        log_messages.append(
+                            f"Coerced non-dict arguments for tool '{tc['name']}' to empty dict"
+                        )
                         tc["arguments"] = {}
                     args = tc["arguments"]
                     keys_to_remove = []

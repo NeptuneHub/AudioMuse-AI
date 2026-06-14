@@ -50,10 +50,13 @@ _EMOJI_RE = re.compile(
     "]+"
 )
 
-# C0 control codes plus DEL, EXCEPT tab (0x09). Includes LF (0x0A) and CR (0x0D):
-# replacing these with a space prevents a value with embedded newlines from
-# forging additional log lines.
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0A-\x1F\x7F]")
+# Control codes plus DEL and the Unicode line/paragraph separators, EXCEPT tab
+# (0x09). Includes LF (0x0A), CR (0x0D), NEL (U+0085), LINE SEPARATOR (U+2028)
+# and PARAGRAPH SEPARATOR (U+2029): replacing these with a space prevents a
+# value with an embedded line break from forging additional log lines, including
+# for consumers (and Windows code-pages) that treat the Unicode separators as
+# line boundaries.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0A-\x1F\x7F\x85" + chr(0x2028) + chr(0x2029) + "]")
 
 
 def _sanitize_log_text(text: Any) -> Any:

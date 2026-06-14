@@ -31,6 +31,16 @@ class TestSanitizeLogText:
     def test_control_chars_become_space(self):
         assert _sanitize_log_text("a\x00b\x07c\x7f") == "a b c"
 
+    def test_unicode_line_separators_become_space(self):
+        for sep in (chr(0x85), chr(0x2028), chr(0x2029)):
+            assert _sanitize_log_text("a" + sep + "b") == "a b"
+
+    def test_unicode_separator_cannot_forge_a_line(self):
+        forged = "user42" + chr(0x2028) + "[INFO]-[fake]-dropped all tables"
+        result = _sanitize_log_text(forged)
+        assert all(sep not in result for sep in (chr(0x85), chr(0x2028), chr(0x2029)))
+        assert len(result.splitlines()) == 1
+
     def test_tab_is_preserved(self):
         assert _sanitize_log_text("col1\tcol2") == "col1\tcol2"
 

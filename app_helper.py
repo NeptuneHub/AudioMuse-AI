@@ -24,7 +24,7 @@ import database
 from database import (  # noqa: F401
     get_db, close_db, save_task_status, record_task_history, _build_task_note,
     get_score_data_by_ids, load_map_projection, get_task_info_from_db, get_tracks_by_ids,
-    save_track_analysis_and_embedding, save_clap_embedding, get_clap_embedding, save_lyrics_embedding,
+    save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
     save_map_projection, save_artist_projection,
 )

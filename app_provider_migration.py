@@ -66,7 +66,7 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion'})
 
 # ---------------------------------------------------------------------------
 # SSRF guard for the user-supplied media-server URL. Delegates to the shared
-# ``app_helper.validate_outbound_url`` (allows LAN/loopback, blocks non-HTTP(S)
+# ``ssrf_guard.validate_outbound_url`` (allows LAN/loopback, blocks non-HTTP(S)
 # schemes and link-local/cloud-metadata). A missing url is allowed and left to
 # the downstream probe.
 # ---------------------------------------------------------------------------
