@@ -1132,12 +1132,12 @@ def get_last_played_time(item_id):
 def get_lyrics(track_id: str, timeout: float = 2.5):
     """Fetch embedded lyrics from Lyrion (LMS) for a given track ID.
 
-    Uses the LMS JSON-RPC ``songinfo`` command with the ``l`` (lyrics) tag.
+    Uses the LMS JSON-RPC ``songinfo`` command with the ``w`` (lyrics) tag.
     Returns plain text or None.
     """
     try:
         result = _jsonrpc_request(
-            'songinfo', [0, 100, f'track_id:{track_id}', 'tags:l'],
+            'songinfo', [0, 100, f'track_id:{track_id}', 'tags:w'],
             timeout=timeout,
         )
         if not result:
