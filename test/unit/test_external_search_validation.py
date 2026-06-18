@@ -1,6 +1,6 @@
 """Validation tests for the external /search endpoint in app_external.
 
-The heavy ``tasks.voyager_manager`` import is stubbed at module load so the
+The heavy ``tasks.ivf_manager`` import is stubbed at module load so the
 endpoint checks stay fast and hermetic; the backend search function is patched
 per test so no database is touched.
 """
@@ -15,9 +15,9 @@ from flask import Flask
 def _import_app_external():
     if 'app_external' in sys.modules:
         return sys.modules['app_external']
-    fake_vm = types.ModuleType('tasks.voyager_manager')
+    fake_vm = types.ModuleType('tasks.ivf_manager')
     fake_vm.search_tracks_unified = MagicMock(return_value=[])
-    stubs = {'tasks.voyager_manager': fake_vm}
+    stubs = {'tasks.ivf_manager': fake_vm}
     if 'tasks' not in sys.modules:
         stubs['tasks'] = types.ModuleType('tasks')
     with patch.dict(sys.modules, stubs):

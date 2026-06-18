@@ -129,11 +129,11 @@ def _run_all_index_builds(log_fn=None):
     lyrics or SemGrove builds are running).
 
     The index-builder modules are imported here rather than at module top so
-    that importing ``tasks.analysis`` does not pull in the voyager / CLAP /
+    that importing ``tasks.analysis`` does not pull in the ivf / CLAP /
     lyrics / SemGrove / artist-GMM subsystems; they are only needed when a
     rebuild actually runs.
     """
-    from .voyager_manager import build_and_store_voyager_index
+    from .ivf_manager import build_and_store_ivf_index
     from .clap_text_search import build_and_store_clap_index
     from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from .sem_grove_manager import build_and_store_sem_grove_index
@@ -157,9 +157,9 @@ def _run_all_index_builds(log_fn=None):
 
     if log_fn:
         log_fn("Performing final index rebuild...", 95)
-    _step("Voyager index rebuilt",
-          lambda: build_and_store_voyager_index(get_db()),
-          progress=95, banner="Building Voyager audio index...",
+    _step("IVF index rebuilt",
+          lambda: build_and_store_ivf_index(get_db()),
+          progress=95, banner="Building IVF audio index...",
           fatal=True)
     _step("CLAP text search index",
           lambda: build_and_store_clap_index(get_db()),

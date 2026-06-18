@@ -6,7 +6,7 @@ providers (including migrating a provider to itself):
 
   1. build a small library exactly as the SOURCE provider's score rows look
      (provider-specific item_id + file_path), seed it into a real ``score``
-     table plus the embedding / voyager / map-projection / artist tables the
+     table plus the embedding / ivf / map-projection / artist tables the
      migration touches,
   2. build the same library as the TARGET provider's probe would return it,
   3. run the real ``tasks.provider_migration_matcher.match_tracks`` to produce
@@ -16,7 +16,7 @@ providers (including migrating a provider to itself):
      ``tasks.provider_migration_tasks.execute_provider_migration`` job (the
      transactional id rewrite),
   5. assert the database ended up correct: item_ids rewritten, embeddings
-     followed through the FK cascade, the orphan deleted, voyager / map
+     followed through the FK cascade, the orphan deleted, ivf / map
      id_maps rewritten, provider-specific artist tables cleared, ``app_config``
      updated with the target provider's credentials, and the session marked
      completed.
@@ -266,7 +266,7 @@ def migration_db(pg_dsn):
 
 def _insert_segmented_index(cur, table, binary_col, base, id_map_json, dim, n_parts=3):
     """Write ``id_map_json`` split across ``n_parts`` rows, mimicking the
-    large-library layout produced by ``store_voyager_index_segmented`` (each
+    large-library layout produced by ``store_ivf_index_segmented`` (each
     row holds a partial-JSON fragment; the binary lives on part 1)."""
     step = max(1, -(-len(id_map_json) // n_parts))
     frags = [id_map_json[i:i + step] for i in range(0, len(id_map_json), step)]
@@ -290,11 +290,11 @@ def _reassemble_id_map(parts):
 def _seed_library(conn, source_rendered, segmented=False):
     """Insert the source library into every table the migration rewrites.
 
-    With ``segmented=True`` the voyager / map-projection id_maps are written
+    With ``segmented=True`` the ivf / map-projection id_maps are written
     split across part rows (the >~1M-song layout) instead of as a single row.
     """
     src_ids = [r['id'] for r in source_rendered]
-    voyager_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
+    ivf_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
     projection_map = json.dumps(src_ids)
     with conn.cursor() as cur:
         for index, r in enumerate(source_rendered):
@@ -308,14 +308,14 @@ def _seed_library(conn, source_rendered, segmented=False):
                 cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
         if segmented:
             _insert_segmented_index(cur, 'voyager_index_data', 'index_data',
-                                    'voyager_main', voyager_map, 128)
+                                    'ivf_main', ivf_map, 128)
             _insert_segmented_index(cur, 'map_projection_data', 'projection_data',
                                     'map_main', projection_map, 2)
         else:
             cur.execute(
                 "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, "
                 "embedding_dimension) VALUES (%s, %s, %s, %s)",
-                ('voyager_main', psycopg2.Binary(b'\x00'), voyager_map, 128),
+                ('ivf_main', psycopg2.Binary(b'\x00'), ivf_map, 128),
             )
             cur.execute(
                 "INSERT INTO map_projection_data (index_name, projection_data, "
@@ -467,10 +467,10 @@ def test_real_provider_migration(source, target, migration_db):
                 f"(orphan cascade-delete + id remap)\n  want {new_ids}\n  got {ids}"
             )
 
-        cur.execute("SELECT id_map_json FROM voyager_index_data WHERE index_name = 'voyager_main'")
-        voyager_map = json.loads(cur.fetchone()[0])
-        assert set(voyager_map.values()) == new_ids
-        assert orphan_id not in voyager_map.values()
+        cur.execute("SELECT id_map_json FROM voyager_index_data WHERE index_name = 'ivf_main'")
+        ivf_map = json.loads(cur.fetchone()[0])
+        assert set(ivf_map.values()) == new_ids
+        assert orphan_id not in ivf_map.values()
 
         cur.execute("SELECT id_map_json FROM map_projection_data WHERE index_name = 'map_main'")
         proj_map = json.loads(cur.fetchone()[0])
@@ -498,9 +498,9 @@ def test_real_provider_migration(source, target, migration_db):
 
 @pytest.mark.integration
 def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
-    """Regression: a SEGMENTED voyager / map id_map must be rewritten end to end.
+    """Regression: a SEGMENTED ivf / map id_map must be rewritten end to end.
 
-    ``store_voyager_index_segmented`` splits ``id_map_json`` across part rows
+    ``store_ivf_index_segmented`` splits ``id_map_json`` across part rows
     once a library is large enough (~1M+ songs), so every segmented row holds a
     partial-JSON fragment. The migration must reassemble + rewrite + re-split;
     the previous per-row ``json.loads`` left every fragment untouched, leaving
@@ -568,12 +568,12 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
     verify = migration_db['connect']()
     with verify.cursor() as cur:
         cur.execute("SELECT index_name, id_map_json FROM voyager_index_data")
-        vparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^voyager_main_\d+_\d+$', n)]
-        assert len(vparts) >= 2, "voyager index must actually be segmented in this test"
-        voyager_map = json.loads(_reassemble_id_map(vparts))
-        assert set(voyager_map.values()) == new_ids
-        assert not (set(voyager_map.values()) & old_ids), "no stale old-provider ids may remain"
-        assert orphan_id not in voyager_map.values()
+        vparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^ivf_main_\d+_\d+$', n)]
+        assert len(vparts) >= 2, "ivf index must actually be segmented in this test"
+        ivf_map = json.loads(_reassemble_id_map(vparts))
+        assert set(ivf_map.values()) == new_ids
+        assert not (set(ivf_map.values()) & old_ids), "no stale old-provider ids may remain"
+        assert orphan_id not in ivf_map.values()
 
         cur.execute("SELECT index_name, id_map_json FROM map_projection_data")
         pparts = [(n, j) for n, j in cur.fetchall() if re.match(r'^map_main_\d+_\d+$', n)]
@@ -583,7 +583,7 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
         assert proj_map[-1] is None, "orphan slot must become None"
         assert set(v for v in proj_map if v is not None) == new_ids
     verify.close()
-    print(f"  ok (segmented): {len(vparts)} voyager parts reassembled + rewritten -> {target}")
+    print(f"  ok (segmented): {len(vparts)} ivf parts reassembled + rewritten -> {target}")
 
 
 def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
@@ -591,7 +591,7 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
     failure: the migration still commits, the stale index is dropped, and
     ``index_rebuild_needed`` is flagged so the UI can ask for a re-analysis.
 
-    Forced by shrinking ``VOYAGER_MAX_PART_SIZE_MB`` to 0 so the rewritten
+    Forced by shrinking ``IVF_MAX_PART_SIZE_MB`` to 0 so the rewritten
     id_map needs far more part rows than the seeded index has, which is exactly
     the condition ``rewrite_segmented_id_map`` raises ``ValueError`` for.
     """
@@ -647,12 +647,12 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
     _seed_library(conn, source_rendered, segmented=True)
     session_id = _insert_session(conn, source, target, matches, new_meta)
 
-    saved_max_part = config.VOYAGER_MAX_PART_SIZE_MB
-    config.VOYAGER_MAX_PART_SIZE_MB = 0
+    saved_max_part = config.IVF_MAX_PART_SIZE_MB
+    config.IVF_MAX_PART_SIZE_MB = 0
     try:
         result = mig.execute_provider_migration(session_id)
     finally:
-        config.VOYAGER_MAX_PART_SIZE_MB = saved_max_part
+        config.IVF_MAX_PART_SIZE_MB = saved_max_part
 
     assert result['ok'] is True
     assert result['matched'] == len(SHARED_TRACKS)
@@ -661,7 +661,7 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
     verify = migration_db['connect']()
     with verify.cursor() as cur:
         cur.execute("SELECT count(*) FROM voyager_index_data")
-        assert cur.fetchone()[0] == 0, "stale voyager index must be dropped, not left corrupt"
+        assert cur.fetchone()[0] == 0, "stale ivf index must be dropped, not left corrupt"
         cur.execute("SELECT count(*) FROM map_projection_data")
         assert cur.fetchone()[0] == 0, "stale map projection must be dropped, not left corrupt"
 

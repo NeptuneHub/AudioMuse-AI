@@ -3,7 +3,7 @@
 SQL is parameterized today; these tests fail loudly if a future refactor ever
 interpolates a user-controlled value into the query string. They assert that
 the user string is passed in the params tuple and never appears inside the
-executed SQL text. The heavy ``tasks.voyager_manager`` import is stubbed so the
+executed SQL text. The heavy ``tasks.ivf_manager`` import is stubbed so the
 request-facing endpoint checks stay fast and hermetic.
 """
 import importlib.util
@@ -26,9 +26,9 @@ def _repo_path(*parts):
 def _import_app_external():
     if 'app_external' in sys.modules:
         return sys.modules['app_external']
-    fake_vm = types.ModuleType('tasks.voyager_manager')
+    fake_vm = types.ModuleType('tasks.ivf_manager')
     fake_vm.search_tracks_unified = MagicMock(return_value=[])
-    stubs = {'tasks.voyager_manager': fake_vm}
+    stubs = {'tasks.ivf_manager': fake_vm}
     if 'tasks' not in sys.modules:
         stubs['tasks'] = types.ModuleType('tasks')
     with patch.dict(sys.modules, stubs):
@@ -134,10 +134,10 @@ class TestToolImplInClauseParameterized:
         conn = MagicMock()
         conn.cursor.return_value = cur
 
-        fake_vm = types.ModuleType('tasks.voyager_manager')
+        fake_vm = types.ModuleType('tasks.ivf_manager')
         fake_vm.find_nearest_neighbors_by_id = MagicMock(
             return_value=[{'item_id': s} for s in similar_ids + [seed_id]])
-        vm_stubs = {'tasks.voyager_manager': fake_vm}
+        vm_stubs = {'tasks.ivf_manager': fake_vm}
         if 'tasks' not in sys.modules:
             vm_stubs['tasks'] = types.ModuleType('tasks')
 

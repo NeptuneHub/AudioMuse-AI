@@ -3,12 +3,12 @@ Lyrics Search Manager
 Provides in-memory caching and fast search for lyrics analysis results.
 
 Mirrors the architecture of tasks/clap_text_search.py:
-- Persists a voyager HNSW index over per-song lyrics embeddings
+- Persists a ivf HNSW index over per-song lyrics embeddings
   (gte-multilingual-base, 768-dim) into the chunked ``lyrics_index_data`` table.
 - Loads the index back at Flask startup and keeps it as a module-level
   singleton.
 - Caches per-song axis_vector (BYTEA float32, fixed order over MUSIC_ANALYSIS_AXES)
-  loaded as a separate voyager HNSW index for fast slider/radio search.
+  loaded as a separate ivf HNSW index for fast slider/radio search.
 - Exposes two search entry points:
     * search_by_axes(targets, limit) for the basic axis-slider tab
     * search_by_text(query, limit) for the open free-form text tab
@@ -27,16 +27,16 @@ logger = logging.getLogger(__name__)
 
 # Global in-memory caches.
 _LYRICS_INDEX_CACHE = {
-    'index': None,            # voyager.Index
-    'id_map': None,           # {voyager_int_id: item_id_str}
-    'reverse_id_map': None,   # {item_id_str: voyager_int_id}
+    'index': None,            # ivf.Index
+    'id_map': None,           # {vec_int_id: item_id_str}
+    'reverse_id_map': None,   # {item_id_str: vec_int_id}
     'loaded': False,
 }
 
 _LYRICS_AXIS_CACHE = {
-    'index': None,            # voyager.Index over the binary-friendly axis vectors
-    'id_map': None,           # {voyager_int_id: item_id_str}
-    'reverse_id_map': None,   # {item_id_str: voyager_int_id}
+    'index': None,            # ivf.Index over the binary-friendly axis vectors
+    'id_map': None,           # {vec_int_id: item_id_str}
+    'reverse_id_map': None,   # {item_id_str: vec_int_id}
     'axis_columns': None,     # list[(axis_name, label)] aligned with the vector columns
     'metadata': None,         # {item_id: {title, author}}
     'loaded': False,
@@ -59,13 +59,13 @@ def _axis_columns_from_axes() -> List[tuple]:
 
 
 # ---------------------------------------------------------------------------
-# Voyager index: build and persist
+# IVF index: build and persist
 # ---------------------------------------------------------------------------
 
 def build_and_store_lyrics_index(db_conn=None) -> bool:
-    """Build a voyager index from stored lyrics embeddings and persist it."""
+    """Build a ivf index from stored lyrics embeddings and persist it."""
     from app_helper import get_db
-    from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, VOYAGER_METRIC
+    from config import LYRICS_ENABLED, LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
     if not LYRICS_ENABLED:
@@ -82,18 +82,18 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
         dim=LYRICS_EMBEDDING_DIMENSION,
         target_table="lyrics_index_data",
         index_name="lyrics_index",
-        metric=VOYAGER_METRIC,
+        metric=IVF_METRIC,
         where_clause="embedding IS NOT NULL",
         label="lyrics",
     )
 
 
 # ---------------------------------------------------------------------------
-# Axes voyager index: build and persist (~27-dim Cosine)
+# Axes ivf index: build and persist (~27-dim Cosine)
 # ---------------------------------------------------------------------------
 
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
-    """Build a voyager index from the per-song axis_scores flattened to a fixed-order vector."""
+    """Build a ivf index from the per-song axis_scores flattened to a fixed-order vector."""
     from app_helper import get_db
     from config import LYRICS_ENABLED
     from .index_build_helpers import build_and_store_index_streaming
@@ -125,19 +125,19 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Voyager index: load
+# IVF index: load
 # ---------------------------------------------------------------------------
 
 def _load_lyrics_index_from_db() -> bool:
-    """Load persisted voyager index for lyrics from the DB into the global cache."""
+    """Load persisted ivf index for lyrics from the DB into the global cache."""
     from app_helper import get_db
-    from config import LYRICS_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
-    from .index_build_helpers import load_voyager_index_from_db
+    from config import LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
+    from .paged_ivf import load_index_auto
 
     try:
-        loaded = load_voyager_index_from_db(
-            get_db(), 'lyrics_index_data', 'lyrics_index',
-            LYRICS_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, label='lyrics',
+        loaded = load_index_auto(
+            get_db(), 'lyrics_index',
+            LYRICS_EMBEDDING_DIMENSION, IVF_METRIC, label='lyrics',
         )
         if loaded is None:
             return False
@@ -156,22 +156,21 @@ def _load_lyrics_index_from_db() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Axes voyager index: load
+# Axes ivf index: load
 # ---------------------------------------------------------------------------
 
 def _load_lyrics_axes_index_from_db() -> bool:
-    """Load persisted voyager index for the lyrics axis vectors."""
+    """Load persisted ivf index for the lyrics axis vectors."""
     from app_helper import get_db
-    from config import VOYAGER_QUERY_EF
-    from .index_build_helpers import load_voyager_index_from_db
+    from .paged_ivf import load_index_auto
 
     columns = _axis_columns_from_axes()
     expected_dim = len(columns)
 
     try:
-        loaded = load_voyager_index_from_db(
-            get_db(), 'lyrics_axes_index_data', 'lyrics_axes_index',
-            expected_dim, VOYAGER_QUERY_EF, label='lyrics axes',
+        loaded = load_index_auto(
+            get_db(), 'lyrics_axes_index',
+            expected_dim, 'angular', label='lyrics axes',
         )
         if loaded is None:
             return False
@@ -198,7 +197,7 @@ def _load_lyrics_axes_index_from_db() -> bool:
 # ---------------------------------------------------------------------------
 
 def load_lyrics_cache_from_db() -> bool:
-    """Load both the embedding voyager index and the axes voyager index into memory."""
+    """Load both the embedding ivf index and the axes ivf index into memory."""
     from config import LYRICS_ENABLED
 
     if not LYRICS_ENABLED:
@@ -305,7 +304,7 @@ def get_axes_definition() -> Dict:
 
 def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     """
-    Voyager nearest-neighbor search over the binary axis vector.
+    IVF nearest-neighbor search over the binary axis vector.
 
     targets: {axis_name: label_str} — at most ONE label per axis. Selected → 1.0,
              everything else → 0.0. Axes the user did not pick contribute 0 across
@@ -316,7 +315,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_AXIS_CACHE['loaded'] or _LYRICS_AXIS_CACHE['index'] is None:
-        logger.error("Lyrics axes voyager index not loaded.")
+        logger.error("Lyrics axes ivf index not loaded.")
         return []
 
     columns = _LYRICS_AXIS_CACHE['axis_columns'] or []
@@ -340,20 +339,23 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
         logger.warning("search_by_axes called with no usable selections.")
         return []
 
-    voyager_index = _LYRICS_AXIS_CACHE['index']
+    ivf_index = _LYRICS_AXIS_CACHE['index']
     id_map = _LYRICS_AXIS_CACHE['id_map'] or {}
     metadata_map = _LYRICS_AXIS_CACHE['metadata'] or {}
 
+    from .paged_ivf import begin_query
+    begin_query(ivf_index)
+
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
     fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
-    num_to_query = min(fetch_size, len(voyager_index))
+    num_to_query = min(fetch_size, len(ivf_index))
     if num_to_query <= 0:
         return []
 
     try:
-        neighbor_ids, distances = voyager_index.query(query_vec, k=num_to_query)
+        neighbor_ids, distances = ivf_index.query(query_vec, k=num_to_query)
     except Exception as e:
-        logger.error(f"Lyrics axes voyager query failed: {e}", exc_info=True)
+        logger.error(f"Lyrics axes ivf query failed: {e}", exc_info=True)
         return []
 
     results: List[Dict] = []
@@ -371,7 +373,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
             if artist_counts.get(an, 0) >= artist_cap:
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
-        similarity = 1.0 - float(dist)
+        similarity = ivf_index.distance_to_similarity(dist)
         results.append({
             'item_id': item_id,
             'title': meta.get('title', ''),
@@ -392,7 +394,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None) -> List[Dict]:
-    """Search lyrics by embedding the query with gte-multilingual-base and querying the voyager index.
+    """Search lyrics by embedding the query with gte-multilingual-base and querying the ivf index.
 
     ``artist_cap`` controls the per-artist diversity cap: ``None`` uses the global
     ``MAX_SONGS_PER_ARTIST`` (the default, for direct user-facing search); ``0``
@@ -406,7 +408,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
     if not LYRICS_ENABLED:
         return []
     if not _LYRICS_INDEX_CACHE['loaded'] or _LYRICS_INDEX_CACHE['index'] is None:
-        logger.error("Lyrics voyager index not loaded.")
+        logger.error("Lyrics ivf index not loaded.")
         return []
 
     text = (query_text or '').strip()
@@ -426,13 +428,15 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
         artist_cap = artist_cap if artist_cap and artist_cap > 0 else 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
-        voyager_index = _LYRICS_INDEX_CACHE['index']
+        ivf_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}
-        num_to_query = min(fetch_size, len(voyager_index))
+        from .paged_ivf import begin_query
+        begin_query(ivf_index)
+        num_to_query = min(fetch_size, len(ivf_index))
         if num_to_query <= 0:
             return []
 
-        neighbor_ids, distances = voyager_index.query(query_vec, k=num_to_query)
+        neighbor_ids, distances = ivf_index.query(query_vec, k=num_to_query)
         candidate_item_ids = [id_map.get(int(v)) for v in neighbor_ids]
         candidate_item_ids = [iid for iid in candidate_item_ids if iid]
         metadata_map = _fetch_lyrics_metadata(candidate_item_ids)
@@ -452,7 +456,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
                 if artist_counts.get(an, 0) >= artist_cap:
                     continue
                 artist_counts[an] = artist_counts.get(an, 0) + 1
-            similarity = 1.0 - float(dist)
+            similarity = ivf_index.distance_to_similarity(dist)
             results.append({
                 'item_id': item_id,
                 'title': meta.get('title', ''),

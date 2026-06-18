@@ -451,7 +451,7 @@ def _format_and_score_iteration_result(
         
         cluster_tracks_info.sort(key=lambda x: x["distance"])
         # Track per-artist counts using a normalized author key. Treat MAX_SONGS_PER_ARTIST <= 0
-        # or None as DISABLED (no cap), consistent with other modules (path_manager/voyager_manager).
+        # or None as DISABLED (no cap), consistent with other modules (path_manager/ivf_manager).
         count_per_artist = defaultdict(int)
         selected_tracks_for_playlist = []
         for t_item_info in cluster_tracks_info:

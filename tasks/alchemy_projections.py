@@ -1,7 +1,7 @@
 """2D projection helpers shared by song_alchemy, app_map, and app_helper.
 
 These functions are pure numpy/sklearn math with no dependency on the
-voyager index, the media server layer, or the database, so consumers that
+ivf index, the media server layer, or the database, so consumers that
 only need a projection (e.g. the music map) can import this module without
 pulling the full song_alchemy import chain.
 """

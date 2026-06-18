@@ -147,6 +147,7 @@ FROM base AS runner
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
+    IVF_DISK_CACHE_DIR=/app/ivf_cache \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
     HF_XET_DISABLE=1

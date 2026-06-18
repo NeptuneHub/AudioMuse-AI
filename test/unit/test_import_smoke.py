@@ -29,7 +29,7 @@ EXCLUDED_DIRS = {
 }
 
 # ImportErrors naming an optional/native dependency that may be absent in CI.
-_OPTIONAL_DEPS = ("cuml", "cupy", "voyager", "faiss", "tensorflow")
+_OPTIONAL_DEPS = ("cuml", "cupy", "ivf", "faiss", "tensorflow")
 
 
 def _discover_modules():

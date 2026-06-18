@@ -72,11 +72,11 @@ def _table_exists(cur, name):
 
 def _get_musicnn_index_count():
     try:
-        from tasks.voyager_manager import voyager_index, id_map
+        from tasks.ivf_manager import ivf_index, id_map
         if id_map is not None:
             return len(id_map)
-        if voyager_index is not None:
-            return getattr(voyager_index, 'num_elements', 0)
+        if ivf_index is not None:
+            return getattr(ivf_index, 'num_elements', 0)
     except Exception:
         pass
     return 0

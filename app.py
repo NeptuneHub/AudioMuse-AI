@@ -145,6 +145,11 @@ swagger = Swagger(app)
 @app.teardown_appcontext
 def teardown_db(e=None):
     close_db(e)
+    try:
+        from tasks.paged_ivf import end_all_requests
+        end_all_requests()
+    except Exception:
+        pass
 
 # Initialize the database schema when the application module is loaded.
 # This is safe because it doesn't import other application modules.
@@ -673,7 +678,7 @@ def get_playlists_endpoint():
 def listen_for_index_reloads():
   """
   Runs in a background thread to listen for messages on a Redis Pub/Sub channel.
-  When a 'reload' message is received, it triggers the in-memory Voyager index and map to be reloaded.
+  When a 'reload' message is received, it triggers the in-memory IVF index and map to be reloaded.
   This is the recommended pattern for inter-process communication in this architecture,
   avoiding direct HTTP calls from workers to the web server.
   """
@@ -690,7 +695,7 @@ def listen_for_index_reloads():
   )
   pubsub = thread_redis_conn.pubsub()
   pubsub.subscribe('index-updates')
-  logger.info("Background thread started. Listening for Voyager index reloads on Redis channel 'index-updates'.")
+  logger.info("Background thread started. Listening for IVF index reloads on Redis channel 'index-updates'.")
 
   for message in pubsub.listen():
     # The first message is a confirmation of subscription, so we skip it.
@@ -700,10 +705,10 @@ def listen_for_index_reloads():
       if message_data == 'reload':
         # We need the application context to access 'g' and the database connection.
         with app.app_context():
-          logger.info("Triggering in-memory Voyager index and map reload from background listener.")
+          logger.info("Triggering in-memory IVF index and map reload from background listener.")
           try:
-            from tasks.voyager_manager import load_voyager_index_for_querying
-            load_voyager_index_for_querying(force_reload=True)
+            from tasks.ivf_manager import load_ivf_index_for_querying
+            load_ivf_index_for_querying(force_reload=True)
             from tasks.artist_gmm_manager import load_artist_index_for_querying
             load_artist_index_for_querying(force_reload=True)
             from database import load_map_projection, load_artist_projection
@@ -718,7 +723,7 @@ def listen_for_index_reloads():
             from tasks.clap_text_search import refresh_clap_cache
             clap_success = refresh_clap_cache()
 
-            # Reload Lyrics cache (voyager index + axis matrix)
+            # Reload Lyrics cache (ivf index + axis matrix)
             try:
               from config import LYRICS_ENABLED
               if LYRICS_ENABLED:
@@ -740,7 +745,7 @@ def listen_for_index_reloads():
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
-            logger.info(f"In-memory reload complete: Voyager ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
+            logger.info(f"In-memory reload complete: IVF ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':
@@ -768,7 +773,7 @@ def _register_blueprints(flask_app):
     from app_clustering import clustering_bp
     from app_analysis import analysis_bp
     from app_cron import cron_bp
-    from app_voyager import voyager_bp
+    from app_ivf import ivf_bp
     from app_sonic_fingerprint import sonic_fingerprint_bp
     from app_path import path_bp
     from app_external import external_bp
@@ -789,7 +794,7 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(clustering_bp)
     flask_app.register_blueprint(analysis_bp)
     flask_app.register_blueprint(cron_bp)
-    flask_app.register_blueprint(voyager_bp)
+    flask_app.register_blueprint(ivf_bp)
     flask_app.register_blueprint(sonic_fingerprint_bp)
     flask_app.register_blueprint(path_bp)
     flask_app.register_blueprint(external_bp, url_prefix='/external')
@@ -818,9 +823,9 @@ except OSError:
 
 if not _is_worker:
   with app.app_context():
-    # --- Initial Voyager Index Load ---
-    from tasks.voyager_manager import load_voyager_index_for_querying
-    load_voyager_index_for_querying()
+    # --- Initial IVF Index Load ---
+    from tasks.ivf_manager import load_ivf_index_for_querying
+    load_ivf_index_for_querying()
     # --- Load Artist Similarity Index ---
     from tasks.artist_gmm_manager import load_artist_index_for_querying
     try:
@@ -861,13 +866,13 @@ if not _is_worker:
           logger.info("No queries found in database (should not happen - check DB)")
     except Exception as e:
       logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load Lyrics search cache (voyager index over per-song gte embeddings + axis-score matrix)
+    # Load Lyrics search cache (ivf index over per-song gte embeddings + axis-score matrix)
     try:
       from config import LYRICS_ENABLED
       if LYRICS_ENABLED:
         from tasks.lyrics_manager import load_lyrics_cache_from_db
         if load_lyrics_cache_from_db():
-          logger.info("Lyrics search cache loaded at startup (voyager index + axis matrix).")
+          logger.info("Lyrics search cache loaded at startup (ivf index + axis matrix).")
         else:
           logger.info("Lyrics search cache empty at startup (run analysis to populate).")
     except Exception as e:

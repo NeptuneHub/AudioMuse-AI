@@ -7,7 +7,7 @@ Tests cover:
 - get_sem_grove_item_ids: cache-miss and cache-hit paths
 - is_sem_grove_cache_loaded: reflects cache state
 - search_by_song: returns seed-first, applies limit, returns empty when index unloaded
-- Full round-trip: build → load → search using an in-memory Voyager index
+- Full round-trip: build → load → search using an in-memory IVF index
 """
 
 import sys
@@ -217,7 +217,7 @@ class TestSearchBySong:
     """Tests for search_by_song() with mocked in-memory index."""
 
     def _make_fake_index(self, n_songs, dim=12):
-        """Return a mock Voyager index with n_songs random unit vectors."""
+        """Return a mock IVF index with n_songs random unit vectors."""
         rng = np.random.default_rng(42)
         vecs = []
         for _ in range(n_songs):
@@ -389,11 +389,11 @@ class TestSearchBySong:
 
 class TestSemGroveRoundTrip:
     """
-    Full round-trip test using a real in-memory Voyager index.
-    Skipped automatically when the `voyager` package is unavailable.
+    Full round-trip test using a real in-memory IVF index.
+    Skipped automatically when the `ivf` package is unavailable.
     """
 
-    pytest.importorskip("voyager", reason="voyager package required for round-trip test")
+    pytest.importorskip("ivf", reason="ivf package required for round-trip test")
 
     def _make_db_mock(self, n_songs, lyrics_dim=16, audio_dim=8):
         """
@@ -442,9 +442,9 @@ class TestSemGroveRoundTrip:
         import io
 
         try:
-            import voyager  # noqa: F401
+            import ivf  # noqa: F401
         except ImportError:
-            pytest.skip("voyager not installed")
+            pytest.skip("ivf not installed")
 
         from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
 
@@ -494,7 +494,7 @@ class TestSemGroveRoundTrip:
              patch("config.EMBEDDING_DIMENSION", audio_dim, create=True), \
              patch("tasks.index_build_helpers.stream_embeddings_to_buffer",
                    side_effect=fake_stream):
-            from config import VOYAGER_MAX_PART_SIZE_MB  # noqa: F401
+            from config import IVF_MAX_PART_SIZE_MB  # noqa: F401
             ok = build_and_store_sem_grove_index(db_conn=mock_conn)
 
         if not ok or not stored:
@@ -514,8 +514,8 @@ class TestSemGroveRoundTrip:
         # Patch _load_sem_grove_index_from_db to use stored bytes directly
         def fake_load():
             import json as _json
-            import voyager as _voyager
-            from config import VOYAGER_QUERY_EF
+            import ivf as _ivf
+            from config import IVF_QUERY_EF
 
             whitening = _json.loads(whitening_json)
             std_lyrics = np.array(whitening["std_lyrics"], dtype=np.float32)
@@ -526,8 +526,8 @@ class TestSemGroveRoundTrip:
             ad_        = int(whitening["audio_dim"])
 
             stream = io.BytesIO(index_binary)
-            loaded = _voyager.Index.load(stream)
-            loaded.ef = VOYAGER_QUERY_EF
+            loaded = _ivf.Index.load(stream)
+            loaded.ef = IVF_QUERY_EF
 
             id_map_        = {int(k): v for k, v in _json.loads(index_idmap).items()}
             reverse_id_map = {v: k for k, v in id_map_.items()}

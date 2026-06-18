@@ -733,7 +733,7 @@
                     finalTrackIds = selectedArtistTracks.map(t => t.item_id);
                 }
                 
-                const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

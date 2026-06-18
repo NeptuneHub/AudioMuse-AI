@@ -499,7 +499,7 @@
                     acLoading = true;
                     try {
                         const params = new URLSearchParams({ search_query: acQuery, start: acOffset, end: acOffset + PAGE_SIZE });
-                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                        const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         if (tracks.length > 0) {
                             acOffset += tracks.length;
@@ -552,7 +552,7 @@
                         acOffset = 0;
                         try {
                             const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
-                            const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                            const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                             const tracks = await response.json();
                             resultsEl.innerHTML = '';
                             acOffset = tracks.length;
@@ -1490,7 +1490,7 @@
 
             playlistStatusDiv.textContent = 'Creating playlist...';
             try {
-                const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ playlist_name: playlistName, track_ids: combined }),

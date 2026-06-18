@@ -254,7 +254,7 @@
             // --- Load mood centroids on page load ---
             async function loadMoodCentroids() {
                 try {
-                    const resp = await fetch(`{{ url_for('voyager_bp.get_mood_centroids_endpoint') }}`);
+                    const resp = await fetch(`{{ url_for('ivf_bp.get_mood_centroids_endpoint') }}`);
                     if (resp.ok) {
                         moodCentroidsCache = await resp.json();
                         // Populate hidden mood select for form compat
@@ -338,7 +338,7 @@
 
                     try {
                         const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
-                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                        const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         autocompleteOffset = tracks.length;
                         showAutocomplete(tracks, false);
@@ -354,7 +354,7 @@
                 isLoadingMore = true;
                 try {
                     const params = new URLSearchParams({ search_query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
-                    const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                    const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                     const tracks = await response.json();
                     if (tracks.length > 0) {
                         autocompleteOffset += tracks.length;
@@ -513,7 +513,7 @@
                 }
 
                 try {
-                    const response = await fetch(`{{ url_for('voyager_bp.get_similar_tracks_endpoint') }}?${params}`);
+                    const response = await fetch(`{{ url_for('ivf_bp.get_similar_tracks_endpoint') }}?${params}`);
                     const data = await response.json();
 
                     if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
@@ -527,7 +527,7 @@
                     if (!isVectorMode) {
                         const itemId = selectedItemIdInput.value;
                         try {
-                            const mdResp = await fetch(`{{ url_for('voyager_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
+                            const mdResp = await fetch(`{{ url_for('ivf_bp.get_max_distance_endpoint') }}?item_id=` + encodeURIComponent(itemId));
                             if (mdResp.ok) {
                                 const md = await mdResp.json();
                                 const maxDistDiv = document.getElementById('max-distance');
@@ -536,7 +536,7 @@
                                     const farId = md.farthest_item_id || md.farthest_id || md.item_id || md.max_item_id || md.farthestItemId;
                                     if (farId) {
                                         try {
-                                            const tdResp = await fetch(`{{ url_for('voyager_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
+                                            const tdResp = await fetch(`{{ url_for('ivf_bp.get_track_endpoint') }}?item_id=` + encodeURIComponent(farId));
                                             if (tdResp.ok) {
                                                 const td = await tdResp.json();
                                                 if (td && (td.title || td.author)) {
@@ -619,7 +619,7 @@
                 playlistStatusDiv.textContent = 'Creating playlist...';
 
                 try {
-                    const response = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+                    const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

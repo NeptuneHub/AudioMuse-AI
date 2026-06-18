@@ -1,7 +1,7 @@
 """
 Semantic & Groove (SemGrove) Manager
 
-Builds and queries a merged lyrics + audio Voyager index for song-by-song
+Builds and queries a merged lyrics + audio IVF index for song-by-song
 similarity that respects both lyrical meaning and acoustic genre simultaneously.
 
 Architecture
@@ -14,7 +14,7 @@ Architecture
     3. Re-normalise to unit length after whitening
     4. Scale by w_L = sqrt(WEIGHT_LYRICS) and w_A = sqrt(WEIGHT_AUDIO)
     5. Concatenate → merged vector of dimension (lyrics_dim + audio_dim)
-* Builds a Voyager Cosine index over the merged vectors
+* Builds a IVF Cosine index over the merged vectors
 * Persists:
     - The index binary in ``lyrics_index_data`` (index_name='sem_grove_index')
     - Whitening stats in the same table  (index_name='sem_grove_whitening')
@@ -28,14 +28,12 @@ build time.  Default: 75 % lyrics / 25 % audio.
 """
 
 import gc
-import json
 import logging
 import math
 import sys
 from typing import Dict, List, Optional
 
 import numpy as np
-import psycopg2
 
 import config
 
@@ -61,9 +59,9 @@ SEM_GROVE_WHITENING_NAME = "sem_grove_whitening"
 # In-memory cache (module-level singleton)
 # ---------------------------------------------------------------------------
 _SEM_GROVE_CACHE: Dict = {
-    "index":          None,   # voyager.Index
-    "id_map":         None,   # {voyager_int_id: item_id_str}
-    "reverse_id_map": None,   # {item_id_str: voyager_int_id}
+    "index":          None,   # ivf.Index
+    "id_map":         None,   # {vec_int_id: item_id_str}
+    "reverse_id_map": None,   # {item_id_str: vec_int_id}
     "std_lyrics":     None,   # np.ndarray (lyrics_dim,)
     "std_audio":      None,   # np.ndarray (audio_dim,)
     "lyrics_dim":     None,
@@ -130,37 +128,22 @@ def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
 
 def build_and_store_sem_grove_index(db_conn=None) -> bool:
     """
-    Build the merged lyrics+audio Voyager index and persist to the DB.
-
-    Rows written to ``lyrics_index_data``:
-      * ``sem_grove_whitening`` – JSON whitening stats (no binary payload)
-      * ``sem_grove_index``     – Voyager binary + id_map (segmented if large)
+    Build the merged lyrics+audio disk-paged IVF index and persist to the DB
+    (directory blob in ``ivf_dir``, cells in ``ivf_cell``).
 
     Memory profile: lyrics and audio embeddings are each streamed into one
     contiguous float32 buffer (no list-of-ndarrays, no vstack). Whitening
     statistics are computed via running sum / sum-of-squares accumulators
-    instead of materializing full-library normalized matrices. Merged
-    vectors are produced in small batches by an internal generator and fed
-    directly to the streaming Voyager index builder -- the full-library
-    merged buffer (lyrics_dim + audio_dim per row × N) is never
-    materialized. Peak RAM is therefore ``lyrics_buf + audio_buf +
-    one merge batch + voyager's own HNSW storage``, with no extra copies.
+    instead of materializing full-library normalized matrices. The merged
+    ``(N, lyrics_dim + audio_dim)`` matrix is then materialized once -- the IVF
+    builder needs the full matrix to train the coarse quantizer -- after which
+    ``lyrics_buf`` and ``audio_buf`` are freed. Peak RAM is therefore
+    ``lyrics_buf + audio_buf + merged`` during the merge loop.
     """
-    try:
-        import voyager  # type: ignore  # noqa: F401
-    except ImportError:
-        logger.warning("Voyager unavailable; skipping SemGrove index build.")
-        return False
-
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
-    from .index_build_helpers import (
-        stream_embeddings_to_buffer,
-        build_voyager_index_bytes_streaming,
-        store_voyager_index_segmented,
-        build_id_map,
-        EmptyIndexError,
-    )
+    from .index_build_helpers import stream_embeddings_to_buffer
+    from .paged_ivf import build_and_store_paged_ivf
 
     if db_conn is None:
         db_conn = get_db()
@@ -230,96 +213,34 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         del sum_l, sumsq_l, sum_a, sumsq_a, mean_l, mean_a, var_l, var_a
         gc.collect()
 
-        logger.info(
-            "SemGrove: building Voyager index for up to %d items (batched merge, dim=%d)…",
-            len(common_ids), merged_dim,
-        )
-
-        merge_batch_size = 4096
-
-        def _merge_batches():
-            """Yield (batch_buf, batch_ids) of merged vectors in chunks.
-
-            Reads ``lyrics_buf`` / ``audio_buf`` by closure; writes one
-            small batch buffer at a time and yields it to the streaming
-            index builder. Rows that produce ``None`` from
-            ``_make_merged_vector`` (zero-norm input) are skipped exactly
-            as the previous single-buffer implementation did.
-            """
-            for start in range(0, len(common_ids), merge_batch_size):
-                chunk = common_ids[start:start + merge_batch_size]
-                batch_buf = np.empty((len(chunk), merged_dim), dtype=np.float32)
-                batch_ids: List[str] = []
-                write_idx = 0
-                for item_id in chunk:
-                    mv = _make_merged_vector(
-                        lyrics_buf[lyrics_pos[item_id]],
-                        audio_buf[audio_pos[item_id]],
-                        std_lyrics, std_audio,
-                        W_LYRICS, W_AUDIO,
-                    )
-                    if mv is None:
-                        continue
-                    batch_buf[write_idx] = mv
-                    batch_ids.append(item_id)
-                    write_idx += 1
-                if write_idx == 0:
-                    continue
-                if write_idx < batch_buf.shape[0]:
-                    yield batch_buf[:write_idx].copy(), batch_ids
-                else:
-                    yield batch_buf, batch_ids
-
-        try:
-            index_bytes, kept_ids = build_voyager_index_bytes_streaming(
-                _merge_batches(), merged_dim, metric="angular",
+        logger.info("SemGrove: building disk-paged IVF index for up to %d items (dim=%d)...", len(common_ids), merged_dim)
+        merged = np.empty((len(common_ids), merged_dim), dtype=np.float32)
+        kept_ids: List[str] = []
+        w = 0
+        for item_id in common_ids:
+            mv = _make_merged_vector(
+                lyrics_buf[lyrics_pos[item_id]],
+                audio_buf[audio_pos[item_id]],
+                std_lyrics, std_audio, W_LYRICS, W_AUDIO,
             )
-        except EmptyIndexError as ve:
-            logger.warning("SemGrove: no valid merged vectors; aborting: %s", ve)
+            if mv is None:
+                continue
+            merged[w] = mv
+            kept_ids.append(item_id)
+            w += 1
+        lyrics_buf = audio_buf = lyrics_pos = audio_pos = None
+        gc.collect()
+        if w == 0:
+            logger.warning("SemGrove: no valid merged vectors; aborting build.")
             return False
-        finally:
-            lyrics_buf = audio_buf = lyrics_pos = audio_pos = None
-            gc.collect()
+        merged = merged[:w]
 
-        if not index_bytes:
-            logger.error("SemGrove: generated index binary is empty; aborting.")
+        ok = build_and_store_paged_ivf(db_conn, SEM_GROVE_INDEX_NAME, merged, kept_ids, merged_dim, "angular")
+        if not ok:
+            db_conn.rollback()
             return False
-
-        id_map: Dict[int, str] = build_id_map(kept_ids)
-        vid = len(kept_ids)
-
-        whitening_json = json.dumps({
-            "std_lyrics": std_lyrics.tolist(),
-            "std_audio":  std_audio.tolist(),
-            "w_lyrics":   W_LYRICS,
-            "w_audio":    W_AUDIO,
-            "lyrics_dim": lyrics_dim,
-            "audio_dim":  audio_dim,
-        })
-        with db_conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO lyrics_index_data "
-                "(index_name, index_data, id_map_json, embedding_dimension, created_at) "
-                "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
-                "ON CONFLICT (index_name) DO UPDATE SET "
-                "index_data = EXCLUDED.index_data, "
-                "id_map_json = EXCLUDED.id_map_json, "
-                "embedding_dimension = EXCLUDED.embedding_dimension, "
-                "created_at = EXCLUDED.created_at",
-                (SEM_GROVE_WHITENING_NAME, psycopg2.Binary(b""), whitening_json, 0),
-            )
-
-        store_voyager_index_segmented(
-            db_conn,
-            target_table="lyrics_index_data",
-            index_name=SEM_GROVE_INDEX_NAME,
-            index_bytes=index_bytes,
-            id_map=id_map,
-            embedding_dimension=merged_dim,
-        )
-
         db_conn.commit()
-        logger.info("SemGrove index build complete: %d songs, dim=%d.", vid, merged_dim)
+        logger.info("SemGrove IVF index build complete: %d songs, dim=%d.", w, merged_dim)
         return True
 
     except Exception as exc:
@@ -336,46 +257,23 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
 # ---------------------------------------------------------------------------
 
 def _load_sem_grove_index_from_db() -> bool:
-    """Load the SemGrove merged Voyager index from the DB into the global cache."""
-    try:
-        import voyager  # type: ignore  # noqa: F401
-    except ImportError:
-        logger.warning("Voyager unavailable; cannot load SemGrove index.")
-        return False
-
+    """Load the merged SemGrove disk-paged IVF index into the global cache."""
     from app_helper import get_db
-    from config import VOYAGER_QUERY_EF
+    from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
+    from .paged_ivf import load_index_auto
+
+    lyrics_dim = LYRICS_EMBEDDING_DIMENSION
+    audio_dim = EMBEDDING_DIMENSION
+    merged_dim = lyrics_dim + audio_dim
 
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = 0")
-
-            # ---- Whitening stats ----
-            cur.execute(
-                "SELECT id_map_json FROM lyrics_index_data WHERE index_name = %s",
-                (SEM_GROVE_WHITENING_NAME,),
-            )
-            row = cur.fetchone()
-            if not row:
-                logger.info("SemGrove: no whitening stats found; index not built yet.")
-                return False
-
-            whitening   = json.loads(row[0])
-            std_lyrics  = np.array(whitening["std_lyrics"], dtype=np.float32)
-            std_audio   = np.array(whitening["std_audio"],  dtype=np.float32)
-            w_lyrics    = float(whitening.get("w_lyrics", W_LYRICS))
-            w_audio     = float(whitening.get("w_audio",  W_AUDIO))
-            lyrics_dim  = int(whitening["lyrics_dim"])
-            audio_dim   = int(whitening["audio_dim"])
-            merged_dim  = lyrics_dim + audio_dim
-
-        from .index_build_helpers import load_voyager_index_from_db
-        loaded = load_voyager_index_from_db(
-            conn, 'lyrics_index_data', SEM_GROVE_INDEX_NAME,
-            merged_dim, VOYAGER_QUERY_EF, label='SemGrove',
+        loaded = load_index_auto(
+            conn, SEM_GROVE_INDEX_NAME,
+            merged_dim, 'angular', label='SemGrove',
         )
         if loaded is None:
+            logger.info("SemGrove: IVF index not found; not built yet.")
             return False
         loaded_index, id_map, reverse_id_map = loaded
 
@@ -383,12 +281,12 @@ def _load_sem_grove_index_from_db() -> bool:
             "index":          loaded_index,
             "id_map":         id_map,
             "reverse_id_map": reverse_id_map,
-            "std_lyrics":     std_lyrics,
-            "std_audio":      std_audio,
+            "std_lyrics":     None,
+            "std_audio":      None,
             "lyrics_dim":     lyrics_dim,
             "audio_dim":      audio_dim,
-            "w_lyrics":       w_lyrics,
-            "w_audio":        w_audio,
+            "w_lyrics":       W_LYRICS,
+            "w_audio":        W_AUDIO,
             "loaded":         True,
             "song_count":     len(id_map),
         })
@@ -490,7 +388,7 @@ def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]
     """Nearest neighbours of ``query_vector`` in merged SemGrove space.
 
     Returns ``[{"item_id": str, "distance": float}, ...]`` mirroring the shape
-    that ``voyager_manager.find_nearest_neighbors_by_vector`` returns, so the
+    that ``ivf_manager.find_nearest_neighbors_by_vector`` returns, so the
     Song Path engine can use it as a drop-in vector backend. Deduplication and
     artist-cap filtering are handled by the path engine itself, so this only
     performs the raw index query.
@@ -499,6 +397,8 @@ def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]
         return []
     index  = _SEM_GROVE_CACHE["index"]
     id_map = _SEM_GROVE_CACHE["id_map"]
+    from .paged_ivf import begin_query
+    begin_query(index)
     num_to_query = min(max(1, int(n)), len(index))
     if num_to_query <= 0:
         return []
@@ -534,7 +434,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     Find songs semantically + acoustically similar to ``seed_item_id``.
 
     The seed song's pre-stored merged vector is retrieved directly from the
-    Voyager index (no re-computation), then used as the query vector.
+    IVF index (no re-computation), then used as the query vector.
     Returns a list of ``{item_id, title, author, similarity}`` dicts sorted
     by descending merged-cosine similarity, excluding the seed itself.
 
@@ -549,6 +449,9 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     index          = _SEM_GROVE_CACHE["index"]
     id_map         = _SEM_GROVE_CACHE["id_map"]
     reverse_id_map = _SEM_GROVE_CACHE["reverse_id_map"]
+
+    from .paged_ivf import begin_query
+    begin_query(index)
 
     seed_vid = reverse_id_map.get(seed_item_id)
     if seed_vid is None:
@@ -584,7 +487,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     try:
         neighbor_ids, distances = index.query(query_vector, k=num_to_query)
     except Exception as exc:
-        logger.error("SemGrove: Voyager query failed: %s", exc, exc_info=True)
+        logger.error("SemGrove: IVF query failed: %s", exc, exc_info=True)
         return []
 
     candidate_ids = [

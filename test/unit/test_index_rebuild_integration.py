@@ -12,17 +12,16 @@ unit tests don't reach:
 2. ``tasks.analysis._run_all_index_builds`` — the single rebuild orchestrator now
    shared by analysis, cleaning, and collection_manager. Covers: every step runs,
    ``log_fn=None`` is safe, a non-fatal builder failure doesn't abort the rest, and
-   a fatal failure (the Voyager audio step) propagates.
+   a fatal failure (the IVF audio step) propagates.
 
-These are mock-based — no real Postgres or voyager graph needed. The actual
+These are mock-based — no real Postgres or ivf graph needed. The actual
 end-to-end build (``build_and_store_artist_index`` fitting GMMs from DB embeddings
-and serializing a real voyager file) is deliberately left to a real-DB integration
+and serializing a real ivf file) is deliberately left to a real-DB integration
 test in the docker test stack: driving it through unit mocks would be a brittle
-maze (faking voyager.save + open() + three separate SELECTs) with low marginal
+maze (faking ivf.save + open() + three separate SELECTs) with low marginal
 value over the codec/storage tests in test_artist_metadata_codec.py.
 """
 
-import json
 import sys
 import types
 from contextlib import ExitStack, contextmanager
@@ -31,7 +30,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-# artist_gmm_manager imports voyager + sklearn at module load; skip cleanly if absent.
+# artist_gmm_manager imports ivf + sklearn at module load; skip cleanly if absent.
 agm = pytest.importorskip("tasks.artist_gmm_manager")
 ibh = pytest.importorskip("tasks.index_build_helpers")
 
@@ -74,21 +73,11 @@ def _conn_returning(row):
 
 
 class TestLoadArtistIndexForQuerying:
-    """The loader where the db_conn NameError lived."""
+    """Artist IVF index loader (IVF removed; IVF-only)."""
 
-    def test_new_bytea_path_sets_globals_and_passes_real_conn(self):
-        """New path: artist_metadata_data blob present -> globals populated from it.
-
-        Critically asserts load_segmented_blob is called with the loader's OWN
-        connection object. The historical bug passed ``db_conn`` (undefined in this
-        function) -> NameError raised at arg-eval time -> load_segmented_blob never
-        called -> this assertion fails. This is the regression guard.
-        """
-        index_bytes = b"voyager-index-bytes"
-        # single-row artist_index_data row: (index_data, legacy_map_json, legacy_gmm_json)
-        # legacy JSON columns are '' on the new write path.
-        conn, cur = _conn_returning((index_bytes, '', ''))
-
+    def test_ivf_path_sets_globals(self):
+        """IVF index present: globals populated from the index + metadata blob."""
+        conn, cur = _conn_returning(None)
         fake_map = {0: "Artist A", 1: "Artist B"}
         fake_gmm = {
             "Artist A": {"means": [[0.1, 0.2]], "weights": [1.0], "n_components": 1,
@@ -97,59 +86,24 @@ class TestLoadArtistIndexForQuerying:
                           "n_features": 2, "n_tracks": 7, "is_few_songs": False, "tracks_hash": "h2"},
         }
         fake_index = MagicMock()
-        fake_index.num_elements = 2
-
+        fake_index.__len__.return_value = len(fake_map)
         with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob") as mock_load, \
-             patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)), \
-             patch.object(agm, "voyager") as mock_voyager:
-            mock_voyager.Index.load.return_value = fake_index
+             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
+             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})), \
+             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"), \
+             patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)):
             agm.load_artist_index_for_querying(force_reload=True)
-
-        # The NameError guard: loader must call the metadata loader with ITS conn.
-        mock_load.assert_called_once()
-        assert mock_load.call_args[0][0] is conn, \
-            "load_segmented_blob must receive the loader's own connection (regression: db_conn NameError)"
 
         assert agm.artist_index is fake_index
         assert agm.artist_map == fake_map
         assert agm.artist_gmm_params == fake_gmm
         assert agm.reverse_artist_map == {"Artist A": 0, "Artist B": 1}
 
-    def test_legacy_json_fallback_when_metadata_table_empty(self):
-        """Legacy deployment: artist_metadata_data empty -> read legacy JSON columns."""
-        index_bytes = b"voyager-index-bytes"
-        legacy_map_json = json.dumps({"0": "Artist A", "1": "Artist B"})
-        legacy_gmm_json = json.dumps({
-            "Artist A": {"means": [[0.1, 0.2]], "weights": [1.0], "n_components": 1, "n_features": 2},
-            "Artist B": {"means": [[0.3, 0.4]], "weights": [1.0], "n_components": 1, "n_features": 2},
-        })
-        conn, cur = _conn_returning((index_bytes, legacy_map_json, legacy_gmm_json))
-
-        fake_index = MagicMock()
-        fake_index.num_elements = 2
-
+    def test_no_ivf_index_resets_cache(self):
+        """No IVF index built yet -> clean reset, no crash."""
+        conn, cur = _conn_returning(None)
         with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch.object(ibh, "load_segmented_blob", return_value=None) as mock_load, \
-             patch.object(agm, "voyager") as mock_voyager:
-            mock_voyager.Index.load.return_value = fake_index
-            agm.load_artist_index_for_querying(force_reload=True)
-
-        mock_load.assert_called_once()  # new path attempted first
-        assert agm.artist_index is fake_index
-        assert agm.artist_map == {0: "Artist A", 1: "Artist B"}
-        assert agm.artist_gmm_params["Artist A"]["n_components"] == 1
-
-    def test_both_sources_empty_resets_cache(self):
-        """No metadata anywhere (new table empty + legacy columns '') -> clean reset, no crash."""
-        index_bytes = b"voyager-index-bytes"
-        conn, cur = _conn_returning((index_bytes, '', ''))
-
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch.object(ibh, "load_segmented_blob", return_value=None), \
-             patch.object(agm, "voyager") as mock_voyager:
-            # voyager.Index.load should never be reached, but stub it defensively.
-            mock_voyager.Index.load.return_value = MagicMock(num_elements=0)
+             patch("tasks.paged_ivf.has_paged_ivf", return_value=False):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
@@ -157,21 +111,14 @@ class TestLoadArtistIndexForQuerying:
         assert agm.artist_gmm_params is None
         assert agm.reverse_artist_map is None
 
-    def test_num_elements_mismatch_resets_cache(self):
-        """If the Voyager element count disagrees with the metadata, abort (don't publish a corrupt index)."""
-        index_bytes = b"voyager-index-bytes"
-        conn, cur = _conn_returning((index_bytes, '', ''))
-        fake_map = {0: "Artist A", 1: "Artist B"}          # 2 artists
-        fake_gmm = {"Artist A": {"means": [[0.1]], "weights": [1.0], "n_components": 1, "n_features": 1},
-                    "Artist B": {"means": [[0.2]], "weights": [1.0], "n_components": 1, "n_features": 1}}
+    def test_missing_metadata_resets_cache(self):
+        """IVF index present but metadata blob missing -> reset (no partial publish)."""
+        conn, cur = _conn_returning(None)
         fake_index = MagicMock()
-        fake_index.num_elements = 5                          # mismatch: 5 != 2
-
         with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"), \
-             patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)), \
-             patch.object(agm, "voyager") as mock_voyager:
-            mock_voyager.Index.load.return_value = fake_index
+             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
+             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})), \
+             patch.object(ibh, "load_segmented_blob", return_value=None):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
@@ -185,7 +132,7 @@ class TestLoadArtistIndexForQuerying:
 analysis_mod = None
 try:
     import tasks.analysis as analysis_mod  # noqa: E402  (heavy: librosa/onnx)
-    import tasks.voyager_manager  # noqa: F401  (builder modules patched in _patched)
+    import tasks.ivf_manager  # noqa: F401  (builder modules patched in _patched)
     import tasks.clap_text_search  # noqa: F401
     import tasks.lyrics_manager  # noqa: F401
     import tasks.sem_grove_manager  # noqa: F401
@@ -194,7 +141,7 @@ except Exception:
 
 
 _BUILDER_NAMES = [
-    "build_and_store_voyager_index",
+    "build_and_store_ivf_index",
     "build_and_store_clap_index",
     "build_and_store_lyrics_index",
     "build_and_store_lyrics_axes_index",
@@ -205,7 +152,7 @@ _BUILDER_NAMES = [
 ]
 
 _BUILDER_SOURCE_MODULES = {
-    "build_and_store_voyager_index": "tasks.voyager_manager",
+    "build_and_store_ivf_index": "tasks.ivf_manager",
     "build_and_store_clap_index": "tasks.clap_text_search",
     "build_and_store_lyrics_index": "tasks.lyrics_manager",
     "build_and_store_lyrics_axes_index": "tasks.lyrics_manager",
@@ -257,10 +204,10 @@ class TestRunAllIndexBuilds:
             assert mocks["build_and_store_artist_index"].called
             assert mocks["build_and_store_artist_projection"].called
 
-    def test_fatal_voyager_failure_propagates_and_aborts(self):
+    def test_fatal_ivf_failure_propagates_and_aborts(self):
         with self._patched() as mocks:
-            mocks["build_and_store_voyager_index"].side_effect = RuntimeError("fatal voyager")
-            with pytest.raises(RuntimeError, match="fatal voyager"):
+            mocks["build_and_store_ivf_index"].side_effect = RuntimeError("fatal ivf")
+            with pytest.raises(RuntimeError, match="fatal ivf"):
                 analysis_mod._run_all_index_builds(log_fn=None)
             # aborted at the first (fatal) step — later builders never ran
             assert not mocks["build_and_store_clap_index"].called

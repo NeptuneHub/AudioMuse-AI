@@ -101,9 +101,9 @@ def endpoints_db(pg_dsn):
 def _import_app_external():
     if 'app_external' in sys.modules:
         return sys.modules['app_external']
-    fake_vm = types.ModuleType('tasks.voyager_manager')
+    fake_vm = types.ModuleType('tasks.ivf_manager')
     fake_vm.search_tracks_unified = MagicMock(return_value=[])
-    stubs = {'tasks.voyager_manager': fake_vm}
+    stubs = {'tasks.ivf_manager': fake_vm}
     if 'tasks' not in sys.modules:
         stubs['tasks'] = types.ModuleType('tasks')
     with patch.dict(sys.modules, stubs):

@@ -271,7 +271,7 @@ def run_due_cron_jobs():
                     # keeps tracking the same server playlist across runs (issue #336).
                     from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
                     from tasks.mediaserver import create_or_replace_playlist
-                    from tasks.voyager_manager import create_playlist_from_ids
+                    from tasks.ivf_manager import create_playlist_from_ids
                     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
                     try:
                         fingerprint_results = generate_sonic_fingerprint()

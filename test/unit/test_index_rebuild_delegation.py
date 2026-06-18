@@ -5,7 +5,7 @@ old partial rebuild path.
 History this pins:
 
 * ``collection_manager.sync_collections_task`` used to rebuild ONLY the audio
-  Voyager index after a sync, leaving CLAP / lyrics / lyrics-axes / SemGrove /
+  IVF index after a sync, leaving CLAP / lyrics / lyrics-axes / SemGrove /
   artist and the 2D map projections stale until the next analysis run.
 * ``cleaning.identify_and_clean_orphaned_albums_task`` rebuilt a hand-maintained
   subset of builders inline, in three separate branches.
@@ -18,7 +18,7 @@ contract so a future edit cannot silently revert either task to a partial
 rebuild.
 
 These tests parse the source with ``ast`` -- no import of the task modules, no
-DB, no voyager/sklearn/librosa -- so they run in every environment and never
+DB, no ivf/sklearn/librosa -- so they run in every environment and never
 skip.
 """
 
@@ -31,7 +31,7 @@ REPO_ROOT = os.path.normpath(
 )
 
 _PARTIAL_BUILDERS = (
-    "build_and_store_voyager_index",
+    "build_and_store_ivf_index",
     "build_and_store_clap_index",
     "build_and_store_lyrics_index",
     "build_and_store_lyrics_axes_index",

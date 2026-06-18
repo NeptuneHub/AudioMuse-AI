@@ -1,5 +1,6 @@
 #AudioMuse-AI/config.py
 import os
+import tempfile
 
 # --- Task Status Constants ---
 # These are used across the application for task tracking. Placed here so they're
@@ -184,7 +185,7 @@ CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHE
 CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS", "30")) # How often to check batch status
 
 # --- Batching Constants for Analysis ---
-REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild Voyager index after this many albums are analyzed.
+REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
 
 # --- Guided Evolutionary Clustering Constants ---
@@ -394,7 +395,7 @@ LYRICS_DEFAULT_SEGMENT_DURATION = 60.0
 LYRICS_DEFAULT_TOPIC_EMBEDDING_MODEL = 'Alibaba-NLP/gte-multilingual-base'
 LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR = os.path.join(LYRICS_MODEL_DIR, 'gte-multilingual-base')
 # Dimension of the gte-multilingual-base sentence embedding stored in
-# lyrics_embedding.embedding and used to build the lyrics voyager index.
+# lyrics_embedding.embedding and used to build the lyrics ivf index.
 LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "768"))
 
 # Minimum number of CHARACTERS (not words) a transcript must have for the
@@ -526,14 +527,37 @@ CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_D
 # loaded after last use. Auto-unloads after this idle period to free RAM.
 LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "300"))
 
-# --- Voyager Index Constants ---
-INDEX_NAME = os.environ.get("VOYAGER_INDEX_NAME", "music_library") # The primary key for our index in the DB
-VOYAGER_METRIC = os.environ.get("VOYAGER_METRIC", "angular") # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
-VOYAGER_EF_CONSTRUCTION = int(os.environ.get("VOYAGER_EF_CONSTRUCTION", "200"))
-VOYAGER_M = int(os.environ.get("VOYAGER_M", "32"))
-VOYAGER_QUERY_EF = int(os.environ.get("VOYAGER_QUERY_EF", "1024"))
-VOYAGER_MAX_PART_SIZE_MB = int(os.environ.get("VOYAGER_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for voyager index storage
+# --- IVF Index Constants ---
+INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
+IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
+IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
+
+# --- Disk-Paged IVF Index Constants ---
+# When enabled, the large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
+# are stored as an inverted-file (IVF) index whose full-precision float32 cells live
+# in Postgres rows. A query reads only the nearest IVF_NPROBE cells, so the Flask
+# container's resident index memory is bounded by IVF_QUERY_CACHE_MB per index instead
+# of growing with the library size. No vector quantization is used.
+IVF_BACKEND_ENABLED = os.environ.get("IVF_BACKEND_ENABLED", "true").lower() == "true"
+IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
+IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "120000"))  # Max vectors sampled to train the coarse quantizer
+IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
+IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
+IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "256"))  # Cells probed per query (X): the dominant recall/latency knob
+IVF_QUERY_CACHE_MB = int(os.environ.get("IVF_QUERY_CACHE_MB", "128"))  # Hard cap (Y) on the per-request vector cache, in MB
+IVF_READ_BATCH_CELLS = int(os.environ.get("IVF_READ_BATCH_CELLS", "16"))  # Cells fetched per DB round-trip during a query
+IVF_GLOBAL_CACHE_MB = int(os.environ.get("IVF_GLOBAL_CACHE_MB", "1024"))  # Hard cap (MB) on the process-wide cross-request decoded-cell cache shared by all indexes; 0 disables it
+IVF_PRELOAD_ALL = os.environ.get("IVF_PRELOAD_ALL", "false").lower() == "true"  # When true, stream every cell into the global cache at load time (in-memory IVF), still bounded by IVF_GLOBAL_CACHE_MB
+IVF_GLOBAL_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_GLOBAL_CACHE_IDLE_SECONDS", "300"))  # Drop the whole global cell cache after this many seconds with no access (frees idle RAM); 0 = never drop
+IVF_RESULT_CACHE_SECONDS = int(os.environ.get("IVF_RESULT_CACHE_SECONDS", "300"))  # TTL (s) for cached similar-song / max-distance results so repeated identical queries are instant; 0 = disable
+IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))  # Max distinct cached query results per result cache
+IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))  # Farthest cells probed for the max-distance display value (reverse-IVF); 0 or >= nlist = exact full scan
+IVF_DISK_CACHE_ENABLED = os.environ.get("IVF_DISK_CACHE_ENABLED", "true").lower() == "true"  # Export each index's cells to a local file at load and serve queries via mmap (OS page cache), instead of reading from Postgres per query; false = read from Postgres
+IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or (
+    os.path.join(APP_DATA_DIR, "ivf_cache") if APP_DATA_DIR
+    else ("/app/ivf_cache" if os.path.isdir("/app") else os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache"))
+)  # Local dir for the mmap cell files: native build data dir, else /app/ivf_cache in containers, else a temp dir
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -542,7 +566,7 @@ PATH_DISTANCE_METRIC = os.environ.get("PATH_DISTANCE_METRIC", "angular").lower()
 PATH_DEFAULT_LENGTH = int(os.environ.get("PATH_DEFAULT_LENGTH", "25"))
 # Number of random songs to sample for calculating the average jump distance.
 PATH_AVG_JUMP_SAMPLE_SIZE = int(os.environ.get("PATH_AVG_JUMP_SAMPLE_SIZE", "200"))
-# Number of candidate songs to retrieve from Voyager for each step in the path.
+# Number of candidate songs to retrieve from IVF for each step in the path.
 PATH_CANDIDATES_PER_STEP = int(os.environ.get("PATH_CANDIDATES_PER_STEP", "25"))
 # Multiplier for the core number of steps (Lcore) to generate more backbone centroids.
 PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))

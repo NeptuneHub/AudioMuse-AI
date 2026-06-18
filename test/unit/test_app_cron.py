@@ -41,7 +41,7 @@ def test_sonic_fingerprint_branch_skips_on_empty_results(mock_get_db, _matches):
 
     with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=[]) as gen, \
          patch('tasks.mediaserver.create_or_replace_playlist') as upsert, \
-         patch('tasks.voyager_manager.create_playlist_from_ids') as legacy:
+         patch('tasks.ivf_manager.create_playlist_from_ids') as legacy:
         run_due_cron_jobs()
 
     gen.assert_called_once()
@@ -63,7 +63,7 @@ def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _
 
     with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp), \
          patch('tasks.mediaserver.create_or_replace_playlist', return_value={'Id': 'pl-x'}) as upsert, \
-         patch('tasks.voyager_manager.create_playlist_from_ids') as legacy:
+         patch('tasks.ivf_manager.create_playlist_from_ids') as legacy:
         run_due_cron_jobs()
 
     upsert.assert_called_once_with(SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, ['a', 'b', 'c'])
@@ -83,7 +83,7 @@ def test_sonic_fingerprint_branch_falls_back_for_unsupported_backend(mock_get_db
 
     with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp), \
          patch('tasks.mediaserver.create_or_replace_playlist', side_effect=NotImplementedError), \
-         patch('tasks.voyager_manager.create_playlist_from_ids', return_value='legacy-id') as legacy:
+         patch('tasks.ivf_manager.create_playlist_from_ids', return_value='legacy-id') as legacy:
         run_due_cron_jobs()
 
     legacy.assert_called_once()

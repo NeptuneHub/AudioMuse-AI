@@ -8,7 +8,7 @@ Unit tests for the artist metadata storage helpers in
 
 The codec replaces the previous JSON-of-floats storage of artist GMM
 parameters. The segmented-blob helpers decouple metadata storage from the
-Voyager index storage so a single PG column value cannot exceed
+IVF index storage so a single PG column value cannot exceed
 ``MaxAllocSize`` (1 GB) at any realistic library size.
 
 The helper module is loaded via importlib so this file does not pull in

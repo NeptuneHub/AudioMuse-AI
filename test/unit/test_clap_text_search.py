@@ -7,13 +7,19 @@ import numpy as np
 from unittest.mock import patch
 
 
-class DummyVoyagerIndex:
-    """Simple fake Voyager index for unit tests."""
+class DummyIVFIndex:
+    """Simple fake IVF index for unit tests (angular metric)."""
     def __init__(self, embeddings: np.ndarray):
         self.embeddings = embeddings
 
     def __len__(self):
         return len(self.embeddings)
+
+    def begin_request(self):
+        pass
+
+    def distance_to_similarity(self, distance):
+        return 1.0 - float(distance)
 
     def query(self, query_vector: np.ndarray, k: int):
         similarities = self.embeddings @ query_vector
@@ -25,7 +31,7 @@ class DummyVoyagerIndex:
 
 def setup_dummy_clap_index_cache(_CLAP_INDEX_CACHE, embeddings, item_ids):
     _CLAP_INDEX_CACHE['loaded'] = True
-    _CLAP_INDEX_CACHE['index'] = DummyVoyagerIndex(embeddings)
+    _CLAP_INDEX_CACHE['index'] = DummyIVFIndex(embeddings)
     _CLAP_INDEX_CACHE['id_map'] = {i: item_ids[i] for i in range(len(item_ids))}
     _CLAP_INDEX_CACHE['reverse_id_map'] = {item_ids[i]: i for i in range(len(item_ids))}
 
