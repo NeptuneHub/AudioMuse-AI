@@ -278,25 +278,21 @@ class _CellLruCache:
     one full cell). Used on a single thread per request (IVF mode runs vector
     post-filtering on the request thread), so no lock is required.
 
-    The ``int_id -> cell_id`` index used by :meth:`vector_for` is built lazily on
-    the first point lookup and rebuilt only after the resident set changes, so
-    the query hot path -- which never calls ``vector_for`` -- pays nothing per
-    cell.
+    Point lookups go through :meth:`get_cell`: the caller already knows an item's
+    cell from the index-level ``id2cell`` map, so the cache never has to maintain
+    its own ``int_id -> cell_id`` index.
     """
 
     def __init__(self, record_size: int, max_bytes: int):
         self._record_size = record_size
         self._max_bytes = max(max_bytes, record_size)
         self._cells: "OrderedDict[int, Tuple[np.ndarray, np.ndarray]]" = OrderedDict()
-        self._id_index: Dict[int, int] = {}
-        self._id_index_dirty = False
         self._bytes = 0
 
     def _evict_until_fits(self, incoming: int) -> None:
         while self._bytes + incoming > self._max_bytes and self._cells:
             _old_id, (ids, _vecs) = self._cells.popitem(last=False)
             self._bytes -= int(ids.shape[0]) * self._record_size
-            self._id_index_dirty = True
 
     def add_cell(self, cell_id: int, ids: np.ndarray, vecs: np.ndarray) -> None:
         if cell_id in self._cells:
@@ -306,7 +302,6 @@ class _CellLruCache:
         self._evict_until_fits(size)
         self._cells[cell_id] = (ids, vecs)
         self._bytes += size
-        self._id_index_dirty = True
 
     def has_cell(self, cell_id: int) -> bool:
         return cell_id in self._cells
@@ -316,24 +311,6 @@ class _CellLruCache:
         if entry is not None:
             self._cells.move_to_end(cell_id)
         return entry
-
-    def _rebuild_id_index(self) -> None:
-        idx: Dict[int, int] = {}
-        for cell_id, (ids, _vecs) in self._cells.items():
-            for k in range(int(ids.shape[0])):
-                idx[int(ids[k])] = cell_id
-        self._id_index = idx
-        self._id_index_dirty = False
-
-    def vector_for(self, int_id: int) -> Optional[np.ndarray]:
-        if self._id_index_dirty:
-            self._rebuild_id_index()
-        cell_id = self._id_index.get(int(int_id))
-        if cell_id is None:
-            return None
-        self._cells.move_to_end(cell_id)
-        ids, vecs = self._cells[cell_id]
-        return _vec_in_cell(ids, vecs, int(int_id))
 
     def resident_bytes(self) -> int:
         return self._bytes
@@ -754,11 +731,13 @@ class PagedIvfIndex:
             vid = int(raw)
             if vid < 0 or vid >= self._n_items:
                 continue
-            v = cache.vector_for(vid)
+            cell_id = int(self._id2cell[vid])
+            entry = cache.get_cell(cell_id)
+            v = _vec_in_cell(entry[0], entry[1], vid) if entry is not None else None
             if v is not None:
                 out[vid] = np.asarray(v, dtype=np.float32)
             else:
-                need_cells.setdefault(int(self._id2cell[vid]), []).append(vid)
+                need_cells.setdefault(cell_id, []).append(vid)
         if need_cells:
             cells = self._read_cells(list(need_cells.keys()), cache)
             for cell_id, vids in need_cells.items():
@@ -879,6 +858,54 @@ class PagedIvfIndex:
         return loaded
 
 
+def _split_cells_over_cap(
+    centroids: np.ndarray,
+    id2cell: np.ndarray,
+    cells: List[Tuple[int, np.ndarray, np.ndarray]],
+    dim: int,
+    cap_bytes: int,
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, np.ndarray, np.ndarray]]]:
+    """Guarantee every cell packs to at most ``cap_bytes`` by splitting oversized ones.
+
+    A cell with more than ``cap_bytes // record_size`` records is sliced by id into
+    fixed-size chunks: the first chunk keeps the original cell id and centroid, each
+    extra chunk becomes a new cell with its own id and a centroid equal to the chunk
+    mean, and ``id2cell`` is rewritten for every moved record. Returns the (possibly
+    extended) ``(centroids, id2cell, cells)``. This is the structural backstop that
+    makes it impossible to write a cell BYTEA over the cap, no matter what the build
+    produced -- the build's smaller per-cell target normally keeps it from firing.
+    A cell packs to exactly ``record_size`` bytes per record (no header), so a chunk
+    of ``cap_bytes // record_size`` records is always at most ``cap_bytes``.
+    """
+    record_size = 4 + dim * 4
+    cap_records = max(1, cap_bytes // record_size)
+    if all(int(ids.shape[0]) <= cap_records for _cid, ids, _vecs in cells):
+        return centroids, id2cell, cells
+
+    id2cell = np.array(id2cell, dtype=np.uint32, copy=True)
+    next_cell_id = int(centroids.shape[0])
+    extra_centroids: List[np.ndarray] = []
+    out_cells: List[Tuple[int, np.ndarray, np.ndarray]] = []
+    for cell_id, ids, vecs in cells:
+        n = int(ids.shape[0])
+        if n <= cap_records:
+            out_cells.append((cell_id, ids, vecs))
+            continue
+        for start in range(0, n, cap_records):
+            chunk_ids = ids[start:start + cap_records]
+            chunk_vecs = vecs[start:start + cap_records]
+            if start == 0:
+                out_cells.append((cell_id, chunk_ids, chunk_vecs))
+            else:
+                out_cells.append((next_cell_id, chunk_ids, chunk_vecs))
+                extra_centroids.append(chunk_vecs.mean(axis=0).astype(np.float32))
+                id2cell[chunk_ids] = next_cell_id
+                next_cell_id += 1
+    if extra_centroids:
+        centroids = np.ascontiguousarray(np.vstack([centroids] + extra_centroids), dtype=np.float32)
+    return centroids, id2cell, out_cells
+
+
 def store_paged_ivf(
     db_conn,
     index_name: str,
@@ -896,18 +923,20 @@ def store_paged_ivf(
     Replaces any existing rows for ``index_name`` in both tables in the caller's
     transaction. Every stored BYTEA value -- each cell row and each directory
     part -- is guaranteed to be at most ``IVF_MAX_PART_SIZE_MB``: the directory
-    blob is segmented across part rows, and each cell is verified against the cap
-    (the build splits oversized cells, so this is a defensive assertion). This
-    keeps every value far below PostgreSQL's 1 GB field limit at any library size.
-    ``normalized`` records whether the stored cell vectors are unit-normalized.
-    The process-wide L2 cell cache is invalidated for ``index_name`` so a rebuild
-    never leaves stale vectors resident.
+    blob is segmented across part rows, and any cell over the cap is split into
+    additional cells by :func:`_split_cells_over_cap` before writing (so storing
+    never fails on an oversized value, it splits). This keeps every value far below
+    PostgreSQL's 1 GB field limit at any library size. ``normalized`` records
+    whether the stored cell vectors are unit-normalized. The process-wide L2 cell
+    cache is invalidated for ``index_name`` so a rebuild never leaves stale vectors
+    resident.
     """
     from .index_build_helpers import store_segmented_blob
 
     part_mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     part_bytes = part_mb * 1024 * 1024
 
+    centroids, id2cell, cells = _split_cells_over_cap(centroids, id2cell, cells, dim, part_bytes)
     dir_blob = pack_directory(centroids, id2cell, item_ids, dim, metric, normalized=normalized)
     with db_conn.cursor() as cur:
         cur.execute(f"DELETE FROM {IVF_CELL_TABLE} WHERE index_name = %s", (index_name,))
@@ -915,17 +944,53 @@ def store_paged_ivf(
             if ids.shape[0] == 0:
                 continue
             packed = pack_cell(ids, vecs)
-            if len(packed) > part_bytes:
-                raise ValueError(
-                    f"IVF cell {cell_id} of '{index_name}' is {len(packed)} bytes, "
-                    f"over the {part_bytes}-byte cap; build must split it further."
-                )
             cur.execute(
                 f"INSERT INTO {IVF_CELL_TABLE} (index_name, cell_id, cell_data) VALUES (%s, %s, %s)",
                 (index_name, int(cell_id), psycopg2.Binary(packed)),
             )
     store_segmented_blob(db_conn, IVF_DIR_TABLE, f"{index_name}__ivf_dir", dir_blob, max_part_size_mb=part_mb)
     invalidate_global_cell_cache(index_name)
+
+
+def _bounded_cell_groups(
+    members: np.ndarray,
+    member_vecs: np.ndarray,
+    base_centroid: np.ndarray,
+    max_records: int,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Split one coarse cell into ``(member_indices, centroid)`` groups under the cap.
+
+    A cell within ``max_records`` is kept whole. An oversized cell is first
+    sub-clustered with k-means for locality; any sub-cluster k-means cannot shrink
+    below the cap -- typically a block of identical vectors that always collapses
+    into a single cluster (e.g. instrumental tracks sharing one lyrics embedding) --
+    is then hard-split into fixed-size chunks by id, so the size bound always holds
+    regardless of vector distribution. Chunk centroids are the chunk mean (the
+    shared point itself when the rows are identical).
+    """
+    from sklearn.cluster import MiniBatchKMeans
+
+    if members.shape[0] <= max_records:
+        return [(members, base_centroid)]
+
+    n_sub = int(np.ceil(members.shape[0] / max_records))
+    sub = MiniBatchKMeans(n_clusters=n_sub, batch_size=10000, n_init=1, max_iter=15, random_state=0)
+    sub_labels = sub.fit_predict(member_vecs)
+    groups: List[Tuple[np.ndarray, np.ndarray]] = []
+    for s in range(n_sub):
+        mask = sub_labels == s
+        grp = members[mask]
+        if grp.shape[0] == 0:
+            continue
+        if grp.shape[0] <= max_records:
+            groups.append((grp, sub.cluster_centers_[s].astype(np.float32)))
+            continue
+        grp_vecs = member_vecs[mask]
+        for start in range(0, grp.shape[0], max_records):
+            chunk = grp[start:start + max_records]
+            chunk_centroid = grp_vecs[start:start + max_records].mean(axis=0).astype(np.float32)
+            groups.append((chunk, chunk_centroid))
+    return groups
 
 
 def build_and_store_paged_ivf(
@@ -991,20 +1056,8 @@ def build_and_store_paged_ivf(
         if members.shape[0] == 0:
             cells.append((c, np.empty(0, dtype=np.int32), np.empty((0, dim), dtype=np.float32)))
             continue
-        if members.shape[0] <= max_cell_records:
-            cells.append((c, int_ids[members], train_mat[members]))
-            id2cell[members] = c
-            continue
-
-        n_sub = int(np.ceil(members.shape[0] / max_cell_records))
-        sub = MiniBatchKMeans(n_clusters=n_sub, batch_size=10000, n_init=1, max_iter=15, random_state=0)
-        sub_labels = sub.fit_predict(train_mat[members])
         reused_c = False
-        for s in range(n_sub):
-            sub_members = members[sub_labels == s]
-            if sub_members.shape[0] == 0:
-                continue
-            centroid = sub.cluster_centers_[s].astype(np.float32)
+        for grp, centroid in _bounded_cell_groups(members, train_mat[members], centroids[c], max_cell_records):
             if not reused_c:
                 assigned_cell = c
                 centroid_list[c] = centroid
@@ -1013,8 +1066,8 @@ def build_and_store_paged_ivf(
                 assigned_cell = next_cell_id
                 centroid_list.append(centroid)
                 next_cell_id += 1
-            cells.append((assigned_cell, int_ids[sub_members], train_mat[sub_members]))
-            id2cell[sub_members] = assigned_cell
+            cells.append((assigned_cell, int_ids[grp], train_mat[grp]))
+            id2cell[grp] = assigned_cell
 
     final_centroids = np.ascontiguousarray(np.vstack(centroid_list), dtype=np.float32)
     logger.info("IVF build '%s': %d cells after splitting (max_cell_records=%d).", index_name, len(centroid_list), max_cell_records)

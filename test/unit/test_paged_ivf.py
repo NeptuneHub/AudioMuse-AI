@@ -22,6 +22,9 @@ from tasks.paged_ivf import (
     unpack_cell,
     _CellLruCache,
     _GlobalCellCache,
+    _vec_in_cell,
+    _bounded_cell_groups,
+    _split_cells_over_cap,
 )
 
 
@@ -96,10 +99,90 @@ def test_cell_cache_vector_lookup_and_eviction():
     ids = np.array([10, 11, 12], dtype=np.int32)
     vecs = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]], dtype=np.float32)
     cache.add_cell(7, ids, vecs)
-    got = cache.vector_for(11)
+    entry = cache.get_cell(7)
+    assert entry is not None
+    got = _vec_in_cell(entry[0], entry[1], 11)
     assert got is not None
     np.testing.assert_array_equal(got, vecs[1])
-    assert cache.vector_for(999) is None
+    assert _vec_in_cell(entry[0], entry[1], 999) is None
+    assert cache.get_cell(999) is None
+
+
+def test_bounded_cell_groups_keeps_small_cell_whole():
+    members = np.arange(50, dtype=np.int32)
+    vecs = np.random.randn(50, 8).astype(np.float32)
+    base = vecs.mean(axis=0)
+    groups = _bounded_cell_groups(members, vecs, base, 100)
+    assert len(groups) == 1
+    np.testing.assert_array_equal(groups[0][0], members)
+    np.testing.assert_array_equal(groups[0][1], base)
+
+
+def test_bounded_cell_groups_splits_identical_vectors_under_cap():
+    n = 5000
+    dim = 16
+    members = np.arange(n, dtype=np.int32)
+    vecs = np.ones((n, dim), dtype=np.float32)
+    max_records = 500
+    groups = _bounded_cell_groups(members, vecs, vecs[0], max_records)
+
+    assert all(g.shape[0] <= max_records for g, _ in groups)
+    all_idx = np.concatenate([g for g, _ in groups])
+    np.testing.assert_array_equal(np.sort(all_idx), members)
+    assert all_idx.shape[0] == n
+
+
+def test_bounded_cell_groups_splits_distinct_vectors_under_cap():
+    rng = np.random.default_rng(0)
+    n = 5000
+    dim = 16
+    members = np.arange(n, dtype=np.int32)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    max_records = 500
+    groups = _bounded_cell_groups(members, vecs, vecs.mean(axis=0), max_records)
+
+    assert all(g.shape[0] <= max_records for g, _ in groups)
+    all_idx = np.concatenate([g for g, _ in groups])
+    np.testing.assert_array_equal(np.sort(all_idx), members)
+
+
+def test_split_cells_over_cap_noop_when_under():
+    dim = 8
+    record = 4 + dim * 4
+    centroids = np.random.randn(2, dim).astype(np.float32)
+    id2cell = np.array([0, 0, 1], dtype=np.uint32)
+    cells = [
+        (0, np.array([0, 1], dtype=np.int32), np.random.randn(2, dim).astype(np.float32)),
+        (1, np.array([2], dtype=np.int32), np.random.randn(1, dim).astype(np.float32)),
+    ]
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, cells, dim, 100 * record)
+    assert out_c.shape[0] == 2
+    assert len(out_cells) == 2
+    np.testing.assert_array_equal(out_id2cell, id2cell)
+
+
+def test_split_cells_over_cap_splits_and_stays_under_cap():
+    dim = 8
+    record = 4 + dim * 4
+    cap_records = 1000
+    cap_bytes = cap_records * record
+    n = 3500
+    ids = np.arange(n, dtype=np.int32)
+    vecs = np.random.randn(n, dim).astype(np.float32)
+    centroids = np.random.randn(1, dim).astype(np.float32)
+    id2cell = np.zeros(n, dtype=np.uint32)
+
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, [(0, ids, vecs)], dim, cap_bytes)
+
+    assert all(c.shape[0] <= cap_records for _cid, c, _v in out_cells)
+    assert all(c.shape[0] * record <= cap_bytes for _cid, c, _v in out_cells)
+    assert out_c.shape[0] == len(out_cells)
+
+    seen = np.concatenate([c for _cid, c, _v in out_cells])
+    np.testing.assert_array_equal(np.sort(seen), ids)
+    for cid, c, _v in out_cells:
+        for i in c:
+            assert int(out_id2cell[int(i)]) == cid
 
 
 def _mk_cell(cell_id, n, dim):

@@ -470,18 +470,37 @@ def test_ivf_directory_is_segmented_under_cap(ivf_db):
     assert max_cell <= part_bytes, f"a cell is {max_cell} > cap {part_bytes}"
 
 
-def test_ivf_oversized_cell_is_rejected(ivf_db):
+def test_ivf_oversized_cell_is_split_not_rejected(ivf_db):
     from tasks import paged_ivf
 
     dim = 8
-    big = 40000
-    cells = [(0, np.arange(big, dtype=np.int32), np.random.randn(big, dim).astype(np.float32))]
+    part_mb = 1
+    cap = part_mb * 1024 * 1024
+    n = 40000
+    ids = np.arange(n, dtype=np.int32)
+    vecs = np.random.randn(n, dim).astype(np.float32)
+    cells = [(0, ids, vecs)]
     centroids = np.random.randn(1, dim).astype(np.float32)
-    item_ids = ["a", "b", "c"]
-    id2cell = np.zeros(3, dtype=np.uint32)
+    item_ids = [f"i{i}" for i in range(n)]
+    id2cell = np.zeros(n, dtype=np.uint32)
 
-    with pytest.raises(ValueError):
-        paged_ivf.store_paged_ivf(ivf_db, "bigcell", centroids, id2cell, item_ids, cells, dim, "angular", max_part_size_mb=1)
+    paged_ivf.store_paged_ivf(ivf_db, "bigcell", centroids, id2cell, item_ids, cells, dim, "angular", max_part_size_mb=part_mb)
+
+    with ivf_db.cursor() as cur:
+        cur.execute("SELECT count(*), max(octet_length(cell_data)) FROM ivf_cell WHERE index_name = %s", ("bigcell",))
+        n_rows, max_cell = cur.fetchone()
+    assert n_rows >= 2, f"oversized cell should split into multiple rows, got {n_rows}"
+    assert max_cell <= cap, f"a cell is {max_cell} > cap {cap}"
+
+    loaded = paged_ivf.load_paged_ivf_index(
+        ivf_db, "bigcell", dim, "angular", conn_factory=lambda: ivf_db, label="bigcell",
+    )
+    assert loaded is not None
+    index = loaded[0]
+    assert index.num_elements == n
+    index.begin_request()
+    got = index.get_vectors([0, n - 1])
+    assert 0 in got and (n - 1) in got
 
 
 def test_ivf_real_build_all_rows_under_default_cap(ivf_db):
@@ -502,6 +521,51 @@ def test_ivf_real_build_all_rows_under_default_cap(ivf_db):
         max_blob = cur.fetchone()[0]
     assert max_cell is not None and max_cell <= cap
     assert max_blob is not None and max_blob <= cap
+
+
+def test_ivf_build_splits_identical_vectors_under_cap(ivf_db, monkeypatch):
+    import config
+    from tasks import paged_ivf
+
+    monkeypatch.setattr(config, "IVF_MAX_CELL_MB", 1)
+    monkeypatch.setattr(config, "IVF_MAX_PART_SIZE_MB", 1)
+
+    dim = 64
+    n_dupes, n_rest = 8000, 4000
+    rng = np.random.default_rng(7)
+    shared = rng.standard_normal((1, dim)).astype(np.float32)
+    dupes = np.repeat(shared, n_dupes, axis=0)
+    rest = rng.standard_normal((n_rest, dim)).astype(np.float32)
+    x = np.vstack([dupes, rest]).astype(np.float32)
+    item_ids = [f"d{i}" for i in range(n_dupes + n_rest)]
+
+    assert paged_ivf.build_and_store_paged_ivf(ivf_db, "dupes_test", x, item_ids, dim, "angular")
+
+    cap = config.IVF_MAX_PART_SIZE_MB * 1024 * 1024
+    with ivf_db.cursor() as cur:
+        cur.execute("SELECT max(octet_length(cell_data)) FROM ivf_cell WHERE index_name = %s", ("dupes_test",))
+        max_cell = cur.fetchone()[0]
+    assert max_cell is not None and max_cell <= cap, f"a cell is {max_cell} > cap {cap}"
+
+    loaded = paged_ivf.load_paged_ivf_index(
+        ivf_db, "dupes_test", dim, "angular", conn_factory=lambda: ivf_db, label="dupes_test",
+    )
+    assert loaded is not None
+    index = loaded[0]
+    assert index.num_elements == n_dupes + n_rest
+
+    from tasks.paged_ivf import _normalize_rows
+    x_norm = _normalize_rows(x)
+    index.begin_request()
+    got = index.get_vectors([0, n_dupes - 1, n_dupes + 100])
+    np.testing.assert_allclose(got[0], x_norm[0], atol=0)
+    np.testing.assert_allclose(got[n_dupes - 1], x_norm[n_dupes - 1], atol=0)
+    np.testing.assert_allclose(got[n_dupes + 100], x_norm[n_dupes + 100], atol=0)
+
+    index.begin_request()
+    probe_id = n_dupes + 100
+    ids, _dists = index.query(x[probe_id], k=10)
+    assert probe_id in [int(i) for i in ids]
 
 
 if __name__ == "__main__":
