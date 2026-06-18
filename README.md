@@ -175,7 +175,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 **Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
 </details>
 
-> **IMPORTANT** Before update a native version, first top any running instance.
+> **IMPORTANT** Before update a native version, first stop any running instance.
 
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
