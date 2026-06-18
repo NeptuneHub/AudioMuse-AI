@@ -40,6 +40,10 @@ class SetupManager:
         if env_url:
             return env_url
 
+        import sys
+        if getattr(sys, "frozen", False):
+            return None
+
         user = os.environ.get("POSTGRES_USER", "audiomuse")
         password = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
         host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
@@ -55,6 +59,8 @@ class SetupManager:
         return psycopg2.connect(self.database_url, connect_timeout=30)
 
     def ensure_table(self):
+        if self.database_url is None:
+            return
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -94,6 +100,8 @@ class SetupManager:
             return False
 
     def get_raw_overrides(self, ensure_table=True):
+        if self.database_url is None:
+            return {}
         try:
             if ensure_table:
                 self.ensure_table()
