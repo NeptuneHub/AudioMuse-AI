@@ -34,7 +34,16 @@ def _run_flask():
     )
 
 
+_NO_LONGDOUBLE_WARMUP_ROLES = {"janitor", "restart-listener"}
+
+
 def _run_role(role):
+    if role not in _NO_LONGDOUBLE_WARMUP_ROLES:
+        try:
+            import numeric_bootstrap
+            numeric_bootstrap.warmup_scipy_longdouble()
+        except Exception:
+            pass
     if role == "flask":
         _run_flask()
     elif role == "worker-high":
@@ -159,12 +168,9 @@ def _run_menubar():
 
 
 def main():
-    # Force a deterministic C *numeric* locale in every frozen process before any
-    # heavy import. NumPy's int->longdouble conversion (used by scipy at import)
-    # goes through the locale-sensitive C strtold; a macOS framework changing the
-    # locale concurrently otherwise causes an intermittent
-    # "Could not parse python long as longdouble" crash. This is macOS-only (the
-    # Linux/Docker workers never run launcher.py), so it cannot affect containers.
+    # Mitigate the macOS NumPy int->longdouble import crash (issue #658). The
+    # decisive fix is warmup_scipy_longdouble() in _run_role(); this pin is only
+    # locale-churn hygiene. See numeric_bootstrap.py for the full mechanism.
     try:
         import numeric_bootstrap
         numeric_bootstrap.pin_numeric_locale()

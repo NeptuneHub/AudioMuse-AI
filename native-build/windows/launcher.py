@@ -19,12 +19,12 @@ multi-call launcher:
 """
 
 # --- Windows: force multiprocessing 'spawn' before ANY imports ---
-# Python's ``multiprocessing`` on Windows does not support ``fork`` (only
-# ``spawn``).  RQ's ``scheduler.py`` calls ``get_context('fork')`` at module
-# level, and RQ workers call ``os.fork()`` directly.  The monkey-patch below
-# redirects ``fork`` requests to ``spawn`` so imports succeed.  Actual
-# worker fork() calls will still fail at runtime, so we skip starting
-# RQ workers on Windows (see supervisor.py).
+# Python's ``multiprocessing`` on Windows supports only ``spawn`` (no ``fork``),
+# but RQ's ``scheduler.py`` calls ``get_context('fork')`` at module level. The
+# monkey-patch below redirects those ``fork`` requests to ``spawn`` so imports
+# succeed. The workers themselves run as RQ's ``SimpleWorker`` on Windows (no
+# ``os.fork()``; each job runs in the worker process), so the full worker pool
+# runs here -- see rq_worker.py and supervisor.py.
 import multiprocessing
 _orig_get_context = multiprocessing.get_context
 def _win_get_context(method=None):
