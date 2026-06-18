@@ -1,4 +1,4 @@
-import os, json, traceback
+import os, traceback
 try:
     import driver as D
 except ModuleNotFoundError:
