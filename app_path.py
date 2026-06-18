@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
 from tasks.path_manager import find_path_between_songs, get_distance
-from tasks.voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector
+from tasks.ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import PATH_DEFAULT_LENGTH, PATH_FIX_SIZE, MOOD_CENTROIDS_FILE, DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS
 from app_helper import top_stratified_genre
 import numpy as np

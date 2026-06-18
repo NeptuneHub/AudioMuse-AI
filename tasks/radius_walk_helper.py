@@ -2,7 +2,7 @@
 Shared Radius Walk helper.
 
 Provides a generalized bucketed greedy walk algorithm for reordering
-similarity search results. Used by both MusicNN (voyager_manager) and
+similarity search results. Used by both MusicNN (ivf_manager) and
 SemGrove (sem_grove_manager) search paths.
 
 The walk:

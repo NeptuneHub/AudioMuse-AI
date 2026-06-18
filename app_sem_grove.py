@@ -2,7 +2,7 @@
 Semantic & Groove (SemGrove) Search Blueprint
 
 Provides the API for the "By Song" tab in the Lyrics Search page.
-Uses the merged lyrics+audio Voyager index built by tasks/sem_grove_manager.py.
+Uses the merged lyrics+audio IVF index built by tasks/sem_grove_manager.py.
 """
 
 import logging
@@ -21,7 +21,7 @@ def sem_grove_search_api():
     ---
     tags:
       - SemGrove
-    summary: Find songs similar to a seed song using the merged lyrics+audio Voyager index.
+    summary: Find songs similar to a seed song using the merged lyrics+audio IVF index.
     requestBody:
       required: true
       content:
@@ -112,7 +112,7 @@ def sem_grove_refresh_api():
     ---
     tags:
       - SemGrove
-    summary: Reload the merged lyrics+audio Voyager index from the database.
+    summary: Reload the merged lyrics+audio IVF index from the database.
     responses:
       200:
         description: Refresh attempted; updated stats returned.

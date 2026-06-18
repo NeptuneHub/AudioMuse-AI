@@ -21,15 +21,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Mirrors test_import_architecture._collect_modules excludes (plus scripts/, which
-# are standalone build entry points not meant to import in a server context).
+# Mirrors test_import_architecture._collect_modules excludes (plus scripts/ and
+# screenshot/, which are standalone tooling entry points -- the latter depends on
+# playwright -- not meant to import in a server context).
 EXCLUDED_DIRS = {
     ".git", ".venv", ".venv-windows", "node_modules", "__pycache__",
-    "build", "dist", "pginstall", "native-build", "test", "scripts",
+    "build", "dist", "pginstall", "native-build", "test", "scripts", "screenshot",
 }
 
 # ImportErrors naming an optional/native dependency that may be absent in CI.
-_OPTIONAL_DEPS = ("cuml", "cupy", "voyager", "faiss", "tensorflow")
+_OPTIONAL_DEPS = ("cuml", "cupy", "ivf", "faiss", "tensorflow")
 
 
 def _discover_modules():

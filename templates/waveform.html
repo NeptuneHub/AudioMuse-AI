@@ -140,7 +140,7 @@
 
                     try {
                         const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
-                        const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                        const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                         const tracks = await response.json();
                         autocompleteOffset = tracks.length;
                         showAutocomplete(tracks, false);
@@ -156,7 +156,7 @@
                 isLoadingMore = true;
                 try {
                     const params = new URLSearchParams({ search_query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
-                    const response = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${params}`);
+                    const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
                     const tracks = await response.json();
                     if (tracks.length > 0) {
                         autocompleteOffset += tracks.length;

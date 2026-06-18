@@ -2,7 +2,7 @@
 # zip to the GitHub release that triggered the run.
 #
 # Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
-# exclusively — there is no Intel build. onnxruntime/PyAV/voyager wheels are not
+# exclusively — there is no Intel build. onnxruntime/PyAV wheels are not
 # reliably universal2, so we build natively on an arm64 runner (macos-14).
 #
 # Reproducibility: the small, exact-version native build inputs are committed in

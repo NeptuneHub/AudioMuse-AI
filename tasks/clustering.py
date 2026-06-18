@@ -493,7 +493,7 @@ def run_clustering_task(
             _log_and_update(f"Starting post-processing with {initial_playlist_count} playlists", 90.2)
             
             # *** STEP 1: Apply duplicate filtering to remove similar songs within playlists ***
-            # Uses the same distance-based filtering logic as voyager_manager to avoid duplicate tracks
+            # Uses the same distance-based filtering logic as ivf_manager to avoid duplicate tracks
             _log_and_update("Applying duplicate filtering to remove similar songs...", 90.5)
             _log_and_update(f"Before duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists", 90.5)
             best_result = apply_duplicate_filtering_to_clustering_result(best_result, log_prefix="[DuplicateFilter] ")

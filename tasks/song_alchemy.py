@@ -2,7 +2,7 @@ import logging
 from typing import List, Tuple
 import numpy as np
 
-from .voyager_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
+from .ivf_manager import find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id, get_vector_by_id
 from .alchemy_projections import (
     _project_to_2d,
     _project_with_discriminant,
@@ -199,7 +199,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         except Exception:
             temperature = 1.0
 
-    # Find nearest neighbors to add_centroid using Voyager
+    # Find nearest neighbors to add_centroid using IVF
     # Special-case: if user provided exactly one ADD song and temperature==0 (deterministic)
     # then use the id-based neighbor query so results match the "similar song" path.
     if temperature is not None and float(temperature) == 0.0 and add_items and len(add_items) == 1 and add_items[0].get('type') == 'song':

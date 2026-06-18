@@ -9,7 +9,7 @@ live in ``tasks.ai.prompts``; AI calls go through ``tasks.ai.api``; DB
 connections come from ``tasks.mcp_helper.get_db_connection``.
 
 Dependencies on heavy submodules (``tasks.artist_gmm_manager``,
-``tasks.clap_text_search``, ``tasks.voyager_manager``, ``tasks.song_alchemy``,
+``tasks.clap_text_search``, ``tasks.ivf_manager``, ``tasks.song_alchemy``,
 ``tasks.ai.api``) are imported lazily inside each tool function. Each of those
 imports appears at most once across the module, so the lazy pattern is not
 duplication -- it is the standard way to keep this module loadable in test
@@ -428,8 +428,8 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
 
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> Dict:
-    """Find similar songs to a (title, artist) seed via Voyager nearest neighbors."""
-    from tasks.voyager_manager import find_nearest_neighbors_by_id
+    """Find similar songs to a (title, artist) seed via IVF nearest neighbors."""
+    from tasks.ivf_manager import find_nearest_neighbors_by_id
 
     get_songs = int(get_songs) if get_songs is not None else 100
 
@@ -912,7 +912,7 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
     Wraps ``tasks.lyrics_manager.search_by_text`` (the same backend that powers
     the ``/api/lyrics/search/text`` endpoint), maps ``author`` -> ``artist`` to
     match the shape other MCP tools return, and surfaces a clear message when
-    lyrics are disabled or the voyager index is not yet loaded.
+    lyrics are disabled or the ivf index is not yet loaded.
     """
     from config import LYRICS_ENABLED
 

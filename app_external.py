@@ -5,8 +5,8 @@ from psycopg2.extras import DictCursor
 import numpy as np
 import logging
 
-# Import voyager_manager functions for track lookups
-from tasks.voyager_manager import search_tracks_unified
+# Import ivf_manager functions for track lookups
+from tasks.ivf_manager import search_tracks_unified
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)

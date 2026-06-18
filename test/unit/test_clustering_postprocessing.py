@@ -186,7 +186,7 @@ class TestTitleArtistDeduplication:
 class TestDistanceFilteringDirect:
     """Test vector distance-based duplicate filtering"""
 
-    @patch('config.VOYAGER_METRIC', 'euclidean')
+    @patch('config.IVF_METRIC', 'euclidean')
     @patch('config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 0.1)
     @patch('config.DUPLICATE_DISTANCE_CHECK_LOOKBACK', 5)
     @patch('tasks.clustering_postprocessing.get_vectors_from_database')
@@ -213,7 +213,7 @@ class TestDistanceFilteringDirect:
         assert len(filtered) == 1
         assert filtered[0]['item_id'] == 's1'
 
-    @patch('config.VOYAGER_METRIC', 'euclidean')
+    @patch('config.IVF_METRIC', 'euclidean')
     @patch('config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 0.1)
     @patch('config.DUPLICATE_DISTANCE_CHECK_LOOKBACK', 5)
     @patch('tasks.clustering_postprocessing.get_vectors_from_database')

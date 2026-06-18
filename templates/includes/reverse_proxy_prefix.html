@@ -3,7 +3,7 @@
 <script>
     (function () {
         var root = {{ request.script_root | tojson }};
-        if (!root || typeof window.fetch !== "function") { return; }
+        if (!root || root.charAt(0) !== "/" || root.charAt(1) === "/" || typeof window.fetch !== "function") { return; }
         var nativeFetch = window.fetch.bind(window);
         window.fetch = function (input, init) {
             if (typeof input === "string" && input.charAt(0) === "/" && input.charAt(1) !== "/"

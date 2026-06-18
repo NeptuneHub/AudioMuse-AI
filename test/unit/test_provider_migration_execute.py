@@ -150,7 +150,7 @@ def _make_session_row(session_id=1, target='navidrome',
     )
 
 
-def _install_fake_psycopg2(mig, session_row, voyager_rows=None, mproj_rows=None,
+def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
                            authors=None, lyrics_exists=False):
     """Install a fake psycopg2 connection on the module + mock out redis, probe, etc.
 
@@ -171,10 +171,10 @@ def _install_fake_psycopg2(mig, session_row, voyager_rows=None, mproj_rows=None,
         elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
             mock_cur.fetchone.return_value = session_row
         elif up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'):
-            mock_cur.fetchall.return_value = [(r[0],) for r in (voyager_rows or [])]
+            mock_cur.fetchall.return_value = [(r[0],) for r in (ivf_rows or [])]
         elif up.startswith('SELECT ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
             name = params[0] if params else None
-            match = next((r for r in (voyager_rows or []) if r[0] == name), None)
+            match = next((r for r in (ivf_rows or []) if r[0] == name), None)
             mock_cur.fetchone.return_value = (match[1],) if match else None
         elif up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
             mock_cur.fetchall.return_value = []
@@ -303,11 +303,11 @@ class TestExecuteProviderMigration:
         assert fake_redis.delete.called
         assert 'migration:paused' in [c[0][0] for c in fake_redis.delete.call_args_list]
 
-    def test_voyager_id_map_rewrite_happens(self, mig):
-        # Seed one voyager row with an id_map containing the old id
-        voyager_rows = [('voyager_main', json.dumps({'0': 'old_1'}))]
+    def test_vec_id_map_rewrite_happens(self, mig):
+        # Seed one ivf row with an id_map containing the old id
+        ivf_rows = [('ivf_main', json.dumps({'0': 'old_1'}))]
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
-        _install_fake_psycopg2(mig, session_row, voyager_rows=voyager_rows)
+        _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
 
         mig.execute_provider_migration(1)
 
@@ -317,8 +317,8 @@ class TestExecuteProviderMigration:
         # Fallback: walk the call_args_list and check sql strings
         calls = mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
         sqls = [c[0][0] for c in calls]
-        upd_voyager = [s for s in sqls if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()]
-        assert len(upd_voyager) >= 1
+        upd_ivf = [s for s in sqls if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()]
+        assert len(upd_ivf) >= 1
 
 
 # ---------------------------------------------------------------------------

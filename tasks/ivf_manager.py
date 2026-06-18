@@ -1,43 +1,73 @@
-import gc
 import os
-import json
+import time
 import logging
-import tempfile
 import numpy as np
+from collections import OrderedDict
 from psycopg2.extras import DictCursor
-import io
 
-# Attempt to import Voyager (may be missing on non-AVX systems)
-try:
-    import voyager  # type: ignore
-    VOYAGER_AVAILABLE = True
-except ImportError:
-    logging.getLogger(__name__).warning("Voyager library not found. HNSW-based features will be disabled (non-AVX CPU detected).")
-    VOYAGER_AVAILABLE = False
-except Exception as e:
-    logging.getLogger(__name__).error(f"Error importing Voyager: {e}")
-    VOYAGER_AVAILABLE = False
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 import threading
 
-from config import EMBEDDING_DIMENSION, INDEX_NAME, VOYAGER_METRIC, VOYAGER_QUERY_EF, VOYAGER_MAX_PART_SIZE_MB, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE
+from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX
 
 logger = logging.getLogger(__name__)
 
 # Optional instrumentation: enable with RADIUS_INSTRUMENTATION=True in env
 INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 
-# When the serialized Voyager index exceeds this threshold the index
-# will be written into multiple rows as: <INDEX_NAME>_<part_no>_<total_parts>
-# Configurable via `VOYAGER_MAX_PART_SIZE_MB` in `config.py` (default 50 MB).
-VOYAGER_MAX_PART_SIZE = VOYAGER_MAX_PART_SIZE_MB * 1024 * 1024
+# --- Global cache for the loaded index ---
+ivf_index = None
+id_map = None # {vec_int_id: item_id_str}
+reverse_id_map = None # {item_id_str: vec_int_id}
 
-# --- Global cache for the loaded Voyager index ---
-voyager_index = None
-id_map = None # {voyager_int_id: item_id_str}
-reverse_id_map = None # {item_id_str: voyager_int_id}
+
+class _ResultCache:
+    """Thread-safe TTL+LRU cache for fully-computed query results.
+
+    The cell cache only removes Postgres reads; the per-request distance, dedup
+    and metadata work still runs every time, so two identical similarity or
+    max-distance queries take the same wall time. This caches the final result so
+    repeats are instant. Entries expire after ttl seconds and are dropped on index
+    rebuild via clear(). ttl <= 0 disables it.
+    """
+
+    def __init__(self, ttl_seconds, max_entries):
+        self._ttl = float(ttl_seconds)
+        self._max = max(1, int(max_entries))
+        self._data = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        if self._ttl <= 0:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            item = self._data.get(key)
+            if item is None:
+                return None
+            expiry, value = item
+            if expiry <= now:
+                del self._data[key]
+                return None
+            self._data.move_to_end(key)
+            return value
+
+    def put(self, key, value):
+        if self._ttl <= 0:
+            return
+        with self._lock:
+            self._data[key] = (time.monotonic() + self._ttl, value)
+            self._data.move_to_end(key)
+            while len(self._data) > self._max:
+                self._data.popitem(last=False)
+
+    def clear(self):
+        with self._lock:
+            self._data.clear()
+
+
+_neighbor_result_cache = _ResultCache(IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX)
+_max_distance_cache = _ResultCache(IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX)
 
 
 # --- Thread pool for parallel operations ---
@@ -54,7 +84,7 @@ def _get_thread_pool():
     global _thread_pool
     with _thread_pool_lock:
         if _thread_pool is None:
-            _thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKER_THREADS, thread_name_prefix="voyager")
+            _thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKER_THREADS, thread_name_prefix="ivf")
         return _thread_pool
 
 def _shutdown_thread_pool():
@@ -65,19 +95,19 @@ def _shutdown_thread_pool():
             _thread_pool.shutdown(wait=True)
             _thread_pool = None
 
-# --- LRU cache for frequently accessed vectors ---
-@lru_cache(maxsize=1000)
 def _get_cached_vector(item_id: str) -> np.ndarray | None:
-    """Cached version of get_vector_by_id for better performance."""
-    if voyager_index is None or reverse_id_map is None:
+    """Return the stored vector for ``item_id`` from the loaded IVF index.
+
+    The IVF backend keeps its own byte-bounded per-request cell cache, so no
+    extra process-global cache is needed here.
+    """
+    if ivf_index is None or reverse_id_map is None:
         return None
-    
-    voyager_id = reverse_id_map.get(item_id)
-    if voyager_id is None:
+    vec_id = reverse_id_map.get(item_id)
+    if vec_id is None:
         return None
-    
     try:
-        return voyager_index.get_vector(voyager_id)
+        return ivf_index.get_vector(vec_id)
     except Exception:
         return None
 
@@ -122,243 +152,82 @@ def _get_direct_cosine_distance(v1, v2):
 
 
 def get_direct_distance(v1, v2):
-    """Public helper that picks the metric according to VOYAGER_METRIC."""
-    if VOYAGER_METRIC == 'angular':
+    """Public helper that picks the metric according to IVF_METRIC."""
+    if IVF_METRIC == 'angular':
         return _get_direct_cosine_distance(v1, v2)
     return _get_direct_euclidean_distance(v1, v2)
 
 
-def load_voyager_index_for_querying(force_reload=False):
-    """
-    Loads the Voyager index from the database into the global in-memory cache.
-    This function is imported at module-level by the app startup path; keep it stable.
-    """
-    global voyager_index, id_map, reverse_id_map
+def load_ivf_index_for_querying(force_reload=False):
+    """Load the disk-paged IVF audio index into the global in-memory cache.
 
-    if voyager_index is not None and not force_reload:
-        logger.info("Voyager index is already loaded in memory. Skipping reload.")
+    Kept under this name because the app startup and reload paths import it directly.
+    """
+    global ivf_index, id_map, reverse_id_map
+
+    if ivf_index is not None and not force_reload:
+        logger.info("Audio index is already loaded in memory. Skipping reload.")
         return
 
-    # Clear the vector cache when reloading
-    if force_reload:
-        _get_cached_vector.cache_clear()
+    _neighbor_result_cache.clear()
+    _max_distance_cache.clear()
 
     from app_helper import get_db
-    logger.info("Attempting to load Voyager index from database into memory...")
+    from .paged_ivf import load_paged_ivf_index
     conn = get_db()
-    cur = conn.cursor()
+    logger.info("Loading audio IVF index from database into memory...")
     try:
-        # 1) Try the classic single-row index first (backwards compatible)
-        cur.execute("SELECT index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name = %s", (INDEX_NAME,))
-        record = cur.fetchone()
-
-        if record:
-            index_binary_data, id_map_json, db_embedding_dim = record
-
-            if not index_binary_data:
-                logger.error(f"Voyager index '{INDEX_NAME}' data in database is empty.")
-                voyager_index, id_map, reverse_id_map = None, None, None
-                return
-
-            if db_embedding_dim != EMBEDDING_DIMENSION:
-                logger.error(f"FATAL: Voyager index dimension mismatch! DB has {db_embedding_dim}, config expects {EMBEDDING_DIMENSION}.")
-                voyager_index, id_map, reverse_id_map = None, None, None
-                return
-
-            index_stream = io.BytesIO(index_binary_data)
-            loaded_index = voyager.Index.load(index_stream)
-            loaded_index.ef = VOYAGER_QUERY_EF
-            voyager_index = loaded_index
-            id_map = {int(k): v for k, v in json.loads(id_map_json).items()}
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            logger.info(f"Voyager index with {len(id_map)} items loaded successfully into memory.")
-            return
-
-        # 2) If not found, look for segmented rows named INDEX_NAME_<part>_<total>
-        cur.execute(
-            "SELECT index_name, index_data, id_map_json, embedding_dimension FROM voyager_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-            (INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
-        )
-        candidates = cur.fetchall()
-
-        if not candidates:
-            logger.warning(f"Voyager index '{INDEX_NAME}' not found in the database (single or segmented). Cache will be empty.")
-            voyager_index, id_map, reverse_id_map = None, None, None
-            return
-
-        # Filter and parse segment suffixes (expect format: name_<part_no>_<total_parts>)
-        seg_pattern = re.compile(rf"^{re.escape(INDEX_NAME)}_(\d+)_(\d+)$")
-        parts = []
-        total_expected = None
-        for row in candidates:
-            name, part_data, part_id_map_json, part_dim = row
-            m = seg_pattern.match(name)
-            if not m:
-                continue
-            part_no = int(m.group(1))
-            total = int(m.group(2))
-            if total_expected is None:
-                total_expected = total
-            elif total_expected != total:
-                logger.error(f"Segment total mismatch for Voyager index parts (found totals {total_expected} and {total}). Aborting load.")
-                voyager_index, id_map, reverse_id_map = None, None, None
-                return
-            parts.append((part_no, part_data, part_id_map_json, part_dim))
-
-        if not parts:
-            logger.error(f"No valid segmented Voyager index rows found for prefix '{INDEX_NAME}'.")
-            voyager_index, id_map, reverse_id_map = None, None, None
-            return
-
-        # Ensure we have all expected parts
-        if total_expected is None or len(parts) != total_expected:
-            logger.error(f"Incomplete Voyager index segments: expected {total_expected}, found {len(parts)}. Aborting load to avoid corruption.")
-            voyager_index, id_map, reverse_id_map = None, None, None
-            return
-
-        # Sort by part number and validate embedding_dimension consistency
-        parts.sort(key=lambda p: p[0])
-        from .index_build_helpers import reassemble_segmented_id_map
-        id_map_json_candidate = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
-        for p in parts:
-            if p[3] != EMBEDDING_DIMENSION:
-                logger.error(f"Voyager index embedding_dimension mismatch in segment {p[0]}: {p[3]} != {EMBEDDING_DIMENSION}. Aborting load.")
-                voyager_index, id_map, reverse_id_map = None, None, None
-                return
-
-        # Reassemble binary and pick id_map_json from first non-empty segment (prefer part 1)
-        index_stream = tempfile.TemporaryFile()
-        for _, part_data, _, _ in parts:
-            index_stream.write(part_data)
-        index_stream.seek(0)
-
-        if not id_map_json_candidate:
-            logger.error("No non-empty id_map_json found in segmented Voyager index rows. Aborting load.")
-            voyager_index, id_map, reverse_id_map = None, None, None
-            index_stream.close()
-            return
-
-        # Final validation: try loading Voyager and ensure element count matches id_map length
-        try:
-            loaded_index = voyager.Index.load(index_stream)
-            loaded_index.ef = VOYAGER_QUERY_EF
-            # Validate element counts if voyager exposes num_elements
-            try:
-                idx_count = getattr(loaded_index, 'num_elements', None)
-            except Exception:
-                idx_count = None
-
-            parsed_id_map = {int(k): v for k, v in json.loads(id_map_json_candidate).items()}
-            if idx_count is not None and idx_count != len(parsed_id_map):
-                logger.error(f"Voyager index element count mismatch after reassembly: index.num_elements={idx_count}, id_map={len(parsed_id_map)}. Aborting load.")
-                voyager_index, id_map, reverse_id_map = None, None, None
-                return
-
-            voyager_index = loaded_index
-            id_map = parsed_id_map
-            reverse_id_map = {v: k for k, v in id_map.items()}
-
-            logger.info(f"Voyager segmented index ({len(parts)} parts) with {len(id_map)} items loaded successfully into memory.")
-            return
-        except Exception as load_error:
-            logger.error(f"Failed to load reassembled Voyager index: {load_error}", exc_info=True)
-            voyager_index, id_map, reverse_id_map = None, None, None
-            return
-        finally:
-            try:
-                index_stream.close()
-            except Exception as close_error:
-                logger.warning("Failed to close Voyager index stream: %s", close_error, exc_info=True)
-
+        loaded = load_paged_ivf_index(conn, INDEX_NAME, EMBEDDING_DIMENSION, IVF_METRIC, label="audio")
     except Exception as e:
-        logger.error("Failed to load Voyager index from database: %s", e, exc_info=True)
-        voyager_index, id_map, reverse_id_map = None, None, None
-    finally:
-        cur.close()
-def build_and_store_voyager_index(db_conn=None):
-    """
-    Fetches all song embeddings, builds a new Voyager index, and stores it
-    atomically in the 'voyager_index_data' table in PostgreSQL.
-
-    Accepts an optional db_conn (psycopg2 connection). If None, the function
-    will acquire a connection via app_helper.get_db().
-    """
-    if not VOYAGER_AVAILABLE:
-        logger.warning("Voyager not available - skipping index build")
+        logger.error("Failed to load audio IVF index: %s", e, exc_info=True)
+        ivf_index, id_map, reverse_id_map = None, None, None
         return
+    if loaded is None:
+        logger.warning("Audio IVF index not found in the database. Cache will be empty (run analysis to build it).")
+        ivf_index, id_map, reverse_id_map = None, None, None
+        return
+    ivf_index, id_map, reverse_id_map = loaded
+    logger.info("Audio IVF index with %d items loaded successfully into memory.", len(id_map))
 
-    from .index_build_helpers import (
-        iter_embedding_batches,
-        build_voyager_index_bytes_streaming,
-        store_voyager_index_segmented,
-        build_id_map,
-        EmptyIndexError,
-    )
 
+def build_and_store_ivf_index(db_conn=None):
+    """Build the disk-paged IVF audio index from song embeddings and store it.
+
+    Accepts an optional db_conn. If None, acquires one via app_helper.get_db().
+    """
     if db_conn is None:
         try:
             from app_helper import get_db
             db_conn = get_db()
         except Exception:
-            logger.error("build_and_store_voyager_index: no db_conn provided and get_db() failed.")
+            logger.error("build_and_store_ivf_index: no db_conn provided and get_db() failed.")
             return
 
-    logger.info("Starting to build and store Voyager index (streaming)...")
-
+    from .index_build_helpers import stream_embeddings_to_buffer
+    from .paged_ivf import build_and_store_paged_ivf
+    logger.info("Starting to build and store audio IVF index (disk-paged)...")
     try:
-        batches = iter_embedding_batches(
-            table="embedding",
-            column="embedding",
-            dim=EMBEDDING_DIMENSION,
+        buf, item_ids = stream_embeddings_to_buffer(
+            table="embedding", column="embedding", dim=EMBEDDING_DIMENSION,
+            where_clause="embedding IS NOT NULL",
         )
-        try:
-            index_binary_data, item_ids = build_voyager_index_bytes_streaming(
-                batches, EMBEDDING_DIMENSION, metric=VOYAGER_METRIC,
-            )
-        except EmptyIndexError as ve:
-            logger.warning(f"No valid embeddings were found to add to the Voyager index. Aborting build process: {ve}")
+        if buf.shape[0] == 0:
+            logger.warning("No valid audio embeddings found for IVF index build. Aborting.")
             return
-        gc.collect()
-
-        logger.info(f"Voyager index binary data size to be stored: {len(index_binary_data)} bytes.")
-
-        if not index_binary_data:
-            logger.error("CRITICAL: Generated Voyager index file is empty. Aborting database storage.")
-            return
-
-        local_id_map = build_id_map(item_ids)
-
-        logger.info(f"Storing Voyager index '{INDEX_NAME}' in the database...")
-        try:
-            store_voyager_index_segmented(
-                db_conn,
-                target_table="voyager_index_data",
-                index_name=INDEX_NAME,
-                index_bytes=index_binary_data,
-                id_map=local_id_map,
-                embedding_dimension=EMBEDDING_DIMENSION,
-            )
+        if build_and_store_paged_ivf(db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC):
             db_conn.commit()
-            logger.info("Voyager index build and database storage complete.")
-        except Exception as e:
-            try:
-                db_conn.rollback()
-            except Exception:
-                pass
-            logger.error("Failed to store segmented Voyager index: %s", e, exc_info=True)
-            raise
-
+            logger.info("Audio IVF index build and database storage complete.")
     except Exception as e:
-        logger.error("An error occurred during Voyager index build: %s", e, exc_info=True)
+        logger.error("An error occurred during audio IVF index build: %s", e, exc_info=True)
         try:
             db_conn.rollback()
         except Exception:
             pass
 
+
 def get_vector_by_id(item_id: str) -> np.ndarray | None:
     """
-    Retrieves the embedding vector for a given item_id from the loaded Voyager index.
+    Retrieves the embedding vector for a given item_id from the loaded IVF index.
     Uses caching for better performance.
     """
     return _get_cached_vector(item_id)
@@ -460,12 +329,15 @@ def _filter_by_distance(song_results: list, db_conn):
         # Use single query for small datasets
         details_map = fetch_details_batch(item_ids)
 
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
+    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
     
     filtered_songs = []
-    
-    # For small datasets, use sequential processing
+
+    # For small datasets, use sequential processing. The larger-dataset branch
+    # below runs its vector distance work on this same request thread (only the
+    # metadata fetch above uses the pool), so the IVF backend takes the identical
+    # code path as ivf and produces identical results.
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         for current_song in song_results:
             is_too_close = False
@@ -859,12 +731,23 @@ def _execute_radius_walk(
 
 def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
     """
-    Finds the N nearest neighbors for a given item_id using the globally cached Voyager index.
+    Finds the N nearest neighbors for a given item_id using the globally cached IVF index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
     If radius_similarity is True, re-orders results based on the 70/30 weighted score.
     """
-    if voyager_index is None or id_map is None or reverse_id_map is None:
-        raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+    if ivf_index is None or id_map is None or reverse_id_map is None:
+        raise RuntimeError("IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+
+    eff_radius = SIMILARITY_RADIUS_DEFAULT if radius_similarity is None else radius_similarity
+    eff_eliminate = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT if eliminate_duplicates is None else eliminate_duplicates
+    eff_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+    _result_key = (target_item_id, int(n), bool(eff_eliminate), bool(eff_mood), bool(eff_radius))
+    _cached = _neighbor_result_cache.get(_result_key)
+    if _cached is not None:
+        return [dict(r) for r in _cached]
+
+    if ivf_index is not None:
+        ivf_index.begin_request()
 
     from app_helper import get_db, get_score_data_by_ids
     db_conn = get_db()
@@ -876,15 +759,15 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     target_song_details = target_song_details_list[0]
 
 
-    target_voyager_id = reverse_id_map.get(target_item_id)
-    if target_voyager_id is None:
-        logger.warning(f"Target item_id '{target_item_id}' not found in the loaded Voyager index map.")
+    target_vec_id = reverse_id_map.get(target_item_id)
+    if target_vec_id is None:
+        logger.warning(f"Target item_id '{target_item_id}' not found in the loaded IVF index map.")
         return []
 
     try:
-        query_vector = voyager_index.get_vector(target_voyager_id)
+        query_vector = ivf_index.get_vector(target_vec_id)
     except Exception as e:
-        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        logger.error(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
         return []
 
 
@@ -919,32 +802,28 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         num_to_query = n + k_increase + 1
 
     original_num_to_query = num_to_query
-    if num_to_query > len(voyager_index):
+    if num_to_query > len(ivf_index):
         logger.warning(
-            f"Voyager query request for {n} final items was expanded to {original_num_to_query} neighbors for processing. "
-            f"This exceeds the total items in the index ({len(voyager_index)}). "
-            f"Capping the actual query to {len(voyager_index)} items."
+            f"IVF query request for {n} final items was expanded to {original_num_to_query} neighbors for processing. "
+            f"This exceeds the total items in the index ({len(ivf_index)}). "
+            f"Capping the actual query to {len(ivf_index)} items."
         )
-        num_to_query = len(voyager_index)
+        num_to_query = len(ivf_index)
 
     try:
         if num_to_query <= 1:
              logger.warning(f"Number of neighbors to query ({num_to_query}) is too small. Skipping query.")
-             neighbor_voyager_ids, distances = [], []
+             neighbor_vec_ids, distances = [], []
         else:
-             neighbor_voyager_ids, distances = voyager_index.query(query_vector, k=num_to_query)
-    except voyager.RecallError as e:
-        logger.warning(f"Voyager RecallError for item '{target_item_id}': {e}. "
-                       "This is expected with small or sparse datasets. Returning empty list.")
-        return []
+             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=num_to_query)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during Voyager query for item '{target_item_id}': {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred during IVF query for item '{target_item_id}': {e}", exc_info=True)
         return []
 
     # --- Initial list of neighbors ---
     initial_results = []
-    for voyager_id, dist in zip(neighbor_voyager_ids, distances):
-        item_id = id_map.get(voyager_id)
+    for vec_id, dist in zip(neighbor_vec_ids, distances):
+        item_id = id_map.get(vec_id)
         if item_id and item_id != target_item_id:
             initial_results.append({"item_id": item_id, "distance": float(dist)})
 
@@ -974,7 +853,8 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         
         # 3. Return the results. They are already in the correct "walk" order.
         # No further filtering or sorting is needed.
-        return final_results
+        _neighbor_result_cache.put(_result_key, final_results)
+        return [dict(r) for r in final_results]
 
     # --- Standard Logic (No Radius) ---
     else:
@@ -1028,14 +908,19 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
             final_results = unique_results_by_song
 
         # 6. Return the top N results, sorted by original distance
-        return final_results[:n]
+        final_results = final_results[:n]
+        _neighbor_result_cache.put(_result_key, final_results)
+        return [dict(r) for r in final_results]
 
 def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
     """
     Finds the N nearest neighbors for a given query vector.
     """
-    if voyager_index is None or id_map is None:
-        raise RuntimeError("Voyager index is not loaded in memory.")
+    if ivf_index is None or id_map is None:
+        raise RuntimeError("IVF index is not loaded in memory.")
+
+    if ivf_index is not None:
+        ivf_index.begin_request()
 
     from app_helper import get_db
     db_conn = get_db()
@@ -1050,32 +935,28 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         num_to_query = n + int(n * 0.2)
 
     original_num_to_query = num_to_query
-    if num_to_query > len(voyager_index):
+    if num_to_query > len(ivf_index):
         logger.warning(
-            f"Voyager query request for {n} final items was expanded to {original_num_to_query} neighbors for processing. "
-            f"This exceeds the total items in the index ({len(voyager_index)}). "
-            f"Capping the actual query to {len(voyager_index)} items."
+            f"IVF query request for {n} final items was expanded to {original_num_to_query} neighbors for processing. "
+            f"This exceeds the total items in the index ({len(ivf_index)}). "
+            f"Capping the actual query to {len(ivf_index)} items."
         )
-        num_to_query = len(voyager_index)
+        num_to_query = len(ivf_index)
 
     try:
         if num_to_query <= 0:
             logger.warning("Number of neighbors to query is zero or less. Skipping query.")
-            neighbor_voyager_ids, distances = [], []
+            neighbor_vec_ids, distances = [], []
         else:
-            neighbor_voyager_ids, distances = voyager_index.query(query_vector, k=num_to_query)
-    except voyager.RecallError as e:
-        logger.warning(f"Voyager RecallError for synthetic vector query: {e}. "
-                       "This is expected with small or sparse datasets. Returning empty list.")
-        return []
+            neighbor_vec_ids, distances = ivf_index.query(query_vector, k=num_to_query)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during Voyager query for synthetic vector: {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred during IVF query for synthetic vector: {e}", exc_info=True)
         return []
 
     initial_results = [
-        {"item_id": id_map.get(voyager_id), "distance": float(dist)}
-        for voyager_id, dist in zip(neighbor_voyager_ids, distances)
-        if id_map.get(voyager_id) is not None
+        {"item_id": id_map.get(vec_id), "distance": float(dist)}
+        for vec_id, dist in zip(neighbor_vec_ids, distances)
+        if id_map.get(vec_id) is not None
     ]
 
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
@@ -1145,47 +1026,37 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
 def get_max_distance_for_id(target_item_id: str):
     """
-    Returns the exact maximum distance from the given item to any other item in the loaded voyager index.
-    Returns a dict: { 'max_distance': float, 'farthest_item_id': str | None }
+    Returns the maximum distance from the given item to any other item in the loaded ivf index.
+
+    This is the APPROXIMATE farthest neighbour computed by
+    ``PagedIvfIndex.get_max_distance`` (it ranks centroids and scans only the
+    ``IVF_MAX_DISTANCE_NPROBE`` farthest cells), used as the UI "max distance"
+    reference value. Returns a dict: { 'max_distance': float, 'farthest_item_id': str | None }
     Raises RuntimeError if the index is not loaded.
     """
-    if voyager_index is None or id_map is None or reverse_id_map is None:
-        raise RuntimeError("Voyager index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+    if ivf_index is None or id_map is None or reverse_id_map is None:
+        raise RuntimeError("IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
 
-    target_voyager_id = reverse_id_map.get(target_item_id)
-    if target_voyager_id is None:
+    target_vec_id = reverse_id_map.get(target_item_id)
+    if target_vec_id is None:
         return None
 
+    _cached = _max_distance_cache.get(target_item_id)
+    if _cached is not None:
+        return dict(_cached)
+
+    ivf_index.begin_request()
     try:
-        query_vector = voyager_index.get_vector(target_voyager_id)
+        max_d, far_vec_id = ivf_index.get_max_distance(target_vec_id)
     except Exception as e:
-        logger.error(f"Could not retrieve vector for Voyager ID {target_voyager_id} (item_id: {target_item_id}): {e}")
+        logger.error(f"Error computing IVF max distance for {target_item_id}: {e}", exc_info=True)
         return None
-
-    # Query distances to all items in the index (includes self). This returns a list of neighbor ids and distances.
-    try:
-        nbrs, dists = voyager_index.query(query_vector, k=len(voyager_index))
-    except Exception as e:
-        logger.error(f"Error querying voyager index for max distance of {target_item_id}: {e}", exc_info=True)
+    if max_d is None:
         return None
-
-    # Find the maximum distance excluding the item itself
-    max_d = float('-inf')
-    far_voy = None
-    for vid, dist in zip(nbrs, dists):
-        if vid == target_voyager_id:
-            continue
-        if dist is None:
-            continue
-        if dist > max_d:
-            max_d = dist
-            far_voy = vid
-
-    if max_d == float('-inf'):
-        # No other items in index (single-item index) -> distance 0.0
-        return { 'max_distance': 0.0, 'farthest_item_id': None }
-
-    return { 'max_distance': float(max_d), 'farthest_item_id': id_map.get(far_voy) }
+    far_item_id = id_map.get(far_vec_id) if far_vec_id is not None else None
+    result = {'max_distance': float(max_d), 'farthest_item_id': far_item_id}
+    _max_distance_cache.put(target_item_id, result)
+    return dict(result)
 
 def get_item_id_by_title_and_artist(title: str, artist: str):
     """
@@ -1337,11 +1208,10 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
 
 def cleanup_resources():
     """
-    Cleanup function to shutdown thread pool and clear caches.
+    Cleanup function to shutdown the thread pool.
     Call this when shutting down the application.
     """
-    logger.info("Cleaning up voyager_manager resources...")
+    logger.info("Cleaning up similarity manager resources...")
     _shutdown_thread_pool()
-    _get_cached_vector.cache_clear()
-    logger.info("Voyager manager cleanup complete.")
+    logger.info("Similarity manager cleanup complete.")
 

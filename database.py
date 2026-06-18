@@ -868,21 +868,28 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
-            # Create 'voyager_index_data' table
-            cur.execute("CREATE TABLE IF NOT EXISTS voyager_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'clap_index_data' table for stored CLAP text search indexes
-            cur.execute("CREATE TABLE IF NOT EXISTS clap_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'lyrics_index_data' table for stored Lyrics voyager indexes (mirrors clap_index_data; supports chunked storage).
-            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'lyrics_axes_index_data' table for the axis-vector voyager index (one binary-friendly vector per song over MUSIC_ANALYSIS_AXES labels).
-            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_axes_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'artist_index_data' table for artist GMM-based HNSW index
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_index_data (index_name VARCHAR(255) PRIMARY KEY, index_data BYTEA NOT NULL, artist_map_json TEXT NOT NULL, gmm_params_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Legacy IVF index tables are no longer used: the similarity
+            # indexes are now disk-paged IVF (ivf_dir / ivf_cell below). Drop the
+            # old IVF tables if they exist to reclaim space; nothing reads
+            # them anymore.
+            cur.execute("DROP TABLE IF EXISTS voyager_index_data")
+            cur.execute("DROP TABLE IF EXISTS clap_index_data")
+            cur.execute("DROP TABLE IF EXISTS lyrics_index_data")
+            cur.execute("DROP TABLE IF EXISTS lyrics_axes_index_data")
+            cur.execute("DROP TABLE IF EXISTS artist_index_data")
             # Create 'artist_metadata_data' table for the per-artist auxiliary
-            # metadata blob (artist_map + GMM params). Decoupled from the Voyager
-            # index binary and segmented independently so a single column value
-            # never crosses PG's 1 GB MaxAllocSize cap, regardless of library size.
+            # metadata blob (artist_map + GMM params), used by the artist IVF
+            # index for the GMM-divergence rerank. Segmented so a single column
+            # value never crosses PG's 1 GB MaxAllocSize cap.
             cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Disk-paged IVF index storage. 'ivf_dir' holds the small resident
+            # directory blob (centroids + id maps) per logical index, reusing the
+            # segmented (name, blob_data) layout. 'ivf_cell' holds one row per IVF
+            # cell of full-precision float32 vectors, paged in at query time so the
+            # Flask container never resident-loads the whole index.
+            cur.execute("CREATE TABLE IF NOT EXISTS ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute("CREATE TABLE IF NOT EXISTS ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))")
+            cur.execute("ALTER TABLE ivf_cell ALTER COLUMN cell_data SET STORAGE EXTERNAL")
             # Create 'map_projection_data' table for precomputed 2D map projections
             cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
             # Create 'artist_component_projection' table for precomputed 2D artist component projections
@@ -1363,8 +1370,8 @@ def save_map_projection(index_name, id_map, projection_array):
             conn.commit()
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
-        from tasks.index_build_helpers import store_voyager_index_segmented
-        store_voyager_index_segmented(
+        from tasks.index_build_helpers import store_ivf_index_segmented
+        store_ivf_index_segmented(
             conn,
             target_table="map_projection_data",
             index_name=index_name,

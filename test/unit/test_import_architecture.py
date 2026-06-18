@@ -2,7 +2,7 @@
 
 Only module-level (eager) imports count here; function-level imports are the
 sanctioned escape hatch used across the codebase (mediaserver providers,
-voyager/app_helper consumers, config's DB-override loader). Six invariants
+ivf/app_helper consumers, config's DB-override loader). Six invariants
 keep the graph flat, layered, and acyclic so deep chains and cycles cannot
 creep back in:
 
@@ -92,7 +92,7 @@ FORBIDDEN_IMPORTS = [
 # Members must not import one another (direct or indirect). Flask route
 # blueprints are self-contained features that compose only through app.py.
 INDEPENDENT_GROUPS = [
-    {"app_chat", "app_clustering", "app_analysis", "app_cron", "app_voyager",
+    {"app_chat", "app_clustering", "app_analysis", "app_cron", "app_ivf",
      "app_sonic_fingerprint", "app_path", "app_external", "app_alchemy", "app_map",
      "app_waveform", "app_artist_similarity", "app_clap_search", "app_lyrics",
      "app_sem_grove", "app_backup", "app_provider_migration", "app_dashboard",

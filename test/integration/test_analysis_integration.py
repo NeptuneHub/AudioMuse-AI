@@ -57,13 +57,13 @@ def _ensure_stubs():
         mistral_mod.Mistral = Mistral
         sys.modules['mistralai'] = mistral_mod
 
-    # voyager stub
-    if 'voyager' not in sys.modules:
-        voyager_mod = types.ModuleType('voyager')
-        voyager_mod.Space = types.SimpleNamespace(Cosine=0, Euclidean=1, InnerProduct=2)
+    # ivf stub
+    if 'ivf' not in sys.modules:
+        ivf_mod = types.ModuleType('ivf')
+        ivf_mod.Space = types.SimpleNamespace(Cosine=0, Euclidean=1, InnerProduct=2)
         class RecallError(Exception):
             pass
-        voyager_mod.RecallError = RecallError
+        ivf_mod.RecallError = RecallError
         class _Index:
             def __init__(self, *a, **k):
                 self.ef = 0
@@ -82,8 +82,8 @@ def _ensure_stubs():
                 return ([], [])
             def __len__(self):
                 return 0
-        voyager_mod.Index = _Index
-        sys.modules['voyager'] = voyager_mod
+        ivf_mod.Index = _Index
+        sys.modules['ivf'] = ivf_mod
 
 
 def _validate_analysis_result(result, expected, track_name, tol=1e-3):
@@ -125,7 +125,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
     This test is skipped if models are not present or onnxruntime is not
     importable in the environment. It injects lightweight stubs for optional
-    AI/voyager libraries so module import succeeds.
+    AI/ivf libraries so module import succeeds.
     """
     project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'

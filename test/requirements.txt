@@ -35,7 +35,6 @@ redis
 rq
 Flask
 pyyaml
-voyager
 rapidfuzz
 sqlglot
 six

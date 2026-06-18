@@ -1,4 +1,4 @@
-# app_voyager.py
+# app_ivf.py
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
@@ -8,7 +8,7 @@ import numpy as np
 # Import the new config option
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
 from app_helper import top_stratified_genre
-from tasks.voyager_manager import (
+from tasks.ivf_manager import (
     find_nearest_neighbors_by_id, 
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
@@ -64,10 +64,10 @@ def _ensure_mood_centroids_loaded():
         _load_mood_centroids_for_similarity()
         _mood_centroids_loaded = True
 
-# Create a Blueprint for Voyager (similarity) related routes
-voyager_bp = Blueprint('voyager_bp', __name__, template_folder='../templates')
+# Create a Blueprint for IVF (similarity) related routes
+ivf_bp = Blueprint('ivf_bp', __name__, template_folder='../templates')
 
-@voyager_bp.route('/similarity', methods=['GET'])
+@ivf_bp.route('/similarity', methods=['GET'])
 def similarity_page():
     """
     Serves the frontend page for finding similar tracks.
@@ -84,7 +84,7 @@ def similarity_page():
     """
     return render_template('similarity.html', title = 'AudioMuse-AI - Playlist from Similar Song', active='similarity')
 
-@voyager_bp.route('/api/search_tracks', methods=['GET'])
+@ivf_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():
     """
     Provides autocomplete suggestions for tracks based on title and artist.
@@ -189,7 +189,7 @@ def search_tracks_endpoint():
         return jsonify({"error": "An error occurred during search."}), 500
 
 
-@voyager_bp.route('/api/mood_centroids', methods=['GET'])
+@ivf_bp.route('/api/mood_centroids', methods=['GET'])
 def get_mood_centroids_endpoint():
     """
     Returns available mood categories and their centroids (top 3 tags only, no vectors).
@@ -216,7 +216,7 @@ def get_mood_centroids_endpoint():
     return jsonify(_MOOD_CENTROIDS_META)
 
 
-@voyager_bp.route('/api/similar_tracks', methods=['GET'])
+@ivf_bp.route('/api/similar_tracks', methods=['GET'])
 def get_similar_tracks_endpoint():
     """
     Find similar tracks for a given track, identified either by item_id or title/artist.
@@ -469,14 +469,14 @@ def get_similar_tracks_endpoint():
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
-@voyager_bp.route('/api/max_distance', methods=['GET'])
+@ivf_bp.route('/api/max_distance', methods=['GET'])
 def get_max_distance_endpoint():
   """
   Maximum distance from a track to any other.
   ---
   tags:
     - Similarity
-  summary: Return the largest cosine/euclidean distance between the given item and any other item in the Voyager index.
+  summary: Return the largest cosine/euclidean distance between the given item and any other item in the IVF index.
   parameters:
     - name: item_id
       in: query
@@ -501,7 +501,7 @@ def get_max_distance_endpoint():
     404:
       description: Item not found in the index.
     503:
-      description: Voyager index unavailable.
+      description: IVF index unavailable.
   """
   item_id = request.args.get('item_id')
   if not item_id:
@@ -520,7 +520,7 @@ def get_max_distance_endpoint():
     return jsonify({"error": "An unexpected error occurred."}), 500
 
 
-@voyager_bp.route('/api/track', methods=['GET'])
+@ivf_bp.route('/api/track', methods=['GET'])
 def get_track_endpoint():
   """
   Basic track metadata.
@@ -578,7 +578,7 @@ def get_track_endpoint():
     logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
     return jsonify({"error": "An unexpected error occurred."}), 500
 
-@voyager_bp.route('/api/create_playlist', methods=['POST'])
+@ivf_bp.route('/api/create_playlist', methods=['POST'])
 def create_media_server_playlist():
     """
     Creates a new playlist in the configured media server with the provided tracks.

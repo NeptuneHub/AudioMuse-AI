@@ -628,7 +628,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     async function searchTracks(params){
         try{
             const qs = new URLSearchParams(params);
-            const resp = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${qs.toString()}`);
+            const resp = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${qs.toString()}`);
             if (!resp.ok) return [];
             return await resp.json();
         } catch(e){ console.debug('searchTracks failed', e); return []; }
@@ -1218,7 +1218,7 @@ function clearMapOverlays() {
             const filtered = (sel || []).filter(id => id !== undefined && id !== null);
             console.debug('Creating playlist with ids', filtered.slice(0,50));
             const payload = { playlist_name: `Map selection ${new Date().toISOString()}`, track_ids: filtered };
-            const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+            const resp = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                 const text = await resp.text();
                 let json = null;
                 try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }

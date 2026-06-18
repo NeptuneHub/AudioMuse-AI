@@ -39,7 +39,7 @@ ENUM_FIELD_OPTIONS = {
     'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],
-    'VOYAGER_METRIC': ['angular', 'euclidean', 'dot'],
+    'IVF_METRIC': ['angular', 'euclidean', 'dot'],
 }
 
 HIDDEN_ADVANCED_FIELDS = {

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from config import SONIC_FINGERPRINT_TOP_N_SONGS, SONIC_FINGERPRINT_NEIGHBORS
 from .mediaserver import get_top_played_songs, get_last_played_time
-from .voyager_manager import find_nearest_neighbors_by_vector
+from .ivf_manager import find_nearest_neighbors_by_vector
 
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     average_vector = np.sum(weighted_vectors, axis=0) / total_weight
     logger.info(f"Calculated average vector (sonic fingerprint) from {len(weighted_vectors)} songs.")
 
-    # 4. Use Voyager to find similar songs
+    # 4. Use IVF to find similar songs
     # Get the IDs of the songs that actually contributed to the fingerprint
     contributing_seed_ids = list(embeddings_map.keys())
     num_seed_songs = len(contributing_seed_ids)
@@ -122,12 +122,12 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
 
     try:
         logger.info(f"Searching for {neighbors_to_find} new neighbors to supplement the {num_seed_songs} seed songs.")
-        similar_songs_from_voyager = find_nearest_neighbors_by_vector(
+        similar_songs_from_ivf = find_nearest_neighbors_by_vector(
             query_vector=average_vector,
             n=neighbors_to_find,
             eliminate_duplicates=True
         )
-        logger.info(f"Found {len(similar_songs_from_voyager)} similar songs for the sonic fingerprint.")
+        logger.info(f"Found {len(similar_songs_from_ivf)} similar songs for the sonic fingerprint.")
 
         # --- Combine seed songs and similar songs ---
         final_song_ids = set()
@@ -141,8 +141,8 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         
         logger.info(f"Added {len(final_song_ids)} seed songs to the results.")
 
-        # 2. Add the similar songs found by Voyager, skipping duplicates, until the desired size is reached
-        for song in similar_songs_from_voyager:
+        # 2. Add the similar songs found by IVF, skipping duplicates, until the desired size is reached
+        for song in similar_songs_from_ivf:
             if len(combined_results) >= total_desired_size:
                 break
             if song['item_id'] not in final_song_ids:

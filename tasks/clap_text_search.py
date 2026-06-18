@@ -61,16 +61,16 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 
 def _load_clap_index_from_db() -> bool:
-    """Load a persisted CLAP voyager index from the database."""
+    """Load a persisted CLAP ivf index from the database."""
 
     from app_helper import get_db
-    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF
-    from .index_build_helpers import load_voyager_index_from_db
+    from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
+    from .paged_ivf import load_index_auto
 
     try:
-        loaded = load_voyager_index_from_db(
-            get_db(), 'clap_index_data', 'clap_index',
-            CLAP_EMBEDDING_DIMENSION, VOYAGER_QUERY_EF, label='CLAP',
+        loaded = load_index_auto(
+            get_db(), 'clap_index',
+            CLAP_EMBEDDING_DIMENSION, IVF_METRIC, label='CLAP',
         )
         if loaded is None:
             return False
@@ -91,9 +91,9 @@ def _load_clap_index_from_db() -> bool:
 
 
 def build_and_store_clap_index(db_conn=None):
-    """Build a CLAP text search voyager index from stored CLAP embeddings and save it to the DB."""
+    """Build a CLAP text search ivf index from stored CLAP embeddings and save it to the DB."""
     from app_helper import get_db
-    from config import CLAP_EMBEDDING_DIMENSION, VOYAGER_METRIC
+    from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
 
     if db_conn is None:
@@ -106,7 +106,7 @@ def build_and_store_clap_index(db_conn=None):
         dim=CLAP_EMBEDDING_DIMENSION,
         target_table="clap_index_data",
         index_name="clap_index",
-        metric=VOYAGER_METRIC,
+        metric=IVF_METRIC,
         label="CLAP",
     )
 
@@ -200,7 +200,7 @@ def get_warm_cache_status() -> Dict:
 
 def load_clap_cache_from_db():
     """
-    Load the persisted CLAP Voyager index from the database.
+    Load the persisted CLAP IVF index from the database.
     Returns True if successful, False otherwise.
     """
     
@@ -282,33 +282,35 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
         # A large limit means the caller wants a big re-rank POOL (the chat
         # pipeline). Skip the in-CLAP per-artist cap there -- it would inflate the
-        # voyager k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
+        # ivf k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
         # applied downstream anyway. Small limits (search page) keep the cap.
         if limit >= 1000:
             artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
 
         if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['index'] is not None:
-            voyager_index = _CLAP_INDEX_CACHE['index']
+            ivf_index = _CLAP_INDEX_CACHE['index']
             id_map = _CLAP_INDEX_CACHE['id_map'] or {}
-            num_to_query = min(fetch_size, len(voyager_index))
+            from .paged_ivf import begin_query
+            begin_query(ivf_index)
+            num_to_query = min(fetch_size, len(ivf_index))
 
             if num_to_query <= 0:
                 logger.warning("CLAP index is loaded but contains no items.")
                 return []
 
-            neighbor_ids, distances = voyager_index.query(text_embedding, k=num_to_query)
-            candidate_item_ids = [id_map.get(int(voyager_id)) for voyager_id in neighbor_ids]
+            neighbor_ids, distances = ivf_index.query(text_embedding, k=num_to_query)
+            candidate_item_ids = [id_map.get(int(vec_id)) for vec_id in neighbor_ids]
             candidate_item_ids = [item_id for item_id in candidate_item_ids if item_id is not None]
 
             metadata_map = _fetch_clap_metadata(candidate_item_ids)
 
             results = []
             artist_counts: dict = {}
-            for voyager_id, distance in zip(neighbor_ids, distances):
+            for vec_id, distance in zip(neighbor_ids, distances):
                 if len(results) >= limit:
                     break
-                item_id = id_map.get(int(voyager_id))
+                item_id = id_map.get(int(vec_id))
                 if item_id is None:
                     continue
 
@@ -321,7 +323,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                         continue
                     artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
 
-                similarity = 1.0 - float(distance)
+                similarity = ivf_index.distance_to_similarity(distance)
                 results.append({
                     'item_id': item_id,
                     'title': metadata.get('title', ''),

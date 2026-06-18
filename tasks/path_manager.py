@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 # Imports from the project
-from .voyager_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
+from .ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
 from config import PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH, PATH_DISTANCE_METRIC, PATH_FIX_SIZE, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK
 # Also import per-artist cap
 from config import MAX_SONGS_PER_ARTIST
@@ -156,21 +156,21 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     found_songs = []
 
     try:
-        candidates_voyager = neighbors_fn(centroid_vec, n=k_search)
+        candidates_ivf = neighbors_fn(centroid_vec, n=k_search)
     except Exception as e:
         logger.error(f"Error finding neighbors for a centroid with k={k_search}: {e}")
         return [] # Failed to search
 
-    if not candidates_voyager:
+    if not candidates_ivf:
         logger.warning(f"No candidates found for centroid with k={k_search}.")
         return []
 
-    candidate_ids = [c['item_id'] for c in candidates_voyager]
+    candidate_ids = [c['item_id'] for c in candidates_ivf]
     candidate_details = get_score_data_by_ids(candidate_ids)
     details_map = {d['item_id']: d for d in candidate_details}
 
     # Scan in order (nearest first) and collect acceptable candidates
-    for candidate in candidates_voyager:
+    for candidate in candidates_ivf:
         if len(found_songs) >= num_to_find:
             break # We found all the songs we needed for this job
 

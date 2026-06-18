@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def get_vectors_from_database(item_ids: list, db_conn):
     """
     Fetches embedding vectors directly from the database for distance calculation.
-    This bypasses the need for the Voyager index to be loaded.
+    This bypasses the need for the IVF index to be loaded.
     
     Args:
         item_ids: List of item IDs to fetch vectors for
@@ -60,7 +60,7 @@ def get_vectors_from_database(item_ids: list, db_conn):
 def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
     """
     Applies distance-based duplicate filtering by fetching vectors directly from the database.
-    This works without requiring the Voyager index to be loaded.
+    This works without requiring the IVF index to be loaded.
     
     Args:
         song_results: List of dictionaries with 'item_id' keys
@@ -73,7 +73,7 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
     from config import (DUPLICATE_DISTANCE_CHECK_LOOKBACK, 
                        DUPLICATE_DISTANCE_THRESHOLD_COSINE, 
                        DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, 
-                       VOYAGER_METRIC)
+                       IVF_METRIC)
     
     if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
         return song_results
@@ -104,9 +104,9 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
         for row in rows:
             details_map[row['item_id']] = {'title': row['title'], 'author': row['author']}
     
-    # Use the same thresholds as voyager_manager
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if VOYAGER_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
-    metric_name = 'Angular' if VOYAGER_METRIC == 'angular' else 'Euclidean'
+    # Use the same thresholds as ivf_manager
+    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
     
     filtered_songs = []
     distance_filtered_count = 0
@@ -139,8 +139,8 @@ def apply_distance_filtering_direct(song_results: list, db_conn, log_prefix=""):
             # *** DIAGNOSTIC: Count comparisons ***
             total_comparisons += 1
             
-            # Calculate direct distance using the same functions as voyager_manager
-            if VOYAGER_METRIC == 'angular':
+            # Calculate direct distance using the same functions as ivf_manager
+            if IVF_METRIC == 'angular':
                 # Angular distance calculation
                 if np.linalg.norm(current_vector) > 0 and np.linalg.norm(recent_vector) > 0:
                     v1_u = current_vector / np.linalg.norm(current_vector)
@@ -277,12 +277,12 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
 
 def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     """
-    Applies duplicate filtering to clustering playlists using the same logic as voyager_manager.
+    Applies duplicate filtering to clustering playlists using the same logic as ivf_manager.
     Removes songs that are too close in vector distance within each playlist.
     
     This function addresses the issue where clustering can produce playlists with very similar
     songs that are close in the embedding/feature space. It uses the same distance thresholds
-    and filtering logic as the voyager_manager to ensure consistent duplicate detection across
+    and filtering logic as the ivf_manager to ensure consistent duplicate detection across
     the system, avoiding expensive recalculations by reusing proven filtering algorithms.
     
     Args:
@@ -309,7 +309,7 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
         
         logger.info(f"{log_prefix}Processing {len(original_playlists)} playlists for duplicate filtering")
         
-        # Use database-based vector distance filtering (no need for Voyager index)
+        # Use database-based vector distance filtering (no need for IVF index)
         logger.info(f"{log_prefix}Using database-based vector distance filtering for duplicate detection")
         
         for playlist_name, songs_list in original_playlists.items():

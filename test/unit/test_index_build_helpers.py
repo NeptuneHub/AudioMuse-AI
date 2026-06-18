@@ -2,13 +2,13 @@
 """
 Unit tests for tasks/index_build_helpers.py
 
-Covers the centralized helpers used by every Voyager index builder:
+Covers the centralized helpers used by every IVF index builder:
 - stream_embeddings_to_buffer: side-connection streaming into a pre-allocated
   numpy buffer; identifier validation; NULL/wrong-dim skipping; buffer
   growth when the COUNT hint under-estimates due to concurrent writes.
-- store_voyager_index_segmented: single-row vs segmented persistence,
+- store_ivf_index_segmented: single-row vs segmented persistence,
   identifier validation, empty-bytes guard.
-- build_id_map / _split_bytes / _resolve_voyager_space / _validate_sql_identifier.
+- build_id_map / _split_bytes / _resolve_ivf_space / _validate_sql_identifier.
 
 The helper module is loaded via importlib so this file does not pull in
 tasks/__init__.py (which imports librosa).
@@ -185,14 +185,14 @@ class TestRewriteSegmentedIdMap:
         return _fn
 
     def test_single_row_rewrite(self):
-        store = {"voyager_main": json.dumps({"0": "a", "1": "b"})}
+        store = {"ivf_main": json.dumps({"0": "a", "1": "b"})}
         cur = self._FakeCursor(store)
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "voyager_main",
+            cur, "voyager_index_data", "ivf_main",
             self._dict_rewriter({"a": "A", "b": "B"}), max_part_size_mb=50,
         )
         assert changed is True
-        assert json.loads(store["voyager_main"]) == {"0": "A", "1": "B"}
+        assert json.loads(store["ivf_main"]) == {"0": "A", "1": "B"}
 
     def test_segmented_reassemble_rewrite_resplit(self):
         full = json.dumps({str(i): c for i, c in enumerate("abcdef")})
@@ -200,14 +200,14 @@ class TestRewriteSegmentedIdMap:
         frags = [full[i:i + step] for i in range(0, len(full), step)]
         while len(frags) < 3:
             frags.append("")
-        store = {f"voyager_main_{k}_3": frags[k - 1] for k in range(1, 4)}
-        assert "".join(store[f"voyager_main_{k}_3"] for k in range(1, 4)) == full
+        store = {f"ivf_main_{k}_3": frags[k - 1] for k in range(1, 4)}
+        assert "".join(store[f"ivf_main_{k}_3"] for k in range(1, 4)) == full
         assert sum(1 for f in frags if f) >= 2, "fixture must actually be segmented"
 
         cur = self._FakeCursor(store)
         mapping = {c: c.upper() for c in "abcdef"}
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "voyager_main",
+            cur, "voyager_index_data", "ivf_main",
             self._dict_rewriter(mapping), max_part_size_mb=50,
         )
         assert changed is True
@@ -221,53 +221,27 @@ class TestRewriteSegmentedIdMap:
 
     def test_no_op_when_rewrite_returns_unchanged(self):
         full = json.dumps({"0": "a"})
-        store = {"voyager_main": full}
+        store = {"ivf_main": full}
         cur = self._FakeCursor(store)
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "voyager_main",
+            cur, "voyager_index_data", "ivf_main",
             lambda js: js, max_part_size_mb=50,
         )
         assert changed is False
-        assert store["voyager_main"] == full
+        assert store["ivf_main"] == full
 
     def test_raises_when_rewrite_needs_more_rows_than_exist(self):
-        store = {"voyager_main_1_1": json.dumps({"0": "a", "1": "b"})}
+        store = {"ivf_main_1_1": json.dumps({"0": "a", "1": "b"})}
         cur = self._FakeCursor(store)
         with pytest.raises(ValueError, match="rebuild"):
             _helpers.rewrite_segmented_id_map(
-                cur, "voyager_index_data", "voyager_main",
+                cur, "voyager_index_data", "ivf_main",
                 self._dict_rewriter({"a": "AAAA", "b": "BBBB"}),
                 max_part_size_mb=0,
             )
 
 
-class TestResolveVoyagerSpace:
-    def test_known_metrics(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-        assert _helpers._resolve_voyager_space("angular") == voyager.Space.Cosine
-        assert _helpers._resolve_voyager_space("ANGULAR") == voyager.Space.Cosine
-        assert _helpers._resolve_voyager_space("euclidean") == voyager.Space.Euclidean
-        assert _helpers._resolve_voyager_space("dot") == voyager.Space.InnerProduct
-
-    def test_unknown_defaults_to_cosine(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-        assert _helpers._resolve_voyager_space("nonsense") == voyager.Space.Cosine
-
-    def test_none_defaults_to_angular(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-        assert _helpers._resolve_voyager_space(None) == voyager.Space.Cosine
-
-
-class TestStoreVoyagerIndexSegmented:
+class TestStoreIVFIndexSegmented:
     def _mock_conn(self, captured):
         mock_cur = MagicMock()
         mock_cur.__enter__ = MagicMock(return_value=mock_cur)
@@ -284,7 +258,7 @@ class TestStoreVoyagerIndexSegmented:
     def test_single_row_path_emits_delete_then_upsert(self):
         captured = []
         mock_conn, _ = self._mock_conn(captured)
-        _helpers.store_voyager_index_segmented(
+        _helpers.store_ivf_index_segmented(
             mock_conn,
             target_table="clap_index_data",
             index_name="clap_index",
@@ -309,7 +283,7 @@ class TestStoreVoyagerIndexSegmented:
         captured = []
         mock_conn, _ = self._mock_conn(captured)
         payload = b"X" * (3 * 1024 * 1024 + 17)
-        _helpers.store_voyager_index_segmented(
+        _helpers.store_ivf_index_segmented(
             mock_conn,
             target_table="voyager_index_data",
             index_name="music_library",
@@ -336,7 +310,7 @@ class TestStoreVoyagerIndexSegmented:
         captured = []
         mock_conn, _ = self._mock_conn(captured)
         with pytest.raises(ValueError, match="empty"):
-            _helpers.store_voyager_index_segmented(
+            _helpers.store_ivf_index_segmented(
                 mock_conn,
                 target_table="lyrics_index_data",
                 index_name="lyrics_index",
@@ -350,7 +324,7 @@ class TestStoreVoyagerIndexSegmented:
         captured = []
         mock_conn, _ = self._mock_conn(captured)
         with pytest.raises(ValueError):
-            _helpers.store_voyager_index_segmented(
+            _helpers.store_ivf_index_segmented(
                 mock_conn,
                 target_table="lyrics_index_data; DROP TABLE x",
                 index_name="lyrics_index",
@@ -359,7 +333,7 @@ class TestStoreVoyagerIndexSegmented:
                 embedding_dimension=768,
             )
         with pytest.raises(ValueError):
-            _helpers.store_voyager_index_segmented(
+            _helpers.store_ivf_index_segmented(
                 mock_conn,
                 target_table="lyrics_index_data",
                 index_name="weird name",
@@ -376,7 +350,7 @@ class TestStoreVoyagerIndexSegmented:
         max_part_size = 1 * 1024 * 1024
         assert len(id_map_json.encode("utf-8")) > max_part_size
 
-        _helpers.store_voyager_index_segmented(
+        _helpers.store_ivf_index_segmented(
             mock_conn,
             target_table="map_projection_data",
             index_name="main_map",
@@ -405,7 +379,7 @@ class TestStoreVoyagerIndexSegmented:
     def test_binary_column_defaults_to_index_data(self):
         captured = []
         mock_conn, _ = self._mock_conn(captured)
-        _helpers.store_voyager_index_segmented(
+        _helpers.store_ivf_index_segmented(
             mock_conn,
             target_table="voyager_index_data",
             index_name="music_library",
@@ -719,101 +693,3 @@ class TestIterEmbeddingBatches:
         assert kwargs.get("readonly") is True
         assert kwargs.get("autocommit") in (None, False)
 
-
-class TestBuildVoyagerIndexBytesStreaming:
-    """Tests for the incremental index builder."""
-
-    def test_validates_dim(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        with pytest.raises(ValueError):
-            _helpers.build_voyager_index_bytes_streaming(iter([]), dim=0)
-
-    def test_rejects_empty_generator(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        with pytest.raises(ValueError, match="no items"):
-            _helpers.build_voyager_index_bytes_streaming(iter([]), dim=8)
-
-    def test_rejects_batch_with_wrong_dim(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        bad_batch = (np.zeros((2, 7), dtype=np.float32), ["a", "b"])
-        with pytest.raises(ValueError, match="batch dim"):
-            _helpers.build_voyager_index_bytes_streaming(iter([bad_batch]), dim=8)
-
-    def test_rejects_batch_with_mismatched_ids_length(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        bad = (np.zeros((3, 4), dtype=np.float32), ["only-two", "ids"])
-        with pytest.raises(ValueError, match="batch_ids len"):
-            _helpers.build_voyager_index_bytes_streaming(iter([bad]), dim=4)
-
-    def test_skips_empty_batches_silently(self):
-        try:
-            import voyager  # noqa: F401
-        except ImportError:
-            pytest.skip("voyager not installed")
-        rng = np.random.default_rng(5)
-        b1 = (rng.standard_normal((3, 4)).astype(np.float32), ["a", "b", "c"])
-        empty = (np.empty((0, 4), dtype=np.float32), [])
-        b2 = (rng.standard_normal((2, 4)).astype(np.float32), ["d", "e"])
-        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
-            iter([b1, empty, b2]), dim=4, metric="angular",
-        )
-        assert ids == ["a", "b", "c", "d", "e"]
-        assert len(index_bytes) > 0
-
-    def test_round_trip_across_multiple_batches(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-        import io as _io
-
-        rng = np.random.default_rng(6)
-        all_vecs = rng.standard_normal((12, 8)).astype(np.float32)
-        batches = [
-            (all_vecs[0:5].copy(), [f"id-{i}" for i in range(0, 5)]),
-            (all_vecs[5:10].copy(), [f"id-{i}" for i in range(5, 10)]),
-            (all_vecs[10:12].copy(), [f"id-{i}" for i in range(10, 12)]),
-        ]
-        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
-            iter(batches), dim=8, metric="angular",
-        )
-        assert ids == [f"id-{i}" for i in range(12)]
-
-        loaded = voyager.Index.load(_io.BytesIO(index_bytes))
-        assert len(loaded) == 12
-        neighbour_ids, _ = loaded.query(all_vecs[7], k=1)
-        assert int(neighbour_ids[0]) == 7
-
-    def test_dense_ids_are_assigned_consecutively_across_batches(self):
-        try:
-            import voyager
-        except ImportError:
-            pytest.skip("voyager not installed")
-        import io as _io
-
-        rng = np.random.default_rng(7)
-        b1_vecs = rng.standard_normal((3, 4)).astype(np.float32)
-        b2_vecs = rng.standard_normal((2, 4)).astype(np.float32)
-        batches = [
-            (b1_vecs, ["x", "y", "z"]),
-            (b2_vecs, ["w", "v"]),
-        ]
-        index_bytes, ids = _helpers.build_voyager_index_bytes_streaming(
-            iter(batches), dim=4, metric="angular",
-        )
-        loaded = voyager.Index.load(_io.BytesIO(index_bytes))
-        for voyager_id in range(5):
-            assert voyager_id in loaded
-        assert ids == ["x", "y", "z", "w", "v"]

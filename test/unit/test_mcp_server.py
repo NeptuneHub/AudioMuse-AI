@@ -682,11 +682,11 @@ class TestSongSimilarityLookup:
             {"item_id": "123", "distance": 0.0},
             {"item_id": "456", "distance": 0.1},
         ])
-        # Create a mock voyager_manager module in sys.modules to avoid tasks/__init__.py
-        mock_voyager = MagicMock()
-        mock_voyager.find_nearest_neighbors_by_id = mock_nn
+        # Create a mock ivf_manager module in sys.modules to avoid tasks/__init__.py
+        mock_ivf = MagicMock()
+        mock_ivf.find_nearest_neighbors_by_id = mock_nn
         with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.voyager_manager': mock_voyager}):
+             patch.dict(sys.modules, {'tasks.ivf_manager': mock_ivf}):
             mod._song_similarity_api_sync("bohemian rhapsody", "queen", 10)
 
         # Should have tried a DB lookup
@@ -985,7 +985,7 @@ class TestSongAlchemySync:
         """If song_alchemy raises, result has empty songs and error message."""
         mod = _import_mcp_impl()
 
-        alchemy_mod = self._setup_alchemy_module(side_effect=Exception("Voyager index missing"))
+        alchemy_mod = self._setup_alchemy_module(side_effect=Exception("IVF index missing"))
 
         with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}):
             result = mod._song_alchemy_sync(
