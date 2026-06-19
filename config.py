@@ -535,14 +535,13 @@ IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Disk-Paged IVF Index Constants ---
-# When enabled, the large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
+# The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
 # are stored as an inverted-file (IVF) index whose full-precision float32 cells live
 # in Postgres rows. A query reads only the nearest IVF_NPROBE cells, so the Flask
 # container's resident index memory is bounded by IVF_QUERY_CACHE_MB per index instead
 # of growing with the library size. No vector quantization is used.
-IVF_BACKEND_ENABLED = os.environ.get("IVF_BACKEND_ENABLED", "true").lower() == "true"
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
-IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "120000"))  # Max vectors sampled to train the coarse quantizer
+IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "256"))  # Cells probed per query (X): the dominant recall/latency knob

@@ -1047,7 +1047,7 @@ def build_and_store_paged_ivf(
     base_nlist = int(round(8.0 * np.sqrt(max(1, n_items))))
     nlist = max(1, min(config.IVF_NLIST_MAX, base_nlist, n_items))
 
-    sample_n = min(n_items, config.IVF_TRAIN_SAMPLE_MAX)
+    sample_n = min(n_items, config.IVF_TRAIN_POINTS_PER_CELL * nlist)
     if sample_n < n_items:
         sample_keys = np.fromiter(
             (
