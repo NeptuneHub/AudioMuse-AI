@@ -32,6 +32,7 @@ import base64
 import datetime
 import json
 import os
+import shutil
 import sys
 import tempfile
 
@@ -83,11 +84,14 @@ def pg_dsn():
             "DB, or `pip install pgserver` for an ephemeral local instance."
         )
     data_dir = tempfile.mkdtemp(prefix='audiomuse_pg_')
-    server = pgserver.get_server(data_dir)
     try:
-        yield server.get_uri()
+        server = pgserver.get_server(data_dir)
+        try:
+            yield server.get_uri()
+        finally:
+            server.cleanup()
     finally:
-        server.cleanup()
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
 def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub='tester'):
