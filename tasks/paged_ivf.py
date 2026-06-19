@@ -755,6 +755,28 @@ class PagedIvfIndex:
         """Return the stored vector for ``int_id`` or None."""
         return self.get_vectors([int(int_id)]).get(int(int_id))
 
+    def cell_groups(self, int_ids):
+        """Group the given int_ids by their IVF cell, in memory and with no I/O.
+
+        Each item already belongs to one coarse cell (``self._id2cell``), and every cell's
+        centroid is held in RAM (``self._centroids``). Returns ``[(centroid, count), ...]``
+        for each distinct cell the items fall into, ordered most-populated first. Items
+        outside the index are skipped. This reuses the index's existing clustering instead
+        of re-clustering the vectors.
+        """
+        counts: Dict[int, int] = {}
+        for raw in int_ids:
+            vid = int(raw)
+            if 0 <= vid < self._n_items:
+                cell_id = int(self._id2cell[vid])
+                counts[cell_id] = counts.get(cell_id, 0) + 1
+        ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        return [
+            (np.array(self._centroids[cell_id], dtype=np.float32), count)
+            for cell_id, count in ordered
+            if 0 <= cell_id < self._num_cells
+        ]
+
     def get_max_distance(self, int_id, nprobe: Optional[int] = None) -> Tuple[Optional[float], Optional[int]]:
         """Maximum distance from ``int_id`` to any other item.
 

@@ -640,6 +640,27 @@ def get_playlist_by_name(playlist_name, user_creds=None):
     
     return None # No match found
 
+def _get_playlist_detail(playlist_id, user_creds=None):
+    """Fetches a Navidrome playlist's detail object (songCount + entry list) via getPlaylist.
+    Returns the inner 'playlist' dict, or None on failure."""
+    detail = _navidrome_request("getPlaylist", {"id": playlist_id}, user_creds=user_creds)
+    if not (detail and "playlist" in detail):
+        return None
+    return detail["playlist"]
+
+
+def get_playlist_track_ids(playlist_id, user_creds=None):
+    """Returns the audio track item_ids of a Navidrome playlist via the Subsonic getPlaylist call."""
+    playlist = _get_playlist_detail(playlist_id, user_creds=user_creds)
+    if not playlist:
+        return []
+    entries = playlist.get("entry")
+    if isinstance(entries, dict):
+        entries = [entries]
+    elif not isinstance(entries, list):
+        entries = []
+    return [str(e.get("id")) for e in entries if e.get("id")]
+
 def get_top_played_songs(limit, user_creds):
     """Fetches the top N most played songs from Navidrome for a specific user."""
     all_top_songs = []
@@ -717,12 +738,12 @@ def _clear_playlist_items(playlist_id, user_creds=None):
     calls with ``songIndexToRemove`` in **descending** order so earlier indices stay valid as
     higher ones are removed. Returns True on success, False on any failed batch.
     """
-    detail = _navidrome_request("getPlaylist", {"id": playlist_id}, user_creds=user_creds)
-    if not (detail and "playlist" in detail):
+    playlist = _get_playlist_detail(playlist_id, user_creds=user_creds)
+    if not playlist:
         logger.error(f"Navidrome _clear_playlist_items: failed to fetch playlist {playlist_id}")
         return False
 
-    song_count = int(detail["playlist"].get("songCount") or 0)
+    song_count = int(playlist.get("songCount") or 0)
     if song_count == 0:
         return True
 

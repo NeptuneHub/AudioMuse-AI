@@ -592,6 +592,11 @@ ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
 ALCHEMY_SUBTRACT_DISTANCE_ANGULAR = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_ANGULAR", "0.2"))
 ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN", "5.0"))
 
+# --- Song Alchemy Playlist Input ---
+ALCHEMY_PLAYLIST_MAX_SONGS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_SONGS", "500"))
+ALCHEMY_PLAYLIST_MAX_CENTROIDS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_CENTROIDS", "10"))
+ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"))
+
 
 # --- Other Feature Labels (computed via CLAP text-audio similarity) ---
 # These features are computed by comparing CLAP audio embeddings against
