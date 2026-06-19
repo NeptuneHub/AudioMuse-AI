@@ -469,6 +469,7 @@ def search_api():
         conn = get_db()
         cur = conn.cursor(cursor_factory=DictCursor)
         playlist_ids = []
+        filter_total = None
 
         if playlist_name:
             cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (playlist_name,))
@@ -480,10 +481,20 @@ def search_api():
 
         elif filters:
             where_clause, params = _build_filter_query(filters, match_mode)
-            cur.execute(f"SELECT item_id FROM score WHERE {where_clause}", tuple(params))
+            if search_only:
+                offset = (page - 1) * per_page
+                cur.execute(f"SELECT COUNT(*) AS total FROM score WHERE {where_clause}", tuple(params))
+                count_row = cur.fetchone()
+                filter_total = int(count_row['total'] if count_row else 0)
+                cur.execute(
+                    f"SELECT item_id FROM score WHERE {where_clause} ORDER BY item_id LIMIT %s OFFSET %s",
+                    tuple(params + [per_page, offset])
+                )
+            else:
+                cur.execute(f"SELECT item_id FROM score WHERE {where_clause}", tuple(params))
             rows = cur.fetchall()
             playlist_ids = [row['item_id'] for row in rows]
-            if not playlist_ids:
+            if not playlist_ids and (filter_total is None or filter_total == 0):
                 cur.close()
                 return jsonify({"error": "No songs found matching the filters"}), 404
 
@@ -494,9 +505,14 @@ def search_api():
 
         # -- SEARCH ONLY MODE --------------------------------------------------
         if search_only:
-            total = len(playlist_ids)
-            offset = (page - 1) * per_page
-            page_ids = playlist_ids[offset:offset + per_page]
+            if filter_total is None:
+                total = len(playlist_ids)
+                offset = (page - 1) * per_page
+                page_ids = playlist_ids[offset:offset + per_page]
+            else:
+                total = filter_total
+                offset = (page - 1) * per_page
+                page_ids = playlist_ids
 
             metadata_list = get_score_data_lite_by_ids(page_ids) if page_ids else []
             # Preserve the order of page_ids in the response (lite query is unordered)
