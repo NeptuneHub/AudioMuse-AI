@@ -198,16 +198,20 @@ For more information about the GPU deployment requirements have a look to the [G
 Our GitHub Actions workflow automatically builds and publishes Docker images with the following tags:
 
 * **`:latest`**
-  Last build from the **main** branch.
-  **Recommended for most users.**
+  Last released image.
+  **Use it for automatic update.**
+
+  * **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
+  Immutable images built from **Git release tags**.
+  **Reccommanded for most user. Pinned deployments. You decide when to update by changing the version manually**
 
 * **`:devel`**
-  Development build from the **devel** branch.
-  May be unstable — **for testing and development only.**
+  Build from main on each commit/pr merged. It's a less stable build 
+  **Recommended only for testing and early adopters.**
 
-* **`:X.Y.Z`** (e.g. `:1.0.0`, `:0.1.4-alpha`)
-  Immutable images built from **Git release tags**.
-  **Ideal for reproducible or pinned deployments.**
+* **`:pr-<NUMBER>`** (e.g. `:pr-661`)
+  Build generated for a specific open **pull request** (non-draft), to preview its changes before they are merged.
+  **For reviewing and testing that single PR**
 
 * **`-noavx2`** variants
   Experimental images for CPUs **without AVX2 support**, using legacy dependencies.
