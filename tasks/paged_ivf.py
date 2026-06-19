@@ -77,8 +77,8 @@ def _metric_code(metric: str) -> int:
 
 
 def _normalize_rows(mat: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(mat, axis=1, keepdims=True)
-    norms[norms == 0.0] = 1.0
+    norms = np.linalg.norm(mat, axis=1, keepdims=True).astype(np.float32)
+    norms[norms == 0.0] = np.float32(1.0)
     return (mat / norms).astype(np.float32, copy=False)
 
 
@@ -576,7 +576,7 @@ class PagedIvfIndex:
             return np.einsum("ij,ij->i", diffs, diffs)
         if self._metric == "dot":
             return -(self._centroids @ q)
-        qn = q / (np.linalg.norm(q) + 1e-12)
+        qn = q / (float(np.linalg.norm(q)) + 1e-12)
         return -(self._centroids @ qn)
 
     def _rank_cells(self, q: np.ndarray) -> np.ndarray:
@@ -672,10 +672,10 @@ class PagedIvfIndex:
             return np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
         if self._metric == "dot":
             return (-(vecs @ q)).astype(np.float32)
-        qn = q / (np.linalg.norm(q) + 1e-12)
+        qn = q / (float(np.linalg.norm(q)) + 1e-12)
         if self._normalized:
             return (1.0 - np.clip(vecs @ qn, -1.0, 1.0)).astype(np.float32)
-        vn = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12)
+        vn = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True).astype(np.float32) + 1e-12)
         return (1.0 - np.clip(vn @ qn, -1.0, 1.0)).astype(np.float32)
 
     def query(self, vector, k: int):
@@ -1069,6 +1069,7 @@ def build_and_store_paged_ivf(
     km = MiniBatchKMeans(n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25, random_state=0)
     km.fit(sample)
     centroids = km.cluster_centers_.astype(np.float32)
+    del sample
 
     labels = np.empty(n_items, dtype=np.int64)
     for start in range(0, n_items, 20000):
