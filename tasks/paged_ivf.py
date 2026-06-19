@@ -1049,8 +1049,18 @@ def build_and_store_paged_ivf(
 
     sample_n = min(n_items, config.IVF_TRAIN_SAMPLE_MAX)
     if sample_n < n_items:
-        rng = np.random.default_rng(42)
-        sample_idx = rng.choice(n_items, size=sample_n, replace=False)
+        sample_keys = np.fromiter(
+            (
+                int.from_bytes(
+                    hashlib.blake2b(str(iid).encode("utf-8"), digest_size=8).digest(),
+                    "big",
+                )
+                for iid in item_ids
+            ),
+            dtype=np.uint64,
+            count=n_items,
+        )
+        sample_idx = np.sort(np.argpartition(sample_keys, sample_n - 1)[:sample_n])
         sample = train_mat[sample_idx]
     else:
         sample = train_mat

@@ -169,7 +169,7 @@ def stream_embeddings_to_buffer(
 
     where_sql = f" WHERE {where_clause}" if where_clause else ""
     count_sql = f"SELECT COUNT(*) FROM {table}{where_sql}"
-    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql}"
+    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql} ORDER BY item_id"
     cname = cursor_name or f"_idx_stream_{table}_{column}"
     _validate_sql_identifier(cname, "cursor name")
 
@@ -287,7 +287,7 @@ def iter_embedding_batches(
         raise ValueError(f"batch_size must be a positive int, got {batch_size!r}")
 
     where_sql = f" WHERE {where_clause}" if where_clause else ""
-    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql}"
+    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql} ORDER BY item_id"
     cname = cursor_name or f"_idx_iter_{table}_{column}"
     _validate_sql_identifier(cname, "cursor name")
 
