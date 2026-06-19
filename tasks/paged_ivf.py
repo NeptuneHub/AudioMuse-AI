@@ -1101,7 +1101,7 @@ def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, dir_b
     try:
         cache_dir = config.IVF_DISK_CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
-        build_id = hashlib.sha1(dir_blob).hexdigest()[:16]
+        build_id = hashlib.sha1(dir_blob, usedforsecurity=False).hexdigest()[:16]
         path = _cell_file_path(cache_dir, index_name, build_id)
         with _IVF_FILE_SWAP_LOCK:
             if not os.path.exists(path):

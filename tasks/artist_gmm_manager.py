@@ -287,7 +287,7 @@ def build_and_store_artist_index(db_conn=None):
         for artist_name, tracks in artist_tracks.items():
             sorted_ids = sorted(track['item_id'] for track in tracks)
             hash_input = ','.join(sorted_ids)
-            artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode()).hexdigest()
+            artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode(), usedforsecurity=False).hexdigest()
 
         # Step 2: Fetch embeddings and fit GMMs (incremental: skip unchanged artists)
         logger.info("Fetching embeddings and fitting GMMs...")
