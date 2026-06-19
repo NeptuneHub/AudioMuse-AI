@@ -2,7 +2,7 @@ import logging
 from typing import List, Tuple
 import numpy as np
 
-from .ivf_manager import multi_query_ids, find_nearest_neighbors_by_id, get_vector_by_id
+from .ivf_manager import multi_query_ids, find_nearest_neighbors_by_id, get_vector_by_id, _filter_by_distance
 from .alchemy_projections import (
     _project_to_2d,
     _project_with_discriminant,
@@ -167,6 +167,54 @@ def _metric_distance(v_query: np.ndarray, v_cand: np.ndarray) -> float:
     return float(np.linalg.norm(a - b))
 
 
+def _song_anchor_points(item_id) -> List[dict]:
+    """One anchor point for a song id, or none if its vector is missing."""
+    vec = get_vector_by_id(item_id)
+    if vec is None:
+        return []
+    return [{'vector': np.array(vec, dtype=float), 'weight': 1.0, 'source_type': 'song', 'source_id': item_id, 'comp_idx': 0, 'label': None}]
+
+
+def _artist_anchor_points(item_id) -> List[dict]:
+    """One anchor point per GMM component of an artist."""
+    gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(item_id)
+    return [{'vector': np.array(vec, dtype=float), 'weight': float(weight), 'source_type': 'artist', 'source_id': item_id, 'comp_idx': idx, 'label': None}
+            for idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights))]
+
+
+def _anchor_anchor_points(item_id) -> List[dict]:
+    """One anchor point for a saved alchemy anchor's centroid."""
+    from database import get_alchemy_anchor_by_id
+    anchor = get_alchemy_anchor_by_id(item_id)
+    if not (anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list)):
+        return []
+    return [{'vector': np.array(anchor['centroid'], dtype=float), 'weight': 1.0, 'source_type': 'anchor', 'source_id': item_id, 'comp_idx': 0, 'label': anchor.get('name', 'Anchor')}]
+
+
+def _mood_anchor_points(item_id) -> List[dict]:
+    """One anchor point for a mood centroid, or none if it cannot be resolved."""
+    vec = _get_mood_centroid_vector(item_id)
+    if vec is None:
+        return []
+    return [{'vector': vec, 'weight': 1.0, 'source_type': 'mood', 'source_id': item_id, 'comp_idx': 0, 'label': _get_mood_label(item_id)}]
+
+
+def _playlist_anchor_points(item_id) -> List[dict]:
+    """One anchor point per cluster centroid of a playlist."""
+    pl_vecs, pl_weights = _get_playlist_components(item_id)
+    return [{'vector': np.array(vec, dtype=float), 'weight': float(weight), 'source_type': 'playlist', 'source_id': item_id, 'comp_idx': idx, 'label': f'Cluster {idx + 1} (w={float(weight):.2f})'}
+            for idx, (vec, weight) in enumerate(zip(pl_vecs, pl_weights))]
+
+
+_ANCHOR_POINT_HANDLERS = {
+    'song': _song_anchor_points,
+    'artist': _artist_anchor_points,
+    'anchor': _anchor_anchor_points,
+    'mood': _mood_anchor_points,
+    'playlist': _playlist_anchor_points,
+}
+
+
 def _gather_anchor_points(items: List[dict]) -> List[dict]:
     """Expand each add/subtract item into one or more weighted anchor points.
 
@@ -175,37 +223,12 @@ def _gather_anchor_points(items: List[dict]) -> List[dict]:
     """
     points = []
     for item in items or []:
-        item_type = item.get('type', 'song').lower()
         item_id = item.get('id')
         if not item_id:
             continue
-
-        if item_type == 'song':
-            vec = get_vector_by_id(item_id)
-            if vec is not None:
-                points.append({'vector': np.array(vec, dtype=float), 'weight': 1.0, 'source_type': 'song', 'source_id': item_id, 'comp_idx': 0, 'label': None})
-
-        elif item_type == 'artist':
-            gmm_vecs, gmm_weights = _get_artist_gmm_vectors_and_weights(item_id)
-            for idx, (vec, weight) in enumerate(zip(gmm_vecs, gmm_weights)):
-                points.append({'vector': np.array(vec, dtype=float), 'weight': float(weight), 'source_type': 'artist', 'source_id': item_id, 'comp_idx': idx, 'label': None})
-
-        elif item_type == 'anchor':
-            from database import get_alchemy_anchor_by_id
-            anchor = get_alchemy_anchor_by_id(item_id)
-            if anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list):
-                points.append({'vector': np.array(anchor['centroid'], dtype=float), 'weight': 1.0, 'source_type': 'anchor', 'source_id': item_id, 'comp_idx': 0, 'label': anchor.get('name', 'Anchor')})
-
-        elif item_type == 'mood':
-            vec = _get_mood_centroid_vector(item_id)
-            if vec is not None:
-                points.append({'vector': vec, 'weight': 1.0, 'source_type': 'mood', 'source_id': item_id, 'comp_idx': 0, 'label': _get_mood_label(item_id)})
-
-        elif item_type == 'playlist':
-            pl_vecs, pl_weights = _get_playlist_components(item_id)
-            for idx, (vec, weight) in enumerate(zip(pl_vecs, pl_weights)):
-                points.append({'vector': np.array(vec, dtype=float), 'weight': float(weight), 'source_type': 'playlist', 'source_id': item_id, 'comp_idx': idx, 'label': f'Cluster {idx + 1} (w={float(weight):.2f})'})
-
+        handler = _ANCHOR_POINT_HANDLERS.get(item.get('type', 'song').lower())
+        if handler:
+            points.extend(handler(item_id))
     return points
 
 
@@ -318,6 +341,15 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     if not candidate_ids:
         return {"results": [], "filtered_out": [], "centroid_2d": None}
 
+    vec_cache: dict = {}
+
+    def _vec(cid):
+        """Memoized get_vector_by_id so the subtract-filter and scoring loops below
+        each re-read the same candidate vector at most once per request."""
+        if cid not in vec_cache:
+            vec_cache[cid] = get_vector_by_id(cid)
+        return vec_cache[cid]
+
     # Remove any user-provided ADD or SUBTRACT song items from candidate list
     # Extract song IDs from items
     add_song_ids = [item['id'] for item in add_items if item.get('type') == 'song' and item.get('id')]
@@ -345,7 +377,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
         sub_vecs = [p['vector'] for p in sub_anchor_points]
         for cid in candidate_ids:
-            vec = get_vector_by_id(cid)
+            vec = _vec(cid)
             if vec is None:
                 continue
             v_sub = np.array(vec, dtype=float)
@@ -359,6 +391,9 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
     # Trim to desired n_results (we'll sample probabilistically from these candidates)
     candidate_ids = candidate_ids[: max(n_results * 3, n_results)]
+
+    from app_helper import get_db
+    candidate_ids = [r['item_id'] for r in _filter_by_distance([{'item_id': cid} for cid in candidate_ids], get_db())]
 
     # Compute distance from add_centroid for each candidate (to display in results)
     # Gather vectors for projection
@@ -752,10 +787,10 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 vec = np.array(anchor['centroid'], dtype=float)
             else:
                 vec = None
-        elif isinstance(pid, str) and (pid.startswith('__add_mood__') or pid.startswith('__sub_mood__')):
+        elif isinstance(pid, str) and pid.startswith(('__add_mood__', '__sub_mood__')):
             mood_id = pid.split('__', 3)[-1]  # extract 'happy:3' from '__add_mood__happy:3'
             vec = _get_mood_centroid_vector(mood_id)
-        elif isinstance(pid, str) and (pid.startswith('__add_playlist__') or pid.startswith('__sub_playlist__')):
+        elif isinstance(pid, str) and pid.startswith(('__add_playlist__', '__sub_playlist__')):
             vec = playlist_vec_by_marker.get(pid)
         else:
             # regular item id
@@ -784,9 +819,9 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     for pid in missing_ids:
                         idx = missing_ids.index(pid)
                         vec = missing_vectors[idx]
-                        if pid.startswith('__add_id__') or pid.startswith('__add_artist_comp__') or pid.startswith('__add_playlist__'):
+                        if pid.startswith(('__add_id__', '__add_artist_comp__', '__add_playlist__')):
                             local_add_vecs.append(vec)
-                        elif pid.startswith('__sub_id__') or pid.startswith('__sub_artist_comp__') or pid.startswith('__sub_playlist__'):
+                        elif pid.startswith(('__sub_id__', '__sub_artist_comp__', '__sub_playlist__')):
                             local_sub_vecs.append(vec)
                     
                     if local_add_vecs and local_sub_vecs and _project_with_discriminant is not None:
@@ -837,7 +872,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     distances = {}
     add_vecs = [p['vector'] for p in add_anchor_points]
     for cid in candidate_ids:
-        vec = get_vector_by_id(cid)
+        vec = _vec(cid)
         if vec is None:
             continue
         v = np.array(vec, dtype=float)
@@ -853,6 +888,23 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             d['album'] = 'Unknown'
         if 'album_artist' not in d or not d['album_artist']:
             d['album_artist'] = 'Unknown'
+
+    seed_song_ids = [sid for sid in (add_song_ids + subtract_song_ids) if sid]
+    seen_signatures = set()
+    if seed_song_ids:
+        for sd in get_score_data_by_ids(seed_song_ids):
+            seen_signatures.add(((sd.get('title') or '').strip().lower(), (sd.get('author') or '').strip().lower()))
+    deduped_ids = []
+    for cid in candidate_ids:
+        d = details_map.get(cid)
+        if not d:
+            continue
+        signature = ((d.get('title') or '').strip().lower(), (d.get('author') or '').strip().lower())
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        deduped_ids.append(cid)
+    candidate_ids = deduped_ids
 
     # Build a list of scored candidates for probabilistic sampling
     scored_candidates = []

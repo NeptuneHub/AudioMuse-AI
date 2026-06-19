@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import math
+import threading
 import time
 
 from tasks.song_alchemy import song_alchemy
@@ -13,6 +14,7 @@ alchemy_bp = Blueprint('alchemy_bp', __name__, template_folder='../templates')
 
 _PLAYLIST_CACHE = {'ts': 0.0, 'data': None}
 _PLAYLIST_CACHE_TTL = 30.0
+_PLAYLIST_CACHE_LOCK = threading.Lock()
 
 
 @alchemy_bp.route('/alchemy', methods=['GET'])
@@ -87,11 +89,15 @@ def _cached_all_playlists():
     now = time.monotonic()
     if _PLAYLIST_CACHE['data'] is not None and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL:
         return _PLAYLIST_CACHE['data']
-    from tasks.mediaserver import get_all_playlists
-    data = get_all_playlists() or []
-    _PLAYLIST_CACHE['data'] = data
-    _PLAYLIST_CACHE['ts'] = now
-    return data
+    with _PLAYLIST_CACHE_LOCK:
+        now = time.monotonic()
+        if _PLAYLIST_CACHE['data'] is not None and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL:
+            return _PLAYLIST_CACHE['data']
+        from tasks.mediaserver import get_all_playlists
+        data = get_all_playlists() or []
+        _PLAYLIST_CACHE['data'] = data
+        _PLAYLIST_CACHE['ts'] = now
+        return data
 
 
 @alchemy_bp.route('/api/search_playlists', methods=['GET'])
@@ -126,7 +132,8 @@ def search_playlists():
             continue
         if query and query not in name.lower():
             continue
-        out.append({'id': str(pid), 'name': name, 'count': p.get('songCount') or p.get('ChildCount')})
+        count = p.get('songCount') if p.get('songCount') is not None else p.get('ChildCount')
+        out.append({'id': str(pid), 'name': name, 'count': count})
     return jsonify(out[:50])
 
 

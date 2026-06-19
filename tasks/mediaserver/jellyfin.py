@@ -565,7 +565,7 @@ def _fetch_playlist_items(playlist_id, user_creds=None):
         r.raise_for_status()
         return r.json().get("Items") or []
     except Exception as e:
-        logger.error(f"Jellyfin _fetch_playlist_items failed for {playlist_id}: {e}", exc_info=True)
+        logger.exception(f"Jellyfin _fetch_playlist_items failed for {playlist_id}: {e}")
         return None
 
 

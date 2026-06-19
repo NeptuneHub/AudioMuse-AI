@@ -1089,7 +1089,7 @@ def get_playlist_track_ids(playlist_id):
     try:
         response = _jsonrpc_request("playlists", ["tracks", 0, 999999, f"playlist_id:{playlist_id}", "tags:u"])
     except Exception as e:
-        logger.error(f"Lyrion get_playlist_track_ids failed for {playlist_id}: {e}", exc_info=True)
+        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}: {e}")
         return []
     if not response:
         return []

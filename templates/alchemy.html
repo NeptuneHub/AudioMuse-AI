@@ -662,25 +662,29 @@
             // Setup autocomplete for playlists
             let playlistSearchTimeout;
 
+            const createPlaylistItem = (playlist) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'autocomplete-item';
+                const countText = playlist.count ? `${playlist.count} tracks` : 'Playlist';
+                const titleDiv = document.createElement('div');
+                titleDiv.className = 'title';
+                titleDiv.textContent = playlist.name;
+                const countDiv = document.createElement('div');
+                countDiv.className = 'artist';
+                countDiv.textContent = countText;
+                itemDiv.appendChild(titleDiv);
+                itemDiv.appendChild(countDiv);
+                itemDiv.addEventListener('click', () => {
+                    idEl.value = playlist.id;
+                    selectedSongNameEl.textContent = `Playlist: ${playlist.name}`;
+                    resultsPlaylistEl.classList.add('hidden');
+                });
+                return itemDiv;
+            };
+
             const appendPlaylistResults = (playlists) => {
                 playlists.forEach(playlist => {
-                    const itemDiv = document.createElement('div');
-                    itemDiv.className = 'autocomplete-item';
-                    const countText = playlist.count ? `${playlist.count} tracks` : 'Playlist';
-                    const titleDiv = document.createElement('div');
-                    titleDiv.className = 'title';
-                    titleDiv.textContent = playlist.name;
-                    const countDiv = document.createElement('div');
-                    countDiv.className = 'artist';
-                    countDiv.textContent = countText;
-                    itemDiv.appendChild(titleDiv);
-                    itemDiv.appendChild(countDiv);
-                    itemDiv.addEventListener('click', () => {
-                        idEl.value = playlist.id;
-                        selectedSongNameEl.textContent = `Playlist: ${playlist.name}`;
-                        resultsPlaylistEl.classList.add('hidden');
-                    });
-                    resultsPlaylistEl.appendChild(itemDiv);
+                    resultsPlaylistEl.appendChild(createPlaylistItem(playlist));
                 });
             };
 

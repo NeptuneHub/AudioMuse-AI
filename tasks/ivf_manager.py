@@ -269,7 +269,7 @@ def multi_query_ids(query_vectors, per_vector_n):
         try:
             vec_ids, _distances = ivf_index.query(vec, k=k)
         except Exception as e:
-            logger.error(f"IVF multi-query failed for a vector: {e}", exc_info=True)
+            logger.exception(f"IVF multi-query failed for a vector: {e}")
             continue
         for vid in vec_ids:
             item_id = id_map.get(vid)
