@@ -1,3 +1,4 @@
+<ul class="sidebar-nav">
 {% if setup_saved %}
 <li><a href="{{ url_for('dashboard_bp.dashboard_page') }}" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a></li>
 {% if is_admin %}
@@ -43,3 +44,4 @@
     </form>
 </li>
 {% endif %}
+</ul>

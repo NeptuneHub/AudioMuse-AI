@@ -252,7 +252,7 @@ def get_vectors_by_ids(item_ids) -> dict:
             seen.add(sid)
             unique.append(sid)
 
-    if voyager_index is None or reverse_id_map is None:
+    if ivf_index is None or reverse_id_map is None:
         return {sid: None for sid in unique}
 
     out = {}
@@ -1254,4 +1254,3 @@ def cleanup_resources():
     logger.info("Cleaning up similarity manager resources...")
     _shutdown_thread_pool()
     logger.info("Similarity manager cleanup complete.")
-

@@ -46,7 +46,22 @@
 /* ---------------- Topbar ---------------- */
 /* Centralised height so the sticky workbench rail can offset itself by the
    same amount (otherwise its bottom save card slides below the viewport). */
-:root { --curator-topbar-h: 4.5rem; }
+:root {
+    --curator-topbar-h: 4.5rem;
+    --curator-player-h: 0px;
+}
+
+.curator-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
 
 .curator-topbar {
     background: var(--bg-card);
@@ -580,9 +595,9 @@ html.dark-mode .curator-table tr.dup-warn { background: #422006; }
     border: 1px solid #9333EA;
 }
 .curator-influence-btn[data-level="3"] {
-    background: #A97C00;
+    background: #7A5600;
     color: #fff;
-    border: 1px solid #A97C00;
+    border: 1px solid #7A5600;
 }
 
 .curator-row-actions {
@@ -757,8 +772,6 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 /* --curator-player-h is bumped to the player's height when it's visible
    (see :has() rule near the sticky-player block). Used to keep the rail's
    bottom save / actions buttons visible above the sticky player. */
-:root { --curator-player-h: 0px; }
-
 .curator-workbench-rail {
     background: var(--bg-code);
     border-left: 1px solid var(--border-color);
@@ -1020,7 +1033,7 @@ body:has(.curator-sticky-player.visible) {
     background: #334155;
     display: grid;
     place-items: center;
-    color: #94A3B8;
+    color: #CBD5E1;
     flex-shrink: 0;
 }
 

@@ -1,6 +1,5 @@
 from flask import Blueprint, jsonify, request, render_template, Response, stream_with_context, redirect, url_for
 import logging
-import os
 import re
 import numpy as np
 import requests as http_requests
@@ -13,6 +12,7 @@ import config
 logger = logging.getLogger(__name__)
 
 playlist_curator_bp = Blueprint('playlist_curator_bp', __name__, template_folder='templates')
+INTERNAL_ERROR_MESSAGE = "Internal error"
 
 INFLUENCE_LEVELS = {
     0: 0.0,    # x1 — equal weight
@@ -225,11 +225,11 @@ def _find_duplicate_groups(item_ids, threshold=0.015):
     if len(vectors) < 2:
         return {"groups": [], "total_groups": 0, "total_duplicate_tracks": 0}
 
-    V = np.vstack(vectors)
-    norms = np.linalg.norm(V, axis=1, keepdims=True)
+    vectors_matrix = np.vstack(vectors)
+    norms = np.linalg.norm(vectors_matrix, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
-    V_normed = V / norms
-    similarity_matrix = V_normed @ V_normed.T
+    vectors_normed = vectors_matrix / norms
+    similarity_matrix = vectors_normed @ vectors_normed.T
     np.clip(similarity_matrix, -1.0, 1.0, out=similarity_matrix)
     distance_matrix = 1.0 - similarity_matrix
 
@@ -697,9 +697,9 @@ def search_api():
             "source_tracks": source_tracks_meta
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Playlist curator search failed")
-        return jsonify({"error": "Internal error"}), 500
+        return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
 
 
 @playlist_curator_bp.route('/api/curator/save_playlist', methods=['POST'])
@@ -735,9 +735,9 @@ def save_playlist_api():
             "total_songs": len(final_ids)
         }), 201
 
-    except Exception as e:
+    except Exception:
         logger.exception("Save curator playlist failed")
-        return jsonify({"error": "Internal error"}), 500
+        return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
 
 
 @playlist_curator_bp.route('/api/curator/server_playlists', methods=['GET'])
@@ -756,9 +756,9 @@ def server_playlists_api():
                 'song_count': int(song_count) if song_count else 0
             })
         return jsonify(normalized)
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to fetch server playlists")
-        return jsonify({"error": "Internal error"}), 500
+        return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
 
 
 def _fetch_server_playlists():
@@ -766,17 +766,17 @@ def _fetch_server_playlists():
     try:
         mstype = config.MEDIASERVER_TYPE
         if mstype == 'jellyfin':
-            from tasks.mediaserver_jellyfin import get_all_playlists
+            from tasks.mediaserver.jellyfin import get_all_playlists
             return get_all_playlists()
         elif mstype == 'emby':
-            from tasks.mediaserver_emby import get_all_playlists
+            from tasks.mediaserver.emby import get_all_playlists
             return get_all_playlists()
         elif mstype == 'navidrome':
-            from tasks.mediaserver_navidrome import get_all_playlists
+            from tasks.mediaserver.navidrome import get_all_playlists
             raw = get_all_playlists() or []
             return [{'Id': p.get('id'), 'Name': p.get('name'), 'songCount': p.get('songCount', 0)} for p in raw]
         elif mstype == 'lyrion':
-            from tasks.mediaserver_lyrion import get_all_playlists
+            from tasks.mediaserver.lyrion import get_all_playlists
             return get_all_playlists()
         elif mstype == 'mpd':
             return []  # MPD intentionally unsupported
@@ -827,9 +827,9 @@ def server_playlist_tracks_api():
             "unresolved_tracks": len(server_item_ids) - len(resolved_ids)
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to fetch server playlist tracks")
-        return jsonify({"error": "Internal error"}), 500
+        return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
 
 
 def _fetch_server_playlist_item_ids(playlist_id):
@@ -908,7 +908,7 @@ def stream_track(item_id):
             upstream_headers = {"X-Emby-Token": config.EMBY_TOKEN}
 
         elif mstype == 'navidrome':
-            from tasks.mediaserver_navidrome import get_navidrome_auth_params
+            from tasks.mediaserver.navidrome import get_navidrome_auth_params
             auth_params = get_navidrome_auth_params()
             if not auth_params:
                 return jsonify({"error": "Navidrome credentials not configured"}), 500

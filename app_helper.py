@@ -71,8 +71,8 @@ def get_score_data_lite_by_ids(item_ids_list):
     try:
         cur.execute(query, (tuple(item_ids_list),))
         rows = cur.fetchall()
-    except Exception as e:
-        logger.error(f"Error fetching lite score data by IDs: {e}")
+    except Exception:
+        logger.exception("Error fetching lite score data by IDs")
         rows = []
     finally:
         cur.close()
