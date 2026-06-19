@@ -56,7 +56,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 2.3.0** Added donate button to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.
+> * **Version 2.3.0** Added [donate button](https://liberapay.com/NeptuneHub/donate) to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.
 > * **Version 2.1.4** introduces the Windows native version. Attached to each release you will find `AudioMuse-AI-amd64-windows.zip`.
 > * **Version 2.1.3** introduces the Linux native version. Attached to each release you will find `.deb` and `.rpm` file.
 > * **Version 2.1.2** introduces the MacOS native version. Attached to each release you will find `AudioMuse-AI-arm64.zip`.
