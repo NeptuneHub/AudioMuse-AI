@@ -146,19 +146,19 @@ def barrier_client(pg_dsn, monkeypatch):
     app = Flask(__name__, template_folder=os.path.join(_REPO_ROOT, 'templates'))
     app_auth.init_app(app, SetupManager(), lambda: _TEST_SECRET)
 
-    @app.route('/api/health')
+    @app.route('/api/health', methods=['GET'])
     def _health():
         return jsonify({"status": "ok"})
 
-    @app.route('/api/protected')
+    @app.route('/api/protected', methods=['GET'])
     def _protected():
         return jsonify({"ok": True})
 
-    @app.route('/api/cron')
+    @app.route('/api/cron', methods=['GET'])
     def _admin_only():
         return jsonify({"ok": True})
 
-    @app.route('/somepage')
+    @app.route('/somepage', methods=['GET'])
     def _page():
         return "page", 200
 
