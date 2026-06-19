@@ -1084,6 +1084,28 @@ def get_playlist_by_name(playlist_name):
             return p # Return the already formatted playlist dict
     return None
 
+def get_playlist_track_ids(playlist_id):
+    """Returns the audio track item_ids of a Lyrion playlist via the 'playlists tracks' JSON-RPC call."""
+    try:
+        response = _jsonrpc_request("playlists", ["tracks", 0, 999999, f"playlist_id:{playlist_id}", "tags:u"])
+    except Exception as e:
+        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}: {e}")
+        return []
+    if not response:
+        return []
+    loop = []
+    if isinstance(response, dict):
+        if isinstance(response.get("playlisttracks_loop"), list):
+            loop = response["playlisttracks_loop"]
+        else:
+            for v in response.values():
+                if isinstance(v, list):
+                    loop = v
+                    break
+    elif isinstance(response, list):
+        loop = response
+    return [str(t.get("id")) for t in loop if isinstance(t, dict) and t.get("id")]
+
 def get_top_played_songs(limit):
     """Fetches the top N most played songs from Lyrion for a specific user using JSON-RPC."""
     response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"])

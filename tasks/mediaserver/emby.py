@@ -878,28 +878,46 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
 
-def _get_playlist_entry_ids(playlist_id, user_id, headers):
-    """Fetches every PlaylistItemId for an existing Emby playlist.
-
-    Emby returns playlist contents at GET /emby/Playlists/{Id}/Items?UserId=... with each item
-    carrying a PlaylistItemId distinct from the audio Item's Id. Removal needs PlaylistItemId.
+def _fetch_playlist_items(playlist_id, user_id, headers):
+    """GETs the raw entries of an Emby playlist (GET /emby/Playlists/{Id}/Items?UserId=...).
+    Each entry carries both the audio Item's ``Id`` and a separate ``PlaylistItemId`` (the
+    removal handle). Returns the list of entry dicts, or None on HTTP failure.
     """
     url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        items = r.json().get("Items") or []
-        entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
-        if len(entry_ids) != len(items):
-            logger.warning(
-                f"Emby _get_playlist_entry_ids: playlist {playlist_id} had "
-                f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
-            )
-        return entry_ids
+        return r.json().get("Items") or []
     except Exception as e:
-        logger.error(f"Emby _get_playlist_entry_ids failed for {playlist_id}: {e}", exc_info=True)
+        logger.exception(f"Emby _fetch_playlist_items failed for {playlist_id}: {e}")
         return None
+
+
+def _get_playlist_entry_ids(playlist_id, user_id, headers):
+    """Fetches every PlaylistItemId for an existing Emby playlist. Removal needs the
+    ``PlaylistItemId`` handle, which is distinct from the audio Item's ``Id``.
+    """
+    items = _fetch_playlist_items(playlist_id, user_id, headers)
+    if items is None:
+        return None
+    entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
+    if len(entry_ids) != len(items):
+        logger.warning(
+            f"Emby _get_playlist_entry_ids: playlist {playlist_id} had "
+            f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
+        )
+    return entry_ids
+
+
+def get_playlist_track_ids(playlist_id, user_creds=None):
+    """Returns the audio track item_ids ('Id') of an Emby playlist."""
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
+    headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
+    items = _fetch_playlist_items(playlist_id, user_id, headers)
+    if not items:
+        return []
+    return [str(it.get("Id")) for it in items if it.get("Id")]
 
 
 def _remove_playlist_entries(playlist_id, entry_ids, headers):

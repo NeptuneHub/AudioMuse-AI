@@ -320,7 +320,7 @@
             card.innerHTML = `
                 <div class="alchemy-card-header">
                     <div class="left-group">
-                        <button type="button" class="type-toggle-btn type-cycle-btn" title="Click to switch: Song → Artist → Anchor → Mood">🎵 Song</button>
+                        <button type="button" class="type-toggle-btn type-cycle-btn" title="Click to switch: Song → Artist → Anchor → Mood → Playlist">🎵 Song</button>
                         <div class="op-buttons">
                             <button type="button" class="op-btn op-add active">Include</button>
                             <button type="button" class="op-btn op-sub">Exclude</button>
@@ -337,6 +337,7 @@
                     <div class="autocomplete-container">
                         <input type="text" placeholder="Start typing..." class="song" />
                         <div class="autocomplete-results-artist hidden"></div>
+                        <div class="autocomplete-results-playlist hidden"></div>
                         <div class="autocomplete-results hidden"></div>
                     </div>
                 </div>
@@ -362,6 +363,7 @@
             const searchInput = card.querySelector('.song');
             const resultsEl = card.querySelector('.autocomplete-results');
             const resultsArtistEl = card.querySelector('.autocomplete-results-artist');
+            const resultsPlaylistEl = card.querySelector('.autocomplete-results-playlist');
             const idEl = card.querySelector('.song-id');
             const opHidden = card.querySelector('.op');
             const itemTypeHidden = card.querySelector('.item-type');
@@ -383,6 +385,7 @@
                 selectedSongNameEl.textContent = '';
                 resultsEl.classList.add('hidden');
                 resultsArtistEl.classList.add('hidden');
+                resultsPlaylistEl.classList.add('hidden');
                 anchorSelect.value = '';
                 moodSelect.value = '';
                 centroidSelect.innerHTML = '<option value="">--</option>';
@@ -398,6 +401,7 @@
                 card.classList.toggle('item-type-artist', type === 'artist');
                 card.classList.toggle('item-type-anchor', type === 'anchor');
                 card.classList.toggle('item-type-mood', type === 'mood');
+                card.classList.toggle('item-type-playlist', type === 'playlist');
 
                 songFieldRow.classList.add('hidden');
                 anchorFieldRow.classList.add('hidden');
@@ -425,11 +429,15 @@
                         if (!_sunburstTree) _sunburstTree = SunburstChart.buildTree(_moodCentroidsCache);
                         _initSunburstOnce();
                     });
+                } else if (type === 'playlist') {
+                    typeCycleBtn.textContent = '📋 Playlist';
+                    typeCycleBtn.style.background = '#EC4899';
+                    songFieldRow.classList.remove('hidden');
                 }
                 clearSelection();
             };
 
-            const cycleTypes = ['song', 'artist', 'anchor', 'mood'];
+            const cycleTypes = ['song', 'artist', 'anchor', 'mood', 'playlist'];
             const cycleType = () => {
                 const current = itemTypeHidden.value || 'song';
                 const curIdx = cycleTypes.indexOf(current);
@@ -647,6 +655,62 @@
                     } catch (error) {
                         console.error('Artist autocomplete error:', error);
                         resultsArtistEl.classList.add('hidden');
+                    }
+                }, 300);
+            });
+
+            // Setup autocomplete for playlists
+            let playlistSearchTimeout;
+
+            const createPlaylistItem = (playlist) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'autocomplete-item';
+                const countText = playlist.count ? `${playlist.count} tracks` : 'Playlist';
+                const titleDiv = document.createElement('div');
+                titleDiv.className = 'title';
+                titleDiv.textContent = playlist.name;
+                const countDiv = document.createElement('div');
+                countDiv.className = 'artist';
+                countDiv.textContent = countText;
+                itemDiv.appendChild(titleDiv);
+                itemDiv.appendChild(countDiv);
+                itemDiv.addEventListener('click', () => {
+                    idEl.value = playlist.id;
+                    selectedSongNameEl.textContent = `Playlist: ${playlist.name}`;
+                    resultsPlaylistEl.classList.add('hidden');
+                });
+                return itemDiv;
+            };
+
+            const appendPlaylistResults = (playlists) => {
+                playlists.forEach(playlist => {
+                    resultsPlaylistEl.appendChild(createPlaylistItem(playlist));
+                });
+            };
+
+            searchInput.addEventListener('input', async () => {
+                clearTimeout(playlistSearchTimeout);
+                const query = searchInput.value.trim();
+
+                if (itemTypeHidden.value !== 'playlist' || query.length < 1) {
+                    resultsPlaylistEl.classList.add('hidden');
+                    return;
+                }
+
+                playlistSearchTimeout = setTimeout(async () => {
+                    try {
+                        const response = await fetch(`{{ url_for('alchemy_bp.search_playlists') }}?query=${encodeURIComponent(query)}`);
+                        const playlists = await response.json();
+                        resultsPlaylistEl.innerHTML = '';
+                        if (playlists.length === 0) {
+                            resultsPlaylistEl.innerHTML = '<div class="autocomplete-item"><em>No playlists found</em></div>';
+                        } else {
+                            appendPlaylistResults(playlists);
+                        }
+                        resultsPlaylistEl.classList.remove('hidden');
+                    } catch (error) {
+                        console.error('Playlist autocomplete error:', error);
+                        resultsPlaylistEl.classList.add('hidden');
                     }
                 }, 300);
             });
