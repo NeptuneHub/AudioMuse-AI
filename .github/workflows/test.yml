@@ -158,7 +158,7 @@ jobs:
       env:
         AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
       run: |
-        pytest test/integration/test_app_endpoints_integration.py test/integration/test_auth_users_integration.py -m integration -s -v --tb=short
+        pytest test/integration/test_app_endpoints_integration.py test/integration/test_auth_users_integration.py test/integration/test_auth_barrier_integration.py -m integration -s -v --tb=short
 
     - name: Run lyrics integration test
       run: |
