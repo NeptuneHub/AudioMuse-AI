@@ -681,7 +681,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
     vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists', 'female vocalist'})
 
-    if 'instrumental' in normalized_moods:
+    try:
+        from config import LYRICS_MUSICNN_SKIP
+    except Exception:
+        LYRICS_MUSICNN_SKIP = True
+
+    if LYRICS_MUSICNN_SKIP and 'instrumental' in normalized_moods:
         embedding, axis_vector = _make_instrumental_sentinel()
         logger.info(
             "STEP 1: musicnn flagged track as instrumental "
