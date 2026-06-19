@@ -12,13 +12,16 @@ Multiple information can be found in the [docs](docs/) folder.
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
 * **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are syncronous like get the similar song.
 * **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for what need to be executed in async, like analyze the song, do clustering or reconstruct the index for similar song search. With the redis queue and a kubernetes architecture is possible to spawn more woker for increase scalability and avaiability.
+* **Redis Queue:** where Flask write the job, and Workers check the job to do.
 * **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
 
- ## Supported Architecture and Mediaserver
+## Supported Architecture and Mediaserver
+Remember that this software support both Intel and Arm architecture. So avoid code that will not work on both except for very specific case. If you're not able to test on both architecture, add this in the PR description.
 
- Remember that this software support both Intel and Arm architecture. So avoid code that will not work on both except for very specific case. If you're not able to test on both architecture, add this in the PR description.
+Remember that AudioMuse-AI is also shipped as native app for MacOS, Linux and Windows and your change must avoid to brake them-
 
- Rememeber also that this application support multiple mediaserver, at the moment Jellyfin and Navidrome. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
+Rememeber also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
+
 
 ## **The Codebase Map**
 
@@ -28,7 +31,7 @@ The following table details the most important paths in the repository, their pu
 | :---- | :---- |
 | app.py, app_*.py | The main entry point for the Flask web application. It handles the initialization of the Flask app, database connections, and the registration of API routes and blueprints. |
 | tasks/ | **The Core Logic Hub.** This is where the most intensive computations occur. Each API or async task then point to an specific implementation in this directory|
-| tasks/mediaserver.py | In this fail the generic method to interact with the mediaservers are specialized to call the specific one |
+| tasks/mediaserver/ | In this package the generic methods to interact with the mediaservers (`__init__.py`) dispatch to the specific backend (`jellyfin.py`, `navidrome.py`, `emby.py`, `lyrion.py`) |
 | tasks/ai/ | All AI / MCP code. `tasks/ai/api.py` is the provider dispatcher (called via `tasks.ai.api.call_with_tools()`), with backends in `tasks/ai/providers/{openai,gemini,mistral,ollama}.py`. Prompts are in `tasks/ai/prompts.py`. MCP tool schemas + dispatcher in `tasks/ai/tools.py`; tool bodies in `tasks/ai/tool_impl.py`. Two-stage planner (intent classifier + plan validation + execution) in `tasks/ai/planner.py`. Vocabulary normalization helpers in `tasks/ai/vocab.py`. |
 | config.py | Contains the application's default, non-sensitive configuration parameters. These values serve as fallbacks and can be easily overridden by environment variables, providing a flexible and secure configuration system. |
 | Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` and `app_helepr.py` functionality |
@@ -43,8 +46,7 @@ The development environment for AudioMuse-AI is fully containerized to ensure co
 
 * **Git:** For version control and interacting with the GitHub repository.  
 * **Docker and Docker Compose:** For building and running the containerized application stack.
-
-Because the entire application runs inside Docker containers, there is no need to install Python, PostgreSQL, or Redis directly on the local development machine.
+* ***Python dependencies:** Need to run unit and integration test locally before push the code.
 
 ## **How to compile**
 
@@ -76,12 +78,9 @@ docker-compose up --build -d
 
 ## **PR**
 ### Before You Start
+0. Remember that **AudioMuse-AI is under AGPLv3 license**, your own code, plus any third-party libraries, frameworks, or models you introduce MUST align with AGPLv3
 1. **Check existing PRs and issues** to avoid duplicate work
-2. **Discuss WHAT you want to implement and HOW first** or in an existing issue (if you want to solve it) or creating a new one if the topic is not already covered (use feature label for feature, bug for bugfix).
-4. **Open a Draft PR early** for significant changes to discuss your approach and get feedback before investing too much time
-   - When creating a PR on GitHub, click the dropdown next to "Create Pull Request" and select **"Create Draft Pull Request"**
-   - This gives visibility to other contributors and maintainers can provide early guidance
-5. **Discuss breaking changes** or major architectural decisions in an issue or draft PR first
+2. **Discuss WHAT you want to implement and HOW first** or in an existing issue (if you want to solve it) or creating a new one if the topic is not already covered (use feature label for feature, bug for bugfix)
 
 ### PR Requirements
 When submitting a pull request, ensure:
@@ -95,7 +94,7 @@ When submitting a pull request, ensure:
   * Song Path
   * Sonic Fingerprint
   * *(Basically, test each function in the integrated front-end menu at least once)*
-* **License compliance:** Your code must align with AudioMuse-AI's license
+* **AGPLv3 License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
 * **Static analysis (flake8):** the `Static Analysis` workflow (`.github/workflows/lint-flake8.yml`) runs `flake8 --select=E9,F63,F7,F82` on every push/PR to `main` and must pass. To avoid failing it: don't reference undefined names, leftover/renamed variables, or unresolved imports; fix syntax errors; and only keep a `global`/`nonlocal` declaration when the function actually reassigns that name (declaring one for a variable you merely read or mutate in place — `d[k]=v`, `.append()`, `.update()` — will fail the check).
@@ -117,9 +116,12 @@ When submitting a pull request, ensure:
 This workflow helps avoid spending time on PRs that may not align with project goals.
 
 ##  **Related Repositories** 
+Below the full list of related repository. When you submit a PR avoid to introduce change that could brake one or more of this repository:
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
   > * [AudioMuse-AI Helm Chart](https://github.com/NeptuneHub/AudioMuse-AI-helm): helm chart for easy installation on Kubernetes;
-  > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin.
+  > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
+  > * [AudioMuse-AI Plugin for Navidrome](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin): Navidrome Plugin;
+  > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 
 ## **Questions**

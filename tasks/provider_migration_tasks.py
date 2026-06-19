@@ -12,9 +12,10 @@ The transaction is atomic:
     - ``score.item_id`` / ``playlist.item_id`` / all embedding tables rewritten
       via ``UPDATE ... FROM item_id_migration_map`` (O(N), one round trip),
     - FKs re-added with original (reflected) names,
-    - voyager / map_projection ``id_map_json`` rewritten in Python (int keys
-      kept, string values swapped),
-    - artist_index_data / artist_component_projection / artist_mapping
+    - map_projection ``id_map_json`` rewritten in Python (int keys kept,
+      string values swapped); the disk-paged IVF indexes (ivf_dir / ivf_cell)
+      are cleared so they rebuild on the next analysis,
+    - artist metadata / artist_component_projection / artist_mapping
       truncated — they contain provider-specific artist IDs and will lazily
       rebuild on next use,
     - ``app_config`` updated with MEDIASERVER_TYPE + provider credentials,
@@ -36,7 +37,7 @@ import logging
 import re
 import time
 
-from tasks.memory_utils import sanitize_string_for_db as _sanitize_text
+from sanitization import sanitize_string_for_db as _sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,12 @@ _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 # ---------------------------------------------------------------------------
 
 def rewrite_id_map_json(id_map_json, mapping):
-    """Rewrite a Voyager / map-projection id_map JSON blob in place.
+    """Rewrite a IVF / map-projection id_map JSON blob in place.
 
     Two on-disk formats live in this DB:
 
-    1. Voyager (``voyager_index_data.id_map_json``) is a dict
-       ``{voyager_int_id_str: old_item_id_str}``. The integer key is the
+    1. IVF (``voyager_index_data.id_map_json``) is a dict
+       ``{vec_int_id_str: old_item_id_str}``. The integer key is the
        HNSW vector slot and must be preserved verbatim; we only swap the
        string values. Orphan entries (old id not in ``mapping``) are
        dropped — consumers already tolerate missing keys, and dropping
@@ -526,11 +527,15 @@ def _run_migration_transaction(cur, mapping, new_meta,
             "FROM migration_new_meta n WHERE s.item_id = n.new_id"
         )
 
-    # 8. Rewrite Voyager / map-projection id_map_json (segment-aware)
+    # 8. Rewrite map-projection / legacy id_map_json (segment-aware) for any of
+    #    these tables that still exist.
     from tasks.index_build_helpers import rewrite_segmented_id_map
     _seg_base = re.compile(r"^(.*)_\d+_\d+$")
     index_rebuild_needed = []
     for table in ('voyager_index_data', 'map_projection_data'):
+        cur.execute("SELECT to_regclass(%s)", (table,))
+        if cur.fetchone()[0] is None:
+            continue
         cur.execute(f"SELECT DISTINCT index_name FROM {table}")
         bases = set()
         for (name,) in (cur.fetchall() or []):
@@ -555,12 +560,18 @@ def _run_migration_transaction(cur, mapping, new_meta,
                 )
                 index_rebuild_needed.append(f"{table}:{base}")
 
-    # 9. Truncate provider-specific artist tables — they contain artist IDs
-    #    from the old provider. They rebuild lazily on next query.
-    cur.execute("DELETE FROM artist_index_data")
-    cur.execute("DELETE FROM artist_metadata_data")
-    cur.execute("DELETE FROM artist_component_projection")
-    cur.execute("DELETE FROM artist_mapping")
+    for ivf_table in ('ivf_cell', 'ivf_dir'):
+        cur.execute("SELECT to_regclass(%s)", (ivf_table,))
+        if cur.fetchone()[0] is not None:
+            cur.execute(f"DELETE FROM {ivf_table}")
+
+    # 9. Truncate provider-specific index/artist tables — they hold IDs from the
+    #    old provider and rebuild lazily on next use.
+    for artist_table in ('artist_index_data', 'artist_metadata_data',
+                         'artist_component_projection', 'artist_mapping'):
+        cur.execute("SELECT to_regclass(%s)", (artist_table,))
+        if cur.fetchone()[0] is not None:
+            cur.execute(f"DELETE FROM {artist_table}")
 
     # 10. Persist the new provider in app_config (same table as setup wizard)
     _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=selected_libraries)
@@ -580,8 +591,6 @@ _CREDS_TO_CONFIG = {
     'emby':      {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
     'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
     'lyrion':    {'url': 'LYRION_URL'},
-    'mpd':       {'host': 'MPD_HOST', 'port': 'MPD_PORT', 'password': 'MPD_PASSWORD',
-                  'music_directory': 'MPD_MUSIC_DIRECTORY'},
 }
 
 

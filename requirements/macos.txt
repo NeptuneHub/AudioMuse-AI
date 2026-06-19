@@ -1,0 +1,17 @@
+-r common.txt
+
+# onnxruntime is pinned in cpu.txt/gpu.txt (the container variants) but not in
+# common.txt, so the macOS build must request it explicitly or analysis fails at
+# runtime with `No module named 'onnxruntime'` (tasks/analysis.py).
+onnxruntime==1.19.2
+
+# pgserver ships a prebuilt PostgreSQL; 0.1.4 bundles PostgreSQL 16.2. Pinned
+# because contrib modules are NOT ABI-stable across PG minors -- the vendored
+# unaccent/pg_trgm in native-build/macos/vendor/pg-contrib/ are compiled against 16.2 and a
+# pgserver bump to a newer PG would break them at load time (see that README).
+pgserver==0.1.4
+rumps
+pyobjc-framework-Cocoa
+waitress
+pyinstaller
+pyinstaller-hooks-contrib

@@ -19,21 +19,43 @@ from rq.exceptions import NoSuchJobError
 from psycopg2.extras import DictCursor
 
 # Import configuration
-from config import MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES, MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA, MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION, EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN, ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS, MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES, CLUSTERING_MAX_FAILED_BATCHES
+from config import (
+    MAX_SONGS_PER_CLUSTER, MOOD_LABELS, STRATIFIED_GENRES,
+    MUTATION_KMEANS_COORD_FRACTION, MUTATION_INT_ABS_DELTA,
+    MUTATION_FLOAT_ABS_DELTA, TOP_N_ELITES, EXPLOITATION_START_FRACTION,
+    EXPLOITATION_PROBABILITY_CONFIG, SAMPLING_PERCENTAGE_CHANGE_PER_RUN,
+    ITERATIONS_PER_BATCH_JOB, MAX_CONCURRENT_BATCH_JOBS,
+    MIN_PLAYLIST_SIZE_FOR_TOP_N, CLUSTERING_BATCH_TIMEOUT_MINUTES,
+    CLUSTERING_MAX_FAILED_BATCHES, CLUSTERING_CLEANING,
+    TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+)
 
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
 
+# App helper functions
+from app_helper import (
+    save_task_status, redis_conn, get_task_info_from_db,
+    get_db, rq_queue_default,
+)
+from database import update_playlist_table, get_child_tasks_from_db
+
+# JSON sanitization (numpy scalars/arrays -> native types) shared project-wide
+from sanitization import sanitize_for_json
+
 # Import AI naming function and prompt template
-from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.prompts import creative_prompt_template
+# (used by clustering_helper._try_ai_name_playlist, imported there)
 # Import media server functions
 from .mediaserver import create_playlist, delete_automatic_playlists
 # Import refactored clustering helpers
 from .clustering_helper import (
     _get_stratified_song_subset,
     get_job_result_safely,
-    _perform_single_clustering_iteration
+    _perform_single_clustering_iteration,
+    _shuffle_playlist_songs,
+    _assign_playlist_chunks,
+    _try_ai_name_playlist,
 )
 # Import post-processing functions from dedicated module
 from .clustering_postprocessing import (
@@ -42,18 +64,11 @@ from .clustering_postprocessing import (
     select_top_n_diverse_playlists
 )
 
-# we want to maintain np.float_ for backwards compatibility but it was removed in numpy 2.0
-# the check below in sanitize_for_json causes an AttributeError that crashes the clustering algo
-# since it tries to access np.float_ so we monkeypatch np.float_ to point to np.float64
-if not np.__dict__.get('float_'):
-    np.float_ = np.float64
-
 logger = logging.getLogger(__name__)
 
 def batch_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the clustering batch sub-task, executed by the worker."""
-    from app import app
-    from app_helper import save_task_status, TASK_STATUS_FAILURE
+    from flask_app import app
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         parent_id = job.kwargs.get('parent_task_id')
@@ -84,28 +99,6 @@ def batch_task_failure_handler(job, connection, type, value, tb):
         )
         app.logger.error(f"Clustering batch task {task_id} (parent: {parent_id}) failed permanently. DB status updated.\n{tb_formatted}")
 
-def _sanitize_for_json(obj):
-    """
-    Recursively converts numpy arrays and numpy numeric types to native Python types
-    to ensure the object is JSON serializable.
-    """
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_sanitize_for_json(elem) for elem in obj]
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    # Handle numpy numeric types which are not JSON serializable by default
-    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
-        return int(obj)
-    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-        return float(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    else:
-        return obj
-
-
 def run_clustering_batch_task(
     batch_id_str, start_run_idx, num_iterations_in_batch,
     genre_to_lightweight_track_data_map_json,
@@ -131,10 +124,7 @@ def run_clustering_batch_task(
     Executes a batch of clustering iterations. This task is enqueued by the main clustering task.
     """
     # --- Local imports to prevent circular dependency ---
-    from app import app
-    from app_helper import (redis_conn, save_task_status, get_task_info_from_db,
-                     TASK_STATUS_PROGRESS, TASK_STATUS_REVOKED, TASK_STATUS_FAILURE,
-                     TASK_STATUS_SUCCESS)
+    from flask_app import app
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -225,7 +215,7 @@ def run_clustering_batch_task(
 
             # *** FIX: Sanitize the result to make it JSON-serializable before logging/returning ***
             if best_result_in_batch:
-                best_result_in_batch = _sanitize_for_json(best_result_in_batch)
+                best_result_in_batch = sanitize_for_json(best_result_in_batch)
 
             final_details = {
                 "best_score_in_batch": best_score_in_batch,
@@ -273,8 +263,7 @@ def run_clustering_task(
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
     """
     # --- Local imports to prevent circular dependency ---
-    from app import app
-    from app_helper import redis_conn, get_db, save_task_status, get_task_info_from_db, update_playlist_table, get_child_tasks_from_db, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+    from flask_app import app
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -399,15 +388,12 @@ def run_clustering_task(
             # --- 2. Batch Job Orchestration ---
             num_total_batches = (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB if ITERATIONS_PER_BATCH_JOB > 0 else 0
             next_batch_to_launch = 0
-            batches_completed_count = 0
 
             # STATE RECOVERY
             child_tasks_from_db = get_child_tasks_from_db(current_task_id)
             if child_tasks_from_db:
                 logger.info(f"Found {len(child_tasks_from_db)} existing child tasks. Attempting state recovery.")
                 _monitor_and_process_batches(_main_task_accumulated_details, current_task_id, initial_check=True)
-                # Count batches processed during recovery (these are now in processed_job_ids)
-                batches_completed_count = len(_main_task_accumulated_details.get('processed_job_ids', set()))
                 
                 # Determine next batch to launch based on total runs accounted for
                 runs_accounted_for = _main_task_accumulated_details["runs_completed"]
@@ -507,7 +493,7 @@ def run_clustering_task(
             _log_and_update(f"Starting post-processing with {initial_playlist_count} playlists", 90.2)
             
             # *** STEP 1: Apply duplicate filtering to remove similar songs within playlists ***
-            # Uses the same distance-based filtering logic as voyager_manager to avoid duplicate tracks
+            # Uses the same distance-based filtering logic as ivf_manager to avoid duplicate tracks
             _log_and_update("Applying duplicate filtering to remove similar songs...", 90.5)
             _log_and_update(f"Before duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists", 90.5)
             best_result = apply_duplicate_filtering_to_clustering_result(best_result, log_prefix="[DuplicateFilter] ")
@@ -540,12 +526,14 @@ def run_clustering_task(
                 ollama_model_name_param,
                 openai_server_url_param, openai_model_name_param, openai_api_key_param,
                 gemini_api_key_param, gemini_model_name_param,
-                mistral_api_key_param, mistral_model_name_param,
-                enable_clustering_embeddings_param
+                mistral_api_key_param, mistral_model_name_param
             )
 
-            _log_and_update("Deleting existing automatic playlists...", 97)
-            delete_automatic_playlists()
+            if CLUSTERING_CLEANING:
+                _log_and_update("Deleting existing automatic playlists...", 97)
+                delete_automatic_playlists()
+            else:
+                _log_and_update("CLUSTERING_CLEANING is disabled — skipping deletion of existing automatic playlists.", 97)
 
             # *** ABSOLUTE FINAL SHUFFLE: Guarantee random order right before database storage ***
             logger.info("=== ABSOLUTE FINAL SHUFFLE: Randomizing all playlists before database storage ===")
@@ -667,8 +655,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     CRITICAL: This prevents the main task from hanging at 4980/5000 runs
     by implementing timeouts and forced progress tracking.
     """
-    from app_helper import redis_conn, get_child_tasks_from_db, get_task_info_from_db, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS
-
     current_time = time.time()
     timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
     processed_jobs = state_dict.get("processed_job_ids", set())
@@ -832,7 +818,6 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
 
 def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_map, target_per_genre, *args):
     """Constructs and enqueues a single batch job."""
-    from app_helper import rq_queue_default # Local import to avoid circular dependency issues at top-level
 
     # Unpack all the parameters passed via *args
     (
@@ -905,13 +890,12 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 
-def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model, embeddings_used):
+def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_model, openai_url, openai_model, openai_key, gemini_key, gemini_model, mistral_key, mistral_model):
     """
     Uses AI to name playlists and formats them for creation.
     Returns a dictionary mapping final playlist names to lists of song tuples (id, title, author).
     """
     final_playlists = {}
-    centroids = best_result.get("playlist_centroids", {})
     named_playlists = best_result.get("named_playlists", {})
     max_songs = best_result.get("parameters", {}).get("max_songs_per_cluster", MAX_SONGS_PER_CLUSTER)
 
@@ -919,36 +903,22 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
         if not songs:
             continue
 
-        final_name = original_name
-        if ai_provider in ["OLLAMA", "OPENAI", "GEMINI", "MISTRAL"]:
+        if ai_provider in ("OLLAMA", "OPENAI", "GEMINI", "MISTRAL"):
             try:
-                # Simplified feature extraction for AI prompt
-                name_parts = original_name.split('_')
-                feature1 = name_parts[0] if len(name_parts) > 0 else "Music"
-                feature2 = name_parts[1] if len(name_parts) > 1 else "Vibes"
-                feature3 = name_parts[2] if len(name_parts) > 2 else "Collection"
-                if embeddings_used:
-                    feature1, feature2, feature3 = "Vibe", "Focused", "Collection"
-
-                ai_config = {
-                    'provider': ai_provider,
-                    'ollama_url': ollama_url, 'ollama_model': ollama_model,
-                    'openai_url': openai_url, 'openai_model': openai_model, 'openai_key': openai_key,
-                    'gemini_key': gemini_key, 'gemini_model': gemini_model,
-                    'mistral_key': mistral_key, 'mistral_model': mistral_model,
-                }
-                ai_name = get_ai_playlist_name(
-                    creative_prompt_template,
-                    [{'title': s_title, 'author': s_author} for _, s_title, s_author in songs],
-                    centroids.get(original_name, {}),
-                    ai_config,
+                final_name = _try_ai_name_playlist(
+                    original_name, songs,
+                    best_result.get("playlist_centroids", {}),
+                    ai_provider,
+                    ollama_url, ollama_model,
+                    openai_url, openai_model, openai_key,
+                    gemini_key, gemini_model,
+                    mistral_key, mistral_model,
                 )
-                if ai_name and "Error" not in ai_name:
-                    final_name = ai_name.strip().replace("\n", " ")
-                else:
-                    logger.warning(f"AI naming failed for '{original_name}': {ai_name}. Using original name.")
             except Exception as e:
                 logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")
+                final_name = original_name
+        else:
+            final_name = original_name
 
         # Ensure unique names
         temp_name = final_name
@@ -958,34 +928,9 @@ def _name_and_prepare_playlists(best_result, ai_provider, ollama_url, ollama_mod
             temp_name = f"{final_name} ({suffix})"
         final_name = temp_name
 
-        # Add suffix and handle chunking
-        base_name_with_suffix = f"{final_name}_automatic"
-        
-        # The 'songs' variable is already the list of tuples: [(item_id, title, author), ...]
-        # *** FINAL SAFETY SHUFFLE: Ensure songs are randomized in final playlists ***
-        final_songs = songs.copy()
-        n = len(final_songs)
-        
-        if n > 1:
-            # FISHER-YATES MANUAL SHUFFLE - GUARANTEED TO RANDOMIZE
-            current_time_seed = int(time.time() * 1000000) % 1000000
-            
-            for i in range(n - 1, 0, -1):
-                j = (random.randint(0, i) + current_time_seed + i * 7) % (i + 1)
-                final_songs[i], final_songs[j] = final_songs[j], final_songs[i]
-                current_time_seed = (current_time_seed * 1103515245 + 12345) % (2**31)
-            
-            logger.info(f"FINAL FISHER-YATES SHUFFLE applied to '{base_name_with_suffix}': {len(final_songs)} songs")
-            logger.info(f"FINAL ORDER: First song = '{final_songs[0][1]}', Last song = '{final_songs[-1][1]}'")
-        else:
-            logger.info(f"FINAL: '{base_name_with_suffix}' has only {n} songs - no shuffling needed")
-        
-        if max_songs > 0 and len(final_songs) > max_songs:
-             chunks = [final_songs[i:i+max_songs] for i in range(0, len(final_songs), max_songs)]
-             for idx, chunk in enumerate(chunks, 1):
-                 final_playlists[f"{base_name_with_suffix} ({idx})"] = chunk # Store the chunk of tuples
-        else:
-            final_playlists[base_name_with_suffix] = final_songs # Store the list of tuples
+        base_name = f"{final_name}_automatic"
+        shuffled = _shuffle_playlist_songs(songs, base_name)
+        _assign_playlist_chunks(shuffled, max_songs, base_name, final_playlists)
 
     return final_playlists
 

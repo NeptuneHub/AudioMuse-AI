@@ -1,6 +1,8 @@
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
-from app_helper import get_db, rq_queue_high, save_task_status, TASK_STATUS_PENDING
+from database import get_db, save_task_status
+from taskqueue import rq_queue_high
+from config import TASK_STATUS_PENDING
 import uuid, time, logging
 from config import (
     TOP_N_MOODS,
@@ -60,7 +62,7 @@ def get_cron_entries():
                     type: string
                   task_type:
                     type: string
-                    enum: [analysis, clustering, sonic_fingerprint]
+                    enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
                   cron_expr:
                     type: string
                     description: 5-field cron expression "min hour day month dow".
@@ -109,7 +111,7 @@ def save_cron_entry():
                 type: string
               task_type:
                 type: string
-                enum: [analysis, clustering, sonic_fingerprint]
+                enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
               cron_expr:
                 type: string
                 description: 5-field cron expression "min hour day month dow".
@@ -238,8 +240,6 @@ def run_due_cron_jobs():
                         "pca_components_max": int(PCA_COMPONENTS_MAX),
                         "num_clustering_runs": int(CLUSTERING_RUNS),
                         "max_songs_per_cluster_val": int(MAX_SONGS_PER_CLUSTER),
-                        "gmm_n_components_min": int(GMM_N_COMPONENTS_MIN),
-                        "gmm_n_components_max": int(GMM_N_COMPONENTS_MAX),
                         "top_n_playlists_param": int(TOP_N_PLAYLISTS),
                         "min_songs_per_genre_for_stratification_param": int(MIN_SONGS_PER_GENRE_FOR_STRATIFICATION),
                         "stratified_sampling_target_percentile_param": int(STRATIFIED_SAMPLING_TARGET_PERCENTILE),
@@ -271,7 +271,7 @@ def run_due_cron_jobs():
                     # keeps tracking the same server playlist across runs (issue #336).
                     from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
                     from tasks.mediaserver import create_or_replace_playlist
-                    from tasks.voyager_manager import create_playlist_from_ids
+                    from tasks.ivf_manager import create_playlist_from_ids
                     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
                     try:
                         fingerprint_results = generate_sonic_fingerprint()
@@ -292,7 +292,7 @@ def run_due_cron_jobs():
                                         f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
                                     )
                                 except NotImplementedError:
-                                    # MPD or unsupported backend: keep the legacy date-suffixed behavior.
+                                    # Unsupported backend: keep the legacy date-suffixed behavior.
                                     legacy_name = f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
                                     playlist_id = create_playlist_from_ids(legacy_name, track_ids)
                                     logger.info(
@@ -304,6 +304,13 @@ def run_due_cron_jobs():
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception as e:
                         logger.error(f"Cron: error running sonic fingerprint: {e}")
+                elif task_type == 'alchemy_radio':
+                    from tasks.radio_manager import run_radio_playlists
+                    try:
+                        summary = run_radio_playlists()
+                        logger.info(f"Cron: ran radio playlists synchronously (job_id={job_id}, summary={summary})")
+                    except Exception:
+                        logger.exception("Cron: error running radio playlists")
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))

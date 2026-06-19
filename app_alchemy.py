@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
+import math
 
 from tasks.song_alchemy import song_alchemy
 from app_helper import attach_song_features
@@ -184,7 +185,7 @@ def list_anchors():
       500:
         description: Database error.
     """
-    from app_helper import get_alchemy_anchors
+    from database import get_alchemy_anchors
     try:
         anchors = get_alchemy_anchors()
         # no centroid returned here (name-only list)
@@ -226,7 +227,7 @@ def create_anchor():
       500:
         description: Database failure.
     """
-    from app_helper import save_alchemy_anchor
+    from database import save_alchemy_anchor
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
     centroid = payload.get('centroid')
@@ -259,7 +260,7 @@ def remove_anchor(anchor_id):
       404:
         description: Anchor not found.
     """
-    from app_helper import delete_alchemy_anchor
+    from database import delete_alchemy_anchor
     ok = delete_alchemy_anchor(anchor_id)
     if not ok:
         return jsonify({'error': 'Anchor not found'}), 404
@@ -297,7 +298,7 @@ def rename_anchor(anchor_id):
       404:
         description: Anchor not found.
     """
-    from app_helper import update_alchemy_anchor_name
+    from database import update_alchemy_anchor_name
     payload = request.get_json() or {}
     name = (payload.get('name') or '').strip()
     if not name:
@@ -306,6 +307,244 @@ def rename_anchor(anchor_id):
     if not anchor:
         return jsonify({'error': 'Anchor not found or rename failed'}), 404
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
+
+
+def _parse_radio_settings(payload):
+    temperature = payload.get('temperature')
+    n_results = payload.get('n_results')
+    if temperature is None:
+        return None, None, 'Radio temperature is required'
+    if n_results is None:
+        return None, None, 'Radio number of results is required'
+    try:
+        temperature = float(temperature)
+    except (TypeError, ValueError):
+        return None, None, 'Radio temperature must be a number'
+    if not math.isfinite(temperature):
+        return None, None, 'Radio temperature must be a finite number'
+    try:
+        n_results = int(n_results)
+    except (TypeError, ValueError):
+        return None, None, 'Radio number of results must be an integer'
+    if temperature < 0:
+        return None, None, 'Radio temperature must be 0 or greater'
+    if n_results < 1 or n_results > config.ALCHEMY_MAX_N_RESULTS:
+        return None, None, f'Radio number of results must be between 1 and {config.ALCHEMY_MAX_N_RESULTS}'
+    return temperature, n_results, None
+
+
+@alchemy_bp.route('/api/radios', methods=['GET'])
+def list_radios():
+    """
+    List saved alchemy radios.
+    ---
+    tags:
+      - Alchemy
+    summary: Return every saved radio (anchor + temperature + number of results) with its enabled state.
+    responses:
+      200:
+        description: Radio list.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                radios:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: integer
+                      anchor_id:
+                        type: integer
+                      name:
+                        type: string
+                        description: Name of the underlying anchor (the radio shares it).
+                      temperature:
+                        type: number
+                        format: float
+                      n_results:
+                        type: integer
+                      enabled:
+                        type: boolean
+      500:
+        description: Database error.
+    """
+    from database import get_alchemy_radios
+    try:
+        radios = get_alchemy_radios()
+        return jsonify({'radios': [{
+            'id': r['id'], 'anchor_id': r['anchor_id'], 'name': r['name'],
+            'temperature': r['temperature'], 'n_results': r['n_results'], 'enabled': bool(r['enabled'])
+        } for r in radios]})
+    except Exception:
+        logger.exception('Failed to list radios')
+        return jsonify({'radios': [], 'error': 'Unable to retrieve radios at this time.'}), 500
+
+
+@alchemy_bp.route('/api/radios', methods=['POST'])
+def create_radio():
+    """
+    Save a new alchemy radio.
+    ---
+    tags:
+      - Alchemy
+    summary: Persist a radio (anchor + temperature + number of results) for batch playlist generation.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [anchor_id, temperature, n_results]
+            properties:
+              anchor_id:
+                type: integer
+                description: Saved anchor the radio is built on (one radio per anchor).
+              temperature:
+                type: number
+                format: float
+              n_results:
+                type: integer
+              enabled:
+                type: boolean
+                default: true
+    responses:
+      200:
+        description: Radio saved.
+      400:
+        description: Missing or invalid anchor/temperature/number of results.
+      500:
+        description: Database failure.
+    """
+    from database import create_alchemy_radio
+    payload = request.get_json() or {}
+    anchor_id = payload.get('anchor_id')
+    try:
+        anchor_id = int(anchor_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Radio anchor is required'}), 400
+    temperature, n_results, error = _parse_radio_settings(payload)
+    if error:
+        return jsonify({'error': error}), 400
+    enabled = bool(payload.get('enabled', True))
+    radio = create_alchemy_radio(anchor_id, temperature, n_results, enabled)
+    if not radio:
+        return jsonify({'error': 'Failed to save radio. Check that the anchor exists and has no radio yet.'}), 400
+    return jsonify({'radio': radio})
+
+
+@alchemy_bp.route('/api/radios/<int:radio_id>', methods=['PUT'])
+def update_radio(radio_id):
+    """
+    Update an alchemy radio.
+    ---
+    tags:
+      - Alchemy
+    summary: Update temperature, number of results and enabled state of a saved radio.
+    parameters:
+      - name: radio_id
+        in: path
+        required: true
+        schema: { type: integer }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [temperature, n_results, enabled]
+            properties:
+              temperature:
+                type: number
+                format: float
+              n_results:
+                type: integer
+              enabled:
+                type: boolean
+    responses:
+      200:
+        description: Radio updated.
+      400:
+        description: Invalid temperature/number of results.
+      404:
+        description: Radio not found.
+    """
+    from database import update_alchemy_radio
+    payload = request.get_json() or {}
+    temperature, n_results, error = _parse_radio_settings(payload)
+    if error:
+        return jsonify({'error': error}), 400
+    enabled = bool(payload.get('enabled', True))
+    radio = update_alchemy_radio(radio_id, temperature, n_results, enabled)
+    if not radio:
+        return jsonify({'error': 'Radio not found or update failed'}), 404
+    return jsonify({'radio': radio})
+
+
+@alchemy_bp.route('/api/radios/<int:radio_id>', methods=['DELETE'])
+def remove_radio(radio_id):
+    """
+    Delete an alchemy radio.
+    ---
+    tags:
+      - Alchemy
+    summary: Remove a saved radio by id (the underlying anchor is kept).
+    parameters:
+      - name: radio_id
+        in: path
+        required: true
+        schema: { type: integer }
+    responses:
+      200:
+        description: Radio deleted.
+      404:
+        description: Radio not found.
+    """
+    from database import delete_alchemy_radio
+    ok = delete_alchemy_radio(radio_id)
+    if not ok:
+        return jsonify({'error': 'Radio not found'}), 404
+    return jsonify({'deleted': True})
+
+
+@alchemy_bp.route('/api/radios/run', methods=['POST'])
+def run_radio_playlists_endpoint():
+    """
+    Create playlists for all enabled radios.
+    ---
+    tags:
+      - Alchemy
+    summary: Upsert one playlist per enabled radio (reuses existing playlist by name, preserving its server-side ID).
+    responses:
+      200:
+        description: Run summary.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                radios_enabled:
+                  type: integer
+                playlists_created:
+                  type: integer
+                failed:
+                  type: array
+                  items:
+                    type: string
+      500:
+        description: Run failed.
+    """
+    from tasks.radio_manager import run_radio_playlists
+    try:
+        summary = run_radio_playlists()
+        return jsonify(summary)
+    except Exception:
+        logger.exception('Radio playlist creation failed')
+        return jsonify({'error': 'Failed to create radio playlists. Check container logs.'}), 500
 
 
 @alchemy_bp.route('/api/artist_projections', methods=['GET'])
@@ -349,7 +588,7 @@ def artist_projections_api():
       500:
         description: Failure to read cache.
     """
-    from app_helper import ARTIST_PROJECTION_CACHE
+    from database import ARTIST_PROJECTION_CACHE
     
     try:
         if not ARTIST_PROJECTION_CACHE:

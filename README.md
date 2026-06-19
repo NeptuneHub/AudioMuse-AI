@@ -2,8 +2,9 @@
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 
-> Tell the world how AudioMuse-AI changed your music experience in your own language.  
-> [Leave your quote on the Wall of Quotes](https://github.com/NeptuneHub/AudioMuse-AI/discussions/528)
+<p align="center">
+<strong>⭐ Leave a star on this project:</strong> One shines alone; together, they make it visible and keep it alive.
+</p>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
 
@@ -11,10 +12,9 @@
   <img src="screenshot/AM-AI-MAP.png?raw=true" alt="AudioMuse-AI Logo" width="480">
 </p>
 
+AudioMuse-AI is an opensource and self-hosted tool that uses sonic analysis to rediscover forgotten songs in your music library and generate groove-aware playlists that also capture the meaning behind each track, without relying on metadata or external APIs.
 
-AudioMuse-AI is an open-source, Dockerized environment that brings **automatic playlist generation** to your self-hosted music library. Using tools such as [Librosa](https://github.com/librosa/librosa) and [ONNX](https://onnx.ai/), it performs **sonic analysis** on your audio files locally, allowing you to curate playlists for any mood or occasion without relying on external APIs.
-
-Deploy it easily on your local machine with Docker Compose or Podman, or scale it in a Kubernetes cluster (supports **AMD64** and **ARM64**). It integrates with the main music servers' APIs such as [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media). More integrations may be added in the future.
+You can run it locally with Docker Compose or Podman, or deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported). It integrates with major self-hosted music servers including [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media), with more integrations planned.
 
 > **Prefer not to self-host?** We're proud that [Elestio](https://elest.io/open-source/audiomuse-ai) picked AudioMuse-AI as a managed cloud service, happy to see the project reach more people.
 
@@ -56,6 +56,9 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 2.1.4** introduces the Windows native version. Attached to each release you will find `AudioMuse-AI-amd64-windows.zip`.
+> * **Version 2.1.3** introduces the Linux native version. Attached to each release you will find `.deb` and `.rpm` file.
+> * **Version 2.1.2** introduces the MacOS native version. Attached to each release you will find `AudioMuse-AI-arm64.zip`.
 > * **Version 2.1.0** re-exports the GTE lyrics model so it produces correct embeddings on **every CPU**. The only affected users are those who analyzed lyrics on an **older CPU without VNNI** (`avx512_vnni`/`avx_vnni`), where the previous model could produce degraded vectors, they should re-analyze the lyrics. To check if your CPU has VNNI, run on the host: `grep -oE 'avx512_vnni|avx_vnni' /proc/cpuinfo | head -1` , if it prints nothing, you have no VNNI and we suggest to re-analyze. Before re-analyzing, drop the old lyrics tables:
 > ```bash
 > docker compose exec -e PGPASSWORD=audiomusepassword postgres \
@@ -72,13 +75,14 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 
 ## **Table of Contents**
 
-- [Quick Start Deployment](#quick-start-deployment)
+- [Quick Start Deployment (Containerized)](#quick-start-deployment-containerized)
+- [Native Deployment](#native-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
 - [Star History](#star-history)
 
-## Quick Start Deployment
+## Quick Start Deployment (Containerized)
 
 Get AudioMuse-AI running in minutes with Docker Compose.
 
@@ -130,8 +134,50 @@ docker compose -f deployment/docker-compose.yaml down
 ```
 > **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
-## **Hardware Requirements**
+## Native Deployment
 
+Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows**, attached to each [release](https://github.com/NeptuneHub/AudioMuse-AI/releases). Each bundles the whole stack (embedded PostgreSQL, Redis, web UI and workers), so you don't need Docker or an external database. Once started, open **http://127.0.0.1:8000**.
+
+> The apps are not signed, so your OS may warn you on first launch, see the per-platform notes below for how to allow them.
+
+<details>
+<summary><b>macOS</b> — Apple Silicon, <code>AudioMuse-AI-arm64.zip</code> (from <code>v2.1.2</code>)</summary>
+
+- Unzip and move `AudioMuse-AI.app` to `/Applications`.
+- Remove the quarantine flag (the app is unsigned), either way:
+  - **Terminal:** `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then double-click — the icon appears in your menu bar.
+  - **No Terminal:** double-click and dismiss the warning, then System Settings → Privacy & Security → "Open Anyway", authenticate, and launch again.
+- Runs only on Apple Silicon (ARM) on recent macOS (tested on macOS 15.3.1, Mac Mini M4 / 16 GB).
+
+**Files:** data (database, Redis, temp audio) in `~/Library/AudioMuse-AI`, log at `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+</details>
+
+<details>
+<summary><b>Linux</b> — x86_64 / arm64, <code>.deb</code> or <code>.rpm</code> (from <code>v2.1.3</code>)</summary>
+
+- **Install as root** (writes to `/opt` and the system app/service dirs):
+  - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-x86_64.deb`
+  - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-x86_64.rpm`
+- **Run as your normal user** (never with `sudo`/root — it stores data in your home and won't start as root):
+  - `audiomuse-ai start` (stop with `audiomuse-ai stop`), or auto-start on login with `systemctl --user enable --now audiomuse-ai`.
+- Verified on **Debian 12 (bookworm)** (glibc 2.36). The `.rpm` is the same payload, expected to work on recent Fedora / RHEL 9, but too old for RHEL/Rocky/Alma 8 (glibc 2.28). Feedback on RPM-based distros is welcome.
+
+**Files** (under the launching user's home): data (database, Redis, temp audio) in `~/.local/share/AudioMuse-AI`, log at `~/.local/state/AudioMuse-AI/logs/audiomuse.log` (newest entries first)
+</details>
+
+<details>
+<summary><b>Windows</b> — x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
+
+- Unzip the portable archive anywhere.
+- From a terminal you can start with `AudioMuse-AI.exe start` and stop with `AudioMuse-AI.exe stop`.
+- Runs only on x86_64 (Intel/AMD) on Windows 10/11.
+
+**Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
+</details>
+
+> **IMPORTANT** Before update a native version, first stop any running instance.
+
+## **Hardware Requirements**
 AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
 * **ARM**: Raspberry Pi 5, 8 GB RAM and NVMe SSD / Mac Mini M4 16GB / Amphere based VM with 4core 8GB ram
@@ -177,6 +223,13 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 Contributions, issues, and feature requests are welcome\!  
 
 For more details on how to contribute please follow the [Contributing Guidelines](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/CONTRIBUTING.md)
+
+## **Code Mirror**
+
+[AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI) repository code is mirrored here:
+- https://codeberg.org/NeptuneHub/AudioMuse-AI
+
+DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
 
 ## Star History
 

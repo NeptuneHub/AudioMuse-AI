@@ -497,8 +497,6 @@ def _run_chat_pipeline(data, log_messages):
     all_songs = plan_result['songs']
     song_sources = plan_result['song_sources']
     tools_used_history = plan_result['tools_used_history']
-    tool_execution_summary = plan_result['tool_execution_summary']
-    detected_min_rating = plan_result['detected_min_rating']
     plan_notes = plan_result.get('plan_notes', [])
     executed_query_str = plan_result['executed_query_str']
     filter_applied = plan_result.get('filter_applied', False)

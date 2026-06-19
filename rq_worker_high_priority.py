@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,7 +22,8 @@ os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
 
-from rq import Worker
+from rq import SimpleWorker, Worker
+WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 
 try:
     from app_helper import redis_conn
@@ -37,18 +39,19 @@ except ImportError as e:
 # logger.info(...) from task modules falls through to Python's lastResort handler
 # and gets silently dropped during long-running jobs.
 configure_logging()
+logger = logging.getLogger(__name__)
 
 # This worker ONLY listens to the 'high' queue.
 queues_to_listen = ['high']
 
 if __name__ == '__main__':
-    print(f"🚀 DEDICATED HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
-    print(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
+    logger.info(f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
+    logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
     # High priority worker doesn't analyze songs, so no CLAP preload needed
     # Only rq_worker.py (default queue) handles song analysis tasks
 
-    worker = Worker(
+    worker = WorkerClass(
         queues_to_listen,
         connection=redis_conn,
         # --- Resilience Settings for Kubernetes ---
@@ -61,12 +64,12 @@ if __name__ == '__main__':
     max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
 
     logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
-    print(f"RQ Worker logging level set to: {logging_level}")
-    print(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
+    logger.info(f"RQ Worker logging level set to: {logging_level}")
+    logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 
     try:
         # The job function itself is responsible for creating an app context if needed.
         worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
     except Exception as e:
-        print(f"High Priority RQ Worker failed to start or encountered an error: {e}")
+        logger.exception(f"High Priority RQ Worker failed to start or encountered an error: {e}")
         sys.exit(1)

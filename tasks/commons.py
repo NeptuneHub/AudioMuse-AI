@@ -1,5 +1,7 @@
 # tasks/commons.py
 
+import logging
+
 import numpy as np
 
 # Import necessary constants from config
@@ -7,6 +9,31 @@ from config import (
     TEMPO_MAX_BPM, TEMPO_MIN_BPM,
     ENERGY_MAX, ENERGY_MIN
 )
+
+logger = logging.getLogger(__name__)
+
+
+def fetch_track_metadata_map(item_ids):
+    """Fetch {item_id: {title, author, album}} from the score table.
+
+    Shared by the CLAP, lyrics, and SemGrove search paths. Returns an empty
+    dict (and logs a warning) when the lookup fails, so callers can always
+    treat the result as a best-effort metadata overlay.
+    """
+    metadata_map = {}
+    if not item_ids:
+        return metadata_map
+    from app_helper import get_score_data_by_ids
+    try:
+        for row in get_score_data_by_ids(item_ids):
+            metadata_map[row['item_id']] = {
+                'title': row.get('title', '') or '',
+                'author': row.get('author', '') or '',
+                'album': row.get('album', '') or '',
+            }
+    except Exception as e:
+        logger.warning(f"Failed to fetch track metadata: {e}")
+    return metadata_map
 
 def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feature_labels_list is now passed
     """Converts a database row into a numerical feature vector for clustering."""

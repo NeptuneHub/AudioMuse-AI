@@ -1,14 +1,14 @@
 import logging
 import os
 import time
-import traceback
 
 from redis import Redis
 import config
+from app_logging import configure_logging
 from restart_manager import RESTART_CHANNEL, restart_supervisor_workers, stop_supervisor_workers, start_supervisor_workers
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(asctime)s %(message)s')
+configure_logging()
 
 
 def main():
@@ -60,8 +60,7 @@ def main():
                     else:
                         logger.warning('Worker start failed; will continue listening')
         except Exception:
-            logger.error('Restart listener connection error, retrying in 5 seconds')
-            traceback.print_exc()
+            logger.exception('Restart listener connection error, retrying in 5 seconds')
             time.sleep(5)
 
 

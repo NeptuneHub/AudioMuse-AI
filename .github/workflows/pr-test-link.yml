@@ -1,0 +1,169 @@
+# Posts a single, self-updating "PR test builds" block at the bottom of a PR
+# description with PUBLIC download links for every per-PR build (the macOS app,
+# the Linux .deb/.rpm packages, and the Docker images).
+#
+# Why this is its own workflow (decoupled from the build workflows)
+# -----------------------------------------------------------------
+# Previously the macOS build workflow was the single place that edited the PR
+# body (to avoid two workflows racing on the same description). That coupled the
+# link list to one build and meant a link could be posted before its artifact
+# actually existed. This workflow instead runs *after* a build finishes
+# (``workflow_run``) and emits a line ONLY for a build that has a SUCCESSFUL
+# run, after VERIFYING via the API that:
+#   * the latest run of that build on the PR branch concluded ``success``, and
+#   * for artifact builds (macOS / Linux), the named artifact actually exists.
+# In-progress and failed builds produce no line. It keys off the latest
+# SUCCESSFUL run on the PR branch, so when a new build is triggered the existing
+# link stays until the new one succeeds -- a working link is never replaced by a
+# placeholder, and users always have something to test.
+#
+# Note: ``workflow_run`` workflows only fire from the copy of this file on the
+# repository's DEFAULT branch -- links start appearing on PRs once this file is
+# merged to ``main``.
+
+name: PR test build links
+
+on:
+  workflow_run:
+    workflows:
+      - "Build standalone macOS app"
+      - "Build standalone Linux packages"
+      - "Build standalone Windows zip"
+      - "Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM"
+      - "Build and Push AudioMuse AI Docker Image with NVIDIA support"
+      - "Build and Push AudioMuse AI Docker Image (NOAVX2)"
+    types:
+      - completed
+
+# Serialize updates for a given PR head so two builds finishing at once cannot
+# clobber each other's edit. Cancel stale queued runs — only the last one runs
+# and sees ALL completed builds, not just the one that triggered it.
+concurrency:
+  group: pr-test-link-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read          # list workflow runs + their artifacts
+  pull-requests: write    # edit the PR description
+
+jobs:
+  update-pr-body:
+    runs-on: ubuntu-latest
+    # Only same-repo PR builds carry a PR to annotate (fork PRs are skipped by
+    # the build workflows anyway, and their token is read-only).
+    if: github.event.workflow_run.event == 'pull_request'
+    steps:
+      - name: Build and upsert the PR test-build block
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const headSha = context.payload.workflow_run.head_sha;
+
+            // ---- Resolve the PR for this head commit -------------------------
+            let pull_number = (context.payload.workflow_run.pull_requests || [])[0]?.number;
+            if (!pull_number) {
+              const assoc = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner, repo, commit_sha: headSha,
+              });
+              const open = assoc.data.find(p => p.state === 'open');
+              pull_number = open?.number;
+            }
+            if (!pull_number) {
+              console.log(`No open PR found for ${headSha}; nothing to annotate.`);
+              return;
+            }
+
+            // ---- Latest SUCCESSFUL run per build, scoped to the PR branch ----
+            const headBranch = context.payload.workflow_run.head_branch;
+            const allRuns = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
+              { owner, repo, branch: headBranch, per_page: 100 },
+            );
+            const latestSuccessfulRun = (wfFile) => {
+              const c = allRuns.filter(r =>
+                r.path === `.github/workflows/${wfFile}` &&
+                r.status === 'completed' && r.conclusion === 'success');
+              c.sort((a, b) => b.run_number - a.run_number);
+              return c[0] || null;
+            };
+
+            const ghcr = `ghcr.io/${owner}/${repo}`.toLowerCase();
+
+            // Each per-PR build, and how to verify + link it.
+            const builds = [
+              { label: 'macOS app (Apple Silicon)', wf: 'build-macos.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-arm64-macos' },
+              { label: 'Linux x86_64 (.deb)', wf: 'build-linux.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-x86_64-linux-deb' },
+              { label: 'Linux x86_64 (.rpm)', wf: 'build-linux.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-x86_64-linux-rpm' },
+              { label: 'Linux aarch64 (.deb)', wf: 'build-linux.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-linux-deb' },
+              { label: 'Linux aarch64 (.rpm)', wf: 'build-linux.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-aarch64-linux-rpm' },
+              { label: 'Windows x86_64 (.zip)', wf: 'build-windows.yml',
+                kind: 'artifact', artifact: 'AudioMuse-AI-amd64-windows-zip' },
+              { label: 'Docker image', wf: 'build-arm-intel.yml',
+                kind: 'image', image: `${ghcr}:pr-${pull_number}` },
+              { label: 'Docker image (nvidia)', wf: 'build-nvidia.yml',
+                kind: 'image', image: `${ghcr}:pr-${pull_number}-nvidia` },
+              { label: 'Docker image (noavx2)', wf: 'build-noavx2.yml',
+                kind: 'image', image: `${ghcr}:pr-${pull_number}-noavx2` },
+            ];
+
+            const lines = [];
+            for (const b of builds) {
+              const run = latestSuccessfulRun(b.wf);
+              if (!run) continue;                       // no successful build yet — show nothing
+              if (b.kind === 'artifact') {
+                // VERIFY the artifact exists before publishing its public link.
+                const arts = await github.paginate(
+                  github.rest.actions.listWorkflowRunArtifacts,
+                  { owner, repo, run_id: run.id, per_page: 100 },
+                );
+                const a = arts.find(x => x.name === b.artifact && !x.expired);
+                if (a) {
+                  const url = `https://nightly.link/${owner}/${repo}/actions/runs/${run.id}/${b.artifact}.zip`;
+                  lines.push(`- ${b.label}: [${b.artifact}.zip](${url})`);
+                }
+              } else {
+                // Image builds: a successful run means the tag was pushed.
+                lines.push(`- ${b.label}: \`${b.image}\``);
+              }
+            }
+
+            if (lines.length === 0) {
+              console.log('No builds to report yet.');
+              return;
+            }
+
+            const START = '<!-- pr-test-build:start -->';
+            const END = '<!-- pr-test-build:end -->';
+            const block = [START, '### PR test builds:', ...lines, END].join('\n');
+
+            // Upsert the managed block, leaving the author's text untouched.
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            let body = pr.body || '';
+
+            // Strip any legacy block left by the old in-build step (it used a
+            // different marker), so renaming the markers does not orphan a stale,
+            // never-updated block on in-flight PRs.
+            const LEGACY_START = '<!-- macos-test-build:start -->';
+            const LEGACY_END = '<!-- macos-test-build:end -->';
+            const ls = body.indexOf(LEGACY_START);
+            const le = body.indexOf(LEGACY_END);
+            if (ls !== -1 && le !== -1 && le > ls) {
+              body = (body.slice(0, ls) + body.slice(le + LEGACY_END.length)).replace(/\s+$/, '');
+            }
+
+            const s = body.indexOf(START);
+            const e = body.indexOf(END);
+            if (s !== -1 && e !== -1 && e > s) {
+              body = body.slice(0, s) + block + body.slice(e + END.length);
+            } else {
+              body = body.replace(/\s+$/, '') + '\n\n' + block;
+            }
+            await github.rest.pulls.update({ owner, repo, pull_number, body });
+            console.log(`Updated PR #${pull_number} with ${lines.length} build line(s).`);

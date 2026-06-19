@@ -118,8 +118,8 @@ def clap_search_api():
         if not query:
             return jsonify({'error': 'Query cannot be empty'}), 400
         
-        if len(query) < 3:
-            return jsonify({'error': 'Query must be at least 3 characters'}), 400
+        if len(query) < 1:
+            return jsonify({'error': 'Query must be at least 1 character'}), 400
         
         # Validate limit
         limit = min(max(1, int(limit)), 500)  # Between 1 and 500
@@ -145,9 +145,7 @@ def clap_search_api():
         logger.warning(f"ValueError in DCLAP search API: {e}")
         return jsonify({'error': 'Invalid or missing request parameter.'}), 400
     except Exception as e:
-        logger.error(f"DCLAP search API error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"DCLAP search API error: {e}")
         return jsonify({'error': 'An internal server error occurred during DCLAP search.'}), 500
 
 

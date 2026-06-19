@@ -170,7 +170,6 @@ def main():
     item_ids, all_X = load_all_embeddings()
 
     clap_scores = load_clap_scores() if USE_CLAP else {}
-    id_to_idx = {iid: i for i, iid in enumerate(item_ids)}
 
     pred_w = load_prediction_weights()
     print("Loaded MSD prediction weights")

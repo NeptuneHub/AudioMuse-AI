@@ -15,7 +15,7 @@ except ImportError:
     logger.warning("librosa not available. Waveform generation will not work. Install with: pip install librosa")
 
 from config import MEDIASERVER_TYPE
-from app_helper import get_db
+from database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ def get_waveform_endpoint():
         # This ensures we have all the metadata needed for proper file extension detection
         if MEDIASERVER_TYPE == "navidrome":
             # Import Navidrome-specific function to get full song details
-            from tasks.mediaserver_navidrome import _navidrome_request
+            from tasks.mediaserver.navidrome import _navidrome_request
             song_response = _navidrome_request("getSong", {"id": item_id})
             if song_response and "song" in song_response:
                 item = song_response["song"]
@@ -240,7 +240,6 @@ def get_waveform_endpoint():
             item = {
                 'Id': item_id,  # Jellyfin/Emby format
                 'id': item_id,  # Navidrome/Lyrion format
-                'file': item_id,  # MPD format (uses file path as ID)
                 'Name': title,
                 'Path': ''  # Will be fetched by download_track if needed
             }

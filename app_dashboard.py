@@ -14,7 +14,8 @@ import psycopg2
 from flask import Blueprint, render_template, jsonify
 from psycopg2.extras import DictCursor
 
-from app_helper import get_db, redis_conn
+from database import get_db
+from taskqueue import redis_conn
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
@@ -71,11 +72,11 @@ def _table_exists(cur, name):
 
 def _get_musicnn_index_count():
     try:
-        from tasks.voyager_manager import voyager_index, id_map
+        from tasks.ivf_manager import ivf_index, id_map
         if id_map is not None:
             return len(id_map)
-        if voyager_index is not None:
-            return getattr(voyager_index, 'num_elements', 0)
+        if ivf_index is not None:
+            return getattr(ivf_index, 'num_elements', 0)
     except Exception:
         pass
     return 0

@@ -6,6 +6,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -25,4 +28,39 @@ jobs:
 
     - name: Run unit tests
       run: |
-        pytest tests/unit/ -v --tb=short
+        pytest test/unit/ -v --tb=short
+
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install scanners
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit pip-audit
+
+    - name: Bandit SAST gate (fails on high-severity, high-confidence findings)
+      run: |
+        bandit -r . \
+          -x ./test,./.venv,./.venv-windows,./screenshot \
+          --severity-level high --confidence-level high
+
+    - name: Bandit full report (medium and above, non-blocking)
+      if: always()
+      run: |
+        bandit -r . \
+          -x ./test,./.venv,./.venv-windows,./screenshot \
+          --severity-level medium --confidence-level medium --exit-zero
+
+    - name: pip-audit dependency CVEs (non-blocking)
+      if: always()
+      continue-on-error: true
+      run: |
+        pip-audit -r requirements/common.txt --progress-spinner off

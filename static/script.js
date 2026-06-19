@@ -1,3 +1,10 @@
+// Escape user/library-derived strings before inserting them into innerHTML.
+// Playlist names and track title/author come from media-server metadata, which
+// is attacker-influenceable, so they must be HTML-escaped to prevent stored XSS.
+const escapeHtml = (str) => String(str ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+));
+
 // --- DOM Element References ---
 const mainContent = document.getElementById('main-content');
 
@@ -484,12 +491,12 @@ function renderPlaylists(playlistsData) {
         playlistDiv.className = 'playlist-item';
         playlistDiv.innerHTML = `
             <div class="playlist-header">
-                <strong class="playlist-name">${playlistName}</strong>
+                <strong class="playlist-name">${escapeHtml(playlistName)}</strong>
                 <span class="playlist-song-count">(${songs.length} songs)</span>
                 <button class="show-songs-btn">SHOW</button>
             </div>
             <ul class="song-list" style="display: none;">
-                ${songs.map(song => `<li>${song.title} by ${song.author}</li>`).join('')}
+                ${songs.map(song => `<li>${escapeHtml(song.title)} by ${escapeHtml(song.author)}</li>`).join('')}
             </ul>`;
         playlistDiv.querySelector('.show-songs-btn').addEventListener('click', e => {
             const btn = e.target;

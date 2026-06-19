@@ -11,12 +11,11 @@ import json
 import time
 import logging
 import uuid
-import traceback
 import gc
 import platform
 
 import librosa
-import onnxruntime as ort  # re-exported: tests patch `tasks.analysis.ort.InferenceSession`
+import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
 # RQ import
 from rq import get_current_job, Retry
@@ -33,11 +32,6 @@ from config import (
 
 
 # Import other project modules
-from .voyager_manager import build_and_store_voyager_index
-from .clap_text_search import build_and_store_clap_index
-from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
-from .sem_grove_manager import build_and_store_sem_grove_index
-from .artist_gmm_manager import build_and_store_artist_index
 from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
 from .memory_utils import (
     cleanup_cuda_memory,
@@ -53,11 +47,12 @@ from .memory_utils import (
 from flask_app import app
 from app_helper import (
     redis_conn, rq_queue_default, get_db, save_task_status,
-    get_task_info_from_db, get_child_tasks_from_db,
+    get_task_info_from_db,
     build_and_store_map_projection, build_and_store_artist_projection,
     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
 )
+from database import get_child_tasks_from_db
 
 from error import error_manager
 from error.error_dictionary import (
@@ -74,7 +69,7 @@ from error.error_dictionary import (
 # tests depend on (``run_inference``, ``_find_onnx_name``, ``sigmoid``).
 # Helpers consumed only inside this file go through ``_ah.<name>`` instead.
 from . import analysis_helper as _ah
-from .analysis_helper import (
+from .analysis_helper import (  # noqa: F401
     DEFINED_TENSOR_NAMES,
     _find_onnx_name,           # re-export: tests do `from tasks.analysis import _find_onnx_name`
     run_inference,             # re-export: tests do `from tasks.analysis import run_inference`
@@ -132,7 +127,18 @@ def _run_all_index_builds(log_fn=None):
     shows which builder is currently active (otherwise users see "Building
     CLAP text search index..." for the entire 95–97 % window even while the
     lyrics or SemGrove builds are running).
+
+    The index-builder modules are imported here rather than at module top so
+    that importing ``tasks.analysis`` does not pull in the ivf / CLAP /
+    lyrics / SemGrove / artist-GMM subsystems; they are only needed when a
+    rebuild actually runs.
     """
+    from .ivf_manager import build_and_store_ivf_index
+    from .clap_text_search import build_and_store_clap_index
+    from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
+    from .sem_grove_manager import build_and_store_sem_grove_index
+    from .artist_gmm_manager import build_and_store_artist_index
+
     def _step(label, fn, progress=None, banner=None, fatal=False):
         if log_fn and progress is not None and banner is not None:
             try:
@@ -151,9 +157,9 @@ def _run_all_index_builds(log_fn=None):
 
     if log_fn:
         log_fn("Performing final index rebuild...", 95)
-    _step("Voyager index rebuilt",
-          lambda: build_and_store_voyager_index(get_db()),
-          progress=95, banner="Building Voyager audio index...",
+    _step("IVF index rebuilt",
+          lambda: build_and_store_ivf_index(get_db()),
+          progress=95, banner="Building IVF audio index...",
           fatal=True)
     _step("CLAP text search index",
           lambda: build_and_store_clap_index(get_db()),

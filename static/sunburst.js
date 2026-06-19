@@ -23,7 +23,7 @@ const SunburstChart = (() => {
     function buildTree(data) {
         const TAG_DEPTH = 3;
         const root = {name: 'root', children: [], depth: 0};
-        for (const mood of Object.keys(data).sort()) {
+        for (const mood of Object.keys(data).sort((a, b) => a.localeCompare(b))) {
             const moodNode = {name: mood, children: [], depth: 1, mood: mood};
             data[mood].forEach(c => {
                 let parent = moodNode;

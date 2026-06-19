@@ -6,7 +6,7 @@ import numpy as np
 import requests as http_requests
 from psycopg2.extras import DictCursor
 
-from tasks.voyager_manager import find_nearest_neighbors_by_vector, get_vector_by_id, get_vectors_by_ids
+from tasks.ivf_manager import find_nearest_neighbors_by_vector, get_vector_by_id, get_vectors_by_ids
 from app_helper import get_db, get_score_data_by_ids, get_score_data_lite_by_ids
 import config
 
@@ -705,7 +705,7 @@ def search_api():
 @playlist_curator_bp.route('/api/curator/save_playlist', methods=['POST'])
 def save_playlist_api():
     """Save an extended/curated playlist to the configured media server."""
-    from tasks.voyager_manager import create_playlist_from_ids
+    from tasks.ivf_manager import create_playlist_from_ids
 
     payload = request.get_json() or {}
     new_playlist_name = payload.get('new_playlist_name')

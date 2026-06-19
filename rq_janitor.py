@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     # We need the queue objects to get their registries
-    from app_helper import redis_conn, rq_queue_high, rq_queue_default
+    from app_helper import rq_queue_high, rq_queue_default
     from app_logging import configure_logging
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
@@ -15,9 +15,10 @@ except ImportError as e:
     sys.exit(1)
 
 configure_logging()
+logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
-    logging.info("🧹 RQ Janitor process starting. Cleaning registries every 10 seconds.")
+    logger.info("RQ Janitor process starting. Cleaning registries every 10 seconds.")
     queues_to_clean = [rq_queue_high, rq_queue_default]
     while True:
         try:
@@ -29,7 +30,7 @@ if __name__ == '__main__':
                 started_after = started_registry.count
                 started_cleaned = started_before - started_after
                 if started_cleaned > 0:
-                    logging.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
+                    logger.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
                 
                 # 2. Clean FinishedJobRegistry - completed jobs older than TTL (default 500s)
                 # CRITICAL: This prevents memory/thread leaks from accumulated finished jobs
@@ -39,7 +40,7 @@ if __name__ == '__main__':
                 finished_after = finished_registry.count
                 finished_cleaned = finished_before - finished_after
                 if finished_cleaned > 0:
-                    logging.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
+                    logger.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
                 
                 # 3. Clean FailedJobRegistry - failed jobs older than TTL
                 failed_registry = queue.failed_job_registry
@@ -48,9 +49,9 @@ if __name__ == '__main__':
                 failed_after = failed_registry.count
                 failed_cleaned = failed_before - failed_after
                 if failed_cleaned > 0:
-                    logging.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
+                    logger.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
         except Exception as e:
-            logging.error("Error in RQ Janitor loop: %s", e, exc_info=True)
+            logger.exception("Error in RQ Janitor loop: %s", e)
         
         # Sleep for the desired monitoring interval.
         time.sleep(10)

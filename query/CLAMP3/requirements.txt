@@ -1,6 +1,0 @@
-numpy
-torch
-transformers
-tqdm
-accelerate
-librosa

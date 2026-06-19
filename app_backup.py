@@ -537,14 +537,19 @@ def restore_backup():
             restore_log = os.path.join(RESTORE_LOG_DIR, f"restore_{timestamp}.log")
             os.makedirs(RESTORE_LOG_DIR, exist_ok=True)
 
-            restore_cmd = [sys.executable, os.path.abspath(__file__), '--run-restore', restore_file, restore_log]
-            proc = subprocess.Popen(
-                restore_cmd,
+            if getattr(sys, 'frozen', False):
+                restore_cmd = [sys.executable, '--run-restore', restore_file, restore_log]
+            else:
+                restore_cmd = [sys.executable, os.path.abspath(__file__), '--run-restore', restore_file, restore_log]
+            popen_kwargs = dict(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 close_fds=True,
             )
+            if sys.platform == 'win32':
+                popen_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(restore_cmd, **popen_kwargs)
             restore_pid = proc.pid
             logger.info("Restore started in detached process %s", restore_pid)
 

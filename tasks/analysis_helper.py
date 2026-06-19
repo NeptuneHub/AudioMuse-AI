@@ -11,12 +11,13 @@ import onnxruntime as ort
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
-# `app_helper` and `app_helper_artist` are safe at module top: they have no
-# import cycle back into this module. Optional ML modules
-# (.clap_analyzer / lyrics.lyrics_transcriber) stay inline inside the
-# per-feature helpers so workers without those models can still import this
-# module.
-from app_helper import (
+# `database` and `app_helper_artist` are safe at module top: they have no
+# import cycle back into this module, and importing the DB primitives directly
+# (rather than via the app_helper facade) keeps this helper decoupled from the
+# blueprint layer. Optional ML modules (.clap_analyzer / lyrics.lyrics_transcriber)
+# stay inline inside the per-feature helpers so workers without those models can
+# still import this module.
+from database import (
     get_db,
     get_clap_embedding,
     save_track_analysis_and_embedding,
@@ -71,19 +72,55 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
-def get_provider_options():
-    """Return [(provider_name, options), ...] preferring CUDA when available."""
-    if 'CUDAExecutionProvider' in ort.get_available_providers():
-        cuda = {
+def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
+    """Centralized ONNX provider selection.
+
+    Returns an ordered ``[(provider_name, options), ...]`` chain following the
+    priority NVIDIA CUDA → Apple CoreML (M1-M4) → CPU. Providers that are not
+    available on the current machine are skipped, and CPU is always appended
+    last as the universal fallback.
+
+    Hardware accelerators are gated off when ``role == 'flask'`` because both
+    CUDA and CoreML sessions are thread-affine and the Flask web process serves
+    requests on short-lived per-request threads (see ``_load_text_model``).
+
+    ``cuda_options`` overrides the default CUDA provider options for callers
+    that need model-specific tuning (e.g. CLAP audio historically used
+    ``cudnn_conv_algo_search='DEFAULT'`` rather than the ``EXHAUSTIVE`` default
+    MusiCNN uses). CUDA-only — it has no effect on the macOS CoreML/CPU path.
+
+    CoreML is only attempted when ``allow_coreml`` is True. It ships in the
+    macOS ``onnxruntime`` wheel by default (no extra dependency), but it is not
+    a safe blanket default: it requires the ``MLProgram`` format for the dynamic
+    batch dimension our exports rely on, and unsupported ops (e.g. attention)
+    get partitioned back to CPU. So we opt in per-model only where it helps.
+    """
+    available = ort.get_available_providers()
+    chain = []
+    accel_ok = role != 'flask'
+
+    if accel_ok and 'CUDAExecutionProvider' in available:
+        chain.append(('CUDAExecutionProvider', cuda_options or {
             'device_id': 0,
             'arena_extend_strategy': 'kSameAsRequested',
             'cudnn_conv_algo_search': 'EXHAUSTIVE',
             'do_copy_in_default_stream': True,
-        }
-        logger.info("CUDA provider available - attempting to use GPU for analysis")
-        return [('CUDAExecutionProvider', cuda), ('CPUExecutionProvider', {})]
-    logger.info("CUDA provider not available - using CPU only")
-    return [('CPUExecutionProvider', {})]
+        }))
+
+    if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
+        chain.append(('CoreMLExecutionProvider', {
+            'MLComputeUnits': 'ALL',       # CPU + GPU + Apple Neural Engine
+            'ModelFormat': 'MLProgram',    # required for our dynamic batch dim
+        }))
+
+    chain.append(('CPUExecutionProvider', {}))
+    logger.info("ONNX provider chain: %s", [p[0] for p in chain])
+    return chain
+
+
+def get_provider_options(allow_coreml=False, role=None):
+    """Backwards-compatible alias for :func:`resolve_providers`."""
+    return resolve_providers(allow_coreml=allow_coreml, role=role)
 
 
 def _default_sess_options():
@@ -93,9 +130,9 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(model_path, provider_options=None, label="", sess_options=None):
+def create_onnx_session(model_path, provider_options=None, label="", sess_options=None, allow_coreml=False):
     """Create an InferenceSession; falls back to CPU if the preferred providers fail."""
-    opts = provider_options or get_provider_options()
+    opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
     if sess_options is None:
         sess_options = _default_sess_options()
     extra = {'sess_options': sess_options}
@@ -117,7 +154,11 @@ def create_onnx_session(model_path, provider_options=None, label="", sess_option
 
 def load_musicnn_sessions(model_paths):
     """Build a {name: InferenceSession} dict for the MusiCNN models, or None on failure."""
-    opts = get_provider_options()
+    # CoreML stays OFF here: MusiCNN takes a variable-length (N, 187, 96) patch
+    # tensor and CoreML can compile but NOT execute that dynamic shape — it
+    # raises "Unable to compute the prediction (error code: -1)" at run time,
+    # which our load-time/OOM fallbacks don't catch, so every track gets skipped.
+    opts = resolve_providers(allow_coreml=False)
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
         logger.info(f"✓ Loaded {len(sessions)} MusiCNN models for album reuse")
@@ -525,7 +566,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                 if track_audio is None or track_audio.size == 0 or track_sr is None:
                     raise RuntimeError("Failed to load audio for lyrics analysis")
             else:
-                def audio_loader():
+                def audio_loader():  # noqa: F811
                     p = download_fn() if download_fn is not None else None
                     if not p:
                         raise RuntimeError("Failed to download audio for lyrics ASR")

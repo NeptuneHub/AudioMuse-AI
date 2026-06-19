@@ -1,22 +1,17 @@
 # tasks/artist_gmm_manager.py
 """
-Artist Similarity using Gaussian Mixture Models (GMM) and Voyager Index.
+Artist Similarity using Gaussian Mixture Models (GMM) and IVF Index.
 
 This module implements artist similarity by:
 1. Using existing embedding vectors (same as song similarity) for all tracks per artist
 2. Fitting a GMM to the embedding vectors to represent each artist's "sound profile"
-3. Building a Voyager index for fast approximate nearest neighbor search
+3. Building a IVF index for fast approximate nearest neighbor search
 4. Using Jeffreys Divergence (symmetric KL divergence) to measure GMM similarity
 
 This approach is fast (no audio re-processing) and consistent with the song similarity system.
 """
 
-import os
 import logging
-import json
-import tempfile
-import io
-import re
 import hashlib
 import numpy as np
 import threading
@@ -24,14 +19,8 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 
 from sklearn.mixture import GaussianMixture
-import voyager  # type: ignore
 
 logger = logging.getLogger(__name__)
-from config import (
-    ARTIST_INDEX_MAX_PART_SIZE_MB,
-    VOYAGER_M,
-    VOYAGER_EF_CONSTRUCTION,
-)
 
 # --- Configuration ---
 ARTIST_INDEX_NAME = 'artist_similarity_index'
@@ -41,14 +30,11 @@ GMM_COVARIANCE_TYPE = 'diag'  # 'diag' is faster than 'full' and works well for 
 GMM_MAX_ITER = 100
 GMM_N_INIT = 3
 MIN_TRACKS_PER_ARTIST = 1  # Minimum tracks needed to build a GMM for an artist (lowered to include all artists)
-ARTIST_INDEX_MAX_PART_SIZE = ARTIST_INDEX_MAX_PART_SIZE_MB * 1024 * 1024  # bytes threshold for segmented artist index storage
-
-from .index_build_helpers import _split_bytes  # noqa: F401  (re-export of helper for legacy in-file callers)
 
 # --- Global cache for the loaded artist index ---
-artist_index = None  # voyager.Index object
-artist_map = None  # {voyager_int_id: artist_name}
-reverse_artist_map = None  # {artist_name: voyager_int_id}
+artist_index = None  # ivf.Index object
+artist_map = None  # {vec_int_id: artist_name}
+reverse_artist_map = None  # {artist_name: vec_int_id}
 artist_gmm_params = None  # {artist_name: gmm_params_dict}
 _index_lock = threading.Lock()
 
@@ -149,9 +135,6 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
         if n_samples < 5:
             logger.info(f"Artist '{artist_name}' has {n_samples} tracks - using each song as a GMM component with equal weights")
             
-            # Use a small fixed covariance for numerical stability
-            # This acts like narrow Gaussians centered on each actual song
-            fixed_variance = 0.01
             
             # Each song becomes one component with equal weight
             n_components = n_samples
@@ -211,7 +194,7 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
 def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
     """
-    Serialize GMM parameters into a fixed-size vector for Voyager indexing.
+    Serialize GMM parameters into a fixed-size vector for IVF indexing.
     (Function name kept for backward compatibility)
     
     We compute a weighted average of the component means, weighted by the
@@ -237,13 +220,13 @@ def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
 
 def build_and_store_artist_index(db_conn=None):
     """
-    Build Voyager index for artist similarity using GMM representations.
+    Build IVF index for artist similarity using GMM representations.
     
     This function:
     1. Fetches all artists and their tracks from the database
     2. Extracts audio features for each track
     3. Fits a GMM for each artist
-    4. Builds a Voyager index for fast similarity search
+    4. Builds a IVF index for fast similarity search
     5. Stores the index in the database
     
     Args:
@@ -253,18 +236,15 @@ def build_and_store_artist_index(db_conn=None):
         from app_helper import get_db
         db_conn = get_db()
     
-    logger.info("Starting to build artist similarity index using GMM + Voyager...")
+    logger.info("Starting to build artist similarity index using GMM + IVF...")
     
     cur = db_conn.cursor()
     
     try:
-        # Step 0: Load existing GMM params for incremental rebuild.
-        # New path: read the binary blob from artist_metadata_data and unpack it.
-        # Legacy fallback: if that table is empty (deployment hasn't rebuilt on
-        # the new code yet), fall back to the old gmm_params_json in
-        # artist_index_data (single-row or segmented). Either way we end up with
-        # a {artist_name: gmm_params_dict} mapping driving the tracks_hash reuse
-        # check below.
+        # Step 0: Load existing GMM params for incremental rebuild from the
+        # binary blob in artist_metadata_data, yielding a {artist_name:
+        # gmm_params_dict} mapping that drives the tracks_hash reuse check below.
+        # An absent/empty blob simply means a full rebuild.
         from .index_build_helpers import load_segmented_blob, unpack_artist_metadata
         existing_gmm_params = None
         try:
@@ -275,41 +255,6 @@ def build_and_store_artist_index(db_conn=None):
                     f"Loaded existing GMM params for {len(existing_gmm_params)} artists "
                     f"(incremental mode, from artist_metadata_data BYTEA)"
                 )
-            else:
-                cur.execute("""
-                    SELECT gmm_params_json
-                    FROM artist_index_data
-                    WHERE index_name = %s
-                """, (ARTIST_INDEX_NAME,))
-                row = cur.fetchone()
-
-                if row and row[0]:
-                    existing_gmm_params = json.loads(row[0])
-                    logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (legacy single-row JSON)")
-                else:
-                    cur.execute(
-                        "SELECT index_name, artist_map_json, gmm_params_json FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                        (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
-                    )
-                    candidates = cur.fetchall()
-
-                    if candidates:
-                        seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
-                        selected_gmm_json = None
-                        for name, part_artist_map_json, part_gmm_params_json in candidates:
-                            m = seg_pattern.match(name)
-                            if not m:
-                                continue
-                            part_no = int(m.group(1))
-                            if part_no == 1 and part_gmm_params_json:
-                                selected_gmm_json = part_gmm_params_json
-                                break
-                            if not selected_gmm_json and part_gmm_params_json:
-                                selected_gmm_json = part_gmm_params_json
-
-                        if selected_gmm_json:
-                            existing_gmm_params = json.loads(selected_gmm_json)
-                            logger.info(f"Loaded existing GMM params for {len(existing_gmm_params)} artists (legacy segmented JSON)")
         except Exception as e:
             logger.warning(f"Could not load existing GMM params, will do full rebuild: {e}")
             existing_gmm_params = None
@@ -342,7 +287,7 @@ def build_and_store_artist_index(db_conn=None):
         for artist_name, tracks in artist_tracks.items():
             sorted_ids = sorted(track['item_id'] for track in tracks)
             hash_input = ','.join(sorted_ids)
-            artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode()).hexdigest()
+            artist_track_hashes[artist_name] = hashlib.md5(hash_input.encode(), usedforsecurity=False).hexdigest()
 
         # Step 2: Fetch embeddings and fit GMMs (incremental: skip unchanged artists)
         logger.info("Fetching embeddings and fitting GMMs...")
@@ -409,165 +354,25 @@ def build_and_store_artist_index(db_conn=None):
             logger.warning("No valid GMMs created, skipping index build")
             return
         
-        # Step 3: Build Voyager index
-        logger.info("Building Voyager index...")
-        
-        # Determine dimensionality from first GMM
+        # Build the disk-paged IVF artist index (euclidean) over the GMM vectors.
         first_gmm = artist_gmms[artist_names_list[0]]
         gmm_vector_dim = len(serialize_gmm_for_hnsw(first_gmm))
-        
-        logger.info(f"Voyager vector dimension: {gmm_vector_dim}")
-        
-        # Adaptive parameters based on dataset size
-        # For small datasets, Voyager needs smaller M and ef_construction values
-        num_artists = len(artist_gmms)
-        
-        # M: number of bi-directional links (should be smaller for small datasets)
-        # Rule of thumb: M should be at most num_elements / 2, typically 12-48
-        if num_artists < 100:
-            M = min(12, max(4, num_artists // 4))
-        elif num_artists < 1000:
-            M = 16
-        else:
-            M = VOYAGER_M
-        
-        # ef_construction: must be > M, but not too large for small datasets
-        # Rule of thumb: 2*M to 10*M depending on size
-        if num_artists < 100:
-            ef_construction = max(M + 1, min(100, num_artists * 2))
-        elif num_artists < 1000:
-            ef_construction = 100
-        else:
-            ef_construction = VOYAGER_EF_CONSTRUCTION
-        
-        logger.info(f"Using adaptive Voyager parameters for {num_artists} artists: M={M}, ef_construction={ef_construction}")
-        
-        # Initialize Voyager index
-        # Note: We use L2 (Euclidean) space here, but actual similarity will use custom Jeffreys divergence
-        # The Voyager index is primarily for fast approximate search structure
-        index = voyager.Index(voyager.Space.Euclidean, num_dimensions=gmm_vector_dim, M=M, ef_construction=ef_construction)
-        
-        # Create mappings
-        artist_map_dict = {}
-        reverse_artist_map_dict = {}
-        
-        # Prepare data for batch insertion
-        vectors = []
-        ids = []
-        
-        for voyager_id, artist_name in enumerate(artist_names_list):
-            gmm_params = artist_gmms[artist_name]
-            
-            # Serialize GMM to vector
-            gmm_vector = serialize_gmm_for_hnsw(gmm_params)
-            
-            vectors.append(gmm_vector)
-            ids.append(voyager_id)
-            
-            artist_map_dict[voyager_id] = artist_name
-            reverse_artist_map_dict[artist_name] = voyager_id
-        
-        # Add all vectors to index (batch add for better performance)
-        try:
-            vectors_array = np.array(vectors, dtype=np.float32)
-            ids_array = np.array(ids, dtype=np.int64)
-            
-            logger.info(f"Adding {len(vectors)} vectors with shape {vectors_array.shape} to Voyager index...")
-            index.add_items(vectors_array, ids=ids_array)
-            
-            logger.info(f"Successfully added {len(artist_gmms)} artists to Voyager index (num_elements={index.num_elements})")
-        except Exception as e:
-            logger.error(f"Failed to add items to Voyager index: {e}", exc_info=True)
-            raise
-        
-        # Step 4: Serialize and store in database
-        logger.info("Serializing and storing index in database...")
-        
-        # Serialize index to bytes using temp file (voyager uses save/load with files)
-        temp_file_path = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-                temp_file_path = tmp.name
-            
-            logger.info(f"Saving Voyager index to temp file: {temp_file_path}")
-            index.save(temp_file_path)
-            
-            with open(temp_file_path, 'rb') as f:
-                index_bytes = f.read()
-            
-            logger.info(f"Index serialized to {len(index_bytes)} bytes")
-        except Exception as e:
-            logger.error(f"Failed to serialize Voyager index: {e}", exc_info=True)
-            raise
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-        
-        # Pack the per-artist metadata (artist_map + GMM params, sans covariances)
-        # into a binary BYTEA blob and persist it to the dedicated
-        # artist_metadata_data table. Decoupled from the Voyager index storage so
-        # each PG row stays well under the 1 GB MaxAllocSize cap at any library
-        # size: a 2.4 GB blob would split into ~48 rows of 50 MB.
         from .index_build_helpers import pack_artist_metadata, store_segmented_blob
+        from .paged_ivf import build_and_store_paged_ivf
+        logger.info("Building artist IVF index (euclidean) for %d artists, dim=%d ...", len(artist_names_list), gmm_vector_dim)
+        artist_map_dict = {vid: a for vid, a in enumerate(artist_names_list)}
+        vectors = np.array([serialize_gmm_for_hnsw(artist_gmms[a]) for a in artist_names_list], dtype=np.float32)
         metadata_blob = pack_artist_metadata(artist_map_dict, artist_gmms)
+        ok = build_and_store_paged_ivf(db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "euclidean")
+        if not ok:
+            db_conn.rollback()
+            logger.warning("Artist IVF build produced no index; aborting.")
+            return
+        store_segmented_blob(db_conn, target_table="artist_metadata_data", name="artist_metadata", blob=metadata_blob)
+        db_conn.commit()
+        logger.info("Artist IVF index built and stored (%d artists).", len(artist_gmms))
+        return
 
-        # Store in database (atomic update)
-        try:
-            # Delete any existing single or segmented rows for this logical index name
-            cur.execute(
-                "DELETE FROM artist_index_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                (ARTIST_INDEX_NAME, ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%")
-            )
-
-            # Voyager index binary still lives in artist_index_data (segmented if
-            # large). The legacy artist_map_json / gmm_params_json columns get
-            # empty strings going forward -- the source of truth is now the
-            # artist_metadata_data BYTEA blob, written below.
-            if len(index_bytes) <= ARTIST_INDEX_MAX_PART_SIZE:
-                cur.execute("""
-                    INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
-                    ON CONFLICT (index_name) DO UPDATE SET
-                        index_data = EXCLUDED.index_data,
-                        artist_map_json = EXCLUDED.artist_map_json,
-                        gmm_params_json = EXCLUDED.gmm_params_json,
-                        created_at = EXCLUDED.created_at
-                """, (ARTIST_INDEX_NAME, index_bytes, '', ''))
-                logger.info("Stored artist index binary as a single row (no segmentation required).")
-            else:
-                parts = _split_bytes(index_bytes, ARTIST_INDEX_MAX_PART_SIZE)
-                num_parts = len(parts)
-                logger.info(f"Artist index size {len(index_bytes)} exceeds {ARTIST_INDEX_MAX_PART_SIZE_MB}MB - storing as {num_parts} segmented rows.")
-
-                insert_q = "INSERT INTO artist_index_data (index_name, index_data, artist_map_json, gmm_params_json, created_at) VALUES (%s, %s, %s, %s, NOW())"
-                for idx, part in enumerate(parts, start=1):
-                    part_name = f"{ARTIST_INDEX_NAME}_{idx}_{num_parts}"
-                    cur.execute(insert_q, (part_name, part, '', ''))
-
-                logger.info(f"Stored artist index in {num_parts} parts (prefix='{ARTIST_INDEX_NAME}_<part>_<total>').")
-
-            store_segmented_blob(
-                db_conn,
-                target_table="artist_metadata_data",
-                name="artist_metadata",
-                blob=metadata_blob,
-            )
-            logger.info(
-                "Stored artist metadata blob (%d bytes, %d artists) in artist_metadata_data.",
-                len(metadata_blob), len(artist_gmms),
-            )
-
-            db_conn.commit()
-            logger.info(f"Artist similarity index built and stored successfully ({len(artist_gmms)} artists)")
-
-        except Exception as e:
-            try:
-                db_conn.rollback()
-            except Exception:
-                pass
-            logger.error("Failed to store segmented artist index: %s", e, exc_info=True)
-            raise
-        
     except Exception as e:
         logger.error(f"Failed to build artist index: {e}", exc_info=True)
         db_conn.rollback()
@@ -579,7 +384,7 @@ def build_and_store_artist_index(db_conn=None):
 
 def load_artist_index_for_querying(force_reload=False):
     """
-    Load the artist Voyager index from database into memory.
+    Load the artist IVF index from database into memory.
     
     Args:
         force_reload: If True, force reload even if already loaded
@@ -608,155 +413,34 @@ def load_artist_index_for_querying(force_reload=False):
         from .index_build_helpers import load_segmented_blob, unpack_artist_metadata
 
         try:
-            # Step A: load the Voyager index bytes from artist_index_data
-            # (single-row or segmented). Legacy artist_map_json / gmm_params_json
-            # columns may or may not be populated on those rows -- we capture
-            # them only to support the backward-compat fallback for metadata in
-            # step B.
-            cur.execute("""
-                SELECT index_data, artist_map_json, gmm_params_json
-                FROM artist_index_data
-                WHERE index_name = %s
-            """, (ARTIST_INDEX_NAME,))
-            row = cur.fetchone()
-
-            index_bytes = None
-            legacy_artist_map_json = None
-            legacy_gmm_params_json = None
-
-            if row and row[0]:
-                index_bytes, legacy_artist_map_json, legacy_gmm_params_json = row
-                index_bytes = bytes(index_bytes)
-                logger.info(f"Retrieved artist index from database (single row): {len(index_bytes)} bytes")
-            else:
-                cur.execute(
-                    "SELECT index_name, index_data, artist_map_json, gmm_params_json "
-                    "FROM artist_index_data WHERE index_name LIKE %s ESCAPE '\\'",
-                    (ARTIST_INDEX_NAME.replace('_', r'\_') + r"\_%\_%",)
-                )
-                candidates = cur.fetchall()
-
-                if not candidates:
-                    logger.warning("Artist index not found in database (single or segmented)")
-                    _reset_cache()
-                    return
-
-                seg_pattern = re.compile(rf"^{re.escape(ARTIST_INDEX_NAME)}_(\d+)_(\d+)$")
-                parts = []
-                total_expected = None
-
-                for cand in candidates:
-                    name, part_data, part_artist_map_json, part_gmm_params_json = cand
-                    m = seg_pattern.match(name)
-                    if not m:
-                        continue
-                    part_no = int(m.group(1))
-                    total = int(m.group(2))
-                    if total_expected is None:
-                        total_expected = total
-                    elif total_expected != total:
-                        logger.error(f"Segment total mismatch for Artist index parts (found totals {total_expected} and {total}). Aborting load.")
-                        _reset_cache()
-                        return
-                    parts.append((part_no, part_data))
-                    if part_artist_map_json and not legacy_artist_map_json:
-                        legacy_artist_map_json = part_artist_map_json
-                    if part_gmm_params_json and not legacy_gmm_params_json:
-                        legacy_gmm_params_json = part_gmm_params_json
-
-                if not parts or total_expected is None or len(parts) != total_expected:
-                    logger.error(
-                        f"Incomplete Artist index segments: expected {total_expected}, found {len(parts)}. Aborting load."
-                    )
-                    _reset_cache()
-                    return
-
-                parts.sort(key=lambda p: p[0])
-                index_bytes = b"".join(bytes(p[1]) for p in parts)
-                logger.info(f"Reassembled artist index from {len(parts)} segmented rows: {len(index_bytes)} bytes")
-
-            # Step B: load the metadata (artist_map + gmm_params). New path
-            # reads the binary blob from artist_metadata_data; legacy fallback
-            # reads the JSON columns we already captured above. This keeps the
-            # upgrade zero-friction: existing deployments keep working from the
-            # legacy JSON columns until the next rebuild populates the new
-            # table; deployments that have already rebuilt skip the JSON path.
-            parsed_artist_map = None
-            parsed_gmm_params = None
-
-            metadata_blob = None
-            try:
-                metadata_blob = load_segmented_blob(conn, "artist_metadata_data", "artist_metadata")
-            except Exception as meta_load_err:
-                logger.warning(
-                    f"artist_metadata_data load failed; falling back to legacy JSON columns: {meta_load_err}"
-                )
-
-            if metadata_blob:
-                try:
-                    parsed_artist_map, parsed_gmm_params = unpack_artist_metadata(metadata_blob)
-                    logger.info(
-                        f"Loaded artist metadata from artist_metadata_data: "
-                        f"{len(parsed_artist_map)} artists, {len(metadata_blob)} bytes."
-                    )
-                except Exception as meta_decode_err:
-                    logger.error(
-                        f"artist_metadata_data blob is corrupt; falling back to legacy JSON: {meta_decode_err}",
-                        exc_info=True,
-                    )
-                    parsed_artist_map = None
-                    parsed_gmm_params = None
-
-            if parsed_artist_map is None or parsed_gmm_params is None:
-                if not legacy_artist_map_json or not legacy_gmm_params_json:
-                    logger.error(
-                        "No artist metadata available: artist_metadata_data is empty and "
-                        "legacy artist_map_json/gmm_params_json columns are also empty. Aborting load."
-                    )
-                    _reset_cache()
-                    return
-                try:
-                    parsed_artist_map = {int(k): v for k, v in json.loads(legacy_artist_map_json).items()}
-                    parsed_gmm_params = json.loads(legacy_gmm_params_json)
-                    logger.info(
-                        f"Loaded artist metadata from legacy JSON columns: {len(parsed_artist_map)} artists "
-                        f"(deployment hasn't rebuilt on the new BYTEA path yet)."
-                    )
-                except Exception as legacy_err:
-                    logger.error(f"Legacy JSON metadata is corrupt: {legacy_err}", exc_info=True)
-                    _reset_cache()
-                    return
-
-            # Step C: load the Voyager index from the reassembled bytes and
-            # validate the element count matches the metadata.
-            try:
-                index = voyager.Index.load(io.BytesIO(index_bytes))
-            except Exception as load_error:
-                logger.error(f"Failed to load Voyager index from bytes: {load_error}", exc_info=True)
+            from .paged_ivf import has_paged_ivf, load_paged_ivf_index
+            if not has_paged_ivf(conn, ARTIST_INDEX_NAME):
+                logger.info("Artist IVF index not found; not built yet.")
                 _reset_cache()
                 return
-
-            try:
-                idx_count = getattr(index, 'num_elements', None)
-            except Exception:
-                idx_count = None
-            if idx_count is not None and idx_count != len(parsed_artist_map):
+            loaded = load_paged_ivf_index(conn, ARTIST_INDEX_NAME, None, "euclidean", conn_factory=get_db, label="artist")
+            if loaded is None:
+                _reset_cache()
+                return
+            metadata_blob = load_segmented_blob(conn, "artist_metadata_data", "artist_metadata")
+            if not metadata_blob:
+                logger.error("Artist IVF index present but metadata blob missing; aborting load.")
+                _reset_cache()
+                return
+            parsed_artist_map, parsed_gmm_params = unpack_artist_metadata(metadata_blob)
+            artist_index = loaded[0]
+            if len(artist_index) != len(parsed_artist_map):
                 logger.error(
-                    f"Artist index element count mismatch: index.num_elements={idx_count}, "
-                    f"artist_map={len(parsed_artist_map)}. Aborting load."
+                    "Artist IVF index element count (%d) != metadata artist_map count (%d); "
+                    "aborting load to avoid mapping vectors to the wrong artist.",
+                    len(artist_index), len(parsed_artist_map),
                 )
                 _reset_cache()
                 return
-
-            artist_index = index
             artist_map = parsed_artist_map
             reverse_artist_map = {v: k for k, v in artist_map.items()}
             artist_gmm_params = parsed_gmm_params
-
-            logger.info(
-                f"Artist index loaded successfully ({len(artist_map)} artists, "
-                f"num_elements={idx_count if idx_count is not None else 'unknown'})."
-            )
+            logger.info("Artist IVF index loaded (%d artists).", len(artist_map))
             return
 
         except Exception as e:
@@ -893,13 +577,14 @@ def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name
 
 def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = None, include_component_matches: bool = False) -> List[Dict]:
     """
-    Find similar artists using the Voyager index.
+    Find similar artists using the IVF index.
     Accepts either artist name or artist ID.
     
     Args:
         query_artist: Name or ID of the query artist
         n: Number of similar artists to return
-        ef_search: Voyager search parameter (higher = more accurate but slower)
+        ef_search: accepted for API compatibility; the disk-paged IVF backend
+            controls recall via IVF_NPROBE, so this value is ignored
         include_component_matches: If True, include component-level similarity explanation
         
     Returns: List of dictionaries with 'artist', 'artist_id', 'divergence' keys
@@ -922,27 +607,26 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         logger.warning(f"Artist '{artist_name}' not found in index")
         return []
     
-    # Get query artist's Voyager ID
+    # Get query artist's IVF ID
     query_id = reverse_artist_map[artist_name]
     
     # Get query GMM parameters
     query_gmm = artist_gmm_params[artist_name]
     
-    # Set ef_search if provided (voyager uses .ef property instead of set_ef method)
-    if ef_search is not None:
-        artist_index.ef = ef_search
-    
-    # Voyager search: get similar artists based on weighted mean distance
+    from .paged_ivf import begin_query
+    begin_query(artist_index)
+
+    # IVF search: get similar artists based on weighted mean distance
     k_candidates = min(n + 1, len(artist_map))  # +1 to account for self
     
     # Get query vector (weighted mean of GMM)
     query_vector = serialize_gmm_for_hnsw(query_gmm)
     
-    # Voyager search: get similar artists based on weighted mean distance
+    # IVF search: get similar artists based on weighted mean distance
     try:
         labels, distances = artist_index.query(query_vector, k=k_candidates)
     except Exception as e:
-        logger.error(f"Voyager query failed for artist '{artist_name}': {e}", exc_info=True)
+        logger.error(f"IVF query failed for artist '{artist_name}': {e}", exc_info=True)
         return []
     
     # Build results (skip self)
@@ -979,7 +663,7 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         
         results.append(result)
     
-    # Return top N (already sorted by Voyager)
+    # Return top N (already sorted by IVF)
     return results[:n]
 
 

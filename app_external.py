@@ -5,8 +5,8 @@ from psycopg2.extras import DictCursor
 import numpy as np
 import logging
 
-# Import voyager_manager functions for track lookups
-from tasks.voyager_manager import search_tracks_unified
+# Import ivf_manager functions for track lookups
+from tasks.ivf_manager import search_tracks_unified
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -165,8 +165,8 @@ def search_tracks_endpoint():
         return jsonify([])
 
     # Enforce minimum length constraint
-    if len(search_query) < 3:
-        return jsonify({"error": "Query must be at least 3 characters long"}), 400
+    if len(search_query) < 1:
+        return jsonify({"error": "Query must be at least 1 character long"}), 400
 
     try:
         results = search_tracks_unified(search_query)

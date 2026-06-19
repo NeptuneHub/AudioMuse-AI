@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Quit AudioMuse-AI
+GenericName=Stop AudioMuse-AI services
+Comment=Cleanly stop AudioMuse-AI (PostgreSQL, Redis and all workers)
+Exec=/usr/bin/audiomuse-ai stop
+Icon=audiomuse-ai
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=music;playlist;stop;quit;
+StartupNotify=false
+NoDisplay=false

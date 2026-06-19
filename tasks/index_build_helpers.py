@@ -1,16 +1,20 @@
 """
-Centralized helpers for building and persisting Voyager indexes.
+Centralized helpers for streaming embeddings and persisting segmented blobs.
 
-Every index builder at the 96% stage (CLAP, lyrics, lyrics-axes, SemGrove,
-audio Voyager) follows the same three-phase pattern:
+The per-song similarity indexes (CLAP, lyrics, lyrics-axes, SemGrove, audio)
+are built as disk-paged IVF indexes (see ``tasks.paged_ivf``). This module
+provides the shared building blocks they reuse:
 
-    1. Load all embeddings from a BYTEA column into a contiguous numpy buffer.
-    2. Add the buffer to a freshly built voyager.Index and serialize it.
-    3. Persist the serialized bytes to an ``*_index_data`` table, splitting
-       into multiple rows if larger than ``VOYAGER_MAX_PART_SIZE_MB``.
+    * ``stream_embeddings_to_buffer`` -- load a BYTEA float32 column into a
+      contiguous numpy buffer over a snapshot-safe side connection.
+    * ``store_segmented_blob`` / ``load_segmented_blob`` -- persist and
+      reassemble arbitrary BYTEA payloads split into <= part-size rows (also
+      used by the 2D map projections).
+    * ``build_and_store_index_streaming`` -- the CLAP/lyrics/lyrics-axes entry
+      point that streams a source column straight into ``build_and_store_paged_ivf``.
 
-This module factors all three phases into reusable functions so any future
-RAM, snapshot, or storage change happens in exactly one place.
+Keeping these in one place means any future RAM, snapshot, or storage change
+happens in exactly one location.
 
 Phase 1 design notes
 --------------------
@@ -45,14 +49,11 @@ because the next batch rebuild picks them up.
 
 from __future__ import annotations
 
-import gc
 import io
 import json
 import logging
-import os
 import re
 import struct
-import tempfile
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import numpy as np
@@ -352,205 +353,6 @@ def iter_embedding_batches(
             pass
 
 
-def _resolve_voyager_space(metric: str):
-    """Translate the config metric string into a voyager.Space enum value."""
-    import voyager
-
-    metric_l = (metric or "angular").lower()
-    if metric_l == "angular":
-        return voyager.Space.Cosine
-    if metric_l == "euclidean":
-        return voyager.Space.Euclidean
-    if metric_l == "dot":
-        return voyager.Space.InnerProduct
-    logger.warning("Unknown Voyager metric '%s'; defaulting to Cosine.", metric)
-    return voyager.Space.Cosine
-
-
-def build_voyager_index_bytes(
-    buf: np.ndarray,
-    dim: int,
-    metric: str = "angular",
-    m: Optional[int] = None,
-    ef_construction: Optional[int] = None,
-) -> bytes:
-    """Build a Voyager HNSW index over ``buf`` and serialize it to bytes.
-
-    Item ids are assigned densely as ``0..N-1``; callers persist their own
-    ``{voyager_id: item_id}`` map alongside the index bytes (see
-    ``store_voyager_index_segmented``).
-
-    Args:
-        buf: contiguous ``np.ndarray`` of shape ``(N, dim)`` and dtype
-            ``float32``. N must be >= 1.
-        dim: number of dimensions, must equal ``buf.shape[1]``.
-        metric: ``"angular"`` (cosine), ``"euclidean"``, or ``"dot"``.
-        m, ef_construction: HNSW graph parameters. Default to the values in
-            ``config.VOYAGER_M`` / ``config.VOYAGER_EF_CONSTRUCTION``.
-
-    Returns:
-        Serialized index bytes.
-
-    Raises:
-        ImportError: if the ``voyager`` library is not installed.
-        ValueError: if ``buf`` is empty or has the wrong shape/dtype.
-    """
-    import voyager
-
-    if not isinstance(buf, np.ndarray) or buf.ndim != 2:
-        raise ValueError("buf must be a 2-D numpy array")
-    if buf.shape[0] == 0:
-        raise ValueError("buf is empty; refusing to build an empty index")
-    if buf.shape[1] != dim:
-        raise ValueError(
-            f"buf has dim={buf.shape[1]} but caller declared dim={dim}"
-        )
-    if buf.dtype != np.float32:
-        buf = buf.astype(np.float32, copy=False)
-    if not buf.flags["C_CONTIGUOUS"]:
-        buf = np.ascontiguousarray(buf)
-
-    m_val = config.VOYAGER_M if m is None else int(m)
-    ef_val = config.VOYAGER_EF_CONSTRUCTION if ef_construction is None else int(ef_construction)
-
-    space = _resolve_voyager_space(metric)
-    builder = voyager.Index(
-        space=space,
-        num_dimensions=dim,
-        M=m_val,
-        ef_construction=ef_val,
-    )
-
-    n = buf.shape[0]
-    ids = np.arange(n, dtype=np.int64)
-    builder.add_items(buf, ids=ids)
-
-    temp_file_path: Optional[str] = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-            temp_file_path = tmp.name
-        builder.save(temp_file_path)
-        del builder
-        gc.collect()
-        with open(temp_file_path, "rb") as f:
-            return f.read()
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
-
-
-def build_voyager_index_bytes_streaming(
-    batch_iter: Iterable[Tuple[np.ndarray, List[str]]],
-    dim: int,
-    metric: str = "angular",
-    m: Optional[int] = None,
-    ef_construction: Optional[int] = None,
-) -> Tuple[bytes, List[str]]:
-    """Build a Voyager HNSW index incrementally and serialize to bytes.
-
-    Consumes batches from ``batch_iter`` (typically the generator returned by
-    :func:`iter_embedding_batches`) and calls ``voyager.Index.add_items``
-    once per batch with dense ``0..N-1`` ids assigned across batches. The
-    Voyager index auto-grows on each ``add_items`` call, so no upfront row
-    count is required.
-
-    Peak RAM during build is ``1 batch + voyager's internal HNSW storage``
-    rather than ``full library buffer + voyager's internal HNSW storage`` --
-    i.e. the input-side memory is essentially zero compared to the
-    unavoidable index storage.
-
-    Args:
-        batch_iter: iterable yielding ``(batch_buf, batch_ids)`` tuples.
-            Each ``batch_buf`` must be a float32 ndarray of shape
-            ``(batch_n, dim)`` (any dtype is silently coerced; non-2-D or
-            wrong-dim batches raise ``ValueError`` immediately).
-        dim: vector dimensionality. Must equal each batch's second axis.
-        metric: ``"angular"`` (cosine), ``"euclidean"``, or ``"dot"``.
-        m, ef_construction: HNSW graph parameters. Default to
-            ``config.VOYAGER_M`` / ``config.VOYAGER_EF_CONSTRUCTION``.
-
-    Returns:
-        ``(index_bytes, item_ids)`` -- the serialized Voyager index and the
-        flat list of item_id strings in row order. Items dropped by the
-        generator (NULL/wrong-dim blobs) do not appear in either output.
-
-    Raises:
-        ImportError: if the ``voyager`` library is not installed.
-        ValueError: if the iterator yields no batches at all, or a batch
-            has the wrong shape/dim.
-    """
-    import voyager
-
-    if not isinstance(dim, int) or dim <= 0:
-        raise ValueError(f"dim must be a positive int, got {dim!r}")
-
-    m_val = config.VOYAGER_M if m is None else int(m)
-    ef_val = config.VOYAGER_EF_CONSTRUCTION if ef_construction is None else int(ef_construction)
-    space = _resolve_voyager_space(metric)
-
-    builder = voyager.Index(
-        space=space,
-        num_dimensions=dim,
-        M=m_val,
-        ef_construction=ef_val,
-    )
-
-    all_ids: List[str] = []
-    next_voyager_id = 0
-    saw_any = False
-
-    for batch_buf, batch_ids in batch_iter:
-        if not isinstance(batch_buf, np.ndarray) or batch_buf.ndim != 2:
-            raise ValueError(
-                "build_voyager_index_bytes_streaming: each batch_buf must be a 2-D ndarray"
-            )
-        if batch_buf.shape[1] != dim:
-            raise ValueError(
-                f"build_voyager_index_bytes_streaming: batch dim={batch_buf.shape[1]} != declared dim={dim}"
-            )
-        if batch_buf.shape[0] == 0:
-            continue
-        if batch_buf.dtype != np.float32:
-            batch_buf = batch_buf.astype(np.float32, copy=False)
-        if not batch_buf.flags["C_CONTIGUOUS"]:
-            batch_buf = np.ascontiguousarray(batch_buf)
-        if len(batch_ids) != batch_buf.shape[0]:
-            raise ValueError(
-                f"build_voyager_index_bytes_streaming: batch_ids len={len(batch_ids)} "
-                f"!= batch_buf rows={batch_buf.shape[0]}"
-            )
-
-        ids = np.arange(next_voyager_id, next_voyager_id + batch_buf.shape[0], dtype=np.int64)
-        builder.add_items(batch_buf, ids=ids)
-        all_ids.extend(batch_ids)
-        next_voyager_id += batch_buf.shape[0]
-        saw_any = True
-
-    if not saw_any or next_voyager_id == 0:
-        del builder
-        gc.collect()
-        raise EmptyIndexError("build_voyager_index_bytes_streaming: no items added; refusing to serialize empty index")
-
-    temp_file_path: Optional[str] = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".voyager") as tmp:
-            temp_file_path = tmp.name
-        builder.save(temp_file_path)
-        del builder
-        gc.collect()
-        with open(temp_file_path, "rb") as f:
-            return f.read(), all_ids
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
-
-
 def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
     return [data[i:i + part_size] for i in range(0, len(data), part_size)]
 
@@ -568,7 +370,56 @@ def reassemble_segmented_id_map(fragments: Iterable[Tuple[int, Optional[str]]]) 
     return "".join(frag or "" for _, frag in sorted(fragments, key=lambda p: p[0]))
 
 
-def store_voyager_index_segmented(
+def build_and_store_index_streaming(
+    db_conn,
+    source_table: str,
+    source_column: str,
+    dim: int,
+    target_table: str,
+    index_name: str,
+    metric: str,
+    where_clause: Optional[str] = None,
+    label: Optional[str] = None,
+) -> bool:
+    """Stream embeddings, build a disk-paged IVF index, and persist it.
+
+    Shared by the CLAP, lyrics, and lyrics-axes builders: streams the source
+    BYTEA column into a buffer and hands it to ``build_and_store_paged_ivf``.
+    Commits on success and rolls back on failure using the caller's
+    ``db_conn``. ``target_table`` is accepted for call-site compatibility and
+    unused (IVF rows live in the shared ``ivf_dir`` / ``ivf_cell`` tables).
+    Returns True on success, False when the source has no usable vectors or the
+    build/store fails.
+    """
+    label = label or index_name
+
+    try:
+        from .paged_ivf import build_and_store_paged_ivf
+        logger.info("Building %s IVF index (disk-paged)...", label)
+        buf, item_ids = stream_embeddings_to_buffer(
+            table=source_table,
+            column=source_column,
+            dim=dim,
+            where_clause=where_clause,
+        )
+        if buf.shape[0] == 0:
+            logger.warning("No valid %s vectors found for IVF index build.", label)
+            return False
+        ok = build_and_store_paged_ivf(db_conn, index_name, buf, item_ids, dim, metric)
+        if ok:
+            db_conn.commit()
+            logger.info("%s IVF index build successful.", label)
+        return ok
+    except Exception as e:
+        logger.error("Failed to build/store %s IVF index: %s", label, e, exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def store_ivf_index_segmented(
     db_conn,
     target_table: str,
     index_name: str,
@@ -578,7 +429,7 @@ def store_voyager_index_segmented(
     max_part_size_mb: Optional[int] = None,
     binary_column: str = "index_data",
 ) -> None:
-    """Persist a serialized Voyager index to a chunked ``*_index_data`` table.
+    """Persist a serialized IVF index to a chunked ``*_index_data`` table.
 
     Atomically replaces any existing rows for ``index_name`` (single or
     segmented). If the binary is small enough it is written as a single
@@ -602,12 +453,12 @@ def store_voyager_index_segmented(
         index_name: logical index name (e.g. ``"clap_index"``). Must be a
             bare SQL identifier so the LIKE-escape pattern is unambiguous.
         index_bytes: serialized index payload (from
-            ``build_voyager_index_bytes``).
-        id_map: ``{voyager_id_int: item_id_str}`` mapping. Serialized to
+            ``build_ivf_index_bytes_streaming``).
+        id_map: ``{vec_id_int: item_id_str}`` mapping. Serialized to
             JSON for the first row.
         embedding_dimension: stored alongside the index for validation on
             load.
-        max_part_size_mb: override for ``config.VOYAGER_MAX_PART_SIZE_MB``.
+        max_part_size_mb: override for ``config.IVF_MAX_PART_SIZE_MB``.
     """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(index_name, "index_name")
@@ -615,7 +466,7 @@ def store_voyager_index_segmented(
     if not index_bytes:
         raise ValueError("index_bytes is empty; refusing to persist an empty index")
 
-    mb = config.VOYAGER_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
+    mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
     id_map_json = json.dumps(id_map)
 
@@ -638,7 +489,12 @@ def store_voyager_index_segmented(
     insert_sql = (
         f"INSERT INTO {target_table} "
         f"(index_name, {binary_column}, id_map_json, embedding_dimension, created_at) "
-        f"VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)"
+        f"VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP) "
+        f"ON CONFLICT (index_name) DO UPDATE SET "
+        f"{binary_column} = EXCLUDED.{binary_column}, "
+        f"id_map_json = EXCLUDED.id_map_json, "
+        f"embedding_dimension = EXCLUDED.embedding_dimension, "
+        f"created_at = EXCLUDED.created_at"
     )
 
     id_map_fits = len(id_map_json.encode("utf-8")) <= max_part_size
@@ -679,7 +535,7 @@ def rewrite_segmented_id_map(
 ) -> bool:
     """Rewrite ``id_map_json`` for a possibly-segmented index in place.
 
-    :func:`store_voyager_index_segmented` splits the id_map JSON across part
+    :func:`store_ivf_index_segmented` splits the id_map JSON across part
     rows, so each segmented row holds a partial-JSON *fragment* rather than a
     standalone document. A naive per-row ``json.loads`` rewrite therefore
     silently no-ops on every fragment. This helper instead reassembles the
@@ -702,7 +558,7 @@ def rewrite_segmented_id_map(
     """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(index_name, "index_name")
-    mb = config.VOYAGER_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
+    mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
 
     cur.execute(
@@ -759,7 +615,7 @@ def rewrite_segmented_id_map(
 
 
 def build_id_map(item_ids: Iterable[str]) -> dict:
-    """Return ``{int_voyager_id: item_id_str}`` matching the row order."""
+    """Return ``{int_vec_id: item_id_str}`` matching the row order."""
     return {i: item_id for i, item_id in enumerate(item_ids)}
 
 
@@ -772,7 +628,7 @@ def store_segmented_blob(
 ) -> None:
     """Persist a single BYTEA payload to a ``(name, blob_data, created_at)`` table.
 
-    Mirrors :func:`store_voyager_index_segmented` but for the simpler 2-column
+    Mirrors :func:`store_ivf_index_segmented` but for the simpler 2-column
     schema used by ``artist_metadata_data``: ``name VARCHAR PRIMARY KEY``,
     ``blob_data BYTEA NOT NULL``, ``created_at TIMESTAMP``. Any previous rows
     matching ``name`` or ``name_<part>_<total>`` are deleted in the same
@@ -794,7 +650,7 @@ def store_segmented_blob(
         name: logical blob name (must be a bare SQL identifier so the
             LIKE-escape pattern is unambiguous).
         blob: payload to persist. Empty bytes raises ``ValueError``.
-        max_part_size_mb: override for ``config.VOYAGER_MAX_PART_SIZE_MB``
+        max_part_size_mb: override for ``config.IVF_MAX_PART_SIZE_MB``
             (the existing global tunable for segmented-row sizing).
     """
     _validate_sql_identifier(target_table, "table")
@@ -802,7 +658,7 @@ def store_segmented_blob(
     if not blob:
         raise ValueError("blob is empty; refusing to persist an empty payload")
 
-    mb = config.VOYAGER_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
+    mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
 
     delete_sql = (
@@ -820,7 +676,10 @@ def store_segmented_blob(
     )
     insert_sql = (
         f"INSERT INTO {target_table} (name, blob_data, created_at) "
-        f"VALUES (%s, %s, CURRENT_TIMESTAMP)"
+        f"VALUES (%s, %s, CURRENT_TIMESTAMP) "
+        f"ON CONFLICT (name) DO UPDATE SET "
+        f"blob_data = EXCLUDED.blob_data, "
+        f"created_at = EXCLUDED.created_at"
     )
 
     with db_conn.cursor() as cur:
@@ -880,7 +739,7 @@ def load_segmented_blob(
         row = cur.fetchone()
         if row and row[0]:
             data = row[0]
-            return bytes(data) if not isinstance(data, (bytes, bytearray)) else bytes(data)
+            return bytes(data)
 
         cur.execute(select_segments_sql, (like_pattern,))
         rows = cur.fetchall()
@@ -933,13 +792,13 @@ def pack_artist_metadata(
 
     * 24-byte header (magic ``ARMD``, version=1, artist_count, two section
       offsets).
-    * Artist-map section: per (voyager_id, artist_name) tuple.
+    * Artist-map section: per (vec_id, artist_name) tuple.
     * GMM-params section: per artist, ``means`` and ``weights`` as raw
       float32 little-endian bytes. ``covariances`` is deliberately not
       stored -- nothing reads it.
 
     Args:
-        artist_map: ``{voyager_id_int: artist_name_str}``.
+        artist_map: ``{vec_id_int: artist_name_str}``.
         artist_gmms: ``{artist_name_str: {means, weights, n_components,
             n_features, n_tracks, is_few_songs, tracks_hash}}``. Extra keys
             are ignored; missing keys raise ``KeyError``.
@@ -949,11 +808,11 @@ def pack_artist_metadata(
 
     artist_map_offset = buf.tell()
     buf.write(struct.pack("<I", len(artist_map)))
-    for voyager_id, artist_name in artist_map.items():
+    for vec_id, artist_name in artist_map.items():
         name_bytes = artist_name.encode("utf-8")
         if len(name_bytes) > 0xFFFF:
             raise ValueError(f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix")
-        buf.write(struct.pack("<IH", int(voyager_id), len(name_bytes)))
+        buf.write(struct.pack("<IH", int(vec_id), len(name_bytes)))
         buf.write(name_bytes)
 
     gmm_params_offset = buf.tell()
@@ -1037,11 +896,11 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
     (map_count,) = struct.unpack_from("<I", blob, pos)
     pos += 4
     for _ in range(map_count):
-        voyager_id, name_len = struct.unpack_from("<IH", blob, pos)
+        vec_id, name_len = struct.unpack_from("<IH", blob, pos)
         pos += 6
         name = blob[pos:pos + name_len].decode("utf-8")
         pos += name_len
-        artist_map[int(voyager_id)] = name
+        artist_map[int(vec_id)] = name
 
     artist_gmms: Dict[str, Dict] = {}
     pos = gmm_params_offset

@@ -2,6 +2,15 @@
 
 From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be configured via environment variables. All other configuration values are managed through the browser setup wizard and persisted in the database. For compatibility with legacy installations, environment variables are imported into the database automatically on first startup. The Setup Wizard is shown on clean installation as lending page and is also available later from the menu under Administration > Setup Wizard.
 
+## Contents
+
+- [Quick Start Deployment on K3S WITH HELM](#quick-start-deployment-on-k3s-with-helm)
+- [Quick Start Deployment on K3S](#quick-start-deployment-on-k3s)
+- [Local Deployment with Docker Compose](#local-deployment-with-docker-compose)
+- [Local Deployment MacOS](#local-deployment-macos)
+- [Local Deployment Linux](#local-deployment-linux)
+- [Local Deployment Windows](#local-deployment-windows)
+- [Local Deployment with Podman Quadlets](#local-deployment-with-podman-quadlets)
 
 ## Quick Start Deployment on K3S WITH HELM
 
@@ -106,6 +115,111 @@ AudioMuse-AI provides Docker Compose files example:
 
 **Remote worker tip:**
 If you deploy a worker on separate hardware, copy your `.env` to that machine and update `WORKER_POSTGRES_HOST` and `WORKER_REDIS_URL` so the worker can reach the main server.
+
+## Local Deployment MacOS
+
+The native MacOS package is shipped as a release asset for Apple Silicon only. It bundles the entire app, embedded PostgreSQL, Redis, and the browser UI so you do not need Docker or an external database for local use.
+
+**Prerequisites:**
+* Apple Silicon Mac (M1/M2/M3/M4)
+* macOS 15 or later
+
+**Steps:**
+1. Download the latest release asset for macOS from the GitHub releases page.
+2. Unzip and move `AudioMuse-AI.app` to `/Applications`.
+3. Clear the quarantine flag before first launch:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app
+   ```
+4. Open the app from `/Applications`.
+
+**Alternative no-terminal flow:**
+* Double-click the app and dismiss the security warning.
+* Go to System Settings → Privacy & Security → Open Anyway for AudioMuse-AI.
+* Launch the app again.
+
+**Important:**
+* The app is unsigned, so macOS will require an explicit trust step on first run.
+* The native MacOS build is Apple Silicon only.
+
+**Data and logs:**
+* Data: `~/Library/AudioMuse-AI`
+* Logs: `~/Library/Logs/AudioMuse-AI/audiomuse.log`
+
+## Local Deployment Linux
+
+The native Linux packages are provided as `.deb` and `.rpm` release assets for x86_64 and aarch64. These packages bundle the full app, embedded PostgreSQL, Redis, and the web UI.
+
+**Prerequisites:**
+* A Linux distribution compatible with the packaged binaries
+* A matching package manager (`dpkg` for Debian/Ubuntu, `rpm` for Fedora/RHEL)
+
+**Install:**
+* Debian/Ubuntu:
+  ```bash
+  sudo dpkg -i AudioMuse-AI-<arch>-linux.deb
+  ```
+* Fedora/RHEL:
+  ```bash
+  sudo rpm -i AudioMuse-AI-<arch>-linux.rpm
+  ```
+Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
+
+**Run:**
+* Start the app as a normal user (do not run as root):
+  ```bash
+  audiomuse-ai start
+  ```
+* Open the web UI at `http://127.0.0.1:8000`.
+* Enable user session autostart:
+  ```bash
+  systemctl --user enable --now audiomuse-ai
+  ```
+* Stop the app:
+  ```bash
+  audiomuse-ai stop
+  ```
+
+**Data and logs:**
+* Data: `~/.local/share/AudioMuse-AI`
+* Logs: `~/.local/state/AudioMuse-AI/logs/audiomuse.log`
+
+> **Tested on:** Debian GNU/Linux 12 (bookworm) with glibc 2.36. RPMs are expected to work on current Fedora/RHEL systems but may not support older distributions.
+
+## Local Deployment Windows
+
+The native Windows package is shipped as a release asset for x86_64 only: a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). It bundles the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
+
+**Prerequisites:**
+* Windows 10 or 11 (x86_64)
+
+**Install (ZIP):**
+1. Download the latest `AudioMuse-AI-amd64-windows.zip` from the GitHub releases page.
+2. Unzip it anywhere.
+3. Double-click `AudioMuse-AI.exe` (or run it from a terminal).
+4. Open the web UI at `http://127.0.0.1:8000`.
+
+**Control from a terminal:**
+* Start the stack and open the browser:
+  ```powershell
+  AudioMuse-AI.exe start
+  ```
+* Print whether it is running or stopped:
+  ```powershell
+  AudioMuse-AI.exe status
+  ```
+* Stop the app:
+  ```powershell
+  AudioMuse-AI.exe stop
+  ```
+
+**Important:**
+* The app is unsigned, so Windows SmartScreen may warn on first run — choose "More info" then "Run anyway".
+* The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
+
+**Data and logs:**
+* Data: `%LOCALAPPDATA%\AudioMuse-AI`
+* Logs: `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log`
 
 ## **Local Deployment with Podman Quadlets**
 

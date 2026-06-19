@@ -42,6 +42,42 @@ _cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
 # across jobs in the same worker process (which may be reused by RQ).
 _label_text_embeddings_cache = None  # {'mood': np.ndarray, 'feature': np.ndarray}
 
+# Every CLAP audio segment is exactly 10 s at 48 kHz; see analyze_audio_file().
+# Kept module-level so the CoreML static-shape pin and the segmenter can't drift.
+_SEGMENT_LENGTH_SAMPLES = 480000
+
+
+def _static_shape_model_bytes(model_path):
+    """Return the CLAP audio model with its dynamic time axis pinned to a fixed
+    size, serialized to bytes — or None if the model is already static.
+
+    The student model declares its mel input as ``(1, 1, n_mels, 's35')``: the
+    time axis is symbolic. CoreML's backend cannot compile a symbolic dim and
+    fails at run time with "Unable to compute the prediction (error code: -1)".
+    But every segment we feed is exactly ``_SEGMENT_LENGTH_SAMPLES`` long, so the
+    librosa (center=True) frame count is constant — ``1 + samples // hop``.
+    Pinning the symbolic dim to that value yields a fully static shape CoreML
+    can compile and run, while CPU/CUDA keep using the original dynamic model.
+    """
+    import onnx
+    from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
+
+    hop = getattr(config, 'CLAP_AUDIO_HOP_LENGTH', 480)
+    frames = 1 + _SEGMENT_LENGTH_SAMPLES // hop
+
+    model = onnx.load(model_path, load_external_data=True)
+    symbolic = {
+        d.dim_param
+        for inp in model.graph.input
+        for d in inp.type.tensor_type.shape.dim
+        if d.HasField('dim_param')
+    }
+    if not symbolic:
+        return None
+    for name in symbolic:
+        make_dim_param_fixed(model.graph, name, frames)
+    return model.SerializeToString()
+
 
 def _load_audio_model():
     """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
@@ -82,25 +118,18 @@ def _load_audio_model():
     # GPU support: ONNX Runtime handles CUDA availability internally
     session = None
     
-    # Configure provider options with GPU memory management
-    available_providers = ort.get_available_providers()
-    if 'CUDAExecutionProvider' in available_providers:
-        gpu_device_id = 0
-        cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
-        if cuda_visible and cuda_visible != '-1':
-            gpu_device_id = 0
-        
-        cuda_options = {
-            'device_id': gpu_device_id,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        }
-        provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
-    else:
-        provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CUDA provider not available - using CPU only")
-    
+    # Centralized provider selection: CUDA → CoreML (Apple Silicon) → CPU.
+    # Keep CLAP audio's original CUDA tuning (cudnn DEFAULT, no copy-in-default-
+    # stream) so the containerized GPU path stays byte-identical to before; this
+    # cuda_options override is CUDA-only and has no effect on the macOS CoreML
+    # path, which is added by allow_coreml=True.
+    from tasks.analysis_helper import resolve_providers
+    provider_options = resolve_providers(allow_coreml=True, cuda_options={
+        'device_id': 0,
+        'arena_extend_strategy': 'kSameAsRequested',
+        'cudnn_conv_algo_search': 'DEFAULT',
+    })
+
     # Create session — pass file path so ORT resolves external data natively
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -115,10 +144,25 @@ def _load_audio_model():
     cpu_providers      = ['CPUExecutionProvider']
     cpu_opts           = [{}]
 
+    # CoreML cannot compile the model's symbolic time axis (it fails at run time
+    # with error -1). When CoreML is in the chain, hand ORT a copy with that axis
+    # pinned to the fixed per-segment frame count so CoreML can actually run it.
+    # CPU/CUDA keep the original dynamic model (passed by path) so external data
+    # resolves natively.
+    preferred_model_input = model_path
+    if 'CoreMLExecutionProvider' in preferred_providers:
+        try:
+            static_bytes = _static_shape_model_bytes(model_path)
+            if static_bytes is not None:
+                preferred_model_input = static_bytes
+                logger.info("CoreML: pinned CLAP audio time axis to a static shape for compilation")
+        except Exception as e:
+            logger.warning(f"CoreML: could not build static-shape model ({e}); using dynamic model")
+
     try:
-        # 1) Direct path — ONNX Runtime resolves external data relative to
-        #    the model directory; works on all platforms and CI.
-        session = _create_session(model_path, preferred_providers, preferred_opts)
+        # 1) Preferred providers. For CoreML this is the static-shape model bytes;
+        #    otherwise the direct path so ORT resolves external data natively.
+        session = _create_session(preferred_model_input, preferred_providers, preferred_opts)
         logger.info("✓ CLAP audio model loaded successfully (direct path)")
 
     except Exception as direct_err:
@@ -221,7 +265,6 @@ def _load_text_model():
             provider_options=[p[1] for p in provider_options]
         )
         
-        active_provider = session.get_providers()[0]
         logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
             
     except Exception as e:
@@ -280,9 +323,7 @@ def initialize_clap_audio_model():
         logger.info("✓ CLAP audio model initialized successfully (for music analysis)")
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize CLAP audio model: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Failed to initialize CLAP audio model: {e}")
         return False
 
 
@@ -308,9 +349,7 @@ def initialize_clap_text_model():
         logger.info("✓ CLAP text model initialized successfully (for text search)")
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize CLAP text model: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Failed to initialize CLAP text model: {e}")
         return False
 
 
@@ -487,7 +526,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
         # Audio constants (48 kHz, 10-second segments, 50 % overlap)
         SAMPLE_RATE = 48000
-        SEGMENT_LENGTH = 480000   # 10 seconds at 48 kHz
+        SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES   # 10 seconds at 48 kHz
         HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
 
         # --- robust audio loading (pydub fallback) ---
@@ -564,9 +603,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         return audio_embedding, duration_sec, num_segments
 
     except Exception as e:
-        logger.error(f"CLAP analysis failed for {audio_path}: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"CLAP analysis failed for {audio_path}: {e}")
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         return None, 0, 0
     finally:
@@ -622,9 +659,7 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         return text_embedding
         
     except Exception as e:
-        logger.error(f"Failed to get text embedding for '{query_text}': {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Failed to get text embedding for '{query_text}': {e}")
         return None
 
 
@@ -650,9 +685,7 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         # Get text-only model for text search
         session = get_clap_text_model()
         tokenizer = get_tokenizer()
-        
-        batch_size = len(query_texts)
-        
+
         # Tokenize all texts at once (max_length=77 for CLAP)
         encoded = tokenizer(
             query_texts,
@@ -681,9 +714,7 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         return text_embeddings
         
     except Exception as e:
-        logger.error(f"Failed to get batch text embeddings: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Failed to get batch text embeddings: {e}")
         return None
 
 
@@ -702,7 +733,7 @@ def is_clap_available() -> bool:
 # --- CLAP-based Other Features (replaces mood-specific ONNX models) ---
 
 def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
-    """Return CLAP text embeddings for OTHER_FEATURE_LABELS, cached in Redis.
+    """Return CLAP text embeddings for config.OTHER_FEATURE_LABELS, cached in Redis.
 
     This function now includes the same optimised caching strategy used in
     devel‑DCLAP:
@@ -749,7 +780,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
     
     # Compute text embeddings for each label
-    logger.info(f"Computing CLAP text embeddings for OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
+    logger.info(f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
     try:
         embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
         if embeddings is None:
@@ -770,9 +801,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
             logger.warning(f"Failed to write text embeddings to Redis: {e}")
         return result
     except Exception as e:
-        logger.error(f"Failed to compute CLAP text embeddings for other features: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Failed to compute CLAP text embeddings for other features: {e}")
         return None
     finally:
         # Unload text model after computing (worker only needs audio model)

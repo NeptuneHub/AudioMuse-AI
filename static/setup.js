@@ -315,7 +315,7 @@ function renderAdvancedFields(fields) {
             label: field.name,
             placeholder: field.default ? field.default : '',
             type: field.type === 'bool' ? 'boolean' : field.type,
-            inputType: field.type === 'boolean' ? 'text' : 'text',
+            inputType: 'text',
             secret: secret,
             has_value: field.has_value,
             options: Array.isArray(field.options) ? field.options : null,
@@ -694,7 +694,7 @@ function updateMusicLibrariesHint() {
 function collectMusicLibrariesValue() {
     // Returns the MUSIC_LIBRARIES value to store, or null to skip writing.
     if (!currentLibraryCheckboxes.length && !currentNoRestrictionCheckbox) {
-        // Section isn't rendered (MPD or provider doesn't support it, or the
+        // Section isn't rendered (provider doesn't support it, or the
         // fetch failed). Don't touch MUSIC_LIBRARIES.
         return null;
     }

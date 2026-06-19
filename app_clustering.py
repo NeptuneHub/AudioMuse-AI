@@ -5,13 +5,31 @@ import logging
 import traceback
 
 # Import all necessary configuration variables
-from config import MAX_SONGS_PER_CLUSTER, SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE, SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ, SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY, SCORE_WEIGHT_OTHER_FEATURE_PURITY, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION, STRATIFIED_SAMPLING_TARGET_PERCENTILE, CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, DBSCAN_MIN_SAMPLES_MIN, DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX, SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS, PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, TOP_N_MOODS, AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL, OPENAI_MODEL_NAME, OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_MODEL_NAME, TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME
+from config import (
+    MAX_SONGS_PER_CLUSTER, SCORE_WEIGHT_DIVERSITY, SCORE_WEIGHT_SILHOUETTE,
+    SCORE_WEIGHT_DAVIES_BOULDIN, SCORE_WEIGHT_CALINSKI_HARABASZ,
+    SCORE_WEIGHT_PURITY, SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
+    SCORE_WEIGHT_OTHER_FEATURE_PURITY, MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
+    STRATIFIED_SAMPLING_TARGET_PERCENTILE, CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN,
+    NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, DBSCAN_MIN_SAMPLES_MIN,
+    DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX,
+    SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS,
+    PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, TOP_N_MOODS,
+    AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL,
+    OPENAI_MODEL_NAME, OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_MODEL_NAME,
+    TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME,
+    TASK_STATUS_PENDING, TASK_STATUS_FAILURE,
+)
 
 # RQ import
 from rq import Retry
 
 from error import error_manager
 from error.error_dictionary import ERR_CLUSTERING_FAILED
+
+# App helper functions
+from app_helper import rq_queue_high, save_task_status
+from database import clean_up_previous_main_tasks, get_active_main_task
 
 
 logger = logging.getLogger(__name__)
@@ -21,8 +39,7 @@ clustering_bp = Blueprint('clustering_bp', __name__)
 
 def clustering_task_failure_handler(job, connection, type, value, tb):
     """A failure handler for the main clustering task, executed by the worker."""
-    from app import app
-    from app_helper import save_task_status, TASK_STATUS_FAILURE
+    from flask_app import app
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         
@@ -245,10 +262,6 @@ def start_clustering_endpoint():
                         status:
                             type: string
     """
-    # Local imports to prevent circular dependency at startup
-    from app_helper import rq_queue_high, get_active_main_task
-    from app_helper import clean_up_previous_main_tasks, save_task_status, TASK_STATUS_PENDING, TASK_STATUS_FAILURE
-
     # Check for any existing active main task to prevent parallel batch runs
     active_task = get_active_main_task()
     if active_task:

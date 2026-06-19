@@ -762,6 +762,33 @@ body.dark-mode #cancel-sync-btn:disabled {
     color: var(--text-muted);
 }
 
+/* --- Donate Button in Sidebar --- */
+.donate-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    width: fit-content;
+    margin: 1.5rem auto 0;
+    padding: 0.4rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: #F87171;
+    border-radius: 9999px;
+    text-decoration: none;
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+.donate-button:hover {
+    background-color: #EF4444;
+    transform: translateY(-1px);
+}
+
+.donate-button .donate-heart {
+    flex-shrink: 0;
+}
+
 /* --- App Version in Sidebar --- */
 .app-version {
     /* This will now appear directly after the navigation links */

@@ -1,0 +1,198 @@
+# Builds the standalone native Linux packages (.deb + .rpm) for x86_64 and
+# aarch64 and attaches them to the GitHub release that triggered the run. The
+# embedded PostgreSQL is sourced differently per arch (pgserver wheel on x86_64;
+# a from-source build on aarch64, which has no pgserver wheel) -- see the
+# `strategy` block and the per-arch build steps below.
+#
+# Mirrors build-macos.yml. The package bundles EVERYTHING (Python runtime,
+# onnxruntime, PyAV/ffmpeg, the ONNX models, an embedded PostgreSQL via pgserver
+# and an embedded Redis), so an installed package needs no Docker and no
+# separately-installed database/broker. See native-build/linux/README.md for why Postgres and
+# Redis are bundled rather than declared as system dependencies (pgvector +
+# unaccent/pg_trgm against an exact PG minor, plus the per-distro package-name /
+# version skew, make a portable single .deb/.rpm "hard dependency" infeasible).
+#
+# The small native build inputs (redis-server, the unaccent/pg_trgm contrib
+# modules) are built from source in this workflow (native-build/linux/vendor/*) rather than
+# committed, then baked into the bundle by the shared AudioMuse-AI.spec.
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# same GitHub releases the Dockerfile/macOS build use, INCLUDING the HuggingFace
+# cache (trimmed to just the roberta-base tokenizer the app actually loads) so
+# the release assets stay under GitHub's 2 GB per-file limit.
+
+name: Build standalone Linux packages
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag (same trigger as the other builds)
+  pull_request:         # Build on PRs too, to catch bundle breakage early.
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+  NFPM_VERSION: '2.41.1'
+
+jobs:
+  build:
+    # Skip draft PRs and fork PRs -- the same guard the other build workflows use.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    # Two legs. The embedded PostgreSQL differs by arch because the `pgserver`
+    # wheel exists for manylinux x86_64 but NOT for Linux aarch64:
+    #   * x86_64  -> pgserver wheel (+ vendored unaccent/pg_trgm grafted in).
+    #   * aarch64 -> a from-source PostgreSQL (server + the two contrib modules)
+    #                built here and bundled wholesale; managed by
+    #                native-build/linux/embedded_pg.py at runtime.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          if [ "$GOT" != "${ARCH}" ]; then
+            echo "::error::Expected ${ARCH} runner but uname -m reports $GOT"
+            exit 1
+          fi
+          echo "Building for $GOT"
+
+      - name: Install build toolchain (compilers, headers, nfpm)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # build-essential + zlib headers: redis and the PG contrib modules
+          # compile against these. bison/flex: required to build PostgreSQL from
+          # source (aarch64 leg). rpm: so nfpm can emit an .rpm.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config \
+            libreadline-dev zlib1g-dev bison flex rpm desktop-file-utils
+          # nfpm (builds both .deb and .rpm from one config).
+          case "${ARCH}" in
+            x86_64)  NFPM_ARCH=x86_64 ;;
+            aarch64) NFPM_ARCH=arm64 ;;
+          esac
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz" \
+            | sudo tar xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      - name: Validate the desktop entries
+        run: |
+          set -euo pipefail
+          desktop-file-validate native-build/linux/packaging/AudioMuse-AI.desktop
+          desktop-file-validate native-build/linux/packaging/AudioMuse-AI-stop.desktop
+          echo "Desktop entries are valid."
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv-linux
+          source .venv-linux/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements/linux.txt
+
+      - name: Build vendored redis-server
+        run: bash native-build/linux/vendor/build-redis.sh
+
+      # x86_64: compile unaccent/pg_trgm against the installed pgserver's PG.
+      - name: Build vendored PostgreSQL contrib (x86_64, against pgserver)
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          source .venv-linux/bin/activate   # pgserver must be importable
+          bash native-build/linux/vendor/pg-contrib/build-pg-contrib.sh
+
+      # aarch64: no pgserver wheel -> build a relocatable PostgreSQL (server +
+      # unaccent/pg_trgm) from source and bundle the whole tree.
+      - name: Build vendored PostgreSQL from source (aarch64)
+        if: matrix.arch == 'aarch64'
+        run: bash native-build/linux/vendor/postgres/build-postgres.sh
+
+      - name: Assemble ./model (mirrors the Dockerfile/macOS models stage)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/standalone/assemble_model.py
+
+      - name: Verify the assembled model/ is complete
+        run: python3 scripts/standalone/assemble_model.py --verify
+
+      - name: Build the packages (.deb + .rpm)
+        run: |
+          set -euo pipefail
+          source .venv-linux/bin/activate
+          python scripts/standalone/build.py --platform linux
+
+      - name: Upload .deb as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}-linux-deb
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.deb
+          if-no-files-found: error
+
+      - name: Upload .rpm as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}-linux-rpm
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.rpm
+          if-no-files-found: error
+
+      # NB: the PR-description "test build links" block is written by the
+      # dedicated `pr-test-link.yml` workflow (which runs after this build,
+      # verifies the artifacts exist, and posts the consolidated link block).
+
+  # Attach the packages to the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach packages to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/AudioMuse-AI-*.deb
+            artifacts/AudioMuse-AI-*.rpm
+          fail_on_unmatched_files: true

@@ -5,8 +5,8 @@ Separated to avoid circular imports.
 """
 
 import logging
-from app_helper import get_db
-from tasks.memory_utils import sanitize_string_for_db
+from database import get_db
+from sanitization import sanitize_string_for_db
 
 logger = logging.getLogger(__name__)
 

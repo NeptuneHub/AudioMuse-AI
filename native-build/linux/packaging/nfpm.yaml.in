@@ -1,0 +1,80 @@
+# nfpm config template for the AudioMuse-AI native Linux package.
+# scripts/standalone/platforms/linux.py expands @VERSION@ / @ARCH@ / @STAGE@ and runs:
+#   nfpm package --packager deb ...
+#   nfpm package --packager rpm ...
+# See https://nfpm.goreleaser.com/configuration/
+
+name: audiomuse-ai
+arch: "@ARCH@"
+platform: linux
+version: "@VERSION@"
+version_schema: none
+section: sound
+priority: optional
+maintainer: NeptuneHub <https://github.com/NeptuneHub/AudioMuse-AI>
+description: |
+  AudioMuse-AI standalone (native Linux build).
+  A self-contained music-analysis + smart-playlist app. Bundles its own Python
+  runtime, ONNX models, PostgreSQL (pgvector) and Redis -- no Docker and no
+  separately installed database or broker required. Open http://127.0.0.1:8000
+  after launching.
+homepage: https://github.com/NeptuneHub/AudioMuse-AI
+license: GPL-3.0
+
+# Runtime system libraries. Everything else (Python, onnxruntime, ffmpeg/PyAV,
+# PostgreSQL, Redis) is bundled inside /opt/AudioMuse-AI, so the dependency list
+# is deliberately tiny. These two are the bits we rely on the host to provide:
+#   * libgomp -- OpenMP runtime onnxruntime links against (PyInstaller does not
+#     always vendor it reliably; depending on it guarantees analysis runs).
+#   * xdg-utils -- provides xdg-open so the launcher can open the web UI.
+overrides:
+  deb:
+    depends:
+      - libgomp1
+      - xdg-utils
+  rpm:
+    depends:
+      - libgomp
+      - xdg-utils
+
+# Packager-specific options. xz compresses the (large) payload far better than
+# nfpm's default gzip, and every supported dpkg/rpm understands xz. (These are
+# top-level blocks, NOT under `overrides` -- compression is not an Overridable.)
+deb:
+  compression: xz
+rpm:
+  compression: xz
+
+contents:
+  - src: "@STAGE@/opt/AudioMuse-AI"
+    dst: /opt/AudioMuse-AI
+
+  - src: "@STAGE@/usr/share/applications/AudioMuse-AI.desktop"
+    dst: /usr/share/applications/AudioMuse-AI.desktop
+
+  - src: "@STAGE@/usr/share/applications/AudioMuse-AI-stop.desktop"
+    dst: /usr/share/applications/AudioMuse-AI-stop.desktop
+
+  - src: "@STAGE@/usr/share/icons/hicolor/512x512/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/512x512/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/256x256/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/256x256/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/128x128/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/128x128/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/64x64/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/64x64/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/48x48/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/48x48/apps/audiomuse-ai.png
+  - src: "@STAGE@/usr/share/icons/hicolor/32x32/apps/audiomuse-ai.png"
+    dst: /usr/share/icons/hicolor/32x32/apps/audiomuse-ai.png
+
+  - src: "@STAGE@/usr/lib/systemd/user/audiomuse-ai.service"
+    dst: /usr/lib/systemd/user/audiomuse-ai.service
+
+  - src: /opt/AudioMuse-AI/AudioMuse-AI
+    dst: /usr/bin/audiomuse-ai
+    type: symlink
+
+scripts:
+  postinstall: native-build/linux/packaging/postinstall.sh
+  postremove: native-build/linux/packaging/postremove.sh

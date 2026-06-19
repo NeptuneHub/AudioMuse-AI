@@ -1,0 +1,157 @@
+# Builds the standalone macOS .app for Apple Silicon and attaches the resulting
+# zip to the GitHub release that triggered the run.
+#
+# Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
+# exclusively — there is no Intel build. onnxruntime/PyAV wheels are not
+# reliably universal2, so we build natively on an arm64 runner (macos-14).
+#
+# Reproducibility: the small, exact-version native build inputs are committed in
+# git (native-build/macos/vendor/redis/arm64/redis-server and
+# native-build/macos/vendor/pg-contrib/arm64/*),
+# NOT regenerated at build time, so the bundle's embedded Redis and the Postgres
+# unaccent/pg_trgm contrib extensions are byte-identical to the tested local build.
+#
+# The app is ad-hoc signed only (no Apple Developer account); end users clear
+# quarantine with `xattr -dr ...` after download (see native-build/macos/README.md).
+#
+# The ~5 GB of models are NOT in git. This workflow assembles ./model from the
+# GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
+# (huggingface_models.tar.gz) — native-build/macos/env.py points HF_HOME at model/huggingface
+# for the CLAP RoBERTa tokenizer, so the bundle needs it. The HF cache is then
+# trimmed to just that tokenizer (bert/bart and the roberta weights are unused by
+# the app, ~1.4 GB) so the release zip stays under GitHub's 2 GB asset limit.
+
+name: Build standalone macOS app
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'        # Build on every version tag (same trigger as the Docker builds)
+  pull_request:         # Build on PRs too, to catch macOS bundle breakage early.
+    types:              # PR runs build+verify only; the release job is gated to tags.
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:    # Allow manual runs for testing without a release
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default for GITHUB_TOKEN: read-only. Only the release job
+# widens it (`contents: write`, to attach the zip to a release). The PR
+# test-build link is posted by the separate `pr-test-link.yml` workflow.
+permissions:
+  contents: read
+
+env:
+  # Releases the models live on. Bump these in lockstep with the Dockerfile.
+  MODEL_RELEASE: v5.0.0-model
+  DCLAP_RELEASE: v1
+
+jobs:
+  build:
+    # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
+    # Skip draft PRs and fork PRs — the same guard the Docker build workflows use.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      ARCH: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sanity-check runner architecture (must be arm64)
+        run: |
+          set -euo pipefail
+          GOT="$(uname -m)"
+          if [ "$GOT" != "arm64" ]; then
+            echo "::error::This build is Apple-Silicon-only but uname -m reports $GOT"
+            exit 1
+          fi
+          echo "Building for $GOT"
+
+      - name: Verify committed native build inputs are present
+        run: |
+          set -euo pipefail
+          # These are committed in git (not regenerated here) so the bundle is
+          # reproducible. If a fresh checkout is missing them, fail loudly.
+          required=(
+            native-build/macos/vendor/redis/arm64/redis-server
+            native-build/macos/vendor/pg-contrib/arm64/lib/unaccent.dylib
+            native-build/macos/vendor/pg-contrib/arm64/lib/pg_trgm.dylib
+            native-build/macos/vendor/pg-contrib/arm64/extension/unaccent.control
+            native-build/macos/vendor/pg-contrib/arm64/extension/pg_trgm.control
+            native-build/macos/vendor/pg-contrib/arm64/tsearch_data/unaccent.rules
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::Missing committed vendor file: $f"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::native-build/macos/vendor/ must be committed (see native-build/macos/vendor/pg-contrib/README.md)."; exit 1; }
+          chmod +x native-build/macos/vendor/redis/arm64/redis-server
+          file native-build/macos/vendor/redis/arm64/redis-server
+
+      - name: Assemble ./model (mirrors the Dockerfile models stage)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/standalone/assemble_model.py
+
+      - name: Verify the assembled model/ is complete
+        run: python3 scripts/standalone/assemble_model.py --verify
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python3.12 -m venv .venv-macos
+          source .venv-macos/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements/macos.txt
+
+      - name: Build the app
+        run: |
+          set -euo pipefail
+          source .venv-macos/bin/activate
+          python scripts/standalone/build.py --platform macos
+
+      - name: Upload zip as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioMuse-AI-${{ env.ARCH }}-macos
+          path: dist/AudioMuse-AI-${{ env.ARCH }}-macos.zip
+          if-no-files-found: error
+
+      # NB: the PR-description "test build links" block is no longer written
+      # here. The dedicated `pr-test-link.yml` workflow runs after this build
+      # completes, verifies the artifact exists, and posts the consolidated
+      # macOS + Linux + Docker link block to the PR.
+
+  # Attach the arm64 zip to the release. Runs only for tag pushes.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built zip
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach zip to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/AudioMuse-AI-*.zip
+          fail_on_unmatched_files: true

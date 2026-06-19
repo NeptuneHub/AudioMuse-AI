@@ -1,0 +1,16 @@
+<!-- Reverse-proxy subpath support: prefix root-relative fetch() URLs with the proxy script root.
+     No-op when not behind a proxy (script_root is empty), so non-proxy and native builds are unaffected. -->
+<script>
+    (function () {
+        var root = {{ request.script_root | tojson }};
+        if (!root || root.charAt(0) !== "/" || root.charAt(1) === "/" || typeof window.fetch !== "function") { return; }
+        var nativeFetch = window.fetch.bind(window);
+        window.fetch = function (input, init) {
+            if (typeof input === "string" && input.charAt(0) === "/" && input.charAt(1) !== "/"
+                && input !== root && input.slice(0, root.length + 1) !== root + "/") {
+                input = root + input;
+            }
+            return nativeFetch(input, init);
+        };
+    })();
+</script>

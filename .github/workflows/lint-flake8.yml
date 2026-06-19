@@ -28,4 +28,4 @@ jobs:
 
     - name: Run flake8 static analysis
       run: |
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --select=E9,F63,F7,F82,F401,F811 --show-source --statistics

@@ -5,7 +5,7 @@ Provides web interface and API for lyrics-based song search.
 Two modes:
   * Axis search: target sliders over MUSIC_ANALYSIS_AXES labels (0..1).
   * Free-text search: gte-multilingual-base embedding nearest-neighbor on the
-    lyrics voyager index built from per-song lyrics embeddings.
+    lyrics ivf index built from per-song lyrics embeddings.
 """
 
 import logging
@@ -146,7 +146,7 @@ def lyrics_search_text_api():
     ---
     tags:
       - Lyrics Search
-    summary: Embed the query with gte-multilingual-base and find nearest neighbors in the lyrics voyager index.
+    summary: Embed the query with gte-multilingual-base and find nearest neighbors in the lyrics ivf index.
     requestBody:
       required: true
       content:
@@ -198,8 +198,8 @@ def lyrics_search_text_api():
         query = (data.get('query') or '').strip()
         if not query:
             return jsonify({'error': 'Missing "query".'}), 400
-        if len(query) < 3:
-            return jsonify({'error': 'Query must be at least 3 characters.'}), 400
+        if len(query) < 1:
+            return jsonify({'error': 'Query must be at least 1 character.'}), 400
 
         try:
             limit = int(data.get('limit', 50))
@@ -275,7 +275,7 @@ def lyrics_warmup_status_api():
 @lyrics_search_bp.route('/api/lyrics/cache/refresh', methods=['POST'])
 def lyrics_refresh_cache_api():
     """
-    Refresh the lyrics voyager index.
+    Refresh the lyrics ivf index.
     ---
     tags:
       - Lyrics Search

@@ -62,8 +62,9 @@ RUN set -eux; \
         fi; \
     done
 
-# Download HuggingFace models (BERT, RoBERTa, BART, T5) from GitHub release
-# These are the text encoders needed by laion-clap library for text embeddings
+# Download the HuggingFace cache tarball from the GitHub release, then trim it.
+# Only the roberta-base *tokenizer* is used at runtime (the CLAP text encoder runs
+# as ONNX); bert/bart and the roberta weights are stripped below to shrink the image.
 RUN set -eux; \
     base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"; \
     hf_models="huggingface_models.tar.gz"; \
@@ -99,10 +100,24 @@ RUN set -eux; \
         exit 1; \
     fi; \
     \
+    # Trim the HF cache to just the roberta-base tokenizer (~1.4 GB saved). \
+    # The app's only runtime HF dependency is AutoTokenizer.from_pretrained("roberta-base") \
+    # (tasks/clap_analyzer.py); the CLAP text encoder runs as ONNX (clap_text_model.onnx), \
+    # so bert-base-uncased, bart-base and the roberta model weights are never loaded. \
+    # A tokenizer needs only tokenizer.json/vocab.json/merges.txt/config (all < 2 MB). \
+    # NOTE: Dockerfile-noavx2 is intentionally left unchanged. \
+    hub_dir="$cache_dir/hub"; \
+    rm -rf "$hub_dir/models--bert-base-uncased" "$hub_dir/models--facebook--bart-base"; \
+    rb="$hub_dir/models--roberta-base"; \
+    if [ -d "$rb" ]; then \
+        find "$rb/blobs" -type f -size +10M -delete; \
+        find "$rb/snapshots" \( -name "model.safetensors" -o -name "pytorch_model.bin" \) -delete; \
+    fi; \
+    \
     # Clean up tarball \
     rm -f "/tmp/$hf_models"; \
     \
-    echo "✓ HuggingFace models extracted to $cache_dir"; \
+    echo "✓ HuggingFace models extracted and trimmed to $cache_dir"; \
     du -sh "$cache_dir"
 
 # Download CLAP ONNX models
@@ -405,11 +420,11 @@ WORKDIR /app
 COPY requirements/ /app/requirements/
 
 # Install Python packages with uv (combined in single layer for efficiency)
-# GPU builds: cupy, cuml, onnxruntime-gpu, voyager, torch (CUDA)
+# GPU builds: cupy, cuml, onnxruntime-gpu, torch (CUDA)
 # CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
 RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
-        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, voyager, torch+cuda)"; \
+        echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \
         echo "CPU base image: installing all packages together for dependency resolution"; \
@@ -433,6 +448,7 @@ ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
+    IVF_DISK_CACHE_DIR=/app/ivf_cache \
     HF_HOME=/app/.cache/huggingface \
     HF_HUB_DISABLE_XET=1 \
     HF_XET_DISABLE=1

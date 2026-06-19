@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import socket
 import subprocess
 import threading
 
@@ -46,7 +48,51 @@ def publish_start_request():
     return publish_control_request('start')
 
 
+def _send_control(arguments):
+    """Forward an ``[action, *services]`` request to the standalone supervisor.
+
+    On macOS/Linux the supervisor listens on a unix socket
+    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on TCP
+    (``AUDIOMUSE_CONTROL_HOST`` / ``AUDIOMUSE_CONTROL_PORT``) because
+    ``AF_UNIX`` is not available.  The JSON-line protocol is identical.
+    """
+    if not arguments:
+        return False
+
+    control_host = config.AUDIOMUSE_CONTROL_HOST
+    control_port = config.AUDIOMUSE_CONTROL_PORT
+
+    payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
+    try:
+        if control_host and control_port:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(15)
+                sock.connect((str(control_host), int(control_port)))
+                sock.sendall(payload + b'\n')
+                response = sock.recv(1024).strip()
+        elif config.AUDIOMUSE_CONTROL_SOCKET:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(15)
+                sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
+                sock.sendall(payload + b'\n')
+                response = sock.recv(1024).strip()
+        else:
+            logger.error('Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s', arguments)
+            return False
+    except Exception:
+        target = f'{control_host}:{control_port}' if (control_host and control_port) else config.AUDIOMUSE_CONTROL_SOCKET
+        logger.exception('Failed to send control command %s to %s', arguments, target)
+        return False
+    if response == b'ok':
+        logger.info('Control command succeeded: %s', arguments)
+        return True
+    logger.error('Control server rejected %s: %s', arguments, response)
+    return False
+
+
 def _run_supervisorctl(arguments):
+    if config.AUDIOMUSE_PLATFORM == 'macos':
+        return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -89,6 +135,8 @@ def start_supervisor_workers():
 
 
 def _spawn_supervisorctl(arguments):
+    if config.AUDIOMUSE_PLATFORM == 'macos':
+        return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
         subprocess.Popen(

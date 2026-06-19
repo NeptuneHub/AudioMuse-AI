@@ -444,7 +444,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             if (sgLoadingMore) return;
                             sgLoadingMore = true;
                             const p = new URLSearchParams({ search_query: sgQuery, start: sgOffset, end: sgOffset + PAGE_SIZE, index: 'sem_grove' });
-                            fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${p}`)
+                            fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`)
                                 .then(r => r.json())
                                 .then(ts => { sgOffset += ts.length; sgShow(ts, true); })
                                 .finally(() => { sgLoadingMore = false; });
@@ -460,11 +460,11 @@ document.addEventListener('DOMContentLoaded', function () {
             clearTimeout(sgTimeout);
             sgTimeout = setTimeout(async () => {
                 const q = sgInput.value.trim();
-                if (q.length < 3) { sgHide(); return; }
+                if (q.length < 1) { sgHide(); return; }
                 sgQuery = q; sgOffset = 0;
                 try {
                     const p = new URLSearchParams({ search_query: q, start: 0, end: PAGE_SIZE, index: 'sem_grove' });
-                    const r = await fetch(`{{ url_for('voyager_bp.search_tracks_endpoint') }}?${p}`);
+                    const r = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`);
                     const ts = await r.json();
                     sgOffset = ts.length;
                     sgShow(ts, false);
@@ -498,8 +498,8 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('search-form').addEventListener('submit', async function (e) {
         e.preventDefault();
         const query = document.getElementById('search-query').value.trim();
-        if (!query || query.length < 3) {
-            alert('Please enter at least 3 characters.');
+        if (!query || query.length < 1) {
+            alert('Please enter at least 1 character.');
             return;
         }
         const limit = parseInt(document.getElementById('text-limit').value, 10) || 50;
@@ -541,7 +541,7 @@ document.addEventListener('DOMContentLoaded', function () {
         playlistCreator.classList.remove('hidden');
     }
 
-    // ----- Playlist creation (re-uses voyager_bp endpoint, like the CLAP page) -----
+    // ----- Playlist creation (re-uses ivf_bp endpoint, like the CLAP page) -----
     playlistForm.addEventListener('submit', async function (e) {
         e.preventDefault();
         const statusDiv = document.getElementById('playlist-status');
@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         statusDiv.textContent = 'Creating playlist...';
         try {
-            const resp = await fetch("{{ url_for('voyager_bp.create_media_server_playlist') }}", {
+            const resp = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -10,7 +10,7 @@ Numeric ranges:
     1000-1099  Configuration / Setup
     1100-1199  Music Server Connection
     2000-2099  Analysis / Model
-    3000-3099  Index / Voyager
+    3000-3099  Index / IVF
     4000-4099  Database
     4100-4199  Backup / Restore
     5000-5099  Lyrics / Translation
