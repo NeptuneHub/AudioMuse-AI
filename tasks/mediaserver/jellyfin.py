@@ -551,29 +551,48 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
 
+def _fetch_playlist_items(playlist_id, user_creds=None):
+    """GETs the raw entries of a Jellyfin playlist. Each entry carries both the audio
+    item's ``Id`` and a separate ``PlaylistItemId`` (the removal handle). Returns the
+    list of entry dicts, or None on HTTP failure. Uses admin creds unless user_creds given.
+    """
+    user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
+    headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
+    url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
+    params = {"UserId": user_id}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        return r.json().get("Items") or []
+    except Exception as e:
+        logger.error(f"Jellyfin _fetch_playlist_items failed for {playlist_id}: {e}", exc_info=True)
+        return None
+
+
 def _get_playlist_entry_ids(playlist_id):
     """Fetches every PlaylistItemId for an existing Jellyfin playlist (admin creds).
 
-    Each playlist *entry* has both the underlying audio item's ``Id`` and a separate
-    ``PlaylistItemId``. Removal via ``DELETE /Playlists/{Id}/Items?entryIds=…`` requires
-    the latter — passing the audio Id will silently no-op.
+    Removal via ``DELETE /Playlists/{Id}/Items?entryIds=…`` requires the ``PlaylistItemId``
+    handle — passing the audio Id will silently no-op.
     """
-    url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
-    params = {"UserId": config.JELLYFIN_USER_ID}
-    try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
-        r.raise_for_status()
-        items = r.json().get("Items") or []
-        entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
-        if len(entry_ids) != len(items):
-            logger.warning(
-                f"Jellyfin _get_playlist_entry_ids: playlist {playlist_id} had "
-                f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
-            )
-        return entry_ids
-    except Exception as e:
-        logger.error(f"Jellyfin _get_playlist_entry_ids failed for {playlist_id}: {e}", exc_info=True)
+    items = _fetch_playlist_items(playlist_id)
+    if items is None:
         return None
+    entry_ids = [it.get("PlaylistItemId") for it in items if it.get("PlaylistItemId")]
+    if len(entry_ids) != len(items):
+        logger.warning(
+            f"Jellyfin _get_playlist_entry_ids: playlist {playlist_id} had "
+            f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
+        )
+    return entry_ids
+
+
+def get_playlist_track_ids(playlist_id, user_creds=None):
+    """Returns the audio track item_ids ('Id') of a Jellyfin playlist."""
+    items = _fetch_playlist_items(playlist_id, user_creds=user_creds)
+    if not items:
+        return []
+    return [str(it.get("Id")) for it in items if it.get("Id")]
 
 
 def _remove_playlist_entries(playlist_id, entry_ids):

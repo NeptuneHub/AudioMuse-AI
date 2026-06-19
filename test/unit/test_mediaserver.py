@@ -325,6 +325,48 @@ class TestJellyfinGetAllPlaylists:
         assert playlists == []
 
 
+class TestJellyfinGetPlaylistTrackIds:
+    """Test fetching a playlist's audio track item_ids (the 'Id' field, not PlaylistItemId)"""
+
+    @patch('tasks.mediaserver.jellyfin.requests.get')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_uses_playlists_items_url_and_reads_id(self, mock_config, mock_get):
+        from tasks.mediaserver.jellyfin import get_playlist_track_ids
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'Items': [
+                {'Id': 'track1', 'PlaylistItemId': 'entry-a'},
+                {'Id': 'track2', 'PlaylistItemId': 'entry-b'}
+            ]
+        }
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+
+        ids = get_playlist_track_ids('pl-xyz')
+
+        call_url = mock_get.call_args[0][0]
+        assert call_url == 'http://jellyfin:8096/Playlists/pl-xyz/Items'
+        assert mock_get.call_args[1].get('params', {}).get('UserId') == 'user123'
+        assert ids == ['track1', 'track2']
+
+    @patch('tasks.mediaserver.jellyfin.requests.get')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_returns_empty_on_error(self, mock_config, mock_get):
+        from tasks.mediaserver.jellyfin import get_playlist_track_ids
+
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'user123'
+        mock_config.HEADERS = {}
+        mock_get.side_effect = requests.exceptions.RequestException("Failed")
+
+        assert get_playlist_track_ids('pl-xyz') == []
+
+
 class TestJellyfinDeletePlaylist:
     """Test playlist deletion - verifies exact URL construction and HTTP method"""
 
@@ -989,6 +1031,50 @@ class TestNavidromeGetAllPlaylists:
         playlists = get_all_playlists()
         
         assert playlists == []
+
+
+class TestNavidromeGetPlaylistTrackIds:
+    """Test fetching a playlist's track item_ids via getPlaylist.entry[]"""
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_reads_entry_ids(self, mock_request):
+        from tasks.mediaserver.navidrome import get_playlist_track_ids
+
+        mock_request.return_value = {
+            'status': 'ok',
+            'playlist': {
+                'id': 'pl1',
+                'entry': [
+                    {'id': 'song1', 'title': 'A'},
+                    {'id': 'song2', 'title': 'B'}
+                ]
+            }
+        }
+
+        ids = get_playlist_track_ids('pl1')
+
+        assert mock_request.call_args[0][0] == 'getPlaylist'
+        assert mock_request.call_args[0][1] == {'id': 'pl1'}
+        assert ids == ['song1', 'song2']
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_coerces_single_entry_dict_to_list(self, mock_request):
+        from tasks.mediaserver.navidrome import get_playlist_track_ids
+
+        mock_request.return_value = {
+            'status': 'ok',
+            'playlist': {'id': 'pl1', 'entry': {'id': 'only-song'}}
+        }
+
+        assert get_playlist_track_ids('pl1') == ['only-song']
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_returns_empty_on_failure(self, mock_request):
+        from tasks.mediaserver.navidrome import get_playlist_track_ids
+
+        mock_request.return_value = None
+
+        assert get_playlist_track_ids('pl1') == []
 
 
 class TestNavidromeDeletePlaylist:

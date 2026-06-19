@@ -212,6 +212,24 @@ def get_playlist_by_name(playlist_name):
         return None
     return provider.get_playlist_by_name(playlist_name)
 
+def get_all_playlists():
+    """Lists every playlist on the configured media server using admin credentials."""
+    provider = _provider()
+    if provider is None:
+        return []
+    return provider.get_all_playlists()
+
+def get_playlist_track_ids(playlist_id, user_creds=None):
+    """Returns the audio track item_ids that make up a media-server playlist."""
+    if not playlist_id:
+        return []
+    provider = _provider()
+    if provider is None:
+        return []
+    if config.MEDIASERVER_TYPE == 'lyrion':
+        return provider.get_playlist_track_ids(playlist_id)
+    return provider.get_playlist_track_ids(playlist_id, user_creds=user_creds)
+
 def create_playlist(base_name, item_ids):
     """Creates a playlist using admin credentials."""
     if not base_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)

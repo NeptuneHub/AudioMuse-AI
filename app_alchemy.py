@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import math
+import time
 
 from tasks.song_alchemy import song_alchemy
 from app_helper import attach_song_features
@@ -9,6 +10,9 @@ import config
 logger = logging.getLogger(__name__)
 
 alchemy_bp = Blueprint('alchemy_bp', __name__, template_folder='../templates')
+
+_PLAYLIST_CACHE = {'ts': 0.0, 'data': None}
+_PLAYLIST_CACHE_TTL = 30.0
 
 
 @alchemy_bp.route('/alchemy', methods=['GET'])
@@ -79,6 +83,53 @@ def search_artists():
         return jsonify([]), 200  # Return empty list on error
 
 
+def _cached_all_playlists():
+    now = time.monotonic()
+    if _PLAYLIST_CACHE['data'] is not None and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL:
+        return _PLAYLIST_CACHE['data']
+    from tasks.mediaserver import get_all_playlists
+    data = get_all_playlists() or []
+    _PLAYLIST_CACHE['data'] = data
+    _PLAYLIST_CACHE['ts'] = now
+    return data
+
+
+@alchemy_bp.route('/api/search_playlists', methods=['GET'])
+def search_playlists():
+    """
+    Playlist autocomplete.
+    ---
+    tags:
+      - Alchemy
+    summary: Search media-server playlists by partial name for autocomplete suggestions.
+    parameters:
+      - name: query
+        in: query
+        schema: { type: string }
+        description: Partial playlist name.
+    responses:
+      200:
+        description: List of matching playlists (id, name, count).
+    """
+    query = (request.args.get('query', '') or '').strip().lower()
+    try:
+        playlists = _cached_all_playlists()
+    except Exception:
+        logger.exception("Playlist search failed")
+        return jsonify([]), 200
+
+    out = []
+    for p in playlists:
+        name = p.get('Name') or p.get('name') or ''
+        pid = p.get('Id') or p.get('id')
+        if not pid:
+            continue
+        if query and query not in name.lower():
+            continue
+        out.append({'id': str(pid), 'name': name, 'count': p.get('songCount') or p.get('ChildCount')})
+    return jsonify(out[:50])
+
+
 @alchemy_bp.route('/api/alchemy', methods=['POST'])
 def alchemy_api():
     """
@@ -110,7 +161,7 @@ def alchemy_api():
                       enum: [ADD, SUBTRACT]
                     type:
                       type: string
-                      enum: [song, artist]
+                      enum: [song, artist, anchor, mood, playlist]
                       default: song
               n:
                 type: integer

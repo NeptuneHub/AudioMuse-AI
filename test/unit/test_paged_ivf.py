@@ -108,6 +108,26 @@ def test_cell_cache_vector_lookup_and_eviction():
     assert cache.get_cell(999) is None
 
 
+def test_cell_groups_groups_items_by_cell_in_memory():
+    from tasks.paged_ivf import PagedIvfIndex
+
+    idx = object.__new__(PagedIvfIndex)
+    idx._n_items = 5
+    idx._num_cells = 3
+    idx._id2cell = np.array([0, 0, 1, 2, 1], dtype=np.uint32)
+    idx._centroids = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=np.float32)
+
+    groups = idx.cell_groups([0, 1, 2, 3, 4])
+
+    assert sorted(count for _, count in groups) == [1, 2, 2]
+    assert groups[0][1] == 2
+
+    out_of_range = idx.cell_groups([3, 99, -1])
+    assert len(out_of_range) == 1
+    assert out_of_range[0][1] == 1
+    np.testing.assert_array_equal(out_of_range[0][0], np.array([2.0, 0.0], dtype=np.float32))
+
+
 def test_bounded_cell_groups_keeps_small_cell_whole():
     members = np.arange(50, dtype=np.int32)
     vecs = np.random.randn(50, 8).astype(np.float32)

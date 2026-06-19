@@ -232,6 +232,51 @@ def get_vector_by_id(item_id: str) -> np.ndarray | None:
     """
     return _get_cached_vector(item_id)
 
+
+def get_cell_groups_for_items(item_ids):
+    """Group item_ids by their IVF cell using only in-memory maps (no vector/cell reads).
+
+    Returns ``[(centroid_vector, count), ...]`` for each distinct cell the items fall into,
+    most-populated first. Items not present in the index are skipped. This lets callers reuse
+    the index's existing coarse centroids instead of re-clustering the items' vectors.
+    """
+    if ivf_index is None or reverse_id_map is None:
+        return []
+    vec_ids = [vid for vid in (reverse_id_map.get(iid) for iid in item_ids) if vid is not None]
+    if not vec_ids:
+        return []
+    return ivf_index.cell_groups(vec_ids)
+
+
+def multi_query_ids(query_vectors, per_vector_n):
+    """Nearest-neighbor item_ids for each query vector, unioned in first-seen order.
+
+    Deliberately lightweight: it runs only the raw IVF cell search and maps vec_ids to
+    item_ids. No DB metadata fetch, no content de-duplication, no distance filtering -- so a
+    caller that only needs candidate ids (e.g. Song Alchemy's multi-anchor blend) does not pay
+    for the full similar-songs pipeline once per anchor point. One request-scoped cell cache is
+    shared across all the query vectors.
+    """
+    if ivf_index is None or id_map is None:
+        return []
+    try:
+        ivf_index.begin_request()
+    except Exception:
+        pass
+    k = max(1, int(per_vector_n))
+    seen = {}
+    for vec in query_vectors:
+        try:
+            vec_ids, _distances = ivf_index.query(vec, k=k)
+        except Exception as e:
+            logger.error(f"IVF multi-query failed for a vector: {e}", exc_info=True)
+            continue
+        for vid in vec_ids:
+            item_id = id_map.get(vid)
+            if item_id is not None:
+                seen.setdefault(item_id, None)
+    return list(seen.keys())
+
 def _normalize_string(text: str) -> str:
     """Lowercase and strip whitespace."""
     if not text:
