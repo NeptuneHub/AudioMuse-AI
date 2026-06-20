@@ -543,9 +543,10 @@ IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on num
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
-IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "256"))  # Cells probed per query (X): the dominant recall/latency knob
+IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob
 IVF_QUERY_CACHE_MB = int(os.environ.get("IVF_QUERY_CACHE_MB", "128"))  # Hard cap (Y) on the per-request vector cache, in MB
 IVF_READ_BATCH_CELLS = int(os.environ.get("IVF_READ_BATCH_CELLS", "16"))  # Cells fetched per DB round-trip during a query
+IVF_QUERY_PARALLEL_MIN_VECTORS = int(os.environ.get("IVF_QUERY_PARALLEL_MIN_VECTORS", "8192"))  # Only fan the per-cell distance scan across threads when a query's probed cells hold at least this many vectors; smaller queries stay serial
 IVF_GLOBAL_CACHE_MB = int(os.environ.get("IVF_GLOBAL_CACHE_MB", "1024"))  # Hard cap (MB) on the process-wide cross-request decoded-cell cache shared by all indexes; 0 disables it
 IVF_PRELOAD_ALL = os.environ.get("IVF_PRELOAD_ALL", "false").lower() == "true"  # When true, stream every cell into the global cache at load time (in-memory IVF), still bounded by IVF_GLOBAL_CACHE_MB
 IVF_GLOBAL_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_GLOBAL_CACHE_IDLE_SECONDS", "300"))  # Drop the whole global cell cache after this many seconds with no access (frees idle RAM); 0 = never drop
@@ -553,6 +554,7 @@ IVF_RESULT_CACHE_SECONDS = int(os.environ.get("IVF_RESULT_CACHE_SECONDS", "300")
 IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))  # Max distinct cached query results per result cache
 IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))  # Farthest cells probed for the max-distance display value (reverse-IVF); 0 or >= nlist = exact full scan
 IVF_DISK_CACHE_ENABLED = os.environ.get("IVF_DISK_CACHE_ENABLED", "true").lower() == "true"  # Export each index's cells to a local file at load and serve queries via mmap (OS page cache), instead of reading from Postgres per query; false = read from Postgres
+IVF_DISK_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_DISK_CACHE_IDLE_SECONDS", "300"))  # Drop the resident (RSS) pages of every disk-cache mmap after this many seconds with no query (MADV_DONTNEED; mapping stays, next query re-faults from disk); frees idle RAM; 0 = never drop
 IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or (
     os.path.join(APP_DATA_DIR, "ivf_cache") if APP_DATA_DIR
     else ("/app/ivf_cache" if os.path.isdir("/app") else os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache"))

@@ -45,6 +45,7 @@ import glob
 import hashlib
 import io
 import logging
+import mmap
 import os
 import struct
 import threading
@@ -380,6 +381,7 @@ class _GlobalCellCache:
                     sleep_for = self._idle_seconds - idle
             if dropped is not None:
                 logger.info("IVF global cell cache idle for %ds; dropped %d cells to free RAM.", self._idle_seconds, dropped)
+                _run_idle_callbacks()
                 _return_freed_heap_to_os()
                 return
             time.sleep(min(max(sleep_for, 1.0), 30.0))
@@ -482,6 +484,103 @@ def begin_query(index) -> None:
         index.begin_request()
 
 
+_QUERY_THREAD_POOL = None
+_QUERY_THREAD_POOL_LOCK = threading.Lock()
+_QUERY_THREAD_PREFIX = "ivf-query"
+
+
+def _query_worker_count() -> int:
+    """Number of threads used to score one query's probed cells.
+
+    Derived directly from the host with no env knob: half the available CPUs,
+    floored at 1 (``max(cpu // 2, 1)``). A 1-3 core host resolves to 1 (serial);
+    bigger hosts use half their cores and leave the rest free for BLAS and other
+    work. ``os.sched_getaffinity`` (Linux) honors a container's cpuset so a
+    CPU-limited container does not over-thread; elsewhere (Windows, macOS) it
+    falls back to ``os.cpu_count``.
+    """
+    try:
+        cpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu = os.cpu_count() or 1
+    return max(cpu // 2, 1)
+
+
+def _query_thread_pool():
+    """Return the shared bounded query thread pool, or None when serial.
+
+    Uses OS threads (not processes), so it is identical and safe on Linux,
+    macOS and Windows: no fork/spawn, no pickling, no extra interpreters. The
+    pool is built once and reused. Returns None when only one worker is
+    configured so callers skip pooling entirely.
+    """
+    if _query_worker_count() <= 1:
+        return None
+    global _QUERY_THREAD_POOL
+    if _QUERY_THREAD_POOL is None:
+        with _QUERY_THREAD_POOL_LOCK:
+            if _QUERY_THREAD_POOL is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _pin_blas_single_thread()
+                _QUERY_THREAD_POOL = ThreadPoolExecutor(
+                    max_workers=_query_worker_count(),
+                    thread_name_prefix=_QUERY_THREAD_PREFIX,
+                )
+    return _QUERY_THREAD_POOL
+
+
+def _in_query_pool_thread() -> bool:
+    """True when already running inside a query worker, to block self-nesting."""
+    return threading.current_thread().name.startswith(_QUERY_THREAD_PREFIX)
+
+
+def shutdown_query_pool() -> None:
+    """Tear down the shared query thread pool, if any (idempotent).
+
+    Mirrors ivf_manager._shutdown_thread_pool so a clean application teardown
+    releases the query workers too instead of leaving them until interpreter
+    exit. The BLAS pin is intentionally NOT undone: it is a process-wide, set-once
+    state and there is nothing to restore safely.
+    """
+    global _QUERY_THREAD_POOL
+    with _QUERY_THREAD_POOL_LOCK:
+        pool = _QUERY_THREAD_POOL
+        _QUERY_THREAD_POOL = None
+    if pool is not None:
+        pool.shutdown(wait=True)
+
+
+_BLAS_LIMITER = None
+_BLAS_PIN_DONE = False
+
+
+def _pin_blas_single_thread() -> None:
+    """Pin this process's BLAS to one thread, ONCE and permanently (race-free).
+
+    The query pool parallelizes the distance scan at the Python-thread level, so
+    each worker's matmul must not also spawn BLAS threads or the two layers
+    oversubscribe the cores. A per-query ``threadpool_limits`` context is NOT
+    concurrency-safe -- two interleaved queries (e.g. under gunicorn gthread)
+    can corrupt the saved limit and leave BLAS globally stuck at one thread for
+    the whole process -- so we set the limit a single time, under the
+    pool-creation lock, and never restore it. The limiter is held in a module
+    global so it is never garbage-collected. The query-serving process wants
+    single-threaded BLAS for its whole life (its heavy BLAS is these queries);
+    index builds run k-means in separate worker processes that never create this
+    pool. A missing threadpoolctl is a silent no-op (the worker count already
+    leaves spare cores, so an unpinned BLAS only risks mild oversubscription).
+    """
+    global _BLAS_LIMITER, _BLAS_PIN_DONE
+    if _BLAS_PIN_DONE:
+        return
+    _BLAS_PIN_DONE = True
+    try:
+        from threadpoolctl import threadpool_limits
+        _BLAS_LIMITER = threadpool_limits(limits=1, user_api="blas")
+    except Exception:
+        _BLAS_LIMITER = None
+
+
 _LIVE_INDEXES: "weakref.WeakSet[PagedIvfIndex]" = weakref.WeakSet()
 
 
@@ -514,6 +613,136 @@ def _close_live_indexes(index_name: str) -> None:
                 idx.close()
         except Exception:
             pass
+
+
+_IDLE_CALLBACKS: "List[Callable[[], None]]" = []
+_IDLE_CALLBACKS_LOCK = threading.Lock()
+
+
+def register_idle_callback(fn: Callable[[], None]) -> None:
+    """Register a callback fired once when the disk-cache working set goes idle.
+
+    Lets other modules (e.g. the similarity result caches) shed their transient
+    query memory on the same idle signal that drops resident mmap pages, so an
+    idle Flask process releases everything at once instead of holding it until the
+    next request happens to evict it.
+    """
+    with _IDLE_CALLBACKS_LOCK:
+        if fn not in _IDLE_CALLBACKS:
+            _IDLE_CALLBACKS.append(fn)
+
+
+def unregister_idle_callback(fn: Callable[[], None]) -> None:
+    """Remove a previously registered idle callback (idempotent)."""
+    with _IDLE_CALLBACKS_LOCK:
+        if fn in _IDLE_CALLBACKS:
+            _IDLE_CALLBACKS.remove(fn)
+
+
+def _run_idle_callbacks() -> None:
+    with _IDLE_CALLBACKS_LOCK:
+        callbacks = list(_IDLE_CALLBACKS)
+    for fn in callbacks:
+        try:
+            fn()
+        except Exception:
+            logger.debug("IVF idle callback %r failed.", fn, exc_info=True)
+
+
+_MMAP_IDLE_LOCK = threading.Lock()
+_MMAP_LAST_ACCESS = time.monotonic()
+_MMAP_IDLE_THREAD: Optional[threading.Thread] = None
+
+
+def _note_mmap_activity() -> None:
+    """Record a disk-cache read and ensure the idle page-drop watcher is running.
+
+    Called once per disk-cache read (not per cell), so the per-query cost is a
+    single monotonic clock read. When idle-dropping is disabled this is a no-op.
+    """
+    if config.IVF_DISK_CACHE_IDLE_SECONDS <= 0:
+        return
+    global _MMAP_LAST_ACCESS, _MMAP_IDLE_THREAD
+    with _MMAP_IDLE_LOCK:
+        _MMAP_LAST_ACCESS = time.monotonic()
+        if _MMAP_IDLE_THREAD is None or not _MMAP_IDLE_THREAD.is_alive():
+            t = threading.Thread(target=_mmap_idle_worker, name="ivf-mmap-idle", daemon=True)
+            _MMAP_IDLE_THREAD = t
+            t.start()
+
+
+def _drop_resident_mmap_pages() -> int:
+    """MADV_DONTNEED every live index's cell-file mapping; return how many were advised.
+
+    Drops the resident (RSS) pages of the disk-cache working set WITHOUT unmapping:
+    the mapping stays valid and a later query re-faults the cells it needs from the
+    file. Unlike close()/munmap this never races an in-flight zero-copy read -- a
+    concurrent reader simply takes a page fault and re-reads identical bytes from
+    the read-only file (the mapping is opened read-only, so there are no dirty
+    pages to lose on any platform). Runs where mmap.madvise + MADV_DONTNEED exist
+    (Linux and macOS); a no-op where they do not (e.g. Windows), mirroring
+    release_memory_to_os(). Skips (with a debug line) any mapping it cannot reach
+    so a numpy layout change degrades to "no reclaim" instead of silent breakage.
+    """
+    advise = getattr(mmap, "MADV_DONTNEED", None)
+    if advise is None:
+        return 0
+    dropped = 0
+    skipped = 0
+    for idx in list(_LIVE_INDEXES):
+        mm = getattr(idx, "_mmap", None)
+        if mm is None:
+            continue
+        buf = getattr(mm, "_mmap", None)
+        if buf is None or not hasattr(buf, "madvise"):
+            skipped += 1
+            continue
+        try:
+            buf.madvise(advise)
+            dropped += 1
+        except (OSError, ValueError) as e:
+            skipped += 1
+            logger.debug("IVF idle page-drop could not advise a mapping (%s).", e)
+    if skipped:
+        logger.debug("IVF idle page-drop skipped %d live mapping(s) it could not reach.", skipped)
+    return dropped
+
+
+def _mmap_idle_worker() -> None:
+    """Drop the disk-cache mmap working set once the process goes idle.
+
+    The idle check and the MADV_DONTNEED drop happen together under
+    ``_MMAP_IDLE_LOCK``: a query that resets the clock either lands before this
+    lock (the idle test fails and nothing is dropped) or after the watcher has
+    cleared itself (it starts a fresh watcher), so the drop can never zap pages a
+    concurrent query just faulted in, and only one watcher ever runs. The idle
+    callbacks and heap trim run after the lock is released.
+    """
+    global _MMAP_IDLE_THREAD
+    while True:
+        dropped = None
+        sleep_for = 30.0
+        with _MMAP_IDLE_LOCK:
+            idle_seconds = config.IVF_DISK_CACHE_IDLE_SECONDS
+            if idle_seconds <= 0:
+                _MMAP_IDLE_THREAD = None
+                return
+            idle = time.monotonic() - _MMAP_LAST_ACCESS
+            if idle >= idle_seconds:
+                dropped = _drop_resident_mmap_pages()
+                _MMAP_IDLE_THREAD = None
+            else:
+                sleep_for = idle_seconds - idle
+        if dropped is not None:
+            _run_idle_callbacks()
+            _return_freed_heap_to_os()
+            if dropped:
+                logger.info(
+                    "IVF disk cache idle for %ds; dropped resident pages of %d index file(s) to free RAM.",
+                    idle_seconds, dropped,
+                )
+            return
+        time.sleep(min(max(sleep_for, 1.0), 30.0))
 
 
 class PagedIvfIndex:
@@ -666,6 +895,7 @@ class PagedIvfIndex:
         mm = self._mmap
         offsets = self._cell_offsets
         if mm is not None:
+            _note_mmap_activity()
             ordered = sorted(
                 {int(c) for c in cell_ids},
                 key=lambda cid: offsets.get(cid, (1 << 62, 0))[0],
@@ -718,6 +948,47 @@ class PagedIvfIndex:
         vn = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True).astype(np.float32) + 1e-12)
         return (1.0 - np.clip(vn @ qn, -1.0, 1.0)).astype(np.float32)
 
+    def _distances_over_cells(self, q: np.ndarray, vecs_list: List[np.ndarray]) -> List[np.ndarray]:
+        """Per-cell distance arrays for ``vecs_list``, aligned with the input order.
+
+        Distance computation is the only CPU-bound step of a query and is purely
+        functional -- each call reads ``q`` and one read-only cell view and returns
+        a fresh array -- so fanning it across the query thread pool needs no locking
+        and mutates no shared state. Parallelism engages only when enabled (see
+        :func:`_query_worker_count`) and when the probed cells hold at least
+        ``IVF_QUERY_PARALLEL_MIN_VECTORS`` vectors, so small queries keep the cheaper
+        serial path. It also stays serial when already inside a query worker (no
+        self-nesting). Any failure falls back to the serial scan, so behavior is
+        never worse than before.
+        """
+        n_cells = len(vecs_list)
+        if n_cells <= 1:
+            return [self._distances(q, v) for v in vecs_list]
+        total = 0
+        for v in vecs_list:
+            total += int(v.shape[0])
+        pool = None
+        if total >= config.IVF_QUERY_PARALLEL_MIN_VECTORS and not _in_query_pool_thread():
+            pool = _query_thread_pool()
+        if pool is None:
+            return [self._distances(q, v) for v in vecs_list]
+
+        n_groups = min(_query_worker_count(), n_cells)
+        bounds = [(i * n_cells) // n_groups for i in range(n_groups)] + [n_cells]
+
+        def _score_slice(lo: int, hi: int) -> List[np.ndarray]:
+            return [self._distances(q, vecs_list[j]) for j in range(lo, hi)]
+
+        try:
+            futures = [pool.submit(_score_slice, bounds[i], bounds[i + 1]) for i in range(n_groups)]
+            out: List[np.ndarray] = []
+            for f in futures:
+                out.extend(f.result())
+            return out
+        except Exception as e:
+            logger.warning("IVF '%s' parallel cell scan failed (%s); using serial scan.", self._index_name, e)
+            return [self._distances(q, v) for v in vecs_list]
+
     def query(self, vector, k: int):
         """Return ``(ids, distances)`` for the ``k`` nearest items."""
         q = np.asarray(vector, dtype=np.float32).reshape(-1)
@@ -726,7 +997,7 @@ class PagedIvfIndex:
         probe = [int(c) for c in order[:max(1, self._nprobe)]]
         cells = self._read_cells(probe, cache)
         cand_ids: List[np.ndarray] = []
-        cand_dist: List[np.ndarray] = []
+        cand_vecs: List[np.ndarray] = []
         for cell_id in probe:
             cell = cells.get(cell_id)
             if cell is None:
@@ -735,9 +1006,10 @@ class PagedIvfIndex:
             if ids.shape[0] == 0:
                 continue
             cand_ids.append(ids)
-            cand_dist.append(self._distances(q, vecs))
+            cand_vecs.append(vecs)
         if not cand_ids:
             return [], []
+        cand_dist = self._distances_over_cells(q, cand_vecs)
         all_ids = np.concatenate(cand_ids)
         all_dist = np.concatenate(cand_dist)
         kk = min(int(k), all_dist.shape[0])
@@ -869,6 +1141,7 @@ class PagedIvfIndex:
 
         mm = self._mmap
         if mm is not None:
+            _note_mmap_activity()
             offsets = self._cell_offsets
             for cid in cell_ids:
                 cell = self._cell_from_mmap(mm, offsets, cid)

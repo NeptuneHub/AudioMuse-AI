@@ -730,6 +730,22 @@ class TestResultCache:
         time.sleep(0.1)
         assert c.get("k") is None
 
+    def test_sweep_expired_drops_only_expired_entries(self):
+        import time
+        from tasks.ivf_manager import _ResultCache
+        c = _ResultCache(0.05, 10)
+        c.put("old", 1)
+        time.sleep(0.1)
+        c.put("fresh", 2)
+        c.sweep_expired()
+        assert c.get("old") is None
+        assert c.get("fresh") == 2
+
+    def test_sweep_expired_noop_when_ttl_zero(self):
+        from tasks.ivf_manager import _ResultCache
+        c = _ResultCache(0, 10)
+        c.sweep_expired()
+
     def test_disabled_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache
         c = _ResultCache(0, 10)

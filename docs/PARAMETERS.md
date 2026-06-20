@@ -82,7 +82,7 @@ These are the default parameters used when launching analysis or clustering task
 | **Similarity General**                      |                                                                                                                           |                 |
 | `IVF_METRIC`                                | Distance metric used by the similarity index: `angular` (cosine), `euclidean`, or `dot` (inner product). Changing it requires an index rebuild.                                                                                            | `angular`       |
 | **Disk-Paged IVF Similarity Index**         |                                                                                                                            |                 |
-| `IVF_NPROBE`                                | Number of nearest IVF cells probed per query — the dominant recall/latency knob. Higher = better recall + slower queries.   | `256`           |
+| `IVF_NPROBE`                                | Number of nearest IVF cells probed per query — the dominant recall/latency knob. Higher = better recall + slower queries.   | `1024`          |
 | `IVF_NLIST_MAX`                             | Upper cap on the number of IVF cells (coarse centroids) created at build time. Requires an index rebuild after change.      | `8192`          |
 | `IVF_TRAIN_POINTS_PER_CELL`                 | Target training vectors per cell; the training sample is this × nlist, capped at the library size (FAISS floor ~39). Requires an index rebuild after change. | `50`            |
 | `IVF_MAX_CELL_MB`                           | Oversized cells are split at build time so no single stored cell exceeds this many MB. Requires an index rebuild after change. | `12`            |
@@ -96,6 +96,7 @@ These are the default parameters used when launching analysis or clustering task
 | `IVF_RESULT_CACHE_MAX`                      | Maximum number of distinct cached query results per result cache.                                                          | `2048`          |
 | `IVF_MAX_DISTANCE_NPROBE`                   | Farthest cells probed when computing the max-distance display value (reverse-IVF). `0` or a value ≥ nlist forces an exact full scan. | `256`           |
 | `IVF_DISK_CACHE_ENABLED`                    | When `true`, export each index's cells to a local file at load and serve queries via mmap (OS page cache) instead of reading from Postgres per query. `false` = read from Postgres. | `true`          |
+| `IVF_DISK_CACHE_IDLE_SECONDS`               | Drop the resident (RSS) pages of every disk-cache mmap after this many seconds with no query (mapping stays; the next query re-faults from disk). Frees idle RAM. `0` = never drop. | `300`           |
 | `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT`   | It enable the possibility of use the `MAX_SONGS_PER_ARTIST` also in similar song                                          | `true`          |
 | `SIMILARITY_RADIUS_DEFAULT`                 | Default behavior for radius similarity mode. When `true`, similarity results may be re-ordered using the radius (bucketed) algorithm for better listening paths. | `true`          |
 | **Sonic Fingerprint General**               |                                                                                                                            |                 |

@@ -678,7 +678,8 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
 
     normalized_moods: set = set()
     if top_moods:
-        normalized_moods = {str(k).strip().lower() for k in top_moods.keys() if k}
+        top5 = sorted(top_moods.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        normalized_moods = {str(k).strip().lower() for k, _ in top5 if k}
     vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists', 'female vocalist'})
 
     try:
