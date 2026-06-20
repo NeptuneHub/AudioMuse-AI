@@ -183,8 +183,11 @@ def _prune_old_cell_files(cache_dir: str, index_name: str, keep_path: str) -> No
                 continue
             try:
                 os.remove(p)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.info(
+                    "IVF index '%s': stale cell file %s not deleted yet (%s); will retry on next load.",
+                    index_name, p, e,
+                )
 
 
 def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, path: str) -> int:
@@ -254,20 +257,6 @@ def _open_cell_file(path: str):
         cid, off, ln = struct.unpack_from(_CELLFILE_ROW_FMT, table, i * _CELLFILE_ROW_SIZE)
         offsets[int(cid)] = (int(off), int(ln))
     return mm, int(dim), offsets
-
-
-def _release_memmap(mm) -> None:
-    """Close a numpy memmap's underlying file handle (idempotent, best-effort).
-
-    Windows keeps a lock on a mapped file, so an unreleased reader makes the old
-    cell file undeletable and ``_prune_old_cell_files`` leaks it across rebuilds.
-    """
-    if mm is None:
-        return
-    try:
-        mm._mmap.close()
-    except Exception:
-        pass
 
 
 def _vec_in_cell(ids: np.ndarray, vecs: np.ndarray, int_id: int) -> Optional[np.ndarray]:
@@ -510,6 +499,23 @@ def end_all_requests() -> None:
             pass
 
 
+def _close_live_indexes(index_name: str) -> None:
+    """Release the memmap of any still-loaded index for ``index_name``.
+
+    A rebuild prunes the old cell file while the manager still holds the
+    previous index (it swaps in the replacement only after the load returns),
+    so that index keeps the old file mapped and Windows refuses to delete it.
+    Closing it here, before the prune, drops the mapping so the file becomes
+    deletable; the closed index degrades to Postgres reads until the swap.
+    """
+    for idx in list(_LIVE_INDEXES):
+        try:
+            if getattr(idx, "_index_name", None) == index_name:
+                idx.close()
+        except Exception:
+            pass
+
+
 class PagedIvfIndex:
     """IVF-compatible query surface backed by Postgres-resident IVF cells.
 
@@ -561,28 +567,22 @@ class PagedIvfIndex:
             self._centroids = np.ascontiguousarray(centroids, dtype=np.float32)
         self._num_cells = int(self._centroids.shape[0])
         self._tl = threading.local()
-        self._finalizer = (
-            weakref.finalize(self, _release_memmap, self._mmap)
-            if self._mmap is not None else None
-        )
         _LIVE_INDEXES.add(self)
 
     def __len__(self) -> int:
         return self._n_items
 
     def close(self) -> None:
-        """Release the memmap so its backing cell file can be deleted.
+        """Drop this index's reference to the memmap so its cell file can be deleted.
 
-        Safe to call more than once. After close the index falls back to
-        Postgres cell reads, so a stray query on a closed index degrades
-        instead of crashing.
+        Only the reference is dropped: the OS unmaps the file once any in-flight
+        zero-copy read finishes, because every reader snapshots ``self._mmap``
+        before use and numpy keeps the mapping alive while a view of it exists.
+        We deliberately do not force-close the underlying buffer, which would
+        unmap memory still aliased by a concurrent query and segfault. Safe to
+        call more than once; after close, reads fall back to Postgres.
         """
-        fin = getattr(self, "_finalizer", None)
-        if fin is not None:
-            fin()
-            self._finalizer = None
         self._mmap = None
-        self._cell_offsets = {}
 
     @property
     def num_elements(self) -> int:
@@ -634,13 +634,18 @@ class PagedIvfIndex:
             return np.arange(n)
         return np.argpartition(scores, n - k)[n - k:]
 
-    def _cell_from_mmap(self, cell_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Zero-copy read of one cell from the memmap, or None if absent."""
-        rec = self._cell_offsets.get(int(cell_id))
+    def _cell_from_mmap(self, mm, offsets, cell_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Zero-copy read of one cell from a snapshotted memmap, or None if absent.
+
+        ``mm``/``offsets`` are captured by the caller before use so a concurrent
+        ``close()`` (which nulls ``self._mmap``) cannot pull the mapping out from
+        under an in-flight read.
+        """
+        rec = offsets.get(int(cell_id))
         if rec is None:
             return None
         off, ln = rec
-        sub = self._mmap[off:off + ln]
+        sub = mm[off:off + ln]
         n = ln // self._record_size
         if n == 0:
             return None
@@ -658,13 +663,15 @@ class PagedIvfIndex:
         depend on L1 retaining every cell under its byte cap.
         """
         out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
-        if self._mmap is not None:
+        mm = self._mmap
+        offsets = self._cell_offsets
+        if mm is not None:
             ordered = sorted(
                 {int(c) for c in cell_ids},
-                key=lambda cid: self._cell_offsets.get(cid, (1 << 62, 0))[0],
+                key=lambda cid: offsets.get(cid, (1 << 62, 0))[0],
             )
             for cid in ordered:
-                cell = self._cell_from_mmap(cid)
+                cell = self._cell_from_mmap(mm, offsets, cid)
                 if cell is not None:
                     out[cid] = cell
             return out
@@ -756,7 +763,15 @@ class PagedIvfIndex:
         return 1.0 - d
 
     def get_vectors(self, int_ids) -> Dict[int, np.ndarray]:
-        """Return ``{int_id: vector}`` for the given ids, reading missing cells."""
+        """Return ``{int_id: vector}`` for the given ids, reading missing cells.
+
+        Each returned vector is an owned float32 copy, never a view into the
+        local mmap, so a result stays valid after the index is reloaded or
+        closed and never keeps the backing cell file mapped past this call. An
+        escaping mmap view would otherwise pin the old file (blocking its
+        deletion on Windows) and dangle once the mapping is released, so the
+        copy here is a correctness invariant, not an option.
+        """
         cache = self._cache()
         out: Dict[int, np.ndarray] = {}
         need_cells: Dict[int, List[int]] = {}
@@ -768,7 +783,7 @@ class PagedIvfIndex:
             entry = cache.get_cell(cell_id)
             v = _vec_in_cell(entry[0], entry[1], vid) if entry is not None else None
             if v is not None:
-                out[vid] = np.asarray(v, dtype=np.float32)
+                out[vid] = np.array(v, dtype=np.float32)
             else:
                 need_cells.setdefault(cell_id, []).append(vid)
         if need_cells:
@@ -781,7 +796,7 @@ class PagedIvfIndex:
                 for vid in vids:
                     v = _vec_in_cell(ids, vecs, vid)
                     if v is not None:
-                        out[vid] = np.asarray(v, dtype=np.float32)
+                        out[vid] = np.array(v, dtype=np.float32)
         return out
 
     def get_vector(self, int_id):
@@ -852,9 +867,11 @@ class PagedIvfIndex:
                 state["max_d"] = cell_max
                 state["far_id"] = int(ids[midx])
 
-        if self._mmap is not None:
+        mm = self._mmap
+        if mm is not None:
+            offsets = self._cell_offsets
             for cid in cell_ids:
-                cell = self._cell_from_mmap(cid)
+                cell = self._cell_from_mmap(mm, offsets, cid)
                 if cell is not None:
                     _consume(cell[0], cell[1])
         else:
@@ -1173,6 +1190,7 @@ def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, dir_b
             if not os.path.exists(path):
                 n = _export_cells_to_file(db_conn, index_name, dim, metric, path)
                 logger.info("IVF index '%s' exported %d cells to %s.", label, n, path)
+            _close_live_indexes(index_name)
             _prune_old_cell_files(cache_dir, index_name, path)
         mm, _dim, offsets = _open_cell_file(path)
         return mm, offsets
