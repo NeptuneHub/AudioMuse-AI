@@ -398,5 +398,44 @@ def test_note_mmap_activity_noop_when_disabled(monkeypatch):
     assert pv._MMAP_IDLE_THREAD is None
 
 
+def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
+    """A continuously-queried index must not keep an idle index's pages resident."""
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 2)
+
+    captured = []
+
+    def fake_drop(indexes=None):
+        batch = list(indexes) if indexes is not None else None
+        captured.append(batch)
+        return len(batch) if batch else 0
+
+    monkeypatch.setattr(pv, "_drop_resident_mmap_pages", fake_drop)
+
+    class _Stub:
+        def __init__(self):
+            self._mmap = object()
+            self._mmap_pages_dropped = False
+            self._last_mmap_access = time.monotonic()
+
+    hot = _Stub()
+    idle = _Stub()
+    idle._last_mmap_access = time.monotonic() - 100  # already well past the window
+    pv._LIVE_INDEXES.add(hot)
+    pv._LIVE_INDEXES.add(idle)
+    try:
+        pv._note_mmap_activity(hot)  # hot is fresh; starts the watcher
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not captured:
+            time.sleep(0.1)
+        assert captured, "watcher never dropped anything"
+        assert captured[0] == [idle], "first drop must target only the idle index"
+        assert idle._mmap_pages_dropped is True
+    finally:
+        pv._LIVE_INDEXES.discard(hot)
+        pv._LIVE_INDEXES.discard(idle)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

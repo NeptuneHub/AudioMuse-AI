@@ -650,46 +650,54 @@ def _run_idle_callbacks() -> None:
 
 
 _MMAP_IDLE_LOCK = threading.Lock()
-_MMAP_LAST_ACCESS = time.monotonic()
 _MMAP_IDLE_THREAD: Optional[threading.Thread] = None
 
 
-def _note_mmap_activity() -> None:
-    """Record a disk-cache read and ensure the idle page-drop watcher is running.
+def _note_mmap_activity(index=None) -> None:
+    """Record a disk-cache read on ``index`` and ensure the idle watcher runs.
 
     Called once per disk-cache read (not per cell), so the per-query cost is a
-    single monotonic clock read. When idle-dropping is disabled this is a no-op.
+    single monotonic clock read. Each index keeps its OWN last-access stamp so a
+    continuously-queried index does not keep the idle pages of the other five
+    indexes resident -- the watcher drops each index independently once it alone
+    has been quiet. Stamping under the lock pairs with the watcher reading it
+    under the same lock, so a just-faulted page is never dropped. When
+    idle-dropping is disabled this is a no-op.
     """
     if config.IVF_DISK_CACHE_IDLE_SECONDS <= 0:
         return
-    global _MMAP_LAST_ACCESS, _MMAP_IDLE_THREAD
+    global _MMAP_IDLE_THREAD
     with _MMAP_IDLE_LOCK:
-        _MMAP_LAST_ACCESS = time.monotonic()
+        if index is not None:
+            index._last_mmap_access = time.monotonic()
+            index._mmap_pages_dropped = False
         if _MMAP_IDLE_THREAD is None or not _MMAP_IDLE_THREAD.is_alive():
             t = threading.Thread(target=_mmap_idle_worker, name="ivf-mmap-idle", daemon=True)
             _MMAP_IDLE_THREAD = t
             t.start()
 
 
-def _drop_resident_mmap_pages() -> int:
-    """MADV_DONTNEED every live index's cell-file mapping; return how many were advised.
+def _drop_resident_mmap_pages(indexes=None) -> int:
+    """MADV_DONTNEED each given index's cell-file mapping; return how many were advised.
 
-    Drops the resident (RSS) pages of the disk-cache working set WITHOUT unmapping:
-    the mapping stays valid and a later query re-faults the cells it needs from the
-    file. Unlike close()/munmap this never races an in-flight zero-copy read -- a
-    concurrent reader simply takes a page fault and re-reads identical bytes from
-    the read-only file (the mapping is opened read-only, so there are no dirty
-    pages to lose on any platform). Runs where mmap.madvise + MADV_DONTNEED exist
-    (Linux and macOS); a no-op where they do not (e.g. Windows), mirroring
-    release_memory_to_os(). Skips (with a debug line) any mapping it cannot reach
-    so a numpy layout change degrades to "no reclaim" instead of silent breakage.
+    ``indexes`` defaults to every live index. Drops the resident (RSS) pages of the
+    disk-cache working set WITHOUT unmapping: the mapping stays valid and a later
+    query re-faults the cells it needs from the file. Unlike close()/munmap this
+    never races an in-flight zero-copy read -- a concurrent reader simply takes a
+    page fault and re-reads identical bytes from the read-only file (the mapping is
+    opened read-only, so there are no dirty pages to lose on any platform). Runs
+    where mmap.madvise + MADV_DONTNEED exist (Linux and macOS); a no-op where they
+    do not (e.g. Windows), mirroring release_memory_to_os(). Skips (with a debug
+    line) any mapping it cannot reach so a numpy layout change degrades to "no
+    reclaim" instead of silent breakage.
     """
     advise = getattr(mmap, "MADV_DONTNEED", None)
     if advise is None:
         return 0
+    targets = list(_LIVE_INDEXES) if indexes is None else list(indexes)
     dropped = 0
     skipped = 0
-    for idx in list(_LIVE_INDEXES):
+    for idx in targets:
         mm = getattr(idx, "_mmap", None)
         if mm is None:
             continue
@@ -709,38 +717,54 @@ def _drop_resident_mmap_pages() -> int:
 
 
 def _mmap_idle_worker() -> None:
-    """Drop the disk-cache mmap working set once the process goes idle.
+    """Drop each disk-cache mapping once THAT index alone has been quiet.
 
-    The idle check and the MADV_DONTNEED drop happen together under
-    ``_MMAP_IDLE_LOCK``: a query that resets the clock either lands before this
-    lock (the idle test fails and nothing is dropped) or after the watcher has
-    cleared itself (it starts a fresh watcher), so the drop can never zap pages a
-    concurrent query just faulted in, and only one watcher ever runs. The idle
-    callbacks and heap trim run after the lock is released.
+    Per-index last-access (set by :func:`_note_mmap_activity`) is read under
+    ``_MMAP_IDLE_LOCK`` in the same critical section as the MADV_DONTNEED drop, so
+    a query that just faulted an index's pages either lands before this lock (the
+    index's idle test fails, nothing is dropped) or after the watcher cleared
+    itself (a fresh watcher starts). The drop therefore never zaps pages a
+    concurrent query just faulted, and only one watcher ever runs. The idle
+    callbacks (result-cache sweep) and the heap trim run once, after the lock is
+    released, when no index remains pending -- i.e. the whole process is idle.
     """
     global _MMAP_IDLE_THREAD
     while True:
-        dropped = None
+        to_drop = []
         sleep_for = 30.0
+        finished = False
         with _MMAP_IDLE_LOCK:
             idle_seconds = config.IVF_DISK_CACHE_IDLE_SECONDS
             if idle_seconds <= 0:
                 _MMAP_IDLE_THREAD = None
                 return
-            idle = time.monotonic() - _MMAP_LAST_ACCESS
-            if idle >= idle_seconds:
-                dropped = _drop_resident_mmap_pages()
+            now = time.monotonic()
+            next_due = None
+            for idx in list(_LIVE_INDEXES):
+                if getattr(idx, "_mmap", None) is None or getattr(idx, "_mmap_pages_dropped", False):
+                    continue
+                idle = now - getattr(idx, "_last_mmap_access", now)
+                if idle >= idle_seconds:
+                    to_drop.append(idx)
+                else:
+                    remaining = idle_seconds - idle
+                    next_due = remaining if next_due is None else min(next_due, remaining)
+            dropped = _drop_resident_mmap_pages(to_drop) if to_drop else 0
+            for idx in to_drop:
+                idx._mmap_pages_dropped = True
+            if next_due is None:
                 _MMAP_IDLE_THREAD = None
+                finished = True
             else:
-                sleep_for = idle_seconds - idle
-        if dropped is not None:
+                sleep_for = next_due
+        if dropped:
+            logger.info(
+                "IVF disk cache: dropped resident pages of %d idle index file(s) to free RAM.",
+                dropped,
+            )
+        if finished:
             _run_idle_callbacks()
             _return_freed_heap_to_os()
-            if dropped:
-                logger.info(
-                    "IVF disk cache idle for %ds; dropped resident pages of %d index file(s) to free RAM.",
-                    idle_seconds, dropped,
-                )
             return
         time.sleep(min(max(sleep_for, 1.0), 30.0))
 
@@ -796,6 +820,8 @@ class PagedIvfIndex:
             self._centroids = np.ascontiguousarray(centroids, dtype=np.float32)
         self._num_cells = int(self._centroids.shape[0])
         self._tl = threading.local()
+        self._last_mmap_access = time.monotonic()
+        self._mmap_pages_dropped = False
         _LIVE_INDEXES.add(self)
 
     def __len__(self) -> int:
@@ -895,7 +921,7 @@ class PagedIvfIndex:
         mm = self._mmap
         offsets = self._cell_offsets
         if mm is not None:
-            _note_mmap_activity()
+            _note_mmap_activity(self)
             ordered = sorted(
                 {int(c) for c in cell_ids},
                 key=lambda cid: offsets.get(cid, (1 << 62, 0))[0],
@@ -1141,7 +1167,7 @@ class PagedIvfIndex:
 
         mm = self._mmap
         if mm is not None:
-            _note_mmap_activity()
+            _note_mmap_activity(self)
             offsets = self._cell_offsets
             for cid in cell_ids:
                 cell = self._cell_from_mmap(mm, offsets, cid)
