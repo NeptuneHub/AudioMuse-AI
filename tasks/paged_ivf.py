@@ -47,6 +47,7 @@ import io
 import logging
 import mmap
 import os
+import platform
 import struct
 import threading
 import time
@@ -691,6 +692,9 @@ def _drop_resident_mmap_pages(indexes=None) -> int:
     line) any mapping it cannot reach so a numpy layout change degrades to "no
     reclaim" instead of silent breakage.
     """
+    # madvise(MADV_DONTNEED) is POSIX (Linux/macOS); absent on Windows.
+    if platform.system() == "Windows":
+        return 0
     advise = getattr(mmap, "MADV_DONTNEED", None)
     if advise is None:
         return 0
