@@ -265,7 +265,7 @@ OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(os.environ.get("OTHER_FE
 # --- AI Playlist Naming ---
 # USE_AI_PLAYLIST_NAMING is replaced by AI_MODEL_PROVIDER
 OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate") # URL for your Ollama instance
-OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b") # Ollama model to use
+OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "qwen3.5:9b") # Ollama model to use
 
 # Maximum number of songs to include in AI naming prompts (to avoid token limit issues)
 # Large playlists will use only the first N songs for naming
