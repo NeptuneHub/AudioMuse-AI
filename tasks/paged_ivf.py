@@ -716,6 +716,22 @@ def _drop_resident_mmap_pages(indexes=None) -> int:
     return dropped
 
 
+def _collect_idle_mmap_indexes(now: float, idle_seconds: float):
+    """Return (indexes idle long enough to drop, seconds until the next goes idle)."""
+    to_drop = []
+    next_due = None
+    for idx in list(_LIVE_INDEXES):
+        if getattr(idx, "_mmap", None) is None or getattr(idx, "_mmap_pages_dropped", False):
+            continue
+        idle = now - getattr(idx, "_last_mmap_access", now)
+        if idle >= idle_seconds:
+            to_drop.append(idx)
+        else:
+            remaining = idle_seconds - idle
+            next_due = remaining if next_due is None else min(next_due, remaining)
+    return to_drop, next_due
+
+
 def _mmap_idle_worker() -> None:
     """Drop each disk-cache mapping once THAT index alone has been quiet.
 
@@ -730,25 +746,15 @@ def _mmap_idle_worker() -> None:
     """
     global _MMAP_IDLE_THREAD
     while True:
-        to_drop = []
         sleep_for = 30.0
         finished = False
+        dropped = 0
         with _MMAP_IDLE_LOCK:
             idle_seconds = config.IVF_DISK_CACHE_IDLE_SECONDS
             if idle_seconds <= 0:
                 _MMAP_IDLE_THREAD = None
                 return
-            now = time.monotonic()
-            next_due = None
-            for idx in list(_LIVE_INDEXES):
-                if getattr(idx, "_mmap", None) is None or getattr(idx, "_mmap_pages_dropped", False):
-                    continue
-                idle = now - getattr(idx, "_last_mmap_access", now)
-                if idle >= idle_seconds:
-                    to_drop.append(idx)
-                else:
-                    remaining = idle_seconds - idle
-                    next_due = remaining if next_due is None else min(next_due, remaining)
+            to_drop, next_due = _collect_idle_mmap_indexes(time.monotonic(), idle_seconds)
             dropped = _drop_resident_mmap_pages(to_drop) if to_drop else 0
             for idx in to_drop:
                 idx._mmap_pages_dropped = True
