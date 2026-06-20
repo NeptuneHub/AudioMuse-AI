@@ -110,7 +110,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.3.0"
+APP_VERSION = "v2.3.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -342,6 +342,7 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
+LYRICS_MUSICNN_SKIP = os.environ.get("LYRICS_MUSICNN_SKIP", "true").lower() == "true"
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
@@ -534,14 +535,13 @@ IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Disk-Paged IVF Index Constants ---
-# When enabled, the large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
+# The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
 # are stored as an inverted-file (IVF) index whose full-precision float32 cells live
 # in Postgres rows. A query reads only the nearest IVF_NPROBE cells, so the Flask
 # container's resident index memory is bounded by IVF_QUERY_CACHE_MB per index instead
 # of growing with the library size. No vector quantization is used.
-IVF_BACKEND_ENABLED = os.environ.get("IVF_BACKEND_ENABLED", "true").lower() == "true"
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
-IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "120000"))  # Max vectors sampled to train the coarse quantizer
+IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "256"))  # Cells probed per query (X): the dominant recall/latency knob

@@ -2,6 +2,8 @@ name: Build and Push AudioMuse AI Docker Image with NVIDIA support
 
 on:
   push:
+    branches:
+      - main      # Trigger on merge/push to main -> 'devel-nvidia' tag
     # Trigger on version tags for stable releases
     tags:
       - 'v*.*.*'  # Trigger for version tags like v1.0.0
@@ -72,8 +74,8 @@ jobs:
             ALL_TAGS="${VERSIONED_TAG},${LATEST_TAG}"
             echo "Building versioned tag: $VERSIONED_TAG"
             echo "Also tagging as latest: $LATEST_TAG"
-          elif [[ "${GITHUB_REF}" == refs/heads/devel ]]; then
-            # When compiling from devel branch, create devel-nvidia tag
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            # When compiling from main (merged PR), create devel-nvidia tag
             DEVEL_TAG="ghcr.io/$REPO_NAME_LOWER:devel-nvidia"
             ALL_TAGS="${DEVEL_TAG}"
             echo "Building devel tag: $DEVEL_TAG"
