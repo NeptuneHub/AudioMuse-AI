@@ -256,6 +256,20 @@ def _open_cell_file(path: str):
     return mm, int(dim), offsets
 
 
+def _release_memmap(mm) -> None:
+    """Close a numpy memmap's underlying file handle (idempotent, best-effort).
+
+    Windows keeps a lock on a mapped file, so an unreleased reader makes the old
+    cell file undeletable and ``_prune_old_cell_files`` leaks it across rebuilds.
+    """
+    if mm is None:
+        return
+    try:
+        mm._mmap.close()
+    except Exception:
+        pass
+
+
 def _vec_in_cell(ids: np.ndarray, vecs: np.ndarray, int_id: int) -> Optional[np.ndarray]:
     """Return the row of ``vecs`` whose id is ``int_id`` (cell ids are sorted), or None."""
     if ids.size == 0:
@@ -547,10 +561,28 @@ class PagedIvfIndex:
             self._centroids = np.ascontiguousarray(centroids, dtype=np.float32)
         self._num_cells = int(self._centroids.shape[0])
         self._tl = threading.local()
+        self._finalizer = (
+            weakref.finalize(self, _release_memmap, self._mmap)
+            if self._mmap is not None else None
+        )
         _LIVE_INDEXES.add(self)
 
     def __len__(self) -> int:
         return self._n_items
+
+    def close(self) -> None:
+        """Release the memmap so its backing cell file can be deleted.
+
+        Safe to call more than once. After close the index falls back to
+        Postgres cell reads, so a stray query on a closed index degrades
+        instead of crashing.
+        """
+        fin = getattr(self, "_finalizer", None)
+        if fin is not None:
+            fin()
+            self._finalizer = None
+        self._mmap = None
+        self._cell_offsets = {}
 
     @property
     def num_elements(self) -> int:
@@ -627,10 +659,11 @@ class PagedIvfIndex:
         """
         out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         if self._mmap is not None:
-            for raw in cell_ids:
-                cid = int(raw)
-                if cid in out:
-                    continue
+            ordered = sorted(
+                {int(c) for c in cell_ids},
+                key=lambda cid: self._cell_offsets.get(cid, (1 << 62, 0))[0],
+            )
+            for cid in ordered:
                 cell = self._cell_from_mmap(cid)
                 if cell is not None:
                     out[cid] = cell
