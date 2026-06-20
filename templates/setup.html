@@ -134,6 +134,38 @@
     #lyrics-api-config {
         margin-top: 1.5rem;
     }
+    .advanced-section {
+        margin-top: 0.75rem;
+        border: 1px solid var(--border-color, #e0e0e0);
+        border-radius: 10px;
+        padding: 0.5rem 0.95rem;
+        background: var(--bg-card, #fbfbfd);
+    }
+    .advanced-section > summary {
+        cursor: pointer;
+        font-weight: 700;
+        padding: 0.35rem 0;
+        list-style-position: inside;
+    }
+    .advanced-section[open] > summary {
+        margin-bottom: 0.85rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border-color, #eee);
+    }
+    .advanced-toolbar {
+        display: flex;
+        gap: 0.5rem;
+        margin: 1rem 0 0.25rem;
+    }
+    #advanced-config .advanced-toolbar button {
+        width: auto;
+        padding: 0.45rem 0.95rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        background: var(--bg-input, #fff);
+        color: var(--text-main, #333);
+        border: 1px solid var(--border-color, #ccc);
+    }
 </style>
 {% endblock %}
 
@@ -268,6 +300,10 @@
                     These settings tune analysis, clustering and internal behavior. Wrong values can break analysis runs or produce poor playlists. Please review the
                     <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS documentation on GitHub</a>
                     before changing anything here.
+                </div>
+                <div class="advanced-toolbar">
+                    <button type="button" id="advanced-expand-all">Expand all</button>
+                    <button type="button" id="advanced-collapse-all">Collapse all</button>
                 </div>
                 <div id="advanced-fields"></div>
             </details>

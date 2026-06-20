@@ -303,5 +303,139 @@ def test_global_cache_no_idle_drop_when_disabled():
     assert cache._timer_thread is None
 
 
+import mmap as _mmap_mod
+
+
+def _vmrss_kb():
+    """Resident set size in KB from /proc/self/status, or None off Linux."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
+
+@pytest.mark.skipif(
+    not hasattr(_mmap_mod, "MADV_DONTNEED") or _vmrss_kb() is None,
+    reason="MADV_DONTNEED / VmRSS only available on Linux",
+)
+def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
+    """MADV_DONTNEED on a live index's mapping must actually shrink process RSS.
+
+    This is the real fix for idle RAM not returning to baseline: the disk-cache
+    mmap pages faulted in during queries are file-backed (malloc_trim cannot free
+    them), so the idle watcher advises them away. We map a real file, fault every
+    page in, then assert the drop is reflected in VmRSS.
+    """
+    import tasks.paged_ivf as pv
+
+    size = 96 * 1024 * 1024
+    path = tmp_path / "cells.bin"
+    with open(path, "wb") as f:
+        block = (b"\xab" * (4 * 1024 * 1024))
+        for _ in range(size // len(block)):
+            f.write(block)
+
+    mm = np.memmap(str(path), dtype=np.uint8, mode="r")
+    _ = int(mm.sum(dtype=np.int64))  # touch every page -> resident
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub._mmap = mm
+    pv._LIVE_INDEXES.add(stub)
+    try:
+        rss_before = _vmrss_kb()
+        dropped = pv._drop_resident_mmap_pages()
+        rss_after = _vmrss_kb()
+    finally:
+        try:
+            pv._LIVE_INDEXES.discard(stub)
+        except Exception:
+            pass
+
+    assert dropped >= 1
+    assert (rss_before - rss_after) > 30_000, (
+        f"expected >30MB RSS drop, got {rss_before - rss_after} KB"
+    )
+
+
+def test_mmap_idle_worker_drops_pages_and_runs_callbacks(monkeypatch):
+    """An idle disk-cache working set must fire the watcher: drop + idle callbacks."""
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 1)
+    fired = {"n": 0}
+
+    def cb():
+        fired["n"] += 1
+
+    pv.register_idle_callback(cb)
+    try:
+        pv._note_mmap_activity()
+        assert pv._MMAP_IDLE_THREAD is not None
+
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline and fired["n"] == 0:
+            time.sleep(0.1)
+
+        assert fired["n"] >= 1, "idle watcher should have run idle callbacks"
+        assert pv._MMAP_IDLE_THREAD is None, "watcher should exit after firing"
+    finally:
+        pv.unregister_idle_callback(cb)
+
+
+def test_note_mmap_activity_noop_when_disabled(monkeypatch):
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 0)
+    monkeypatch.setattr(pv, "_MMAP_IDLE_THREAD", None)
+    pv._note_mmap_activity()
+    assert pv._MMAP_IDLE_THREAD is None
+
+
+def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
+    """A continuously-queried index must not keep an idle index's pages resident."""
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 2)
+
+    captured = []
+
+    def fake_drop(indexes=None):
+        batch = list(indexes) if indexes is not None else None
+        captured.append(batch)
+        return len(batch) if batch else 0
+
+    monkeypatch.setattr(pv, "_drop_resident_mmap_pages", fake_drop)
+
+    class _Stub:
+        def __init__(self):
+            self._mmap = object()
+            self._mmap_pages_dropped = False
+            self._last_mmap_access = time.monotonic()
+
+    hot = _Stub()
+    idle = _Stub()
+    idle._last_mmap_access = time.monotonic() - 100  # already well past the window
+    pv._LIVE_INDEXES.add(hot)
+    pv._LIVE_INDEXES.add(idle)
+    try:
+        pv._note_mmap_activity(hot)  # hot is fresh; starts the watcher
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not captured:
+            time.sleep(0.1)
+        assert captured, "watcher never dropped anything"
+        assert captured[0] == [idle], "first drop must target only the idle index"
+        assert idle._mmap_pages_dropped is True
+    finally:
+        pv._LIVE_INDEXES.discard(hot)
+        pv._LIVE_INDEXES.discard(idle)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

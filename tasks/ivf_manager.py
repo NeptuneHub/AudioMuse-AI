@@ -65,9 +65,36 @@ class _ResultCache:
         with self._lock:
             self._data.clear()
 
+    def sweep_expired(self):
+        """Drop every entry past its TTL.
+
+        Entries otherwise only expire lazily on the next get()/put(), so a fully
+        idle process keeps them resident forever. The IVF idle watcher calls this
+        so an idle Flask process sheds cached result lists too, not just cells.
+        """
+        if self._ttl <= 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            stale = [k for k, (expiry, _v) in self._data.items() if expiry <= now]
+            for k in stale:
+                del self._data[k]
+
 
 _neighbor_result_cache = _ResultCache(IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX)
 _max_distance_cache = _ResultCache(IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX)
+
+
+def _sweep_result_caches():
+    _neighbor_result_cache.sweep_expired()
+    _max_distance_cache.sweep_expired()
+
+
+try:
+    from .paged_ivf import register_idle_callback
+    register_idle_callback(_sweep_result_caches)
+except Exception:
+    logger.debug("Could not register IVF result-cache idle sweep", exc_info=True)
 
 
 # --- Thread pool for parallel operations ---
@@ -1258,5 +1285,10 @@ def cleanup_resources():
     """
     logger.info("Cleaning up similarity manager resources...")
     _shutdown_thread_pool()
+    try:
+        from tasks.paged_ivf import shutdown_query_pool
+        shutdown_query_pool()
+    except Exception:
+        logger.debug("IVF query pool shutdown failed during cleanup.", exc_info=True)
     logger.info("Similarity manager cleanup complete.")
 

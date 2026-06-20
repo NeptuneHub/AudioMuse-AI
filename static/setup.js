@@ -297,32 +297,186 @@ function renderServerFields(serverType, values, hasValueMap) {
     updateTestButtonState();
 }
 
+// Advanced parameters are grouped into collapsible sections so the long, flat
+// list is navigable. Each section is just an ordered list of field names; any
+// advanced field not listed here falls into the catch-all "Other parameters"
+// section, so newly added config keys stay visible instead of being silently
+// dropped. This is purely presentational ordering - the values still
+// round-trip through the form exactly as before.
+var ADVANCED_SECTIONS = [
+    {
+        title: 'Audio Analysis',
+        items: [
+            'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS',
+            'PER_SONG_MODEL_RELOAD', 'CLAP_TOP_QUERIES_COUNT', 'CLAP_TEXT_SEARCH_WARMUP_DURATION',
+            'ENERGY_MIN', 'ENERGY_MAX', 'AUDIO_LOAD_TIMEOUT', 'REBUILD_INDEX_BATCH_SIZE',
+            'MAX_QUEUED_ANALYSIS_JOBS'
+        ]
+    },
+    {
+        title: 'Clustering & Playlist Generation',
+        items: [
+            'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
+            'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_PLAYLISTS',
+            'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
+            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS', 'DB_FETCH_CHUNK_SIZE',
+            'CLUSTERING_BATCH_TIMEOUT_MINUTES', 'CLUSTERING_MAX_FAILED_BATCHES',
+            'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
+            'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
+            'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION',
+            'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
+            'SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY', 'SCORE_WEIGHT_OTHER_FEATURE_PURITY',
+            'SCORE_WEIGHT_SILHOUETTE', 'SCORE_WEIGHT_DAVIES_BOULDIN', 'SCORE_WEIGHT_CALINSKI_HARABASZ',
+            'NUM_CLUSTERS_MIN', 'NUM_CLUSTERS_MAX',
+            'DBSCAN_EPS_MIN', 'DBSCAN_EPS_MAX', 'DBSCAN_MIN_SAMPLES_MIN', 'DBSCAN_MIN_SAMPLES_MAX',
+            'GMM_N_COMPONENTS_MIN', 'GMM_N_COMPONENTS_MAX', 'GMM_COVARIANCE_TYPE',
+            'SPECTRAL_N_CLUSTERS_MIN', 'SPECTRAL_N_CLUSTERS_MAX', 'SPECTRAL_N_NEIGHBORS',
+            'PCA_COMPONENTS_MIN', 'PCA_COMPONENTS_MAX',
+            'MIN_SONGS_PER_GENRE_FOR_STRATIFICATION', 'STRATIFIED_SAMPLING_TARGET_PERCENTILE',
+            'SAMPLING_PERCENTAGE_CHANGE_PER_RUN'
+        ]
+    },
+    {
+        title: 'Similarity & IVF Index',
+        items: [
+            'SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT', 'SIMILARITY_RADIUS_DEFAULT', 'IVF_METRIC',
+            'IVF_NPROBE', 'IVF_NLIST_MAX', 'IVF_TRAIN_POINTS_PER_CELL', 'IVF_MAX_CELL_MB',
+            'IVF_MAX_PART_SIZE_MB', 'IVF_QUERY_CACHE_MB', 'IVF_READ_BATCH_CELLS', 'IVF_GLOBAL_CACHE_MB',
+            'IVF_PRELOAD_ALL', 'IVF_GLOBAL_CACHE_IDLE_SECONDS', 'IVF_RESULT_CACHE_SECONDS',
+            'IVF_RESULT_CACHE_MAX', 'IVF_MAX_DISTANCE_NPROBE', 'IVF_DISK_CACHE_ENABLED',
+            'IVF_DISK_CACHE_IDLE_SECONDS', 'IVF_QUERY_EF'
+        ]
+    },
+    {
+        title: 'Duplicate & Mood Filtering',
+        items: [
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE', 'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
+            'DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 'DUPLICATE_DISTANCE_CHECK_LOOKBACK',
+            'MOOD_SIMILARITY_THRESHOLD', 'MOOD_SIMILARITY_ENABLE'
+        ]
+    },
+    {
+        title: 'Song Path',
+        items: [
+            'PATH_DISTANCE_METRIC', 'PATH_DEFAULT_LENGTH', 'PATH_AVG_JUMP_SAMPLE_SIZE',
+            'PATH_CANDIDATES_PER_STEP', 'PATH_LCORE_MULTIPLIER', 'PATH_FIX_SIZE'
+        ]
+    },
+    {
+        title: 'Song Alchemy',
+        items: [
+            'ALCHEMY_DEFAULT_N_RESULTS', 'ALCHEMY_MAX_N_RESULTS', 'ALCHEMY_TEMPERATURE',
+            'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR', 'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+            'ALCHEMY_PLAYLIST_MAX_SONGS', 'ALCHEMY_PLAYLIST_MAX_CENTROIDS', 'ALCHEMY_MAX_ANCHOR_POINTS'
+        ]
+    },
+    {
+        title: 'Sonic Fingerprint',
+        items: [
+            'SONIC_FINGERPRINT_TOP_N_SONGS', 'SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM',
+            'SONIC_FINGERPRINT_NEIGHBORS', 'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME'
+        ]
+    },
+    {
+        title: 'Lyrics & SemGrove Search',
+        items: [
+            'LYRICS_ENABLED', 'LYRICS_API_ENABLE', 'LYRICS_ASR_ENABLE', 'LYRICS_MUSICNN_SKIP',
+            'MUSICSERVER_LYRICS_TIMEOUT', 'VAD_VOICE_RECOGNITION', 'LYRICS_ASR_BEAM_SIZE',
+            'LYRICS_ASR_MIN_AVG_LOGPROB', 'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB',
+            'LYRICS_MIN_CHARS_FOR_EMBEDDING', 'LYRICS_TEXT_MAX_COMPRESSION_RATIO',
+            'LYRICS_LANG_CONFIDENCE_MIN', 'LYRICS_CJK_SCRIPT_MIN_RATIO', 'LYRICS_GTE_WARMUP_DURATION',
+            'SEM_GROVE_WEIGHT_LYRICS', 'SEM_GROVE_WEIGHT_AUDIO'
+        ]
+    },
+    {
+        title: 'AI Naming & Chat',
+        items: [
+            'AI_MODEL_PROVIDER', 'AI_REQUEST_TIMEOUT_SECONDS', 'MAX_SONGS_IN_AI_PROMPT',
+            'OLLAMA_SERVER_URL', 'OLLAMA_MODEL_NAME', 'OPENAI_SERVER_URL', 'OPENAI_MODEL_NAME',
+            'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_MODEL_NAME', 'MISTRAL_API_KEY', 'MISTRAL_MODEL_NAME'
+        ]
+    }
+];
+var ADVANCED_OTHER_TITLE = 'Other parameters';
+
+function buildAdvancedFieldRow(field) {
+    var secret = false;
+    if (field.secret) {
+        secret = true;
+    }
+    if (field.name.indexOf('_API_KEY') !== -1) {
+        secret = true;
+    }
+    var fieldConfig = {
+        name: field.name,
+        label: field.name,
+        placeholder: field.default ? field.default : '',
+        type: field.type === 'bool' ? 'boolean' : field.type,
+        inputType: 'text',
+        secret: secret,
+        has_value: field.has_value,
+        options: Array.isArray(field.options) ? field.options : null,
+        originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
+    };
+    return createInputField(fieldConfig, field.value);
+}
+
+function renderAdvancedSection(title, items, byName, consumed) {
+    var body = document.createDocumentFragment();
+    var count = 0;
+    items.forEach(function(name) {
+        var field = byName[name];
+        if (!field || consumed[name]) {
+            return;
+        }
+        body.appendChild(buildAdvancedFieldRow(field));
+        consumed[name] = true;
+        count += 1;
+    });
+    if (count === 0) {
+        return;
+    }
+    var details = document.createElement('details');
+    details.className = 'advanced-section';
+    var summary = document.createElement('summary');
+    summary.textContent = title + ' (' + count + ')';
+    details.appendChild(summary);
+    details.appendChild(body);
+    advancedFields.appendChild(details);
+}
+
+function setAllAdvancedSections(open) {
+    var sections = advancedFields.querySelectorAll('details.advanced-section');
+    Array.prototype.forEach.call(sections, function(section) {
+        section.open = open;
+    });
+}
+
 function renderAdvancedFields(fields) {
     advancedFields.innerHTML = '';
     if (!fields) {
         return;
     }
+    var byName = {};
     fields.forEach(function(field) {
-        var secret = false;
-        if (field.secret) {
-            secret = true;
+        if (field && field.name) {
+            byName[field.name] = field;
         }
-        if (field.name.indexOf('_API_KEY') !== -1) {
-            secret = true;
-        }
-        var fieldConfig = {
-            name: field.name,
-            label: field.name,
-            placeholder: field.default ? field.default : '',
-            type: field.type === 'bool' ? 'boolean' : field.type,
-            inputType: 'text',
-            secret: secret,
-            has_value: field.has_value,
-            options: Array.isArray(field.options) ? field.options : null,
-            originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
-        };
-        advancedFields.appendChild(createInputField(fieldConfig, field.value));
     });
+    var consumed = {};
+    ADVANCED_SECTIONS.forEach(function(section) {
+        renderAdvancedSection(section.title, section.items, byName, consumed);
+    });
+    // Catch-all for any advanced field not claimed by a named section, in the
+    // order the server returned them (alphabetical).
+    var leftovers = fields.filter(function(field) {
+        return field && field.name && !consumed[field.name];
+    }).map(function(field) {
+        return field.name;
+    });
+    if (leftovers.length) {
+        renderAdvancedSection(ADVANCED_OTHER_TITLE, leftovers, byName, consumed);
+    }
 }
 
 function loadSetupData() {
@@ -894,6 +1048,15 @@ document.getElementById('test-button').addEventListener('click', testConnection)
 serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
+
+var advancedExpandAll = document.getElementById('advanced-expand-all');
+if (advancedExpandAll) {
+    advancedExpandAll.addEventListener('click', function() { setAllAdvancedSections(true); });
+}
+var advancedCollapseAll = document.getElementById('advanced-collapse-all');
+if (advancedCollapseAll) {
+    advancedCollapseAll.addEventListener('click', function() { setAllAdvancedSections(false); });
+}
 
 // ---------------------------------------------------------------------------
 // Lyrics API section — interactive analyze & configure
