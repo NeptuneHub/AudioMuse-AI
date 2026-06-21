@@ -30,7 +30,7 @@ WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 try:
     from app_helper import redis_conn
     from app_logging import configure_logging
-    from config import APP_VERSION, TEMP_DIR
+    from config import APP_VERSION, TEMP_DIR, RQ_MAX_JOBS, RQ_LOGGING_LEVEL
 except ImportError as e:
     print(f"Error importing worker dependencies: {e}")
     sys.exit(1)
@@ -44,8 +44,7 @@ except OSError as e:
 configure_logging()
 logger = logging.getLogger(__name__)
 
-# The queues the worker will listen on.
-# The order is important! Workers will always check 'high' before 'default'.
+# This worker ONLY listens to the 'default' queue; the 'high' queue is served by rq_worker_high_priority.py.
 queues_to_listen = ['default']
 
 # NOTE: Do NOT preload Whisper / gte / silero ONNX sessions here in
@@ -81,12 +80,12 @@ if __name__ == '__main__':
     # Memory leak prevention: restart after N jobs
     # RQ will automatically respawn via supervisord
     # Balance: High enough to avoid frequent CLAP reloads, low enough to prevent memory leaks
-    max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS', '50'))
+    max_jobs_before_restart = RQ_MAX_JOBS
 
     # Start the worker.
     # You can set logging_level for more verbose output.
     # Common levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
-    logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
+    logging_level = RQ_LOGGING_LEVEL
     logger.info(f"RQ Worker logging level set to: {logging_level}")
     logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 

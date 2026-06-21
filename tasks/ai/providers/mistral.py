@@ -5,6 +5,8 @@ import os
 import time
 from typing import Dict, List, Optional
 
+import config
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -61,7 +63,7 @@ def generate_text(
         complete_kwargs = {
             "model": model_name,
             "temperature": 0.9 if temperature is None else float(temperature),
-            "timeout_ms": 960,
+            "timeout_ms": config.AI_REQUEST_TIMEOUT_SECONDS * 1000,
             "messages": [{"role": "user", "content": full_prompt}],
         }
         if max_tokens is not None:

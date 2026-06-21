@@ -223,7 +223,7 @@ def run_clustering_batch_task(
                 "full_best_result_from_batch": best_result_in_batch,
                 "final_subset_track_ids": current_sampled_track_ids
             }
-            _log_and_update(f"Batch complete. Best score: {best_score_in_batch or -1:.2f}", 100, details=final_details, state=TASK_STATUS_SUCCESS)
+            _log_and_update(f"Batch complete. Best score: {best_score_in_batch:.2f}", 100, details=final_details, state=TASK_STATUS_SUCCESS)
             return {
                 "status": "SUCCESS",
                 "iterations_completed_in_batch": iterations_completed,

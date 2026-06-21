@@ -16,7 +16,7 @@ _MOOD_CENTROIDS = {}  # mood_name -> list of np.array centroids
 
 def _load_mood_centroids():
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
+        with open(MOOD_CENTROIDS_FILE, encoding='utf-8') as f:
             data = json.load(f)
         for mood, info in data.items():
             _MOOD_CENTROIDS[mood] = [np.array(c['centroid'], dtype=np.float32) for c in info['centroids']]

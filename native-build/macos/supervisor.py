@@ -55,6 +55,12 @@ class ProcessSupervisor:
         self._control = ControlServer(paths.control_socket_path(), self.dispatch_control)
         self._health_thread = None
         self._health_stop = threading.Event()
+        # Set by stop_all() to tell an in-flight start_all() to stop spawning;
+        # _boot_thread lets stop_all() join the boot thread before teardown so a
+        # stop racing a boot can't sweep the child table mid-spawn and leak the
+        # late children as detached (start_new_session) orphans.
+        self._stop_requested = threading.Event()
+        self._boot_thread = None
         self._log = self._setup_logging()
 
     def _setup_logging(self):
@@ -76,25 +82,51 @@ class ProcessSupervisor:
     def state(self):
         return self._state
 
+    def start_in_background(self, on_ready=None, on_error=None):
+        """Boot the stack on a daemon thread the supervisor owns, so stop_all can
+        join it before teardown (a stop racing a boot would otherwise sweep the
+        child table mid-spawn and leak the late children as orphans)."""
+        def _boot():
+            try:
+                self.start_all()
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+                return
+            if on_ready is not None and self.is_running():
+                on_ready()
+        self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
+        self._boot_thread.start()
+        return self._boot_thread
+
     def start_all(self):
         with self._lock:
             if self._state in ("running", "starting"):
                 return
             self._state = "starting"
+            self._stop_requested.clear()
         self._log.info("=== AudioMuse-AI starting ===")
         try:
             self._reap_orphans()
             self._control.start()
+            if self._stop_requested.is_set():
+                return  # stop arrived mid-boot; the stopper handles teardown
             self._database_url = database.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
+            if self._stop_requested.is_set():
+                return
             self._start_redis()
             self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
+                if self._stop_requested.is_set():
+                    return
                 self.start_child(name)
                 if name == "flask":
                     self._wait_http(FLASK_URL, timeout=180)
             self._write_pidfile()
             with self._lock:
+                if self._stop_requested.is_set():
+                    return
                 self._state = "running"
             self._start_health_loop()
             self._log.info("=== AudioMuse-AI running ===")
@@ -106,11 +138,17 @@ class ProcessSupervisor:
 
     def stop_all(self):
         with self._lock:
-            if self._state == "stopped":
+            if self._state in ("stopping", "stopped"):
                 return
             self._state = "stopping"
+            self._stop_requested.set()
             self._desired.clear()
         self._health_stop.set()
+        # Wait for any in-flight boot/health work to stop spawning before we
+        # sweep: a child spawned after the sweep would survive as an orphan in
+        # its own session. Joining guarantees everything they started is
+        # registered in _children and gets torn down below.
+        self._join_workers()
         for name in reversed(BOOT_ORDER):
             self._terminate_named(name)
         self._terminate_named("redis")
@@ -123,6 +161,16 @@ class ProcessSupervisor:
         with self._lock:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
+
+    def _join_workers(self):
+        """Wait for the boot and health threads to finish before teardown.
+
+        Skips the current thread so stop_all() called from within start_all()'s
+        failure handler (boot thread) never deadlocks on itself."""
+        current = threading.current_thread()
+        for thread in (self._boot_thread, self._health_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=30)
 
     def _start_redis(self):
         argv, url = taskqueue.build_embedded_redis_argv(
@@ -148,11 +196,16 @@ class ProcessSupervisor:
         role = ROLE_OF.get(name)
         if role is None:
             return False
+        with self._lock:
+            # Refuse to spawn once a stop is in progress -- otherwise the boot
+            # loop or the health loop could create a child after stop_all's
+            # teardown sweep, leaking it as a detached orphan.
+            if self._state not in ("starting", "running"):
+                return False
+            self._desired.add(name)
         argv = [sys.executable, f"--role={role}"]
         child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
         self._spawn(name, argv, child_env)
-        with self._lock:
-            self._desired.add(name)
         return True
 
     def stop_child(self, name):

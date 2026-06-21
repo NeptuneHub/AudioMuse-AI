@@ -93,6 +93,10 @@ class ProcessSupervisor:
                 return
             self._state = "starting"
             self._stop_requested.clear()
+            # Record the boot thread so stop_all can join it before the teardown
+            # sweep: a stop racing a boot would otherwise sweep _children while
+            # this thread is still spawning, leaking the late children as orphans.
+            self._boot_thread = threading.current_thread()
         self._log.info("=== AudioMuse-AI starting ===")
         try:
             self._reap_orphans()
@@ -101,14 +105,20 @@ class ProcessSupervisor:
                 return
             self._db_conn = db_backend.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
+            if self._stop_requested.is_set():
+                return
             self._start_redis()
             self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
+                if self._stop_requested.is_set():
+                    return
                 self.start_child(name)
                 if name == "flask":
                     self._wait_http(FLASK_URL, timeout=180)
             self._write_pidfile()
             with self._lock:
+                if self._stop_requested.is_set():
+                    return
                 self._state = "running"
             self._start_health_loop()
             self._log.info("=== AudioMuse-AI running ===")
@@ -125,6 +135,9 @@ class ProcessSupervisor:
                 return
             self._state = "stopping"
         self._log.info("=== AudioMuse-AI stopping ===")
+        # Wait for any in-flight boot/health work to stop spawning before we
+        # sweep: a child spawned after the sweep would survive as an orphan.
+        self._join_workers()
         self._control.stop()
         for name in list(self._children.keys()):
             self._stop_child(name)
@@ -136,8 +149,27 @@ class ProcessSupervisor:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
 
+    def _join_workers(self):
+        """Wait for the boot and health threads to finish before teardown.
+
+        Skips the current thread so stop_all() called from within start_all()'s
+        failure handler (boot thread) never deadlocks on itself."""
+        current = threading.current_thread()
+        for thread in (self._boot_thread, self._health_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=30)
+
     def start_child(self, name):
-        role = ROLE_OF[name]
+        role = ROLE_OF.get(name)
+        if role is None:
+            return False
+        with self._lock:
+            # Refuse to spawn once a stop is in progress -- otherwise the boot
+            # loop, the restart pump, or a control request could create a child
+            # after stop_all's teardown sweep, leaking it as an orphan.
+            if self._state not in ("starting", "running"):
+                return False
+            self._desired.add(name)
         self._log.info("Starting %s (role=%s)", name, role)
         db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
         redis_url = self._ensure_redis_running()
@@ -152,15 +184,18 @@ class ProcessSupervisor:
             stdin=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         with self._lock:
             self._children[name] = popen
-            self._desired.add(name)
         threading.Thread(target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True).start()
+        return True
 
     def _stop_child(self, name):
-        popen = self._children.pop(name, None)
-        self._desired.discard(name)
+        with self._lock:
+            popen = self._children.pop(name, None)
+            self._desired.discard(name)
         if popen is None:
             return
         self._log.info("Stopping %s (pid=%d)", name, popen.pid)
@@ -181,8 +216,11 @@ class ProcessSupervisor:
             self._log.info("[%s] %s", name, line.rstrip())
         popen.wait()
         with self._lock:
+            if self._children.get(name) is not popen:
+                return
             self._children.pop(name, None)
-        if name in self._desired and self._state == "running":
+            restart = name in self._desired and self._state == "running"
+        if restart:
             self._log.warning("%s exited unexpectedly -- restarting", name)
             try:
                 self.start_child(name)

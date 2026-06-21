@@ -101,6 +101,39 @@ def attach_song_features(rows, id_key='item_id'):
     return rows
 
 
+def serialize_neighbor_results(neighbor_results, missing_album='unknown', include_album_artist=True):
+    """Build the similar-tracks JSON list from neighbor dicts carrying item_id + distance.
+
+    Shared by the IVF similarity endpoints and the sonic-fingerprint endpoint so the
+    response shape lives in one place. missing_album / include_album_artist keep each
+    caller's existing output shape.
+    """
+    if not neighbor_results:
+        return []
+    ids = [n['item_id'] for n in neighbor_results]
+    details_map = {d['item_id']: d for d in get_score_data_by_ids(ids)}
+    distance_map = {n['item_id']: n['distance'] for n in neighbor_results}
+    out = []
+    for nid in ids:
+        info = details_map.get(nid)
+        if not info:
+            continue
+        row = {
+            "item_id": info['item_id'],
+            "title": info['title'],
+            "author": info['author'],
+            "album": (info.get('album') or missing_album),
+            "distance": distance_map[nid],
+            "mood_vector": info.get('mood_vector'),
+            "other_features": info.get('other_features'),
+            "top_genre": top_stratified_genre(info.get('mood_vector')),
+        }
+        if include_album_artist:
+            row["album_artist"] = (info.get('album_artist') or 'unknown')
+        out.append(row)
+    return out
+
+
 
 
 

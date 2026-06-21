@@ -181,9 +181,10 @@ def download_track(temp_dir, item):
         
         response = _navidrome_request("stream", params={"id": track_id}, stream=True)
         if response:
-            with open(local_filename, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            with response:
+                with open(local_filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
@@ -542,7 +543,7 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
         logger.error(f"Navidrome playlist '{playlist_name}' was created, but the response did not contain an ID.")
         return None
 
-    logger.info(f"✅ Created Navidrome playlist '{playlist_name}' (ID: {new_playlist_id}) with the first {len(ids_for_creation)} songs.")
+    logger.info(f"Created Navidrome playlist '{playlist_name}' (ID: {new_playlist_id}) with the first {len(ids_for_creation)} songs.")
 
     # Immediately update playlist to public (Navidrome requires updatePlaylist for visibility).
     update_response = _navidrome_request(
@@ -583,7 +584,7 @@ def delete_playlist(playlist_id):
     """Deletes a playlist on Navidrome using admin credentials."""
     response = _navidrome_request("deletePlaylist", {"id": playlist_id}, method='post')
     if response and response.get("status") == "ok":
-        logger.info(f"🗑️ Deleted Navidrome playlist ID: {playlist_id}")
+        logger.info(f"Deleted Navidrome playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Navidrome")
     return False

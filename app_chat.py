@@ -233,7 +233,7 @@ def chat_playlist_api():
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
     data = request.get_json()
-    if not data or 'userInput' not in data:
+    if not data or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
         return jsonify({"error": "Missing userInput in request"}), 400
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
@@ -256,7 +256,7 @@ def chat_playlist_stream_api():
     value (the response object) is delivered as the ``done`` event.
     """
     data = request.get_json()
-    if not data or 'userInput' not in data:
+    if not data or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
         return jsonify({"error": "Missing userInput in request"}), 400
 
     @stream_with_context
@@ -749,7 +749,7 @@ def create_media_server_playlist_api():
     user_playlist_name = data.get('playlist_name')
     item_ids = data.get('item_ids') # This will be a list of strings
 
-    if not user_playlist_name.strip():
+    if not user_playlist_name or not str(user_playlist_name).strip():
         return jsonify({"message": "Error: Playlist name cannot be empty."}), 400
     if not item_ids:
         return jsonify({"message": "Error: No songs provided to create the playlist."}), 400

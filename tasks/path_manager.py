@@ -1,8 +1,6 @@
 # tasks/path_manager.py
 import logging
 import numpy as np
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 # Imports from the project
 from .ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
@@ -11,9 +9,6 @@ from config import PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH, PATH_DISTANCE_
 from config import MAX_SONGS_PER_ARTIST
 
 logger = logging.getLogger(__name__)
-
-# small shared thread pool in case of parallel vector fetch needs
-_PATH_THREAD_POOL = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 1) - 1), thread_name_prefix="path")
 
 
 def get_euclidean_distance(v1, v2):

@@ -383,7 +383,7 @@ def call_with_tools(
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning(f"OpenAI request timed out after {timeout} seconds")
         log_messages.append(
-            f"\u23f1\ufe0f Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable."
+            f"Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable."
         )
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
@@ -391,7 +391,7 @@ def call_with_tools(
     except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning("OpenAI request timed out", exc_info=True)
-        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds.")
+        log_messages.append(f"Request timed out after {timeout} seconds.")
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
@@ -475,7 +475,7 @@ def call_with_tools_ollama(
 
             if cleaned.startswith("{") and '"type"' in cleaned and '"array"' in cleaned:
                 log_messages.append(
-                    "\u26a0\ufe0f Ollama returned schema instead of tool calls, using fallback"
+                    "WARN: Ollama returned schema instead of tool calls, using fallback"
                 )
                 return {"error": "Ollama returned schema definition instead of tool calls"}
 
@@ -485,24 +485,24 @@ def call_with_tools_ollama(
             if isinstance(parsed, dict) and "tool_calls" in parsed:
                 tool_calls = parsed["tool_calls"]
                 log_messages.append(
-                    f"\u2713 Extracted tool_calls array with {len(tool_calls) if isinstance(tool_calls, list) else 1} items"
+                    f"OK: Extracted tool_calls array with {len(tool_calls) if isinstance(tool_calls, list) else 1} items"
                 )
             elif isinstance(parsed, list):
                 tool_calls = parsed
-                log_messages.append("\u26a0\ufe0f Got array directly (expected object with tool_calls field)")
+                log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
             elif isinstance(parsed, dict) and "name" in parsed:
                 tool_calls = [parsed]
                 log_messages.append(
-                    "\u26a0\ufe0f Got single tool call object (expected object with tool_calls array)"
+                    "WARN: Got single tool call object (expected object with tool_calls array)"
                 )
             elif isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
                 tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
                 log_messages.append(
-                    "\u26a0\ufe0f Remapped {'tool','arguments'} -> {'name','arguments'} format"
+                    "WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format"
                 )
             else:
                 log_messages.append(
-                    f"\u26a0\ufe0f Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
+                    f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
                 )
                 return {"error": "Ollama response missing 'tool_calls' field"}
 
@@ -528,22 +528,22 @@ def call_with_tools_ollama(
                             keys_to_remove.append(k)
                     for k in keys_to_remove:
                         log_messages.append(
-                            f"   \U0001f9f9 Stripped empty/default arg '{k}={args[k]}' from {tc['name']}"
+                            f"   Stripped empty/default arg '{k}={args[k]}' from {tc['name']}"
                         )
                         del args[k]
                     valid_calls.append(tc)
                 else:
-                    log_messages.append(f"\u26a0\ufe0f Skipping invalid tool call: {tc}")
+                    log_messages.append(f"WARN: Skipping invalid tool call: {tc}")
 
             if not valid_calls:
                 return {"error": "No valid tool calls found in Ollama response"}
 
-            log_messages.append(f"\u2705 Ollama returned {len(valid_calls)} valid tool calls")
+            log_messages.append(f"OK: Ollama returned {len(valid_calls)} valid tool calls")
             return {"tool_calls": valid_calls}
 
         except json.JSONDecodeError:
             logger.exception("JSON decode error while parsing Ollama tool response")
-            log_messages.append("\u274c Failed to parse Ollama JSON response.")
+            log_messages.append("X: Failed to parse Ollama JSON response.")
             log_messages.append(f"Attempted to parse: {cleaned[:300]}")
             return {
                 "error": "Failed to parse Ollama JSON response.",
@@ -559,10 +559,10 @@ def call_with_tools_ollama(
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning(f"Ollama request timed out after {timeout} seconds")
         log_messages.append(
-            f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow."
+            f"Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow."
         )
         log_messages.append(
-            "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value (e.g., 600 for 10 minutes)"
+            "TIP: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value (e.g., 600 for 10 minutes)"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
@@ -570,9 +570,9 @@ def call_with_tools_ollama(
     except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning("Ollama request timed out", exc_info=True)
-        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds.")
+        log_messages.append(f"Ollama request timed out after {timeout} seconds.")
         log_messages.append(
-            "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
+            "TIP: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."

@@ -151,7 +151,8 @@ def fit_gmm_bic(X, k_range=GMM_K_RANGE):
     best_k = -1
     bic_values = {}
 
-    for k in k_range:
+    max_k = min(k_range.stop - 1, len(X))
+    for k in range(k_range.start, max_k + 1):
         gmm = GaussianMixture(n_components=k, covariance_type='diag',
                                n_init=3, max_iter=300, reg_covar=1e-5,
                                random_state=42)

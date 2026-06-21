@@ -131,14 +131,8 @@ def _run_menubar():
                 None,
                 rumps.MenuItem("Quit", callback=self.on_quit),
             ]
-            threading.Thread(target=self._boot, name="boot", daemon=True).start()
+            supervisor.start_in_background()
             rumps.Timer(self._refresh, 3).start()
-
-        def _boot(self):
-            try:
-                supervisor.start_all()
-            except Exception:
-                pass
 
         def on_open_browser(self, _):
             subprocess.Popen(["open", "http://127.0.0.1:8000"])
@@ -147,8 +141,13 @@ def _run_menubar():
             subprocess.Popen(["open", "-a", "Console", paths.log_file()])
 
         def on_toggle(self, _):
-            target = supervisor.stop_all if supervisor.is_running() else supervisor.start_all
-            threading.Thread(target=target, daemon=True).start()
+            # START via start_in_background so the supervisor tracks the boot
+            # thread (_join_workers can then join it on a racing stop/quit and
+            # not leak a child spawned in the Popen->register micro-window).
+            if supervisor.is_running():
+                threading.Thread(target=supervisor.stop_all, daemon=True).start()
+            else:
+                supervisor.start_in_background()
 
         def on_quit(self, _):
             supervisor.stop_all()

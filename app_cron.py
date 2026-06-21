@@ -146,14 +146,36 @@ def save_cron_entry():
     return jsonify({'message': 'saved'}), 200
 
 
-def _field_matches(field_expr, value):
-    # very small cron field matcher supporting '*', single number, list (comma), and ranges (a-b)
+def _field_matches(field_expr, value, field_min=0):
+    # very small cron field matcher supporting '*', single number, list (comma), ranges (a-b), and steps (*/N, a-b/N).
+    # field_min is the lowest legal value for this field (0 for minute/hour/dow, 1 for day-of-month/month) so '*/N'
+    # anchors at the field minimum like standard cron instead of at 0.
     if field_expr.strip() == '*':
         return True
     parts = field_expr.split(',')
     for p in parts:
         p = p.strip()
-        if '-' in p:
+        if '/' in p:
+            base, step_s = p.split('/', 1)
+            try:
+                step = int(step_s)
+                if step <= 0:
+                    continue
+                if base.strip() == '*':
+                    if value >= field_min and (value - field_min) % step == 0:
+                        return True
+                elif '-' in base:
+                    a, b = base.split('-', 1)
+                    lo, hi = int(a), int(b)
+                    if lo <= value <= hi and (value - lo) % step == 0:
+                        return True
+                else:
+                    start = int(base)
+                    if value >= start and (value - start) % step == 0:
+                        return True
+            except ValueError:
+                continue
+        elif '-' in p:
             a, b = p.split('-', 1)
             try:
                 if int(a) <= value <= int(b):
@@ -171,7 +193,7 @@ def _field_matches(field_expr, value):
 
 def cron_matches_now(expr, ts=None):
     # expr expected as 'min hour day month dow'
-    t = time.localtime(ts) if ts else time.localtime()
+    t = time.localtime(ts) if ts is not None else time.localtime()
     parts = expr.strip().split()
     if len(parts) < 5:
         return False
@@ -186,15 +208,15 @@ def cron_matches_now(expr, ts=None):
     # the job runs if EITHER matches; otherwise both must match.
     dom_restricted = dom.strip() != '*'
     dow_restricted = dow.strip() != '*'
-    dom_ok = _field_matches(dom, t.tm_mday)
-    dow_ok = _field_matches(dow, py_dow)
+    dom_ok = _field_matches(dom, t.tm_mday, field_min=1)
+    dow_ok = _field_matches(dow, py_dow) or (py_dow == 0 and _field_matches(dow, 7))
     if dom_restricted and dow_restricted:
         if not (dom_ok or dow_ok):
             return False
     else:
         if not dom_ok or not dow_ok:
             return False
-    if not _field_matches(month, t.tm_mon):
+    if not _field_matches(month, t.tm_mon, field_min=1):
         return False
     return True
 

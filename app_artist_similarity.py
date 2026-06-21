@@ -79,6 +79,7 @@ def search_artists_endpoint():
     if end is not None and end <= start:
         return jsonify([])
     limit = (end - start) if end is not None else 20
+    limit = min(limit, 100)
     offset = start
 
     try:

@@ -17,6 +17,8 @@ def main():
     logger.info('Starting restart listener on channel: %s', channel)
 
     while True:
+        redis_conn = None
+        pubsub = None
         try:
             redis_conn = Redis.from_url(
                 redis_url,
@@ -62,6 +64,17 @@ def main():
         except Exception:
             logger.exception('Restart listener connection error, retrying in 5 seconds')
             time.sleep(5)
+        finally:
+            try:
+                if pubsub is not None:
+                    pubsub.close()
+            except Exception:
+                pass
+            try:
+                if redis_conn is not None:
+                    redis_conn.close()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

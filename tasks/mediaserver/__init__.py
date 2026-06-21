@@ -105,7 +105,7 @@ def download_track(temp_dir, item):
 
             detected_ext = _detect_audio_format(downloaded_path)
             if detected_ext and detected_ext != '.tmp':
-                new_path = downloaded_path.replace('.tmp', detected_ext)
+                new_path = downloaded_path[:-len('.tmp')] + detected_ext
                 # Check if target file already exists (avoid overwriting)
                 if os.path.exists(new_path):
                     logger.warning(f"Target file already exists, keeping .tmp: {new_path}")

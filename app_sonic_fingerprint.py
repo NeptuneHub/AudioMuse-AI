@@ -5,7 +5,7 @@ import logging
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
 from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
 from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
-from app_helper import top_stratified_genre
+from app_helper import serialize_neighbor_results
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +128,6 @@ def generate_sonic_fingerprint_endpoint():
       500:
         description: Server error during generation.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_score_data_by_ids
-
     try:
         if request.method == 'POST':
             data = request.get_json()
@@ -180,27 +177,9 @@ def generate_sonic_fingerprint_endpoint():
         if not fingerprint_results:
             return jsonify([])
 
-        result_ids = [r['item_id'] for r in fingerprint_results]
-        details_list = get_score_data_by_ids(result_ids)
-        
-        details_map = {d['item_id']: d for d in details_list}
-        distance_map = {r['item_id']: r['distance'] for r in fingerprint_results}
-
-        final_results = []
-        for res_id in result_ids:
-            if res_id in details_map:
-                track_info = details_map[res_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "album": track_info.get('album'),
-                    "distance": distance_map[res_id],
-                    "mood_vector": track_info.get('mood_vector'),
-                    "other_features": track_info.get('other_features'),
-                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
-                })
-
+        final_results = serialize_neighbor_results(
+            fingerprint_results, missing_album=None, include_album_artist=False
+        )
         return jsonify(final_results)
     except Exception as e:
         logger.error(f"Error in sonic_fingerprint endpoint: {e}", exc_info=True)

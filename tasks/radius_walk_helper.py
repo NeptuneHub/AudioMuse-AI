@@ -19,10 +19,11 @@ mood filtering) and for preparing candidate_data in the expected format.
 
 import logging
 import math
-import os
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
+
+from config import RADIUS_INSTRUMENTATION
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Configurable constants (kept small so the module stays self-contained)
 # ---------------------------------------------------------------------------
 BUCKET_SIZE = 50
-INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == "true"
+INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 
 
 # ---------------------------------------------------------------------------

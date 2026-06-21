@@ -191,7 +191,11 @@ def alchemy_api():
     """
     payload = request.get_json() or {}
     items = payload.get('items', [])
-    n = payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS)
+    try:
+        n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))
+    except (TypeError, ValueError):
+        n = config.ALCHEMY_DEFAULT_N_RESULTS
+    n = max(1, min(n, config.ALCHEMY_MAX_N_RESULTS))
     # Temperature parameter for probabilistic sampling (softmax temperature)
     temperature = payload.get('temperature', config.ALCHEMY_TEMPERATURE)
 

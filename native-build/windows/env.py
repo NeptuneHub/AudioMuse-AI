@@ -39,11 +39,9 @@ def build_child_env(role, db_conn, redis_url):
         # shared restart_manager.py. Not a real OS check.
         "AUDIOMUSE_PLATFORM": "macos",
         "APP_DATA_DIR": paths.app_support_dir(),
-        # Windows has no AF_UNIX.  Set the control socket to empty so
-        # restart_manager._send_control bails out safely (logs an error,
-        # returns False) instead of crashing on ``socket.AF_UNIX``.
-        # Restart-on-config-change is a no-op on Windows; users restart
-        # the app manually.
+        # Windows has no AF_UNIX: leave the control socket empty and use
+        # host/port. restart_manager._send_control prefers the TCP path,
+        # so save-config -> restart-workers works on Windows.
         "AUDIOMUSE_CONTROL_SOCKET": "",
         "AUDIOMUSE_CONTROL_HOST": "127.0.0.1",
         "AUDIOMUSE_CONTROL_PORT": str(paths.control_port()),

@@ -1,15 +1,27 @@
-<!-- Reverse-proxy subpath support: prefix root-relative fetch() URLs with the proxy script root.
+<!-- Reverse-proxy subpath support: prefix root-relative URLs with the proxy script root.
+     Exposes window.SCRIPT_ROOT and window.appUrl() (used for fetch() and for
+     window.location redirects), plus a fetch() wrapper that auto-prefixes.
      No-op when not behind a proxy (script_root is empty), so non-proxy and native builds are unaffected. -->
 <script>
     (function () {
         var root = {{ request.script_root | tojson }};
-        if (!root || root.charAt(0) !== "/" || root.charAt(1) === "/" || typeof window.fetch !== "function") { return; }
+        if (typeof root !== "string" || root.charAt(0) !== "/" || root.charAt(1) === "/") { root = ""; }
+        window.SCRIPT_ROOT = root;
+        // Prefix a root-relative path with the script root; leave others untouched.
+        window.appUrl = function (path) {
+            if (!root || typeof path !== "string" || path.charAt(0) !== "/" || path.charAt(1) === "/"
+                || path === root || path.slice(0, root.length + 1) === root + "/") {
+                return path;
+            }
+            return root + path;
+        };
+        // Centralized redirect: build the target through appUrl so a root-relative
+        // redirect survives a subpath proxy without a guard at every call site.
+        window.appRedirect = function (path) { window.location.href = window.appUrl(path); };
+        if (!root || typeof window.fetch !== "function") { return; }
         var nativeFetch = window.fetch.bind(window);
         window.fetch = function (input, init) {
-            if (typeof input === "string" && input.charAt(0) === "/" && input.charAt(1) !== "/"
-                && input !== root && input.slice(0, root.length + 1) !== root + "/") {
-                input = root + input;
-            }
+            if (typeof input === "string") { input = window.appUrl(input); }
             return nativeFetch(input, init);
         };
     })();

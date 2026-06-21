@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 def _get_weights():
     """Read current weights from config (supports hot-reload via setup wizard)."""
-    wl = max(0.0, float(getattr(config, 'SEM_GROVE_WEIGHT_LYRICS', 0.75)))
-    wa = max(0.0, float(getattr(config, 'SEM_GROVE_WEIGHT_AUDIO',  0.25)))
+    wl = max(0.0, float(config.SEM_GROVE_WEIGHT_LYRICS))
+    wa = max(0.0, float(config.SEM_GROVE_WEIGHT_AUDIO))
     return math.sqrt(wl), math.sqrt(wa)
 
 # Module-level defaults used at build time
