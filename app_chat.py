@@ -95,6 +95,14 @@ def chat_config_defaults_api():
         "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
     }), 200
 
+
+def _reject_missing_user_input(data):
+    # Shared guard for both chat endpoints: 400 on non-dict body or blank userInput.
+    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
+        return jsonify({"error": "Missing userInput in request"}), 400
+    return None
+
+
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
 @swag_from({
     'tags': ['Chat Interaction'],
@@ -233,8 +241,9 @@ def chat_playlist_api():
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
     data = request.get_json()
-    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
-        return jsonify({"error": "Missing userInput in request"}), 400
+    err = _reject_missing_user_input(data)
+    if err:
+        return err
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
     return jsonify({"response": resp_obj}), status
@@ -256,8 +265,9 @@ def chat_playlist_stream_api():
     value (the response object) is delivered as the ``done`` event.
     """
     data = request.get_json()
-    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
-        return jsonify({"error": "Missing userInput in request"}), 400
+    err = _reject_missing_user_input(data)
+    if err:
+        return err
 
     @stream_with_context
     def generate():

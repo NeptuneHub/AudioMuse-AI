@@ -297,7 +297,11 @@ def get_waveform_endpoint():
         return jsonify({"error": "An unexpected error occurred during waveform generation"}), 500
     finally:
         if temp_dir and os.path.exists(temp_dir):
+            # Best-effort: keep removing siblings past a locked file (common on
+            # Windows when a timed-out worker still holds the audio open).
+            def _on_rmtree_error(func, path, exc_info):
+                logger.warning(f"Failed to remove {path} during waveform temp cleanup: {exc_info[1]}")
             try:
-                shutil.rmtree(temp_dir)
+                shutil.rmtree(temp_dir, onerror=_on_rmtree_error)
             except Exception as cleanup_error:
                 logger.warning(f"Failed to clean up temporary directory {temp_dir}: {cleanup_error}")
