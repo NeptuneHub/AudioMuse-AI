@@ -95,7 +95,7 @@ def _run_supervisorctl(arguments):
         return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         if result.returncode != 0:
@@ -105,6 +105,9 @@ def _run_supervisorctl(arguments):
         return True
     except FileNotFoundError:
         logger.exception('supervisorctl command not found at %s', SUPERVISORCTL_CMD)
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error('supervisorctl timed out after 30s: %s', cmd)
         return False
     except Exception:
         logger.exception('Failed to run supervisorctl command: %s', cmd)
@@ -181,4 +184,4 @@ def restart_supervisor_workers():
         return True
 
     logger.info('Restarting supervised worker programs via supervisorctl')
-    return _run_supervisorctl(['restart', 'rq-worker-default', 'rq-worker-high', 'rq-janitor'])
+    return _run_supervisorctl(['restart'] + WORKER_SERVICES)

@@ -38,6 +38,16 @@ from tz_helper import UTC_NOW_SQL, to_local_str
 logger = logging.getLogger(__name__)
 
 
+def _original_request_is_https():
+    """True when the original request was HTTPS, honoring X-Forwarded-Proto from a
+    TLS-terminating reverse proxy even when ProxyFix is disabled. Single source of
+    truth for the Secure cookie flag so the decision can't drift per call site."""
+    if request.is_secure:
+        return True
+    forwarded_proto = request.headers.get('X-Forwarded-Proto', '')
+    return forwarded_proto.split(',')[0].strip().lower() == 'https'
+
+
 # --- User model constants ---------------------------------------------------
 
 USER_ROLE_USER = 'user'
@@ -503,7 +513,7 @@ def check_auth_needed(jwt_secret):
     # Check valid Bearer token (M2M callers) - always admin-equivalent.
     # Use secrets.compare_digest to avoid leaking token contents via timing.
     auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and secrets.compare_digest(auth_header[7:], _cfg.API_TOKEN):
+    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and secrets.compare_digest(auth_header[7:].encode('utf-8'), _cfg.API_TOKEN.encode('utf-8')):
         g.auth_role = 'admin'
         g.auth_user = None
         return None
@@ -770,10 +780,9 @@ def auth_endpoint():
         path='/',
         httponly=True,
         samesite='Strict',
-        # Mark the cookie Secure when the request came in over HTTPS so
-        # production deployments get the hardened flag while local HTTP
-        # development still works.
-        secure=request.is_secure,
+        # Secure when the original request was HTTPS, including via a reverse
+        # proxy (X-Forwarded-Proto) even when ProxyFix is disabled.
+        secure=_original_request_is_https(),
         max_age=8 * 3600,
     )
     return resp

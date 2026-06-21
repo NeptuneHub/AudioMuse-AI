@@ -191,7 +191,11 @@ def alchemy_api():
     """
     payload = request.get_json() or {}
     items = payload.get('items', [])
-    n = payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS)
+    try:
+        n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))
+    except (TypeError, ValueError):
+        n = config.ALCHEMY_DEFAULT_N_RESULTS
+    n = max(1, min(n, config.ALCHEMY_MAX_N_RESULTS))
     # Temperature parameter for probabilistic sampling (softmax temperature)
     temperature = payload.get('temperature', config.ALCHEMY_TEMPERATURE)
 
@@ -287,7 +291,8 @@ def create_anchor():
     """
     from database import save_alchemy_anchor
     payload = request.get_json() or {}
-    name = (payload.get('name') or '').strip()
+    raw_name = payload.get('name')
+    name = raw_name.strip() if isinstance(raw_name, str) else ''
     centroid = payload.get('centroid')
     if not name:
         return jsonify({'error': 'Anchor name is required'}), 400
@@ -358,7 +363,8 @@ def rename_anchor(anchor_id):
     """
     from database import update_alchemy_anchor_name
     payload = request.get_json() or {}
-    name = (payload.get('name') or '').strip()
+    raw_name = payload.get('name')
+    name = raw_name.strip() if isinstance(raw_name, str) else ''
     if not name:
         return jsonify({'error': 'Anchor name is required'}), 400
     anchor = update_alchemy_anchor_name(anchor_id, name)

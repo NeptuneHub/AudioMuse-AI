@@ -2,6 +2,7 @@
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import os
+import shutil
 import tempfile
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -91,22 +92,23 @@ def generate_waveform_peaks(file_path, samples_count=500):
             return []
         
         # Vectorized peak extraction
-        samples_per_peak = max(1, len(y) // samples_count)
-        trim_length = samples_count * samples_per_peak
+        n = min(samples_count, len(y))
+        samples_per_peak = max(1, len(y) // n)
+        trim_length = n * samples_per_peak
         y_trimmed = y[:trim_length]
-        
+
         # Reshape and get peak energy
-        chunks = y_trimmed.reshape(samples_count, samples_per_peak)
+        chunks = y_trimmed.reshape(n, samples_per_peak)
         abs_chunks = np.abs(chunks)
         peak_energy = np.max(abs_chunks, axis=1)
-        
+
         # Normalize to -1 to 1 range
         max_val = np.max(peak_energy)
         if max_val > 0:
             peak_energy = peak_energy / max_val
-        
+
         # Create symmetric waveform
-        peaks = np.empty(samples_count * 2, dtype=np.float32)
+        peaks = np.empty(n * 2, dtype=np.float32)
         peaks[0::2] = -peak_energy
         peaks[1::2] = peak_energy
         
@@ -120,15 +122,16 @@ def generate_waveform_peaks(file_path, samples_count=500):
         if len(y) == 0:
             return []
         
-        samples_per_peak = max(1, len(y) // samples_count)
-        trim_length = samples_count * samples_per_peak
+        n = min(samples_count, len(y))
+        samples_per_peak = max(1, len(y) // n)
+        trim_length = n * samples_per_peak
         y_trimmed = y[:trim_length]
-        
-        chunks = y_trimmed.reshape(samples_count, samples_per_peak)
+
+        chunks = y_trimmed.reshape(n, samples_per_peak)
         abs_chunks = np.abs(chunks)
         peak_energy = np.max(abs_chunks, axis=1)
-        
-        peaks = np.empty(samples_count * 2, dtype=np.float32)
+
+        peaks = np.empty(n * 2, dtype=np.float32)
         peaks[0::2] = -peak_energy
         peaks[1::2] = peak_energy
         peaks = np.clip(peaks, -1.0, 1.0)
@@ -201,6 +204,7 @@ def get_waveform_endpoint():
     
     # Download the track to a temporary location
     temp_file = None
+    temp_dir = None
     try:
         import time
         start_time = time.time()
@@ -245,7 +249,7 @@ def get_waveform_endpoint():
             }
         
         fetch_time = time.time() - start_time
-        logger.info(f"⏱️  Fetched track metadata in {fetch_time:.2f}s")
+        logger.info(f"Fetched track metadata in {fetch_time:.2f}s")
         
         # Create a temporary directory for this download
         temp_dir = tempfile.mkdtemp(prefix='waveform_')
@@ -254,13 +258,13 @@ def get_waveform_endpoint():
         download_start = time.time()
         temp_file = download_track(temp_dir, item)
         download_time = time.time() - download_start
-        logger.info(f"⏱️  Downloaded track in {download_time:.2f}s")
+        logger.info(f"Downloaded track in {download_time:.2f}s")
         
         if not temp_file or not os.path.exists(temp_file):
             return jsonify({"error": "Failed to download track from media server"}), 500
         
         # Generate waveform peaks in a thread pool with timeout
-        logger.info(f"🌊 Generating waveform with librosa for song={title}, item_id={item_id}")
+        logger.info(f"Generating waveform with librosa for song={title}, item_id={item_id}")
         
         waveform_start = time.time()
         # Submit to thread pool for parallel execution
@@ -275,7 +279,7 @@ def get_waveform_endpoint():
         
         waveform_time = time.time() - waveform_start
         total_time = time.time() - start_time
-        logger.info(f"✅ Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
+        logger.info(f"Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
         
         response = {
             "peaks": peaks,
@@ -287,18 +291,17 @@ def get_waveform_endpoint():
         
     except RuntimeError as e:
         logger.error(f"Runtime error generating waveform for {item_id}: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "An error occurred during waveform generation"}), 500
     except Exception as e:
         logger.error(f"Unexpected error generating waveform for {item_id}: {e}", exc_info=True)
         return jsonify({"error": "An unexpected error occurred during waveform generation"}), 500
     finally:
-        # Clean up temporary file
-        if temp_file and os.path.exists(temp_file):
+        if temp_dir and os.path.exists(temp_dir):
+            # Best-effort: keep removing siblings past a locked file (common on
+            # Windows when a timed-out worker still holds the audio open).
+            def _on_rmtree_error(func, path, exc_info):
+                logger.warning(f"Failed to remove {path} during waveform temp cleanup: {exc_info[1]}")
             try:
-                os.remove(temp_file)
-                # Try to remove the temp directory if it's empty
-                temp_dir = os.path.dirname(temp_file)
-                if os.path.exists(temp_dir):
-                    os.rmdir(temp_dir)
+                shutil.rmtree(temp_dir, onerror=_on_rmtree_error)
             except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up temporary file {temp_file}: {cleanup_error}")
+                logger.warning(f"Failed to clean up temporary directory {temp_dir}: {cleanup_error}")

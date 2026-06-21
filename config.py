@@ -41,7 +41,7 @@ PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 # unmatched groups (e.g. wrong path format) and the page becomes unusable
 # beyond a couple hundred entries. The full count is still surfaced as a
 # warning so the user knows the list is truncated.
-MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = max(1, int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200")))
 # Hard cap on the per-collision detail rows persisted into migration_session.state.
 # collision_details is display-only (it tells the user which albums to re-match),
 # so storing one entry per collision would let this single JSONB field grow with
@@ -118,6 +118,8 @@ MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs p
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.
 SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").lower() == 'true'
+# Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
+RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
 TOP_N_PLAYLISTS = int(os.environ.get("TOP_N_PLAYLISTS", "8")) # *** NEW: Default for Top N diverse playlists ***
 MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", "20")) # Min songs for a playlist to be considered in the first pass of Top-N selection.
@@ -288,6 +290,11 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 # Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
+# RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.
+RQ_MAX_JOBS = int(os.getenv('RQ_MAX_JOBS', '50'))
+RQ_MAX_JOBS_HIGH = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
+RQ_LOGGING_LEVEL = os.getenv('RQ_LOGGING_LEVEL', 'INFO').upper()
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -687,6 +694,11 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 #   proxy_set_header X-Forwarded-Proto https;
 #   proxy_set_header X-Forwarded-Prefix /audiomuseai;
 # }
+# The trailing slash on BOTH 'location /audiomuseai/' and 'proxy_pass .../' is
+# required: it makes nginx strip the subpath before forwarding. Without it the
+# full path reaches the app while X-Forwarded-Prefix is still sent, doubling the
+# prefix; the app now collapses that duplication (StripDuplicatedScriptName) so
+# it no longer loops to /audiomuseai/setup, but stripping at the proxy is correct.
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 
 # --- Instant Playlist Optimization ---

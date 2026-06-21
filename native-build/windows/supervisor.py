@@ -87,6 +87,24 @@ class ProcessSupervisor:
     def state(self):
         return self._state
 
+    def start_in_background(self, on_ready=None, on_error=None):
+        """Boot on a daemon thread the supervisor owns, recording it BEFORE the
+        thread runs so a stop racing the boot can join it (and thus tear down
+        every child it spawned) instead of missing a thread that recorded itself
+        too late and leaking the late children as orphans."""
+        def _boot():
+            try:
+                self.start_all()
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+                return
+            if on_ready is not None and self.is_running():
+                on_ready()
+        self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
+        self._boot_thread.start()
+        return self._boot_thread
+
     def start_all(self):
         with self._lock:
             if self._state in ("running", "starting"):
@@ -101,14 +119,20 @@ class ProcessSupervisor:
                 return
             self._db_conn = db_backend.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
+            if self._stop_requested.is_set():
+                return
             self._start_redis()
             self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
+                if self._stop_requested.is_set():
+                    return
                 self.start_child(name)
                 if name == "flask":
                     self._wait_http(FLASK_URL, timeout=180)
             self._write_pidfile()
             with self._lock:
+                if self._stop_requested.is_set():
+                    return
                 self._state = "running"
             self._start_health_loop()
             self._log.info("=== AudioMuse-AI running ===")
@@ -125,6 +149,9 @@ class ProcessSupervisor:
                 return
             self._state = "stopping"
         self._log.info("=== AudioMuse-AI stopping ===")
+        # Wait for any in-flight boot/health work to stop spawning before we
+        # sweep: a child spawned after the sweep would survive as an orphan.
+        self._join_workers()
         self._control.stop()
         for name in list(self._children.keys()):
             self._stop_child(name)
@@ -136,8 +163,30 @@ class ProcessSupervisor:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
 
+    def _join_workers(self):
+        """Wait for the boot and health threads to finish before teardown.
+
+        Skips the current thread (so a stop from start_all's failure handler
+        never self-joins) and the main thread: in console `start` mode the boot
+        runs ON the main thread, which then parks forever, so joining it would
+        stall teardown until process exit and orphan the children."""
+        current = threading.current_thread()
+        main = threading.main_thread()
+        for thread in (self._boot_thread, self._health_thread):
+            if thread is not None and thread is not current and thread is not main and thread.is_alive():
+                thread.join(timeout=30)
+
     def start_child(self, name):
-        role = ROLE_OF[name]
+        role = ROLE_OF.get(name)
+        if role is None:
+            return False
+        with self._lock:
+            # Refuse to spawn once a stop is in progress -- otherwise the boot
+            # loop, the restart pump, or a control request could create a child
+            # after stop_all's teardown sweep, leaking it as an orphan.
+            if self._state not in ("starting", "running"):
+                return False
+            self._desired.add(name)
         self._log.info("Starting %s (role=%s)", name, role)
         db_conn = db_backend.ensure_embedded_running(paths.pgdata_dir())
         redis_url = self._ensure_redis_running()
@@ -152,15 +201,18 @@ class ProcessSupervisor:
             stdin=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         with self._lock:
             self._children[name] = popen
-            self._desired.add(name)
         threading.Thread(target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True).start()
+        return True
 
     def _stop_child(self, name):
-        popen = self._children.pop(name, None)
-        self._desired.discard(name)
+        with self._lock:
+            popen = self._children.pop(name, None)
+            self._desired.discard(name)
         if popen is None:
             return
         self._log.info("Stopping %s (pid=%d)", name, popen.pid)
@@ -181,8 +233,11 @@ class ProcessSupervisor:
             self._log.info("[%s] %s", name, line.rstrip())
         popen.wait()
         with self._lock:
+            if self._children.get(name) is not popen:
+                return
             self._children.pop(name, None)
-        if name in self._desired and self._state == "running":
+            restart = name in self._desired and self._state == "running"
+        if restart:
             self._log.warning("%s exited unexpectedly -- restarting", name)
             try:
                 self.start_child(name)
@@ -190,23 +245,33 @@ class ProcessSupervisor:
                 self._log.exception("Failed to restart %s", name)
 
     def dispatch_control(self, action, services):
-        """Handle a restart/stop/start request from the web UI."""
-        if action == "restart":
-            for svc in services:
-                if svc in self._children:
+        """Apply a restart/stop/start request from the web UI.
+
+        Runs the work on a daemon thread and acknowledges immediately:
+        restarting several busy workers serially (each up to 15s to stop) can
+        outlast the control socket's 15s timeout, which would make the UI report
+        a failure for a restart that actually succeeds."""
+        if action not in ("restart", "stop", "start"):
+            return False
+        threading.Thread(
+            target=self._apply_control, args=(action, list(services)),
+            name=f"control-{action}", daemon=True,
+        ).start()
+        return True
+
+    def _apply_control(self, action, services):
+        for svc in services:
+            try:
+                if action == "restart":
+                    if svc in self._children:
+                        self._stop_child(svc)
+                        self.start_child(svc)
+                elif action == "stop":
                     self._stop_child(svc)
+                elif action == "start" and svc not in self._children:
                     self.start_child(svc)
-            return True
-        elif action == "stop":
-            for svc in services:
-                self._stop_child(svc)
-            return True
-        elif action == "start":
-            for svc in services:
-                if svc not in self._children:
-                    self.start_child(svc)
-            return True
-        return False
+            except Exception:
+                self._log.exception("Control %s failed for %s", action, svc)
 
     # --- embedded Redis ---
 
@@ -283,6 +348,10 @@ class ProcessSupervisor:
         raise RuntimeError(f"Timed out waiting for {url}")
 
     def _start_health_loop(self):
+        # Clear the stop event so a restart (stop_all sets it) gets a live loop;
+        # without this the new health thread sees a set event and exits at once.
+        self._health_stop.clear()
+
         def _loop():
             while not self._health_stop.is_set():
                 self._health_stop.wait(30)
@@ -294,16 +363,35 @@ class ProcessSupervisor:
         self._health_thread.start()
 
     def _reap_orphans(self):
-        """Kill leftover Postgres/Redis processes from a previous unclean shutdown."""
-        import psutil
-        for proc in psutil.process_iter(["name"]):
+        """Kill leftover embedded Postgres/Redis from a previous unclean run.
+
+        Match by *our* data dirs in the cmdline, not by bare process name -- a
+        name-only match would also kill an unrelated PostgreSQL/Redis the user
+        runs on the same machine."""
+        try:
+            import psutil
+        except Exception:
+            return
+        me = os.getpid()
+        redis_marker = paths.redis_dir().lower()
+        pg_marker = paths.pgdata_dir().lower()
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
-                name = proc.info.get("name", "").lower()
-                if name in ("redis-server.exe", "postgres.exe", "pg_ctl.exe"):
-                    self._log.info("Reaping orphan: %s (pid=%d)", proc.info["name"], proc.pid)
-                    proc.kill()
+                if proc.info["pid"] == me:
+                    continue
+                cmd = " ".join(proc.info.get("cmdline") or []).lower()
+                if not cmd:
+                    continue
+                stale_redis = "redis-server" in cmd and redis_marker in cmd
+                stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
+                if stale_redis or stale_pg:
+                    self._log.info("Reaping orphan %s (pid=%d) referencing our data dir",
+                                   proc.info.get("name"), proc.info["pid"])
+                    proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
             except Exception:
-                pass
+                continue
 
     def _write_pidfile(self):
         pids = {name: proc.pid for name, proc in self._children.items()}

@@ -241,7 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 + 'redirecting in ' + countdown + ' seconds…';
                         } else {
                             clearInterval(countdownInterval);
-                            window.location.href = '/';
+                            if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
                         }
                     }, 1000);
                     return;

@@ -96,7 +96,7 @@
     <div class="login-container">
         <h1>AudioMuse-AI</h1>
         <p class="subtitle">Sign in to continue</p>
-        <form id="login-form" action="/auth" method="post">
+        <form id="login-form" action="{{ url_for('auth_endpoint') }}" method="post">
             <input type="text" id="login-user" name="user" placeholder="Username" autocomplete="username" required>
             <input type="password" id="login-password" name="password" placeholder="Password" autocomplete="current-password" required>
             <button type="submit">Sign In</button>

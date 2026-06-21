@@ -8,12 +8,12 @@ from psycopg2.extras import DictCursor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX
+from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX, RADIUS_INSTRUMENTATION
 
 logger = logging.getLogger(__name__)
 
 # Optional instrumentation: enable with RADIUS_INSTRUMENTATION=True in env
-INSTRUMENT_BUCKET_SKIPS = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
+INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 
 # --- Global cache for the loaded index ---
 ivf_index = None
@@ -105,6 +105,7 @@ _thread_pool_lock = threading.Lock()
 MAX_WORKER_THREADS = max(1, (os.cpu_count() or 1) - 1)  # Use cpu_count - 1, minimum 1
 BATCH_SIZE_VECTOR_OPS = 50  # Process vectors in batches
 BATCH_SIZE_DB_OPS = 100     # Process database operations in batches
+SCORE_DETAIL_COLUMNS = 'title, author'
 
 def _get_thread_pool():
     """Get or create the global thread pool for parallel operations."""
@@ -121,6 +122,30 @@ def _shutdown_thread_pool():
         if _thread_pool is not None:
             _thread_pool.shutdown(wait=True)
             _thread_pool = None
+
+
+# Run fetch_batch_fn over BATCH_SIZE_DB_OPS chunks sequentially
+# (batches share one db connection, which psycopg2 cannot use concurrently)
+def _fetch_in_batches(item_ids, fetch_batch_fn):
+    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
+    merged = {}
+    for batch in id_batches:
+        merged.update(fetch_batch_fn(batch))
+    return merged
+
+
+# Batched score-table metadata fetch keyed by item_id
+def _fetch_details_map(db_conn, item_ids, columns):
+    column_keys = [c.strip() for c in columns.split(',')]
+    def fetch_batch(id_batch):
+        out = {}
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(f"SELECT item_id, {columns} FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            for row in cur.fetchall():
+                out[row['item_id']] = {c: row.get(c) for c in column_keys}
+        return out
+    return _fetch_in_batches(item_ids, fetch_batch)
+
 
 def _get_cached_vector(item_id: str) -> np.ndarray | None:
     """Return the stored vector for ``item_id`` from the loaded IVF index.
@@ -322,43 +347,36 @@ def _is_same_song(title1, artist1, title2, artist2):
     
     return norm_title1 == norm_title2 and norm_artist1 == norm_artist2
 
+# True if current_vector is within threshold of any vector in window_songs
+def _is_too_close(current_song, current_vector, window_songs, threshold, metric_name, details_map):
+    for recent_song in window_songs:
+        recent_vector = _get_cached_vector(recent_song['item_id'])
+        if recent_vector is None:
+            continue
+        direct_dist = get_direct_distance(current_vector, recent_vector)
+        if direct_dist < threshold:
+            current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+            recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+            logger.info(
+                f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
+                f"due to direct distance of {direct_dist:.4f} from "
+                f"'{recent_details['title']}' by '{recent_details['author']}' (Threshold: {threshold})."
+            )
+            return True
+    return False
+
+
 def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, details_map):
     """Compute distances for a batch of songs in parallel."""
     batch_results = []
-    
     for current_song in song_batch:
-        is_too_close = False
         current_vector = _get_cached_vector(current_song['item_id'])
         if current_vector is None:
             continue
-        
-        # Check against lookback window
-        # Build an effective comparison window that includes the provided lookback
-        # plus any songs already accepted in this batch. This avoids the case where
-        # two near-duplicate songs fall into the same batch and both slip through
-        # because they weren't compared to each other.
+        # Window = provided lookback plus songs already accepted in this batch.
         combined_recent = list(lookback_songs) + list(batch_results)
-        for recent_song in combined_recent:
-            recent_vector = _get_cached_vector(recent_song['item_id'])
-            if recent_vector is None:
-                continue
-
-            direct_dist = get_direct_distance(current_vector, recent_vector)
-            
-            if direct_dist < threshold:
-                current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                logger.info(
-                    f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
-                    f"due to direct distance of {direct_dist:.4f} from "
-                    f"'{recent_details['title']}' by '{recent_details['author']}' (Threshold: {threshold})."
-                )
-                is_too_close = True
-                break
-        
-        if not is_too_close:
+        if not _is_too_close(current_song, current_vector, combined_recent, threshold, metric_name, details_map):
             batch_results.append(current_song)
-    
     return batch_results
 
 def _filter_by_distance(song_results: list, db_conn):
@@ -372,34 +390,8 @@ def _filter_by_distance(song_results: list, db_conn):
     if not song_results:
         return []
 
-    # Fetch all song details in parallel batches
     item_ids = [s['item_id'] for s in song_results]
-    details_map = {}
-    
-    # Process DB queries in batches
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author']}
-        return batch_details
-    
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            details_map.update(batch_details)
-    else:
-        # Use single query for small datasets
-        details_map = fetch_details_batch(item_ids)
+    details_map = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
@@ -412,32 +404,11 @@ def _filter_by_distance(song_results: list, db_conn):
     # code path as ivf and produces identical results.
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         for current_song in song_results:
-            is_too_close = False
             current_vector = _get_cached_vector(current_song['item_id'])
             if current_vector is None:
                 continue
-
-            # Check against the last N songs in the filtered list
             lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
-            for recent_song in lookback_window:
-                recent_vector = _get_cached_vector(recent_song['item_id'])
-                if recent_vector is None:
-                    continue
-
-                direct_dist = get_direct_distance(current_vector, recent_vector)
-                
-                if direct_dist < threshold:
-                    current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                    recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-                    logger.info(
-                        f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
-                        f"due to direct distance of {direct_dist:.4f} from "
-                        f"'{recent_details['title']}' by '{recent_details['author']}' (Threshold: {threshold})."
-                    )
-                    is_too_close = True
-                    break
-            
-            if not is_too_close:
+            if not _is_too_close(current_song, current_vector, lookback_window, threshold, metric_name, details_map):
                 filtered_songs.append(current_song)
     else:
         # For larger datasets, use parallel processing with rolling lookback
@@ -466,33 +437,8 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     if not song_results:
         return []
 
-    # Fetch song details in parallel batches
     item_ids = [r['item_id'] for r in song_results]
-    item_details = {}
-    
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
-        return batch_details
-    
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            item_details.update(batch_details)
-    else:
-        # Use single query for small datasets
-        item_details = fetch_details_batch(item_ids)
+    item_details = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
     unique_songs = []
 
@@ -526,33 +472,30 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
 
     return unique_songs
 
+# Normalized sum of abs mood-feature diffs
+def _mood_distance(target_mood_features, candidate_features, mood_features):
+    total = sum(
+        abs(target_mood_features.get(feature, 0.0) - candidate_features.get(feature, 0.0))
+        for feature in mood_features
+    )
+    return total / len(mood_features)
+
+
 def _compute_mood_distances_batch(song_batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold):
     """Compute mood distances for a batch of songs in parallel."""
     batch_results = []
-    
     for song in song_batch:
         candidate_features = candidate_mood_features.get(song['item_id'])
         if not candidate_features:
-            continue  # Skip songs without mood features
-
-        # Calculate mood distance (sum of absolute differences)
-        mood_distance = sum(
-            abs(target_mood_features.get(feature, 0.0) - candidate_features.get(feature, 0.0))
-            for feature in mood_features
-        )
-        
-        # Normalize by number of features
-        normalized_mood_distance = mood_distance / len(mood_features)
-        
+            continue
+        normalized_mood_distance = _mood_distance(target_mood_features, candidate_features, mood_features)
         if normalized_mood_distance <= mood_threshold:
-            # Add mood distance info to the song result
             song_with_mood = song.copy()
             song_with_mood['mood_distance'] = normalized_mood_distance
             batch_results.append(song_with_mood)
-    
     return batch_results
 
-def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn, mood_threshold: float = None):
+def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn, mood_threshold: float = None, target_other_features=None):
     """
     Filters songs by mood similarity using the other_features stored in the database.
     Keeps songs with similar mood features (danceability, aggressive, happy, party, relaxed, sad).
@@ -565,52 +508,39 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
     if mood_threshold is None:
         mood_threshold = MOOD_SIMILARITY_THRESHOLD
 
-    # Get target song mood features
-    with db_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("SELECT other_features FROM score WHERE item_id = %s", (target_item_id,))
-        target_row = cur.fetchone()
-        if not target_row or not target_row['other_features']:
-            logger.warning(f"No mood features found for target song {target_item_id}. Skipping mood filtering.")
-            return song_results
+    # Target mood features: reuse a caller-prefetched other_features when present, else fetch it.
+    if target_other_features is None:
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT other_features FROM score WHERE item_id = %s", (target_item_id,))
+            target_row = cur.fetchone()
+            target_other_features = target_row['other_features'] if target_row else None
+    if not target_other_features:
+        logger.warning("No mood features found for target song. Skipping mood filtering.")
+        return song_results
 
-        target_mood_features = _parse_mood_features(target_row['other_features'])
-        if not target_mood_features:
-            logger.warning(f"Could not parse mood features for target song {target_item_id}. Skipping mood filtering.")
-            return song_results
+    target_mood_features = _parse_mood_features(target_other_features)
+    if not target_mood_features:
+        logger.warning("Could not parse mood features for target song. Skipping mood filtering.")
+        return song_results
 
-        logger.info(f"Target song {target_item_id} mood features: {target_mood_features}")
+    logger.info("Target mood features parsed (%d features).", len(target_mood_features))
 
-        # Get mood features for all candidate songs in batches
-        candidate_ids = [s['item_id'] for s in song_results]
-        candidate_mood_features = {}
-        
-        # Process DB queries in batches for better performance
-        def fetch_mood_features_batch(id_batch):
-            batch_features = {}
-            with db_conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (id_batch,))
-                rows = cur.fetchall()
-                for row in rows:
-                    if row['other_features']:
-                        parsed_features = _parse_mood_features(row['other_features'])
-                        if parsed_features:
-                            batch_features[row['item_id']] = parsed_features
-            return batch_features
-        
-        # Split candidate_ids into batches
-        id_batches = [candidate_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(candidate_ids), BATCH_SIZE_DB_OPS)]
-        
-        if len(id_batches) > 1:
-            # Use parallel DB queries for large datasets
-            executor = _get_thread_pool()
-            future_to_batch = {executor.submit(fetch_mood_features_batch, batch): batch for batch in id_batches}
-            
-            for future in as_completed(future_to_batch):
-                batch_features = future.result()
-                candidate_mood_features.update(batch_features)
-        else:
-            # Use single query for small datasets
-            candidate_mood_features = fetch_mood_features_batch(candidate_ids)
+    # Get mood features for all candidate songs in batches
+    candidate_ids = [s['item_id'] for s in song_results]
+
+    def fetch_mood_features_batch(id_batch):
+        batch_features = {}
+        with db_conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            rows = cur.fetchall()
+            for row in rows:
+                if row['other_features']:
+                    parsed_features = _parse_mood_features(row['other_features'])
+                    if parsed_features:
+                        batch_features[row['item_id']] = parsed_features
+        return batch_features
+
+    candidate_mood_features = _fetch_in_batches(candidate_ids, fetch_mood_features_batch)
 
     # Filter by mood similarity
     mood_features = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
@@ -626,15 +556,8 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
                 logger.debug(f"Skipping song {song['item_id']}: no mood features found")
                 continue
 
-            # Calculate mood distance (sum of absolute differences)
-            mood_distance = sum(
-                abs(target_mood_features.get(feature, 0.0) - candidate_features.get(feature, 0.0))
-                for feature in mood_features
-            )
-            
-            # Normalize by number of features
-            normalized_mood_distance = mood_distance / len(mood_features)
-            
+            normalized_mood_distance = _mood_distance(target_mood_features, candidate_features, mood_features)
+
             logger.debug(f"Song {song['item_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}")
             
             if normalized_mood_distance <= mood_threshold:
@@ -737,7 +660,7 @@ def _radius_walk_get_candidates(
         effective_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood:
             before_mood = len(unique_results_by_song)
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
+            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn, target_other_features=original_song_details.get('other_features'))
             after_mood = len(unique_results_by_song)
             logger.info(f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}")
         else:
@@ -947,7 +870,7 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood_nonradius:
             logger.info(f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}")
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn)
+            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn, target_other_features=target_song_details.get('other_features'))
         else:
             logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
         
@@ -1033,34 +956,9 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
 
-    # Fetch item details in parallel batches
     item_ids = [r['item_id'] for r in distance_filtered_results]
-    item_details = {}
-    
-    def fetch_details_batch(id_batch):
-        batch_details = {}
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, title, author, album, album_artist FROM score WHERE item_id = ANY(%s)", (id_batch,))
-            rows = cur.fetchall()
-            for row in rows:
-                batch_details[row['item_id']] = {'title': row['title'], 'author': row['author'], 'album': row.get('album'), 'album_artist': row.get('album_artist')}
-        return batch_details
-    
-    # Split item_ids into batches for parallel DB queries
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    
-    if len(id_batches) > 1:
-        # Use parallel DB queries for large datasets
-        executor = _get_thread_pool()
-        future_to_batch = {executor.submit(fetch_details_batch, batch): batch for batch in id_batches}
-        
-        for future in as_completed(future_to_batch):
-            batch_details = future.result()
-            item_details.update(batch_details)
-    else:
-        # Use single query for small datasets
-        item_details = fetch_details_batch(item_ids)
-            
+    item_details = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
+
     unique_songs_by_content = []
     added_songs_details = []
     for song in distance_filtered_results:

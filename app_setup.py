@@ -184,7 +184,7 @@ def _test_media_server_connection(filtered_values):
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
-        probe_limit = getattr(config, 'PROBE_TOP_PLAYED_LIMIT', 1)
+        probe_limit = config.PROBE_TOP_PLAYED_LIMIT
         items = mediaserver.get_top_played_songs(probe_limit)
         if not items:
             raise AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.")
@@ -715,7 +715,7 @@ def setup_lyrics_api_analyze():
             path_segments.append({'index': idx, 'value': decoded})
 
     # For path-based APIs without artist/title query params, the convention is
-    # ``/.../<artist>/<title>`` — guess the last two surfaced segments accordingly.
+    # ``/.../<artist>/<title>`` -- guess the last two surfaced segments accordingly.
     if not guesses['artist_param'] and not guesses['title_param'] and len(path_segments) >= 2:
         guesses['path_roles'][path_segments[-2]['index']] = 'artist'
         guesses['path_roles'][path_segments[-1]['index']] = 'title'
@@ -766,7 +766,7 @@ def setup_lyrics_api_analyze():
                     _find_lyrics(v, path)
         _find_lyrics(json_obj)
 
-    display_raw = (raw_text or '')[:16384] + ('…' if raw_text and len(raw_text) > 16384 else '')
+    display_raw = (raw_text or '')[:16384] + ('...' if raw_text and len(raw_text) > 16384 else '')
     return jsonify({
         'params':        flat_params,
         'path_segments': path_segments,

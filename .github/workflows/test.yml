@@ -160,6 +160,12 @@ jobs:
       run: |
         pytest test/integration/test_app_endpoints_integration.py test/integration/test_auth_users_integration.py test/integration/test_auth_barrier_integration.py -m integration -s -v --tb=short
 
+    - name: Run serializer / batch-fetch / task-status integration tests
+      env:
+        AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
+      run: |
+        pytest test/integration/test_neighbor_serialize_integration.py test/integration/test_ivf_batch_fetch_integration.py test/integration/test_task_status_integration.py -m integration -s -v --tb=short
+
     - name: Run lyrics integration test
       run: |
         # On first run test/lyrics_expected_gte_512.json does not exist yet: the

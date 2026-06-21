@@ -251,7 +251,7 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
 
 def rebuild_all_indexes_task():
     """Rebuild all indexes as a standalone RQ task (enqueued on default queue)."""
-    logger.info("🔨 Starting index rebuild task (enqueued as subtask)...")
+    logger.info("Starting index rebuild task (enqueued as subtask)...")
     with app.app_context():
         try:
             _run_all_index_builds()
@@ -691,11 +691,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             save_task_status(current_task_id, "main_analysis", task_state, progress=progress, details=details)
 
         try:
-            log_and_update_main("🚀 Starting main analysis process...", 0)
+            log_and_update_main("Starting main analysis process...", 0)
             clean_temp(TEMP_DIR)
             all_albums = get_recent_albums(num_recent_albums)
             if not all_albums:
-                log_and_update_main("⚠️ No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS)
+                log_and_update_main("No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)

@@ -1521,7 +1521,7 @@
                         } else {
                             countdownHost.textContent = 'Redirecting...';
                             clearInterval(cdInterval);
-                            window.location.href = '/login';
+                            if (window.appRedirect) { window.appRedirect('/login'); } else { window.location.href = '/login'; }
                         }
                     }, 1000);
                     return;

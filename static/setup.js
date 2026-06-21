@@ -1026,7 +1026,7 @@ setupForm.addEventListener('submit', function(event) {
                 saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
             } else {
                 clearInterval(countdownInterval);
-                window.location.href = '/';
+                if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
             }
         }, 1000);
     }).catch(function(err) {
@@ -1048,6 +1048,25 @@ document.getElementById('test-button').addEventListener('click', testConnection)
 serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
+
+// Advisory-only admin password length recommendation (never blocks saving).
+const RECOMMENDED_ADMIN_PASSWORD_LENGTH = 15;
+function updateAdminPasswordHint() {
+    const input = document.getElementById('AUDIOMUSE_PASSWORD');
+    const hint = document.getElementById('admin-password-hint');
+    if (!input || !hint) { return; }
+    const value = input.value;
+    if (value && value !== '********' && value.length < RECOMMENDED_ADMIN_PASSWORD_LENGTH) {
+        hint.textContent = 'For better security we recommend at least ' + RECOMMENDED_ADMIN_PASSWORD_LENGTH + ' characters. You can still save a shorter password.';
+        hint.style.display = 'block';
+    } else {
+        hint.style.display = 'none';
+    }
+}
+const adminPasswordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+if (adminPasswordInput) {
+    adminPasswordInput.addEventListener('input', updateAdminPasswordHint);
+}
 
 var advancedExpandAll = document.getElementById('advanced-expand-all');
 if (advancedExpandAll) {

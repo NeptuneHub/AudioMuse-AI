@@ -28,7 +28,7 @@ WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 try:
     from app_helper import redis_conn
     from app_logging import configure_logging
-    from config import APP_VERSION
+    from config import APP_VERSION, RQ_MAX_JOBS_HIGH, RQ_LOGGING_LEVEL
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
     print("Please ensure app.py is in the Python path and does not have top-level errors.")
@@ -61,9 +61,9 @@ if __name__ == '__main__':
 
     # Memory leak prevention: restart after N jobs
     # Higher than default worker since this doesn't load CLAP model
-    max_jobs_before_restart = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
+    max_jobs_before_restart = RQ_MAX_JOBS_HIGH
 
-    logging_level = os.getenv("RQ_LOGGING_LEVEL", "INFO").upper()
+    logging_level = RQ_LOGGING_LEVEL
     logger.info(f"RQ Worker logging level set to: {logging_level}")
     logger.info(f"Worker will restart after {max_jobs_before_restart} jobs to prevent memory leaks")
 

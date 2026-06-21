@@ -264,7 +264,6 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
     Saves or updates a task's status in the database, using Unix timestamps for start and end times.
     """
     db = get_db()
-    cur = db.cursor()
     current_unix_time = time.time()
 
     if details is not None and isinstance(details, dict):
@@ -283,7 +282,8 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
                 details['log'] = ["Task completed successfully."]
 
     details_json = json.dumps(details) if details is not None else None
-    
+
+    cur = db.cursor()
     try:
         # This query now handles start_time and end_time using Unix timestamps
         cur.execute("""
@@ -326,13 +326,12 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
         ):
             duration_s = None
             try:
-                hist_cur = db.cursor()
-                hist_cur.execute(
-                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
-                    (task_id,),
-                )
-                row = hist_cur.fetchone()
-                hist_cur.close()
+                with db.cursor() as hist_cur:
+                    hist_cur.execute(
+                        "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
+                        (task_id,),
+                    )
+                    row = hist_cur.fetchone()
                 if row and row[0] is not None:
                     end = row[1] if row[1] is not None else current_unix_time
                     duration_s = max(0.0, float(end) - float(row[0]))

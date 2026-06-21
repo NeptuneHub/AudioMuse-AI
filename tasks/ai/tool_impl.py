@@ -68,7 +68,7 @@ def _reroute_other_feature_labels(genres, moods, other_features):
         parts.append(f"from genres: {', '.join(rerouted_from_genres)}")
     if rerouted_from_moods:
         parts.append(f"from moods: {', '.join(rerouted_from_moods)}")
-    msg = "\u26a0\ufe0f Rerouted to other_features (" + "; ".join(parts) + ")"
+    msg = "WARN: Rerouted to other_features (" + "; ".join(parts) + ")"
     return new_genres, new_moods, new_other, msg
 
 
@@ -93,7 +93,7 @@ def _reroute_mood_labels_from_genres(genres, moods):
         if canonical not in existing_lower:
             new_moods.append(canonical)
             existing_lower.add(canonical)
-    msg = f"\u26a0\ufe0f Rerouted from genres to moods (not real genres): {', '.join(rerouted)}"
+    msg = f"WARN: Rerouted from genres to moods (not real genres): {', '.join(rerouted)}"
     return kept, new_moods, msg
 
 

@@ -678,27 +678,70 @@ def _note_mmap_activity(index=None) -> None:
             t.start()
 
 
-def _drop_resident_mmap_pages(indexes=None) -> int:
-    """MADV_DONTNEED each given index's cell-file mapping; return how many were advised.
+_WIN_VIRTUAL_UNLOCK = None
+_WIN_ERROR_NOT_LOCKED = 158
 
-    ``indexes`` defaults to every live index. Drops the resident (RSS) pages of the
-    disk-cache working set WITHOUT unmapping: the mapping stays valid and a later
-    query re-faults the cells it needs from the file. Unlike close()/munmap this
-    never races an in-flight zero-copy read -- a concurrent reader simply takes a
-    page fault and re-reads identical bytes from the read-only file (the mapping is
-    opened read-only, so there are no dirty pages to lose on any platform). Runs
-    where mmap.madvise + MADV_DONTNEED exist (Linux and macOS); a no-op where they
-    do not (e.g. Windows), mirroring release_memory_to_os(). Skips (with a debug
-    line) any mapping it cannot reach so a numpy layout change degrades to "no
-    reclaim" instead of silent breakage.
+
+def _win_virtual_unlock():
+    """Lazily resolve ``(VirtualUnlock, get_last_error)`` from kernel32 (Windows only).
+
+    Returns the error reader bound to the same ``use_last_error=True`` context so
+    the drop loop never references the Windows-only ``ctypes.get_last_error``
+    attribute directly (keeps it testable off-Windows). Cached for reuse.
     """
-    # madvise(MADV_DONTNEED) is POSIX (Linux/macOS); absent on Windows.
-    if platform.system() == "Windows":
+    global _WIN_VIRTUAL_UNLOCK
+    if _WIN_VIRTUAL_UNLOCK is None:
+        import ctypes
+        from ctypes import wintypes
+        fn = ctypes.WinDLL("kernel32", use_last_error=True).VirtualUnlock
+        fn.argtypes = [wintypes.LPVOID, ctypes.c_size_t]
+        fn.restype = wintypes.BOOL
+        _WIN_VIRTUAL_UNLOCK = (fn, ctypes.get_last_error)
+    return _WIN_VIRTUAL_UNLOCK
+
+
+def _drop_pages_windows(targets) -> int:
+    """Drop each index's read-only file pages from the working set via VirtualUnlock.
+
+    VirtualUnlock on pages that were never VirtualLock'd returns FALSE with
+    ERROR_NOT_LOCKED (158) but still removes them from the process working set
+    (documented behavior), so the file-backed pages move to the standby cache and
+    a later query soft-faults only the cells it probes (sub-millisecond). This is
+    the Windows analog of MADV_DONTNEED: surgical, per-index, no unmap, no dirty
+    pages to lose. ``np.memmap.ctypes.data``/``.nbytes`` give the mapping base and
+    length directly.
+    """
+    try:
+        unlock, last_error = _win_virtual_unlock()
+    except Exception as e:
+        logger.debug("IVF idle page-drop: VirtualUnlock unavailable (%s).", e)
         return 0
+    dropped = 0
+    for idx in targets:
+        mm = getattr(idx, "_mmap", None)
+        if mm is None:
+            continue
+        try:
+            addr = int(mm.ctypes.data)
+            size = int(mm.nbytes)
+        except Exception:
+            continue
+        if not addr or size <= 0:
+            continue
+        ok = unlock(addr, size)
+        err = last_error()
+        if ok or err == _WIN_ERROR_NOT_LOCKED:
+            dropped += 1
+        else:
+            logger.debug("IVF idle page-drop: VirtualUnlock failed (err=%s).", err)
+    return dropped
+
+
+def _drop_pages_posix(targets) -> int:
+    """MADV_DONTNEED each mapping (Linux drops RSS; macOS deactivates pages)."""
     advise = getattr(mmap, "MADV_DONTNEED", None)
     if advise is None:
         return 0
-    targets = list(_LIVE_INDEXES) if indexes is None else list(indexes)
     dropped = 0
     skipped = 0
     for idx in targets:
@@ -718,6 +761,25 @@ def _drop_resident_mmap_pages(indexes=None) -> int:
     if skipped:
         logger.debug("IVF idle page-drop skipped %d live mapping(s) it could not reach.", skipped)
     return dropped
+
+
+def _drop_resident_mmap_pages(indexes=None) -> int:
+    """Drop each given index's cell-file pages from RSS; return how many were dropped.
+
+    ``indexes`` defaults to every live index. Drops the resident pages of the
+    disk-cache working set WITHOUT unmapping: the mapping stays valid and a later
+    query re-faults the cells it needs from the file. This never races an in-flight
+    zero-copy read -- a concurrent reader simply takes a page fault and re-reads
+    identical bytes from the read-only file (no dirty pages to lose on any
+    platform). Uses VirtualUnlock on Windows and madvise(MADV_DONTNEED) on
+    Linux/macOS.
+    """
+    targets = list(_LIVE_INDEXES) if indexes is None else list(indexes)
+    if not targets:
+        return 0
+    if platform.system() == "Windows":
+        return _drop_pages_windows(targets)
+    return _drop_pages_posix(targets)
 
 
 def _collect_idle_mmap_indexes(now: float, idle_seconds: float):
@@ -918,6 +980,17 @@ class PagedIvfIndex:
         vecs = sub[4 * n:].view(np.float32).reshape(n, self._dim)
         return ids, vecs
 
+    def _iter_db_cells(self, cur, cell_ids):
+        """Yield ``(cid, ids, vecs)`` decoded from ivf_cell for ``cell_ids``."""
+        cur.execute(
+            f"SELECT cell_id, cell_data FROM {IVF_CELL_TABLE} "
+            f"WHERE index_name = %s AND cell_id = ANY(%s)",
+            (self._index_name, list(cell_ids)),
+        )
+        for cell_id, blob in cur.fetchall():
+            ids, vecs = unpack_cell(bytes(blob), self._dim)
+            yield int(cell_id), ids, vecs
+
     def _read_cells(self, cell_ids: List[int], cache: _CellLruCache) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
         """Decode ``cell_ids`` and return ``{cell_id: (ids, vecs)}``.
 
@@ -959,30 +1032,32 @@ class PagedIvfIndex:
         if db_needed:
             conn = self._conn_factory()
             with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT cell_id, cell_data FROM {IVF_CELL_TABLE} "
-                    f"WHERE index_name = %s AND cell_id = ANY(%s)",
-                    (self._index_name, db_needed),
-                )
-                for cell_id, blob in cur.fetchall():
-                    cid = int(cell_id)
-                    ids, vecs = unpack_cell(bytes(blob), self._dim)
+                for cid, ids, vecs in self._iter_db_cells(cur, db_needed):
                     cache.add_cell(cid, ids, vecs)
                     gcache.put_cell(self._index_name, cid, ids, vecs)
                     out[cid] = (ids, vecs)
         return out
 
-    def _distances(self, q: np.ndarray, vecs: np.ndarray) -> np.ndarray:
+    def _prep_query(self, q: np.ndarray) -> np.ndarray:
+        """Per-query precompute reused across every probed cell (angular: normalize once)."""
+        if self._metric == "angular":
+            return q / (float(np.linalg.norm(q)) + 1e-12)
+        return q
+
+    def _cell_distances(self, qp: np.ndarray, vecs: np.ndarray) -> np.ndarray:
+        """Distances for one cell from a prepared query ``qp`` (smaller = nearer)."""
         if self._metric == "euclidean":
-            diffs = vecs - q[None, :]
+            diffs = vecs - qp[None, :]
             return np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
         if self._metric == "dot":
-            return (-(vecs @ q)).astype(np.float32)
-        qn = q / (float(np.linalg.norm(q)) + 1e-12)
+            return (-(vecs @ qp)).astype(np.float32)
         if self._normalized:
-            return (1.0 - np.clip(vecs @ qn, -1.0, 1.0)).astype(np.float32)
+            return (1.0 - np.clip(vecs @ qp, -1.0, 1.0)).astype(np.float32)
         vn = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True).astype(np.float32) + 1e-12)
-        return (1.0 - np.clip(vn @ qn, -1.0, 1.0)).astype(np.float32)
+        return (1.0 - np.clip(vn @ qp, -1.0, 1.0)).astype(np.float32)
+
+    def _distances(self, q: np.ndarray, vecs: np.ndarray) -> np.ndarray:
+        return self._cell_distances(self._prep_query(q), vecs)
 
     def _distances_over_cells(self, q: np.ndarray, vecs_list: List[np.ndarray]) -> List[np.ndarray]:
         """Per-cell distance arrays for ``vecs_list``, aligned with the input order.
@@ -998,8 +1073,9 @@ class PagedIvfIndex:
         never worse than before.
         """
         n_cells = len(vecs_list)
+        qp = self._prep_query(q)
         if n_cells <= 1:
-            return [self._distances(q, v) for v in vecs_list]
+            return [self._cell_distances(qp, v) for v in vecs_list]
         total = 0
         for v in vecs_list:
             total += int(v.shape[0])
@@ -1007,13 +1083,13 @@ class PagedIvfIndex:
         if total >= config.IVF_QUERY_PARALLEL_MIN_VECTORS and not _in_query_pool_thread():
             pool = _query_thread_pool()
         if pool is None:
-            return [self._distances(q, v) for v in vecs_list]
+            return [self._cell_distances(qp, v) for v in vecs_list]
 
         n_groups = min(_query_worker_count(), n_cells)
         bounds = [(i * n_cells) // n_groups for i in range(n_groups)] + [n_cells]
 
         def _score_slice(lo: int, hi: int) -> List[np.ndarray]:
-            return [self._distances(q, vecs_list[j]) for j in range(lo, hi)]
+            return [self._cell_distances(qp, vecs_list[j]) for j in range(lo, hi)]
 
         try:
             futures = [pool.submit(_score_slice, bounds[i], bounds[i + 1]) for i in range(n_groups)]
@@ -1023,7 +1099,7 @@ class PagedIvfIndex:
             return out
         except Exception as e:
             logger.warning("IVF '%s' parallel cell scan failed (%s); using serial scan.", self._index_name, e)
-            return [self._distances(q, v) for v in vecs_list]
+            return [self._cell_distances(qp, v) for v in vecs_list]
 
     def query(self, vector, k: int):
         """Return ``(ids, distances)`` for the ``k`` nearest items."""
@@ -1160,11 +1236,12 @@ class PagedIvfIndex:
         else:
             cell_ids = [int(c) for c in self._farthest_cells(q, k)]
         state = {"max_d": float("-inf"), "far_id": None}
+        qp = self._prep_query(q)
 
         def _consume(ids: np.ndarray, vecs: np.ndarray) -> None:
             if vecs.shape[0] == 0:
                 return
-            dists = self._distances(q, vecs)
+            dists = self._cell_distances(qp, vecs)
             mask = ids != int(int_id)
             if not mask.any():
                 return
@@ -1197,13 +1274,7 @@ class PagedIvfIndex:
                 with conn.cursor() as cur:
                     for start in range(0, len(db_needed), self._read_batch):
                         chunk = db_needed[start:start + self._read_batch]
-                        cur.execute(
-                            f"SELECT cell_data FROM {IVF_CELL_TABLE} "
-                            f"WHERE index_name = %s AND cell_id = ANY(%s)",
-                            (self._index_name, chunk),
-                        )
-                        for (blob,) in cur.fetchall():
-                            ids, vecs = unpack_cell(bytes(blob), self._dim)
+                        for _cid, ids, vecs in self._iter_db_cells(cur, chunk):
                             _consume(ids, vecs)
         if state["max_d"] == float("-inf"):
             return 0.0, None
@@ -1227,14 +1298,8 @@ class PagedIvfIndex:
         with conn.cursor() as cur:
             for start in range(0, len(cell_ids), self._read_batch):
                 chunk = cell_ids[start:start + self._read_batch]
-                cur.execute(
-                    f"SELECT cell_id, cell_data FROM {IVF_CELL_TABLE} "
-                    f"WHERE index_name = %s AND cell_id = ANY(%s)",
-                    (self._index_name, chunk),
-                )
-                for cell_id, blob in cur.fetchall():
-                    ids, vecs = unpack_cell(bytes(blob), self._dim)
-                    gcache.put_cell(self._index_name, int(cell_id), ids, vecs)
+                for cid, ids, vecs in self._iter_db_cells(cur, chunk):
+                    gcache.put_cell(self._index_name, cid, ids, vecs)
                     loaded += 1
         return loaded
 
@@ -1411,7 +1476,7 @@ def build_and_store_paged_ivf(
         sample_keys = np.fromiter(
             (
                 int.from_bytes(
-                    hashlib.blake2b(str(iid).encode("utf-8"), digest_size=8).digest(),
+                    hashlib.blake2b(str(iid).encode("utf-8"), digest_size=8, usedforsecurity=False).digest(),
                     "big",
                 )
                 for iid in item_ids

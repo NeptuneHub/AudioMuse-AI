@@ -274,13 +274,7 @@ def start_clustering_endpoint():
     data = request.json
     job_id = str(uuid.uuid4())
 
-    # Clean up details of previously successful or stale tasks before starting a new one
-    clean_up_previous_main_tasks()
-    save_task_status(job_id, "main_clustering", TASK_STATUS_PENDING, details={"message": "Task enqueued."})
-
-    job = rq_queue_high.enqueue(
-        'tasks.clustering.run_clustering_task', # Enqueue by string path
-        kwargs={ # Pass all arguments as a dictionary
+    clustering_kwargs = { # Pass all arguments as a dictionary
             "clustering_method": data.get('clustering_method', CLUSTER_ALGORITHM),
             "num_clusters_min": int(data.get('num_clusters_min', NUM_CLUSTERS_MIN)),
             "num_clusters_max": int(data.get('num_clusters_max', NUM_CLUSTERS_MAX)),
@@ -321,7 +315,15 @@ def start_clustering_endpoint():
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
-        },
+    }
+
+    # Clean up details of previously successful or stale tasks before starting a new one
+    clean_up_previous_main_tasks()
+    save_task_status(job_id, "main_clustering", TASK_STATUS_PENDING, details={"message": "Task enqueued."})
+
+    job = rq_queue_high.enqueue(
+        'tasks.clustering.run_clustering_task', # Enqueue by string path
+        kwargs=clustering_kwargs,
         job_id=job_id,
         description="Main Music Clustering",
         retry=Retry(max=3),

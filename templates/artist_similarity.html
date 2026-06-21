@@ -243,6 +243,13 @@
 {% block bodyAdditions %}
 <script>
     (() => {
+        // Escape data interpolated into innerHTML (track/artist names come from
+        // library metadata and may contain HTML meta-characters).
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (c) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[c]);
+        }
         let currentArtist = null;
         let similarArtists = [];
         let selectedArtist = null;
@@ -322,7 +329,7 @@
                     const itemDiv = document.createElement('div');
                     itemDiv.className = 'autocomplete-item';
                     itemDiv.innerHTML = `
-                        <span class="artist-name">${artist.artist}</span>
+                        <span class="artist-name">${escapeHtml(artist.artist)}</span>
                         <span class="track-count">(${artist.track_count} tracks)</span>
                     `;
                     itemDiv.addEventListener('click', () => selectArtist(artist.artist));
@@ -457,17 +464,17 @@
                         </thead>
                         <tbody>
                             ${data.map((item, idx) => `
-                                <tr class="artist-row" data-artist="${item.artist}" data-index="${idx}">
-                                    <td>${item.artist}</td>
+                                <tr class="artist-row" data-artist="${escapeHtml(item.artist)}" data-index="${idx}">
+                                    <td>${escapeHtml(item.artist)}</td>
                                     <td>${item.divergence.toFixed(4)}</td>
                                     <td>
-                                        <button class="btn btn-primary btn-sm expand-btn" data-artist="${item.artist}" data-mode="full">
+                                        <button class="btn btn-primary btn-sm expand-btn" data-artist="${escapeHtml(item.artist)}" data-mode="full">
                                             Show All Songs
                                         </button>
                                     </td>
                                     ${showComponentMatches ? `
                                         <td>
-                                            <button class="btn btn-primary btn-sm expand-btn" data-artist="${item.artist}" data-mode="components">
+                                            <button class="btn btn-primary btn-sm expand-btn" data-artist="${escapeHtml(item.artist)}" data-mode="components">
                                                 Show Matches
                                             </button>
                                         </td>
@@ -547,7 +554,7 @@
                 // Show playlist creator
                 playlistCreator.classList.remove('hidden');
                 selectedArtistInfo.innerHTML = `
-                    <p><strong>Selected Artist:</strong> ${artistName} (${tracks.length} tracks) - <em>Full artist tracks</em></p>
+                    <p><strong>Selected Artist:</strong> ${escapeHtml(artistName)} (${tracks.length} tracks) - <em>Full artist tracks</em></p>
                 `;
                 document.getElementById('playlist_name').value = `Best of ${artistName}`;
                 playlistStatusDiv.textContent = '';
@@ -555,9 +562,9 @@
                 // Add track list to results
                 const trackListHTML = `
                     <div class="track-list">
-                        <h4>All Tracks by ${artistName}:</h4>
+                        <h4>All Tracks by ${escapeHtml(artistName)}:</h4>
                         ${tracks.map(t => `
-                            <div class="track-list-item">${t.title}</div>
+                            <div class="track-list-item">${escapeHtml(t.title)}</div>
                         `).join('')}
                     </div>
                 `;
@@ -637,7 +644,7 @@
                 // Show playlist creator
                 playlistCreator.classList.remove('hidden');
                 selectedArtistInfo.innerHTML = `
-                    <p><strong>Component Matches:</strong> ${currentArtist} × ${artistName}</p>
+                    <p><strong>Component Matches:</strong> ${escapeHtml(currentArtist)} × ${escapeHtml(artistName)}</p>
                     <p><em>${allSongs.length} total songs from ${songsByMatch.length} component matches</em></p>
                 `;
                 document.getElementById('playlist_name').value = `${currentArtist} × ${artistName} Matches`;
@@ -653,18 +660,18 @@
                     matchHTML += `
                         <div class="component-match-songs">
                             <div class="component-match-header">
-                                Component Match: ${currentArtist} C${comp1} ↔ ${artistName} C${comp2}
+                                Component Match: ${escapeHtml(currentArtist)} C${comp1} ↔ ${escapeHtml(artistName)} C${comp2}
                             </div>
                             <div style="margin-top: 0.5rem;">
-                                <strong>${currentArtist}:</strong>
+                                <strong>${escapeHtml(currentArtist)}:</strong>
                                 ${match.artist1_representative_songs.map(s => `
-                                    <div class="song-item">${s.title}</div>
+                                    <div class="song-item">${escapeHtml(s.title)}</div>
                                 `).join('')}
                             </div>
                             <div style="margin-top: 0.5rem;">
-                                <strong>${artistName}:</strong>
+                                <strong>${escapeHtml(artistName)}:</strong>
                                 ${match.artist2_representative_songs.map(s => `
-                                    <div class="song-item">${s.title}</div>
+                                    <div class="song-item">${escapeHtml(s.title)}</div>
                                 `).join('')}
                             </div>
                         </div>

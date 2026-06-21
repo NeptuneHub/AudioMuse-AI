@@ -45,6 +45,8 @@ def _recording_db():
     cur = MagicMock()
     cur.fetchone.return_value = None
     cur.fetchall.return_value = []
+    cur.__enter__ = lambda self: self
+    cur.__exit__ = lambda self, *a: None
     db = MagicMock()
     db.cursor.return_value = cur
     return db, cur

@@ -51,10 +51,9 @@ def get_score_endpoint():
 
     try:
         db = get_db()
-        cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
-        score_data = cur.fetchone()
-        cur.close()
+        with db.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
+            score_data = cur.fetchone()
 
         if score_data:
             # Convert DictRow to a standard dictionary for consistent JSON output
@@ -99,10 +98,9 @@ def get_embedding_endpoint():
     
     try:
         db = get_db()
-        cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
-        embedding_data = cur.fetchone()
-        cur.close()
+        with db.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
+            embedding_data = cur.fetchone()
 
         if embedding_data:
             embedding_dict = dict(embedding_data)

@@ -236,7 +236,7 @@
                     <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--card-bg, #f5f5f5); border:1px solid var(--border-color, #ccc);">
                         An admin account already exists. To add, remove, or change
                         admin and normal user accounts, go to the
-                        <a href="/users">Users</a> page.
+                        <a href="{{ url_for('users_bp.users_page') }}">Users</a> page.
                     </p>
                 </div>
                 <div id="auth-credentials" class="field-grid">
@@ -259,6 +259,7 @@
                             </span>
                         </label>
                         <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
+                        <p id="admin-password-hint" class="inline-feedback status-pending" style="display:none; margin:6px 0 0; width:100%;"></p>
                     </div>
                     <div class="auth-admin-credential">
                         <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">

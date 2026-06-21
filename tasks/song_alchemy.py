@@ -1,4 +1,6 @@
+import json
 import logging
+import threading
 from typing import List, Tuple
 import numpy as np
 
@@ -66,6 +68,21 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     return [means[i] for i in range(len(means))], weights.tolist()
 
 
+_mood_centroids_cache = None
+_mood_centroids_lock = threading.Lock()
+
+
+def _load_mood_centroids_data():
+    """Load and cache the ~1MB mood-centroids JSON once (read by every alchemy request)."""
+    global _mood_centroids_cache
+    if _mood_centroids_cache is None:
+        with _mood_centroids_lock:
+            if _mood_centroids_cache is None:
+                with open(config.MOOD_CENTROIDS_FILE, encoding='utf-8') as _f:
+                    _mood_centroids_cache = json.load(_f)
+    return _mood_centroids_cache
+
+
 def _get_mood_centroid_vector(item_id: str):
     """Parse 'mood_name:centroid_index' and return the centroid vector as np.ndarray, or None."""
     parts = str(item_id).split(':', 1)
@@ -74,9 +91,7 @@ def _get_mood_centroid_vector(item_id: str):
     mood_name, idx_str = parts[0].strip().lower(), parts[1].strip()
     try:
         cidx = int(idx_str)
-        import json as _json
-        with open(config.MOOD_CENTROIDS_FILE) as _f:
-            _mcdata = _json.load(_f)
+        _mcdata = _load_mood_centroids_data()
         centroids_list = _mcdata.get(mood_name, {}).get('centroids', [])
         if 0 <= cidx < len(centroids_list):
             vec = centroids_list[cidx].get('centroid')
@@ -629,15 +644,11 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             coord = id_to_coord.get(str(item_id))
             if coord is not None:
                 proj_map[pid] = coord
-            else:
-                missing_ids.append(pid)
         elif isinstance(pid, str) and pid.startswith('__sub_id__'):
             item_id = pid.replace('__sub_id__', '')
             coord = id_to_coord.get(str(item_id))
             if coord is not None:
                 proj_map[pid] = coord
-            else:
-                missing_ids.append(pid)
         elif pid in ('__add_centroid__', '__subtract_centroid__'):
             # compute centroid coords later (from member point coords) if possible
             continue
@@ -646,8 +657,6 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             coord = id_to_coord.get(str(pid))
             if coord is not None:
                 proj_map[pid] = coord
-            else:
-                missing_ids.append(pid)
     
     # Now add artist component projections from precomputed cache
     # Note: Artist components are NOT in proj_ids because we didn't add their vectors

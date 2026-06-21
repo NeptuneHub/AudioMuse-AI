@@ -364,6 +364,40 @@ def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
     )
 
 
+def test_drop_pages_windows_routing(tmp_path, monkeypatch):
+    """On Windows the drop routes through VirtualUnlock; ERROR_NOT_LOCKED counts as success."""
+    import tasks.paged_ivf as pv
+
+    path = tmp_path / "wcells.bin"
+    with open(path, "wb") as f:
+        f.write(b"\xcd" * (2 * 1024 * 1024))
+
+    def make_stub():
+        mm = np.memmap(str(path), dtype=np.uint8, mode="r")
+        stub = type("S", (), {})()
+        stub._mmap = mm
+        return stub, mm
+
+    monkeypatch.setattr(pv.platform, "system", lambda: "Windows")
+
+    # FALSE + ERROR_NOT_LOCKED(158) is the documented success path for unlocked pages.
+    stub, mm = make_stub()
+    calls = []
+
+    def unlock_not_locked(addr, size):
+        calls.append((addr, size))
+        return 0
+
+    monkeypatch.setattr(pv, "_win_virtual_unlock", lambda: (unlock_not_locked, lambda: pv._WIN_ERROR_NOT_LOCKED))
+    assert pv._drop_resident_mmap_pages([stub]) == 1
+    assert calls == [(int(mm.ctypes.data), int(mm.nbytes))]
+
+    # A genuine failure (other error code, FALSE) must not be counted as dropped.
+    stub2, _mm2 = make_stub()
+    monkeypatch.setattr(pv, "_win_virtual_unlock", lambda: ((lambda addr, size: 0), lambda: 5))
+    assert pv._drop_resident_mmap_pages([stub2]) == 0
+
+
 def test_mmap_idle_worker_drops_pages_and_runs_callbacks(monkeypatch):
     """An idle disk-cache working set must fire the watcher: drop + idle callbacks."""
     import tasks.paged_ivf as pv

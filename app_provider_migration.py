@@ -432,12 +432,14 @@ def probe_test():
                         'sample_count': 0, 'warnings': []}), 200
     try:
         result = provider_probe.test_connection(t, creds)
-    except NotImplementedError as e:
-        return jsonify({'ok': False, 'error': str(e), 'path_format': 'none',
-                        'sample_count': 0, 'warnings': []}), 200
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e), 'path_format': 'none',
-                        'sample_count': 0, 'warnings': []}), 200
+    except NotImplementedError:
+        logger.warning("test_connection not supported for provider type %s", t)
+        return jsonify({'ok': False, 'error': 'Connection testing is not supported for this provider.',
+                        'path_format': 'none', 'sample_count': 0, 'warnings': []}), 200
+    except Exception:
+        logger.warning("test_connection failed for provider type %s", t, exc_info=True)
+        return jsonify({'ok': False, 'error': 'Connection test failed. Check the container logs for details.',
+                        'path_format': 'none', 'sample_count': 0, 'warnings': []}), 200
     return jsonify(result)
 
 
@@ -504,7 +506,7 @@ def libraries_list():
             'libraries': [],
             'unsupported': False,
             'selected_libraries': selected,
-            'error': str(e),
+            'error': 'Failed to list libraries. Check the container logs for details.',
         }), 200
     return jsonify({
         'libraries': result.get('libraries', []),
@@ -628,8 +630,9 @@ def search_albums():
     target_type, creds = session
     try:
         albums = provider_probe.search_albums(target_type, creds, query)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        logger.warning("search_albums failed for session %s", session_id, exc_info=True)
+        return jsonify({'error': 'Album search failed. Check the container logs for details.'}), 500
     return jsonify({'albums': albums})
 
 
@@ -699,8 +702,9 @@ def source_paths_refresh():
 
     try:
         tracks = provider_probe.fetch_all_tracks(source_type, creds)
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+    except Exception:
+        logger.warning("source path refresh failed during provider probe", exc_info=True)
+        return jsonify({'ok': False, 'error': 'Failed to refresh source paths. Check the container logs for details.'}), 500
 
     path_format = _detect_path_format(tracks)
     overrides = {
@@ -815,8 +819,9 @@ def dry_run():
 
     try:
         new_tracks = provider_probe.fetch_all_tracks(target_type, creds)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        logger.warning("fetch_all_tracks failed for target type %s", target_type, exc_info=True)
+        return jsonify({'error': 'Failed to fetch target tracks. Check the container logs for details.'}), 500
 
     old_rows = _load_score_rows_as_dicts()
     _apply_source_path_overrides(old_rows, source_overrides)
@@ -932,8 +937,9 @@ def match_album():
 
     try:
         new_tracks = provider_probe.get_album_tracks(target_type, creds, new_album_id)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    except Exception:
+        logger.warning("get_album_tracks failed for session %s", session_id, exc_info=True)
+        return jsonify({'error': 'Failed to fetch album tracks. Check the container logs for details.'}), 500
 
     import importlib
     matcher = importlib.import_module('tasks.provider_migration_matcher')
@@ -1345,11 +1351,12 @@ def job_status(task_id):
             'id': job.id,
             'status': status,
             'result': job.result if job.is_finished else None,
-            'error': str(job.exc_info) if job.is_failed else None,
+            'error': 'Job failed. Check the container logs for details.' if job.is_failed else None,
             'restart_scheduled': restart_scheduled,
         })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 404
+    except Exception:
+        logger.warning("migration job status fetch failed for task %s", task_id, exc_info=True)
+        return jsonify({'error': 'Job not found.'}), 404
 
 
 @migration_bp.route('/api/migration/dry-run-report/<int:session_id>', methods=['GET'])
@@ -1592,7 +1599,8 @@ def _load_unmatched_for_album(session_id, album_key):
     """Return the set of old rows that live in the given (album_artist, album)
     and were NOT matched by the dry run."""
     state = _load_state(session_id) or {}
-    matched_ids = set((state.get('dry_run') or {}).get('matches', {}).keys())
+    manual_unmatches = set(state.get('manual_unmatches') or [])
+    matched_ids = set((state.get('dry_run') or {}).get('matches', {}).keys()) - manual_unmatches
     matched_ids |= set((state.get('manual_matches') or {}).keys())
     rows = _load_score_rows_as_dicts()
     target_artist, target_album = (album_key[0] if album_key else None,
@@ -1637,7 +1645,7 @@ def _albums_payload(unmatched_by_album):
     to keep the persisted state and the step-4 review page bounded.
     """
     import config
-    limit = int(getattr(config, 'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT', 200) or 200)
+    limit = config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT
     out = []
     for key, rows in unmatched_by_album.items():
         if len(out) >= limit:

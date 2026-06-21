@@ -95,7 +95,7 @@ class TestCheckAuthNeededBearer:
             result = app_auth.check_auth_needed('s')
             assert result is None
             assert g.auth_role == 'admin'
-        assert ('tok-123', 'tok-123') in calls
+        assert (b'tok-123', b'tok-123') in calls
 
     def test_bearer_wrong_token_rejected(self, app, monkeypatch):
         import config

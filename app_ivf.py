@@ -7,7 +7,7 @@ import numpy as np
 
 # Import the new config option
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
-from app_helper import top_stratified_genre
+from app_helper import serialize_neighbor_results
 from tasks.ivf_manager import (
     find_nearest_neighbors_by_id, 
     find_nearest_neighbors_by_vector,
@@ -19,6 +19,35 @@ from tasks.ivf_manager import (
 
 logger = logging.getLogger(__name__)
 
+
+# Map a neighbor-search exception to the shared JSON error response (one contract,
+# reused by every similarity mode).
+def _neighbor_search_error_response(ctx, exc, is_runtime):
+    if is_runtime:
+        logger.error(f"Runtime error finding neighbors for {ctx}: {exc}", exc_info=True)
+        return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+    logger.error(f"Unexpected error finding neighbors for {ctx}: {exc}", exc_info=True)
+    return jsonify({"error": "An unexpected error occurred."}), 500
+
+
+# Wrap the shared vector-neighbor search + error mapping
+def _vector_neighbors_or_error(vector, num_neighbors, eliminate_duplicates, ctx, empty_msg):
+    try:
+        results = find_nearest_neighbors_by_vector(vector, n=num_neighbors, eliminate_duplicates=eliminate_duplicates)
+    except RuntimeError as e:
+        return None, _neighbor_search_error_response(ctx, e, is_runtime=True)
+    except Exception as e:
+        return None, _neighbor_search_error_response(ctx, e, is_runtime=False)
+    if not results:
+        return None, (jsonify({"error": empty_msg}), 404)
+    return results, None
+
+
+# Build similar-tracks JSON list from neighbor results (shared serializer)
+def _serialize_neighbor_results(neighbor_results):
+    return serialize_neighbor_results(neighbor_results)
+
+
 _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
 _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)} for API
 _mood_centroids_loaded = False
@@ -26,7 +55,7 @@ _mood_centroids_lock = threading.Lock()
 
 def _load_mood_centroids_for_similarity():
     try:
-        with open(MOOD_CENTROIDS_FILE) as f:
+        with open(MOOD_CENTROIDS_FILE, encoding='utf-8') as f:
             data = json.load(f)
         for mood, info in data.items():
             centroids = info.get('centroids', [])
@@ -164,6 +193,7 @@ def search_tracks_endpoint():
     if end is not None and end <= start:
         return jsonify([])
     limit = (end - start) if end is not None else 20
+    limit = min(limit, 500)
     offset = start
 
     try:
@@ -289,6 +319,7 @@ def get_similar_tracks_endpoint():
     title = request.args.get('title')
     artist = request.args.get('artist')
     num_neighbors = request.args.get('n', 10, type=int)
+    num_neighbors = max(1, num_neighbors)
 
     # Optional mood centroid parameters
     mood_param = request.args.get('mood', '', type=str).strip().lower()
@@ -326,44 +357,12 @@ def get_similar_tracks_endpoint():
             return jsonify({"error": f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' (0-{len(centroids)-1})."}), 400
 
         centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
-        try:
-            neighbor_results = find_nearest_neighbors_by_vector(
-                centroid_vector,
-                n=num_neighbors,
-                eliminate_duplicates=eliminate_duplicates
-            )
-        except RuntimeError as e:
-            logger.error(f"Runtime error finding neighbors for mood centroid: {e}", exc_info=True)
-            return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-        except Exception as e:
-            logger.error(f"Unexpected error finding neighbors for mood centroid: {e}", exc_info=True)
-            return jsonify({"error": "An unexpected error occurred."}), 500
-
-        if not neighbor_results:
-            return jsonify({"error": "No similar tracks found for this mood centroid."}), 404
-
-        from app_helper import get_score_data_by_ids
-        neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
-        neighbor_details = get_score_data_by_ids(neighbor_ids)
-        details_map = {d['item_id']: d for d in neighbor_details}
-        distance_map = {n_item['item_id']: n_item['distance'] for n_item in neighbor_results}
-
-        final_results = []
-        for neighbor_id in neighbor_ids:
-            if neighbor_id in details_map:
-                track_info = details_map[neighbor_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "album": (track_info.get('album') or 'unknown'),
-                    "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id],
-                    "mood_vector": track_info.get('mood_vector'),
-                    "other_features": track_info.get('other_features'),
-                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
-                })
-        return jsonify(final_results)
+        neighbor_results, err = _vector_neighbors_or_error(
+            centroid_vector, num_neighbors, eliminate_duplicates,
+            "mood centroid", "No similar tracks found for this mood centroid.")
+        if err:
+            return err
+        return jsonify(_serialize_neighbor_results(neighbor_results))
 
     # --- Anchor mode: use anchor's centroid vector ---
     if anchor_id_param is not None:
@@ -373,44 +372,12 @@ def get_similar_tracks_endpoint():
             return jsonify({"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}), 404
 
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
-        try:
-            neighbor_results = find_nearest_neighbors_by_vector(
-                anchor_vector,
-                n=num_neighbors,
-                eliminate_duplicates=eliminate_duplicates
-            )
-        except RuntimeError as e:
-            logger.error(f"Runtime error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
-            return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-        except Exception as e:
-            logger.error(f"Unexpected error finding neighbors for anchor {anchor_id_param}: {e}", exc_info=True)
-            return jsonify({"error": "An unexpected error occurred."}), 500
-
-        if not neighbor_results:
-            return jsonify({"error": "No similar tracks found for this anchor."}), 404
-
-        from app_helper import get_score_data_by_ids
-        neighbor_ids = [n_item['item_id'] for n_item in neighbor_results]
-        neighbor_details = get_score_data_by_ids(neighbor_ids)
-        details_map = {d['item_id']: d for d in neighbor_details}
-        distance_map = {n_item['item_id']: n_item['distance'] for n_item in neighbor_results}
-
-        final_results = []
-        for neighbor_id in neighbor_ids:
-            if neighbor_id in details_map:
-                track_info = details_map[neighbor_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "album": (track_info.get('album') or 'unknown'),
-                    "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id],
-                    "mood_vector": track_info.get('mood_vector'),
-                    "other_features": track_info.get('other_features'),
-                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
-                })
-        return jsonify(final_results)
+        neighbor_results, err = _vector_neighbors_or_error(
+            anchor_vector, num_neighbors, eliminate_duplicates,
+            f"anchor {anchor_id_param}", "No similar tracks found for this anchor.")
+        if err:
+            return err
+        return jsonify(_serialize_neighbor_results(neighbor_results))
 
     # --- Standard song-based mode ---
     target_item_id = None
@@ -436,37 +403,11 @@ def get_similar_tracks_endpoint():
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404
 
-        from app_helper import get_score_data_by_ids
-
-        neighbor_ids = [n['item_id'] for n in neighbor_results]
-        neighbor_details = get_score_data_by_ids(neighbor_ids)
-
-        details_map = {d['item_id']: d for d in neighbor_details}
-        distance_map = {n['item_id']: n['distance'] for n in neighbor_results}
-
-        final_results = []
-        for neighbor_id in neighbor_ids:
-            if neighbor_id in details_map:
-                track_info = details_map[neighbor_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "album": (track_info.get('album') or 'unknown'),
-                    "album_artist": (track_info.get('album_artist') or 'unknown'),
-                    "distance": distance_map[neighbor_id],
-                    "mood_vector": track_info.get('mood_vector'),
-                    "other_features": track_info.get('other_features'),
-                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
-                })
-
-        return jsonify(final_results)
+        return jsonify(_serialize_neighbor_results(neighbor_results))
     except RuntimeError as e:
-        logger.error(f"Runtime error finding neighbors for {target_item_id}: {e}", exc_info=True)
-        return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        return _neighbor_search_error_response(target_item_id, e, is_runtime=True)
     except Exception as e:
-        logger.error(f"Unexpected error finding neighbors for {target_item_id}: {e}", exc_info=True)
-        return jsonify({"error": "An unexpected error occurred."}), 500
+        return _neighbor_search_error_response(target_item_id, e, is_runtime=False)
 
 
 @ivf_bp.route('/api/max_distance', methods=['GET'])
@@ -621,8 +562,8 @@ def create_media_server_playlist():
     playlist_name = data.get('playlist_name')
     track_ids_raw = data.get('track_ids', [])
 
-    if not playlist_name:
-        return jsonify({"error": "Missing 'playlist_name'"}), 400
+    if not isinstance(playlist_name, str) or not playlist_name:
+        return jsonify({"error": "Invalid or missing 'playlist_name'"}), 400
 
     final_track_ids = []
     if isinstance(track_ids_raw, list):

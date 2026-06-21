@@ -24,6 +24,7 @@ from config import TEMP_DIR, REDIS_URL, APP_VERSION, ENABLE_PROXY_FIX, JWT_SECRE
 if ENABLE_PROXY_FIX:
   # Werkzeug import for reverse proxy support
   from werkzeug.middleware.proxy_fix import ProxyFix
+  from proxy_prefix import StripDuplicatedScriptName
 
 # --- Flask App Setup ---
 # The Flask instance lives in `flask_app` so RQ task modules can import it
@@ -68,7 +69,10 @@ from app_logging import configure_logging
 configure_logging()
 
 if ENABLE_PROXY_FIX:
-  app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+  # StripDuplicatedScriptName runs after ProxyFix (inner app) to undo a doubled
+  # subpath prefix from a proxy that forwards the full path while also sending
+  # X-Forwarded-Prefix, which otherwise loops redirects to /<prefix>/setup (#668).
+  app.wsgi_app = ProxyFix(StripDuplicatedScriptName(app.wsgi_app), x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
@@ -293,7 +297,15 @@ def get_task_status_endpoint(task_id):
             response['state'] = db_task_info.get('status', response['state']) # Use DB status if RQ is still active
 
         response['progress'] = db_task_info.get('progress', response['progress'])
-        db_details = json.loads(db_task_info.get('details')) if db_task_info.get('details') else {}
+        raw_details = db_task_info.get('details')
+        db_details = {}
+        if isinstance(raw_details, dict):
+            db_details = raw_details
+        elif raw_details:
+            try:
+                db_details = json.loads(raw_details)
+            except (json.JSONDecodeError, TypeError):
+                db_details = {}
         # Merge details: RQ meta (live) can override DB details (persisted)
         response['details'] = {**db_details, **response['details']}
 
@@ -745,7 +757,7 @@ def listen_for_index_reloads():
               logger.warning(f"SemGrove cache reload failed: {e}")
               sg_success = False
 
-            logger.info(f"In-memory reload complete: IVF ✓, Artist ✓, Maps ✓, CLAP {'✓' if clap_success else '✗'}, Lyrics {'✓' if lyrics_success else '✗'}, SemGrove {'✓' if sg_success else '✗'}")
+            logger.info(f"In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP {'OK' if clap_success else 'X'}, Lyrics {'OK' if lyrics_success else 'X'}, SemGrove {'OK' if sg_success else 'X'}")
           except Exception as e:
             logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
       elif message_data == 'reload-artist':

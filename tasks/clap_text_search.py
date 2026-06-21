@@ -377,7 +377,7 @@ def ensure_text_search_queries_table():
     Called automatically at startup.
     """
     from app_helper import get_db
-    
+    conn = None
     try:
         conn = get_db()
         with conn.cursor() as cur:
