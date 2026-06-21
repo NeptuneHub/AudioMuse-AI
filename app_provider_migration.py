@@ -703,7 +703,7 @@ def source_paths_refresh():
     try:
         tracks = provider_probe.fetch_all_tracks(source_type, creds)
     except Exception:
-        logger.warning("source path refresh failed during provider probe for provider %s", source_type, exc_info=True)
+        logger.warning("source path refresh failed during provider probe", exc_info=True)
         return jsonify({'ok': False, 'error': 'Failed to refresh source paths. Check the container logs for details.'}), 500
 
     path_format = _detect_path_format(tracks)
