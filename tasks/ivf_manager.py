@@ -105,6 +105,7 @@ _thread_pool_lock = threading.Lock()
 MAX_WORKER_THREADS = max(1, (os.cpu_count() or 1) - 1)  # Use cpu_count - 1, minimum 1
 BATCH_SIZE_VECTOR_OPS = 50  # Process vectors in batches
 BATCH_SIZE_DB_OPS = 100     # Process database operations in batches
+SCORE_DETAIL_COLUMNS = 'title, author'
 
 def _get_thread_pool():
     """Get or create the global thread pool for parallel operations."""
@@ -123,16 +124,13 @@ def _shutdown_thread_pool():
             _thread_pool = None
 
 
-# Run fetch_batch_fn over BATCH_SIZE_DB_OPS chunks, fanning out when >1 batch
+# Run fetch_batch_fn over BATCH_SIZE_DB_OPS chunks sequentially
+# (batches share one db connection, which psycopg2 cannot use concurrently)
 def _fetch_in_batches(item_ids, fetch_batch_fn):
     id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
-    if len(id_batches) <= 1:
-        return fetch_batch_fn(item_ids)
-    executor = _get_thread_pool()
-    future_to_batch = {executor.submit(fetch_batch_fn, b): b for b in id_batches}
     merged = {}
-    for future in as_completed(future_to_batch):
-        merged.update(future.result())
+    for batch in id_batches:
+        merged.update(fetch_batch_fn(batch))
     return merged
 
 
@@ -393,7 +391,7 @@ def _filter_by_distance(song_results: list, db_conn):
         return []
 
     item_ids = [s['item_id'] for s in song_results]
-    details_map = _fetch_details_map(db_conn, item_ids, 'title, author')
+    details_map = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
@@ -440,7 +438,7 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
         return []
 
     item_ids = [r['item_id'] for r in song_results]
-    item_details = _fetch_details_map(db_conn, item_ids, 'title, author')
+    item_details = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
     unique_songs = []
 
@@ -517,15 +515,15 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
             target_row = cur.fetchone()
             target_other_features = target_row['other_features'] if target_row else None
     if not target_other_features:
-        logger.warning(f"No mood features found for target song {target_item_id}. Skipping mood filtering.")
+        logger.warning("No mood features found for target song. Skipping mood filtering.")
         return song_results
 
     target_mood_features = _parse_mood_features(target_other_features)
     if not target_mood_features:
-        logger.warning(f"Could not parse mood features for target song {target_item_id}. Skipping mood filtering.")
+        logger.warning("Could not parse mood features for target song. Skipping mood filtering.")
         return song_results
 
-    logger.info(f"Target song {target_item_id} mood features: {target_mood_features}")
+    logger.info("Target mood features parsed (%d features).", len(target_mood_features))
 
     # Get mood features for all candidate songs in batches
     candidate_ids = [s['item_id'] for s in song_results]
@@ -959,7 +957,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
 
     item_ids = [r['item_id'] for r in distance_filtered_results]
-    item_details = _fetch_details_map(db_conn, item_ids, 'title, author')
+    item_details = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
     unique_songs_by_content = []
     added_songs_details = []

@@ -1050,12 +1050,12 @@ document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateSer
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
 
 // Advisory-only admin password length recommendation (never blocks saving).
-var RECOMMENDED_ADMIN_PASSWORD_LENGTH = 15;
+const RECOMMENDED_ADMIN_PASSWORD_LENGTH = 15;
 function updateAdminPasswordHint() {
-    var input = document.getElementById('AUDIOMUSE_PASSWORD');
-    var hint = document.getElementById('admin-password-hint');
+    const input = document.getElementById('AUDIOMUSE_PASSWORD');
+    const hint = document.getElementById('admin-password-hint');
     if (!input || !hint) { return; }
-    var value = input.value;
+    const value = input.value;
     if (value && value !== '********' && value.length < RECOMMENDED_ADMIN_PASSWORD_LENGTH) {
         hint.textContent = 'For better security we recommend at least ' + RECOMMENDED_ADMIN_PASSWORD_LENGTH + ' characters. You can still save a shorter password.';
         hint.style.display = 'block';
@@ -1063,7 +1063,7 @@ function updateAdminPasswordHint() {
         hint.style.display = 'none';
     }
 }
-var adminPasswordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+const adminPasswordInput = document.getElementById('AUDIOMUSE_PASSWORD');
 if (adminPasswordInput) {
     adminPasswordInput.addEventListener('input', updateAdminPasswordHint);
 }

@@ -233,7 +233,7 @@ def chat_playlist_api():
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
     data = request.get_json()
-    if not data or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
+    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
         return jsonify({"error": "Missing userInput in request"}), 400
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
@@ -256,7 +256,7 @@ def chat_playlist_stream_api():
     value (the response object) is delivered as the ``done`` event.
     """
     data = request.get_json()
-    if not data or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
+    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
         return jsonify({"error": "Missing userInput in request"}), 400
 
     @stream_with_context

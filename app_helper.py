@@ -118,11 +118,16 @@ def serialize_neighbor_results(neighbor_results, missing_album='unknown', includ
         info = details_map.get(nid)
         if not info:
             continue
+        # missing_album=None means "no substitution" (sonic fingerprint keeps the
+        # raw album, incl. '') -- only fall back when a sentinel is supplied.
+        album = info.get('album')
+        if missing_album is not None:
+            album = album or missing_album
         row = {
             "item_id": info['item_id'],
             "title": info['title'],
             "author": info['author'],
-            "album": (info.get('album') or missing_album),
+            "album": album,
             "distance": distance_map[nid],
             "mood_vector": info.get('mood_vector'),
             "other_features": info.get('other_features'),

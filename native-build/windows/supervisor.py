@@ -152,11 +152,14 @@ class ProcessSupervisor:
     def _join_workers(self):
         """Wait for the boot and health threads to finish before teardown.
 
-        Skips the current thread so stop_all() called from within start_all()'s
-        failure handler (boot thread) never deadlocks on itself."""
+        Skips the current thread (so a stop from start_all's failure handler
+        never self-joins) and the main thread: in console `start` mode the boot
+        runs ON the main thread, which then parks forever, so joining it would
+        stall teardown until process exit and orphan the children."""
         current = threading.current_thread()
+        main = threading.main_thread()
         for thread in (self._boot_thread, self._health_thread):
-            if thread is not None and thread is not current and thread.is_alive():
+            if thread is not None and thread is not current and thread is not main and thread.is_alive():
                 thread.join(timeout=30)
 
     def start_child(self, name):
@@ -321,6 +324,10 @@ class ProcessSupervisor:
         raise RuntimeError(f"Timed out waiting for {url}")
 
     def _start_health_loop(self):
+        # Clear the stop event so a restart (stop_all sets it) gets a live loop;
+        # without this the new health thread sees a set event and exits at once.
+        self._health_stop.clear()
+
         def _loop():
             while not self._health_stop.is_set():
                 self._health_stop.wait(30)

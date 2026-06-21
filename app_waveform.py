@@ -298,6 +298,6 @@ def get_waveform_endpoint():
     finally:
         if temp_dir and os.path.exists(temp_dir):
             try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                shutil.rmtree(temp_dir)
             except Exception as cleanup_error:
                 logger.warning(f"Failed to clean up temporary directory {temp_dir}: {cleanup_error}")

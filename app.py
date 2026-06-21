@@ -299,7 +299,9 @@ def get_task_status_endpoint(task_id):
         response['progress'] = db_task_info.get('progress', response['progress'])
         raw_details = db_task_info.get('details')
         db_details = {}
-        if raw_details:
+        if isinstance(raw_details, dict):
+            db_details = raw_details
+        elif raw_details:
             try:
                 db_details = json.loads(raw_details)
             except (json.JSONDecodeError, TypeError):
