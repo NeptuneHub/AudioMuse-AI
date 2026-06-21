@@ -333,17 +333,29 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded Redis")
 
     def dispatch_control(self, action, services):
-        results = []
+        """Apply a restart/stop/start request on a daemon thread and acknowledge
+        immediately: restarting several busy workers serially (each up to ~10s to
+        terminate) can outlast the control socket's 15s timeout, which would make
+        the UI report a failure for a restart that actually succeeds."""
+        if action not in ("restart", "stop", "start"):
+            return False
+        threading.Thread(
+            target=self._apply_control, args=(action, list(services)),
+            name=f"control-{action}", daemon=True,
+        ).start()
+        return True
+
+    def _apply_control(self, action, services):
         for svc in services:
-            if action == "stop":
-                results.append(self.stop_child(svc))
-            elif action == "start":
-                results.append(self.start_child(svc))
-            elif action == "restart":
-                results.append(self.restart_child(svc))
-            else:
-                results.append(False)
-        return all(results) if results else False
+            try:
+                if action == "stop":
+                    self.stop_child(svc)
+                elif action == "start":
+                    self.start_child(svc)
+                elif action == "restart":
+                    self.restart_child(svc)
+            except Exception:
+                logger.exception("Control %s failed for %s", action, svc)
 
     def _wait_http(self, url, timeout):
         deadline = time.time() + timeout

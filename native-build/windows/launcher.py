@@ -298,7 +298,7 @@ def _run_tray():
             pass
 
     def _on_start(icon, _item):
-        threading.Thread(target=supervisor.start_all, name="tray-start", daemon=True).start()
+        supervisor.start_in_background()
 
     def _on_stop(icon, _item):
         threading.Thread(target=supervisor.stop_all, name="tray-stop", daemon=True).start()
@@ -321,14 +321,13 @@ def _run_tray():
     image = Image.open(icon_path) if os.path.exists(icon_path) else None
     icon = pystray.Icon("AudioMuse-AI", icon=image, title="AudioMuse-AI", menu=menu)
 
-    def _boot():
-        try:
-            supervisor.start_all()
-            _open_browser(WEB_URL)
-        except Exception as exc:
-            print(f"Startup failed: {exc}", file=sys.stderr)
+    def _on_ready():
+        _open_browser(WEB_URL)
 
-    threading.Thread(target=_boot, name="boot", daemon=True).start()
+    def _on_error(exc):
+        print(f"Startup failed: {exc}", file=sys.stderr)
+
+    supervisor.start_in_background(on_ready=_on_ready, on_error=_on_error)
     try:
         icon.run()
     finally:

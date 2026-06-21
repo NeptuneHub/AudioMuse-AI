@@ -41,7 +41,7 @@ PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 # unmatched groups (e.g. wrong path format) and the page becomes unusable
 # beyond a couple hundred entries. The full count is still surfaced as a
 # warning so the user knows the list is truncated.
-MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = max(1, int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200")))
 # Hard cap on the per-collision detail rows persisted into migration_session.state.
 # collision_details is display-only (it tells the user which albums to re-match),
 # so storing one entry per collision would let this single JSONB field grow with
