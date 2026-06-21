@@ -124,7 +124,7 @@ class TestDistancePassthrough:
         with patch('app_helper.get_score_data_by_ids',
                    return_value=[score('1')]):
             out = serialize_neighbor_results(neighbors(('1', 0.0)))
-        assert out[0]['distance'] == 0.0
+        assert out[0]['distance'] == pytest.approx(0.0)
 
 
 class TestFeatureFlagsPassthrough:

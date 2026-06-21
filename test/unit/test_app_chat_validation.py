@@ -122,8 +122,7 @@ class TestValidBodyProceeds:
 
         def _fake_run(data, log_messages):
             called['run'] += 1
-            if False:
-                yield
+            yield from ()  # generator marker; never yields
             return ({'message': 'stub', 'query_results': None}, 200)
 
         with patch.object(app_chat_mod, '_run_chat_pipeline', _fake_run):

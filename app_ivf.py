@@ -319,6 +319,7 @@ def get_similar_tracks_endpoint():
     title = request.args.get('title')
     artist = request.args.get('artist')
     num_neighbors = request.args.get('n', 10, type=int)
+    num_neighbors = max(1, num_neighbors)
 
     # Optional mood centroid parameters
     mood_param = request.args.get('mood', '', type=str).strip().lower()
@@ -561,8 +562,8 @@ def create_media_server_playlist():
     playlist_name = data.get('playlist_name')
     track_ids_raw = data.get('track_ids', [])
 
-    if not playlist_name:
-        return jsonify({"error": "Missing 'playlist_name'"}), 400
+    if not isinstance(playlist_name, str) or not playlist_name:
+        return jsonify({"error": "Invalid or missing 'playlist_name'"}), 400
 
     final_track_ids = []
     if isinstance(track_ids_raw, list):

@@ -154,7 +154,7 @@ class TestSerializeNeighborResultsRealDb:
         assert out['normal-1']['title'] == 'Real Title One'
         assert out['normal-1']['author'] == 'Real Author One'
         assert out['normal-1']['album_artist'] == 'RA1'
-        assert out['normal-1']['distance'] == 0.30
+        assert out['normal-1']['distance'] == pytest.approx(0.30)
         assert out['normal-2']['title'] == 'Real Title Two'
         assert out['normal-2']['author'] == 'Real Author Two'
 

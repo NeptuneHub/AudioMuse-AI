@@ -355,7 +355,7 @@ def _run_chat_pipeline(data, log_messages):
     ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
 
-    log_messages.append(f"🎵 NEW MCP-BASED PLAYLIST GENERATION")
+    log_messages.append(f"NEW MCP-BASED PLAYLIST GENERATION")
     log_messages.append(f"Request: '{original_user_input}'")
     log_messages.append(f"AI Provider: {ai_provider}")
 
@@ -460,7 +460,7 @@ def _run_chat_pipeline(data, log_messages):
     # MCP AGENTIC WORKFLOW
     # ====================
 
-    log_messages.append("\n🤖 Using MCP Agentic Workflow for playlist generation")
+    log_messages.append("\nUsing MCP Agentic Workflow for playlist generation")
     log_messages.append("Target: 100 songs")
 
     # Get MCP tools and library context
@@ -538,7 +538,7 @@ def _run_chat_pipeline(data, log_messages):
 
         diversity_removed = len(all_songs) - len(diversified_pool)
         if diversity_removed > 0:
-            log_messages.append(f"\n🎨 Artist diversity: removed {diversity_removed} excess songs from pool (max {max_per_artist}/artist)")
+            log_messages.append(f"\nArtist diversity: removed {diversity_removed} excess songs from pool (max {max_per_artist}/artist)")
 
         # --- Phase 2: Proportional sampling from diversified pool ---
         if len(diversified_pool) <= target_song_count:
@@ -600,7 +600,7 @@ def _run_chat_pipeline(data, log_messages):
 
             final_query_results_list = final_query_results_list[:target_song_count]
 
-        log_messages.append(f"\n📊 Pool: {len(all_songs)} collected → {len(diversified_pool)} after diversity cap → {len(final_query_results_list)} in final playlist")
+        log_messages.append(f"\nPool: {len(all_songs)} collected → {len(diversified_pool)} after diversity cap → {len(final_query_results_list)} in final playlist")
 
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
         # Only when NO filter drove the result. When a filter/score was applied
@@ -609,7 +609,7 @@ def _run_chat_pipeline(data, log_messages):
         # similarity. Re-sorting by tempo/energy/key here would scramble that and
         # bury the matched songs, so the scored order is preserved instead.
         if filter_applied:
-            log_messages.append(f"\n🎵 Playlist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
+            log_messages.append(f"\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
         else:
             try:
                 from tasks.playlist_ordering import order_playlist
@@ -621,10 +621,10 @@ def _run_chat_pipeline(data, log_messages):
                 # Rebuild list in new order
                 id_to_song = {s['item_id']: s for s in final_query_results_list}
                 final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
-                log_messages.append(f"\n🎵 Playlist ordered for smooth transitions (tempo/energy/key)")
+                log_messages.append(f"\nPlaylist ordered for smooth transitions (tempo/energy/key)")
             except Exception:
                 logger.warning("Playlist ordering failed (non-fatal)", exc_info=True)
-                log_messages.append("\n⚠️ Playlist ordering skipped due to an internal processing issue")
+                log_messages.append("\nPlaylist ordering skipped due to an internal processing issue")
 
         final_executed_query_str = executed_query_str
 
@@ -638,7 +638,7 @@ def _run_chat_pipeline(data, log_messages):
         log_messages.append(f"   Tools called: {len(tools_used_history)}")
         
         # Show tool contribution breakdown (collected vs final)
-        log_messages.append(f"\n📊 Tool Contribution (Collected → Final Playlist):")
+        log_messages.append(f"\nTool Contribution (Collected → Final Playlist):")
         
         # Count songs in final playlist by tool call
         final_by_call = {}

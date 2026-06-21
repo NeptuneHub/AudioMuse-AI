@@ -88,9 +88,6 @@ class TestIvfSimilarTracksNCoercion:
         assert resp.status_code != 500
         assert backend.call_args.kwargs['n'] == 7
 
-    @pytest.mark.xfail(strict=True, reason="app_ivf get_similar_tracks_endpoint does not clamp "
-                       "a negative 'n'; it is forwarded verbatim to find_nearest_neighbors_by_id "
-                       "(app_ivf.py:321).")
     def test_negative_n_is_clamped_to_a_valid_bound(self, client):
         with patch.object(app_ivf, 'find_nearest_neighbors_by_id', return_value=[]) as backend:
             client.get('/api/similar_tracks', query_string={'item_id': 'x', 'n': -5})
@@ -141,10 +138,6 @@ class TestIvfCreatePlaylistName:
         assert resp.status_code == 400
         backend.assert_not_called()
 
-    @pytest.mark.xfail(strict=True, reason="app_ivf create_media_server_playlist only does "
-                       "'if not playlist_name' (empty check); a non-string truthy name (int/list) "
-                       "passes and is forwarded to create_playlist_from_ids, returning 201 instead "
-                       "of a 4xx (app_ivf.py:564). PR.md theme #5 claims a name type check.")
     def test_non_string_name_rejected_4xx(self, client):
         with patch.object(app_ivf, 'create_playlist_from_ids', return_value='pid') as backend:
             resp = client.post('/api/create_playlist',
@@ -168,10 +161,6 @@ class TestAlchemyAnchorName:
         assert resp.status_code == 400
         backend.assert_not_called()
 
-    @pytest.mark.xfail(strict=True, reason="app_alchemy create_anchor does "
-                       "(payload.get('name') or '').strip() which raises AttributeError on a "
-                       "non-string name, producing a 500 instead of a 4xx validation error "
-                       "(app_alchemy.py:294). rename_anchor (app_alchemy.py:365) shares the bug.")
     def test_non_string_name_rejected_4xx(self, alchemy_client):
         with patch('database.save_alchemy_anchor', return_value={'id': 1, 'name': 'n'}) as backend:
             resp = alchemy_client.post('/api/anchors',

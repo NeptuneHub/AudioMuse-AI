@@ -268,9 +268,8 @@ class ProcessSupervisor:
                         self.start_child(svc)
                 elif action == "stop":
                     self._stop_child(svc)
-                elif action == "start":
-                    if svc not in self._children:
-                        self.start_child(svc)
+                elif action == "start" and svc not in self._children:
+                    self.start_child(svc)
             except Exception:
                 self._log.exception("Control %s failed for %s", action, svc)
 

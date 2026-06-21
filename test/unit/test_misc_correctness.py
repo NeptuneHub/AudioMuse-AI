@@ -39,7 +39,7 @@ def _ensure_mistralai_stub():
     try:
         import mistralai  # noqa: F401
         return
-    except (ImportError, ModuleNotFoundError):
+    except ImportError:
         pass
     mod = types.ModuleType('mistralai')
     mod.Mistral = MagicMock

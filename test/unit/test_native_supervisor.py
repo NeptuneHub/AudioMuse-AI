@@ -169,7 +169,7 @@ class TestJoinWorkersSkips:
 
 class TestStartHealthLoopClearsStop:
     def test_clears_preset_stop_and_spawns_live_thread(self, supervisor_case, monkeypatch):
-        platform_name, mod = supervisor_case
+        _, mod = supervisor_case
         sup = _bare_supervisor(mod)
         sup._state = 'running'
 
@@ -243,7 +243,7 @@ class TestSpawnRefusedWhileStopping:
         """Sanity: the guard is state-specific -- in the 'starting' state the
         child IS marked desired (proving the refusal is the stop, not a blanket
         block). Popen is mocked so no real process spawns."""
-        platform_name, mod = supervisor_case
+        _, mod = supervisor_case
         sup = _bare_supervisor(mod)
 
         class _FakePopen:

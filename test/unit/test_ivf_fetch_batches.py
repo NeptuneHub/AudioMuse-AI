@@ -109,7 +109,7 @@ class TestFetchInBatches:
 
         def fetch_fn(batch):
             idents_seen.append(threading.get_ident())
-            return {item: 1 for item in batch}
+            return dict.fromkeys(batch, 1)
 
         _fetch_in_batches(ids, fetch_fn)
 
@@ -125,7 +125,7 @@ class TestFetchInBatches:
 
         def fetch_fn(batch):
             # Every batch claims the same shared key; later call must win.
-            out = {item: 'own' for item in batch}
+            out = dict.fromkeys(batch, 'own')
             out['shared'] = batch[0]
             return out
 
@@ -180,7 +180,7 @@ class TestFetchDetailsMap:
         rows = [
             make_dict_row({'item_id': 'x', 'title': 'T', 'author': 'X'}),
         ]
-        conn, cursor = self._make_conn(rows)
+        conn, _ = self._make_conn(rows)
 
         result = _fetch_details_map(conn, ['x'], 'title')
 

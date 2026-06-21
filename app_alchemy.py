@@ -291,7 +291,8 @@ def create_anchor():
     """
     from database import save_alchemy_anchor
     payload = request.get_json() or {}
-    name = (payload.get('name') or '').strip()
+    raw_name = payload.get('name')
+    name = raw_name.strip() if isinstance(raw_name, str) else ''
     centroid = payload.get('centroid')
     if not name:
         return jsonify({'error': 'Anchor name is required'}), 400
@@ -362,7 +363,8 @@ def rename_anchor(anchor_id):
     """
     from database import update_alchemy_anchor_name
     payload = request.get_json() or {}
-    name = (payload.get('name') or '').strip()
+    raw_name = payload.get('name')
+    name = raw_name.strip() if isinstance(raw_name, str) else ''
     if not name:
         return jsonify({'error': 'Anchor name is required'}), 400
     anchor = update_alchemy_anchor_name(anchor_id, name)
