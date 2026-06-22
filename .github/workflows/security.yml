@@ -109,25 +109,32 @@ jobs:
     # the PR checks) and FAILS this job on any CVE (red check). It does NOT block
     # merge unless this check is added to branch protection's required checks.
 
+    # Single accepted-CVE allowlist: one id per line, the text after '#' is the
+    # reason. Here '#' is a real shell comment, so the reason is stripped and only
+    # the bare id reaches pip-audit (the action's ignore-vulns is whitespace-split
+    # and cannot carry comments itself). Edit THIS list to accept/remove a CVE.
+    - name: Assemble pip-audit CVE allowlist
+      id: cve_allowlist
+      if: always()
+      run: |
+        ids=""
+        accept() { ids="$ids $1"; }
+        accept PYSEC-2025-217   # transformers X-CLIP checkpoint-conversion RCE - unreachable (no X-CLIP / checkpoint conversion)
+        accept CVE-2026-1839    # transformers Trainer torch.load RCE - unreachable (no Trainer); fix only in 5.0.0rc3 (major RC)
+        accept PYSEC-2026-113   # pyarrow C++ Use-After-Free - Python binding is NOT vulnerable per the advisory
+        accept PYSEC-2026-169   # distributed (Dask) dashboard XSS - needs Jupyter Lab + jupyter-server-proxy + a Dask cluster; none run here
+        echo "ids=$(echo $ids | xargs)" >> "$GITHUB_OUTPUT"
+
     # Shared deps - full resolution, so transitive CVEs are caught too.
-    # transformers CVEs allowlisted: unreachable in AudioMuse (only tokenizer/
-    # inference, never Trainer / X-CLIP / checkpoint conversion - verified by grep).
-    #   PYSEC-2025-217 = X-CLIP checkpoint-conversion RCE (no fixed release).
-    #   CVE-2026-1839  = Trainer torch.load RCE (fix only in 5.0.0rc3, a major RC).
-    # Revisit when bumping transformers to a stable 5.x.
     - name: pip-audit dependency CVEs (common)
       if: always()
       uses: pypa/gh-action-pip-audit@v1.1.0
       with:
         inputs: requirements/common.txt
-        ignore-vulns: |
-          PYSEC-2025-217
-          CVE-2026-1839
+        ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
 
-    # CPU + NVIDIA GPU extras. no-deps audits the pinned runtime packages
-    # (onnxruntime / onnxruntime-gpu / cupy / cuml) by version WITHOUT resolving
-    # their trees, which avoids pulling multi-GB CUDA wheels from the nvidia
-    # index. The noavx2 variant is intentionally NOT audited.
+    # CPU + NVIDIA GPU extras (onnxruntime / onnxruntime-gpu / cupy / cuml plus
+    # the deps cuml/RAPIDS resolves in). The noavx2 variant is intentionally NOT audited.
     - name: pip-audit dependency CVEs (cpu + nvidia gpu)
       if: always()
       uses: pypa/gh-action-pip-audit@v1.1.0
@@ -136,3 +143,4 @@ jobs:
         inputs: |
           requirements/cpu.txt
           requirements/gpu.txt
+        ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
