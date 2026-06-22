@@ -52,6 +52,23 @@ logger = logging.getLogger(__name__)
 # the build_and_store_* helpers below and read by database.load_*_projection.
 
 
+def coerce_db_details(raw_details):
+    """Normalize a task_status.details DB value to a dict without double-parsing.
+
+    psycopg2 hands back a TEXT details column as a JSON string (needs json.loads)
+    but a JSONB column as an already-parsed dict (must NOT be re-parsed). NULL or
+    unparseable values collapse to {}.
+    """
+    if isinstance(raw_details, dict):
+        return raw_details
+    if raw_details:
+        try:
+            return json.loads(raw_details)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 def top_stratified_genre(mood_vector):
     """Return the highest-scoring genre label present in STRATIFIED_GENRES, or None.
 

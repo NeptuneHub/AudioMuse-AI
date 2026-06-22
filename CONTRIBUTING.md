@@ -94,6 +94,7 @@ When submitting a pull request, ensure:
   * Song Path
   * Sonic Fingerprint
   * *(Basically, test each function in the integrated front-end menu at least once)*
+* **Automated tests:** Any PR that adds or changes major functionality MUST include automated tests (unit and/or integration, under `test/`) that cover that functionality. Run `pytest test/unit/` and `pytest test/integration/` locally before pushing, and make sure the CI Unit Tests and Integration Tests workflows pass.
 * **AGPLv3 License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
@@ -123,6 +124,10 @@ Below the full list of related repository. When you submit a PR avoid to introdu
   > * [AudioMuse-AI Plugin for Navidrome](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin): Navidrome Plugin;
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
+
+## **Security**
+
+To report a security vulnerability, please do **not** open a public issue or PR. Follow the private process documented in [SECURITY.md](SECURITY.md).
 
 ## **Questions**
 

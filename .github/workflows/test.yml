@@ -140,39 +140,18 @@ jobs:
         echo "Runner CPU INT8 path (vnni => int32 accumulation, none => int16/VPMADDUBSW):"
         grep -o 'avx512_vnni\|avx_vnni' /proc/cpuinfo | sort -u | head -1 || echo "none (non-VNNI)"
 
-    - name: Run integration tests
-      run: |
-        # Run the MusiCNN integration test
-        pytest test/integration/test_analysis_integration.py -s -v --tb=short
-
-        # Run the CLAP integration test
-        pytest test/integration/test_clap_analysis_integration.py -s -v --tb=short
-
-    - name: Run provider migration integration test
+    - name: Run all integration tests
       env:
         AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
       run: |
-        pytest test/integration/test_provider_migration_integration.py -s -v --tb=short
-
-    - name: Run app endpoint and auth integration tests
-      env:
-        AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
-      run: |
-        pytest test/integration/test_app_endpoints_integration.py test/integration/test_auth_users_integration.py test/integration/test_auth_barrier_integration.py -m integration -s -v --tb=short
-
-    - name: Run serializer / batch-fetch / task-status integration tests
-      env:
-        AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_migration_test
-      run: |
-        pytest test/integration/test_neighbor_serialize_integration.py test/integration/test_ivf_batch_fetch_integration.py test/integration/test_task_status_integration.py -m integration -s -v --tb=short
-
-    - name: Run lyrics integration test
-      run: |
-        # On first run test/lyrics_expected_gte_512.json does not exist yet: the
-        # test enters RECORD mode automatically, writes the file and exits
-        # successfully. The next step then commits it back to main so
-        # subsequent runs pin against it (cosine similarity >= 0.99).
-        pytest test/integration/test_lyrics_analysis_integration.py -s -v --tb=short
+        # Run the WHOLE integration dir so any new test/integration/test_*.py is
+        # picked up automatically (no per-file list to keep in sync). DB-backed
+        # tests use AUDIOMUSE_TEST_DATABASE_URL; the MusiCNN/CLAP/lyrics model
+        # tests read the model paths exported to GITHUB_ENV by the download steps
+        # above. On first run the lyrics test auto-RECORDs
+        # test/lyrics_expected_gte_512.json; the next step commits it back so
+        # subsequent runs pin against it (cosine similarity >= 0.98).
+        pytest test/integration/ -s -v --tb=short
 
     - name: Commit recorded lyrics expected vectors
       # Push back the auto-recorded vectors on:

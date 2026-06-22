@@ -1,7 +1,6 @@
 import os
 from psycopg2.extras import DictCursor
 from flask import jsonify, request, render_template, g
-import json
 import logging
 import threading
 import time
@@ -37,6 +36,7 @@ from app_helper import (
     redis_conn,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
+    coerce_db_details,
 )
 from database import init_db
 from config import (
@@ -297,15 +297,7 @@ def get_task_status_endpoint(task_id):
             response['state'] = db_task_info.get('status', response['state']) # Use DB status if RQ is still active
 
         response['progress'] = db_task_info.get('progress', response['progress'])
-        raw_details = db_task_info.get('details')
-        db_details = {}
-        if isinstance(raw_details, dict):
-            db_details = raw_details
-        elif raw_details:
-            try:
-                db_details = json.loads(raw_details)
-            except (json.JSONDecodeError, TypeError):
-                db_details = {}
+        db_details = coerce_db_details(db_task_info.get('details'))
         # Merge details: RQ meta (live) can override DB details (persisted)
         response['details'] = {**db_details, **response['details']}
 
@@ -493,8 +485,7 @@ def get_last_overall_task_status_endpoint():
     if last_task_row:
         last_task_data = dict(last_task_row)
         if last_task_data.get('details'):
-            try: last_task_data['details'] = json.loads(last_task_data['details'])
-            except json.JSONDecodeError: pass
+            last_task_data['details'] = coerce_db_details(last_task_data['details'])
 
         # Calculate running time in Python
         start_time = last_task_data.get('start_time')
@@ -567,22 +558,16 @@ def get_active_tasks_endpoint():
             task_item['running_time_seconds'] = 0.0
 
         if task_item.get('details'):
-            try:
-                task_item['details'] = json.loads(task_item['details'])
-                # Prune specific large or internal keys from details
-                if isinstance(task_item['details'], dict):
-                    task_item['details'].pop('clustering_run_job_ids', None)
-                    task_item['details'].pop('checked_album_ids', None)
-                    if 'best_params' in task_item['details'] and \
-                       isinstance(task_item['details']['best_params'], dict) and \
-                       'clustering_method_config' in task_item['details']['best_params'] and \
-                       isinstance(task_item['details']['best_params']['clustering_method_config'], dict) and \
-                       'params' in task_item['details']['best_params']['clustering_method_config']['params'] and \
-                       isinstance(task_item['details']['best_params']['clustering_method_config']['params'], dict):
-                        task_item['details']['best_params']['clustering_method_config']['params'].pop('initial_centroids', None)
-
-            except json.JSONDecodeError:
-                task_item['details'] = {"raw_details": task_item['details'], "error": "Failed to parse details JSON."}
+            details = coerce_db_details(task_item['details'])
+            task_item['details'] = details
+            # Prune specific large or internal keys from details
+            if isinstance(details, dict):
+                details.pop('clustering_run_job_ids', None)
+                details.pop('checked_album_ids', None)
+                cmc = details.get('best_params', {}).get('clustering_method_config', {}) \
+                    if isinstance(details.get('best_params'), dict) else {}
+                if isinstance(cmc, dict) and isinstance(cmc.get('params'), dict):
+                    cmc['params'].pop('initial_centroids', None)
 
         # Clean up raw time columns before sending response
         task_item.pop('start_time', None)

@@ -1,0 +1,146 @@
+name: Security Scan
+
+# Standalone, independent workflow. It can go red on its own without affecting
+# the Unit Tests / Integration Tests / build workflows (they are separate
+# workflows and never depend on this one). A red result here does NOT block
+# merge unless this check is explicitly added to branch protection's required
+# status checks - by default it is not.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    # Surface findings IN the pull request so they are reviewable before merge:
+    # Bandit -> code scanning annotations on the PR diff + a checks entry;
+    # pip-audit -> a job summary on the run (linked from the PR checks).
+    # NOTE: on a public repo these PR surfaces are visible to anyone who can
+    # see the PR, not only maintainers.
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install scanners
+      run: |
+        python -m pip install --upgrade pip
+        pip install "bandit[sarif]"
+
+    # Gate - high severity + high confidence fails this job (red check).
+    - name: Bandit SAST gate (fails on high-severity, high-confidence findings)
+      run: |
+        bandit -r . \
+          -x ./test,./.venv,./.venv-windows,./screenshot \
+          --severity-level high --confidence-level high
+
+    # medium+ report -> SARIF (for PR annotations + Security tab) and JSON (summary).
+    - name: Bandit report (SARIF + JSON, non-blocking)
+      if: always()
+      run: |
+        bandit -r . \
+          -x ./test,./.venv,./.venv-windows,./screenshot \
+          --severity-level medium --confidence-level medium \
+          -f sarif -o bandit.sarif --exit-zero
+        bandit -r . \
+          -x ./test,./.venv,./.venv-windows,./screenshot \
+          --severity-level medium --confidence-level medium \
+          -f json -o bandit.json --exit-zero
+
+    # Upload on BOTH push and pull_request so code scanning annotations appear
+    # inline on the PR diff before merge. category keeps Bandit separate from CodeQL.
+    - name: Upload Bandit SARIF to code scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: bandit.sarif
+        category: bandit
+
+    # Counts on the run summary, linked from the PR checks.
+    - name: Bandit job summary
+      if: always()
+      run: |
+        python - <<'PY'
+        import json, os, collections
+        try:
+            data = json.load(open("bandit.json"))
+        except FileNotFoundError:
+            data = {"results": []}
+        results = data.get("results", [])
+        sev = collections.Counter(r["issue_severity"] for r in results)
+        conf = collections.Counter(r["issue_confidence"] for r in results)
+        lines = ["## Bandit SAST (medium+ report)", "",
+                 "Total findings: %d" % len(results), "",
+                 "| Level | Severity count | Confidence count |", "|---|---|---|"]
+        for lvl in ("HIGH", "MEDIUM", "LOW"):
+            lines.append("| %s | %d | %d |" % (lvl, sev.get(lvl, 0), conf.get(lvl, 0)))
+        lines += ["", "Inline findings annotate the PR diff; full list: Security tab -> Code scanning -> bandit."]
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write("\n".join(lines) + "\n")
+        PY
+
+    # Downloadable full reports.
+    - name: Upload Bandit reports as artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bandit-reports
+        path: |
+          bandit.sarif
+          bandit.json
+        retention-days: 7
+
+    # Dependency CVEs. The official action renders a job summary (visible from
+    # the PR checks) and FAILS this job on any CVE (red check). It does NOT block
+    # merge unless this check is added to branch protection's required checks.
+
+    # Single accepted-CVE allowlist: one id per line, the text after '#' is the
+    # reason. Here '#' is a real shell comment, so the reason is stripped and only
+    # the bare id reaches pip-audit (the action's ignore-vulns is whitespace-split
+    # and cannot carry comments itself). Edit THIS list to accept/remove a CVE.
+    - name: Assemble pip-audit CVE allowlist
+      id: cve_allowlist
+      if: always()
+      run: |
+        ids=""
+        accept() { ids="$ids $1"; }
+        accept PYSEC-2025-217   # transformers X-CLIP checkpoint-conversion RCE - unreachable (no X-CLIP / checkpoint conversion)
+        accept CVE-2026-1839    # transformers Trainer torch.load RCE - unreachable (no Trainer); fix only in 5.0.0rc3 (major RC)
+        accept PYSEC-2026-113   # pyarrow C++ Use-After-Free - Python binding is NOT vulnerable per the advisory
+        accept PYSEC-2026-169   # distributed (Dask) dashboard XSS - needs Jupyter Lab + jupyter-server-proxy + a Dask cluster; none run here
+        echo "ids=$(echo $ids | xargs)" >> "$GITHUB_OUTPUT"
+
+    # Shared deps - full resolution, so transitive CVEs are caught too.
+    - name: pip-audit dependency CVEs (common)
+      if: always()
+      uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+      with:
+        inputs: requirements/common.txt
+        ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
+
+    # CPU + NVIDIA GPU extras (onnxruntime / onnxruntime-gpu / cupy / cuml plus
+    # the deps cuml/RAPIDS resolves in). The noavx2 variant is intentionally NOT audited.
+    - name: pip-audit dependency CVEs (cpu + nvidia gpu)
+      if: always()
+      uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+      with:
+        no-deps: true
+        inputs: |
+          requirements/cpu.txt
+          requirements/gpu.txt
+        ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
