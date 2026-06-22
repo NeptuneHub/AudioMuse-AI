@@ -105,14 +105,34 @@ jobs:
           bandit.json
         retention-days: 7
 
-    # Dependency CVEs. Official action renders a job summary (visible from the
-    # PR checks) and FAILS this job on any CVE (red check). It does NOT block
+    # Dependency CVEs. The official action renders a job summary (visible from
+    # the PR checks) and FAILS this job on any CVE (red check). It does NOT block
     # merge unless this check is added to branch protection's required checks.
-    # Allowlist a no-fix CVE by uncommenting the ignore-vulns block below.
-    - name: pip-audit dependency CVEs
+
+    # Shared deps - full resolution, so transitive CVEs are caught too.
+    # transformers CVEs allowlisted: unreachable in AudioMuse (only tokenizer/
+    # inference, never Trainer / X-CLIP / checkpoint conversion - verified by grep).
+    #   PYSEC-2025-217 = X-CLIP checkpoint-conversion RCE (no fixed release).
+    #   CVE-2026-1839  = Trainer torch.load RCE (fix only in 5.0.0rc3, a major RC).
+    # Revisit when bumping transformers to a stable 5.x.
+    - name: pip-audit dependency CVEs (common)
       if: always()
       uses: pypa/gh-action-pip-audit@v1.1.0
       with:
         inputs: requirements/common.txt
-        # ignore-vulns: |
-        #   GHSA-xxxx-xxxx-xxxx  # no fix yet; transitive via <dep>; revisit 2026-09
+        ignore-vulns: |
+          PYSEC-2025-217
+          CVE-2026-1839
+
+    # CPU + NVIDIA GPU extras. no-deps audits the pinned runtime packages
+    # (onnxruntime / onnxruntime-gpu / cupy / cuml) by version WITHOUT resolving
+    # their trees, which avoids pulling multi-GB CUDA wheels from the nvidia
+    # index. The noavx2 variant is intentionally NOT audited.
+    - name: pip-audit dependency CVEs (cpu + nvidia gpu)
+      if: always()
+      uses: pypa/gh-action-pip-audit@v1.1.0
+      with:
+        no-deps: true
+        inputs: |
+          requirements/cpu.txt
+          requirements/gpu.txt
