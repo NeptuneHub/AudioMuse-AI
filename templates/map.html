@@ -50,8 +50,9 @@
         <div class="map-search-row">
             <div class="map-search-col">
                 <label for="search_query_map" style="font-size:12px;color:var(--text-sub)">Song, Artist or Album</label>
-                <input id="search_query_map" class="map-search-input" type="text" placeholder="Start typing..." autocomplete="off">
-                <div id="map_autocomplete_results" class="autocomplete-results hidden" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
+                <input id="search_query_map" class="map-search-input" type="text" placeholder="Start typing..." autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="map_autocomplete_results" aria-autocomplete="list">
+                <div id="map_autocomplete_results" class="autocomplete-results hidden" role="listbox" aria-label="Song suggestions" style="background:var(--bg-card);border:1px solid var(--border-color);max-height:180px;overflow:auto;position:relative;z-index:50;"></div>
             </div>
             <div class="map-search-col button-col">
                 <label style="font-size:12px;color:transparent">&nbsp;</label>
@@ -622,8 +623,32 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     let acOffset = 0;
     let acQuery = '';
     let acLoading = false;
+    let acActive = -1;   // keyboard-highlighted option
+    let acIdSeq = 0;     // unique id sequence for option elements
 
     function debounce(fn, wait){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
+
+    function selectMapTrack(t){
+        selectedItemId = t.item_id;
+        const searchEl = document.getElementById('search_query_map');
+        if (searchEl) { searchEl.value = `${t.title || ''} — ${t.author || ''}`; searchEl.setAttribute('aria-expanded', 'false'); searchEl.removeAttribute('aria-activedescendant'); }
+        const res = document.getElementById('map_autocomplete_results');
+        if (res) res.classList.add('hidden');
+        acActive = -1;
+    }
+
+    function setMapActive(idx){
+        const c = document.getElementById('map_autocomplete_results');
+        if (!c) return;
+        const opts = c.querySelectorAll('[role="option"]');
+        if (!opts.length) return;
+        acActive = ((idx % opts.length) + opts.length) % opts.length;
+        opts.forEach((o, i) => o.classList.toggle('active', i === acActive));
+        const cur = opts[acActive];
+        cur.scrollIntoView({ block: 'nearest' });
+        const searchEl = document.getElementById('search_query_map');
+        if (searchEl) searchEl.setAttribute('aria-activedescendant', cur.id);
+    }
 
     async function searchTracks(params){
         try{
@@ -643,14 +668,12 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         for (const t of list){
             const div = document.createElement('div');
             div.className = 'autocomplete-item';
+            div.setAttribute('role', 'option');
+            div.id = 'map-ac-opt-' + (acIdSeq++);
+            div._track = t;
             div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid var(--border-color)';
             div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:var(--text-muted)">${t.author || ''}</div><div style="font-size:12px;color:var(--text-muted)">${t.album ? t.album : ''}</div>`;
-            div.addEventListener('click', ()=>{
-                selectedItemId = t.item_id;
-                const searchEl = document.getElementById('search_query_map');
-                if (searchEl) searchEl.value = `${t.title || ''} — ${t.author || ''}`;
-                try { document.getElementById('map_autocomplete_results').classList.add('hidden'); } catch(e){}
-            });
+            div.addEventListener('click', ()=> selectMapTrack(t));
             c.appendChild(div);
         }
         if (list.length >= PAGE_SIZE) {
@@ -683,6 +706,9 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         const c = document.getElementById(containerId);
         if (!c) return;
         c.innerHTML = '';
+        acActive = -1; acIdSeq = 0;
+        const searchEl = document.getElementById('search_query_map');
+        if (searchEl) { searchEl.setAttribute('aria-expanded', 'true'); searchEl.removeAttribute('aria-activedescendant'); }
         if (!list || list.length === 0){ c.innerHTML = '<div style="padding:6px;color:var(--text-muted)">No results</div>'; c.classList.remove('hidden'); return; }
         appendResults(list, containerId);
         c.classList.remove('hidden');
@@ -787,6 +813,19 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     // Wire inputs/buttons
     try{
         document.getElementById('search_query_map').addEventListener('input', handleSearchInput);
+        document.getElementById('search_query_map').addEventListener('keydown', (e)=>{
+            const c = document.getElementById('map_autocomplete_results');
+            const isOpen = c && !c.classList.contains('hidden');
+            if (e.key === 'ArrowDown'){ if(!isOpen) return; e.preventDefault(); setMapActive(acActive + 1); }
+            else if (e.key === 'ArrowUp'){ if(!isOpen) return; e.preventDefault(); setMapActive(acActive - 1); }
+            else if (e.key === 'Enter'){
+                const opts = c ? c.querySelectorAll('[role="option"]') : [];
+                if (isOpen && acActive >= 0 && opts[acActive] && opts[acActive]._track){ e.preventDefault(); selectMapTrack(opts[acActive]._track); }
+            }
+            else if (e.key === 'Escape'){
+                if (isOpen){ e.preventDefault(); c.classList.add('hidden'); e.target.setAttribute('aria-expanded', 'false'); }
+            }
+        });
         document.getElementById('map_search_btn').addEventListener('click', async ()=>{
             // If user selected an item from autocomplete, use it. Otherwise run a unified search and pick first.
             if (selectedItemId) {
@@ -808,7 +847,11 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         });
         // clicking outside should hide results
         document.addEventListener('click', (e)=>{
-            if (!e.target.closest('#search_query_map') && !e.target.closest('#map_autocomplete_results')) document.getElementById('map_autocomplete_results').classList.add('hidden');
+            if (!e.target.closest('#search_query_map') && !e.target.closest('#map_autocomplete_results')) {
+                document.getElementById('map_autocomplete_results').classList.add('hidden');
+                const searchEl = document.getElementById('search_query_map');
+                if (searchEl) searchEl.setAttribute('aria-expanded', 'false');
+            }
         });
     } catch(e){ console.warn('map search init failed', e); }
 })();

@@ -330,8 +330,10 @@ function displayTaskStatus(task) {
     statusTaskType.textContent = task.task_type_from_db || task.task_type || 'N/A';
     const stateUpper = (task.state || task.status || 'IDLE').toUpperCase();
     statusStatus.textContent = stateUpper;
-    statusProgress.textContent = task.progress || 0;
-    progressBar.style.width = `${task.progress || 0}%`;
+    const progressValue = task.progress || 0;
+    statusProgress.textContent = progressValue;
+    progressBar.style.width = `${progressValue}%`;
+    progressBar.setAttribute('aria-valuenow', progressValue);
 
     statusStatus.className = 'status-text'; // Reset classes
     let statusClass = 'status-pending';

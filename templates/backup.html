@@ -52,20 +52,6 @@
         border-radius: 4px;
         font-size: 0.95rem;
     }
-    .danger-button {
-        background-color: var(--color-danger, #ef4444) !important;
-        border-color: var(--color-danger, #ef4444) !important;
-        color: white !important;
-    }
-    .danger-button:hover {
-        opacity: 0.9;
-    }
-    .danger-button:disabled {
-        background-color: var(--text-muted) !important;
-        border-color: var(--text-muted) !important;
-        cursor: not-allowed;
-        opacity: 0.6;
-    }
     #backup-status {
         margin-top: 0.75rem;
         font-size: 0.95rem;
@@ -108,7 +94,7 @@
                 <label>To confirm, type the following phrase exactly:</label>
                 <p style="font-style:italic; margin-bottom:0.5rem; color:var(--text-main);">I want to restore the database from the backup. This action is not reversible</p>
                 <input type="text" id="restore-confirm-input" placeholder="Type the phrase above..." autocomplete="off">
-                <button id="restore-btn" class="btn danger-button" disabled>Restore</button>
+                <button id="restore-btn" class="btn btn-danger" disabled>Restore</button>
                 <div id="restore-status" style="margin-top:0.75rem; font-size:0.95rem; white-space:pre-line;"></div>
             </div>
         </div>
