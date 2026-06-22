@@ -128,7 +128,7 @@ jobs:
     # Shared deps - full resolution, so transitive CVEs are caught too.
     - name: pip-audit dependency CVEs (common)
       if: always()
-      uses: pypa/gh-action-pip-audit@v1.1.0
+      uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
       with:
         inputs: requirements/common.txt
         ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
@@ -137,7 +137,7 @@ jobs:
     # the deps cuml/RAPIDS resolves in). The noavx2 variant is intentionally NOT audited.
     - name: pip-audit dependency CVEs (cpu + nvidia gpu)
       if: always()
-      uses: pypa/gh-action-pip-audit@v1.1.0
+      uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
       with:
         no-deps: true
         inputs: |
