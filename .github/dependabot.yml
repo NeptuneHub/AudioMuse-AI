@@ -4,14 +4,35 @@ updates:
     directory: "/.github/dependabot/cpu"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
+    groups:
+      cpu-requirements:
+        patterns:
+          - "*"
   - package-ecosystem: "pip"
     directory: "/.github/dependabot/nvidia"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
+    groups:
+      nvidia-requirements:
+        patterns:
+          - "*"
   - package-ecosystem: "pip"
     directory: "/test"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 0
+    open-pull-requests-limit: 10
+    groups:
+      test-requirements:
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
