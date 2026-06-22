@@ -4,7 +4,7 @@
 # IMPORTANT: Versions aligned with requirements/common.txt and Dockerfile
 # Updated: 2026-01-08 - Aligned with Ubuntu 24.04/Python 3.12 dependencies:
 #   - scipy: 1.15.3 → 1.16.3
-#   - onnx: 1.16.0 → 1.20.0
+#   - onnx: 1.16.0 → 1.21.0 (CVE fixes; aligned with common.txt)
 #   - scikit-learn: 1.7.2 → 1.8.0
 #   - transformers: unversioned → 4.57.6
 #   - sentencepiece: unversioned → 0.2.1
@@ -17,7 +17,7 @@ scipy==1.16.3
 numba==0.60.0
 soundfile==0.13.1
 resampy
-onnx==1.20.0
+onnx==1.21.0
 onnxruntime==1.19.2
 pydub==0.25.1
 scikit-learn==1.8.0
@@ -44,7 +44,7 @@ flasgger
 umap-learn
 google-genai==1.57.0
 argon2-cffi==25.1.0
-PyJWT==2.12.1
+PyJWT==2.13.0
 
 # Lyrics integration test dependencies (versions aligned with requirements/common.txt).
 # The lyrics integration test does NOT use whisper or audio decoding: it feeds

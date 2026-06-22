@@ -148,13 +148,21 @@ jobs:
   # Image / supply-chain layer: Trivy scans the container DEFINITION (Dockerfile
   # + deployment manifests) for misconfigurations and the working tree for leaked
   # secrets -- coverage pip-audit (Python CVEs) and Bandit (Python SAST) do not
-  # provide. Report-only (exit-code 0): findings appear in the run log/summary but
-  # do NOT block merge, matching the rest of this workflow. A full built-image OS
-  # scan can later be hooked into the image-publish pipeline.
+  # provide. The config scan (Dockerfile/manifest misconfig) is report-only
+  # (exit-code 0); the filesystem scan GATES (exit-code 1) so HIGH/CRITICAL
+  # dependency CVEs or leaked secrets turn this check red, matching pip-audit's
+  # fail-on-CVE behaviour. A red check does NOT block merge unless this workflow
+  # is added to branch protection's required checks. Findings are uploaded as
+  # SARIF to code scanning so the detailed table lives in the private Security
+  # tab (write/maintain/admin only) instead of the public Actions run log. A
+  # full built-image OS scan can later be hooked into the image-publish pipeline.
   trivy:
     runs-on: ubuntu-latest
+    # security-events:write lets the SARIF upload publish to the Security tab.
     permissions:
       contents: read
+      security-events: write
+      actions: read
 
     steps:
     - uses: actions/checkout@v4
@@ -164,11 +172,35 @@ jobs:
         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
           | sh -s -- -b /usr/local/bin
 
+    # Accepted / not-applicable findings are listed in .trivyignore (the Trivy
+    # counterpart of the pip-audit allowlist above). Config scan is report-only.
     - name: Trivy config scan (Dockerfiles + deployment manifests)
+      if: always()
       run: |
-        trivy config --severity HIGH,CRITICAL --exit-code 0 .
+        trivy config --severity HIGH,CRITICAL --exit-code 0 \
+          --ignorefile .trivyignore \
+          --format sarif --output trivy-config.sarif .
 
-    - name: Trivy filesystem scan (dependency CVEs + leaked secrets)
+    - name: Upload Trivy config SARIF to code scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-config.sarif
+        category: trivy-config
+
+    # Filesystem scan GATES on HIGH/CRITICAL. SARIF output keeps the detailed
+    # finding table out of the public run log and in the Security tab; the step
+    # still exits non-zero so the check goes red.
+    - name: Trivy filesystem scan (dependency CVEs + leaked secrets, fails on HIGH/CRITICAL)
       run: |
-        trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 0 \
+        trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
+          --ignorefile .trivyignore \
+          --format sarif --output trivy-fs.sarif \
           --skip-dirs .venv,.venv-windows,native-build,test/songs,model,dist .
+
+    - name: Upload Trivy filesystem SARIF to code scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-fs.sarif
+        category: trivy-fs

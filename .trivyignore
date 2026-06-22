@@ -1,0 +1,23 @@
+# Trivy ignore list -- accepted / not-applicable HIGH/CRITICAL findings.
+# This is the Trivy counterpart of the pip-audit allowlist in
+# .github/workflows/security.yml. Format: put the human reason on a '#' line,
+# then the bare CVE/GHSA id on the next line. Add an id here ONLY when the
+# finding does not impact AudioMuse (unreachable path) or has no fixed release
+# yet; PREFER bumping the dependency when a fix exists.
+#
+# Currently no active entries. The onnx model-loading CVEs are intentionally
+# NOT excluded here because they are already fixed by onnx==1.21.0 in
+# requirements/common.txt and test/requirements.txt. They are recorded below,
+# commented out, only to document why they would be non-applicable should a
+# future onnx pin ever regress (AudioMuse loads ONLY its own app-bundled
+# models via onnx.load(); it never loads attacker-supplied models or calls
+# save_external_data on untrusted data):
+#
+#   # onnx path traversal via external-data load -- only trusted bundled models
+#   CVE-2026-27489
+#   # onnx untrusted-model-repo warning suppression -- models are vendored, not fetched at runtime
+#   CVE-2026-28500
+#   # onnx malicious-model DoS / info disclosure -- only trusted bundled models
+#   CVE-2026-34445
+#   # onnx TOCTOU in save_external_data -- never called on untrusted data
+#   GHSA-q56x-g2fj-4rj6
