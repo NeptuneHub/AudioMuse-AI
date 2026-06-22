@@ -75,10 +75,10 @@ jobs:
       ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -158,14 +158,14 @@ jobs:
           python scripts/standalone/build.py --platform linux
 
       - name: Upload .deb as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AudioMuse-AI-${{ env.ARCH }}-linux-deb
           path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.deb
           if-no-files-found: error
 
       - name: Upload .rpm as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AudioMuse-AI-${{ env.ARCH }}-linux-rpm
           path: dist/AudioMuse-AI-${{ env.ARCH }}-linux.rpm
@@ -184,13 +184,13 @@ jobs:
       contents: write
     steps:
       - name: Download built packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Attach packages to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/AudioMuse-AI-*.deb

@@ -24,7 +24,7 @@ jobs:
       issues: write
     steps:
       - name: Post a short thank-you comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -72,7 +72,7 @@ jobs:
       discussions: write
     steps:
       - name: Post a short thank-you comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;

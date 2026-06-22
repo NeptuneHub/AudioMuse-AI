@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # Action to check out your repository code
+        uses: actions/checkout@v7 # Action to check out your repository code
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # Action to set up Python environment
+        uses: actions/setup-python@v6 # Action to set up Python environment
         with:
           python-version: '3.x' # Use a compatible Python version
 
@@ -52,13 +52,13 @@ jobs:
         run: mkdocs build
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5 # Action to set up GitHub Pages for deployment
+        uses: actions/configure-pages@v6 # Action to set up GitHub Pages for deployment
 
       - name: Upload artifact for deployment
-        uses: actions/upload-pages-artifact@v3 # Action to upload the built site as an artifact
+        uses: actions/upload-pages-artifact@v5 # Action to upload the built site as an artifact
         with:
           path: './site' # The path to the directory containing your built site
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4 # Action to deploy the artifact to GitHub Pages
+        uses: actions/deploy-pages@v5 # Action to deploy the artifact to GitHub Pages

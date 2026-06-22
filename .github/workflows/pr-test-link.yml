@@ -55,7 +55,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     steps:
       - name: Build and upsert the PR test-build block
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const { owner, repo } = context.repo;

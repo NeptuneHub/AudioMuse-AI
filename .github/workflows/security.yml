@@ -30,10 +30,10 @@ jobs:
       contents: read
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
 
@@ -66,7 +66,7 @@ jobs:
     # inline on the PR diff before merge. category keeps Bandit separate from CodeQL.
     - name: Upload Bandit SARIF to code scanning
       if: always()
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: bandit.sarif
         category: bandit
@@ -97,7 +97,7 @@ jobs:
     # Downloadable full reports.
     - name: Upload Bandit reports as artifacts
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: bandit-reports
         path: |
