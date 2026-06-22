@@ -1,6 +1,7 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
+<a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
 <a href="https://liberapay.com/NeptuneHub/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a>
 
 <p align="center">
