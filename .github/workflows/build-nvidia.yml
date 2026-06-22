@@ -20,6 +20,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   build-and-push:
     # Run on non-PR events; for PR events skip drafts and fork PRs (the

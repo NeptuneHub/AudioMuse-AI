@@ -3,6 +3,9 @@ name: Test absence of AVX2
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   avx2-scan-and-import-test:
     runs-on: ubuntu-latest

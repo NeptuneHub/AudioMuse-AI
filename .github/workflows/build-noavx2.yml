@@ -28,6 +28,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   build-and-push-noavx2:
     # Run on non-PR events; for PR events skip drafts and fork PRs (the
