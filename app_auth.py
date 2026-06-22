@@ -35,6 +35,9 @@ from psycopg2.extras import DictCursor
 
 from tz_helper import UTC_NOW_SQL, to_local_str
 
+import config
+from rate_limit import limiter
+
 logger = logging.getLogger(__name__)
 
 
@@ -1034,10 +1037,19 @@ def init_app(app, setup_manager, jwt_secret_getter):
     _jwt_secret_getter = jwt_secret_getter
 
     app.before_request(auth_setup_barrier)
+
+    # Rate-limit the brute-forceable surfaces: login and user administration.
+    # Limits are applied here (not as module decorators) so unit tests that
+    # register routes without calling init_app stay unthrottled.
+    auth_view = limiter.limit(config.RATE_LIMIT_AUTH)(auth_endpoint)
+    create_user_view = limiter.limit(config.RATE_LIMIT_USER_ADMIN)(create_user_endpoint)
+    delete_user_view = limiter.limit(config.RATE_LIMIT_USER_ADMIN)(delete_user_endpoint)
+    update_password_view = limiter.limit(config.RATE_LIMIT_USER_ADMIN)(update_user_password_endpoint)
+
     app.add_url_rule('/login', endpoint='login_page', view_func=login_page, methods=['GET'])
-    app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_endpoint, methods=['POST'])
+    app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_view, methods=['POST'])
     app.add_url_rule('/logout', endpoint='logout_endpoint', view_func=logout_endpoint, methods=['POST'])
     app.add_url_rule('/api/users', endpoint='list_users_endpoint', view_func=list_users_endpoint, methods=['GET'])
-    app.add_url_rule('/api/users', endpoint='create_user_endpoint', view_func=create_user_endpoint, methods=['POST'])
-    app.add_url_rule('/api/users/<int:user_id>', endpoint='delete_user_endpoint', view_func=delete_user_endpoint, methods=['DELETE'])
-    app.add_url_rule('/api/users/<int:user_id>/password', endpoint='update_user_password_endpoint', view_func=update_user_password_endpoint, methods=['PUT'])
+    app.add_url_rule('/api/users', endpoint='create_user_endpoint', view_func=create_user_view, methods=['POST'])
+    app.add_url_rule('/api/users/<int:user_id>', endpoint='delete_user_endpoint', view_func=delete_user_view, methods=['DELETE'])
+    app.add_url_rule('/api/users/<int:user_id>/password', endpoint='update_user_password_endpoint', view_func=update_password_view, methods=['PUT'])

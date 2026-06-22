@@ -54,6 +54,9 @@ from error import error_manager
 from error.error_manager import AudioMuseError
 from error.error_dictionary import UNKNOWN_ERROR_CODE
 
+# Shared rate limiter.
+from rate_limit import limiter
+
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,10 @@ def inject_globals():
 
 # Register the auth barrier + auth routes (/login, /auth, /logout, /api/users).
 init_auth(app, setup_manager, _get_jwt_secret)
+
+# Bind the shared rate limiter to the app; the limited endpoints are declared
+# with limiter.limit() inside app_auth.init_app above.
+limiter.init_app(app)
 
 @app.before_request
 def log_api_request():

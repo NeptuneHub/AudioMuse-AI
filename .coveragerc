@@ -1,0 +1,25 @@
+# Coverage.py configuration for the unit test suite.
+# Measures only first-party code: third-party venvs, the native standalone
+# builds, screenshots and the test tree itself are excluded so the percentage
+# reflects the application, not its dependencies.
+[run]
+branch = True
+source = .
+omit =
+    test/*
+    .venv/*
+    .venv-windows/*
+    native-build/*
+    screenshot/*
+    dist/*
+    query/*
+    */__pycache__/*
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 1
+exclude_also =
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:

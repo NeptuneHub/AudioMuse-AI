@@ -144,3 +144,31 @@ jobs:
           requirements/cpu.txt
           requirements/gpu.txt
         ignore-vulns: ${{ steps.cve_allowlist.outputs.ids }}
+
+  # Image / supply-chain layer: Trivy scans the container DEFINITION (Dockerfile
+  # + deployment manifests) for misconfigurations and the working tree for leaked
+  # secrets -- coverage pip-audit (Python CVEs) and Bandit (Python SAST) do not
+  # provide. Report-only (exit-code 0): findings appear in the run log/summary but
+  # do NOT block merge, matching the rest of this workflow. A full built-image OS
+  # scan can later be hooked into the image-publish pipeline.
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Trivy
+      run: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+          | sh -s -- -b /usr/local/bin
+
+    - name: Trivy config scan (Dockerfiles + deployment manifests)
+      run: |
+        trivy config --severity HIGH,CRITICAL --exit-code 0 .
+
+    - name: Trivy filesystem scan (dependency CVEs + leaked secrets)
+      run: |
+        trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 0 \
+          --skip-dirs .venv,.venv-windows,native-build,test/songs,model,dist .

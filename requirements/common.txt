@@ -16,7 +16,7 @@ ftfy==6.3.1
 flasgger==0.9.7.1
 sqlglot==30.6.0
 google-genai==1.57.0
-mistralai>=1.11.1,<2.0.0
+mistralai==1.12.4
 umap-learn==0.5.12
 av==13.1.0
 psutil==7.2.2
@@ -39,3 +39,5 @@ argon2-cffi==25.1.0
 gunicorn==25.3.0
 zstandard==0.25.0
 wn==0.13.0
+# Rate limiting for login / user-admin endpoints (brute-force protection).
+flask-limiter==3.12

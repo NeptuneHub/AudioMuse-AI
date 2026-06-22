@@ -988,7 +988,7 @@ class PagedIvfIndex:
             (self._index_name, list(cell_ids)),
         )
         for cell_id, blob in cur.fetchall():
-            ids, vecs = unpack_cell(bytes(blob), self._dim)
+            ids, vecs = unpack_cell(blob, self._dim)
             yield int(cell_id), ids, vecs
 
     def _read_cells(self, cell_ids: List[int], cache: _CellLruCache) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
@@ -1005,11 +1005,10 @@ class PagedIvfIndex:
         offsets = self._cell_offsets
         if mm is not None:
             _note_mmap_activity(self)
-            ordered = sorted(
-                {int(c) for c in cell_ids},
-                key=lambda cid: offsets.get(cid, (1 << 62, 0))[0],
-            )
-            for cid in ordered:
+            # inputs are unique; read in file order, box to int only at the dict key
+            ordered = sorted(cell_ids, key=lambda c: offsets.get(int(c), (1 << 62, 0))[0])
+            for c in ordered:
+                cid = int(c)
                 cell = self._cell_from_mmap(mm, offsets, cid)
                 if cell is not None:
                     out[cid] = cell
@@ -1106,7 +1105,7 @@ class PagedIvfIndex:
         q = np.asarray(vector, dtype=np.float32).reshape(-1)
         order = self._rank_cells(q)
         cache = self._cache()
-        probe = [int(c) for c in order[:max(1, self._nprobe)]]
+        probe = order[:max(1, self._nprobe)]
         cells = self._read_cells(probe, cache)
         cand_ids: List[np.ndarray] = []
         cand_vecs: List[np.ndarray] = []
