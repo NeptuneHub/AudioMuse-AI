@@ -4,7 +4,7 @@ updates:
     directory: "/.github/dependabot/cpu"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       cpu-requirements:
         patterns:
@@ -13,7 +13,7 @@ updates:
     directory: "/.github/dependabot/nvidia"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       nvidia-requirements:
         patterns:
@@ -22,7 +22,7 @@ updates:
     directory: "/test"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       test-requirements:
         patterns:
@@ -31,7 +31,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       github-actions:
         patterns:
