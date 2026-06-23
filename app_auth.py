@@ -1034,7 +1034,6 @@ def init_app(app, setup_manager, jwt_secret_getter):
     _jwt_secret_getter = jwt_secret_getter
 
     app.before_request(auth_setup_barrier)
-
     app.add_url_rule('/login', endpoint='login_page', view_func=login_page, methods=['GET'])
     app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_endpoint, methods=['POST'])
     app.add_url_rule('/logout', endpoint='logout_endpoint', view_func=logout_endpoint, methods=['POST'])
