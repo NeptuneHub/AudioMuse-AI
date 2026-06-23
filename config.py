@@ -731,20 +731,6 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
-# --- Rate Limiting (flask-limiter) ---
-# Protects auth and user-administration endpoints from brute force. Only the
-# endpoints decorated in app_auth.init_app are limited; everything else is
-# unthrottled (rate_limit.py sets no default limits), so high-frequency polling
-# like /api/status is never affected.
-RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "True").lower() == "true"
-# Shared counter store. Defaults to the Redis the app already requires so limits
-# hold across gunicorn workers; falls back to in-process memory if unreachable.
-RATE_LIMIT_STORAGE_URI = os.environ.get("RATE_LIMIT_STORAGE_URI", REDIS_URL)
-# Login (POST /auth) limit. flask-limiter syntax; ';' separates windows.
-RATE_LIMIT_AUTH = os.environ.get("RATE_LIMIT_AUTH", "10 per minute;100 per hour")
-# User create / delete / password-change limit.
-RATE_LIMIT_USER_ADMIN = os.environ.get("RATE_LIMIT_USER_ADMIN", "30 per minute")
-
 def _apply_db_overrides():
     global HEADERS, refresh_config
     try:

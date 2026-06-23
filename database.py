@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 # adds no depth to the eager import graph, so there is no need to duplicate it.
 from tz_helper import UTC_NOW_SQL
 
-# Versioned, ordered schema migrations applied on top of init_db()'s base schema.
-from db_migrations import run_schema_migrations
-
 # Shared input sanitizer (leaf module) for cleaning string columns before writes.
 from sanitization import sanitize_db_field
 
@@ -1031,10 +1028,6 @@ def init_db():
                     """, (query, 1.0, rank))
             
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
-
-            # Apply versioned, ordered migrations on top of the base schema, while
-            # still holding the advisory lock so concurrent workers serialize here.
-            run_schema_migrations(cur)
 
             db.commit()
             # Release the advisory lock acquired at the top of init_db().

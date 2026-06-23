@@ -35,7 +35,6 @@ sentencepiece==0.2.1
 redis
 rq
 Flask
-flask-limiter==3.12
 pyyaml
 rapidfuzz
 sqlglot
