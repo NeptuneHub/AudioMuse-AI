@@ -32,9 +32,6 @@ concurrency:
 env:
   REGISTRY: ghcr.io
 
-permissions:
-  contents: read
-
 jobs:
   # ============================================================================
   # Step 1: Compute image name and tags once (shared by all jobs)
@@ -48,6 +45,7 @@ jobs:
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       image: ${{ steps.repo_name.outputs.image }}
       tags: ${{ steps.tags.outputs.tags }}
