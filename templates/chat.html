@@ -266,7 +266,7 @@
         </div>
 
         <!-- Submit Button -->
-        <button type="submit" id="submitChat">
+        <button type="submit" id="submitChat" class="btn btn-primary btn-block">
             <span>Get Playlist Idea</span>
         </button>
     </form>
@@ -275,7 +275,7 @@
 <!-- Response Section -->
 <section>
     <h2>AI Response</h2>
-    <div id="responseArea">
+    <div id="responseArea" role="status" aria-live="polite">
         <p class="italic">Your generated playlist will appear here...</p>
     </div>
     <!-- MODIFIED: Changed section title and form details to be more generic -->
@@ -289,9 +289,9 @@
                     <input type="text" id="mediaServerPlaylistName" name="playlist_name" placeholder="Enter playlist name" required>
                 </div>
             </div>
-            <button type="submit" id="submitMediaServerPlaylist">Create Playlist</button>
+            <button type="submit" id="submitMediaServerPlaylist" class="btn btn-success btn-block">Create Playlist</button>
         </form>
-        <div id="mediaServerResponseArea"></div>
+        <div id="mediaServerResponseArea" role="status" aria-live="polite"></div>
     </div>
 </section>
 {% endblock %}

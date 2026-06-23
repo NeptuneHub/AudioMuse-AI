@@ -233,7 +233,7 @@
                     </select>
                 </div>
                 <div id="auth-admin-exists" class="field-row" style="display:none;">
-                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--card-bg, #f5f5f5); border:1px solid var(--border-color, #ccc);">
+                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--bg-card, #f5f5f5); border:1px solid var(--border-color, #ccc);">
                         An admin account already exists. To add, remove, or change
                         admin and normal user accounts, go to the
                         <a href="{{ url_for('users_bp.users_page') }}">Users</a> page.
@@ -317,7 +317,7 @@
                     If no API is configured, or if all configured APIs fail or time out,
                     AudioMuse-AI will fall back to local transcription with <strong>Whisper</strong>.
                     <br><br>
-                    Paste a real example URL (with actual artist and track values) and click <strong>Analyze</strong>.
+                    Paste a real example URL (with actual artist and track values) including http:// or https:// and click <strong>Analyze</strong>.
                     AudioMuse-AI will call the URL, detect the parameters automatically, and show the JSON response
                     so you can click the field that contains the lyrics.
                 </div>

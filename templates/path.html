@@ -4,20 +4,7 @@
 <style>
         #path-form button {
             flex-grow: 1;
-            color: white;
-            font-weight: 700;
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.5rem;
-            border: none;
-            cursor: pointer;
-            transition: background-color 0.2s;
-            width: 100%;
-            font-size: 1rem;
             margin-top: 1rem;
-            background-color: var(--color-primary);
-        }
-        #path-form button:hover {
-            background-color: var(--color-primary-hover);
         }
         .graph-view-switcher {
             margin-bottom: 1rem;
@@ -215,7 +202,7 @@
                 </label>
             </div>
         </div>
-        <button type="submit">Find Path</button>
+        <button type="submit" class="btn btn-primary btn-block">Find Path</button>
     </form>
 </section>
 
@@ -243,7 +230,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., Path from Song A to B">
             </div>
         </div>
-        <button type="submit" style="background-color: var(--color-success);">Create Playlist on Media Server</button>
+        <button type="submit" class="btn btn-success btn-block">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>

@@ -97,6 +97,18 @@ body {
     transition: background-color 0.3s, color 0.3s;
 }
 
+/* --- Accessibility: keyboard focus ring ---
+   Buttons, links and nav items had no focus style at all. Show a ring only for
+   keyboard users (not mouse clicks). Form fields keep their own box-shadow ring. */
+:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+}
+:focus:not(:focus-visible) {
+    outline: none;
+}
+
 /* --- Main Container --- */
 .container {
     width: 100%;
@@ -290,15 +302,18 @@ textarea {
     gap: 0.5rem;
     color: #ffffff;
     font-weight: 700;
-    padding: 0.6rem 1rem;
+    padding: 0.75rem 1.5rem;
     border-radius: 0.5rem;
     border: none;
     cursor: pointer;
-    transition: background-color 0.18s ease, transform 0.06s ease;
+    transition: background-color 0.2s ease, transform 0.06s ease;
     font-size: 1rem;
 }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Full-width block button (form submit buttons, task buttons) */
+.btn-block { width: 100%; }
 
 /* Primary blue button (matches existing primary selectors) */
 .btn-primary { background-color: var(--color-primary); }
@@ -307,6 +322,10 @@ textarea {
 /* Danger/red button */
 .btn-danger { background-color: var(--color-danger); }
 .btn-danger:hover { background-color: var(--color-danger-hover); }
+
+/* Success/green button */
+.btn-success { background-color: var(--color-success); }
+.btn-success:hover { background-color: var(--color-success-hover); }
 
 /* Ghost / outline button for secondary actions */
 .btn-ghost {
@@ -373,72 +392,24 @@ textarea {
     margin-top: 1rem; /* Add space above buttons */
 }
 
-#start-analysis-btn,
-#start-clustering-btn,
-#fetch-playlists-btn,
-#start-sync-btn,
-#playlistForm button,
-#similarity-form button,
-#waveform-form button,
-#artist-similarity-form button,
-#find-artists-btn,
-#create-artist-playlist-btn {
-    background-color: var(--color-primary);
-}
+/* Button colors are now supplied by the shared .btn-primary / .btn-danger /
+   .btn-success utilities (see above). The old per-ID color lists and the
+   inline-style attribute selector were removed once every action button was
+   migrated to the .btn system. The sizing block above remains as a benign
+   layout helper. */
 
-#start-analysis-btn:hover,
-#start-clustering-btn:hover,
-#fetch-playlists-btn:hover,
-#start-sync-btn:hover,
-#playlistForm button:hover,
-#similarity-form button:hover,
-#waveform-form button:hover,
-#artist-similarity-form button:hover,
-#find-artists-btn:hover,
-#create-artist-playlist-btn:hover {
-    background-color: var(--color-primary-hover);
-}
-
-#createPlaylistForm button,
-#playlist-form button[style*="background-color: #16A34A"] {
-    background-color: var(--color-success) !important; /* Green */
-}
-#createPlaylistForm button:hover,
-#playlist-form button[style*="background-color: #16A34A"]:hover {
-    background-color: var(--color-success-hover) !important;
-}
-
-
-#cancel-task-btn,
-#cancel-sync-btn {
-    background-color: var(--color-danger);
-}
-#cancel-task-btn:hover,
-#cancel-sync-btn:hover {
-    background-color: var(--color-danger-hover);
-}
-
-button:disabled,
-#cancel-task-btn:disabled,
-#cancel-sync-btn:disabled {
-    background-color: #93C5FD !important; /* Light blue - maybe needs var too? */
+/* Legacy (non-.btn) buttons keep the old greyed-blue disabled treatment.
+   .btn buttons are governed by .btn:disabled above, so a disabled .btn-danger
+   stays red and .btn-success stays green (dimmed), not blue. */
+button:not(.btn):disabled {
+    background-color: #93C5FD !important; /* Light blue */
     cursor: not-allowed !important;
-    opacity: 0.7 !important; /* Changed from 1 to 0.7 for better visual indication */
+    opacity: 0.7 !important;
 }
-body.dark-mode button:disabled,
-body.dark-mode #cancel-task-btn:disabled,
-body.dark-mode #cancel-sync-btn:disabled {
-    background-color: #1E3A8A !important; /* Darker blue for disabled in dark mode */
+body.dark-mode button:not(.btn):disabled,
+html.dark-mode button:not(.btn):disabled {
+    background-color: #1E3A8A !important; /* Darker blue in dark mode */
     color: #9CA3AF !important;
-}
-
-#cancel-task-btn:disabled,
-#cancel-sync-btn:disabled {
-    background-color: #FCA5A5 !important; /* Light red */
-}
-body.dark-mode #cancel-task-btn:disabled,
-body.dark-mode #cancel-sync-btn:disabled {
-    background-color: #7F1D1D !important; /* Dark red */
 }
 
 

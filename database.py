@@ -1028,7 +1028,7 @@ def init_db():
                     """, (query, 1.0, rank))
             
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
-        
+
             db.commit()
             # Release the advisory lock acquired at the top of init_db().
         finally:

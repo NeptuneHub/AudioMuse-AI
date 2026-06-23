@@ -26,6 +26,31 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r test/requirements.txt
 
-    - name: Run unit tests
+    - name: Run unit tests with coverage
       run: |
-        pytest test/unit/ -v --tb=short
+        pytest test/unit/ -v --tb=short \
+          --cov --cov-report=term-missing --cov-report=xml
+
+    - name: Coverage summary
+      if: always()
+      run: |
+        python - <<'PY'
+        import xml.etree.ElementTree as ET, os
+        try:
+            rate = float(ET.parse("coverage.xml").getroot().get("line-rate", 0)) * 100
+        except Exception:
+            rate = 0.0
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        line = f"## Unit test coverage: {rate:.1f}% of lines\n"
+        if summary:
+            open(summary, "a").write(line)
+        print(line)
+        PY
+
+    - name: Upload coverage report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage.xml
+        retention-days: 7
