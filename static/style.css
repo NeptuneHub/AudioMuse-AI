@@ -398,27 +398,18 @@ textarea {
    migrated to the .btn system. The sizing block above remains as a benign
    layout helper. */
 
-button:disabled,
-#cancel-task-btn:disabled,
-#cancel-sync-btn:disabled {
-    background-color: #93C5FD !important; /* Light blue - maybe needs var too? */
+/* Legacy (non-.btn) buttons keep the old greyed-blue disabled treatment.
+   .btn buttons are governed by .btn:disabled above, so a disabled .btn-danger
+   stays red and .btn-success stays green (dimmed), not blue. */
+button:not(.btn):disabled {
+    background-color: #93C5FD !important; /* Light blue */
     cursor: not-allowed !important;
-    opacity: 0.7 !important; /* Changed from 1 to 0.7 for better visual indication */
+    opacity: 0.7 !important;
 }
-body.dark-mode button:disabled,
-body.dark-mode #cancel-task-btn:disabled,
-body.dark-mode #cancel-sync-btn:disabled {
-    background-color: #1E3A8A !important; /* Darker blue for disabled in dark mode */
+body.dark-mode button:not(.btn):disabled,
+html.dark-mode button:not(.btn):disabled {
+    background-color: #1E3A8A !important; /* Darker blue in dark mode */
     color: #9CA3AF !important;
-}
-
-#cancel-task-btn:disabled,
-#cancel-sync-btn:disabled {
-    background-color: #FCA5A5 !important; /* Light red */
-}
-body.dark-mode #cancel-task-btn:disabled,
-body.dark-mode #cancel-sync-btn:disabled {
-    background-color: #7F1D1D !important; /* Dark red */
 }
 
 

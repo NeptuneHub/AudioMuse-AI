@@ -172,6 +172,10 @@ jobs:
         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
           | sh -s -- -b /usr/local/bin
 
+    # Each scan emits native JSON once: it feeds both a numeric recap on the run
+    # summary (0 shown when clean) and, via `trivy convert`, the SARIF uploaded
+    # to the Security tab -- one scan, no second pass over the vuln DB.
+
     # Accepted / not-applicable findings are listed in .trivyignore (the Trivy
     # counterpart of the pip-audit allowlist above). Config scan is report-only.
     - name: Trivy config scan (Dockerfiles + deployment manifests)
@@ -179,7 +183,11 @@ jobs:
       run: |
         trivy config --severity HIGH,CRITICAL --exit-code 0 \
           --ignorefile .trivyignore \
-          --format sarif --output trivy-config.sarif .
+          --format json --output trivy-config.json .
+
+    - name: Convert Trivy config report to SARIF
+      if: always()
+      run: trivy convert --format sarif --output trivy-config.sarif trivy-config.json
 
     - name: Upload Trivy config SARIF to code scanning
       if: always()
@@ -188,15 +196,25 @@ jobs:
         sarif_file: trivy-config.sarif
         category: trivy-config
 
-    # Filesystem scan GATES on HIGH/CRITICAL. SARIF output keeps the detailed
-    # finding table out of the public run log and in the Security tab; the step
-    # still exits non-zero so the check goes red.
+    # Filesystem scan GATES on HIGH/CRITICAL. --file-patterns adds the shipped
+    # requirements/*.txt to the pip vuln scan (Trivy's pip scanner otherwise only
+    # reads files named exactly requirements.txt); the -noavx2 legacy stacks and
+    # the dev-only test/requirements.txt are skipped. The detailed finding table
+    # reaches the Security tab via the converted SARIF (kept out of the public run
+    # log); only the counts are public. The step still exits non-zero on findings
+    # so the check goes red.
     - name: Trivy filesystem scan (dependency CVEs + leaked secrets, fails on HIGH/CRITICAL)
       run: |
         trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
           --ignorefile .trivyignore \
-          --format sarif --output trivy-fs.sarif \
+          --file-patterns "pip:requirements/.*\.txt" \
+          --skip-files requirements/common-noavx2.txt,requirements/cpu-noavx2.txt,test/requirements.txt \
+          --format json --output trivy-fs.json \
           --skip-dirs .venv,.venv-windows,native-build,test/songs,model,dist .
+
+    - name: Convert Trivy filesystem report to SARIF
+      if: always()
+      run: trivy convert --format sarif --output trivy-fs.sarif trivy-fs.json
 
     - name: Upload Trivy filesystem SARIF to code scanning
       if: always()
@@ -204,3 +222,47 @@ jobs:
       with:
         sarif_file: trivy-fs.sarif
         category: trivy-fs
+
+    # Counts on the run summary (0 when clean), mirroring the Bandit summary.
+    - name: Trivy job summary
+      if: always()
+      run: |
+        python3 - <<'PY'
+        import json, os
+
+        def load(path):
+            try:
+                with open(path) as fh:
+                    return json.load(fh)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return {}
+
+        def tally(report, key):
+            total = high = crit = 0
+            for res in (report.get("Results") or []):
+                for item in (res.get(key) or []):
+                    total += 1
+                    sev = (item.get("Severity") or "").upper()
+                    if sev == "HIGH":
+                        high += 1
+                    elif sev == "CRITICAL":
+                        crit += 1
+            return total, high, crit
+
+        cfg = load("trivy-config.json")
+        fs = load("trivy-fs.json")
+        rows = [
+            ("Config misconfig (Dockerfiles / manifests)",) + tally(cfg, "Misconfigurations"),
+            ("Dependency CVEs (filesystem)",) + tally(fs, "Vulnerabilities"),
+            ("Leaked secrets (filesystem)",) + tally(fs, "Secrets"),
+        ]
+        total = sum(r[1] for r in rows)
+        lines = ["## Trivy (HIGH / CRITICAL)", "",
+                 "Total findings: %d" % total, "",
+                 "| Scan | Findings | HIGH | CRITICAL |", "|---|---|---|---|"]
+        for name, t, h, c in rows:
+            lines.append("| %s | %d | %d | %d |" % (name, t, h, c))
+        lines += ["", "Detail for any non-zero row: Security tab -> Code scanning -> trivy-config / trivy-fs."]
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+            fh.write("\n".join(lines) + "\n")
+        PY

@@ -10,6 +10,7 @@ omit =
     .venv/*
     .venv-windows/*
     native-build/*
+    scripts/*
     screenshot/*
     dist/*
     query/*

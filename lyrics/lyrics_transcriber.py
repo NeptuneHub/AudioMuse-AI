@@ -339,6 +339,9 @@ def _fetch_from_configured_api(
         import socket as _socket
         import urllib.parse as _up
         _parsed_tpl = _up.urlparse(url_template)
+        if _parsed_tpl.scheme not in ('http', 'https'):
+            logger.warning('Lyrics API slot %s blocked: non-http(s) scheme %r', slot, _parsed_tpl.scheme)
+            return None
         _host = _parsed_tpl.hostname or ''
         _host_l = _host.strip().lower()
         if _host_l in ('localhost', '') or _host_l.endswith('.localhost') or _host_l.endswith('.local'):

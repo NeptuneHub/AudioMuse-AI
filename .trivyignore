@@ -4,14 +4,24 @@
 # then the bare CVE/GHSA id on the next line. Add an id here ONLY when the
 # finding does not impact AudioMuse (unreachable path) or has no fixed release
 # yet; PREFER bumping the dependency when a fix exists.
-#
-# Currently no active entries. The onnx model-loading CVEs are intentionally
-# NOT excluded here because they are already fixed by onnx==1.21.0 in
-# requirements/common.txt and test/requirements.txt. They are recorded below,
-# commented out, only to document why they would be non-applicable should a
-# future onnx pin ever regress (AudioMuse loads ONLY its own app-bundled
-# models via onnx.load(); it never loads attacker-supplied models or calls
-# save_external_data on untrusted data):
+
+# transformers X-CLIP checkpoint-conversion deserialization RCE -- unreachable:
+# AudioMuse never converts X-CLIP checkpoints nor loads untrusted checkpoints.
+# Mirrors PYSEC-2025-217 in the pip-audit allowlist; no fix in the 4.x line.
+CVE-2025-14929
+GHSA-8jfx-5878-hv4v
+# transformers Trainer torch.load RCE -- unreachable: AudioMuse does not use the
+# transformers Trainer class. Mirrors CVE-2026-1839 in the pip-audit allowlist;
+# fixed only in 5.0.0rc3 (a pre-release we do not pin to).
+CVE-2026-1839
+GHSA-69w3-r845-3855
+
+# The onnx model-loading CVEs are intentionally NOT excluded here because they
+# are already fixed by onnx==1.21.0 in requirements/common.txt (the version Trivy
+# now scans). They are recorded below, commented out, only to document why they
+# would be non-applicable should a future onnx pin ever regress (AudioMuse loads
+# ONLY its own app-bundled models via onnx.load(); it never loads attacker-
+# supplied models or calls save_external_data on untrusted data):
 #
 #   # onnx path traversal via external-data load -- only trusted bundled models
 #   CVE-2026-27489

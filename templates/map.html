@@ -817,7 +817,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             const c = document.getElementById('map_autocomplete_results');
             const isOpen = c && !c.classList.contains('hidden');
             if (e.key === 'ArrowDown'){ if(!isOpen) return; e.preventDefault(); setMapActive(acActive + 1); }
-            else if (e.key === 'ArrowUp'){ if(!isOpen) return; e.preventDefault(); setMapActive(acActive - 1); }
+            else if (e.key === 'ArrowUp'){ if(!isOpen) return; e.preventDefault(); setMapActive(acActive < 0 ? -1 : acActive - 1); }
             else if (e.key === 'Enter'){
                 const opts = c ? c.querySelectorAll('[role="option"]') : [];
                 if (isOpen && acActive >= 0 && opts[acActive] && opts[acActive]._track){ e.preventDefault(); selectMapTrack(opts[acActive]._track); }

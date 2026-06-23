@@ -467,7 +467,8 @@
                 } else if (e.key === 'ArrowUp') {
                     if (!isOpen) return;
                     e.preventDefault();
-                    setActiveOption(activeIndex - 1);
+                    // From the unhighlighted state, ArrowUp wraps to the last option.
+                    setActiveOption(activeIndex < 0 ? -1 : activeIndex - 1);
                 } else if (e.key === 'Enter') {
                     const opts = autocompleteResults.querySelectorAll('[role="option"]');
                     if (isOpen && activeIndex >= 0 && opts[activeIndex] && opts[activeIndex]._track) {

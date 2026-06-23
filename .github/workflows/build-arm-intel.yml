@@ -32,6 +32,9 @@ concurrency:
 env:
   REGISTRY: ghcr.io
 
+permissions:
+  contents: read
+
 jobs:
   # ============================================================================
   # Step 1: Compute image name and tags once (shared by all jobs)
