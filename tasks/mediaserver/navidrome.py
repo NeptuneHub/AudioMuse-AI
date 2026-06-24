@@ -44,11 +44,7 @@ def _get_target_music_folder_ids(user_creds=None):
 
     # Subsonic-compatible servers may return a single dict (not a list) when
     # only one folder exists. Coerce to a list for consistent iteration.
-    all_folders = response["musicFolders"]["musicFolder"]
-    if isinstance(all_folders, dict):
-        all_folders = [all_folders]
-    elif not isinstance(all_folders, list):
-        all_folders = []
+    all_folders = _coerce_to_list(response["musicFolders"]["musicFolder"])
 
     # Build a case-insensitive map: lowercase_name -> {'name': OriginalCaseName, 'id': FolderId}
     folder_map = {
@@ -97,13 +93,8 @@ def list_libraries(user_creds=None):
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         return []
     # Subsonic-compatible servers may return a single dict (not a list) when
-    # only one folder exists, depending on server implementation and JSON
-    # parser configuration — coerce to a list so iteration is consistent.
-    all_folders = response["musicFolders"]["musicFolder"]
-    if isinstance(all_folders, dict):
-        all_folders = [all_folders]
-    elif not isinstance(all_folders, list):
-        all_folders = []
+    # only one folder exists — coerce to a list so iteration is consistent.
+    all_folders = _coerce_to_list(response["musicFolders"]["musicFolder"])
     return [
         {'id': str(f['id']), 'name': f['name']}
         for f in all_folders

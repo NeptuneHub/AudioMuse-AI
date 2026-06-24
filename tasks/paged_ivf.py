@@ -1644,6 +1644,16 @@ def load_paged_ivf_index(
         logger.error("IVF '%s': dimension mismatch db=%s expected=%s", label, dim, expected_dim)
         return None
 
+    # Reject a stale-metric index (e.g. the artist index switched euclidean->angular):
+    # storage dtype can still match, so without this it would load under the old metric
+    # while the caller reranks under the new one. Treat as not built so it rebuilds.
+    if stored_metric and metric and str(stored_metric).lower() != str(metric).lower():
+        logger.warning(
+            "IVF index '%s' stored with metric '%s' but config now uses '%s'; treating as not built so it rebuilds.",
+            label, stored_metric, metric,
+        )
+        return None
+
     # Reject a stale-precision index so it is rebuilt in the current format (no mixed f32/i8 cells).
     expected_storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), stored_metric)
     if int(storage_dtype) != int(expected_storage_dtype):

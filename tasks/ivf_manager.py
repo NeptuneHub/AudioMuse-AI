@@ -249,10 +249,22 @@ def _get_direct_cosine_distance(v1, v2):
         return float('inf')
 
 
+def _get_direct_dot_distance(v1, v2):
+    """Negative inner product (smaller = nearer), matching the 'dot' cell metric. +inf if unavailable."""
+    if v1 is None or v2 is None:
+        return float('inf')
+    try:
+        return float(-np.dot(v1.astype(np.float32), v2.astype(np.float32)))
+    except Exception:
+        return float('inf')
+
+
 def get_direct_distance(v1, v2):
     """Public helper that picks the metric according to IVF_METRIC."""
     if IVF_METRIC == 'angular':
         return _get_direct_cosine_distance(v1, v2)
+    if IVF_METRIC == 'dot':
+        return _get_direct_dot_distance(v1, v2)
     return _get_direct_euclidean_distance(v1, v2)
 
 
@@ -772,6 +784,15 @@ def _execute_radius_walk(
 
 
 def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
+    """Clears the per-request exact-f32 cache on every exit so a primed neighbor pool
+    never leaks into later get_vector_by_id calls on this reused worker thread."""
+    try:
+        return _find_nearest_neighbors_by_id_impl(target_item_id, n, eliminate_duplicates, mood_similarity, radius_similarity)
+    finally:
+        _clear_request_f32()
+
+
+def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached IVF index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -888,12 +909,14 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
     # int8 stays the coarse candidate generator (cells remain int8 -> RAM win
     # intact); only this bounded shortlist is read at full precision. Priming the
     # request cache also feeds exact vectors to the dedup filter and radius walk.
-    if initial_results:
+    # Gate on anchor_f32: with no exact anchor (source row missing) the anchor is
+    # the int8 cell vector, so keep the pool int8 too rather than score exact
+    # candidates against a quantized anchor.
+    if initial_results and anchor_f32 is not None:
         f32_map = _fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results])
-        if anchor_f32 is not None:
+        if f32_map:
             f32_map[target_item_id] = anchor_f32
-        _prime_request_f32(f32_map)
-        if anchor_f32 is not None and f32_map:
+            _prime_request_f32(f32_map)
             for r in initial_results:
                 v = f32_map.get(r["item_id"])
                 if v is not None:
@@ -991,6 +1014,15 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         return [dict(r) for r in final_results]
 
 def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
+    """Clears the per-request exact-f32 cache on exit so the primed candidate pool
+    never leaks into later get_vector_by_id calls on this reused worker thread."""
+    try:
+        return _find_nearest_neighbors_by_vector_impl(query_vector, n, eliminate_duplicates)
+    finally:
+        _clear_request_f32()
+
+
+def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
     """
     Finds the N nearest neighbors for a given query vector.
     """
@@ -1037,6 +1069,13 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         for vec_id, dist in zip(neighbor_vec_ids, distances)
         if id_map.get(vec_id) is not None
     ]
+
+    # Dedup runs DUPLICATE_DISTANCE_THRESHOLD_* (cosine 0.01 < int8's ~0.014 error),
+    # tuned at full precision. Prime exact f32 for the pool so by-vector dedup matches
+    # the by-id path instead of filtering on int8 quantization noise. The synthetic
+    # query has no source row, so only the candidates are primed.
+    if initial_results:
+        _prime_request_f32(_fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results]))
 
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
 

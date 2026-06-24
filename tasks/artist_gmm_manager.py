@@ -247,6 +247,11 @@ def gmm_soft_chamfer_distance(gmm1_params: Dict, gmm2_params: Dict) -> float:
     """
     means1 = np.asarray(gmm1_params['means'], dtype=np.float32)
     means2 = np.asarray(gmm2_params['means'], dtype=np.float32)
+    # A corrupt/0-component GMM yields an empty means matrix; dmat.min(axis=...) over a
+    # zero-size axis would raise and 500 the whole similar-artists request. Treat such a
+    # candidate as infinitely far so the rerank simply sorts it last instead.
+    if means1.ndim != 2 or means2.ndim != 2 or means1.shape[0] == 0 or means2.shape[0] == 0:
+        return float('inf')
     w1 = np.asarray(gmm1_params['weights'], dtype=np.float32)
     w2 = np.asarray(gmm2_params['weights'], dtype=np.float32)
     w1 = w1 / (float(w1.sum()) + 1e-12)
