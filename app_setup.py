@@ -21,6 +21,10 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
 SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
+# Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
+# through the admin-user path, JWT_SECRET blank means "auto-generate". Every
+# other secret treats a blank submission as "keep the stored value".
+BLANK_KEEP_EXCLUDED_SECRETS = {"AUDIOMUSE_PASSWORD", "JWT_SECRET"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
 
 LYRICS_API_CONFIG_FIELDS = [
@@ -385,6 +389,17 @@ def setup_api():
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
                 return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+
+        # A blank secret means "keep the stored value" so re-saving the wizard
+        # (e.g. to add an API token) never wipes an already-configured
+        # password/token. Drop blanks before they reach the DB.
+        for key in list(filtered_values.keys()):
+            if key in BLANK_KEEP_EXCLUDED_SECRETS:
+                continue
+            if key in SECRET_FIELDS or key.endswith('_API_KEY'):
+                value = filtered_values[key]
+                if isinstance(value, str) and not value.strip():
+                    del filtered_values[key]
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):

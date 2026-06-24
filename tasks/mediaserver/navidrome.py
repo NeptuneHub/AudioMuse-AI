@@ -120,11 +120,18 @@ def get_navidrome_auth_params(username=None, password=None):
     hex_encoded_password = auth_pass.encode('utf-8').hex()
     return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
 
-def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
-    """
-    Helper to make Navidrome API requests. It sends all parameters in the URL's
-    query string, which is the expected behavior for Subsonic APIs, but can cause
-    issues with very long parameter lists (e.g., creating large playlists).
+# Subsonic auth-related error codes: 40 wrong username/password, 41 token auth
+# not supported, 42 token auth required, 43 client must upgrade, 44 not authorized.
+_SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+
+
+def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
+    """Make a Navidrome API request, returning ``(data, error)``.
+
+    ``error`` is None on success, otherwise ``{'kind', 'message'}`` where kind is
+    'config' (no credentials), 'auth' (server rejected the credentials), 'server'
+    (other Subsonic failure) or 'network' (transport error). Params are sent in
+    the query string, as the Subsonic API expects.
     """
     params = params or {}
     auth_params = get_navidrome_auth_params(
@@ -132,8 +139,9 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         password=user_creds.get('password') if user_creds else None
     )
     if not auth_params:
-        logger.error("Navidrome credentials not configured. Cannot make API call.")
-        return None
+        msg = "Navidrome username or password is not configured."
+        logger.error(f"{msg} Cannot make API call.")
+        return None, {'kind': 'config', 'message': msg}
 
     base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.NAVIDROME_URL).rstrip('/')
     url = f"{base_url}/rest/{endpoint}.view"
@@ -144,18 +152,28 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         r.raise_for_status()
 
         if stream:
-            return r
-            
+            return r, None
+
         subsonic_response = r.json().get("subsonic-response", {})
         if subsonic_response.get("status") == "failed":
-            error = subsonic_response.get("error", {})
-            logger.error(f"Navidrome API Error on '{endpoint}': {error.get('message')}")
-            return None
-        return subsonic_response
-        
+            error = subsonic_response.get("error", {}) or {}
+            message = error.get("message") or "Navidrome returned an error."
+            logger.error(f"Navidrome API Error on '{endpoint}': {message}")
+            kind = 'auth' if error.get("code") in _SUBSONIC_AUTH_ERROR_CODES else 'server'
+            return None, {'kind': kind, 'message': message}
+        return subsonic_response, None
+
     except requests.exceptions.RequestException as e:
         logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {e}", exc_info=True)
-        return None
+        return None, {'kind': 'network', 'message': str(e)}
+
+
+def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
+    """Make a Navidrome API request, returning the parsed response or None on failure."""
+    data, _ = _navidrome_request_ex(
+        endpoint, params=params, method=method, stream=stream, user_creds=user_creds, timeout=timeout
+    )
+    return data
 
 def download_track(temp_dir, item):
     """Downloads a single track from Navidrome using admin credentials."""
@@ -431,7 +449,7 @@ def search_albums(query, user_creds=None):
 def test_connection(user_creds=None):
     """Test Navidrome connectivity using admin or override credentials."""
     warnings = []
-    body = _navidrome_request("search3", {
+    body, err = _navidrome_request_ex("search3", {
         "query": '',
         "songCount": 100,
         "songOffset": 0,
@@ -439,7 +457,14 @@ def test_connection(user_creds=None):
         "albumCount": 0,
     }, user_creds=user_creds)
     if not body:
-        return {'ok': False, 'error': 'Navidrome test_connection failed', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+        return {
+            'ok': False,
+            'error': (err or {}).get('message') or 'Navidrome test_connection failed',
+            'auth_failed': bool(err and err.get('kind') == 'auth'),
+            'sample_count': 0,
+            'path_format': 'none',
+            'warnings': [],
+        }
     songs = (body.get('searchResult3') or {}).get('song')
     if songs is None:
         songs = []

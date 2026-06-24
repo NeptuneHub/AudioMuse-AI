@@ -6,6 +6,36 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# HTTP statuses and wording that mean "the server rejected our credentials".
+_AUTH_STATUS_CODES = {401, 403}
+_AUTH_TEXT_HINTS = (
+    'unauthorized', 'unauthorised', 'forbidden', 'wrong username',
+    'wrong password', 'invalid credentials', 'invalid login',
+    'authentication failed', 'not authorized', 'permission denied',
+)
+
+
+def is_auth_error(exc):
+    """True when an exception (or its cause/context chain) signals a rejected
+    credentials response (HTTP 401/403) or carries auth-failure wording.
+
+    Lets every provider's test_connection report a credentials problem the same
+    way (an ``auth_failed`` flag) so the analysis task can surface an
+    authentication error instead of a misleading "0 albums found".
+    """
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        status = getattr(getattr(cur, 'response', None), 'status_code', None)
+        if status in _AUTH_STATUS_CODES:
+            return True
+        text = str(cur).lower()
+        if any(hint in text for hint in _AUTH_TEXT_HINTS):
+            return True
+        cur = getattr(cur, '__cause__', None) or getattr(cur, '__context__', None)
+    return False
+
 
 def select_best_artist(item, title="Unknown"):
     """

@@ -32,7 +32,10 @@ from config import (
 
 
 # Import other project modules
-from .mediaserver import get_recent_albums, get_tracks_from_album, download_track
+from .mediaserver import (
+    get_recent_albums, get_tracks_from_album, download_track,
+    test_connection as mediaserver_test_connection,
+)
 from .memory_utils import (
     cleanup_cuda_memory,
     cleanup_onnx_session,
@@ -60,6 +63,8 @@ from error.error_dictionary import (
     ERR_ALBUM_ANALYSIS_FAILED,
     ERR_DB_CONNECTION,
     ERR_MEDIASERVER_LIBRARY,
+    ERR_MEDIASERVER_AUTH,
+    ERR_MEDIASERVER_UNREACHABLE,
     ERR_INDEX_BUILD,
     ERR_INDEX_EMPTY,
 )
@@ -646,6 +651,49 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             cleanup_optional_models(context="finally")
             _release_freed_ram_to_os()
 
+_AUTH_FAILURE_HINTS = (
+    'wrong username', 'wrong password', 'unauthorized', 'unauthorised',
+    'invalid login', 'invalid credentials', 'permission denied',
+    'not authorized', 'authentication failed', '401', '403',
+)
+
+
+def _probe_looks_like_auth_failure(probe):
+    """True when a failed test_connection result points to a credentials problem."""
+    if not probe:
+        return False
+    if probe.get('auth_failed'):
+        return True
+    message = str(probe.get('error') or '').lower()
+    return any(hint in message for hint in _AUTH_FAILURE_HINTS)
+
+
+def _verify_media_server_reachable():
+    """Probe the configured media server and raise AudioMuseError if it is failing.
+
+    A scan that returns zero albums is ambiguous: the library may genuinely have
+    nothing new, or the server rejected our credentials / was unreachable (the
+    provider clients swallow those and return an empty list). Probing here turns a
+    real failure into a coded error instead of a misleading "0 albums" success.
+    """
+    try:
+        probe = mediaserver_test_connection()
+    except error_manager.AudioMuseError:
+        raise
+    except Exception as e:
+        raise error_manager.AudioMuseError(
+            error_manager.classify(e, ERR_MEDIASERVER_UNREACHABLE), str(e), cause=e
+        ) from e
+
+    if probe and probe.get('ok'):
+        return
+
+    message = (probe or {}).get('error') or None
+    if _probe_looks_like_auth_failure(probe):
+        raise error_manager.AudioMuseError(ERR_MEDIASERVER_AUTH, message)
+    raise error_manager.AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, message)
+
+
 def run_analysis_task(num_recent_albums, top_n_moods):
     from .clap_analyzer import is_clap_available
 
@@ -695,6 +743,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             clean_temp(TEMP_DIR)
             all_albums = get_recent_albums(num_recent_albums)
             if not all_albums:
+                # Distinguish an empty library from a silent auth/connection failure.
+                _verify_media_server_reachable()
                 log_and_update_main("No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 

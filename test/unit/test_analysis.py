@@ -11,6 +11,7 @@
 
 """Unit tests for tasks/analysis.py"""
 import numpy as np
+import pytest
 from unittest.mock import Mock, patch
 from tasks.analysis import run_inference, _find_onnx_name, sigmoid, robust_load_audio_with_fallback, analyze_track
 
@@ -1159,10 +1160,55 @@ class TestOOMFallback:
         }
         
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # Analysis should succeed without CPU fallback
         assert result is not None
         assert embeddings is not None
         assert cpu_fallback_used[0] is False
 
+
+class TestMediaServerProbe:
+    """A zero-album scan must not be reported as success when the media server
+    is actually unreachable or rejecting our credentials."""
+
+    def test_probe_detects_auth_failure_from_flag(self):
+        from tasks.analysis import _probe_looks_like_auth_failure
+        assert _probe_looks_like_auth_failure({'ok': False, 'auth_failed': True}) is True
+
+    def test_probe_detects_auth_failure_from_message(self):
+        from tasks.analysis import _probe_looks_like_auth_failure
+        assert _probe_looks_like_auth_failure(
+            {'ok': False, 'error': 'HTTP 401 Unauthorized'}) is True
+
+    def test_probe_ignores_generic_failure(self):
+        from tasks.analysis import _probe_looks_like_auth_failure
+        assert _probe_looks_like_auth_failure(
+            {'ok': False, 'error': 'connection timed out'}) is False
+
+    def test_verify_returns_silently_when_reachable(self):
+        from tasks.analysis import _verify_media_server_reachable
+        with patch('tasks.analysis.mediaserver_test_connection',
+                   return_value={'ok': True}):
+            _verify_media_server_reachable()  # must not raise
+
+    def test_verify_raises_auth_error_on_bad_credentials(self):
+        from tasks.analysis import _verify_media_server_reachable
+        from error.error_manager import AudioMuseError
+        from error.error_dictionary import ERR_MEDIASERVER_AUTH
+        with patch('tasks.analysis.mediaserver_test_connection',
+                   return_value={'ok': False, 'auth_failed': True,
+                                 'error': 'Wrong username or password'}):
+            with pytest.raises(AudioMuseError) as exc_info:
+                _verify_media_server_reachable()
+        assert exc_info.value.code == ERR_MEDIASERVER_AUTH
+
+    def test_verify_raises_unreachable_on_generic_failure(self):
+        from tasks.analysis import _verify_media_server_reachable
+        from error.error_manager import AudioMuseError
+        from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
+        with patch('tasks.analysis.mediaserver_test_connection',
+                   return_value={'ok': False, 'error': 'connection refused'}):
+            with pytest.raises(AudioMuseError) as exc_info:
+                _verify_media_server_reachable()
+        assert exc_info.value.code == ERR_MEDIASERVER_UNREACHABLE
 
