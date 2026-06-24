@@ -1,5 +1,8 @@
 # Contributor Covenant Code of Conduct
 
+## Language
+To keep our community accessible to everyone, English is the working language of this project. All issues, discussions, pull requests, code comments, and other interactions should be written in English. Contributions in other languages may not receive a response and could be closed.
+
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body
