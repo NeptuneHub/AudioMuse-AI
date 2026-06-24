@@ -360,7 +360,12 @@ RUN set -ux; \
             ffmpeg wget curl \
             supervisor procps \
             git vim redis-tools strace iputils-ping \
-            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            postgresql-common ca-certificates \
+            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)" \
+            # PostgreSQL 18 client from PGDG (pg_dump 18 backs up PG 15-18; psql restore stays compatible with old pg_dump 16 / PG 15 dumps)
+            && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+            && DEBIAN_FRONTEND=noninteractive apt-get update \
+            && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client-18; then \
             break; \
         fi; \
         n=$((n+1)); \
@@ -371,17 +376,6 @@ RUN set -ux; \
     apt-get remove -y python3-numpy || true && \
     apt-get autoremove -y || true && \
     rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
-
-# PostgreSQL 18 client via PGDG (pg_dump 18 dumps PG 15-18; psql restore stays back-compatible with old pg_dump 16 / PG 15 backups)
-RUN set -ux; \
-    DEBIAN_FRONTEND=noninteractive apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        postgresql-common ca-certificates && \
-    /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        postgresql-client-18 && \
-    rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
 # Stage 2b: base — runtime-base + compilers / -dev headers (BUILD-ONLY)
