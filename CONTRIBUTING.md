@@ -8,6 +8,8 @@ Remember that contributing not only means develop code, also suggest new feature
 
 Multiple information can be found in the [docs](docs/) folder.
 
+> Issues, discussions, PRs, comments in code, and any other interaction MUST be written in English. We reserve the right not to reply to and to close them if they are not.
+
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
 * **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are syncronous like get the similar song.
