@@ -6,7 +6,17 @@ Tests GMM component selection and parameter extraction:
 - GMM parameter structure validation
 """
 import numpy as np
-from tasks.artist_gmm_manager import select_optimal_gmm_components, fit_artist_gmm, GMM_N_COMPONENTS_MAX
+from tasks.artist_gmm_manager import (
+    select_optimal_gmm_components,
+    fit_artist_gmm,
+    GMM_N_COMPONENTS_MAX,
+    gmm_soft_chamfer_distance,
+    _cosine_distance_matrix,
+)
+
+
+def _gmm(means, weights):
+    return {"means": [list(m) for m in means], "weights": list(weights)}
 
 
 class TestSelectOptimalGMMComponents:
@@ -222,6 +232,105 @@ class TestFitArtistGMM:
         assert gmm_params is not None
         assert gmm_params['n_features'] == 512
         assert all(len(mean) == 512 for mean in gmm_params['means'])
+
+
+class TestGmmSoftChamfer:
+    """Weighted soft-Chamfer cosine rerank over GMM component sets."""
+
+    # Orthonormal "sound modes" so cosine distances are clean: same=0, different=1.
+    A = [1.0, 0.0, 0.0, 0.0]
+    B = [0.0, 1.0, 0.0, 0.0]
+    C = [0.0, 0.0, 1.0, 0.0]
+    D = [0.0, 0.0, 0.0, 1.0]
+
+    def test_cosine_distance_matrix_shape_and_values(self):
+        d = _cosine_distance_matrix(np.array([self.A, self.B]), np.array([self.A, self.C]))
+        assert d.shape == (2, 2)
+        assert abs(d[0, 0]) < 1e-6        # A vs A -> 0
+        assert abs(d[0, 1] - 1.0) < 1e-6  # A vs C -> 1
+        assert abs(d[1, 0] - 1.0) < 1e-6  # B vs A -> 1
+
+    def test_identical_gmm_distance_is_zero(self):
+        g = _gmm([self.A, self.B], [0.5, 0.5])
+        assert gmm_soft_chamfer_distance(g, g) < 1e-6
+
+    def test_scale_invariance(self):
+        # cosine ignores magnitude: scaling a component mean must not change the score.
+        g1 = _gmm([self.A, self.B], [0.5, 0.5])
+        g2 = _gmm([list(3.0 * np.array(self.A)), list(7.0 * np.array(self.B))], [0.5, 0.5])
+        assert gmm_soft_chamfer_distance(g1, g2) < 1e-6
+
+    def test_shared_mode_scores_closer_than_no_shared_mode(self):
+        query = _gmm([self.A, self.B], [0.5, 0.5])
+        shares_one = _gmm([self.A, self.C], [0.5, 0.5])
+        shares_none = _gmm([self.C, self.D], [0.5, 0.5])
+        assert gmm_soft_chamfer_distance(query, shares_one) < gmm_soft_chamfer_distance(query, shares_none)
+
+    def test_symmetric(self):
+        a = _gmm([self.A, self.B], [0.7, 0.3])
+        b = _gmm([self.A, self.C], [0.4, 0.6])
+        assert abs(gmm_soft_chamfer_distance(a, b) - gmm_soft_chamfer_distance(b, a)) < 1e-6
+
+    def test_weights_make_dominant_mode_matter_more(self):
+        # Query is mostly mode A (0.9). Matching A should beat matching the rare mode B.
+        query = _gmm([self.A, self.B], [0.9, 0.1])
+        shares_dominant = _gmm([self.A, self.C], [0.5, 0.5])
+        shares_rare = _gmm([self.C, self.B], [0.5, 0.5])
+        assert gmm_soft_chamfer_distance(query, shares_dominant) < gmm_soft_chamfer_distance(query, shares_rare)
+
+    def test_single_component_artists(self):
+        # 1-component GMMs (few-song artists) must still score, no shape errors.
+        q = _gmm([self.A], [1.0])
+        same = _gmm([self.A], [1.0])
+        diff = _gmm([self.C], [1.0])
+        assert gmm_soft_chamfer_distance(q, same) < 1e-6
+        assert gmm_soft_chamfer_distance(q, diff) > 0.5
+
+
+class TestFindSimilarArtistsRerank:
+    """find_similar_artists must return the soft-Chamfer order, not the raw IVF order."""
+
+    def test_reranks_candidates_and_excludes_self(self, monkeypatch):
+        import sys
+        import types
+        import tasks.artist_gmm_manager as agm
+
+        A = [1.0, 0.0, 0.0, 0.0]
+        B = [0.0, 1.0, 0.0, 0.0]
+        C = [0.0, 0.0, 1.0, 0.0]
+        D = [0.0, 0.0, 0.0, 1.0]
+        gmm_params = {
+            "Q": _gmm([A, B], [0.5, 0.5]),
+            "near": _gmm([A, B], [0.5, 0.5]),   # identical to Q -> 0.0 (best)
+            "mid": _gmm([A, C], [0.5, 0.5]),    # shares one mode -> 0.5
+            "far": _gmm([C, D], [0.5, 0.5]),    # shares nothing -> 1.0
+        }
+        artist_map = {0: "Q", 1: "far", 2: "near", 3: "mid"}
+        reverse = {v: k for k, v in artist_map.items()}
+
+        class _FakeIndex:
+            def __len__(self):
+                return len(artist_map)
+
+            def query(self, _vec, k):
+                labels = [0, 1, 3, 2]  # self first, then deliberately NOT in rerank order
+                return labels[:k], [0.0] * min(k, len(labels))
+
+        monkeypatch.setattr(agm, "artist_index", _FakeIndex())
+        monkeypatch.setattr(agm, "artist_map", artist_map)
+        monkeypatch.setattr(agm, "reverse_artist_map", reverse)
+        monkeypatch.setattr(agm, "artist_gmm_params", gmm_params)
+
+        fake_mod = types.ModuleType("app_helper_artist")
+        fake_mod.get_artist_id_by_name = lambda name: f"id-{name}"
+        fake_mod.get_artist_name_by_id = lambda x: None
+        monkeypatch.setitem(sys.modules, "app_helper_artist", fake_mod)
+
+        res = agm.find_similar_artists("Q", n=2)
+        names = [r["artist"] for r in res]
+        assert names == ["near", "mid"], f"expected rerank order, got {names}"
+        assert all(r["artist"] != "Q" for r in res), "self must be excluded"
+        assert res[0]["divergence"] <= res[1]["divergence"], "results must be ascending by divergence"
 
 
 class TestEdgeCases:

@@ -775,6 +775,23 @@ class TestNavidromeAuthDetection:
         assert 'enc:7365637265743132' not in err['message']
         assert '[REDACTED]' in err['message']
 
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_handles_non_dict_json(self, mock_config, mock_request):
+        # A proxy error page or odd server can yield a JSON non-dict; calling
+        # .get() on it must not raise out of this boundary helper.
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        mock_response = Mock()
+        mock_response.json.return_value = ['unexpected', 'list']
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'server'
+
     @patch('tasks.mediaserver.navidrome.config')
     def test_request_ex_missing_credentials(self, mock_config):
         from tasks.mediaserver.navidrome import _navidrome_request_ex
@@ -3074,6 +3091,10 @@ class TestEmbyGetAllSongsRaisesOnFailure:
         assert get_all_songs() == []
 
 
+class _WrapperError(Exception):
+    """Dedicated test exception for wrapping a cause in is_auth_error tests."""
+
+
 def _make_http_error(status_code, message='error'):
     """Build a requests.HTTPError carrying a response with the given status."""
     resp = Mock()
@@ -3105,7 +3126,7 @@ class TestIsAuthError:
 
     def test_detects_auth_wording(self):
         from tasks.mediaserver.helper import is_auth_error
-        assert is_auth_error(Exception('Wrong username or password')) is True
+        assert is_auth_error(_WrapperError('Wrong username or password')) is True
 
     def test_walks_exception_chain(self):
         from tasks.mediaserver.helper import is_auth_error
@@ -3113,7 +3134,7 @@ class TestIsAuthError:
             try:
                 raise _make_http_error(401, 'unauthorized')
             except Exception as inner:
-                raise RuntimeError('wrapped call') from inner
+                raise _WrapperError('wrapped call') from inner
         except Exception as e:
             assert is_auth_error(e) is True
 

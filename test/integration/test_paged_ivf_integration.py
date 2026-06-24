@@ -139,7 +139,12 @@ class _CountingConn:
         return getattr(self._conn, name)
 
 
-def test_ivf_build_load_query_recall_and_ram_bound(ivf_db):
+def test_ivf_build_load_query_recall_and_ram_bound(ivf_db, monkeypatch):
+    import config
+    # This test asserts the EXACT float32 round-trip and exact distances, so pin
+    # storage to f32 (the no-quantization path). i8/f16 behaviour is covered by
+    # test_ivf_i8_storage_recall_and_approx_roundtrip.
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
     n, dim = 6000, 64
@@ -186,6 +191,81 @@ def test_ivf_build_load_query_recall_and_ram_bound(ivf_db):
     assert index._cache().resident_bytes() <= cap
 
 
+def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
+    """int8 storage: cells are 1 byte/dim, recall holds, get_vector is approx-unit."""
+    import config
+    from tasks import ivf_quant as quant
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "i8")
+    from tasks import paged_ivf
+
+    n, dim = 6000, 64
+    x = _make_clustered(n, dim, n_clusters=120, spread=0.35, seed=7)
+    item_ids = [f"i8-{i}" for i in range(n)]
+    assert paged_ivf.build_and_store_paged_ivf(ivf_db, "i8_test", x, item_ids, dim, "angular")
+
+    # The stored directory must advertise int8 and cells must be 1 byte/dim.
+    from tasks.paged_ivf import unpack_directory, IVF_DIR_TABLE
+    from tasks.index_build_helpers import load_segmented_blob
+    blob = load_segmented_blob(ivf_db, IVF_DIR_TABLE, "i8_test__ivf_dir")
+    *_rest, storage_dtype = unpack_directory(bytes(blob))
+    assert storage_dtype == quant.DTYPE_I8
+    with ivf_db.cursor() as cur:
+        cur.execute("SELECT cell_data FROM ivf_cell WHERE index_name=%s AND octet_length(cell_data) > 0 LIMIT 1", ("i8_test",))
+        cell = bytes(cur.fetchone()[0])
+    assert len(cell) % (4 + dim) == 0, "i8 cell record must be 4-byte id + 1 byte per dim"
+
+    loaded = paged_ivf.load_paged_ivf_index(
+        ivf_db, "i8_test", dim, "angular", conn_factory=lambda: ivf_db, label="i8_test")
+    index = loaded[0]
+    assert index._storage_dtype == quant.DTYPE_I8
+    assert index._mmap is not None, "disk mmap should be active for the i8 index"
+
+    from tasks.paged_ivf import _normalize_rows
+    x_unit = _normalize_rows(x)
+    index.begin_request()
+    rng = np.random.default_rng(1)
+    for vid in rng.choice(n, 30, replace=False):
+        v = index.get_vector(int(vid))
+        assert v is not None
+        # dequantized i8 recovers the unit vector within the quantization step.
+        np.testing.assert_allclose(v, x_unit[int(vid)], atol=2.0 / 127.0)
+
+    queries = rng.choice(n, 60, replace=False)
+    hit = tot = 0
+    for qi in queries:
+        index.begin_request()
+        gt = _brute_force_topk(x, int(qi), 10)
+        ids, _d = index.query(x[int(qi)], k=11)
+        got = set(int(i) for i in ids if int(i) != int(qi))
+        got = set(list(got)[:10])
+        hit += len(gt & got)
+        tot += 10
+    recall = hit / tot
+    assert recall >= 0.88, f"i8 IVF recall too low: {recall}"
+
+
+def test_ivf_stale_storage_dtype_loads_as_none_so_it_rebuilds(ivf_db, monkeypatch):
+    """An index stored in a precision the current config no longer builds must load as
+    None, so the normal build path regenerates it (no mixed f32/i8 cells)."""
+    import config
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
+    from tasks import paged_ivf
+
+    n, dim = 1500, 32
+    x = _make_clustered(n, dim, n_clusters=40, spread=0.4, seed=11)
+    item_ids = [f"stale-{i}" for i in range(n)]
+    assert paged_ivf.build_and_store_paged_ivf(ivf_db, "stale_test", x, item_ids, dim, "angular")
+
+    # Same config the index was built with -> loads normally.
+    assert paged_ivf.load_paged_ivf_index(
+        ivf_db, "stale_test", dim, "angular", conn_factory=lambda: ivf_db, label="stale_test") is not None
+
+    # Flip the configured precision: the stored f32 index is now stale and must not load.
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "i8")
+    assert paged_ivf.load_paged_ivf_index(
+        ivf_db, "stale_test", dim, "angular", conn_factory=lambda: ivf_db, label="stale_test") is None
+
+
 def test_ivf_cross_request_cell_reuse(ivf_db, monkeypatch):
     import config
     monkeypatch.setattr(config, "IVF_DISK_CACHE_ENABLED", False)
@@ -222,6 +302,7 @@ def test_ivf_cross_request_cell_reuse(ivf_db, monkeypatch):
 def test_ivf_max_distance_uses_l2_when_preloaded(ivf_db, monkeypatch):
     import config
     monkeypatch.setattr(config, "IVF_DISK_CACHE_ENABLED", False)
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # exact 1e-4 distance check
     from tasks import paged_ivf
 
     gcache = paged_ivf.get_global_cell_cache()
@@ -362,7 +443,9 @@ def test_ivf_disk_cache_disabled_falls_back_to_postgres(ivf_db, monkeypatch):
     assert counter[0] >= 1, "with disk cache disabled, query must read cells from Postgres"
 
 
-def test_ivf_get_max_distance_exact(ivf_db):
+def test_ivf_get_max_distance_exact(ivf_db, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # exact 1e-4 distance + exact far_id
     from tasks import paged_ivf
 
     n, dim = 1500, 32
@@ -470,7 +553,10 @@ def test_ivf_directory_is_segmented_under_cap(ivf_db):
     assert max_cell <= part_bytes, f"a cell is {max_cell} > cap {part_bytes}"
 
 
-def test_ivf_oversized_cell_is_split_not_rejected(ivf_db):
+def test_ivf_oversized_cell_is_split_not_rejected(ivf_db, monkeypatch):
+    import config
+    # store_paged_ivf writes f32 cells here, so pin storage to f32 for a consistent load.
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
     dim = 8
@@ -529,6 +615,7 @@ def test_ivf_build_splits_identical_vectors_under_cap(ivf_db, monkeypatch):
 
     monkeypatch.setattr(config, "IVF_MAX_CELL_MB", 1)
     monkeypatch.setattr(config, "IVF_MAX_PART_SIZE_MB", 1)
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # asserts exact get_vectors round-trip
 
     dim = 64
     n_dupes, n_rest = 8000, 4000

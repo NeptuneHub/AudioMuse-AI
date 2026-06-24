@@ -398,7 +398,7 @@ def setup_api():
                 continue
             if key in SECRET_FIELDS or key.endswith('_API_KEY'):
                 value = filtered_values[key]
-                if isinstance(value, str) and not value.strip():
+                if value is None or (isinstance(value, str) and not value.strip()):
                     del filtered_values[key]
 
         # Validate any Lyrics API URL templates before persisting them.

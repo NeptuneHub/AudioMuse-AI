@@ -464,6 +464,18 @@ def search_albums(query, user_creds=None):
     ]
 
 
+def _coerce_to_list(value):
+    """Normalize a Subsonic field that may arrive as a single dict, a tuple, a
+    list, or be absent into a list, so callers can iterate it uniformly."""
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, list):
+        return value
+    return []
+
+
 def test_connection(user_creds=None):
     """Test Navidrome connectivity using admin or override credentials."""
     warnings = []
@@ -483,15 +495,7 @@ def test_connection(user_creds=None):
             'path_format': 'none',
             'warnings': [],
         }
-    songs = (body.get('searchResult3') or {}).get('song')
-    if songs is None:
-        songs = []
-    elif isinstance(songs, dict):
-        songs = [songs]
-    elif isinstance(songs, tuple):
-        songs = list(songs)
-    elif not isinstance(songs, list):
-        songs = []
+    songs = _coerce_to_list((body.get('searchResult3') or {}).get('song'))
 
     sample = []
     for s in songs:

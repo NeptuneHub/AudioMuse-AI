@@ -334,6 +334,25 @@ class TestGetVectorById:
 
         assert result is None
 
+    def test_prefers_primed_exact_f32_over_index_int8(self):
+        """The per-request exact-f32 cache must win over the int8 index vector."""
+        import tasks.ivf_manager as im
+
+        exact = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        mock_index = Mock()
+        mock_index.get_vector.return_value = np.array([9.0, 9.0, 9.0], dtype=np.float32)
+        with patch.object(im, 'ivf_index', mock_index), patch.object(im, 'reverse_id_map', {'item-123': 0}):
+            im._prime_request_f32({'item-123': exact})
+            try:
+                np.testing.assert_array_equal(im._get_cached_vector('item-123'), exact)
+                mock_index.get_vector.assert_not_called()
+            finally:
+                im._clear_request_f32()
+            # after clearing the request cache, it falls back to the index (int8) vector
+            np.testing.assert_array_equal(
+                im._get_cached_vector('item-123'), np.array([9.0, 9.0, 9.0], dtype=np.float32)
+            )
+
 
 # =============================================================================
 # INDEX LOADING TESTS

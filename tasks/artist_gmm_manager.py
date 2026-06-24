@@ -5,8 +5,11 @@ Artist Similarity using Gaussian Mixture Models (GMM) and IVF Index.
 This module implements artist similarity by:
 1. Using existing embedding vectors (same as song similarity) for all tracks per artist
 2. Fitting a GMM to the embedding vectors to represent each artist's "sound profile"
-3. Building a IVF index for fast approximate nearest neighbor search
-4. Using Jeffreys Divergence (symmetric KL divergence) to measure GMM similarity
+3. Building an angular (cosine) IVF index over each GMM's weighted centroid for fast,
+   coarse candidate retrieval
+4. Reranking the over-fetched candidates by a weighted soft-Chamfer cosine distance
+   between the two artists' GMM component means, so multimodality matters and not just
+   the centroid
 
 This approach is fast (no audio re-processing) and consistent with the song similarity system.
 """
@@ -214,8 +217,44 @@ def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
     
     # Compute weighted mean: sum(w_i * mean_i)
     weighted_mean = np.sum(weights[:, np.newaxis] * means, axis=0)
-    
+
     return weighted_mean
+
+
+def _l2_normalize_rows(mat: np.ndarray) -> np.ndarray:
+    mat = np.asarray(mat, dtype=np.float32)
+    if mat.ndim == 1:
+        mat = mat[np.newaxis, :]
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return mat / norms
+
+
+def _cosine_distance_matrix(means1: np.ndarray, means2: np.ndarray) -> np.ndarray:
+    """Pairwise cosine distance (1 - cos) between two sets of component means."""
+    m1 = _l2_normalize_rows(means1)
+    m2 = _l2_normalize_rows(means2)
+    return (1.0 - np.clip(m1 @ m2.T, -1.0, 1.0)).astype(np.float32)
+
+
+def gmm_soft_chamfer_distance(gmm1_params: Dict, gmm2_params: Dict) -> float:
+    """Weighted soft-Chamfer cosine distance between two artists' GMMs.
+
+    Treats each artist as its SET of component means (not one centroid): builds the
+    pairwise cosine-distance matrix, then takes w_i * min_j D[i,j] for every query
+    component i and symmetrizes by averaging the candidate->query direction. Lower
+    means more similar; component weights make dominant sound-modes count more.
+    """
+    means1 = np.asarray(gmm1_params['means'], dtype=np.float32)
+    means2 = np.asarray(gmm2_params['means'], dtype=np.float32)
+    w1 = np.asarray(gmm1_params['weights'], dtype=np.float32)
+    w2 = np.asarray(gmm2_params['weights'], dtype=np.float32)
+    w1 = w1 / (float(w1.sum()) + 1e-12)
+    w2 = w2 / (float(w2.sum()) + 1e-12)
+    dmat = _cosine_distance_matrix(means1, means2)
+    forward = float(np.sum(w1 * dmat.min(axis=1)))   # query -> nearest candidate component
+    backward = float(np.sum(w2 * dmat.min(axis=0)))  # candidate -> nearest query component
+    return 0.5 * (forward + backward)
 
 
 def build_and_store_artist_index(db_conn=None):
@@ -354,16 +393,18 @@ def build_and_store_artist_index(db_conn=None):
             logger.warning("No valid GMMs created, skipping index build")
             return
         
-        # Build the disk-paged IVF artist index (euclidean) over the GMM vectors.
+        # Build the disk-paged IVF artist index (angular/cosine) over the weighted
+        # GMM centroids. Angular makes the coarse pass use the same metric as the
+        # soft-Chamfer rerank, and lets the cells store as int8 like every other index.
         first_gmm = artist_gmms[artist_names_list[0]]
         gmm_vector_dim = len(serialize_gmm_for_hnsw(first_gmm))
         from .index_build_helpers import pack_artist_metadata, store_segmented_blob
         from .paged_ivf import build_and_store_paged_ivf
-        logger.info("Building artist IVF index (euclidean) for %d artists, dim=%d ...", len(artist_names_list), gmm_vector_dim)
+        logger.info("Building artist IVF index (angular) for %d artists, dim=%d ...", len(artist_names_list), gmm_vector_dim)
         artist_map_dict = {vid: a for vid, a in enumerate(artist_names_list)}
         vectors = np.array([serialize_gmm_for_hnsw(artist_gmms[a]) for a in artist_names_list], dtype=np.float32)
         metadata_blob = pack_artist_metadata(artist_map_dict, artist_gmms)
-        ok = build_and_store_paged_ivf(db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "euclidean")
+        ok = build_and_store_paged_ivf(db_conn, ARTIST_INDEX_NAME, vectors, list(artist_names_list), gmm_vector_dim, "angular")
         if not ok:
             db_conn.rollback()
             logger.warning("Artist IVF build produced no index; aborting.")
@@ -418,7 +459,7 @@ def load_artist_index_for_querying(force_reload=False):
                 logger.info("Artist IVF index not found; not built yet.")
                 _reset_cache()
                 return
-            loaded = load_paged_ivf_index(conn, ARTIST_INDEX_NAME, None, "euclidean", conn_factory=get_db, label="artist")
+            loaded = load_paged_ivf_index(conn, ARTIST_INDEX_NAME, None, "angular", conn_factory=get_db, label="artist")
             if loaded is None:
                 _reset_cache()
                 return
@@ -544,10 +585,10 @@ def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name
     means2 = np.array(gmm2_params['means'])  # Shape: [n_components2, n_features]
     weights1 = np.array(gmm1_params['weights'])
     weights2 = np.array(gmm2_params['weights'])
-    
-    # Compute pairwise distances between all components
-    # Distance[i,j] = distance between component i of artist1 and component j of artist2
-    distances = np.linalg.norm(means1[:, np.newaxis, :] - means2[np.newaxis, :, :], axis=2)
+
+    # Pairwise cosine distance D[i,j] between component i of artist1 and component j of
+    # artist2 (matches the soft-Chamfer rerank and the angular IVF coarse pass).
+    distances = _cosine_distance_matrix(means1, means2)
     
     # Find top-k closest component pairs
     flat_indices = np.argsort(distances.ravel())[:top_k]
@@ -616,55 +657,52 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     from .paged_ivf import begin_query
     begin_query(artist_index)
 
-    # IVF search: get similar artists based on weighted mean distance
-    k_candidates = min(n + 1, len(artist_map))  # +1 to account for self
-    
-    # Get query vector (weighted mean of GMM)
+    # Stage 1 -- coarse retrieval: the IVF over the weighted GMM centroid is only a
+    # fast prefilter, so over-fetch ~3x the requested count to give the rerank room
+    # to reorder. The raw IVF order is NOT the final ranking.
+    k_candidates = min(3 * n + 1, len(artist_map))  # +1 to account for self
     query_vector = serialize_gmm_for_hnsw(query_gmm)
-    
-    # IVF search: get similar artists based on weighted mean distance
     try:
-        labels, distances = artist_index.query(query_vector, k=k_candidates)
+        labels, _distances = artist_index.query(query_vector, k=k_candidates)
     except Exception as e:
         logger.error(f"IVF query failed for artist '{artist_name}': {e}", exc_info=True)
         return []
-    
-    # Build results (skip self)
-    results = []
-    
-    from app_helper_artist import get_artist_id_by_name
-    
-    for idx, dist in zip(labels, distances):
+
+    # Stage 2 -- rerank: score each candidate against the query as a SET of GMM
+    # component means via the weighted soft-Chamfer cosine distance, so two artists
+    # match on shared sound-modes rather than just their centroids.
+    scored = []
+    for idx in labels:
         if idx == query_id:
             continue  # Skip self
-        
-        candidate_artist = artist_map[idx]
-        candidate_artist_id = get_artist_id_by_name(candidate_artist)
-        candidate_gmm = artist_gmm_params[candidate_artist]
-        
+        candidate_artist = artist_map.get(idx)
+        if candidate_artist is None:
+            continue
+        candidate_gmm = artist_gmm_params.get(candidate_artist)
+        if candidate_gmm is None:
+            continue
+        scored.append((gmm_soft_chamfer_distance(query_gmm, candidate_gmm), candidate_artist, candidate_gmm))
+
+    scored.sort(key=lambda t: t[0])
+
+    from app_helper_artist import get_artist_id_by_name
+
+    results = []
+    for score, candidate_artist, candidate_gmm in scored[:n]:
         result = {
             'artist': candidate_artist,
-            'artist_id': candidate_artist_id,
-            'divergence': float(dist)  # Use L2 distance as similarity score
+            'artist_id': get_artist_id_by_name(candidate_artist),
+            'divergence': float(score)  # weighted soft-Chamfer cosine distance (lower = closer)
         }
-        
-        # Add component-level matching if requested
         if include_component_matches:
-            component_matches = compute_component_matches(
-                query_gmm, 
-                candidate_gmm, 
-                artist_name, 
-                candidate_artist,
-                top_k=3  # Top 3 component matches
+            result['component_matches'] = compute_component_matches(
+                query_gmm, candidate_gmm, artist_name, candidate_artist, top_k=3
             )
-            result['component_matches'] = component_matches
             result['query_artist_components'] = query_gmm['n_components']
             result['candidate_artist_components'] = candidate_gmm['n_components']
-        
         results.append(result)
-    
-    # Return top N (already sorted by IVF)
-    return results[:n]
+
+    return results
 
 
 def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List[Dict]:
