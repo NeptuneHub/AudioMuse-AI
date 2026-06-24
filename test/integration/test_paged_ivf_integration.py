@@ -177,7 +177,7 @@ def test_ivf_build_load_query_recall_and_ram_bound(ivf_db, monkeypatch):
         index.begin_request()
         gt = _brute_force_topk(x, int(qi), 10)
         ids, dists = index.query(x[int(qi)], k=11)
-        got = set(int(i) for i in ids if int(i) != int(qi))
+        got = {int(i) for i in ids if int(i) != int(qi)}
         got = set(list(got)[:10])
         hit += len(gt & got)
         tot += 10
@@ -236,7 +236,7 @@ def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
         index.begin_request()
         gt = _brute_force_topk(x, int(qi), 10)
         ids, _d = index.query(x[int(qi)], k=11)
-        got = set(int(i) for i in ids if int(i) != int(qi))
+        got = {int(i) for i in ids if int(i) != int(qi)}
         got = set(list(got)[:10])
         hit += len(gt & got)
         tot += 10
@@ -388,7 +388,7 @@ def test_ivf_disk_mmap_created_and_no_postgres_on_query(ivf_db):
     for qi in rng.choice(n, 30, replace=False):
         gt = _brute_force_topk(x, int(qi), 10)
         ids, _d = index.query(x[int(qi)], k=11)
-        got = set(int(i) for i in ids if int(i) != int(qi))
+        got = {int(i) for i in ids if int(i) != int(qi)}
         got = set(list(got)[:10])
         hit += len(gt & got)
         tot += 10

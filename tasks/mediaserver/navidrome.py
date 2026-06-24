@@ -128,7 +128,8 @@ _SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
 # The Subsonic auth params (incl. the hex-encoded password p=enc:...) travel in
 # the request URL query string, so a transport error's str() carries them. Scrub
 # the password and salt before any message can reach a log or the frontend.
-_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:p|s|t)=)[^&\s]*')
+# Never log with exc_info here: the raw exception repr re-embeds that query string.
+_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&][pst]=)[^&\s]*')
 
 
 def _redact_navidrome_secrets(text):
@@ -176,13 +177,13 @@ def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, use
 
     except requests.exceptions.RequestException as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}", exc_info=True)
+        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")
         return None, {'kind': 'network', 'message': safe}
     except Exception as e:
         # A non-JSON body or a JSON non-dict (e.g. a proxy error page) would
         # otherwise raise out of this boundary helper; report it as a failure.
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}", exc_info=True)
+        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")
         return None, {'kind': 'server', 'message': safe}
 
 
@@ -224,7 +225,7 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {e}", exc_info=True)
+        logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}")
     return None
 
 def get_recent_albums(limit):

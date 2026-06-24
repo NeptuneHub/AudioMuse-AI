@@ -1604,7 +1604,7 @@ def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, stora
 def load_paged_ivf_index(
     db_conn,
     index_name: str,
-    expected_dim: int,
+    expected_dim: Optional[int],
     metric: str,
     conn_factory: Optional[Callable[[], "psycopg2.extensions.connection"]] = None,
     label: Optional[str] = None,
@@ -1671,7 +1671,7 @@ def load_paged_ivf_index(
 def load_index_auto(
     db_conn,
     index_name: str,
-    expected_dim: int,
+    expected_dim: Optional[int],
     metric: str,
     label: Optional[str] = None,
 ):
