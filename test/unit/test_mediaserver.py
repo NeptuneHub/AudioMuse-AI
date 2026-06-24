@@ -480,6 +480,51 @@ class TestJellyfinGetLastPlayedTime:
 # NAVIDROME TESTS
 # =============================================================================
 
+class TestNavidromeCoerceToList:
+    """Test the Subsonic field normalizer used before iterating search results"""
+
+    def test_single_dict_wrapped_in_list(self):
+        """A lone dict (Subsonic collapses single-element arrays) becomes a one-item list"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = {'id': 'song-1', 'title': 'Track'}
+        assert _coerce_to_list(value) == [value]
+
+    def test_tuple_converted_to_list(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(({'id': 'a'}, {'id': 'b'})) == [{'id': 'a'}, {'id': 'b'}]
+
+    def test_list_passed_through_unchanged(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = [{'id': 'a'}, {'id': 'b'}]
+        assert _coerce_to_list(value) is value
+
+    def test_empty_list_passed_through(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = []
+        assert _coerce_to_list(value) is value
+
+    def test_none_becomes_empty_list(self):
+        """An absent field (None) yields an empty list, not a [None]"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(None) == []
+
+    def test_str_becomes_empty_list(self):
+        """A string is not iterable-as-records here; it must not be treated as one"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list('song') == []
+
+    def test_int_becomes_empty_list(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(42) == []
+
+
 class TestNavidromeSelectBestArtist:
     """Test Navidrome artist field prioritization - no HTTP mocking needed"""
 

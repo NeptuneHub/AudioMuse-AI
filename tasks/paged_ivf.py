@@ -68,6 +68,23 @@ from . import ivf_quant as quant
 
 logger = logging.getLogger(__name__)
 
+_warned_numkong_missing = False
+
+
+def _warn_numkong_missing_once(dtype_name: str) -> None:
+    # Quantized cells without the native SIMD kernels still return correct results.
+    global _warned_numkong_missing
+    if _warned_numkong_missing:
+        return
+    _warned_numkong_missing = True
+    logger.warning(
+        "NumKong native kernels unavailable; %s IVF cells fall back to the NumPy distance "
+        "path (correct results, slower per-scan compute). Install the numkong wheel for this "
+        "platform, or set IVF_STORAGE_DTYPE=f32 to skip quantization.",
+        dtype_name,
+    )
+
+
 _MAGIC = b"AMIV"
 _VERSION = 1
 # magic, version, metric(B), normalized(B), storage_dtype(B), pad, dim, nlist, n_items.
@@ -1659,6 +1676,8 @@ def load_paged_ivf_index(
     reverse_id_map = {item_id: i for i, item_id in id_map.items()}
     logger.info("IVF index '%s' loaded: %d items, %d cells, dim=%d, normalized=%s, storage=%s, disk_mmap=%s.",
                 label, len(item_ids), centroids.shape[0], dim, normalized, quant.dtype_name(storage_dtype), mmap_obj is not None)
+    if storage_dtype != quant.DTYPE_F32 and not quant.HAVE_NUMKONG:
+        _warn_numkong_missing_once(quant.dtype_name(storage_dtype))
     if config.IVF_PRELOAD_ALL:
         try:
             loaded = index.preload_all(db_conn)
