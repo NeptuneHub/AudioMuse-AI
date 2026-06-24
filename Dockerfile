@@ -356,11 +356,16 @@ RUN set -ux; \
             libopenblas0 \
             liblapack3=3.12.0-3build1.1 \
             libgomp1 \
-            libpq5 postgresql-client \
+            libpq5 \
             ffmpeg wget curl \
             supervisor procps \
             git vim redis-tools strace iputils-ping \
-            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)"; then \
+            postgresql-common ca-certificates \
+            "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)" \
+            # PostgreSQL 18 client from PGDG (pg_dump 18 backs up PG 15-18; psql restore stays compatible with old pg_dump 16 / PG 15 dumps)
+            && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+            && DEBIAN_FRONTEND=noninteractive apt-get update \
+            && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client-18; then \
             break; \
         fi; \
         n=$((n+1)); \
