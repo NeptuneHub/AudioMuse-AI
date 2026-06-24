@@ -753,6 +753,28 @@ class TestNavidromeAuthDetection:
         assert data is None
         assert err['kind'] == 'network'
 
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_network_error_redacts_password(self, mock_config, mock_request):
+        # A transport error's str() carries the request URL, and the Subsonic
+        # password rides in the query string as p=enc:<hex>. The surfaced
+        # message must not leak it (it ends up in task status / the UI).
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        leaky = (
+            "HTTPConnectionPool(host='navidrome', port=4533): Max retries exceeded "
+            "with url: /rest/search3.view?u=admin&p=enc:7365637265743132&v=1.16.1&f=json"
+        )
+        mock_request.side_effect = requests.exceptions.ConnectionError(leaky)
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'network'
+        assert '7365637265743132' not in err['message']
+        assert 'enc:7365637265743132' not in err['message']
+        assert '[REDACTED]' in err['message']
+
     @patch('tasks.mediaserver.navidrome.config')
     def test_request_ex_missing_credentials(self, mock_config):
         from tasks.mediaserver.navidrome import _navidrome_request_ex

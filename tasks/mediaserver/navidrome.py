@@ -4,6 +4,7 @@ from . import http as requests
 import logging
 import os
 import random
+import re
 import config
 
 from .helper import detect_path_format
@@ -124,6 +125,16 @@ def get_navidrome_auth_params(username=None, password=None):
 # not supported, 42 token auth required, 43 client must upgrade, 44 not authorized.
 _SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
 
+# The Subsonic auth params (incl. the hex-encoded password p=enc:...) travel in
+# the request URL query string, so a transport error's str() carries them. Scrub
+# the password and salt before any message can reach a log or the frontend.
+_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:p|s|t)=)[^&\s]*')
+
+
+def _redact_navidrome_secrets(text):
+    """Mask credential query params in an error string before it is surfaced."""
+    return _SECRET_QUERY_PARAM.sub(r'\1[REDACTED]', str(text))
+
 
 def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
     """Make a Navidrome API request, returning ``(data, error)``.
@@ -164,8 +175,15 @@ def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, use
         return subsonic_response, None
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {e}", exc_info=True)
-        return None, {'kind': 'network', 'message': str(e)}
+        safe = _redact_navidrome_secrets(e)
+        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}", exc_info=True)
+        return None, {'kind': 'network', 'message': safe}
+    except Exception as e:
+        # A non-JSON body or a JSON non-dict (e.g. a proxy error page) would
+        # otherwise raise out of this boundary helper; report it as a failure.
+        safe = _redact_navidrome_secrets(e)
+        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}", exc_info=True)
+        return None, {'kind': 'server', 'message': safe}
 
 
 def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
