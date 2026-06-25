@@ -312,8 +312,13 @@ def session_get(session_id):
     """
     db = get_db()
     with db.cursor() as cur:
+        # Strip the two heavy keys the wizard UI never reads (the per-row
+        # auto-match map and the source-path override map). Server-side ``#-``
+        # keeps a 100k-entry, tens-of-MB blob from being shipped to the browser
+        # on every step-4 render.
         cur.execute(
-            "SELECT id, source_type, target_type, status, state "
+            "SELECT id, source_type, target_type, status, "
+            "(state #- '{dry_run,matches}' #- '{source_path_overrides}') "
             "FROM migration_session WHERE id = %s",
             (session_id,),
         )
@@ -693,18 +698,33 @@ def source_paths_refresh():
     if session_id is None:
         return jsonify({'error': 'session_id is required'}), 400
 
-    source_type, creds = _current_provider_creds()
+    # Cheap support check (reads config) stays in the request; the full
+    # source-catalog fetch is offloaded to an RQ worker like the dry-run.
+    source_type, _ = _current_provider_creds()
     if not source_type:
         return jsonify({
             'ok': False,
             'error': 'The current provider does not support path refresh.',
         }), 400
 
-    try:
-        tracks = provider_probe.fetch_all_tracks(source_type, creds)
-    except Exception:
-        logger.warning("source path refresh failed during provider probe", exc_info=True)
-        return jsonify({'ok': False, 'error': 'Failed to refresh source paths. Check the container logs for details.'}), 500
+    job = rq_queue_high.enqueue(
+        'tasks.provider_migration_tasks.source_refresh_provider_migration',
+        session_id,
+        job_timeout=3600,
+    )
+    _patch_state_keys(session_id, source_refresh_task_id=job.id)
+    return jsonify({'task_id': job.id, 'async': True})
+
+
+def run_source_refresh_core(session_id):
+    """Heavy source-path refresh, run in an RQ worker (see
+    :func:`source_paths_refresh`). Re-probes the current provider, builds the
+    {item_id -> real_path} override map, and stores it in ``state``."""
+    source_type, creds = _current_provider_creds()
+    if not source_type:
+        raise RuntimeError('The current provider does not support path refresh.')
+
+    tracks = provider_probe.fetch_all_tracks(source_type, creds)
 
     path_format = _detect_path_format(tracks)
     overrides = {
@@ -722,14 +742,15 @@ def source_paths_refresh():
             'also proceed with metadata-only matching.'
         )
 
-    _update_state(session_id, source_path_overrides=overrides)
-    return jsonify({
+    _update_state(session_id, source_path_overrides=overrides,
+                  source_refresh_task_id=None)
+    return {
         'ok':              True,
         'source_type':     source_type,
         'path_format':     path_format,
         'overrides_count': len(overrides),
         'warnings':        warnings,
-    })
+    }
 
 
 @migration_bp.route('/api/migration/dry-run', methods=['POST'])
@@ -795,10 +816,10 @@ def dry_run():
     session = _fetch_session_creds(session_id)
     if session is None:
         return jsonify({'error': 'session not found'}), 404
-    target_type, creds = session
 
-    # Gate on source path quality. Skip if the user has already refreshed
-    # (overrides present) or explicitly opted to proceed with metadata-only.
+    # Gate on source path quality (cheap — samples 100 rows). Stays in the
+    # request so the UI can prompt for a refresh. Skip if the user has already
+    # refreshed (overrides present) or opted into metadata-only matching.
     state = _load_state(session_id) or {}
     source_overrides = state.get('source_path_overrides') or {}
     if not source_overrides and not bypass_source_check:
@@ -817,16 +838,55 @@ def dry_run():
                 ),
             }), 409
 
-    try:
-        new_tracks = provider_probe.fetch_all_tracks(target_type, creds)
-    except Exception:
-        logger.warning("fetch_all_tracks failed for target type %s", target_type, exc_info=True)
-        return jsonify({'error': 'Failed to fetch target tracks. Check the container logs for details.'}), 500
+    # The heavy work (fetch the whole target catalog + match every score row +
+    # persist) can take minutes on 100k+ libraries — far past the gunicorn
+    # request timeout — so it runs in an RQ worker; the UI polls the status.
+    job = rq_queue_high.enqueue(
+        'tasks.provider_migration_tasks.dry_run_provider_migration',
+        session_id, allow_title_artist_only,
+        job_timeout=3600,
+    )
+    _patch_state_keys(session_id, dry_run_task_id=job.id)
+    return jsonify({'task_id': job.id, 'async': True})
 
+
+def run_dry_run_core(session_id, allow_title_artist_only=False):
+    """Heavy dry-run work, run in an RQ worker (see :func:`dry_run`).
+
+    Fetches the target catalog, matches it against every score row, and
+    persists the result (summary + ``matches`` into ``state``, target metadata
+    into the ``migration_target_meta`` side table). Returns the summary dict the
+    wizard renders, or ``{'error': ...}`` for a controlled abort.
+    """
+    session = _fetch_session_creds(session_id)
+    if session is None:
+        raise RuntimeError(f'migration session {session_id} not found')
+    target_type, creds = session
+
+    new_tracks = provider_probe.fetch_all_tracks(target_type, creds)
+
+    # Safety guard: a target that returns zero tracks (transient outage, wrong
+    # creds, empty/mis-scoped library) would make EVERY score row an orphan,
+    # and execute would then delete the entire library. Refuse instead of
+    # producing an all-orphan plan. Returned (not raised) so the UI shows the
+    # reason rather than a generic failure.
+    if not new_tracks:
+        logger.warning(
+            "provider migration dry-run: target '%s' returned 0 tracks; aborting "
+            "to avoid orphaning the whole library (session %s)", target_type, session_id,
+        )
+        _patch_state_keys(session_id, dry_run_task_id=None)
+        return {'error': (
+            'The new provider returned 0 tracks. Aborting so your library is '
+            'not deleted as orphans. Check the connection / library selection '
+            'and run automatic matching again.'
+        )}
+
+    state = _load_state(session_id) or {}
+    source_overrides = state.get('source_path_overrides') or {}
     old_rows = _load_score_rows_as_dicts()
     _apply_source_path_overrides(old_rows, source_overrides)
 
-    # Lazy import of matcher — same reasoning as provider_probe
     import importlib
     matcher = importlib.import_module('tasks.provider_migration_matcher')
     result = matcher.match_tracks(
@@ -834,19 +894,13 @@ def dry_run():
         allow_title_artist_only=allow_title_artist_only,
     )
 
-    # Serialize only what we need for persistence (no unmatched row dicts in state —
-    # keep it light; unmatched_by_album is reconstructed from unmatched on demand)
     state_dry_run = {
-        'matches':           result['matches'],
-        'match_tiers':       result['match_tiers'],
-        'tier_counts':       result['tier_counts'],
-        'unmatched_albums':  _albums_payload(result['unmatched_by_album']),
-        # Persist the full count so the wizard can warn the user when the
-        # rendered list is only a truncated sample.
+        'matches':          result['matches'],
+        'tier_counts':      result['tier_counts'],
+        'unmatched_albums': _albums_payload(result['unmatched_by_album']),
+        # Full count so the wizard can warn when the rendered list is a sample.
         'unmatched_albums_total': len(result['unmatched_by_album']),
     }
-    # Also snapshot new track metadata keyed by new_id for the post-execute
-    # score refresh (file_path, title, artist, album, album_artist, year).
     new_meta = {
         n['id']: {
             'path':         n.get('path'),
@@ -858,16 +912,17 @@ def dry_run():
         }
         for n in new_tracks if n.get('id')
     }
+    _store_target_meta(session_id, new_meta)
+    _update_state(session_id, dry_run=state_dry_run,
+                  manual_matches={}, manual_unmatches=[],
+                  final_counts=None, dry_run_task_id=None)
 
-    _update_state(session_id, dry_run=state_dry_run, new_meta=new_meta,
-                  manual_matches={}, manual_unmatches=[], final_counts=None)
-
-    return jsonify({
+    return {
         'tier_counts': result['tier_counts'],
         'matched':     len(result['matches']),
         'unmatched':   len(result['unmatched']),
         'unmatched_albums_count': len(result['unmatched_by_album']),
-    })
+    }
 
 
 @migration_bp.route('/api/migration/match-album', methods=['POST'])
@@ -1094,7 +1149,6 @@ def finalize_dry_run():
         return jsonify({'error': 'session not found'}), 404
 
     dry = state.get('dry_run') or {}
-    new_meta = state.get('new_meta') or {}
 
     import importlib
     mig_tasks = importlib.import_module('tasks.provider_migration_tasks')
@@ -1109,16 +1163,27 @@ def finalize_dry_run():
     # whether to go back to step 4 and fix the duplicates.
     orphans = max(0, total_score - matched - collisions)
 
+    import config
+    collision_details_total = collisions
     # Build human-readable collision details so the UI can tell the user
-    # exactly which albums to rematch. Only hit the DB for score rows if
-    # there's anything to report.
+    # exactly which albums to rematch. Only the capped subset is rendered, so
+    # fetch only those score rows / target metadata (by id) rather than the
+    # whole catalog.
     collision_details = []
     if dropped:
-        old_by_id = {r['item_id']: r for r in _load_score_rows_as_dicts()}
-        for loser_old_id, new_id, winner_old_id in dropped:
+        dropped_for_details = dropped[:config.MIGRATION_MAX_COLLISION_DETAILS]
+        needed_old_ids = set()
+        needed_new_ids = set()
+        for loser_old_id, new_id, winner_old_id in dropped_for_details:
+            needed_old_ids.add(loser_old_id)
+            needed_old_ids.add(winner_old_id)
+            needed_new_ids.add(str(new_id))
+        old_by_id = _load_score_rows_by_ids(needed_old_ids)
+        meta_by_id = _load_target_meta(session_id, needed_new_ids)
+        for loser_old_id, new_id, winner_old_id in dropped_for_details:
             loser = old_by_id.get(loser_old_id) or {}
             winner = old_by_id.get(winner_old_id) or {}
-            tgt = new_meta.get(str(new_id)) or new_meta.get(new_id) or {}
+            tgt = meta_by_id.get(str(new_id)) or {}
             collision_details.append({
                 'loser_title':   loser.get('title') or '',
                 'loser_artist':  loser.get('album_artist') or loser.get('author') or '',
@@ -1133,11 +1198,6 @@ def finalize_dry_run():
                 'target_album':  tgt.get('album') or '',
                 'target_path':   tgt.get('path') or '',
             })
-
-    import config
-    collision_details_total = len(collision_details)
-    if collision_details_total > config.MIGRATION_MAX_COLLISION_DETAILS:
-        collision_details = collision_details[:config.MIGRATION_MAX_COLLISION_DETAILS]
 
     final_counts = {
         'matched':                 matched,
@@ -1250,15 +1310,7 @@ def execute():
     # Persist the RQ task id on the session so a page refresh can resume
     # polling this job rather than losing track of it.
     try:
-        state = _load_state(session_id) or {}
-        state['exec_task_id'] = job.id
-        state = _sanitize_json_value(state)
-        with db.cursor() as cur:
-            cur.execute(
-                "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-                (json.dumps(state, ensure_ascii=False), session_id),
-            )
-        db.commit()
+        _patch_state_keys(session_id, exec_task_id=job.id)
     except Exception as e:
         # Non-fatal: the execute job is already enqueued. Losing exec_task_id
         # only means the UI cannot auto-resume polling after a page refresh.
@@ -1325,13 +1377,17 @@ def job_status(task_id):
         job = Job.fetch(task_id, connection=redis_conn)
         status = job.get_status()
         restart_scheduled = False
+        # Only the EXECUTE job changes the active provider and needs the
+        # config-reload + Flask restart. The dry-run / source-refresh jobs
+        # share this status endpoint but must NOT restart Flask.
+        is_execute_job = (getattr(job, 'func_name', '') or '').endswith('execute_provider_migration')
         # The execute worker reloads its own config and publishes a restart
         # request for other workers, but Flask (this process) isn't on that
         # pub/sub path. Reload here when the job finishes so subsequent
         # requests see the new provider, then schedule a Flask restart so
         # any stale module-level `from config import X` bindings across
         # blueprints are rebuilt cleanly (mirrors the setup wizard).
-        if status == 'finished':
+        if status == 'finished' and is_execute_job:
             try:
                 import config as _cfg
                 _cfg.refresh_config()
@@ -1394,7 +1450,7 @@ def dry_run_report(session_id):
     auto_matches     = dry_run.get('matches') or {}
     manual_matches   = state.get('manual_matches') or {}
     manual_unmatches = set(state.get('manual_unmatches') or [])
-    new_meta         = state.get('new_meta') or {}
+    new_meta         = _load_target_meta(session_id)
 
     # Same effective-merge logic as finalize: drop auto rows the user
     # force-orphaned, then manual_matches wins on any remaining conflict.
@@ -1483,37 +1539,23 @@ def matched_albums(session_id):
       404:
         description: Session not found.
     """
-    state = _load_state(session_id)
-    if state is None:
+    # The review list only ever shows manually re-targeted albums, so we need
+    # just ``manual_matches`` (small) — not the full state blob, the auto-match
+    # map, or the whole score table. Load only those rows + their target meta.
+    found, manual_matches = _read_state_key(session_id, 'manual_matches')
+    if not found:
         return jsonify({'error': 'session not found'}), 404
-
-    dry = state.get('dry_run') or {}
-    auto_matches     = dry.get('matches') or {}
-    manual_matches   = state.get('manual_matches') or {}
-    manual_unmatches = set(state.get('manual_unmatches') or [])
-    new_meta         = state.get('new_meta') or {}
-
-    merged = {}
-    for old_id, new_id in auto_matches.items():
-        if old_id not in manual_unmatches:
-            merged[old_id] = new_id
-    merged.update(manual_matches)
-
-    if not merged:
+    manual_matches = manual_matches or {}
+    if not manual_matches:
         return jsonify({'albums': []})
 
-    old_rows = _load_score_rows_as_dicts()
+    old_rows = list(_load_score_rows_by_ids(manual_matches.keys()).values())
+    new_meta = _load_target_meta(session_id, list(manual_matches.values()))
     groups = {}  # (old_artist, old_album) -> {'count', 'new_ids', 'tiers'}
     for r in old_rows:
         old_id = r['item_id']
-        new_id = merged.get(old_id)
+        new_id = manual_matches.get(old_id)
         if new_id is None:
-            continue
-        # Skip auto-matched rows entirely: the step-4 review list is meant
-        # for albums the user manually re-targeted. With huge libraries the
-        # auto-match list dominates and makes the UI unusable, but it has
-        # nothing to review.
-        if old_id not in manual_matches:
             continue
         key = (r.get('album_artist') or r.get('author') or '', r.get('album') or '')
         g = groups.setdefault(key, {'count': 0, 'new_ids': [], 'tiers': []})
@@ -1575,59 +1617,152 @@ def _fetch_session_creds(session_id):
     return target_type, creds
 
 
+def _row_to_score_dict(r):
+    return {
+        'item_id':      r[0],
+        'file_path':    r[1],
+        'title':        r[2],
+        'author':       r[3],
+        'album':        r[4],
+        'album_artist': r[5],
+    }
+
+
+_SCORE_COLS = "item_id, file_path, title, author, album, album_artist"
+
+
 def _load_score_rows_as_dicts():
     db = get_db()
     with db.cursor() as cur:
+        cur.execute(f"SELECT {_SCORE_COLS} FROM score")
+        rows = cur.fetchall() or []
+    return [_row_to_score_dict(r) for r in rows]
+
+
+def _load_score_rows_by_ids(item_ids):
+    """Return ``{item_id: score_dict}`` for the given ids only (PK lookup).
+
+    Replaces full-table scans on the step-4 / finalize hot paths; an empty
+    input returns ``{}`` without hitting the DB.
+    """
+    ids = [str(i) for i in (item_ids or [])]
+    if not ids:
+        return {}
+    db = get_db()
+    with db.cursor() as cur:
         cur.execute(
-            "SELECT item_id, file_path, title, author, album, album_artist FROM score"
+            f"SELECT {_SCORE_COLS} FROM score WHERE item_id = ANY(%s)", (ids,)
         )
         rows = cur.fetchall() or []
-    return [
-        {
-            'item_id':      r[0],
-            'file_path':    r[1],
-            'title':        r[2],
-            'author':       r[3],
-            'album':        r[4],
-            'album_artist': r[5],
+    return {r[0]: _row_to_score_dict(r) for r in rows}
+
+
+def _sanitize_text(value):
+    from sanitization import sanitize_string_for_db
+    return sanitize_string_for_db(value)
+
+
+def _store_target_meta(session_id, new_meta):
+    """Persist target-provider track metadata into the ``migration_target_meta``
+    side table (replacing any prior rows for this session).
+
+    Kept OUT of ``migration_session.state`` so the wizard's per-click state
+    writes don't drag tens of MB of catalog metadata through a JSONB
+    read-modify-write on every click.
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM migration_target_meta WHERE session_id = %s", (session_id,))
+        rows = [
+            (
+                session_id,
+                _sanitize_text(new_id),
+                _sanitize_text((meta or {}).get('path')),
+                _sanitize_text((meta or {}).get('title')),
+                _sanitize_text((meta or {}).get('artist')),
+                _sanitize_text((meta or {}).get('album')),
+                _sanitize_text((meta or {}).get('album_artist')),
+                (meta or {}).get('year'),
+            )
+            for new_id, meta in (new_meta or {}).items()
+        ]
+        for i in range(0, len(rows), 500):
+            chunk = rows[i:i + 500]
+            placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+            flat = [v for row in chunk for v in row]
+            cur.execute(
+                "INSERT INTO migration_target_meta "
+                "(session_id, new_id, path, title, artist, album, album_artist, year) "
+                "VALUES " + placeholders,
+                flat,
+            )
+    db.commit()
+
+
+def _load_target_meta(session_id, new_ids=None):
+    """Return ``{new_id: {path,title,artist,album,album_artist,year}}`` for the
+    session. If ``new_ids`` is given, only those rows are fetched (an empty
+    list short-circuits to ``{}``)."""
+    if new_ids is not None:
+        ids = [str(n) for n in new_ids]
+        if not ids:
+            return {}
+    db = get_db()
+    with db.cursor() as cur:
+        if new_ids is None:
+            cur.execute(
+                "SELECT new_id, path, title, artist, album, album_artist, year "
+                "FROM migration_target_meta WHERE session_id = %s",
+                (session_id,),
+            )
+        else:
+            cur.execute(
+                "SELECT new_id, path, title, artist, album, album_artist, year "
+                "FROM migration_target_meta WHERE session_id = %s AND new_id = ANY(%s)",
+                (session_id, ids),
+            )
+        rows = cur.fetchall() or []
+    return {
+        r[0]: {
+            'path': r[1], 'title': r[2], 'artist': r[3],
+            'album': r[4], 'album_artist': r[5], 'year': r[6],
         }
         for r in rows
-    ]
-
-
-def _load_unmatched_for_album(session_id, album_key):
-    """Return the set of old rows that live in the given (album_artist, album)
-    and were NOT matched by the dry run."""
-    state = _load_state(session_id) or {}
-    manual_unmatches = set(state.get('manual_unmatches') or [])
-    matched_ids = set((state.get('dry_run') or {}).get('matches', {}).keys()) - manual_unmatches
-    matched_ids |= set((state.get('manual_matches') or {}).keys())
-    rows = _load_score_rows_as_dicts()
-    target_artist, target_album = (album_key[0] if album_key else None,
-                                   album_key[1] if album_key and len(album_key) > 1 else None)
-    out = []
-    for r in rows:
-        if r['item_id'] in matched_ids:
-            continue
-        ra = r.get('album_artist') or r.get('author')
-        if ra == target_artist and r.get('album') == target_album:
-            out.append(r)
-    return out
+    }
 
 
 def _load_rows_for_album(album_key):
     """Return all old rows in the given (album_artist, album) regardless of
-    whether they were matched. Used by the step-4 re-match flow, which needs
-    to overwrite existing match state for the whole album at once."""
+    whether they were matched. Used by the step-4 re-match flow.
+
+    The album key's artist mirrors the matcher's ``album_artist or author``
+    precedence, so the SQL uses ``COALESCE(NULLIF(album_artist,''), author)``
+    (NULLIF so an empty string falls through to author exactly like Python's
+    ``or``) and null-safe ``IS NOT DISTINCT FROM`` so a NULL artist/album
+    matches a NULL key instead of silently dropping the row.
+    """
     target_artist, target_album = (album_key[0] if album_key else None,
                                    album_key[1] if album_key and len(album_key) > 1 else None)
-    rows = _load_score_rows_as_dicts()
-    out = []
-    for r in rows:
-        ra = r.get('album_artist') or r.get('author')
-        if ra == target_artist and r.get('album') == target_album:
-            out.append(r)
-    return out
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {_SCORE_COLS} FROM score "
+            "WHERE COALESCE(NULLIF(album_artist, ''), author) IS NOT DISTINCT FROM %s "
+            "AND album IS NOT DISTINCT FROM %s",
+            (target_artist, target_album),
+        )
+        rows = cur.fetchall() or []
+    return [_row_to_score_dict(r) for r in rows]
+
+
+def _load_unmatched_for_album(session_id, album_key):
+    """Return the rows in the given (album_artist, album) that were NOT matched
+    by the dry run."""
+    state = _load_state(session_id) or {}
+    manual_unmatches = set(state.get('manual_unmatches') or [])
+    matched_ids = set((state.get('dry_run') or {}).get('matches', {}).keys()) - manual_unmatches
+    matched_ids |= set((state.get('manual_matches') or {}).keys())
+    return [r for r in _load_rows_for_album(album_key) if r['item_id'] not in matched_ids]
 
 
 # Hard cap on the number of unmatched albums returned to the wizard. The
@@ -1685,39 +1820,67 @@ def _sanitize_json_value(value):
     return sanitize_json_for_db(value)
 
 
+def _patch_state_keys(session_id, _set_status=None, **patch):
+    """Patch individual top-level keys of ``migration_session.state`` in place
+    via ``jsonb_set`` instead of round-tripping the whole (possibly multi-MB)
+    blob. A value of ``None`` deletes the key. Only the small patched values
+    pass through the sanitizer.
+
+    ``_set_status`` (optional) also updates the ``status`` column in the same
+    transaction.
+    """
+    db = get_db()
+    with db.cursor() as cur:
+        if _set_status is not None:
+            cur.execute(
+                "UPDATE migration_session SET status = %s WHERE id = %s",
+                (_set_status, session_id),
+            )
+        for k, v in patch.items():
+            if v is None:
+                cur.execute(
+                    "UPDATE migration_session SET state = state - %s WHERE id = %s",
+                    (k, session_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE migration_session SET state = jsonb_set("
+                    "COALESCE(state, '{}'::jsonb), %s, %s::jsonb, true) WHERE id = %s",
+                    ([k], json.dumps(_sanitize_json_value(v), ensure_ascii=False), session_id),
+                )
+    db.commit()
+
+
 def _update_state(session_id, **patch):
-    """Shallow merge the given keys into migration_session.state."""
-    state = _load_state(session_id) or {}
-    for k, v in patch.items():
-        if v is None and k in state:
-            del state[k]
-        elif v is not None:
-            state[k] = v
-    state = _sanitize_json_value(state)
+    """Patch the given keys into migration_session.state and flag the session
+    in_progress. Backed by :func:`_patch_state_keys` so a large ``dry_run`` /
+    ``source_path_overrides`` value never forces a whole-blob rewrite of the
+    other keys."""
+    _patch_state_keys(session_id, _set_status='in_progress', **patch)
+
+
+def _read_state_key(session_id, key):
+    """Return a single top-level ``state`` key (parsed) without loading the
+    whole blob. Returns ``(found, value)`` — ``found`` is False when the
+    session row doesn't exist."""
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            "UPDATE migration_session SET state = %s::jsonb, status = 'in_progress' "
-            "WHERE id = %s",
-            (json.dumps(state, ensure_ascii=False), session_id),
+            "SELECT state -> %s FROM migration_session WHERE id = %s",
+            (key, session_id),
         )
-    db.commit()
+        row = cur.fetchone()
+    if row is None:
+        return False, None
+    return True, row[0]
 
 
 def _merge_manual_matches(session_id, new_matches):
-    state = _load_state(session_id) or {}
-    manual = state.get('manual_matches') or {}
+    _, manual = _read_state_key(session_id, 'manual_matches')
+    manual = dict(manual or {})
     manual.update(new_matches)
-    state['manual_matches'] = manual
     # Invalidate final_counts so the user must re-finalize
-    state.pop('final_counts', None)
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute(
-            "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
-        )
-    db.commit()
+    _patch_state_keys(session_id, manual_matches=manual, final_counts=None)
 
 
 def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
@@ -1731,41 +1894,30 @@ def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
     manual_matches entry and add it to manual_unmatches so finalize treats
     it as an orphan regardless of what dry.matches said.
     """
-    state = _load_state(session_id) or {}
-    manual = dict(state.get('manual_matches') or {})
-    unmatches = set(state.get('manual_unmatches') or [])
+    _, manual = _read_state_key(session_id, 'manual_matches')
+    _, unmatch_list = _read_state_key(session_id, 'manual_unmatches')
+    manual = dict(manual or {})
+    unmatches = set(unmatch_list or [])
     for old_id, new_id in newly_matched.items():
         manual[old_id] = new_id
         unmatches.discard(old_id)
     for old_id in newly_unmatched:
         manual.pop(old_id, None)
         unmatches.add(old_id)
-    state['manual_matches']   = manual
-    state['manual_unmatches'] = sorted(unmatches)
-    state.pop('final_counts', None)
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute(
-            "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
-        )
-    db.commit()
+    _patch_state_keys(
+        session_id,
+        manual_matches=manual,
+        manual_unmatches=sorted(unmatches),
+        final_counts=None,
+    )
 
 
 def _mark_album_skipped(session_id, old_album_key):
-    state = _load_state(session_id) or {}
-    skipped = state.get('skipped_albums') or []
+    _, skipped = _read_state_key(session_id, 'skipped_albums')
+    skipped = list(skipped or [])
     if old_album_key and old_album_key not in skipped:
         skipped.append(old_album_key)
-    state['skipped_albums'] = skipped
-    state.pop('final_counts', None)
-    db = get_db()
-    with db.cursor() as cur:
-        cur.execute(
-            "UPDATE migration_session SET state = %s::jsonb WHERE id = %s",
-            (json.dumps(_sanitize_json_value(state), ensure_ascii=False), session_id),
-        )
-    db.commit()
+    _patch_state_keys(session_id, skipped_albums=skipped, final_counts=None)
 
 
 def _count_score_rows():

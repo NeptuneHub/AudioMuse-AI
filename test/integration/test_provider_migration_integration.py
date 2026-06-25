@@ -197,6 +197,10 @@ _SCHEMA_DDL = [
     "status TEXT NOT NULL DEFAULT 'in_progress', source_type TEXT NOT NULL, "
     "target_type TEXT NOT NULL, target_creds TEXT NOT NULL, "
     "state JSONB NOT NULL DEFAULT '{}')",
+    "CREATE TABLE migration_target_meta (session_id INTEGER NOT NULL "
+    "REFERENCES migration_session(id) ON DELETE CASCADE, new_id TEXT NOT NULL, "
+    "path TEXT, title TEXT, artist TEXT, album TEXT, album_artist TEXT, "
+    "year INTEGER, PRIMARY KEY (session_id, new_id))",
 ]
 
 
@@ -344,11 +348,12 @@ def _seed_library(conn, source_rendered, segmented=False):
 
 
 def _insert_session(conn, source, target, matches, new_meta):
+    # new_meta now lives in the migration_target_meta side table (kept out of
+    # state so the wizard's per-click writes stay small), so seed it there.
     state = {
         'dry_run': {'matches': matches},
         'manual_matches': {},
         'manual_unmatches': [],
-        'new_meta': new_meta,
         'selected_libraries': None,
     }
     with conn.cursor() as cur:
@@ -358,6 +363,14 @@ def _insert_session(conn, source, target, matches, new_meta):
             (source, target, json.dumps(_TARGET_CREDS[target]), json.dumps(state)),
         )
         session_id = cur.fetchone()[0]
+        for new_id, meta in (new_meta or {}).items():
+            cur.execute(
+                "INSERT INTO migration_target_meta (session_id, new_id, path, title, "
+                "artist, album, album_artist, year) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (session_id, new_id, meta.get('path'), meta.get('title'),
+                 meta.get('artist'), meta.get('album'), meta.get('album_artist'),
+                 meta.get('year')),
+            )
     conn.commit()
     return session_id
 
