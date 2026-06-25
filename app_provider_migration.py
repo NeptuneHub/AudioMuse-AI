@@ -17,6 +17,7 @@ import json
 import logging
 
 from flask import Blueprint, jsonify, render_template, request
+from psycopg2 import sql as pgsql
 
 # App-level singletons (DB connection, Redis, RQ queues). Importing here keeps
 # the blueprint file self-contained — the rest of the app doesn't need to hand
@@ -1628,13 +1629,14 @@ def _row_to_score_dict(r):
     }
 
 
-_SCORE_COLS = "item_id, file_path, title, author, album, album_artist"
+_SCORE_COL_NAMES = ("item_id", "file_path", "title", "author", "album", "album_artist")
+_SCORE_COLS = pgsql.SQL(", ").join(pgsql.Identifier(c) for c in _SCORE_COL_NAMES)
 
 
 def _load_score_rows_as_dicts():
     db = get_db()
     with db.cursor() as cur:
-        cur.execute(f"SELECT {_SCORE_COLS} FROM score")
+        cur.execute(pgsql.SQL("SELECT {} FROM score").format(_SCORE_COLS))
         rows = cur.fetchall() or []
     return [_row_to_score_dict(r) for r in rows]
 
@@ -1651,7 +1653,8 @@ def _load_score_rows_by_ids(item_ids):
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            f"SELECT {_SCORE_COLS} FROM score WHERE item_id = ANY(%s)", (ids,)
+            pgsql.SQL("SELECT {} FROM score WHERE item_id = ANY(%s)").format(_SCORE_COLS),
+            (ids,),
         )
         rows = cur.fetchall() or []
     return {r[0]: _row_to_score_dict(r) for r in rows}
@@ -1693,7 +1696,7 @@ def _store_target_meta(session_id, new_meta):
             cur.execute(
                 "INSERT INTO migration_target_meta "
                 "(session_id, new_id, path, title, artist, album, album_artist, year) "
-                "VALUES " + placeholders,
+                "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
                 flat,
             )
     db.commit()
@@ -1746,9 +1749,11 @@ def _load_rows_for_album(album_key):
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            f"SELECT {_SCORE_COLS} FROM score "
-            "WHERE COALESCE(NULLIF(album_artist, ''), author) IS NOT DISTINCT FROM %s "
-            "AND album IS NOT DISTINCT FROM %s",
+            pgsql.SQL(
+                "SELECT {} FROM score "
+                "WHERE COALESCE(NULLIF(album_artist, ''), author) IS NOT DISTINCT FROM %s "
+                "AND album IS NOT DISTINCT FROM %s"
+            ).format(_SCORE_COLS),
             (target_artist, target_album),
         )
         rows = cur.fetchall() or []

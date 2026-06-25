@@ -2,16 +2,16 @@ import importlib.util
 import shutil
 from pathlib import Path
 
-from ._pgserver import verify_pgserver_bundle
+import config
 
-_OMP_DLL = {"amd64": "libomp140.x86_64.dll", "arm64": "libomp140.aarch64.dll"}
+from ._pgserver import verify_pgserver_bundle
 
 
 def prepare(ctx):
     arch = ctx.arch
     vendor = ctx.root / "native-build" / "windows" / "vendor"
     pg_contrib = vendor / "pg-contrib" / arch
-    omp_dll = vendor / "numkong" / arch / _OMP_DLL[arch]
+    omp_dll = vendor / "numkong" / arch / config.windows_omp_dll(arch)
     required = [
         vendor / "redis" / arch / "redis-server.exe",
         pg_contrib / "lib" / "unaccent.dll",
@@ -37,8 +37,10 @@ def _stage_numkong_openmp(omp_dll):
         print("[WARN] numkong not installed in build venv; the i8 SIMD kernels will be absent.")
         return
     dest = Path(spec.origin).parent / omp_dll.name
-    if not dest.exists():
+    try:
         shutil.copy2(omp_dll, dest)
+    except OSError as exc:
+        print(f"[WARN] could not stage {omp_dll.name} into {dest.parent}: {exc}")
 
 
 def package(ctx):

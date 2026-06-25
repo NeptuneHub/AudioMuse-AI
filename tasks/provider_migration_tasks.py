@@ -437,7 +437,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
         placeholders = ",".join(["(%s,%s)"] * len(chunk))
         flat = [v for pair in chunk for v in pair]
         cur.execute(
-            "INSERT INTO item_id_migration_map (old_id, new_id) VALUES " + placeholders,
+            "INSERT INTO item_id_migration_map (old_id, new_id) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
             flat,
         )
     # stats so the planner uses a hash anti-join for the orphan delete below
@@ -552,7 +552,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
             cur.execute(
                 "INSERT INTO migration_new_meta "
                 "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
-                "VALUES " + placeholders,
+                "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
                 flat,
             )
         cur.execute(
