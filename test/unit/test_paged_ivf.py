@@ -26,6 +26,7 @@ from tasks.paged_ivf import (
     _bounded_cell_groups,
     _split_cells_over_cap,
 )
+from tasks import ivf_quant as quant
 
 
 def test_directory_round_trip():
@@ -37,11 +38,12 @@ def test_directory_round_trip():
     item_ids = [f"item-{i}-é" for i in range(n_items)]
 
     blob = pack_directory(centroids, id2cell, item_ids, dim, "angular")
-    c2, id2cell2, ids2, dim2, metric2, normalized2 = unpack_directory(blob)
+    c2, id2cell2, ids2, dim2, metric2, normalized2, storage_dtype2 = unpack_directory(blob)
 
     assert dim2 == dim
     assert metric2 == "angular"
     assert normalized2 is False
+    assert storage_dtype2 == quant.DTYPE_F32
     assert ids2 == item_ids
     np.testing.assert_array_equal(id2cell2, id2cell)
     np.testing.assert_allclose(c2, centroids, rtol=0, atol=0)
@@ -56,13 +58,28 @@ def test_directory_normalized_flag_round_trip():
     item_ids = [f"id-{i}" for i in range(n_items)]
 
     blob = pack_directory(centroids, id2cell, item_ids, dim, "angular", normalized=True)
-    _c, _i, _ids, _dim, metric, normalized = unpack_directory(blob)
+    _c, _i, _ids, _dim, metric, normalized, _sd = unpack_directory(blob)
     assert metric == "angular"
     assert normalized is True
 
     blob_default = pack_directory(centroids, id2cell, item_ids, dim, "angular")
-    *_rest, normalized_default = unpack_directory(blob_default)
+    _c2, _i2, _ids2, _dim2, _metric2, normalized_default, _sd2 = unpack_directory(blob_default)
     assert normalized_default is False
+
+
+def test_directory_storage_dtype_round_trip():
+    dim = 6
+    nlist = 3
+    n_items = 4
+    centroids = np.random.randn(nlist, dim).astype(np.float32)
+    id2cell = np.zeros(n_items, dtype=np.uint32)
+    item_ids = [f"id-{i}" for i in range(n_items)]
+
+    for name in ("f32", "f16", "i8"):
+        code = quant.dtype_code(name)
+        blob = pack_directory(centroids, id2cell, item_ids, dim, "angular", normalized=True, storage_dtype=code)
+        *_rest, storage_dtype = unpack_directory(blob)
+        assert storage_dtype == code, f"{name} dtype did not round-trip"
 
 
 def test_cell_round_trip():
@@ -74,6 +91,99 @@ def test_cell_round_trip():
     ids2, vecs2 = unpack_cell(blob, dim)
     np.testing.assert_array_equal(ids2, ids)
     np.testing.assert_allclose(vecs2, vecs, rtol=0, atol=0)
+
+
+def test_cell_round_trip_f16_preserves_ids_and_record_size():
+    dim = 8
+    n = 7
+    code = quant.DTYPE_F16
+    ids = np.array([3, 1, 9, 4, 2, 8, 0], dtype=np.int32)
+    vecs = np.random.randn(n, dim).astype(np.float32)
+    blob = pack_cell(ids, vecs, code)
+    assert len(blob) == n * (4 + dim * 2)
+    ids2, vecs2 = unpack_cell(blob, dim, code)
+    assert vecs2.dtype == np.float16
+    np.testing.assert_array_equal(ids2, ids)
+    np.testing.assert_allclose(vecs2.astype(np.float32), vecs, rtol=0, atol=1e-2)
+
+
+def test_cell_round_trip_i8_quantizes_unit_vectors_within_tolerance():
+    dim = 64
+    n = 12
+    code = quant.DTYPE_I8
+    rng = np.random.default_rng(0)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    ids = np.arange(n, dtype=np.int32)
+    blob = pack_cell(ids, vecs, code)
+    assert len(blob) == n * (4 + dim)  # int8 -> 1 byte per dim + 4-byte id
+    ids2, vecs2 = unpack_cell(blob, dim, code)
+    assert vecs2.dtype == np.int8
+    np.testing.assert_array_equal(ids2, ids)
+    # i8 stores round(unit * 127); decode_row recovers the unit vector within ~1/127.
+    decoded = np.vstack([quant.decode_row(vecs2[i], code) for i in range(n)])
+    np.testing.assert_allclose(decoded, vecs, atol=1.5 / 127.0)
+
+
+def test_quant_cell_distances_i8_matches_numpy_cosine():
+    dim = 128
+    n = 200
+    rng = np.random.default_rng(1)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    q = rng.standard_normal(dim).astype(np.float32)
+    qn = q / np.linalg.norm(q)
+
+    ref = (1.0 - np.clip(vecs @ qn, -1.0, 1.0)).astype(np.float32)
+
+    code = quant.DTYPE_I8
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "angular")
+    got = quant.cell_distances("angular", code, qp, enc, normalized=True)
+
+    assert got.shape == (n,)
+    # int8 quantization error on a unit-cosine scale stays small.
+    assert float(np.max(np.abs(got - ref))) < 0.03
+
+
+def test_quant_cell_distances_f16_euclidean_near_lossless():
+    dim = 48
+    n = 150
+    rng = np.random.default_rng(2)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    q = rng.standard_normal(dim).astype(np.float32)
+
+    diffs = vecs - q[None, :]
+    ref = np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
+
+    code = quant.effective_code(quant.DTYPE_I8, "euclidean")
+    assert code == quant.DTYPE_F16  # i8 is invalid for euclidean -> f16
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "euclidean")
+    got = quant.cell_distances("euclidean", code, qp, enc, normalized=False)
+
+    assert got.shape == (n,)
+    np.testing.assert_allclose(got, ref, rtol=0, atol=5e-2)
+
+
+def test_quant_numpy_fallback_matches_numkong(monkeypatch):
+    dim = 64
+    n = 100
+    rng = np.random.default_rng(3)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    q = rng.standard_normal(dim).astype(np.float32)
+
+    code = quant.DTYPE_I8
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "angular")
+
+    primary = quant.cell_distances("angular", code, qp, enc, normalized=True)
+    monkeypatch.setattr(quant, "HAVE_NUMKONG", False)
+    fallback = quant.cell_distances("angular", code, qp, enc, normalized=True)
+
+    # The NumPy fallback must agree with the native kernel within rounding noise.
+    np.testing.assert_allclose(primary, fallback, rtol=0, atol=2e-3)
 
 
 def test_cell_cache_byte_bound_holds():

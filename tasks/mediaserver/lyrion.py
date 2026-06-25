@@ -6,7 +6,7 @@ import os
 from urllib.parse import unquote, urlparse
 import config
 
-from .helper import detect_path_format
+from .helper import detect_path_format, is_auth_error
 
 logger = logging.getLogger(__name__)
 
@@ -772,15 +772,20 @@ def search_albums(query, user_creds=None):
 def test_connection(user_creds=None):
     """Test Lyrion connectivity using admin or override credentials."""
     warnings = []
-    body = _jsonrpc_request("titles", [0, 100, "tags:galduAyR"], user_creds=user_creds)
-    if body is None:
-        return {'ok': False, 'error': 'Lyrion test_connection failed', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
-
-    raws = _lyrion_titles_response(body)
-    if not raws:
-        # Fallback to a simpler call if the tagged query returns no tracks.
-        body = _jsonrpc_request("titles", [0, 100], user_creds=user_creds)
+    try:
+        body = _jsonrpc_request("titles", [0, 100, "tags:galduAyR"], user_creds=user_creds)
+        if body is None:
+            return {'ok': False, 'error': 'Lyrion test_connection failed', 'auth_failed': False,
+                    'sample_count': 0, 'path_format': 'none', 'warnings': []}
         raws = _lyrion_titles_response(body)
+        if not raws:
+            # Fallback to a simpler call if the tagged query returns no tracks.
+            body = _jsonrpc_request("titles", [0, 100], user_creds=user_creds)
+            raws = _lyrion_titles_response(body)
+    except Exception as e:
+        logger.warning(f"Lyrion test_connection failed: {e}")
+        return {'ok': False, 'error': str(e), 'auth_failed': is_auth_error(e),
+                'sample_count': 0, 'path_format': 'none', 'warnings': []}
 
     sample = []
     for r in raws:

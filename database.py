@@ -828,6 +828,12 @@ def init_db():
                 cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
                 cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
 
+            # Provider-migration step-4 lookups filter score by album. Plain
+            # btree (no extension) so the per-album queries don't seq-scan the
+            # whole table on 100k+ libraries.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
+
             # Create 'playlist' table
             cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
             # Create 'task_status' table
@@ -948,6 +954,24 @@ def init_db():
                     target_type  TEXT NOT NULL,
                     target_creds TEXT NOT NULL,
                     state        JSONB NOT NULL DEFAULT '{}'
+                )
+            """)
+            # Target-provider track metadata for an in-flight migration, kept
+            # OUT of migration_session.state so the step-4 wizard's per-click
+            # state read-modify-writes stay small on 100k+ libraries (the full
+            # target catalog is tens of MB). ON DELETE CASCADE so pruning /
+            # discarding a session cleans these rows automatically.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS migration_target_meta (
+                    session_id   INTEGER NOT NULL REFERENCES migration_session(id) ON DELETE CASCADE,
+                    new_id       TEXT NOT NULL,
+                    path         TEXT,
+                    title        TEXT,
+                    artist       TEXT,
+                    album        TEXT,
+                    album_artist TEXT,
+                    year         INTEGER,
+                    PRIMARY KEY (session_id, new_id)
                 )
             """)
             # Create 'text_search_queries' table for precomputed CLAP text search queries

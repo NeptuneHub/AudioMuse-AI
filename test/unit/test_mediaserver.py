@@ -480,6 +480,51 @@ class TestJellyfinGetLastPlayedTime:
 # NAVIDROME TESTS
 # =============================================================================
 
+class TestNavidromeCoerceToList:
+    """Test the Subsonic field normalizer used before iterating search results"""
+
+    def test_single_dict_wrapped_in_list(self):
+        """A lone dict (Subsonic collapses single-element arrays) becomes a one-item list"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = {'id': 'song-1', 'title': 'Track'}
+        assert _coerce_to_list(value) == [value]
+
+    def test_tuple_converted_to_list(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(({'id': 'a'}, {'id': 'b'})) == [{'id': 'a'}, {'id': 'b'}]
+
+    def test_list_passed_through_unchanged(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = [{'id': 'a'}, {'id': 'b'}]
+        assert _coerce_to_list(value) is value
+
+    def test_empty_list_passed_through(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        value = []
+        assert _coerce_to_list(value) is value
+
+    def test_none_becomes_empty_list(self):
+        """An absent field (None) yields an empty list, not a [None]"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(None) == []
+
+    def test_str_becomes_empty_list(self):
+        """A string is not iterable-as-records here; it must not be treated as one"""
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list('song') == []
+
+    def test_int_becomes_empty_list(self):
+        from tasks.mediaserver.navidrome import _coerce_to_list
+
+        assert _coerce_to_list(42) == []
+
+
 class TestNavidromeSelectBestArtist:
     """Test Navidrome artist field prioritization - no HTTP mocking needed"""
 
@@ -688,6 +733,142 @@ class TestNavidromeRequest:
         result = _navidrome_request('getPlaylists')
         
         assert result is None
+
+
+class TestNavidromeAuthDetection:
+    """Wrong-credentials must be distinguishable from an empty library so the
+    analysis task can surface an auth error instead of '0 albums found'."""
+
+    def _ok_config(self, mock_config):
+        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
+        mock_config.NAVIDROME_USER = 'admin'
+        mock_config.NAVIDROME_PASSWORD = 'password'
+        mock_config.APP_VERSION = '1.0'
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_flags_wrong_password_as_auth(self, mock_config, mock_request):
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'subsonic-response': {
+                'status': 'failed',
+                'error': {'code': 40, 'message': 'Wrong username or password'},
+            }
+        }
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'auth'
+        assert err['message'] == 'Wrong username or password'
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_classifies_non_auth_failure_as_server(self, mock_config, mock_request):
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'subsonic-response': {
+                'status': 'failed',
+                'error': {'code': 70, 'message': 'Requested data not found'},
+            }
+        }
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'server'
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_network_error(self, mock_config, mock_request):
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        mock_request.side_effect = requests.exceptions.RequestException('refused')
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'network'
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_network_error_redacts_password(self, mock_config, mock_request):
+        # A transport error's str() carries the request URL, and the Subsonic
+        # password rides in the query string as p=enc:<hex>. The surfaced
+        # message must not leak it (it ends up in task status / the UI).
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        leaky = (
+            "HTTPConnectionPool(host='navidrome', port=4533): Max retries exceeded "
+            "with url: /rest/search3.view?u=admin&p=enc:7365637265743132&v=1.16.1&f=json"
+        )
+        mock_request.side_effect = requests.exceptions.ConnectionError(leaky)
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'network'
+        assert '7365637265743132' not in err['message']
+        assert 'enc:7365637265743132' not in err['message']
+        assert '[REDACTED]' in err['message']
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_handles_non_dict_json(self, mock_config, mock_request):
+        # A proxy error page or odd server can yield a JSON non-dict; calling
+        # .get() on it must not raise out of this boundary helper.
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        self._ok_config(mock_config)
+        mock_response = Mock()
+        mock_response.json.return_value = ['unexpected', 'list']
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'server'
+
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_missing_credentials(self, mock_config):
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+        mock_config.NAVIDROME_URL = 'http://navidrome:4533'
+        mock_config.NAVIDROME_USER = ''
+        mock_config.NAVIDROME_PASSWORD = ''
+
+        data, err = _navidrome_request_ex('search3')
+
+        assert data is None
+        assert err['kind'] == 'config'
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_test_connection_reports_auth_failed(self, mock_config, mock_request):
+        from tasks.mediaserver.navidrome import test_connection
+        self._ok_config(mock_config)
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'subsonic-response': {
+                'status': 'failed',
+                'error': {'code': 40, 'message': 'Wrong username or password'},
+            }
+        }
+        mock_response.raise_for_status = Mock()
+        mock_request.return_value = mock_response
+
+        result = test_connection()
+
+        assert result['ok'] is False
+        assert result['auth_failed'] is True
+        assert result['error'] == 'Wrong username or password'
 
 
 class TestNavidromeGetTracksFromAlbum:
@@ -2953,3 +3134,101 @@ class TestEmbyGetAllSongsRaisesOnFailure:
         mock_get.side_effect = [_audio_page(0)]
 
         assert get_all_songs() == []
+
+
+class _WrapperError(Exception):
+    """Dedicated test exception for wrapping a cause in is_auth_error tests."""
+
+
+def _make_http_error(status_code, message='error'):
+    """Build a requests.HTTPError carrying a response with the given status."""
+    resp = Mock()
+    resp.status_code = status_code
+    err = requests.exceptions.HTTPError(message)
+    err.response = resp
+    return err
+
+
+class TestIsAuthError:
+    """Shared helper that lets every provider flag a credentials failure the
+    same way, so a zero-album scan surfaces as an auth error not a silent OK."""
+
+    def test_detects_401_response(self):
+        from tasks.mediaserver.helper import is_auth_error
+        assert is_auth_error(_make_http_error(401, '401 Client Error')) is True
+
+    def test_detects_403_response(self):
+        from tasks.mediaserver.helper import is_auth_error
+        assert is_auth_error(_make_http_error(403, '403 Forbidden')) is True
+
+    def test_ignores_500_response(self):
+        from tasks.mediaserver.helper import is_auth_error
+        assert is_auth_error(_make_http_error(500, '500 Server Error')) is False
+
+    def test_ignores_plain_connection_error(self):
+        from tasks.mediaserver.helper import is_auth_error
+        assert is_auth_error(requests.exceptions.ConnectionError('refused')) is False
+
+    def test_detects_auth_wording(self):
+        from tasks.mediaserver.helper import is_auth_error
+        assert is_auth_error(_WrapperError('Wrong username or password')) is True
+
+    def test_walks_exception_chain(self):
+        from tasks.mediaserver.helper import is_auth_error
+        try:
+            try:
+                raise _make_http_error(401, 'unauthorized')
+            except Exception as inner:
+                raise _WrapperError('wrapped call') from inner
+        except Exception as e:
+            assert is_auth_error(e) is True
+
+
+class TestProviderTestConnectionAuth:
+    """test_connection must report auth_failed=True on wrong credentials for
+    every provider, matching the Navidrome behavior."""
+
+    @patch('tasks.mediaserver.jellyfin.requests.get')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_jellyfin_flags_401(self, mock_config, mock_get):
+        from tasks.mediaserver.jellyfin import test_connection
+        mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
+        mock_config.JELLYFIN_USER_ID = 'uid'
+        mock_config.JELLYFIN_TOKEN = 'tok'
+        mock_config.HEADERS = {}
+        resp = Mock()
+        resp.raise_for_status.side_effect = _make_http_error(401, '401 Unauthorized')
+        mock_get.return_value = resp
+
+        result = test_connection()
+
+        assert result['ok'] is False
+        assert result['auth_failed'] is True
+
+    @patch('tasks.mediaserver.emby.requests.get')
+    @patch('tasks.mediaserver.emby.config')
+    def test_emby_flags_401(self, mock_config, mock_get):
+        from tasks.mediaserver.emby import test_connection
+        mock_config.EMBY_URL = 'http://emby:8096'
+        mock_config.EMBY_USER_ID = 'uid'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_config.HEADERS = {}
+        resp = Mock()
+        resp.raise_for_status.side_effect = _make_http_error(401, '401 Unauthorized')
+        mock_get.return_value = resp
+
+        result = test_connection()
+
+        assert result['ok'] is False
+        assert result['auth_failed'] is True
+
+    @patch('tasks.mediaserver.lyrion._jsonrpc_request')
+    def test_lyrion_flags_auth_error_without_raising(self, mock_jsonrpc):
+        from tasks.mediaserver.lyrion import test_connection, LyrionAPIError
+        mock_jsonrpc.side_effect = LyrionAPIError(
+            'Unexpected error calling Lyrion API: 401 Client Error: Unauthorized')
+
+        result = test_connection()
+
+        assert result['ok'] is False
+        assert result['auth_failed'] is True

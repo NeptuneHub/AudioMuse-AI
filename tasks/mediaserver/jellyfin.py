@@ -5,7 +5,7 @@ import logging
 import os
 import config
 
-from .helper import detect_path_format, detect_download_extension
+from .helper import detect_path_format, detect_download_extension, is_auth_error
 from .helper import select_best_artist as _select_best_artist
 
 logger = logging.getLogger(__name__)
@@ -394,7 +394,8 @@ def test_connection(user_creds=None):
         }
     except Exception as e:
         logger.warning(f"Jellyfin test_connection failed: {e}")
-        return {'ok': False, 'error': str(e), 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+        return {'ok': False, 'error': str(e), 'auth_failed': is_auth_error(e),
+                'sample_count': 0, 'path_format': 'none', 'warnings': []}
 
 
 def get_playlist_by_name(playlist_name):

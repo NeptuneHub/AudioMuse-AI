@@ -4,6 +4,7 @@ from . import http as requests
 import logging
 import os
 import random
+import re
 import config
 
 from .helper import detect_path_format
@@ -43,11 +44,7 @@ def _get_target_music_folder_ids(user_creds=None):
 
     # Subsonic-compatible servers may return a single dict (not a list) when
     # only one folder exists. Coerce to a list for consistent iteration.
-    all_folders = response["musicFolders"]["musicFolder"]
-    if isinstance(all_folders, dict):
-        all_folders = [all_folders]
-    elif not isinstance(all_folders, list):
-        all_folders = []
+    all_folders = _coerce_to_list(response["musicFolders"]["musicFolder"])
 
     # Build a case-insensitive map: lowercase_name -> {'name': OriginalCaseName, 'id': FolderId}
     folder_map = {
@@ -96,13 +93,8 @@ def list_libraries(user_creds=None):
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         return []
     # Subsonic-compatible servers may return a single dict (not a list) when
-    # only one folder exists, depending on server implementation and JSON
-    # parser configuration — coerce to a list so iteration is consistent.
-    all_folders = response["musicFolders"]["musicFolder"]
-    if isinstance(all_folders, dict):
-        all_folders = [all_folders]
-    elif not isinstance(all_folders, list):
-        all_folders = []
+    # only one folder exists — coerce to a list so iteration is consistent.
+    all_folders = _coerce_to_list(response["musicFolders"]["musicFolder"])
     return [
         {'id': str(f['id']), 'name': f['name']}
         for f in all_folders
@@ -120,11 +112,29 @@ def get_navidrome_auth_params(username=None, password=None):
     hex_encoded_password = auth_pass.encode('utf-8').hex()
     return {"u": auth_user, "p": f"enc:{hex_encoded_password}", "v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
 
-def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
-    """
-    Helper to make Navidrome API requests. It sends all parameters in the URL's
-    query string, which is the expected behavior for Subsonic APIs, but can cause
-    issues with very long parameter lists (e.g., creating large playlists).
+# Subsonic auth-related error codes: 40 wrong username/password, 41 token auth
+# not supported, 42 token auth required, 43 client must upgrade, 44 not authorized.
+_SUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+
+# The Subsonic auth params (incl. the hex-encoded password p=enc:...) travel in
+# the request URL query string, so a transport error's str() carries them. Scrub
+# the password and salt before any message can reach a log or the frontend.
+# Never log with exc_info here: the raw exception repr re-embeds that query string.
+_SECRET_QUERY_PARAM = re.compile(r'(?i)([?&][pst]=)[^&\s]*')
+
+
+def _redact_navidrome_secrets(text):
+    """Mask credential query params in an error string before it is surfaced."""
+    return _SECRET_QUERY_PARAM.sub(r'\1[REDACTED]', str(text))
+
+
+def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
+    """Make a Navidrome API request, returning ``(data, error)``.
+
+    ``error`` is None on success, otherwise ``{'kind', 'message'}`` where kind is
+    'config' (no credentials), 'auth' (server rejected the credentials), 'server'
+    (other Subsonic failure) or 'network' (transport error). Params are sent in
+    the query string, as the Subsonic API expects.
     """
     params = params or {}
     auth_params = get_navidrome_auth_params(
@@ -132,8 +142,9 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         password=user_creds.get('password') if user_creds else None
     )
     if not auth_params:
-        logger.error("Navidrome credentials not configured. Cannot make API call.")
-        return None
+        msg = "Navidrome username or password is not configured."
+        logger.error(f"{msg} Cannot make API call.")
+        return None, {'kind': 'config', 'message': msg}
 
     base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.NAVIDROME_URL).rstrip('/')
     url = f"{base_url}/rest/{endpoint}.view"
@@ -144,18 +155,35 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
         r.raise_for_status()
 
         if stream:
-            return r
-            
+            return r, None
+
         subsonic_response = r.json().get("subsonic-response", {})
         if subsonic_response.get("status") == "failed":
-            error = subsonic_response.get("error", {})
-            logger.error(f"Navidrome API Error on '{endpoint}': {error.get('message')}")
-            return None
-        return subsonic_response
-        
+            error = subsonic_response.get("error", {}) or {}
+            message = error.get("message") or "Navidrome returned an error."
+            logger.error(f"Navidrome API Error on '{endpoint}': {message}")
+            kind = 'auth' if error.get("code") in _SUBSONIC_AUTH_ERROR_CODES else 'server'
+            return None, {'kind': kind, 'message': message}
+        return subsonic_response, None
+
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {e}", exc_info=True)
-        return None
+        safe = _redact_navidrome_secrets(e)
+        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")
+        return None, {'kind': 'network', 'message': safe}
+    except Exception as e:
+        # A non-JSON body or a JSON non-dict (e.g. a proxy error page) would
+        # otherwise raise out of this boundary helper; report it as a failure.
+        safe = _redact_navidrome_secrets(e)
+        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")
+        return None, {'kind': 'server', 'message': safe}
+
+
+def _navidrome_request(endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None):
+    """Make a Navidrome API request, returning the parsed response or None on failure."""
+    data, _ = _navidrome_request_ex(
+        endpoint, params=params, method=method, stream=stream, user_creds=user_creds, timeout=timeout
+    )
+    return data
 
 def download_track(temp_dir, item):
     """Downloads a single track from Navidrome using admin credentials."""
@@ -188,7 +216,7 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {e}", exc_info=True)
+        logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}")
     return None
 
 def get_recent_albums(limit):
@@ -428,10 +456,22 @@ def search_albums(query, user_creds=None):
     ]
 
 
+def _coerce_to_list(value):
+    """Normalize a Subsonic field that may arrive as a single dict, a tuple, a
+    list, or be absent into a list, so callers can iterate it uniformly."""
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, list):
+        return value
+    return []
+
+
 def test_connection(user_creds=None):
     """Test Navidrome connectivity using admin or override credentials."""
     warnings = []
-    body = _navidrome_request("search3", {
+    body, err = _navidrome_request_ex("search3", {
         "query": '',
         "songCount": 100,
         "songOffset": 0,
@@ -439,16 +479,15 @@ def test_connection(user_creds=None):
         "albumCount": 0,
     }, user_creds=user_creds)
     if not body:
-        return {'ok': False, 'error': 'Navidrome test_connection failed', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
-    songs = (body.get('searchResult3') or {}).get('song')
-    if songs is None:
-        songs = []
-    elif isinstance(songs, dict):
-        songs = [songs]
-    elif isinstance(songs, tuple):
-        songs = list(songs)
-    elif not isinstance(songs, list):
-        songs = []
+        return {
+            'ok': False,
+            'error': (err or {}).get('message') or 'Navidrome test_connection failed',
+            'auth_failed': bool(err and err.get('kind') == 'auth'),
+            'sample_count': 0,
+            'path_format': 'none',
+            'warnings': [],
+        }
+    songs = _coerce_to_list((body.get('searchResult3') or {}).get('song'))
 
     sample = []
     for s in songs:

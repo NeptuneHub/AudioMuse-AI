@@ -168,6 +168,9 @@ def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
             mock_cur.fetchone.return_value = ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
         elif 'TO_REGCLASS' in up and 'LYRICS_EMBEDDING' in up:
             mock_cur.fetchone.return_value = (lyrics_exists,)
+        elif 'TO_REGCLASS' in up and 'MIGRATION_TARGET_META' in up:
+            # new_meta now lives in a side table; absent in these mocks -> {}.
+            mock_cur.fetchone.return_value = (None,)
         elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
             mock_cur.fetchone.return_value = session_row
         elif up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'):

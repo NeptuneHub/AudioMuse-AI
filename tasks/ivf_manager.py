@@ -8,7 +8,7 @@ from psycopg2.extras import DictCursor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX, RADIUS_INSTRUMENTATION
+from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX, RADIUS_INSTRUMENTATION, IVF_RERANK_OVERFETCH
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +147,58 @@ def _fetch_details_map(db_conn, item_ids, columns):
     return _fetch_in_batches(item_ids, fetch_batch)
 
 
-def _get_cached_vector(item_id: str) -> np.ndarray | None:
-    """Return the stored vector for ``item_id`` from the loaded IVF index.
+# --- Exact-f32 rerank support ---
+# The IVF cells are int8 (RAM win), but int8's distance error (~0.014 on this
+# library) is several times the gap between adjacent top-K neighbors (~0.0015), so
+# it cannot order near-tied neighbors. For user-facing ordering we re-score the
+# over-fetched candidate shortlist with the EXACT float32 embeddings from the
+# source ``embedding`` table (int8 storage does not remove those), keeping int8 as
+# the coarse candidate generator. The vectors are primed into a per-request
+# thread-local so the downstream dedup and radius walk also use exact distances.
+_tls = threading.local()
 
-    The IVF backend keeps its own byte-bounded per-request cell cache, so no
-    extra process-global cache is needed here.
+
+def _fetch_f32_embeddings(db_conn, item_ids) -> dict:
+    """Batch-read exact float32 embeddings for ``item_ids`` from the source table."""
+    if not item_ids:
+        return {}
+    out: dict = {}
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT item_id, embedding FROM embedding WHERE item_id = ANY(%s) AND embedding IS NOT NULL",
+                (list(item_ids),),
+            )
+            for item_id, emb in cur.fetchall():
+                v = np.frombuffer(bytes(emb), dtype=np.float32)
+                if v.shape[0] == EMBEDDING_DIMENSION:
+                    out[item_id] = v
+    except Exception as e:
+        logger.warning("Exact-f32 rerank: could not read source embeddings (%s); using int8 vectors.", e)
+    return out
+
+
+def _prime_request_f32(vec_map: dict) -> None:
+    _tls.f32 = vec_map
+
+
+def _clear_request_f32() -> None:
+    _tls.f32 = {}
+
+
+def _get_cached_vector(item_id: str) -> np.ndarray | None:
+    """Return the vector for ``item_id`` for post-retrieval distance work.
+
+    Prefers the exact float32 embedding primed into the per-request cache by the
+    similarity path; otherwise falls back to the loaded IVF index (int8). The
+    request cache is keyed by item_id, whose source embedding is stable, so a
+    warm entry is always the correct vector for that song.
     """
+    cached = getattr(_tls, "f32", None)
+    if cached:
+        v = cached.get(item_id)
+        if v is not None:
+            return v
     if ivf_index is None or reverse_id_map is None:
         return None
     vec_id = reverse_id_map.get(item_id)
@@ -203,10 +249,22 @@ def _get_direct_cosine_distance(v1, v2):
         return float('inf')
 
 
+def _get_direct_dot_distance(v1, v2):
+    """Negative inner product (smaller = nearer), matching the 'dot' cell metric. +inf if unavailable."""
+    if v1 is None or v2 is None:
+        return float('inf')
+    try:
+        return float(-np.dot(v1.astype(np.float32), v2.astype(np.float32)))
+    except Exception:
+        return float('inf')
+
+
 def get_direct_distance(v1, v2):
     """Public helper that picks the metric according to IVF_METRIC."""
     if IVF_METRIC == 'angular':
         return _get_direct_cosine_distance(v1, v2)
+    if IVF_METRIC == 'dot':
+        return _get_direct_dot_distance(v1, v2)
     return _get_direct_euclidean_distance(v1, v2)
 
 
@@ -315,6 +373,7 @@ def multi_query_ids(query_vectors, per_vector_n):
         ivf_index.begin_request()
     except Exception:
         pass
+    _clear_request_f32()
     k = max(1, int(per_vector_n))
     seen = {}
     for vec in query_vectors:
@@ -725,6 +784,15 @@ def _execute_radius_walk(
 
 
 def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
+    """Clears the per-request exact-f32 cache on every exit so a primed neighbor pool
+    never leaks into later get_vector_by_id calls on this reused worker thread."""
+    try:
+        return _find_nearest_neighbors_by_id_impl(target_item_id, n, eliminate_duplicates, mood_similarity, radius_similarity)
+    finally:
+        _clear_request_f32()
+
+
+def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
     """
     Finds the N nearest neighbors for a given item_id using the globally cached IVF index.
     If mood_similarity is True, filters results by mood feature similarity (danceability, aggressive, happy, party, relaxed, sad).
@@ -759,11 +827,19 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         logger.warning(f"Target item_id '{target_item_id}' not found in the loaded IVF index map.")
         return []
 
-    try:
-        query_vector = ivf_index.get_vector(target_vec_id)
-    except Exception as e:
-        logger.error(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
-        return []
+    # Anchor: use the EXACT float32 embedding from the source table (the int8 IVF
+    # cell is a lossy dequantization, and feeding it back as the query would double
+    # the quantization error). Fall back to the index vector if the source is gone.
+    _clear_request_f32()
+    anchor_f32 = _fetch_f32_embeddings(db_conn, [target_item_id]).get(target_item_id)
+    if anchor_f32 is not None:
+        query_vector = anchor_f32
+    else:
+        try:
+            query_vector = ivf_index.get_vector(target_vec_id)
+        except Exception as e:
+            logger.error(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
+            return []
 
 
     # If caller didn't supply radius_similarity explicitly (None), use the configured default.
@@ -805,12 +881,17 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         )
         num_to_query = len(ivf_index)
 
+    # int8 is only the COARSE candidate generator: over-fetch a wider pool so the
+    # exact-f32 rerank below recovers the true top-(num_to_query) that int8's rounded
+    # distances may have ordered just outside it (the usearch/FAISS "retrieve wide,
+    # rescore exact" pattern). ~IVF_RERANK_OVERFETCH x the pool reproduces it exactly.
+    rerank_k = min(len(ivf_index), max(num_to_query * IVF_RERANK_OVERFETCH, num_to_query + 200))
     try:
         if num_to_query <= 1:
              logger.warning(f"Number of neighbors to query ({num_to_query}) is too small. Skipping query.")
              neighbor_vec_ids, distances = [], []
         else:
-             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=num_to_query)
+             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=rerank_k)
     except Exception as e:
         logger.error(f"An unexpected error occurred during IVF query for item '{target_item_id}': {e}", exc_info=True)
         return []
@@ -821,6 +902,31 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         item_id = id_map.get(vec_id)
         if item_id and item_id != target_item_id:
             initial_results.append({"item_id": item_id, "distance": float(dist)})
+
+    # --- Exact f32 rerank of the int8 candidate pool ---
+    # int8 IVF distances are too coarse to order near-tied top-K neighbors, so
+    # re-score the over-fetched shortlist with exact float32 embeddings and re-sort.
+    # int8 stays the coarse candidate generator (cells remain int8 -> RAM win
+    # intact); only this bounded shortlist is read at full precision. Priming the
+    # request cache also feeds exact vectors to the dedup filter and radius walk.
+    # Gate on anchor_f32: with no exact anchor (source row missing) the anchor is
+    # the int8 cell vector, so keep the pool int8 too rather than score exact
+    # candidates against a quantized anchor.
+    if initial_results and anchor_f32 is not None:
+        f32_map = _fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results])
+        if f32_map:
+            f32_map[target_item_id] = anchor_f32
+            _prime_request_f32(f32_map)
+            for r in initial_results:
+                v = f32_map.get(r["item_id"])
+                if v is not None:
+                    r["distance"] = get_direct_distance(anchor_f32, v)
+            initial_results.sort(key=lambda r: r["distance"])
+
+    # Trim the over-fetched pool back to the intended size: the exact-f32 top-
+    # num_to_query now matches the pre-quantization candidate pool, so the dedup /
+    # radius walk downstream produce the same output they did before quantization.
+    initial_results = initial_results[:num_to_query]
 
     # --- Divert logic for Radius Similarity ---
     if radius_similarity:
@@ -908,6 +1014,15 @@ def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_dup
         return [dict(r) for r in final_results]
 
 def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
+    """Clears the per-request exact-f32 cache on exit so the primed candidate pool
+    never leaks into later get_vector_by_id calls on this reused worker thread."""
+    try:
+        return _find_nearest_neighbors_by_vector_impl(query_vector, n, eliminate_duplicates)
+    finally:
+        _clear_request_f32()
+
+
+def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
     """
     Finds the N nearest neighbors for a given query vector.
     """
@@ -916,6 +1031,7 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
 
     if ivf_index is not None:
         ivf_index.begin_request()
+    _clear_request_f32()
 
     from app_helper import get_db
     db_conn = get_db()
@@ -953,6 +1069,13 @@ def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eli
         for vec_id, dist in zip(neighbor_vec_ids, distances)
         if id_map.get(vec_id) is not None
     ]
+
+    # Dedup runs DUPLICATE_DISTANCE_THRESHOLD_* (cosine 0.01 < int8's ~0.014 error),
+    # tuned at full precision. Prime exact f32 for the pool so by-vector dedup matches
+    # the by-id path instead of filtering on int8 quantization noise. The synthetic
+    # query has no source row, so only the candidates are primed.
+    if initial_results:
+        _prime_request_f32(_fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results]))
 
     distance_filtered_results = _filter_by_distance(initial_results, db_conn)
 
@@ -1016,6 +1139,7 @@ def get_max_distance_for_id(target_item_id: str):
         return dict(_cached)
 
     ivf_index.begin_request()
+    _clear_request_f32()
     try:
         max_d, far_vec_id = ivf_index.get_max_distance(target_vec_id)
     except Exception as e:

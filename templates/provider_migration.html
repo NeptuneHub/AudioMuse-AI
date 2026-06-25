@@ -982,7 +982,31 @@
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
         if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        // The heavy fetch+match runs in an RQ worker now; poll for the result.
+        if (data.task_id) {
+            return await pollMigrationJob(data.task_id);
+        }
         return data;
+    }
+
+    // Poll a backgrounded migration helper job (dry-run / source-path refresh)
+    // via the shared status endpoint. Returns the job result on success;
+    // throws on failure or a controlled {error} result.
+    async function pollMigrationJob(taskId) {
+        const statusUrl = "{{ url_for('migration_bp.job_status', task_id='__TID__') }}".replace('__TID__', taskId);
+        while (true) {
+            const res = await jsonFetch(statusUrl);
+            const s = res.status || 'unknown';
+            if (s === 'finished') {
+                const r = res.result || {};
+                if (r && r.error) throw new Error(r.error);
+                return r;
+            }
+            if (s === 'failed') {
+                throw new Error(res.error || 'Background job failed. Check the container logs for details.');
+            }
+            await new Promise(r => setTimeout(r, 2000));
+        }
     }
 
     function renderSourceRefreshPanel(info) {
@@ -1016,13 +1040,15 @@
 
     async function refreshSourcePaths() {
         const statusEl = $('mig-source-refresh-status');
-        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider…</div>';
+        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider… this can take a few minutes on large libraries.</div>';
         try {
-            const result = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
+            const enq = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId }),
             });
+            // Heavy source re-probe runs in an RQ worker now; poll for it.
+            const result = enq.task_id ? await pollMigrationJob(enq.task_id) : enq;
             if (result.path_format === 'absolute') {
                 statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
                     ' real paths from ' + esc(result.source_type) + '. You can run automatic matching now.</div>';
@@ -1611,6 +1637,18 @@
                 [4, 5, 6].forEach(unlock);
                 setActive(6);
                 pollJob(state.exec_task_id);
+                return;
+            }
+
+            // Step 3: a dry-run job is still running (large library). Resume
+            // polling instead of leaving the user staring at step 3.
+            if (state.dry_run_task_id && !state.dry_run) {
+                setActive(3);
+                $('mig-dry-result').innerHTML =
+                    '<div class="mig-status">Resuming automatic matching — this can take a few minutes…</div>';
+                pollMigrationJob(state.dry_run_task_id)
+                    .then(renderDryRunResult)
+                    .catch(e => { if (e.message !== '__source_refresh__') showError($('mig-dry-result'), e.message); });
                 return;
             }
 

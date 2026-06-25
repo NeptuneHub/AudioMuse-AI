@@ -21,6 +21,10 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
 SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
+# Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
+# through the admin-user path, JWT_SECRET blank means "auto-generate". Every
+# other secret treats a blank submission as "keep the stored value".
+BLANK_KEEP_EXCLUDED_SECRETS = {"AUDIOMUSE_PASSWORD", "JWT_SECRET"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
 
 LYRICS_API_CONFIG_FIELDS = [
@@ -120,6 +124,36 @@ HIDDEN_ADVANCED_FIELDS = {
     'LYRICS_MAX_SONGS_TO_ANALYZE',
     'LYRICS_MODEL_DIR',
     'LYRICS_SUPPORTED_AUDIO_EXTENSIONS',
+    # Undocumented internals / quality gates that leaked into the wizard
+    'RADIUS_INSTRUMENTATION',
+    'ENERGY_MIN',
+    'ENERGY_MAX',
+    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
+    'CLAP_TOP_QUERIES_COUNT',
+    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
+    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+    'ALCHEMY_PLAYLIST_MAX_SONGS',
+    'ALCHEMY_PLAYLIST_MAX_CENTROIDS',
+    'ALCHEMY_MAX_ANCHOR_POINTS',
+    'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
+    'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME',
+    # Worker / queue / batch-orchestration infra knobs (operator-level)
+    'RQ_MAX_JOBS',
+    'RQ_MAX_JOBS_HIGH',
+    'RQ_LOGGING_LEVEL',
+    'MAX_QUEUED_ANALYSIS_JOBS',
+    'REBUILD_INDEX_BATCH_SIZE',
+    'DB_FETCH_CHUNK_SIZE',
+    'AUDIO_LOAD_TIMEOUT',
+    'ITERATIONS_PER_BATCH_JOB',
+    'MAX_CONCURRENT_BATCH_JOBS',
+    'CLUSTERING_BATCH_TIMEOUT_MINUTES',
+    'CLUSTERING_MAX_FAILED_BATCHES',
+    'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
+    # Pathfinding internals
+    'PATH_AVG_JUMP_SAMPLE_SIZE',
+    'PATH_CANDIDATES_PER_STEP',
+    'PATH_LCORE_MULTIPLIER',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
     'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
     'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
@@ -385,6 +419,17 @@ def setup_api():
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
                 return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+
+        # A blank secret means "keep the stored value" so re-saving the wizard
+        # (e.g. to add an API token) never wipes an already-configured
+        # password/token. Drop blanks before they reach the DB.
+        for key in list(filtered_values.keys()):
+            if key in BLANK_KEEP_EXCLUDED_SECRETS:
+                continue
+            if key in SECRET_FIELDS or key.endswith('_API_KEY'):
+                value = filtered_values[key]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    del filtered_values[key]
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):

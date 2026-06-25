@@ -137,3 +137,19 @@ def use_pgserver(policy, arch):
     if policy == "arch":
         return arch in ("x86_64", "amd64")
     return False
+
+
+# numkong's Windows wheel links LLVM's libomp but, unlike its mac/linux wheels,
+# does not bundle it; we vendor it per arch. Single home for both consumers:
+# the spec (bundling) and platforms/windows.py (existence check + venv staging).
+_WINDOWS_OMP_DLLS = {"amd64": "libomp140.x86_64.dll", "arm64": "libomp140.aarch64.dll"}
+
+
+def windows_omp_dll(arch):
+    """Filename of the LLVM OpenMP runtime numkong's Windows wheel needs but omits."""
+    try:
+        return _WINDOWS_OMP_DLLS[arch]
+    except KeyError:
+        raise ValueError(
+            f"No vendored libomp for Windows arch {arch!r}; expected one of {sorted(_WINDOWS_OMP_DLLS)}"
+        ) from None

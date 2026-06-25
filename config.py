@@ -542,15 +542,18 @@ IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 
 # --- Disk-Paged IVF Index Constants ---
 # The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
-# are stored as an inverted-file (IVF) index whose full-precision float32 cells live
-# in Postgres rows. A query reads only the nearest IVF_NPROBE cells, so the Flask
-# container's resident index memory is bounded by IVF_QUERY_CACHE_MB per index instead
-# of growing with the library size. No vector quantization is used.
+# are stored as an inverted-file (IVF) index whose cells live in Postgres rows. A
+# query reads only the nearest IVF_NPROBE cells, so the Flask container's resident
+# index memory is bounded by IVF_QUERY_CACHE_MB per index instead of growing with
+# the library size. Cell vectors are quantized per IVF_STORAGE_DTYPE (coarse
+# centroids stay float32, so cell selection / recall is unaffected).
+IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob
+IVF_RERANK_OVERFETCH = int(os.environ.get("IVF_RERANK_OVERFETCH", "4"))  # int8 is the coarse stage; the similarity query over-fetches this multiple of the candidate pool and re-ranks it with exact float32 (read from the source embedding table) so top-K ordering matches full precision. Higher = more exact tail recall, more per-query f32 reads.
 IVF_QUERY_CACHE_MB = int(os.environ.get("IVF_QUERY_CACHE_MB", "128"))  # Hard cap (Y) on the per-request vector cache, in MB
 IVF_READ_BATCH_CELLS = int(os.environ.get("IVF_READ_BATCH_CELLS", "16"))  # Cells fetched per DB round-trip during a query
 IVF_QUERY_PARALLEL_MIN_VECTORS = int(os.environ.get("IVF_QUERY_PARALLEL_MIN_VECTORS", "8192"))  # Only fan the per-cell distance scan across threads when a query's probed cells hold at least this many vectors; smaller queries stay serial

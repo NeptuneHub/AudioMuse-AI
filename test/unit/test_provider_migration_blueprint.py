@@ -158,7 +158,9 @@ class TestApplySourcePathOverrides:
 
 
 class TestSourcePathsRefreshRoute:
-    def test_stores_overrides_in_session_state(self, bp_mod, client):
+    def test_stores_overrides_in_session_state(self, bp_mod):
+        # The heavy re-probe + override build now lives in run_source_refresh_core
+        # (the RQ-job body); drive it directly.
         import config
         config.MEDIASERVER_TYPE = 'navidrome'
         config.NAVIDROME_URL = 'http://nav'
@@ -175,11 +177,8 @@ class TestSourcePathsRefreshRoute:
              patch.object(bp_mod, '_update_state') as mock_update:
             p.fetch_all_tracks.return_value = fake_tracks
             mock_detect.return_value = 'absolute'
-            resp = client.post('/api/migration/source-paths/refresh',
-                               json={'session_id': 7})
+            data = bp_mod.run_source_refresh_core(7)
 
-        assert resp.status_code == 200
-        data = resp.get_json()
         assert data['ok'] is True
         assert data['source_type'] == 'navidrome'
         assert data['path_format'] == 'absolute'
@@ -193,23 +192,41 @@ class TestSourcePathsRefreshRoute:
             't2': '/music/rock/b.mp3',
         }
 
-    def test_returns_warning_when_still_not_absolute(self, bp_mod, client):
+    def test_returns_warning_when_still_not_absolute(self, bp_mod):
         import config
         config.MEDIASERVER_TYPE = 'navidrome'
+        config.NAVIDROME_URL = 'http://nav'
+        config.NAVIDROME_USER = 'u'
+        config.NAVIDROME_PASSWORD = 'p'
 
         with patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
              patch.object(bp_mod, '_detect_path_format') as mock_detect, \
              patch.object(bp_mod, '_update_state'):
             p.fetch_all_tracks.return_value = [{'id': 't1', 'path': 'relative/path.mp3'}]
             mock_detect.return_value = 'relative'
-            resp = client.post('/api/migration/source-paths/refresh',
-                               json={'session_id': 1})
+            data = bp_mod.run_source_refresh_core(1)
 
-        assert resp.status_code == 200
-        data = resp.get_json()
         assert data['path_format'] == 'relative'
         assert data['warnings']  # non-empty
         assert 'report real path' in data['warnings'][0].lower()
+
+    def test_enqueues_job_for_supported_provider(self, bp_mod, client):
+        import config
+        config.MEDIASERVER_TYPE = 'navidrome'
+        config.NAVIDROME_URL = 'http://nav'
+        config.NAVIDROME_USER = 'u'
+        config.NAVIDROME_PASSWORD = 'p'
+        fake_queue = MagicMock()
+        fake_job = MagicMock()
+        fake_job.id = 'src-job-1'
+        fake_queue.enqueue.return_value = fake_job
+        with patch.object(bp_mod, '_patch_state_keys'), \
+             patch.object(bp_mod, 'rq_queue_high', fake_queue):
+            resp = client.post('/api/migration/source-paths/refresh',
+                               json={'session_id': 5})
+        assert resp.status_code == 200
+        assert resp.get_json().get('task_id') == 'src-job-1'
+        assert fake_queue.enqueue.called
 
     def test_rejects_unsupported_current_provider(self, bp_mod, client):
         import config
@@ -243,25 +260,27 @@ class TestDryRunSourcePathGate:
         assert data['path_format'] == 'none'
 
     def test_bypass_flag_skips_gate(self, bp_mod, client):
-        fake_matcher = MagicMock()
-        fake_matcher.match_tracks.return_value = {
-            'matches': {}, 'match_tiers': {}, 'tier_counts': {},
-            'unmatched': [], 'unmatched_by_album': {},
-        }
+        # The heavy fetch+match is now offloaded to an RQ job; the endpoint
+        # only runs the (bypassed) gate and enqueues. Assert it enqueues 200.
+        fake_queue = MagicMock()
+        fake_job = MagicMock()
+        fake_job.id = 'dry-job-1'
+        fake_queue.enqueue.return_value = fake_job
         with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {'url': 'http://jf'})), \
              patch.object(bp_mod, '_load_state', return_value={}), \
              patch.object(bp_mod, '_detect_source_path_format', return_value='none'), \
-             patch.object(bp_mod, '_load_score_rows_as_dicts', return_value=[]), \
-             patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
-             patch.object(bp_mod, '_update_state'), \
-             patch('importlib.import_module', return_value=fake_matcher):
-            p.fetch_all_tracks.return_value = []
+             patch.object(bp_mod, '_patch_state_keys'), \
+             patch.object(bp_mod, 'rq_queue_high', fake_queue):
             resp = client.post('/api/migration/dry-run',
                                json={'session_id': 1, 'bypass_source_check': True})
 
         assert resp.status_code == 200  # proceeded despite bad paths
+        assert resp.get_json().get('task_id') == 'dry-job-1'
+        assert fake_queue.enqueue.called
 
-    def test_overrides_present_skip_gate_and_apply_to_rows(self, bp_mod, client):
+    def test_overrides_present_skip_gate_and_apply_to_rows(self, bp_mod):
+        # The override-application now lives in run_dry_run_core (the RQ-job
+        # body). Drive it directly and assert the matcher saw the patched rows.
         old_rows = [
             {'item_id': 'a', 'file_path': '', 'title': 't', 'author': 'x', 'album': 'y', 'album_artist': 'x'},
         ]
@@ -275,18 +294,33 @@ class TestDryRunSourcePathGate:
              patch.object(bp_mod, '_load_state', return_value={'source_path_overrides': overrides}), \
              patch.object(bp_mod, '_load_score_rows_as_dicts', return_value=old_rows), \
              patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
+             patch.object(bp_mod, '_store_target_meta'), \
+             patch.object(bp_mod, '_albums_payload', return_value=[]), \
              patch.object(bp_mod, '_update_state'), \
              patch('importlib.import_module', return_value=fake_matcher):
-            p.fetch_all_tracks.return_value = []
-            # _detect_source_path_format should NOT be called because overrides exist
-            with patch.object(bp_mod, '_detect_source_path_format') as mock_detect:
-                resp = client.post('/api/migration/dry-run', json={'session_id': 1})
-                mock_detect.assert_not_called()
+            # Non-empty target catalog so the 0-tracks safety guard doesn't fire.
+            p.fetch_all_tracks.return_value = [{'id': 'n1', 'path': '/x', 'title': 't'}]
+            result = bp_mod.run_dry_run_core(1, allow_title_artist_only=False)
 
-        assert resp.status_code == 200
+        assert result.get('matched') == 0
         # Matcher received rows with the overridden path
         called_old_rows = fake_matcher.match_tracks.call_args[0][0]
         assert called_old_rows[0]['file_path'] == '/music/real.mp3'
+
+    def test_dry_run_zero_tracks_guard_aborts(self, bp_mod):
+        # Safety guard: an empty target catalog must NOT proceed to matching
+        # (which would orphan the whole library); it returns a controlled error.
+        with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {})), \
+             patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
+             patch.object(bp_mod, '_patch_state_keys'), \
+             patch.object(bp_mod, '_load_score_rows_as_dicts') as mock_load, \
+             patch.object(bp_mod, '_store_target_meta') as mock_store:
+            p.fetch_all_tracks.return_value = []
+            result = bp_mod.run_dry_run_core(1)
+
+        assert 'error' in result and '0 tracks' in result['error']
+        mock_load.assert_not_called()
+        mock_store.assert_not_called()
 
 
 class TestExecuteGate:

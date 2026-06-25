@@ -237,6 +237,12 @@ function createInputField(field, value) {
         }
         if (field.secret) {
             input.type = 'password';
+            // Stop the browser password manager from autofilling a saved
+            // credential over the masked '********' placeholder; that wrong
+            // value would then be submitted and overwrite the stored secret.
+            input.setAttribute('autocomplete', 'new-password');
+        } else {
+            input.setAttribute('autocomplete', 'off');
         }
     }
     if (field.required) {

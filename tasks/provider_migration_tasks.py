@@ -218,9 +218,12 @@ def execute_provider_migration(session_id):
                 f"'{session['status']}', expected 'dry_run_ready'"
             )
 
-        # 3. Merge dry_run auto-matches with manual matches into a flat dict
+        # 3. Merge dry_run auto-matches with manual matches into a flat dict.
+        #    Target metadata lives in the migration_target_meta side table
+        #    (kept out of state so the wizard's per-click writes stay small),
+        #    so read it here rather than from the session JSON.
         mapping = _merge_mapping(state)
-        new_meta = state.get('new_meta') or {}
+        new_meta = _load_new_meta_from_table(cur, session_id)
         selected_libraries = state.get('selected_libraries')
         logger.info("provider migration: %d tracks will be rewritten", len(mapping))
 
@@ -381,6 +384,29 @@ def _merge_mapping(state):
     return deduped
 
 
+def _load_new_meta_from_table(cur, session_id):
+    """Read target-provider metadata for the session from the
+    ``migration_target_meta`` side table into the ``{new_id: {...}}`` dict shape
+    the transaction expects. Returns ``{}`` if the table is absent (pre-feature
+    sessions / older restores) so the score metadata refresh is simply skipped.
+    """
+    cur.execute("SELECT to_regclass('public.migration_target_meta')")
+    if cur.fetchone()[0] is None:
+        return {}
+    cur.execute(
+        "SELECT new_id, path, title, artist, album, album_artist, year "
+        "FROM migration_target_meta WHERE session_id = %s",
+        (session_id,),
+    )
+    out = {}
+    for r in (cur.fetchall() or []):
+        out[r[0]] = {
+            'path': r[1], 'title': r[2], 'artist': r[3],
+            'album': r[4], 'album_artist': r[5], 'year': r[6],
+        }
+    return out
+
+
 def _run_migration_transaction(cur, mapping, new_meta,
                                fk_embedding, fk_clap_embedding,
                                fk_lyrics_embedding, lyrics_exists,
@@ -405,17 +431,24 @@ def _run_migration_transaction(cur, mapping, new_meta,
         " new_id TEXT NOT NULL UNIQUE"
         ") ON COMMIT DROP"
     )
-    for old_id, new_id in mapping.items():
+    _rows = list(mapping.items())
+    for i in range(0, len(_rows), 1000):
+        chunk = _rows[i:i + 1000]
+        placeholders = ",".join(["(%s,%s)"] * len(chunk))
+        flat = [v for pair in chunk for v in pair]
         cur.execute(
-            "INSERT INTO item_id_migration_map (old_id, new_id) VALUES (%s, %s)",
-            (old_id, new_id),
+            "INSERT INTO item_id_migration_map (old_id, new_id) VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
+            flat,
         )
+    # stats so the planner uses a hash anti-join for the orphan delete below
+    cur.execute("ANALYZE item_id_migration_map")
 
-    # 3. Delete orphans FIRST so the FK cascades clean the embedding tables
-    #    before we start rewriting.
+    # 3. Delete orphans FIRST so the FK cascades clean the embedding tables.
+    #    NOT EXISTS (anti-join), not NOT IN: NOT IN can't hash a 100k+ row
+    #    subquery and degrades to O(N^2).
     cur.execute(
-        "DELETE FROM score WHERE item_id NOT IN "
-        "(SELECT old_id FROM item_id_migration_map)"
+        "DELETE FROM score s WHERE NOT EXISTS "
+        "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = s.item_id)"
     )
 
     # 4. Drop FKs on the embedding tables — Postgres has ON DELETE CASCADE
@@ -501,12 +534,13 @@ def _run_migration_transaction(cur, mapping, new_meta,
             " new_album TEXT, new_album_artist TEXT, new_year INTEGER"
             ") ON COMMIT DROP"
         )
-        for new_id, meta in new_meta.items():
-            cur.execute(
-                "INSERT INTO migration_new_meta "
-                "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
+        _metas = list(new_meta.items())
+        for i in range(0, len(_metas), 500):
+            chunk = _metas[i:i + 500]
+            placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+            flat = []
+            for new_id, meta in chunk:
+                flat.extend((
                     _sanitize_text(new_id),
                     _sanitize_text(meta.get('path')),
                     _sanitize_text(meta.get('title')),
@@ -514,7 +548,12 @@ def _run_migration_transaction(cur, mapping, new_meta,
                     _sanitize_text(meta.get('album')),
                     _sanitize_text(meta.get('album_artist')),
                     meta.get('year'),
-                ),
+                ))
+            cur.execute(
+                "INSERT INTO migration_new_meta "
+                "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
+                "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
+                flat,
             )
         cur.execute(
             "UPDATE score s SET "
@@ -690,3 +729,28 @@ def _post_commit_reload(redis):
         restart_manager.publish_restart_request()
     except Exception as e:
         logger.warning("restart_manager.publish_restart_request() failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# RQ entry points for the wizard's read-heavy steps (dry-run, source-path
+# refresh). They run the fetch+match / fetch+overrides work in a worker so a
+# 100k+ library can't time out the Flask request. Both push a Flask app context
+# (mirroring the analysis tasks) so app_provider_migration's get_db helpers
+# work, then delegate to the shared core functions.
+# ---------------------------------------------------------------------------
+
+def dry_run_provider_migration(session_id, allow_title_artist_only=False):
+    """RQ job: run the migration dry-run (fetch target catalog + match)."""
+    from app import app
+    with app.app_context():
+        import app_provider_migration
+        return app_provider_migration.run_dry_run_core(
+            session_id, allow_title_artist_only=allow_title_artist_only)
+
+
+def source_refresh_provider_migration(session_id):
+    """RQ job: re-probe the current provider for real file paths."""
+    from app import app
+    with app.app_context():
+        import app_provider_migration
+        return app_provider_migration.run_source_refresh_core(session_id)

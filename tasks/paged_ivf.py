@@ -23,11 +23,15 @@ reads the nearest ``nprobe`` cells from Postgres, and caches decoded cells in a
 per-request ``_CellLruCache`` (L1, thread-local) in front of a process-wide
 ``_GlobalCellCache`` (L2, byte-bounded by IVF_GLOBAL_CACHE_MB, idle-dropped).
 
-No quantization is used: stored vectors are full-precision float32
-(unit-normalized when the metric is angular, so queries skip per-call
-renormalization). Decoded cells (mmap views or ``unpack_cell`` output) are
-read-only, so the same arrays are shared by reference across threads without
-copying; callers that mutate a vector copy it first.
+Stored vectors are quantized per ``IVF_STORAGE_DTYPE`` to shrink the mmap /
+page-cache footprint and the per-query memory bandwidth: int8 for the angular
+(cosine) metric, float16 for euclidean/dot, or float32 to disable quantization
+(see :mod:`tasks.ivf_quant`). Distances are computed directly in the stored
+dtype via NumKong's SIMD kernels (NumPy fallback). Coarse centroids stay
+float32 and are ranked in full precision, so recall is unchanged. Decoded cells
+(mmap views or ``unpack_cell`` output) are read-only, so the same arrays are
+shared by reference across threads without copying; callers that mutate or
+dequantize a vector copy it first.
 
 Format is self-describing and versioned (directory magic ``AMIV``, cell-file
 magic ``AMVF``).
@@ -60,11 +64,34 @@ import psycopg2
 
 import config
 
+from . import ivf_quant as quant
+
 logger = logging.getLogger(__name__)
+
+_warned_numkong_missing = False
+
+
+def _warn_numkong_missing_once(dtype_name: str) -> None:
+    # Quantized cells without the native SIMD kernels still return correct results.
+    global _warned_numkong_missing
+    if _warned_numkong_missing:
+        return
+    _warned_numkong_missing = True
+    logger.warning(
+        "NumKong native kernels unavailable; %s IVF cells fall back to the NumPy distance "
+        "path (correct results, slower per-scan compute). Install the numkong wheel for this "
+        "platform, or set IVF_STORAGE_DTYPE=f32 to skip quantization.",
+        dtype_name,
+    )
+
 
 _MAGIC = b"AMIV"
 _VERSION = 1
-_HEADER_FMT = "<4sIBBxxIII"
+# magic, version, metric(B), normalized(B), storage_dtype(B), pad, dim, nlist, n_items.
+# The storage_dtype byte reuses one of the old pad bytes, so blobs written before
+# quantization existed carry 0 there and read back as float32 (DTYPE_F32) -- no
+# version bump, full backward compatibility.
+_HEADER_FMT = "<4sIBBBxIII"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 
 _METRIC_TO_CODE = {"angular": 0, "euclidean": 1, "dot": 2}
@@ -91,6 +118,7 @@ def pack_directory(
     dim: int,
     metric: str,
     normalized: bool = False,
+    storage_dtype: int = 0,
 ) -> bytes:
     """Serialize the resident directory (centroids + id maps) into one blob."""
     centroids = np.ascontiguousarray(centroids, dtype=np.float32)
@@ -103,7 +131,7 @@ def pack_directory(
         raise ValueError(f"centroid dim {centroids.shape[1]} != dim {dim}")
 
     buf = io.BytesIO()
-    buf.write(struct.pack(_HEADER_FMT, _MAGIC, _VERSION, _metric_code(metric), 1 if normalized else 0, dim, nlist, n_items))
+    buf.write(struct.pack(_HEADER_FMT, _MAGIC, _VERSION, _metric_code(metric), 1 if normalized else 0, int(storage_dtype), dim, nlist, n_items))
     buf.write(centroids.tobytes())
     buf.write(id2cell.tobytes())
     id_blob = io.BytesIO()
@@ -117,16 +145,17 @@ def pack_directory(
     return buf.getvalue()
 
 
-def unpack_directory(blob: bytes) -> Tuple[np.ndarray, np.ndarray, List[str], int, str, bool]:
+def unpack_directory(blob: bytes) -> Tuple[np.ndarray, np.ndarray, List[str], int, str, bool, int]:
     """Inverse of :func:`pack_directory`.
 
-    Returns ``(centroids, id2cell, item_ids, dim, metric, normalized)``. Blobs
-    written before the normalized flag existed carry a zero in that byte and so
-    report ``normalized=False``, keeping old indexes correct.
+    Returns ``(centroids, id2cell, item_ids, dim, metric, normalized,
+    storage_dtype)``. Blobs written before the normalized flag / storage_dtype
+    byte existed carry zeros there and so report ``normalized=False`` and
+    ``storage_dtype=DTYPE_F32``, keeping old indexes correct.
     """
     if len(blob) < _HEADER_SIZE:
         raise ValueError(f"directory blob too short ({len(blob)} bytes)")
-    magic, version, metric_code, normalized, dim, nlist, n_items = struct.unpack_from(_HEADER_FMT, blob, 0)
+    magic, version, metric_code, normalized, storage_dtype, dim, nlist, n_items = struct.unpack_from(_HEADER_FMT, blob, 0)
     if magic != _MAGIC:
         raise ValueError(f"directory magic mismatch: {magic!r}")
     if version != _VERSION:
@@ -143,30 +172,31 @@ def unpack_directory(blob: bytes) -> Tuple[np.ndarray, np.ndarray, List[str], in
         pos += 2
         item_ids.append(blob[pos:pos + slen].decode("utf-8"))
         pos += slen
-    return centroids.copy(), id2cell, item_ids, int(dim), _CODE_TO_METRIC.get(metric_code, "angular"), bool(normalized)
+    return centroids.copy(), id2cell, item_ids, int(dim), _CODE_TO_METRIC.get(metric_code, "angular"), bool(normalized), int(storage_dtype)
 
 
-def pack_cell(int_ids: np.ndarray, vecs: np.ndarray) -> bytes:
-    """Pack a cell as ``[n int32 ids][n*dim float32 vectors]``."""
+def pack_cell(int_ids: np.ndarray, vecs: np.ndarray, storage_dtype: int = 0) -> bytes:
+    """Pack a cell as ``[n int32 ids][n*dim vectors]``, vectors in ``storage_dtype``."""
     int_ids = np.ascontiguousarray(int_ids, dtype=np.int32)
-    vecs = np.ascontiguousarray(vecs, dtype=np.float32)
-    return int_ids.tobytes() + vecs.tobytes()
+    enc = np.ascontiguousarray(quant.encode_vectors(vecs, storage_dtype))
+    return int_ids.tobytes() + enc.tobytes()
 
 
-def unpack_cell(blob: bytes, dim: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Inverse of :func:`pack_cell`."""
-    record = 4 + dim * 4
+def unpack_cell(blob: bytes, dim: int, storage_dtype: int = 0) -> Tuple[np.ndarray, np.ndarray]:
+    """Inverse of :func:`pack_cell` (vectors come back in ``storage_dtype``)."""
+    record = 4 + dim * quant.elem_size(storage_dtype)
     if record <= 0 or len(blob) % record != 0:
         raise ValueError(f"cell blob size {len(blob)} not a multiple of record size {record}")
     n = len(blob) // record
     ids = np.frombuffer(blob, dtype=np.int32, count=n, offset=0)
-    vecs = np.frombuffer(blob, dtype=np.float32, count=n * dim, offset=n * 4).reshape(n, dim)
+    vecs = np.frombuffer(blob, dtype=quant.np_dtype(storage_dtype), count=n * dim, offset=n * 4).reshape(n, dim)
     return ids, vecs
 
 
 _CELLFILE_MAGIC = b"AMVF"
-_CELLFILE_VERSION = 1
-_CELLFILE_HEADER_FMT = "<4sIIII"
+_CELLFILE_VERSION = 2
+_CELLFILE_HEADER_FMT_V1 = "<4sIIII"  # magic, version, dim, n_cells, metric (float32 cells)
+_CELLFILE_HEADER_FMT = "<4sIIIII"    # v2 adds a trailing storage_dtype code
 _CELLFILE_HEADER_SIZE = struct.calcsize(_CELLFILE_HEADER_FMT)
 _CELLFILE_ROW_FMT = "<IQQ"
 _CELLFILE_ROW_SIZE = struct.calcsize(_CELLFILE_ROW_FMT)
@@ -192,14 +222,14 @@ def _prune_old_cell_files(cache_dir: str, index_name: str, keep_path: str) -> No
                 )
 
 
-def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, path: str) -> int:
+def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, storage_dtype: int, path: str) -> int:
     """Stream every cell of ``index_name`` from Postgres into a local mmap file.
 
     Two passes keep RAM bounded: pass 1 reads only ``octet_length`` to lay out the
     offset table; pass 2 streams the blobs in cell_id order in small chunks. Writes
     to ``path + '.tmp'`` then atomically renames. Returns the number of cells.
     """
-    record = 4 + int(dim) * 4
+    record = 4 + int(dim) * quant.elem_size(storage_dtype)
     with db_conn.cursor() as cur:
         cur.execute(
             f"SELECT cell_id, octet_length(cell_data) FROM {IVF_CELL_TABLE} "
@@ -220,7 +250,7 @@ def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, path:
 
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        f.write(struct.pack(_CELLFILE_HEADER_FMT, _CELLFILE_MAGIC, _CELLFILE_VERSION, int(dim), n_cells, _metric_code(metric)))
+        f.write(struct.pack(_CELLFILE_HEADER_FMT, _CELLFILE_MAGIC, _CELLFILE_VERSION, int(dim), n_cells, _metric_code(metric), int(storage_dtype)))
         for cid, off, ln in table:
             f.write(struct.pack(_CELLFILE_ROW_FMT, cid, off, ln))
         chunk = 64
@@ -245,20 +275,31 @@ def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, path:
 
 
 def _open_cell_file(path: str):
-    """Open a cell file as a read-only memmap; return ``(mmap, dim, {cell_id:(off,len)})``."""
+    """Open a cell file as a read-only memmap; return ``(mmap, dim, offsets, storage_dtype)``.
+
+    Accepts the v1 header (float32 cells, no dtype field) and the v2 header (adds a
+    trailing storage_dtype code), so a cache file written by an older build still
+    maps and reads as float32.
+    """
     mm = np.memmap(path, dtype=np.uint8, mode="r")
-    head = bytes(mm[:_CELLFILE_HEADER_SIZE])
-    magic, version, dim, n_cells, _metric_code_v = struct.unpack(_CELLFILE_HEADER_FMT, head)
+    magic, version = struct.unpack_from("<4sI", bytes(mm[:8]), 0)
     if magic != _CELLFILE_MAGIC:
         raise ValueError(f"cell file magic mismatch: {magic!r}")
-    if version != _CELLFILE_VERSION:
+    if version == 1:
+        hsize = struct.calcsize(_CELLFILE_HEADER_FMT_V1)
+        _m, _v, dim, n_cells, _metric_code_v = struct.unpack(_CELLFILE_HEADER_FMT_V1, bytes(mm[:hsize]))
+        storage_dtype = quant.DTYPE_F32
+    elif version == 2:
+        hsize = _CELLFILE_HEADER_SIZE
+        _m, _v, dim, n_cells, _metric_code_v, storage_dtype = struct.unpack(_CELLFILE_HEADER_FMT, bytes(mm[:hsize]))
+    else:
         raise ValueError(f"unsupported cell file version: {version}")
-    table = bytes(mm[_CELLFILE_HEADER_SIZE:_CELLFILE_HEADER_SIZE + n_cells * _CELLFILE_ROW_SIZE])
+    table = bytes(mm[hsize:hsize + n_cells * _CELLFILE_ROW_SIZE])
     offsets = {}
     for i in range(n_cells):
         cid, off, ln = struct.unpack_from(_CELLFILE_ROW_FMT, table, i * _CELLFILE_ROW_SIZE)
         offsets[int(cid)] = (int(off), int(ln))
-    return mm, int(dim), offsets
+    return mm, int(dim), offsets, int(storage_dtype)
 
 
 def _vec_in_cell(ids: np.ndarray, vecs: np.ndarray, int_id: int) -> Optional[np.ndarray]:
@@ -864,18 +905,21 @@ class PagedIvfIndex:
         query_cache_bytes: Optional[int] = None,
         read_batch_cells: Optional[int] = None,
         normalized: bool = False,
+        storage_dtype: int = 0,
         mmap_obj=None,
         cell_offsets: Optional[Dict[int, Tuple[int, int]]] = None,
     ):
         self._dim = int(dim)
         self._metric = (metric or "angular").lower()
         self._normalized = bool(normalized)
+        self._storage_dtype = int(storage_dtype)
+        self._np_vec_dtype = quant.np_dtype(self._storage_dtype)
         self._index_name = index_name
         self._conn_factory = conn_factory
         self._mmap = mmap_obj
         self._cell_offsets = cell_offsets or {}
         self._n_items = len(item_ids)
-        self._record_size = 4 + self._dim * 4
+        self._record_size = 4 + self._dim * quant.elem_size(self._storage_dtype)
         self._id2cell = np.ascontiguousarray(id2cell, dtype=np.uint32)
         self._nprobe = int(nprobe if nprobe is not None else config.IVF_NPROBE)
         _query_cache_bytes = int(
@@ -977,7 +1021,7 @@ class PagedIvfIndex:
         if n == 0:
             return None
         ids = sub[:4 * n].view(np.int32)
-        vecs = sub[4 * n:].view(np.float32).reshape(n, self._dim)
+        vecs = sub[4 * n:].view(self._np_vec_dtype).reshape(n, self._dim)
         return ids, vecs
 
     def _iter_db_cells(self, cur, cell_ids):
@@ -988,7 +1032,7 @@ class PagedIvfIndex:
             (self._index_name, list(cell_ids)),
         )
         for cell_id, blob in cur.fetchall():
-            ids, vecs = unpack_cell(blob, self._dim)
+            ids, vecs = unpack_cell(blob, self._dim, self._storage_dtype)
             yield int(cell_id), ids, vecs
 
     def _read_cells(self, cell_ids: List[int], cache: _CellLruCache) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
@@ -1038,22 +1082,16 @@ class PagedIvfIndex:
         return out
 
     def _prep_query(self, q: np.ndarray) -> np.ndarray:
-        """Per-query precompute reused across every probed cell (angular: normalize once)."""
-        if self._metric == "angular":
-            return q / (float(np.linalg.norm(q)) + 1e-12)
-        return q
+        """Per-query precompute reused across every probed cell.
+
+        Returns the query in the stored dtype (angular: unit-normalized then
+        scaled), so the per-cell scan compares like-typed vectors.
+        """
+        return quant.prepare_query(q, self._storage_dtype, self._metric)
 
     def _cell_distances(self, qp: np.ndarray, vecs: np.ndarray) -> np.ndarray:
         """Distances for one cell from a prepared query ``qp`` (smaller = nearer)."""
-        if self._metric == "euclidean":
-            diffs = vecs - qp[None, :]
-            return np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
-        if self._metric == "dot":
-            return (-(vecs @ qp)).astype(np.float32)
-        if self._normalized:
-            return (1.0 - np.clip(vecs @ qp, -1.0, 1.0)).astype(np.float32)
-        vn = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True).astype(np.float32) + 1e-12)
-        return (1.0 - np.clip(vn @ qp, -1.0, 1.0)).astype(np.float32)
+        return quant.cell_distances(self._metric, self._storage_dtype, qp, vecs, self._normalized)
 
     def _distances(self, q: np.ndarray, vecs: np.ndarray) -> np.ndarray:
         return self._cell_distances(self._prep_query(q), vecs)
@@ -1166,7 +1204,7 @@ class PagedIvfIndex:
             entry = cache.get_cell(cell_id)
             v = _vec_in_cell(entry[0], entry[1], vid) if entry is not None else None
             if v is not None:
-                out[vid] = np.array(v, dtype=np.float32)
+                out[vid] = quant.decode_row(v, self._storage_dtype)
             else:
                 need_cells.setdefault(cell_id, []).append(vid)
         if need_cells:
@@ -1179,7 +1217,7 @@ class PagedIvfIndex:
                 for vid in vids:
                     v = _vec_in_cell(ids, vecs, vid)
                     if v is not None:
-                        out[vid] = np.array(v, dtype=np.float32)
+                        out[vid] = quant.decode_row(v, self._storage_dtype)
         return out
 
     def get_vector(self, int_id):
@@ -1309,6 +1347,7 @@ def _split_cells_over_cap(
     cells: List[Tuple[int, np.ndarray, np.ndarray]],
     dim: int,
     cap_bytes: int,
+    elem_size: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, np.ndarray, np.ndarray]]]:
     """Guarantee every cell packs to at most ``cap_bytes`` by splitting oversized ones.
 
@@ -1319,10 +1358,12 @@ def _split_cells_over_cap(
     extended) ``(centroids, id2cell, cells)``. This is the structural backstop that
     makes it impossible to write a cell BYTEA over the cap, no matter what the build
     produced -- the build's smaller per-cell target normally keeps it from firing.
-    A cell packs to exactly ``record_size`` bytes per record (no header), so a chunk
-    of ``cap_bytes // record_size`` records is always at most ``cap_bytes``.
+    A cell packs to exactly ``record_size`` bytes per record (no header), where
+    ``record_size`` reflects the stored ``elem_size`` (1 for i8, 2 for f16, 4 for
+    f32), so a chunk of ``cap_bytes // record_size`` records is always at most
+    ``cap_bytes``.
     """
-    record_size = 4 + dim * 4
+    record_size = 4 + dim * elem_size
     cap_records = max(1, cap_bytes // record_size)
     if all(int(ids.shape[0]) <= cap_records for _cid, ids, _vecs in cells):
         return centroids, id2cell, cells
@@ -1362,6 +1403,7 @@ def store_paged_ivf(
     metric: str,
     max_part_size_mb: Optional[int] = None,
     normalized: bool = False,
+    storage_dtype: int = 0,
 ) -> None:
     """Persist a built IVF index: directory blob in ``ivf_dir``, cells in ``ivf_cell``.
 
@@ -1381,14 +1423,15 @@ def store_paged_ivf(
     part_mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     part_bytes = part_mb * 1024 * 1024
 
-    centroids, id2cell, cells = _split_cells_over_cap(centroids, id2cell, cells, dim, part_bytes)
-    dir_blob = pack_directory(centroids, id2cell, item_ids, dim, metric, normalized=normalized)
+    esize = quant.elem_size(storage_dtype)
+    centroids, id2cell, cells = _split_cells_over_cap(centroids, id2cell, cells, dim, part_bytes, esize)
+    dir_blob = pack_directory(centroids, id2cell, item_ids, dim, metric, normalized=normalized, storage_dtype=storage_dtype)
     with db_conn.cursor() as cur:
         cur.execute(f"DELETE FROM {IVF_CELL_TABLE} WHERE index_name = %s", (index_name,))
         for cell_id, ids, vecs in cells:
             if ids.shape[0] == 0:
                 continue
-            packed = pack_cell(ids, vecs)
+            packed = pack_cell(ids, vecs, storage_dtype)
             cur.execute(
                 f"INSERT INTO {IVF_CELL_TABLE} (index_name, cell_id, cell_data) VALUES (%s, %s, %s)",
                 (index_name, int(cell_id), psycopg2.Binary(packed)),
@@ -1465,6 +1508,7 @@ def build_and_store_paged_ivf(
 
     metric = (metric or "angular").lower()
     normalized = metric == "angular"
+    storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), metric)
     train_mat = _normalize_rows(vectors) if normalized else vectors
 
     base_nlist = int(round(8.0 * np.sqrt(max(1, n_items))))
@@ -1499,7 +1543,7 @@ def build_and_store_paged_ivf(
         labels[start:start + 20000] = km.predict(train_mat[start:start + 20000])
 
     max_cell_bytes = min(config.IVF_MAX_CELL_MB, config.IVF_MAX_PART_SIZE_MB) * 1024 * 1024
-    max_cell_records = max(1, max_cell_bytes // (4 + dim * 4))
+    max_cell_records = max(1, max_cell_bytes // (4 + dim * quant.elem_size(storage_dtype)))
     int_ids = np.arange(n_items, dtype=np.int32)
 
     cells: List[Tuple[int, np.ndarray, np.ndarray]] = []
@@ -1526,9 +1570,10 @@ def build_and_store_paged_ivf(
             id2cell[grp] = assigned_cell
 
     final_centroids = np.ascontiguousarray(np.vstack(centroid_list), dtype=np.float32)
-    logger.info("IVF build '%s': %d cells after splitting (max_cell_records=%d).", index_name, len(centroid_list), max_cell_records)
+    logger.info("IVF build '%s': %d cells after splitting (max_cell_records=%d, storage=%s).",
+                index_name, len(centroid_list), max_cell_records, quant.dtype_name(storage_dtype))
     store_paged_ivf(db_conn, index_name, final_centroids, id2cell, list(item_ids), cells, dim, metric,
-                    max_part_size_mb=config.IVF_MAX_PART_SIZE_MB, normalized=normalized)
+                    max_part_size_mb=config.IVF_MAX_PART_SIZE_MB, normalized=normalized, storage_dtype=storage_dtype)
     return True
 
 
@@ -1543,12 +1588,13 @@ def has_paged_ivf(db_conn, index_name: str) -> bool:
         return False
 
 
-def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, dir_blob: bytes, label: str):
+def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, storage_dtype: int, dir_blob: bytes, label: str):
     """Export this index's cells to a local mmap file and open it.
 
-    The filename embeds a hash of the directory blob, so an unchanged index
-    reuses the existing file across restarts (no re-export) while a rebuild
-    produces a new file (versioned name = Windows-safe swap). Returns
+    The filename embeds a hash of the directory blob (which encodes the storage
+    dtype), so an unchanged index reuses the existing file across restarts (no
+    re-export) while a rebuild -- including one that changes the stored precision
+    -- produces a new file (versioned name = Windows-safe swap). Returns
     ``(mmap, offsets)`` or ``(None, None)`` to fall back to Postgres reads when
     the cache is disabled or the dir is not writable.
     """
@@ -1561,11 +1607,11 @@ def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, dir_b
         path = _cell_file_path(cache_dir, index_name, build_id)
         with _IVF_FILE_SWAP_LOCK:
             if not os.path.exists(path):
-                n = _export_cells_to_file(db_conn, index_name, dim, metric, path)
+                n = _export_cells_to_file(db_conn, index_name, dim, metric, storage_dtype, path)
                 logger.info("IVF index '%s' exported %d cells to %s.", label, n, path)
             _close_live_indexes(index_name)
             _prune_old_cell_files(cache_dir, index_name, path)
-        mm, _dim, offsets = _open_cell_file(path)
+        mm, _dim, offsets, _file_dtype = _open_cell_file(path)
         return mm, offsets
     except Exception as e:
         logger.warning("IVF index '%s' disk cell cache unavailable (%s); reading cells from Postgres.", label, e)
@@ -1575,7 +1621,7 @@ def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, dir_b
 def load_paged_ivf_index(
     db_conn,
     index_name: str,
-    expected_dim: int,
+    expected_dim: Optional[int],
     metric: str,
     conn_factory: Optional[Callable[[], "psycopg2.extensions.connection"]] = None,
     label: Optional[str] = None,
@@ -1593,16 +1639,35 @@ def load_paged_ivf_index(
     blob = load_segmented_blob(db_conn, IVF_DIR_TABLE, f"{index_name}__ivf_dir")
     if not blob:
         return None
-    centroids, id2cell, item_ids, dim, stored_metric, normalized = unpack_directory(bytes(blob))
+    centroids, id2cell, item_ids, dim, stored_metric, normalized, storage_dtype = unpack_directory(bytes(blob))
     if expected_dim is not None and dim != expected_dim:
         logger.error("IVF '%s': dimension mismatch db=%s expected=%s", label, dim, expected_dim)
+        return None
+
+    # Reject a stale-metric index (e.g. the artist index switched euclidean->angular):
+    # storage dtype can still match, so without this it would load under the old metric
+    # while the caller reranks under the new one. Treat as not built so it rebuilds.
+    if stored_metric and metric and str(stored_metric).lower() != str(metric).lower():
+        logger.warning(
+            "IVF index '%s' stored with metric '%s' but config now uses '%s'; treating as not built so it rebuilds.",
+            label, stored_metric, metric,
+        )
+        return None
+
+    # Reject a stale-precision index so it is rebuilt in the current format (no mixed f32/i8 cells).
+    expected_storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), stored_metric)
+    if int(storage_dtype) != int(expected_storage_dtype):
+        logger.warning(
+            "IVF index '%s' stored as %s but config now builds %s; treating as not built so it rebuilds.",
+            label, quant.dtype_name(storage_dtype), quant.dtype_name(expected_storage_dtype),
+        )
         return None
 
     if conn_factory is None:
         from app_helper import get_db
         conn_factory = get_db
 
-    mmap_obj, cell_offsets = _setup_disk_cell_file(db_conn, index_name, dim, stored_metric or metric, bytes(blob), label)
+    mmap_obj, cell_offsets = _setup_disk_cell_file(db_conn, index_name, dim, stored_metric or metric, storage_dtype, bytes(blob), label)
 
     index = PagedIvfIndex(
         centroids=centroids,
@@ -1613,12 +1678,16 @@ def load_paged_ivf_index(
         index_name=index_name,
         conn_factory=conn_factory,
         normalized=normalized,
+        storage_dtype=storage_dtype,
         mmap_obj=mmap_obj,
         cell_offsets=cell_offsets,
     )
     id_map = {i: item_id for i, item_id in enumerate(item_ids)}
     reverse_id_map = {item_id: i for i, item_id in id_map.items()}
-    logger.info("IVF index '%s' loaded: %d items, %d cells, dim=%d, normalized=%s, disk_mmap=%s.", label, len(item_ids), centroids.shape[0], dim, normalized, mmap_obj is not None)
+    logger.info("IVF index '%s' loaded: %d items, %d cells, dim=%d, normalized=%s, storage=%s, disk_mmap=%s.",
+                label, len(item_ids), centroids.shape[0], dim, normalized, quant.dtype_name(storage_dtype), mmap_obj is not None)
+    if storage_dtype != quant.DTYPE_F32 and not quant.HAVE_NUMKONG:
+        _warn_numkong_missing_once(quant.dtype_name(storage_dtype))
     if config.IVF_PRELOAD_ALL:
         try:
             loaded = index.preload_all(db_conn)
@@ -1631,7 +1700,7 @@ def load_paged_ivf_index(
 def load_index_auto(
     db_conn,
     index_name: str,
-    expected_dim: int,
+    expected_dim: Optional[int],
     metric: str,
     label: Optional[str] = None,
 ):
