@@ -58,6 +58,8 @@ def upsert_artist_mappings(pairs):
     Bulk upsert (artist_name, artist_id) pairs in a single transaction.
     Collapses to one row per name (last id wins) and never raises.
     """
+    # materialize once: pairs may be a single-use generator
+    pairs = list(pairs)
     by_name = {}
     for name, aid in pairs:
         name, aid = _clean_mapping(name, aid)
