@@ -751,7 +751,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
             albums_no_tracks = 0
-            last_monitor_db_check = 0.0
+            last_monitor_db_check = float('-inf')  # -inf so the first reconcile always fires (monotonic epoch is boot-relative)
 
             def monitor_and_clear_jobs():
                 """Sync `albums_completed` with terminal RQ jobs and DB child-task statuses.
