@@ -78,6 +78,12 @@ def check_gpu_available():
     return _GPU_AVAILABLE
 
 
+def _to_gpu_array(X):
+    """Return X as a cupy array, avoiding a copy if it already is one."""
+    import cupy as cp
+    return X if isinstance(X, cp.ndarray) else cp.asarray(X)
+
+
 class GPUKMeans:
     """
     GPU-accelerated KMeans using cuML with CPU fallback.
@@ -96,14 +102,7 @@ class GPUKMeans:
         """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.cluster import KMeans as cuKMeans
-
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
 
                 # Create and fit GPU model
                 # Build kwargs dynamically to avoid passing None to cuKMeans
@@ -118,7 +117,7 @@ class GPUKMeans:
 
                 self.model = cuKMeans(**kmeans_kwargs)
 
-                labels = self.model.fit_predict(X_gpu)
+                labels = self.model.fit_predict(_to_gpu_array(X))
                 self.cluster_centers_ = self.model.cluster_centers_
                 self.labels_ = labels
                 self.using_gpu = True
@@ -162,14 +161,7 @@ class GPUDBSCAN:
         """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.cluster import DBSCAN as cuDBSCAN
-
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
 
                 # Create and fit GPU model
                 self.model = cuDBSCAN(
@@ -178,7 +170,7 @@ class GPUDBSCAN:
                     output_type='numpy'  # Return numpy arrays for compatibility
                 )
 
-                labels = self.model.fit_predict(X_gpu)
+                labels = self.model.fit_predict(_to_gpu_array(X))
                 self.labels_ = labels
                 self.using_gpu = True
 
@@ -216,14 +208,7 @@ class GPUPCA:
         """Fit the model and transform the data."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.decomposition import PCA as cuPCA
-
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
 
                 # Create and fit GPU model
                 self.model = cuPCA(
@@ -231,7 +216,7 @@ class GPUPCA:
                     output_type='numpy'  # Return numpy arrays for compatibility
                 )
 
-                X_transformed = self.model.fit_transform(X_gpu)
+                X_transformed = self.model.fit_transform(_to_gpu_array(X))
                 self.components_ = self.model.components_
                 self.explained_variance_ratio_ = self.model.explained_variance_ratio_
                 self.n_components_ = self.model.n_components_
@@ -263,13 +248,7 @@ class GPUPCA:
 
         if self.using_gpu:
             try:
-                import cupy as cp
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
-                return self.model.inverse_transform(X_gpu)
+                return self.model.inverse_transform(_to_gpu_array(X))
             except Exception as e:
                 logger.warning(f"GPU PCA inverse_transform failed: {e}")
                 # Fall through to use CPU model

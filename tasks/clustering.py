@@ -4,7 +4,6 @@ from collections import defaultdict
 import numpy as np
 import json
 import time
-import random
 import logging
 import uuid
 import traceback
@@ -535,46 +534,8 @@ def run_clustering_task(
             else:
                 _log_and_update("CLUSTERING_CLEANING is disabled — skipping deletion of existing automatic playlists.", 97)
 
-            # *** ABSOLUTE FINAL SHUFFLE: Guarantee random order right before database storage ***
-            logger.info("=== ABSOLUTE FINAL SHUFFLE: Randomizing all playlists before database storage ===")
-            final_shuffled_playlists = {}
-            for playlist_name, songs_list in final_playlists_with_details.items():
-                if len(songs_list) > 1:
-                    # ULTIMATE FISHER-YATES SHUFFLE - Last chance to randomize before database
-                    shuffled_list = songs_list.copy()
-                    n = len(shuffled_list)
-                    # Triple-source randomization: system time + random + position-based seed
-                    ultra_seed = int(time.time() * 1000000) % 1000000
-                    
-                    # Apply Fisher-Yates with enhanced randomization
-                    for i in range(n - 1, 0, -1):
-                        # Multi-source random index generation
-                        base_random = random.randint(0, i)
-                        time_component = ultra_seed % (i + 1)
-                        position_component = (i * 13 + 7) % (i + 1)
-                        j = (base_random + time_component + position_component) % (i + 1)
-                        
-                        # Perform swap
-                        shuffled_list[i], shuffled_list[j] = shuffled_list[j], shuffled_list[i]
-                        ultra_seed = (ultra_seed * 1664525 + 1013904223) % (2**32)
-                    
-                    # Verify shuffle effectiveness
-                    original_first_5 = [song[1] for song in songs_list[:5]]
-                    shuffled_first_5 = [song[1] for song in shuffled_list[:5]]
-                    
-                    logger.info(f"ULTIMATE SHUFFLE '{playlist_name}': {len(shuffled_list)} songs")
-                    logger.info(f"  ORIGINAL: {original_first_5}")
-                    logger.info(f"  SHUFFLED: {shuffled_first_5}")
-                    
-                    # Emergency fallback if shuffle didn't work (shouldn't happen)
-                    if original_first_5 == shuffled_first_5:
-                        logger.warning(f"Emergency fallback: manually reversing '{playlist_name}'")
-                        shuffled_list = list(reversed(shuffled_list))
-                    
-                    final_shuffled_playlists[playlist_name] = shuffled_list
-                else:
-                    final_shuffled_playlists[playlist_name] = songs_list
-                    logger.info(f"ULTIMATE SHUFFLE '{playlist_name}': only {len(songs_list)} songs, no shuffle needed")
+            # Songs were already shuffled per-playlist in _name_and_prepare_playlists.
+            final_shuffled_playlists = final_playlists_with_details
 
             _log_and_update(f"Creating {len(final_shuffled_playlists)} new playlists...", 98)
             for name, songs_with_details in final_shuffled_playlists.items():
