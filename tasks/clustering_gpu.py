@@ -78,6 +78,12 @@ def check_gpu_available():
     return _GPU_AVAILABLE
 
 
+def _to_gpu_array(X):
+    """Return X as a cupy array, avoiding a copy if it already is one."""
+    import cupy as cp
+    return X if isinstance(X, cp.ndarray) else cp.asarray(X)
+
+
 class GPUKMeans:
     """
     GPU-accelerated KMeans using cuML with CPU fallback.
@@ -96,14 +102,9 @@ class GPUKMeans:
         """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.cluster import KMeans as cuKMeans
 
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
+                X_gpu = _to_gpu_array(X)
 
                 # Create and fit GPU model
                 # Build kwargs dynamically to avoid passing None to cuKMeans
@@ -162,14 +163,9 @@ class GPUDBSCAN:
         """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.cluster import DBSCAN as cuDBSCAN
 
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
+                X_gpu = _to_gpu_array(X)
 
                 # Create and fit GPU model
                 self.model = cuDBSCAN(
@@ -216,14 +212,9 @@ class GPUPCA:
         """Fit the model and transform the data."""
         if check_gpu_available():
             try:
-                import cupy as cp
                 from cuml.decomposition import PCA as cuPCA
 
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
+                X_gpu = _to_gpu_array(X)
 
                 # Create and fit GPU model
                 self.model = cuPCA(
@@ -263,12 +254,7 @@ class GPUPCA:
 
         if self.using_gpu:
             try:
-                import cupy as cp
-                # Convert to cupy array if needed
-                if not isinstance(X, cp.ndarray):
-                    X_gpu = cp.asarray(X)
-                else:
-                    X_gpu = X
+                X_gpu = _to_gpu_array(X)
                 return self.model.inverse_transform(X_gpu)
             except Exception as e:
                 logger.warning(f"GPU PCA inverse_transform failed: {e}")

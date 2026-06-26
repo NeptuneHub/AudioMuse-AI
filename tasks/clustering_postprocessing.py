@@ -17,11 +17,12 @@ Functions:
 
 import logging
 import numpy as np
-import time
 import random
 import re
 from scipy.spatial.distance import cdist
 from psycopg2.extras import DictCursor
+
+from .clustering_helper import _shuffle_playlist_songs
 
 
 logger = logging.getLogger(__name__)
@@ -350,46 +351,10 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                 filtered_songs = [song for song in songs_sorted_by_title if song[0] in filtered_item_ids]
                 
                 logger.debug(f"{log_prefix}Filtering complete, now have {len(filtered_songs)} songs in ALPHABETICAL order")
-                
-                # *** NOW SHUFFLE: Distance filtering is complete, safe to randomize order for user experience ***
-                # IMPORTANT: Filtering MUST happen on sorted songs, shuffling MUST happen after filtering
-                
-                # *** COMPLETELY NEW SHUFFLE ALGORITHM - FISHER-YATES MANUAL IMPLEMENTATION ***
-                shuffled_songs = filtered_songs.copy()
-                n = len(shuffled_songs)
-                
-                if n > 1:
-                    # Manual Fisher-Yates shuffle - guaranteed to work differently than random.shuffle
-                    # Use current time in microseconds as additional randomness
-                    current_time_seed = int(time.time() * 1000000) % 1000000
-                    
-                    for i in range(n - 1, 0, -1):
-                        # Generate random index using multiple sources of randomness
-                        j = (random.randint(0, i) + current_time_seed + i) % (i + 1)
-                        # Swap elements
-                        shuffled_songs[i], shuffled_songs[j] = shuffled_songs[j], shuffled_songs[i]
-                        current_time_seed = (current_time_seed * 1103515245 + 12345) % (2**31)  # Linear congruential generator
-                    
-                    # Verify the shuffle actually worked
-                    original_titles = [song[1] for song in filtered_songs]
-                    shuffled_titles = [song[1] for song in shuffled_songs]
-                    
-                    # Check if ANY position changed (not just first song)
-                    positions_changed = sum(1 for i in range(len(original_titles)) if original_titles[i] != shuffled_titles[i])
-                    
-                    logger.info(f"{log_prefix}FISHER-YATES SHUFFLED '{playlist_name}': {n} songs, {positions_changed}/{n} positions changed")
-                    logger.info(f"{log_prefix}BEFORE SHUFFLE: First 5 titles = {original_titles[:5]}")
-                    logger.info(f"{log_prefix}AFTER SHUFFLE:  First 5 titles = {shuffled_titles[:5]}")
-                    logger.info(f"{log_prefix}BEFORE SHUFFLE: Last 3 titles = {original_titles[-3:]}")
-                    logger.info(f"{log_prefix}AFTER SHUFFLE:  Last 3 titles = {shuffled_titles[-3:]}")
-                    
-                    if positions_changed == 0:
-                        logger.error(f"{log_prefix}SHUFFLE COMPLETELY FAILED FOR '{playlist_name}' - FORCE REVERSING ORDER")
-                        shuffled_songs = list(reversed(shuffled_songs))
-                        logger.info(f"{log_prefix}FORCE REVERSED: First 5 titles = {[song[1] for song in shuffled_songs[:5]]}")
-                else:
-                    logger.info(f"{log_prefix}Playlist '{playlist_name}' has only {n} songs - no shuffling needed")
-                
+
+                # Filtering is done on sorted songs; randomize the order now for the user.
+                shuffled_songs = _shuffle_playlist_songs(filtered_songs, playlist_name)
+
                 filtered_playlists[playlist_name] = shuffled_songs
                 total_songs_after += len(shuffled_songs)
                 
