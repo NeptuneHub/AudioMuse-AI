@@ -359,7 +359,7 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                     logger.debug(f"{log_prefix}Playlist '{playlist_name}': no songs filtered ({len(songs_list)} songs)")
 
             except Exception as e:
-                logger.error(f"{log_prefix}Error filtering playlist '{playlist_name}': {e}. Keeping original playlist.", exc_info=True)
+                logger.exception(f"{log_prefix}Error filtering playlist '{playlist_name}': {e}. Keeping original playlist.")
                 filtered_playlists[playlist_name] = songs_list
                 total_songs_after += len(songs_list)
         
