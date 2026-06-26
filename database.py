@@ -838,6 +838,8 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
             # Create 'task_status' table
             cur.execute("CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            # Child-task lookups (analysis/clustering monitors) filter by parent_task_id every poll.
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)")
             # Migrate 'start_time' and 'end_time' columns
             for col_name in ['start_time', 'end_time']:
                 cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
@@ -1189,14 +1191,14 @@ def get_active_main_task(task_type=None):
     return dict(active_task) if active_task else None
 
 def get_child_tasks_from_db(parent_task_id):
-    """Fetches all child tasks for a given parent_task_id from the database."""
-    conn = get_db() # This now calls the function within this file
+    """Fetch a parent's child tasks (task_id/status/sub_type_identifier). The heavy
+    details JSON is intentionally not selected; monitors poll often and don't read
+    it, so pulling it ballooned memory at scale."""
+    conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    # MODIFIED: Select the 'details' column as well for the final check.
-    cur.execute("SELECT task_id, status, sub_type_identifier, details FROM task_status WHERE parent_task_id = %s", (parent_task_id,))
+    cur.execute("SELECT task_id, status, sub_type_identifier FROM task_status WHERE parent_task_id = %s", (parent_task_id,))
     tasks = cur.fetchall()
     cur.close()
-    # DictCursor returns a list of dictionary-like objects, convert to plain dicts
     return [dict(row) for row in tasks]
 
 

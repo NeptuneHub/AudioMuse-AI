@@ -189,6 +189,7 @@ CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_C
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
+ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
@@ -442,6 +443,19 @@ LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO"
 # CPU cost. Changing this alters the embeddings, so re-embed (drop the lyrics
 # tables) afterwards for consistency.
 LYRICS_GTE_MAX_TOKENS = int(os.environ.get("LYRICS_GTE_MAX_TOKENS", "512"))
+
+# Silero VAD tuning for the lyrics ASR pre-pass (16 kHz only). The retry floor is
+# a second, more permissive threshold tried only when the primary pass finds no
+# speech. Durations are in milliseconds.
+LYRICS_VAD_THRESHOLD = float(os.environ.get("LYRICS_VAD_THRESHOLD", "0.2"))
+# Hysteresis floor; derived from the primary threshold when unset.
+LYRICS_VAD_NEG_THRESHOLD = (float(os.environ["LYRICS_VAD_NEG_THRESHOLD"])
+    if "LYRICS_VAD_NEG_THRESHOLD" in os.environ
+    else max(0.01, LYRICS_VAD_THRESHOLD - 0.15))
+LYRICS_VAD_RETRY_FLOOR = float(os.environ.get("LYRICS_VAD_RETRY_FLOOR", "0.15"))
+LYRICS_VAD_MIN_SILENCE_MS = int(os.environ.get("LYRICS_VAD_MIN_SILENCE_MS", "1000"))
+LYRICS_VAD_MIN_SPEECH_MS = int(os.environ.get("LYRICS_VAD_MIN_SPEECH_MS", "250"))
+LYRICS_VAD_SPEECH_PAD_MS = int(os.environ.get("LYRICS_VAD_SPEECH_PAD_MS", "400"))
 
 # --- SemGrove (Semantic + Groove) merged index weights ---
 # Controls how much each signal contributes to the merged cosine similarity.

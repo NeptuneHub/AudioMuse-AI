@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 _audio_session = None  # For audio analysis (worker containers)
 _text_session = None   # For text search (Flask containers)
 _tokenizer = None
-_cached_dummy_input_ids = None  # Reusable dummy input for audio-only inference
 # Small dictionary of text embeddings for mood/feature labels that persists
 # across jobs in the same worker process (which may be reused by RQ).
 _label_text_embeddings_cache = None  # {'mood': np.ndarray, 'feature': np.ndarray}
@@ -79,6 +78,22 @@ def _static_shape_model_bytes(model_path):
     return model.SerializeToString()
 
 
+def _clap_session_options(label):
+    import onnxruntime as ort
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options.log_severity_level = 3
+    sess_options.enable_cpu_mem_arena = False
+    sess_options.enable_mem_pattern = False
+    if config.CLAP_PYTHON_MULTITHREADS:
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+        logger.info("CLAP %s: Using Python threading, ONNX single-threaded", label)
+    else:
+        logger.info("CLAP %s: Using ONNX Runtime automatic thread management", label)
+    return sess_options
+
+
 def _load_audio_model():
     """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
     import onnxruntime as ort
@@ -102,19 +117,8 @@ def _load_audio_model():
     if has_external_data:
         logger.info(f"External data file detected: {data_file}")
 
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_options.log_severity_level = 3
-    sess_options.enable_cpu_mem_arena = False
-    sess_options.enable_mem_pattern = False
+    sess_options = _clap_session_options("Audio")
 
-    if not config.CLAP_PYTHON_MULTITHREADS:
-        logger.info("CLAP Audio: Using ONNX Runtime automatic thread management")
-    else:
-        sess_options.intra_op_num_threads = 1
-        sess_options.inter_op_num_threads = 1
-        logger.info("CLAP Audio: Using Python threading (auto-calculated threads), ONNX single-threaded")
-    
     # GPU support: ONNX Runtime handles CUDA availability internally
     session = None
     
@@ -212,19 +216,8 @@ def _load_text_model():
     model_path = config.CLAP_TEXT_MODEL_PATH
     logger.info(f"Loading CLAP text model from {model_path}...")
     
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess_options.log_severity_level = 3
-    sess_options.enable_cpu_mem_arena = False
-    sess_options.enable_mem_pattern = False
+    sess_options = _clap_session_options("Text")
 
-    if not config.CLAP_PYTHON_MULTITHREADS:
-        logger.info("CLAP Text: Using ONNX Runtime automatic thread management")
-    else:
-        sess_options.intra_op_num_threads = 1
-        sess_options.inter_op_num_threads = 1
-        logger.info("CLAP Text: Using Python threading, ONNX single-threaded")
-    
     # Provider choice depends on the process role:
     #  - Flask (web) process: ALWAYS CPU. A CUDA ONNX session is thread-affine;
     #    text search runs on short-lived per-request threads, so a GPU session
@@ -380,7 +373,7 @@ def unload_clap_audio_only():
 
 def unload_clap_model():
     """Unload CLAP model from memory to free RAM and GPU VRAM."""
-    global _audio_session, _text_session, _tokenizer, _cached_dummy_input_ids
+    global _audio_session, _text_session, _tokenizer
     
     if _audio_session is None and _text_session is None:
         return False
@@ -396,8 +389,7 @@ def unload_clap_model():
             freed_mb += 478
         
         _tokenizer = None
-        _cached_dummy_input_ids = None
-        
+
         # Force garbage collection
         import gc
         gc.collect()
@@ -467,12 +459,12 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     """
     import librosa
 
-    n_fft = getattr(config, 'CLAP_AUDIO_N_FFT', 2048)
-    hop_length = getattr(config, 'CLAP_AUDIO_HOP_LENGTH', 480)
-    n_mels = getattr(config, 'CLAP_AUDIO_N_MELS', 128)
-    f_min = getattr(config, 'CLAP_AUDIO_FMIN', 0)
-    f_max = getattr(config, 'CLAP_AUDIO_FMAX', 14000)
-    transpose = getattr(config, 'CLAP_AUDIO_MEL_TRANSPOSE', False)
+    n_fft = config.CLAP_AUDIO_N_FFT
+    hop_length = config.CLAP_AUDIO_HOP_LENGTH
+    n_mels = config.CLAP_AUDIO_N_MELS
+    f_min = config.CLAP_AUDIO_FMIN
+    f_max = config.CLAP_AUDIO_FMAX
+    transpose = config.CLAP_AUDIO_MEL_TRANSPOSE
 
     mel = librosa.feature.melspectrogram(
         y=audio_data,

@@ -46,6 +46,9 @@ from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOG
 from config import LYRICS_TEXT_MAX_COMPRESSION_RATIO as TEXT_COMPRESSION_RATIO_THRESHOLD
 from config import LYRICS_LANG_CONFIDENCE_MIN as LANG_CONFIDENCE_MIN
 from config import LYRICS_CJK_SCRIPT_MIN_RATIO as CJK_SCRIPT_MIN_RATIO
+from config import (LYRICS_VAD_THRESHOLD, LYRICS_VAD_NEG_THRESHOLD,
+                    LYRICS_VAD_RETRY_FLOOR, LYRICS_VAD_MIN_SILENCE_MS,
+                    LYRICS_VAD_MIN_SPEECH_MS, LYRICS_VAD_SPEECH_PAD_MS)
 
 _LATIN_MIN_RATIO = 0.90
 _NON_LATIN_SCRIPT_LANGS = {
@@ -451,14 +454,12 @@ def _apply_vad(audio: np.ndarray, sr: int,
     if sr != 16000 or get_speech_timestamps is None:
         return audio
 
-    primary_threshold = float(os.environ.get('LYRICS_VAD_THRESHOLD', '0.2'))
-    neg_threshold_env = os.environ.get('LYRICS_VAD_NEG_THRESHOLD')
-    neg_threshold = (float(neg_threshold_env) if neg_threshold_env
-                     else max(0.01, primary_threshold - 0.15))
-    retry_floor = float(os.environ.get('LYRICS_VAD_RETRY_FLOOR', '0.15'))
-    min_silence_ms = int(os.environ.get('LYRICS_VAD_MIN_SILENCE_MS', '1000'))
-    min_speech_ms = int(os.environ.get('LYRICS_VAD_MIN_SPEECH_MS', '250'))
-    speech_pad_ms = int(os.environ.get('LYRICS_VAD_SPEECH_PAD_MS', '400'))
+    primary_threshold = LYRICS_VAD_THRESHOLD
+    neg_threshold = LYRICS_VAD_NEG_THRESHOLD
+    retry_floor = LYRICS_VAD_RETRY_FLOOR
+    min_silence_ms = LYRICS_VAD_MIN_SILENCE_MS
+    min_speech_ms = LYRICS_VAD_MIN_SPEECH_MS
+    speech_pad_ms = LYRICS_VAD_SPEECH_PAD_MS
 
     try:
         from .silero_onnx import analyze_audio, threshold_segments
@@ -635,13 +636,12 @@ def _resolve_lang_and_quality(text: str, candidate_lang: str) -> Tuple[str, str,
     reject = _text_quality_reject(text, resolved_lang)
     return resolved_lang, script_lang, reject
 
-def _lyrics_result(text: str, translated_text: str, final_text: str,
+def _lyrics_result(text: str, final_text: str,
                    language: str, used_seconds: float,
                    embedding: Optional[np.ndarray],
                    axis_vector: np.ndarray) -> Dict[str, object]:
     return {
         'text': text,
-        'translated_text': translated_text,
         'final_text': final_text,
         'language': language,
         'used_seconds': used_seconds,
@@ -698,7 +698,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
             "directly (embedding_dim=%s, axis_dim=%s)",
             list(top_moods.keys()), embedding.shape[0], axis_vector.shape[0],
         )
-        return _lyrics_result('', '', '', '', 0.0, embedding, axis_vector)
+        return _lyrics_result('', '', '', 0.0, embedding, axis_vector)
 
     logger.info('STEP 2 start: media server lyrics (track_id=%r)', track_id)
     if track_id:
@@ -854,13 +854,12 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         raw_text = ''
     logger.info('STEP 7 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
 
-    text_for_cleanup = raw_text
-    final_text = text_for_cleanup
+    final_text = raw_text
     if final_text:
         _reject = _text_quality_reject(final_text, detected_lang)
         if _reject:
             logger.info('STEP 8: final text rejected (%s) - dropping to instrumental', _reject)
-            raw_text = text_for_cleanup = final_text = ''
+            raw_text = final_text = ''
     logger.info('STEP 9 start: embedding + axis scoring (chars=%s)',
                 len(final_text))
     embedding = None
@@ -871,7 +870,7 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
         if embedding is not None:
             axis_vector = _score_axes(embedding)
     else:
-        raw_text = text_for_cleanup = final_text = ''
+        raw_text = final_text = ''
 
     if embedding is None or getattr(embedding, 'size', 0) == 0:
         try:
@@ -886,5 +885,5 @@ def analyze_lyrics(audio: Optional[np.ndarray] = None,
                 None if embedding is None else embedding.shape,
                 int(axis_vector.shape[0]) if axis_vector is not None else 0)
 
-    return _lyrics_result(raw_text, text_for_cleanup, final_text,
+    return _lyrics_result(raw_text, final_text,
                           detected_lang, used_seconds, embedding, axis_vector)

@@ -24,7 +24,7 @@ from database import (
     save_clap_embedding,
     save_lyrics_embedding,
 )
-from app_helper_artist import upsert_artist_mapping
+from app_helper_artist import upsert_artist_mappings
 from psycopg2 import sql as pgsql
 
 logger = logging.getLogger(__name__)
@@ -418,17 +418,21 @@ def refresh_track_metadata(item, album_name):
 
 
 def upsert_artist_mappings_for_tracks(tracks, album_name=None):
-    """Bulk-store artist_name → artist_id for a list of tracks. Errors are logged, never raised."""
+    """Store distinct artist_name -> artist_id for a list of tracks. Errors are logged, never raised."""
+    # One id per name (last wins, as a per-track upsert would leave it); write the
+    # whole list in a single batch instead of one commit per track.
+    last_id_by_name = {}
     for t in tracks:
         name, aid = t.get('AlbumArtist'), t.get('ArtistId')
         if name and aid:
-            try:
-                upsert_artist_mapping(name, aid)
-            except Exception as e:
-                logger.error(f"Failed to upsert artist mapping for '{name}': {e}")
+            last_id_by_name[name] = aid
         elif name:
+            last_id_by_name.setdefault(name, None)
+    upsert_artist_mappings((n, a) for n, a in last_id_by_name.items() if a)
+    for name, aid in last_id_by_name.items():
+        if not aid:
             scope = f" in album '{album_name}'" if album_name else ""
-            logger.warning(f"✗ No artist_id for '{name}'{scope}")
+            logger.warning(f"No artist_id for '{name}'{scope}")
 
 
 # --- Per-track decision / status --------------------------------------------

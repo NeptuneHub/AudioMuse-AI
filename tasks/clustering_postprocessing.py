@@ -17,7 +17,6 @@ Functions:
 
 import logging
 import numpy as np
-import random
 import re
 from scipy.spatial.distance import cdist
 from psycopg2.extras import DictCursor
@@ -293,7 +292,6 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     """
     try:
         from app_helper import get_db
-        from .clustering_helper import _shuffle_playlist_songs
 
         if not best_result or not best_result.get("named_playlists"):
             logger.warning(f"{log_prefix}No playlists found in best_result, skipping duplicate filtering")
@@ -351,25 +349,19 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                 
                 logger.debug(f"{log_prefix}Filtering complete, now have {len(filtered_songs)} songs in ALPHABETICAL order")
 
-                # Filtering is done on sorted songs; randomize the order now for the user.
-                shuffled_songs = _shuffle_playlist_songs(filtered_songs, playlist_name)
+                # Leave songs in sorted order; _name_and_prepare_playlists shuffles before storage.
+                filtered_playlists[playlist_name] = filtered_songs
+                total_songs_after += len(filtered_songs)
 
-                filtered_playlists[playlist_name] = shuffled_songs
-                total_songs_after += len(shuffled_songs)
-                
                 if len(filtered_songs) != len(songs_list):
                     logger.info(f"{log_prefix}Playlist '{playlist_name}': filtered {len(songs_list)} -> {len(filtered_songs)} songs")
                 else:
                     logger.debug(f"{log_prefix}Playlist '{playlist_name}': no songs filtered ({len(songs_list)} songs)")
-                    
+
             except Exception as e:
-                logger.error(f"{log_prefix}Error filtering playlist '{playlist_name}': {e}. Keeping original playlist but shuffling it.", exc_info=True)
-                # Keep original playlist if filtering fails, but still shuffle it
-                shuffled_original = songs_list.copy()
-                random.shuffle(shuffled_original)
-                logger.info(f"{log_prefix}SHUFFLED original playlist '{playlist_name}' as fallback: {len(shuffled_original)} songs")
-                filtered_playlists[playlist_name] = shuffled_original
-                total_songs_after += len(shuffled_original)
+                logger.exception(f"{log_prefix}Error filtering playlist '{playlist_name}': {e}. Keeping original playlist.")
+                filtered_playlists[playlist_name] = songs_list
+                total_songs_after += len(songs_list)
         
         # Create new result with filtered playlists
         new_result = best_result.copy()
