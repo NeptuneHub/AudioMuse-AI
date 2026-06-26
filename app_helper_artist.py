@@ -45,8 +45,8 @@ def upsert_artist_mapping(artist_name, artist_id):
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
             """, (artist_name, artist_id))
             conn.commit()
-    except Exception as e:
-        logger.error(f"Failed to upsert artist mapping for '{artist_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to upsert artist mapping for '{artist_name}'")
         try:
             conn.rollback()
         except Exception:
@@ -77,8 +77,8 @@ def upsert_artist_mappings(pairs):
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
             """, list(by_name.items()))
             conn.commit()
-    except Exception as e:
-        logger.error(f"Failed to bulk upsert {len(by_name)} artist mappings: {e}")
+    except Exception:
+        logger.exception(f"Failed to bulk upsert {len(by_name)} artist mappings")
         try:
             conn.rollback()
         except Exception:
@@ -104,8 +104,8 @@ def get_artist_id_by_name(artist_name):
             cur.execute("SELECT artist_id FROM artist_mapping WHERE artist_name = %s", (sanitized_name,))
             row = cur.fetchone()
             return row[0] if row else None
-    except Exception as e:
-        logger.error(f"Failed to get artist_id for '{sanitized_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to get artist_id for '{sanitized_name}'")
         return None
 
 def get_artist_name_by_id(artist_id):
@@ -122,6 +122,6 @@ def get_artist_name_by_id(artist_id):
             cur.execute("SELECT artist_name FROM artist_mapping WHERE artist_id = %s", (artist_id,))
             row = cur.fetchone()
             return row[0] if row else None
-    except Exception as e:
-        logger.error(f"Failed to get artist_name for '{artist_id}': {e}")
+    except Exception:
+        logger.exception(f"Failed to get artist_name for '{artist_id}'")
         return None
