@@ -160,8 +160,8 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 <summary><b>Linux</b> — x86_64 / arm64, <code>.deb</code> or <code>.rpm</code> (from <code>v2.1.3</code>)</summary>
 
 - **Install as root** (writes to `/opt` and the system app/service dirs):
-  - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-x86_64-linux.deb`
-  - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-x86_64-linux.rpm`
+  - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-<arch>-linux.deb` (where `<arch>` is `x86_64` or `aarch64`)
+  - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-<arch>-linux.rpm` (where `<arch>` is `x86_64` or `aarch64`)
 - **Run as your normal user** (never with `sudo`/root — it stores data in your home and won't start as root):
   - `audiomuse-ai start` (stop with `audiomuse-ai stop`), or auto-start on login with `systemctl --user enable --now audiomuse-ai`.
 - Verified on **Debian 12 (bookworm)** (glibc 2.36). The `.rpm` is the same payload, expected to work on recent Fedora / RHEL 9, but too old for RHEL/Rocky/Alma 8 (glibc 2.28). Feedback on RPM-based distros is welcome.
