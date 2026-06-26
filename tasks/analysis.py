@@ -7,7 +7,6 @@
 import os
 import shutil
 import numpy as np
-import json
 import time
 import logging
 import uuid
@@ -28,6 +27,7 @@ from config import (
     OTHER_FEATURE_LABELS,
     REBUILD_INDEX_BATCH_SIZE, MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
     AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED,
+    ANALYSIS_MONITOR_DB_INTERVAL,
 )
 
 
@@ -377,14 +377,10 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         # already been written back into ``onnx_sessions`` above so the
         # album-level dict owns it — DO NOT release it here, or the next
         # track will SEGV trying to run on a destroyed session.
-        cleanup_embedding = should_cleanup_sessions
-        cleanup_prediction = should_cleanup_sessions
-        if cleanup_embedding or cleanup_prediction:
+        if should_cleanup_sessions:
             try:
-                if cleanup_embedding:
-                    cleanup_onnx_session(embedding_sess, "embedding")
-                if cleanup_prediction:
-                    cleanup_onnx_session(prediction_sess, "prediction")
+                cleanup_onnx_session(embedding_sess, "embedding")
+                cleanup_onnx_session(prediction_sess, "prediction")
                 cleanup_cuda_memory(force=True)
                 logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)}")
             except Exception as cleanup_error:
@@ -706,10 +702,12 @@ def run_analysis_task(num_recent_albums, top_n_moods):
              num_recent_albums = 0
 
         task_info = get_task_info_from_db(current_task_id)
-        if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]:
+        # Only truly-terminal states stop a re-entry; a prior FAILURE resumes via RQ retry.
+        if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED]:
             return {"status": task_info.get('status'), "message": "Task already in terminal state."}
-        
-        checked_album_ids = set(json.loads(task_info.get('details', '{}')).get('checked_album_ids', [])) if task_info else set()
+
+        # RAM-only dedup for this run; resume correctness comes from the DB, so never persisted.
+        checked_album_ids = set()
         
         initial_details = {"message": "Fetching albums...", "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Main analysis task started."]}
 
@@ -724,7 +722,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             details = {**kwargs, "status_message": message}
             log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
             task_state = kwargs.get('task_state', TASK_STATUS_PROGRESS)
-            
+
             if task_state != TASK_STATUS_SUCCESS:
                 current_task_logs.append(log_entry)
                 if len(current_task_logs) > 200:
@@ -753,6 +751,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             launched_job_ids = set()  # Track job IDs launched in THIS run only
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
             albums_no_tracks = 0
+            last_monitor_db_check = 0.0
 
             def monitor_and_clear_jobs():
                 """Sync `albums_completed` with terminal RQ jobs and DB child-task statuses.
@@ -764,7 +763,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 Enqueues an index-rebuild subtask each time `REBUILD_INDEX_BATCH_SIZE`
                 fresh albums have completed.
                 """
-                nonlocal albums_completed, last_rebuild_count
+                nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
                 removed = 0
                 for job_id in list(active_jobs.keys()):
                     if job_id not in launched_job_ids:
@@ -785,21 +784,25 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 if removed:
                     albums_completed += removed
 
-                try:
-                    terminal = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
-                    child_tasks = get_child_tasks_from_db(current_task_id)
-                    db_done = sum(1 for t in child_tasks
-                                  if t.get('status') in terminal and t.get('task_id') in launched_job_ids)
-                    if db_done != albums_completed:
-                        logger.info(f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} (of {len(launched_job_ids)} launched)")
-                        albums_completed = db_done
-                        terminal_ids = {t['task_id'] for t in child_tasks
-                                        if t.get('status') in terminal and t.get('task_id') in launched_job_ids}
-                        for j in list(active_jobs.keys()):
-                            if j in terminal_ids:
-                                active_jobs.pop(j, None)
-                except Exception as e:
-                    logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
+                # Throttled status-only reconcile (no details); RQ Job.fetch above drains active_jobs every poll.
+                now = time.monotonic()
+                if now - last_monitor_db_check >= ANALYSIS_MONITOR_DB_INTERVAL:
+                    last_monitor_db_check = now
+                    try:
+                        terminal = {TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED}
+                        child_tasks = get_child_tasks_from_db(current_task_id)
+                        db_done = sum(1 for t in child_tasks
+                                      if t.get('status') in terminal and t.get('task_id') in launched_job_ids)
+                        if db_done != albums_completed:
+                            logger.info(f"Reconciling albums_completed: RQ={albums_completed} DB={db_done} (of {len(launched_job_ids)} launched)")
+                            albums_completed = db_done
+                            terminal_ids = {t['task_id'] for t in child_tasks
+                                            if t.get('status') in terminal and t.get('task_id') in launched_job_ids}
+                            for j in list(active_jobs.keys()):
+                                if j in terminal_ids:
+                                    active_jobs.pop(j, None)
+                    except Exception as e:
+                        logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
 
                 if albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(
@@ -814,10 +817,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
-                monitor_and_clear_jobs()
+                # Skip before polling, so a large re-scan doesn't poll per already-done album.
                 if album['Id'] in checked_album_ids:
                     albums_skipped += 1
                     continue
+                monitor_and_clear_jobs()
                 while len(active_jobs) >= MAX_QUEUED_ANALYSIS_JOBS:
                     monitor_and_clear_jobs()
                     time.sleep(5)
@@ -866,8 +870,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}."
                 log_and_update_main(status_message, progress,
                                     albums_to_process=albums_launched,
-                                    albums_skipped=albums_skipped,
-                                    checked_album_ids=list(checked_album_ids))
+                                    albums_skipped=albums_skipped)
 
             if albums_launched == 0 and total_albums_to_check > 0 and albums_no_tracks == total_albums_to_check:
                 logger.error(f"No tracks were returned for any of the {total_albums_to_check} albums; the media server library may be unreachable or empty.")
@@ -880,7 +883,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 monitor_and_clear_jobs()
                 progress = 5 + int(85 * ((albums_skipped + albums_completed) / float(total_albums_to_check)))
                 status_message = f"Launched: {albums_launched}. Completed: {albums_completed}/{albums_launched}. Active: {len(active_jobs)}. Skipped: {albums_skipped}/{total_albums_to_check}. (Finalizing)"
-                log_and_update_main(status_message, progress, checked_album_ids=list(checked_album_ids))
+                log_and_update_main(status_message, progress)
                 time.sleep(5)
 
             log_and_update_main("Performing final index rebuild...", 95)
