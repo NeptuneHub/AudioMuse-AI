@@ -5,30 +5,36 @@ Separated to avoid circular imports.
 """
 
 import logging
+from psycopg2.extras import execute_values
 from database import get_db
 from sanitization import sanitize_string_for_db
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_mapping(artist_name, artist_id):
+    """Sanitize and length-cap a (name, id) pair; return (None, None) if unusable."""
+    if artist_name:
+        artist_name = sanitize_string_for_db(artist_name)
+        if artist_name and len(artist_name) > 500:
+            artist_name = artist_name[:500]
+    if artist_id:
+        artist_id = sanitize_string_for_db(str(artist_id))
+        if artist_id and len(artist_id) > 200:
+            artist_id = artist_id[:200]
+    if not artist_name or not artist_id:
+        return None, None
+    return artist_name, artist_id
+
 
 def upsert_artist_mapping(artist_name, artist_id):
     """
     Stores or updates the mapping between artist name and artist ID.
     If artist_name or artist_id is None/empty, does nothing.
     """
-    # Sanitize inputs using centralized function
-    if artist_name:
-        artist_name = sanitize_string_for_db(artist_name)
-        if artist_name and len(artist_name) > 500:
-            artist_name = artist_name[:500]
-    
-    if artist_id:
-        artist_id = sanitize_string_for_db(str(artist_id))
-        if artist_id and len(artist_id) > 200:
-            artist_id = artist_id[:200]
-    
-    if not artist_name or not artist_id:
+    artist_name, artist_id = _clean_mapping(artist_name, artist_id)
+    if not artist_name:
         return
-    
     try:
         conn = get_db()
         with conn.cursor() as cur:
@@ -43,7 +49,37 @@ def upsert_artist_mapping(artist_name, artist_id):
         logger.error(f"Failed to upsert artist mapping for '{artist_name}': {e}")
         try:
             conn.rollback()
-        except:
+        except Exception:
+            pass
+
+
+def upsert_artist_mappings(pairs):
+    """
+    Bulk upsert (artist_name, artist_id) pairs in a single transaction.
+    Collapses to one row per name (last id wins) and never raises.
+    """
+    by_name = {}
+    for name, aid in pairs:
+        name, aid = _clean_mapping(name, aid)
+        if name:
+            by_name[name] = aid
+    if not by_name:
+        return
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            execute_values(cur, """
+                INSERT INTO artist_mapping (artist_name, artist_id)
+                VALUES %s
+                ON CONFLICT (artist_name)
+                DO UPDATE SET artist_id = EXCLUDED.artist_id
+            """, list(by_name.items()))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to bulk upsert {len(by_name)} artist mappings: {e}")
+        try:
+            conn.rollback()
+        except Exception:
             pass
 
 def get_artist_id_by_name(artist_name):
