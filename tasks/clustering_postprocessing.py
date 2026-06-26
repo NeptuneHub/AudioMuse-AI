@@ -22,8 +22,6 @@ import re
 from scipy.spatial.distance import cdist
 from psycopg2.extras import DictCursor
 
-from .clustering_helper import _shuffle_playlist_songs
-
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +293,8 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
     """
     try:
         from app_helper import get_db
-        
+        from .clustering_helper import _shuffle_playlist_songs
+
         if not best_result or not best_result.get("named_playlists"):
             logger.warning(f"{log_prefix}No playlists found in best_result, skipping duplicate filtering")
             return best_result

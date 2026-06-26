@@ -534,12 +534,8 @@ def run_clustering_task(
             else:
                 _log_and_update("CLUSTERING_CLEANING is disabled — skipping deletion of existing automatic playlists.", 97)
 
-            # *** ABSOLUTE FINAL SHUFFLE: Guarantee random order right before database storage ***
-            logger.info("=== ABSOLUTE FINAL SHUFFLE: Randomizing all playlists before database storage ===")
-            final_shuffled_playlists = {
-                playlist_name: _shuffle_playlist_songs(songs_list, playlist_name)
-                for playlist_name, songs_list in final_playlists_with_details.items()
-            }
+            # Songs were already shuffled per-playlist in _name_and_prepare_playlists.
+            final_shuffled_playlists = final_playlists_with_details
 
             _log_and_update(f"Creating {len(final_shuffled_playlists)} new playlists...", 98)
             for name, songs_with_details in final_shuffled_playlists.items():

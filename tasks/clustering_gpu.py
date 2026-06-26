@@ -104,8 +104,6 @@ class GPUKMeans:
             try:
                 from cuml.cluster import KMeans as cuKMeans
 
-                X_gpu = _to_gpu_array(X)
-
                 # Create and fit GPU model
                 # Build kwargs dynamically to avoid passing None to cuKMeans
                 kmeans_kwargs = {
@@ -119,7 +117,7 @@ class GPUKMeans:
 
                 self.model = cuKMeans(**kmeans_kwargs)
 
-                labels = self.model.fit_predict(X_gpu)
+                labels = self.model.fit_predict(_to_gpu_array(X))
                 self.cluster_centers_ = self.model.cluster_centers_
                 self.labels_ = labels
                 self.using_gpu = True
@@ -165,8 +163,6 @@ class GPUDBSCAN:
             try:
                 from cuml.cluster import DBSCAN as cuDBSCAN
 
-                X_gpu = _to_gpu_array(X)
-
                 # Create and fit GPU model
                 self.model = cuDBSCAN(
                     eps=self.eps,
@@ -174,7 +170,7 @@ class GPUDBSCAN:
                     output_type='numpy'  # Return numpy arrays for compatibility
                 )
 
-                labels = self.model.fit_predict(X_gpu)
+                labels = self.model.fit_predict(_to_gpu_array(X))
                 self.labels_ = labels
                 self.using_gpu = True
 
@@ -214,15 +210,13 @@ class GPUPCA:
             try:
                 from cuml.decomposition import PCA as cuPCA
 
-                X_gpu = _to_gpu_array(X)
-
                 # Create and fit GPU model
                 self.model = cuPCA(
                     n_components=self.n_components,
                     output_type='numpy'  # Return numpy arrays for compatibility
                 )
 
-                X_transformed = self.model.fit_transform(X_gpu)
+                X_transformed = self.model.fit_transform(_to_gpu_array(X))
                 self.components_ = self.model.components_
                 self.explained_variance_ratio_ = self.model.explained_variance_ratio_
                 self.n_components_ = self.model.n_components_
@@ -254,8 +248,7 @@ class GPUPCA:
 
         if self.using_gpu:
             try:
-                X_gpu = _to_gpu_array(X)
-                return self.model.inverse_transform(X_gpu)
+                return self.model.inverse_transform(_to_gpu_array(X))
             except Exception as e:
                 logger.warning(f"GPU PCA inverse_transform failed: {e}")
                 # Fall through to use CPU model
