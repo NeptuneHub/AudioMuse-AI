@@ -53,7 +53,7 @@ TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 
 def _compute_headers():
     if MEDIASERVER_TYPE == "jellyfin":
-        return {"X-Emby-Token": JELLYFIN_TOKEN}
+        return {"Authorization": f'MediaBrowser Token="{JELLYFIN_TOKEN}"'}
     if MEDIASERVER_TYPE == "emby":
         return {"X-Emby-Token": EMBY_TOKEN}
     return {}

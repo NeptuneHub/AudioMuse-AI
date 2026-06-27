@@ -1,4 +1,5 @@
 # tasks/mediaserver/jellyfin.py
+from typing import Any
 
 from . import http as requests
 import logging
@@ -104,18 +105,18 @@ def _jellyfin_base_url(user_creds=None):
     return (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
 
 
-def _jellyfin_headers_from_creds(user_creds=None):
+def _jellyfin_headers_from_creds(user_creds: dict[str, str]|None=None) -> dict[str, str]:
     headers = dict(getattr(config, 'HEADERS', {}) or {})
     token = user_creds.get('token') if user_creds else getattr(config, 'JELLYFIN_TOKEN', None)
     if token:
-        headers['X-Emby-Token'] = token
+        headers['Authorization'] = f'MediaBrowser Token="{token}"'
     return headers
 
 
-def _jellyfin_get_users(token):
+def _jellyfin_get_users(token: str|None) -> list[dict[str, Any]]|None:
     """Fetches a list of all users from Jellyfin using a provided token."""
     url = f"{config.JELLYFIN_URL}/Users"
-    headers = {"X-Emby-Token": token}
+    headers = _jellyfin_headers_from_creds(user_creds={'token': token} if token else None)
     try:
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -453,14 +454,14 @@ def delete_playlist(playlist_id):
         return False
 
 # --- USER-SPECIFIC JELLYFIN FUNCTIONS ---
-def get_top_played_songs(limit, user_creds=None):
+def get_top_played_songs(limit, user_creds: dict[str, str] | None=None) -> list[dict[str, Any]]:
     """Fetches the top N most played songs from Jellyfin for a specific user."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
     url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items"
-    headers = {"X-Emby-Token": token}
+    headers = _jellyfin_headers_from_creds(user_creds)
     params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
@@ -482,14 +483,14 @@ def get_top_played_songs(limit, user_creds=None):
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
         return []
 
-def get_last_played_time(item_id, user_creds=None):
+def get_last_played_time(item_id, user_creds: dict[str, str]|None=None) -> str|None:
     """Fetches the last played time for a specific track from Jellyfin for a specific user."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
     url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items/{item_id}"
-    headers = {"X-Emby-Token": token}
+    headers = _jellyfin_headers_from_creds(user_creds)
     params = {"Fields": "UserData"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
@@ -520,7 +521,7 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
         logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
         return None
 
-def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+def create_instant_playlist(playlist_name: str, item_ids, user_creds: dict[str, str]|None=None) -> dict[str, Any]|None:
     """Creates a new instant playlist on Jellyfin for a specific user."""
     # Treat empty token ("") as not provided and fall back to admin token from config
     token = config.JELLYFIN_TOKEN
@@ -541,7 +542,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     
     final_playlist_name = f"{playlist_name.strip()}_instant"
     url = f"{config.JELLYFIN_URL}/Playlists"
-    headers = {"X-Emby-Token": token}
+    headers = _jellyfin_headers_from_creds(user_creds)
     body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
     try:
         r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
@@ -552,13 +553,13 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         return None
 
 
-def _fetch_playlist_items(playlist_id, user_creds=None):
+def _fetch_playlist_items(playlist_id: str, user_creds: dict[str,str]|None=None) -> list[dict[str, Any]]|None:
     """GETs the raw entries of a Jellyfin playlist. Each entry carries both the audio
     item's ``Id`` and a separate ``PlaylistItemId`` (the removal handle). Returns the
     list of entry dicts, or None on HTTP failure. Uses admin creds unless user_creds given.
     """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
+    headers = _jellyfin_headers_from_creds(user_creds) if user_creds else config.HEADERS
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:

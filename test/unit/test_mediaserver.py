@@ -12,6 +12,14 @@ import requests
 # JELLYFIN TESTS
 # =============================================================================
 
+try:
+    JELLYFIN_AUTHORIZATION_HEADERS = frozendict({'Authorization': 'MediaBrowser Token="token"'})
+    EMBY_AUTHORIZATION_HEADERS = frozendict({'X-Emby-Token': 'token'})
+except NameError: # Python 3.14 or earlier
+    from types import MappingProxyType
+    JELLYFIN_AUTHORIZATION_HEADERS = MappingProxyType({'Authorization': 'MediaUser Token="token"'})
+    EMBY_AUTHORIZATION_HEADERS = MappingProxyType({'X-Emby-Token': 'token'})
+
 class TestJellyfinSelectBestArtist:
     """Test artist field prioritization logic - no mocking needed"""
 
@@ -153,7 +161,7 @@ class TestJellyfinGetTracksFromAlbum:
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         
         mock_response = Mock()
         mock_response.json.return_value = {'Items': []}
@@ -180,7 +188,7 @@ class TestJellyfinGetTracksFromAlbum:
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -261,7 +269,7 @@ class TestJellyfinGetAllPlaylists:
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         
         mock_response = Mock()
         mock_response.json.return_value = {'Items': []}
@@ -335,7 +343,7 @@ class TestJellyfinGetPlaylistTrackIds:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
 
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -377,7 +385,7 @@ class TestJellyfinDeletePlaylist:
         from tasks.mediaserver.jellyfin import delete_playlist
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
-        mock_config.HEADERS = {'X-Emby-Token': 'test-token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
@@ -393,7 +401,7 @@ class TestJellyfinDeletePlaylist:
             f"URL changed! Expected '/Items/playlist-123', got '{call_url}'"
         # Verify headers are passed
         call_kwargs = mock_delete.call_args[1]
-        assert call_kwargs.get('headers') == {'X-Emby-Token': 'test-token'}
+        assert call_kwargs.get('headers') == JELLYFIN_AUTHORIZATION_HEADERS
 
     @patch('tasks.mediaserver.jellyfin.requests.delete')
     @patch('tasks.mediaserver.jellyfin.config')
@@ -2071,7 +2079,7 @@ class TestEmbyGetAllPlaylists:
         
         mock_config.EMBY_URL = 'http://emby:8096'
         mock_config.EMBY_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = EMBY_AUTHORIZATION_HEADERS
         
         mock_response = Mock()
         mock_response.json.return_value = {'Items': []}
@@ -2143,8 +2151,8 @@ class TestEmbyDeletePlaylist:
         from tasks.mediaserver.emby import delete_playlist
         
         mock_config.EMBY_URL = 'http://emby:8096'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
-        
+        mock_config.HEADERS = EMBY_AUTHORIZATION_HEADERS
+
         mock_response = Mock()
         mock_response.raise_for_status = Mock()
         mock_post.return_value = mock_response
@@ -2385,7 +2393,7 @@ class TestJellyfinListLibraries:
         called_url = mock_get.call_args[0][0]
         assert called_url == 'http://target-jelly:8096/Library/VirtualFolders'
         headers = mock_get.call_args[1]['headers']
-        assert headers.get('X-Emby-Token') == 'target-token'
+        assert headers.get('Authorization') == 'MediaBrowser Token="target-token"'
 
 
 class TestEmbyListLibraries:
@@ -2701,7 +2709,7 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         mock_config.JELLYFIN_URL = 'http://jf'
         mock_config.JELLYFIN_USER_ID = 'admin-user'
-        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         mock_get.return_value = None
 
         post_resp = MagicMock()
@@ -2725,7 +2733,7 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         mock_config.JELLYFIN_URL = 'http://jf'
         mock_config.JELLYFIN_USER_ID = 'admin-user'
-        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         mock_get.return_value = {'Id': 'pl-existing', 'Name': 'SF'}
 
         # GET items returns two entries with PlaylistItemId
@@ -2778,7 +2786,7 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         mock_config.JELLYFIN_URL = 'http://jf'
         mock_config.JELLYFIN_USER_ID = 'admin-user'
-        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         mock_get.return_value = {'Id': 'pl-1', 'Name': 'SF'}
         mock_get_entries.return_value = ['e1']
         mock_remove.return_value = True
@@ -2803,7 +2811,7 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         mock_config.JELLYFIN_URL = 'http://jf'
         mock_config.JELLYFIN_USER_ID = 'admin-user'
-        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
         mock_get_entries.return_value = ['e1', 'e2']
         mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
@@ -2830,7 +2838,7 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         mock_config.JELLYFIN_URL = 'http://jf'
         mock_config.JELLYFIN_USER_ID = 'admin-user'
-        mock_config.HEADERS = {'X-Emby-Token': 't'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         mock_get.return_value = {'Id': 'old-pl', 'Name': 'SF'}
         mock_get_entries.return_value = ['e1']
         mock_remove.side_effect = requests.exceptions.HTTPError('400 Bad Request')
@@ -3057,7 +3065,7 @@ class TestJellyfinGetAllSongsPagination:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         # Page 1 full (500) -> continue; page 2 short (3) -> stop.
         mock_get.side_effect = [_audio_page(500), _audio_page(3, start=500)]
 
@@ -3078,7 +3086,7 @@ class TestJellyfinGetAllSongsPagination:
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = JELLYFIN_AUTHORIZATION_HEADERS
         # Page 1 succeeds (full -> would continue); page 2 times out.
         mock_get.side_effect = [
             _audio_page(500),
@@ -3113,7 +3121,7 @@ class TestEmbyGetAllSongsRaisesOnFailure:
 
         mock_config.EMBY_URL = 'http://emby:8096'
         mock_config.EMBY_USER_ID = 'user123'
-        mock_config.HEADERS = {'X-Emby-Token': 'token'}
+        mock_config.HEADERS = EMBY_AUTHORIZATION_HEADERS
         # Page 1 full (1000 -> would continue); page 2 times out.
         mock_get.side_effect = [
             _audio_page(1000),
