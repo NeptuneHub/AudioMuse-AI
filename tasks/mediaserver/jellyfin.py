@@ -4,6 +4,7 @@ from . import http as requests
 import logging
 import os
 import config
+from config import jellyfin_auth_header
 
 from .helper import detect_path_format, detect_download_extension, is_auth_error
 from .helper import select_best_artist as _select_best_artist
@@ -105,17 +106,14 @@ def _jellyfin_base_url(user_creds=None):
 
 
 def _jellyfin_headers_from_creds(user_creds=None):
-    headers = dict(getattr(config, 'HEADERS', {}) or {})
-    token = user_creds.get('token') if user_creds else getattr(config, 'JELLYFIN_TOKEN', None)
-    if token:
-        headers['X-Emby-Token'] = token
-    return headers
+    token = (user_creds.get('token') if user_creds else None) or getattr(config, 'JELLYFIN_TOKEN', None)
+    return jellyfin_auth_header(token)
 
 
 def _jellyfin_get_users(token):
     """Fetches a list of all users from Jellyfin using a provided token."""
     url = f"{config.JELLYFIN_URL}/Users"
-    headers = {"X-Emby-Token": token}
+    headers = jellyfin_auth_header(token)
     try:
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -163,8 +161,9 @@ def get_recent_albums(limit):
         page_size = 500
         while True:
             # We fetch full pages and apply the limit only after collecting and sorting.
-            url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+            url = f"{config.JELLYFIN_URL}/Items"
             params = {
+                "userId": config.JELLYFIN_USER_ID,
                 "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                 "Recursive": True, "Limit": page_size, "StartIndex": start_index
             }
@@ -193,8 +192,9 @@ def get_recent_albums(limit):
             start_index = 0
             page_size = 500
             while True: # Paginate through the current library
-                url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
+                url = f"{config.JELLYFIN_URL}/Items"
                 params = {
+                    "userId": config.JELLYFIN_USER_ID,
                     "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
                     "Recursive": True, "Limit": page_size, "StartIndex": start_index,
                     "ParentId": library_id
@@ -230,8 +230,9 @@ def get_recent_albums(limit):
 def get_tracks_from_album(album_id, user_creds=None):
     """Fetches all audio tracks for a given album ID from Jellyfin using admin or override credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    url = f"{_jellyfin_base_url(user_creds)}/Items"
     params = {
+        "userId": user_id,
         "ParentId": album_id,
         "IncludeItemTypes": "Audio",
         "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
@@ -288,13 +289,14 @@ def get_all_songs(user_creds=None):
     already wrap this call and surface the error to the user.
     """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    url = f"{_jellyfin_base_url(user_creds)}/Items"
     all_items = []
     start_index = 0
     limit = 500  # smaller than Emby's 1000 due to Jellyfin 10.11.x per-request DB cost
 
     while True:
         params = {
+            "userId": user_id,
             "IncludeItemTypes": "Audio",
             "Recursive": True,
             "StartIndex": start_index,
@@ -333,8 +335,9 @@ def get_all_songs(user_creds=None):
 def search_albums(query, user_creds=None):
     """Search Jellyfin albums using admin or override credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+    url = f"{_jellyfin_base_url(user_creds)}/Items"
     params = {
+        "userId": user_id,
         "IncludeItemTypes": "MusicAlbum",
         "Recursive": True,
         "SearchTerm": query,
@@ -364,8 +367,9 @@ def test_connection(user_creds=None):
     """Test Jellyfin connectivity using admin or override credentials."""
     try:
         user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-        url = f"{_jellyfin_base_url(user_creds)}/Users/{user_id}/Items"
+        url = f"{_jellyfin_base_url(user_creds)}/Items"
         params = {
+            "userId": user_id,
             "IncludeItemTypes": "Audio",
             "Recursive": True,
             "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
@@ -401,12 +405,12 @@ def test_connection(user_creds=None):
 def get_playlist_by_name(playlist_name):
     """Finds a Jellyfin playlist by its exact name using admin credentials.
 
-    Jellyfin's /Users/{userId}/Items endpoint silently ignores the Name query
-    parameter and returns every playlist regardless of value, so we have to
-    filter client-side by exact match (mirrors the Emby version).
+    Jellyfin's /Items endpoint silently ignores the Name query parameter and
+    returns every playlist regardless of value, so we have to filter client-side
+    by exact match (mirrors the Emby version).
     """
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
+    url = f"{config.JELLYFIN_URL}/Items"
+    params = {"userId": config.JELLYFIN_USER_ID, "IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -431,8 +435,8 @@ def create_playlist(base_name, item_ids):
 
 def get_all_playlists():
     """Fetches all playlists from Jellyfin using admin credentials."""
-    url = f"{config.JELLYFIN_URL}/Users/{config.JELLYFIN_USER_ID}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
+    url = f"{config.JELLYFIN_URL}/Items"
+    params = {"userId": config.JELLYFIN_USER_ID, "IncludeItemTypes": "Playlist", "Recursive": True}
     try:
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -459,9 +463,9 @@ def get_top_played_songs(limit, user_creds=None):
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
-    url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items"
-    headers = {"X-Emby-Token": token}
-    params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
+    url = f"{config.JELLYFIN_URL}/Items"
+    headers = jellyfin_auth_header(token)
+    params = {"userId": user_id, "IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -488,9 +492,9 @@ def get_last_played_time(item_id, user_creds=None):
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
 
-    url = f"{config.JELLYFIN_URL}/Users/{user_id}/Items/{item_id}"
-    headers = {"X-Emby-Token": token}
-    params = {"Fields": "UserData"}
+    url = f"{config.JELLYFIN_URL}/Items/{item_id}"
+    headers = jellyfin_auth_header(token)
+    params = {"userId": user_id, "Fields": "UserData"}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -541,7 +545,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     
     final_playlist_name = f"{playlist_name.strip()}_instant"
     url = f"{config.JELLYFIN_URL}/Playlists"
-    headers = {"X-Emby-Token": token}
+    headers = jellyfin_auth_header(token)
     body = {"Name": final_playlist_name, "Ids": item_ids, "UserId": user_id}
     try:
         r = requests.post(url, headers=headers, json=body, timeout=REQUESTS_TIMEOUT)
@@ -558,7 +562,7 @@ def _fetch_playlist_items(playlist_id, user_creds=None):
     list of entry dicts, or None on HTTP failure. Uses admin creds unless user_creds given.
     """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
+    headers = jellyfin_auth_header(user_creds.get('token')) if user_creds and user_creds.get('token') else config.HEADERS
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:

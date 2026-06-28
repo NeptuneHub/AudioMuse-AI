@@ -5,7 +5,7 @@ takes a ``creds`` dict so the migration tool can test and migrate to a new
 provider without mutating the running app's active configuration.
 
 Supported providers:
-  * ``jellyfin`` / ``emby`` — X-Emby-Token header API, identical shape
+  * ``jellyfin`` / ``emby`` — token header API (Jellyfin: Authorization MediaBrowser; Emby: X-Emby-Token), identical shape
   * ``navidrome``           — Subsonic JSON API
   * ``lyrion``              — Logitech Media Server JSON-RPC (``/jsonrpc.js``)
  
