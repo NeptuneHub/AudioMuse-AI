@@ -148,7 +148,7 @@ class TestJellyfinGetTracksFromAlbum:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_uses_correct_url_and_params(self, mock_config, mock_get):
-        """CRITICAL: Must use /Users/{id}/Items with ParentId - catches if URL changes"""
+        """CRITICAL: Must use /Items with userId+ParentId (Jellyfin 12.0) - catches if URL changes"""
         from tasks.mediaserver.jellyfin import get_tracks_from_album
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -165,10 +165,11 @@ class TestJellyfinGetTracksFromAlbum:
         call_url = mock_get.call_args[0][0]
         call_params = mock_get.call_args[1].get('params', {})
         
-        # Verify exact URL
-        assert call_url == 'http://jellyfin:8096/Users/user123/Items', \
-            f"URL changed! Expected '/Users/user123/Items', got '{call_url}'"
+        # Verify exact URL (modern non-deprecated /Items endpoint; Jellyfin 12.0)
+        assert call_url == 'http://jellyfin:8096/Items', \
+            f"URL changed! Expected '/Items', got '{call_url}'"
         # Verify required params
+        assert call_params.get('userId') == 'user123', "userId param missing or wrong"
         assert call_params.get('ParentId') == 'album-xyz', "ParentId param missing or wrong"
         assert call_params.get('IncludeItemTypes') == 'Audio', "IncludeItemTypes param wrong"
 
@@ -256,7 +257,7 @@ class TestJellyfinGetAllPlaylists:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_uses_correct_url_and_params(self, mock_config, mock_get):
-        """CRITICAL: Must use /Users/{id}/Items with IncludeItemTypes=Playlist"""
+        """CRITICAL: Must use /Items with userId+IncludeItemTypes=Playlist (Jellyfin 12.0)"""
         from tasks.mediaserver.jellyfin import get_all_playlists
         
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -273,10 +274,11 @@ class TestJellyfinGetAllPlaylists:
         call_url = mock_get.call_args[0][0]
         call_params = mock_get.call_args[1].get('params', {})
         
-        # Verify exact URL
-        assert call_url == 'http://jellyfin:8096/Users/user123/Items', \
+        # Verify exact URL (modern non-deprecated /Items endpoint; Jellyfin 12.0)
+        assert call_url == 'http://jellyfin:8096/Items', \
             f"URL changed! Got '{call_url}'"
         # Verify required params
+        assert call_params.get('userId') == 'user123', "userId param missing or wrong"
         assert call_params.get('IncludeItemTypes') == 'Playlist', \
             "IncludeItemTypes must be 'Playlist'"
         assert call_params.get('Recursive') == True, \
@@ -2385,7 +2387,7 @@ class TestJellyfinListLibraries:
         called_url = mock_get.call_args[0][0]
         assert called_url == 'http://target-jelly:8096/Library/VirtualFolders'
         headers = mock_get.call_args[1]['headers']
-        assert headers.get('X-Emby-Token') == 'target-token'
+        assert headers.get('Authorization') == 'MediaBrowser Token="target-token"'
 
 
 class TestEmbyListLibraries:

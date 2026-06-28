@@ -51,9 +51,15 @@ MIGRATION_MAX_COLLISION_DETAILS = int(os.environ.get("MIGRATION_MAX_COLLISION_DE
 TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 
 
+def jellyfin_auth_header(token):
+    # Jellyfin 12.0 disables the legacy X-Emby-Token header by default; the
+    # Authorization: MediaBrowser scheme works on every supported version.
+    return {"Authorization": f'MediaBrowser Token="{token}"'} if token else {}
+
+
 def _compute_headers():
     if MEDIASERVER_TYPE == "jellyfin":
-        return {"X-Emby-Token": JELLYFIN_TOKEN}
+        return jellyfin_auth_header(JELLYFIN_TOKEN)
     if MEDIASERVER_TYPE == "emby":
         return {"X-Emby-Token": EMBY_TOKEN}
     return {}
