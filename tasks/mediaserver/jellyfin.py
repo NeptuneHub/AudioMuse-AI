@@ -106,7 +106,7 @@ def _jellyfin_base_url(user_creds=None):
 
 
 def _jellyfin_headers_from_creds(user_creds=None):
-    token = user_creds.get('token') if user_creds else getattr(config, 'JELLYFIN_TOKEN', None)
+    token = (user_creds.get('token') if user_creds else None) or getattr(config, 'JELLYFIN_TOKEN', None)
     return jellyfin_auth_header(token)
 
 
@@ -562,7 +562,7 @@ def _fetch_playlist_items(playlist_id, user_creds=None):
     list of entry dicts, or None on HTTP failure. Uses admin creds unless user_creds given.
     """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    headers = jellyfin_auth_header(user_creds.get('token')) if user_creds else config.HEADERS
+    headers = jellyfin_auth_header(user_creds.get('token')) if user_creds and user_creds.get('token') else config.HEADERS
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:
