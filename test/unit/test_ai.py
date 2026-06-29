@@ -828,6 +828,52 @@ class TestGetOpenAICompatiblePlaylistName:
         # Should only have made 2 calls (initial + aggressive fallback, then error)
         assert mock_post.call_count == 2
 
+    @patch('tasks.ai.providers.openai.os.environ.get')
+    @patch('tasks.ai.providers.openai.requests.post')
+    @patch('tasks.ai.providers.openai.time.sleep')
+    def test_reasoning_effort_dropped_on_null_code_400(self, mock_sleep, mock_post, mock_env):
+        """#696: non-reasoning models reject reasoning_effort with code=null; drop it and retry."""
+        mock_env.return_value = "0"
+
+        # First call: 400 with code=null and message naming reasoning_effort
+        mock_response_400 = Mock()
+        mock_response_400.status_code = 400
+        mock_response_400.json.return_value = {
+            'error': {
+                'message': 'Unrecognized request argument supplied: reasoning_effort',
+                'type': 'invalid_request_error',
+                'param': None,
+                'code': None
+            }
+        }
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+
+        # Second call: success after dropping reasoning_effort
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status = Mock()
+        mock_response_success.iter_lines.return_value = [
+            b'data: {"choices":[{"delta":{"content":"OK Playlist"}}]}\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        ]
+
+        mock_post.side_effect = [mock_response_400, mock_response_success]
+
+        result = get_openai_compatible_playlist_name(
+            server_url="https://api.openai.com/v1/chat/completions",
+            model_name="gpt-4o-mini",
+            full_prompt="test",
+            api_key="test-key"
+        )
+
+        assert result == "OK Playlist"
+        assert mock_post.call_count == 2
+        # Only reasoning_effort dropped; temperature and max_tokens preserved.
+        second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
+        assert 'reasoning_effort' not in second_call_data
+        assert 'temperature' in second_call_data
+        assert second_call_data.get('max_tokens') == 8000
+
 
 class TestGetOllamaPlaylistName:
     """Tests for Ollama-format generate_text (now handled directly by openai.py)"""

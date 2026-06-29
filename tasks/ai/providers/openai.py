@@ -92,6 +92,7 @@ def generate_text(
 
     max_retries = 3
     base_delay = 5
+    tried_drop_reasoning = False
     tried_aggressive_fallback = False
     tried_ultra_minimal_fallback = False
 
@@ -207,7 +208,18 @@ def generate_text(
             if e.response.status_code == 400 and is_openai_format:
                 try:
                     error_body = e.response.json()
-                    error_code = error_body.get("error", {}).get("code", "")
+                    error_obj = error_body.get("error", {})
+                    error_code = error_obj.get("code", "") or ""
+                    error_message = (error_obj.get("message", "") or "").lower()
+                    # Non-reasoning models (gpt-4o, gpt-4o-mini, gpt-4.1*) reject
+                    # reasoning_effort with a 400 whose error.code is null, so
+                    # match the message text and just drop the param (#696).
+                    if (not tried_drop_reasoning and "reasoning_effort" in payload
+                            and "reasoning_effort" in error_message):
+                        logger.info("reasoning_effort rejected (400); retrying without it")
+                        payload.pop("reasoning_effort", None)
+                        tried_drop_reasoning = True
+                        continue
                     if error_code in ("unsupported_parameter", "unsupported_value"):
                         if not tried_aggressive_fallback:
                             logger.info(
