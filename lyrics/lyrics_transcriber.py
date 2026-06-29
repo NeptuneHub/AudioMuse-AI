@@ -356,6 +356,10 @@ def _fetch_from_configured_api(
         sep = '&' if '?' in url_template else '?'
         url = url_template + sep + urllib.parse.urlencode(params)
 
+    if urllib.parse.urlparse(url).scheme not in ('http', 'https'):
+        logger.warning('Lyrics API slot %s blocked: non-http(s) scheme', slot)
+        return None
+
     try:
         req = urllib.request.Request(
             url,
