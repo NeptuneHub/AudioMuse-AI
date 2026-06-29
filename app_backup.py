@@ -85,16 +85,19 @@ def _pg_cmd(tool, *extra_args):
 _TXN_TIMEOUT_RE = re.compile(rb'(?m)^SET transaction_timeout\b[^\n]*\n')
 
 
-def _feed_dump(stdin, dump_file):
-    """Stream the dump into psql, dropping prologue GUCs older servers reject."""
+def _feed_dump(stdin, dump_file, result):
+    """Stream the dump into psql; record delivery in result so a short feed isn't reported as success."""
     try:
         with open(dump_file, 'rb') as src:
-            head = _TXN_TIMEOUT_RE.sub(b'', src.read(1024 * 1024))
+            head = _TXN_TIMEOUT_RE.sub(b'', src.read(1024 * 1024), count=1)
             stdin.write(b'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;\n')
             stdin.write(head)
             shutil.copyfileobj(src, stdin, 1024 * 1024)
-    except (BrokenPipeError, OSError):
-        pass
+        result['ok'] = True
+    except BrokenPipeError:
+        result['error'] = 'psql closed the input stream before the dump finished'
+    except OSError as exc:
+        result['error'] = str(exc)
     finally:
         try:
             stdin.close()
@@ -146,12 +149,13 @@ def _run_restore_runner(dump_file, log_file):
             '-v', 'ON_ERROR_STOP=1',
             '--single-transaction',
         )
-        log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
+        log.write(f"Running restore command: {' '.join(restore_cmd)} < {dump_file} (via stdin)\n")
         log.write("Streaming dump via stdin (stripping pg_dump 17+ transaction_timeout for old-server compatibility).\n")
         log.flush()
 
         proc = None
         feeder = None
+        feed_result = {}
         ret = -1
         try:
             proc = subprocess.Popen(
@@ -163,11 +167,15 @@ def _run_restore_runner(dump_file, log_file):
                 start_new_session=True,
                 close_fds=True,
             )
-            feeder = threading.Thread(target=_feed_dump, args=(proc.stdin, dump_file), daemon=True)
+            feeder = threading.Thread(target=_feed_dump, args=(proc.stdin, dump_file, feed_result), daemon=True)
             feeder.start()
             ret = proc.wait(timeout=3600)
         except subprocess.TimeoutExpired:
             if proc is not None:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
                 proc.kill()
                 proc.wait()
             ret = -1
@@ -179,36 +187,47 @@ def _run_restore_runner(dump_file, log_file):
         finally:
             if feeder is not None:
                 feeder.join(timeout=10)
+        if ret == 0 and not feed_result.get('ok'):
+            ret = 1
+            log.write(
+                "Restore FAILED: dump was not fully streamed to psql (%s); database may be incomplete.\n"
+                % feed_result.get('error', 'feeder did not finish')
+            )
+            log.flush()
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
         try:
-            restart_manager.publish_start_request()
-            log.write("Published worker start request.\n")
-            log.flush()
-        except Exception as exc:
-            log.write(f"Failed to publish worker start request: {exc}\n")
-            log.flush()
+            try:
+                restart_manager.publish_start_request()
+                log.write("Published worker start request.\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Failed to publish worker start request: {exc}\n")
+                log.flush()
 
-        try:
-            restart_manager.start_local_flask_service()
-            log.write("Started local Flask service.\n")
-            log.flush()
-        except Exception as exc:
-            log.write(f"Failed to start local Flask service: {exc}\n")
-            log.flush()
+            try:
+                restart_manager.start_local_flask_service()
+                log.write("Started local Flask service.\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Failed to start local Flask service: {exc}\n")
+                log.flush()
 
-        try:
-            os.unlink(dump_file)
-            log.write(f"Deleted temporary dump file {dump_file}\n")
-            log.flush()
-        except Exception as exc:
-            log.write(f"Could not delete temporary dump file {dump_file}: {exc}\n")
-            log.flush()
-
-        _release_restore_lock()
-        log.write("Released restore lock.\n")
-        log.flush()
+            try:
+                os.unlink(dump_file)
+                log.write(f"Deleted temporary dump file {dump_file}\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Could not delete temporary dump file {dump_file}: {exc}\n")
+                log.flush()
+        finally:
+            _release_restore_lock()
+            try:
+                log.write("Released restore lock.\n")
+                log.flush()
+            except OSError:
+                pass
 
         log.write(f"Restore runner finished at {datetime.now().isoformat()}\n")
         log.flush()
@@ -451,8 +470,8 @@ def restore_backup():
                     if f.startswith('backup_') and f.endswith('.sql'):
                         try:
                             os.unlink(os.path.join(chunks_dir, f))
-                        except Exception as exc:
-                            logger.warning(f"Could not delete leftover chunk {f}: {exc}")
+                        except Exception:
+                            logger.warning("Could not delete leftover chunk %s", f, exc_info=True)
 
             # Save the current chunk
             try:
@@ -529,8 +548,8 @@ def restore_backup():
                         try:
                             if os.path.exists(chunk_path):
                                 os.unlink(chunk_path)
-                        except OSError as exc:
-                            logger.warning("Could not delete chunk %s after reassembly failure: %s", i, exc)
+                        except OSError:
+                            logger.warning("Could not delete chunk %s after reassembly failure", i, exc_info=True)
                     _release_restore_lock()
                     return jsonify({'error': 'Failed to reassemble chunks due to an internal error.'}), 500
             else:
