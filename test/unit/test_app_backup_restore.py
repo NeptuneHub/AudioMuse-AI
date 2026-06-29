@@ -132,13 +132,23 @@ class TestFeedDumpStrip:
             b"COPY t (a) FROM stdin;\n1\n\\.\n"
         )
         fake = _FakeStdin()
-        app_backup._feed_dump(fake, str(dump))
+        result = {}
+        app_backup._feed_dump(fake, str(dump), result)
         out = bytes(fake.buf)
         assert out.startswith(b"DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;\n")
         assert b"transaction_timeout" not in out
         assert b"SET statement_timeout = 0;\n" in out
         assert b"SET client_encoding = 'UTF8';\n" in out
         assert b"COPY t (a) FROM stdin;" in out
+        assert fake.closed is True
+        assert result.get('ok') is True
+
+    def test_missing_dump_file_is_not_reported_ok(self, tmp_path):
+        fake = _FakeStdin()
+        result = {}
+        app_backup._feed_dump(fake, str(tmp_path / 'does_not_exist.sql'), result)
+        assert result.get('ok') is not True
+        assert 'error' in result
         assert fake.closed is True
 
 

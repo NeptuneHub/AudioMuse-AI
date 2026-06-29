@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 THINK_END_TAG = "</think>"
 
+# Models that 400-rejected reasoning_effort once; skip the param for them next time.
+_MODELS_REJECTING_REASONING = set()
+
 
 def _is_ollama_format_url(server_url: str) -> bool:
     """Detect Ollama endpoints from the URL path (issue #467 fix preserved)."""
@@ -79,8 +82,9 @@ def generate_text(
             "stream": True,
             "temperature": temp,
             "max_tokens": out_tokens,
-            "reasoning_effort": "low" if is_deepseek else "none",
         }
+        if model_name not in _MODELS_REJECTING_REASONING:
+            payload["reasoning_effort"] = "low" if is_deepseek else "none"
     else:
         payload = {
             "model": model_name,
@@ -92,7 +96,6 @@ def generate_text(
 
     max_retries = 3
     base_delay = 5
-    tried_drop_reasoning = False
     tried_aggressive_fallback = False
     tried_ultra_minimal_fallback = False
 
@@ -209,16 +212,19 @@ def generate_text(
                 try:
                     error_body = e.response.json()
                     error_obj = error_body.get("error", {})
+                    if not isinstance(error_obj, dict):
+                        error_obj = {}
                     error_code = error_obj.get("code", "") or ""
+                    error_param = error_obj.get("param", "") or ""
                     error_message = (error_obj.get("message", "") or "").lower()
-                    # Non-reasoning models (gpt-4o, gpt-4o-mini, gpt-4.1*) reject
-                    # reasoning_effort with a 400 whose error.code is null, so
-                    # match the message text and just drop the param (#696).
-                    if (not tried_drop_reasoning and "reasoning_effort" in payload
-                            and "reasoning_effort" in error_message):
+                    # gpt-4o*/gpt-4.1* reject reasoning_effort with error.code null;
+                    # drop it, remember the model, and retry (#696).
+                    if ("reasoning_effort" in payload
+                            and (error_param == "reasoning_effort"
+                                 or "reasoning_effort" in error_message)):
                         logger.info("reasoning_effort rejected (400); retrying without it")
                         payload.pop("reasoning_effort", None)
-                        tried_drop_reasoning = True
+                        _MODELS_REJECTING_REASONING.add(model_name)
                         continue
                     if error_code in ("unsupported_parameter", "unsupported_value"):
                         if not tried_aggressive_fallback:
@@ -318,7 +324,7 @@ def call_with_tools(
         ]
         if is_deepseek:
             payload.update(deepseek_thinking_off_forms[0])
-        else:
+        elif model_name not in _MODELS_REJECTING_REASONING:
             payload["reasoning_effort"] = "none"
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
@@ -356,6 +362,7 @@ def call_with_tools(
             elif "reasoning_effort" in payload:
                 log_messages.append("reasoning_effort unsupported by this model; retrying without it")
                 payload.pop("reasoning_effort", None)
+                _MODELS_REJECTING_REASONING.add(model_name)
                 result = _post(payload)
             else:
                 raise

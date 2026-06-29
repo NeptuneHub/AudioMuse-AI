@@ -123,13 +123,22 @@ for _name, _relpath in (
 
 
 from unittest.mock import Mock, patch
+import pytest
 import requests
 import json
+import tasks.ai.providers.openai as ai_openai
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
 from tasks.ai.providers.gemini import generate_text as get_gemini_playlist_name
 from tasks.ai.providers.mistral import generate_text as get_mistral_playlist_name
 from tasks.ai.prompts import creative_prompt_template
+
+
+@pytest.fixture(autouse=True)
+def _reset_reasoning_cache():
+    ai_openai._MODELS_REJECTING_REASONING.clear()
+    yield
+    ai_openai._MODELS_REJECTING_REASONING.clear()
 
 
 class TestCleanPlaylistName:
@@ -833,7 +842,7 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_reasoning_effort_dropped_on_null_code_400(self, mock_sleep, mock_post, mock_env):
         """#696: non-reasoning models reject reasoning_effort with code=null; drop it and retry."""
-        mock_env.return_value = "0"
+        mock_env.side_effect = lambda key, default=None: "0" if key == "OPENAI_API_CALL_DELAY_SECONDS" else default
 
         # First call: 400 with code=null and message naming reasoning_effort
         mock_response_400 = Mock()
@@ -868,6 +877,9 @@ class TestGetOpenAICompatiblePlaylistName:
 
         assert result == "OK Playlist"
         assert mock_post.call_count == 2
+        # First call must actually carry reasoning_effort, else the drop is a no-op.
+        first_call_data = json.loads(mock_post.call_args_list[0][1]['data'])
+        assert first_call_data.get('reasoning_effort') == 'none'
         # Only reasoning_effort dropped; temperature and max_tokens preserved.
         second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
         assert 'reasoning_effort' not in second_call_data
