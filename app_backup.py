@@ -1,6 +1,9 @@
 import os
+import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import logging
 import tempfile
@@ -76,6 +79,29 @@ def _pg_cmd(tool, *extra_args):
     ]
 
 
+# pg_dump 17+ writes `SET transaction_timeout = 0;` in the dump prologue; that
+# GUC does not exist before PG 17, so a dump from the bundled client 18 cannot
+# be replayed into a PG 15/16 server. Drop the line on the way into psql.
+_TXN_TIMEOUT_RE = re.compile(rb'(?m)^SET transaction_timeout\b[^\n]*\n')
+
+
+def _feed_dump(stdin, dump_file):
+    """Stream the dump into psql, dropping prologue GUCs older servers reject."""
+    try:
+        with open(dump_file, 'rb') as src:
+            head = _TXN_TIMEOUT_RE.sub(b'', src.read(1024 * 1024))
+            stdin.write(b'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;\n')
+            stdin.write(head)
+            shutil.copyfileobj(src, stdin, 1024 * 1024)
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        try:
+            stdin.close()
+        except OSError:
+            pass
+
+
 def _run_restore_runner(dump_file, log_file):
     """Run the restore outside the Flask request in a detached process."""
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -119,24 +145,26 @@ def _run_restore_runner(dump_file, log_file):
             '-d', POSTGRES_DB,
             '-v', 'ON_ERROR_STOP=1',
             '--single-transaction',
-            '-c', 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;',
-            '-f', dump_file,
         )
         log.write(f"Running restore command: {' '.join(restore_cmd)}\n")
+        log.write("Streaming dump via stdin (stripping pg_dump 17+ transaction_timeout for old-server compatibility).\n")
         log.flush()
 
         proc = None
+        feeder = None
         ret = -1
         try:
             proc = subprocess.Popen(
                 restore_cmd,
                 env=env,
+                stdin=subprocess.PIPE,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                text=True,
                 start_new_session=True,
                 close_fds=True,
             )
+            feeder = threading.Thread(target=_feed_dump, args=(proc.stdin, dump_file), daemon=True)
+            feeder.start()
             ret = proc.wait(timeout=3600)
         except subprocess.TimeoutExpired:
             if proc is not None:
@@ -148,6 +176,9 @@ def _run_restore_runner(dump_file, log_file):
         except Exception as exc:
             log.write(f"Failed to execute restore command: {exc}\n")
             log.flush()
+        finally:
+            if feeder is not None:
+                feeder.join(timeout=10)
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
@@ -478,12 +509,12 @@ def restore_backup():
                     for i in range(1, total_chunks + 1):
                         try:
                             os.unlink(os.path.join(chunks_dir, f'backup_{i}_of_{total_chunks}.sql'))
-                        except Exception as e:
-                            logger.warning(f"Could not delete chunk {i}: {e}")
+                        except Exception:
+                            logger.warning("Could not delete chunk %s", i, exc_info=True)
 
                     # Start restore with reassembled file
                     all_chunks_received = True
-                except Exception as e:
+                except Exception:
                     logger.exception("Failed to reassemble uploaded backup chunks")
                     if tmp:
                         try:

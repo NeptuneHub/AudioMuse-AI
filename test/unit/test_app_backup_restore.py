@@ -109,6 +109,39 @@ class TestRestoreLock:
         assert 'already in progress' in resp.get_json()['error']
 
 
+class _FakeStdin:
+    def __init__(self):
+        self.buf = bytearray()
+        self.closed = False
+
+    def write(self, b):
+        self.buf += b
+        return len(b)
+
+    def close(self):
+        self.closed = True
+
+
+class TestFeedDumpStrip:
+    def test_strips_transaction_timeout_and_prepends_schema(self, tmp_path):
+        dump = tmp_path / 'd.sql'
+        dump.write_bytes(
+            b"SET statement_timeout = 0;\n"
+            b"SET transaction_timeout = 0;\n"
+            b"SET client_encoding = 'UTF8';\n"
+            b"COPY t (a) FROM stdin;\n1\n\\.\n"
+        )
+        fake = _FakeStdin()
+        app_backup._feed_dump(fake, str(dump))
+        out = bytes(fake.buf)
+        assert out.startswith(b"DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;\n")
+        assert b"transaction_timeout" not in out
+        assert b"SET statement_timeout = 0;\n" in out
+        assert b"SET client_encoding = 'UTF8';\n" in out
+        assert b"COPY t (a) FROM stdin;" in out
+        assert fake.closed is True
+
+
 class TestRestoreChunkProgress:
     def test_intermediate_chunk_is_acknowledged(self, client, monkeypatch, tmp_path):
         monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
