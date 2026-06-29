@@ -337,30 +337,6 @@ def _fetch_from_configured_api(
     if not url_template or not artist_param or not title_param or not lyrics_field:
         return None
 
-    try:
-        import ipaddress as _ipaddress
-        import socket as _socket
-        import urllib.parse as _up
-        _parsed_tpl = _up.urlparse(url_template)
-        if _parsed_tpl.scheme not in ('http', 'https'):
-            logger.warning('Lyrics API slot %s blocked: non-http(s) scheme %r', slot, _parsed_tpl.scheme)
-            return None
-        _host = _parsed_tpl.hostname or ''
-        _host_l = _host.strip().lower()
-        if _host_l in ('localhost', '') or _host_l.endswith('.localhost') or _host_l.endswith('.local'):
-            logger.warning('Lyrics API slot %s blocked: local hostname %r', slot, _host)
-            return None
-        _port = _parsed_tpl.port or (443 if _parsed_tpl.scheme == 'https' else 80)
-        for _entry in _socket.getaddrinfo(_host, _port, type=_socket.SOCK_STREAM):
-            _ip = _ipaddress.ip_address(_entry[4][0])
-            if (_ip.is_private or _ip.is_loopback or _ip.is_link_local
-                    or _ip.is_multicast or _ip.is_reserved or _ip.is_unspecified):
-                logger.warning('Lyrics API slot %s blocked: %r resolves to non-public IP %s', slot, _host, _ip)
-                return None
-    except Exception as _ssrf_exc:
-        logger.warning('Lyrics API slot %s SSRF check failed: %s', slot, _ssrf_exc)
-        return None
-
     params: dict = {
         artist_param: artist,
         title_param:  track,
