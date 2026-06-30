@@ -1,13 +1,3 @@
-"""Unit tests for app_logging's record sanitization.
-
-Covers the two jobs of ``_sanitize_log_text`` / ``LogSanitizingFilter``:
-console-safety (emoji and non-Latin-1 symbol stripping for Windows code-pages)
-and log-injection safety (CR/LF and other control characters are neutralised so
-an attacker-controlled value cannot forge or split log lines -- CWE-117).
-
-Emoji and accented characters are built with ``chr()`` so this source file
-stays pure ASCII.
-"""
 import logging
 
 from app_logging import _sanitize_log_text, LogSanitizingFilter, configure_logging

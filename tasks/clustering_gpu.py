@@ -1,40 +1,19 @@
-# tasks/clustering_gpu.py
-"""
-GPU-accelerated clustering module using RAPIDS cuML.
-
-This module provides GPU implementations of clustering algorithms using RAPIDS cuML
-with automatic fallback to CPU (scikit-learn) if GPU is unavailable or fails.
-
-Supports:
-- KMeans (cuML)
-- DBSCAN (cuML)
-- PCA (cuML)
-- GaussianMixture (CPU fallback - no GPU version in cuML)
-- SpectralClustering (CPU fallback - no GPU version in cuML)
-"""
 
 import logging
 from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
 
 logger = logging.getLogger(__name__)
 
-# Global flag to track if GPU is available
 _GPU_AVAILABLE = None
 _GPU_CHECK_DONE = False
 
 def _check_cuda_driver_available():
-    """
-    Check if CUDA driver is available using low-level libcuda.so.
-    This MUST be called before importing cupy/cuml to avoid corrupting CUDA state.
-    """
     try:
         import ctypes
         cuda = ctypes.CDLL('libcuda.so.1')
-        # Must initialize CUDA driver first
         init_result = cuda.cuInit(0)
         if init_result != 0:
             return False
-        # Then get device count
         device_count = ctypes.c_int()
         result = cuda.cuDeviceGetCount(ctypes.byref(device_count))
         return result == 0 and device_count.value > 0
@@ -42,20 +21,11 @@ def _check_cuda_driver_available():
         return False
 
 def check_gpu_available():
-    """
-    Check if GPU and cuML are available.
-    This is cached after the first check.
-
-    IMPORTANT: We first check if CUDA driver is accessible using low-level API
-    before importing cupy/cuml, because their import can corrupt CUDA state
-    for other libraries (like ONNX Runtime) if it fails.
-    """
     global _GPU_AVAILABLE, _GPU_CHECK_DONE
 
     if _GPU_CHECK_DONE:
         return _GPU_AVAILABLE
 
-    # First check if CUDA driver is available at all
     if not _check_cuda_driver_available():
         _GPU_AVAILABLE = False
         _GPU_CHECK_DONE = True
@@ -65,7 +35,6 @@ def check_gpu_available():
     try:
         import cupy as cp
         import cuml  # noqa: F401
-        # Try to create a small array on GPU to verify it works
         test_array = cp.array([1, 2, 3])
         _ = test_array.sum()
         _GPU_AVAILABLE = True
@@ -79,15 +48,11 @@ def check_gpu_available():
 
 
 def _to_gpu_array(X):
-    """Return X as a cupy array, avoiding a copy if it already is one."""
     import cupy as cp
     return X if isinstance(X, cp.ndarray) else cp.asarray(X)
 
 
 class GPUKMeans:
-    """
-    GPU-accelerated KMeans using cuML with CPU fallback.
-    """
     def __init__(self, n_clusters, init='k-means++', n_init=10, random_state=None):
         self.n_clusters = n_clusters
         self.init = init
@@ -99,18 +64,15 @@ class GPUKMeans:
         self.using_gpu = False
 
     def fit_predict(self, X):
-        """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
                 from cuml.cluster import KMeans as cuKMeans
 
-                # Create and fit GPU model
-                # Build kwargs dynamically to avoid passing None to cuKMeans
                 kmeans_kwargs = {
                     'n_clusters': int(self.n_clusters),
                     'init': self.init,
                     'n_init': int(self.n_init),
-                    'output_type': 'numpy'  # Return numpy arrays for compatibility
+                    'output_type': 'numpy'
                 }
                 if self.random_state is not None:
                     kmeans_kwargs['random_state'] = int(self.random_state)
@@ -127,9 +89,7 @@ class GPUKMeans:
 
             except Exception as e:
                 logger.warning(f"GPU KMeans failed, falling back to CPU: {e}")
-                # Fall through to CPU implementation
 
-        # CPU fallback
         from sklearn.cluster import KMeans
         self.model = KMeans(
             n_clusters=self.n_clusters,
@@ -147,9 +107,6 @@ class GPUKMeans:
 
 
 class GPUDBSCAN:
-    """
-    GPU-accelerated DBSCAN using cuML with CPU fallback.
-    """
     def __init__(self, eps, min_samples):
         self.eps = eps
         self.min_samples = min_samples
@@ -158,16 +115,14 @@ class GPUDBSCAN:
         self.using_gpu = False
 
     def fit_predict(self, X):
-        """Fit the model and return cluster labels."""
         if check_gpu_available():
             try:
                 from cuml.cluster import DBSCAN as cuDBSCAN
 
-                # Create and fit GPU model
                 self.model = cuDBSCAN(
                     eps=self.eps,
                     min_samples=self.min_samples,
-                    output_type='numpy'  # Return numpy arrays for compatibility
+                    output_type='numpy'
                 )
 
                 labels = self.model.fit_predict(_to_gpu_array(X))
@@ -179,9 +134,7 @@ class GPUDBSCAN:
 
             except Exception as e:
                 logger.warning(f"GPU DBSCAN failed, falling back to CPU: {e}")
-                # Fall through to CPU implementation
 
-        # CPU fallback
         from sklearn.cluster import DBSCAN
         self.model = DBSCAN(eps=self.eps, min_samples=self.min_samples)
         labels = self.model.fit_predict(X)
@@ -193,9 +146,6 @@ class GPUDBSCAN:
 
 
 class GPUPCA:
-    """
-    GPU-accelerated PCA using cuML with CPU fallback.
-    """
     def __init__(self, n_components):
         self.n_components = n_components
         self.model = None
@@ -205,15 +155,13 @@ class GPUPCA:
         self.using_gpu = False
 
     def fit_transform(self, X):
-        """Fit the model and transform the data."""
         if check_gpu_available():
             try:
                 from cuml.decomposition import PCA as cuPCA
 
-                # Create and fit GPU model
                 self.model = cuPCA(
                     n_components=self.n_components,
-                    output_type='numpy'  # Return numpy arrays for compatibility
+                    output_type='numpy'
                 )
 
                 X_transformed = self.model.fit_transform(_to_gpu_array(X))
@@ -227,9 +175,7 @@ class GPUPCA:
 
             except Exception as e:
                 logger.warning(f"GPU PCA failed, falling back to CPU: {e}")
-                # Fall through to CPU implementation
 
-        # CPU fallback
         from sklearn.decomposition import PCA
         self.model = PCA(n_components=self.n_components)
         X_transformed = self.model.fit_transform(X)
@@ -242,7 +188,6 @@ class GPUPCA:
         return X_transformed
 
     def inverse_transform(self, X):
-        """Inverse transform the data back to original space."""
         if self.model is None:
             raise ValueError("Model must be fitted before inverse_transform")
 
@@ -251,19 +196,12 @@ class GPUPCA:
                 return self.model.inverse_transform(_to_gpu_array(X))
             except Exception as e:
                 logger.warning(f"GPU PCA inverse_transform failed: {e}")
-                # Fall through to use CPU model
 
         return self.model.inverse_transform(X)
 
 
-# For GaussianMixture and SpectralClustering, cuML doesn't have GPU implementations
-# So we always use CPU versions (sklearn)
 
 class GPUGaussianMixture:
-    """
-    GaussianMixture (CPU only - no GPU version available in cuML).
-    Provided for API consistency.
-    """
     def __init__(self, n_components, covariance_type='full', init_params='k-means++',
                  n_init=10, random_state=None, reg_covar=1e-4):
         from sklearn.mixture import GaussianMixture
@@ -281,17 +219,12 @@ class GPUGaussianMixture:
         logger.debug("GaussianMixture using CPU (no GPU implementation available)")
 
     def fit_predict(self, X):
-        """Fit the model and return cluster labels."""
         labels = self.model.fit_predict(X)
         self.means_ = self.model.means_
         return labels
 
 
 class GPUSpectralClustering:
-    """
-    SpectralClustering (CPU only - no GPU version available in cuML).
-    Provided for API consistency.
-    """
     def __init__(self, n_clusters, assign_labels='kmeans', affinity='nearest_neighbors',
                  n_neighbors=10, random_state=None, n_init=10, verbose=False):
         from sklearn.cluster import SpectralClustering
@@ -309,24 +242,11 @@ class GPUSpectralClustering:
         logger.debug("SpectralClustering using CPU (no GPU implementation available)")
 
     def fit_predict(self, X):
-        """Fit the model and return cluster labels."""
         return self.model.fit_predict(X)
 
 
 def get_clustering_model(method, params, use_gpu=False):
-    """
-    Factory function to get the appropriate clustering model.
-
-    Args:
-        method: Clustering method ('kmeans', 'dbscan', 'gmm', 'spectral')
-        params: Dictionary of parameters for the model
-        use_gpu: Whether to attempt GPU acceleration
-
-    Returns:
-        Model instance (GPU-accelerated if available and requested)
-    """
     if not use_gpu:
-        # Use CPU implementations directly
         from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
         from sklearn.mixture import GaussianMixture
 
@@ -354,7 +274,6 @@ def get_clustering_model(method, params, use_gpu=False):
                 verbose=False
             )
 
-    # Use GPU implementations (with automatic CPU fallback)
     if method == 'kmeans':
         return GPUKMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
     elif method == 'dbscan':
@@ -383,16 +302,6 @@ def get_clustering_model(method, params, use_gpu=False):
 
 
 def get_pca_model(n_components, use_gpu=False):
-    """
-    Factory function to get the appropriate PCA model.
-
-    Args:
-        n_components: Number of components
-        use_gpu: Whether to attempt GPU acceleration
-
-    Returns:
-        PCA model instance (GPU-accelerated if available and requested)
-    """
     if not use_gpu:
         from sklearn.decomposition import PCA
         return PCA(n_components=n_components)

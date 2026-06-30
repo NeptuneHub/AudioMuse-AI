@@ -1,10 +1,3 @@
-"""Guards for centralized RQ/radius config defaults.
-
-Each of RQ_MAX_JOBS, RQ_MAX_JOBS_HIGH, RQ_LOGGING_LEVEL and
-RADIUS_INSTRUMENTATION must be defined once (with its default) in config.py and
-honored from its environment variable. Importer modules must consume
-config.<NAME> without re-introducing a second default.
-"""
 import importlib
 import os
 import re
@@ -14,7 +7,6 @@ import pytest
 import config
 
 
-# (attr_name, default_value, env_var, env_value_to_set, expected_after_reload)
 _DEFAULTS = (
     ('RQ_MAX_JOBS', 50, 'RQ_MAX_JOBS', '7', 7),
     ('RQ_MAX_JOBS_HIGH', 100, 'RQ_MAX_JOBS_HIGH', '13', 13),
@@ -28,7 +20,6 @@ _DEFAULTS = (
 )
 def test_attribute_exists_with_default(attr, default):
     assert hasattr(config, attr), f"config.{attr} missing"
-    # Reload with the env var unset so we observe the documented default.
     env_var = next(d[2] for d in _DEFAULTS if d[0] == attr)
     saved = os.environ.pop(env_var, None)
     try:
@@ -63,7 +54,6 @@ def _read_source(relative_path):
         return fh.read()
 
 
-# module -> names it actually consumes from config
 _IMPORTERS = {
     'rq_worker.py': ('RQ_MAX_JOBS', 'RQ_LOGGING_LEVEL'),
     'rq_worker_high_priority.py': ('RQ_MAX_JOBS_HIGH', 'RQ_LOGGING_LEVEL'),

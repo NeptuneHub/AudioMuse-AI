@@ -1,30 +1,4 @@
-"""Standalone Windows entry point (the PyInstaller entry script).
 
-Windows counterpart of ``native-build/linux/launcher.py``. There is no native menu-bar agent
-here (rumps/AppKit are macOS-only); instead the frozen binary is a small
-multi-call launcher:
-
-* ``AudioMuse-AI.exe`` (no args) or ``AudioMuse-AI.exe start`` -- become the single
-  foreground supervisor: start embedded PostgreSQL + Redis, the Flask web UI and
-  the RQ workers, open the browser, and stay alive until told to stop (Ctrl+C
-  sends CTRL_BREAK_EVENT to the process group, or ``AudioMuse-AI.exe stop`` from
-  another terminal).
-* ``AudioMuse-AI.exe stop`` -- signal the running instance to shut everything down.
-* ``AudioMuse-AI.exe status`` -- print whether the stack is up.
-* ``AudioMuse-AI.exe open`` -- open the web UI in the browser (starts the stack
-  first if it is not already running).
-* ``AudioMuse-AI.exe --role=<x>`` -- re-invocation by the supervisor to run one
-  child service (the web server, an RQ worker, the janitor or the restart
-  listener), reusing the existing entry points unchanged via runpy.
-"""
-
-# --- Windows: force multiprocessing 'spawn' before ANY imports ---
-# Python's ``multiprocessing`` on Windows supports only ``spawn`` (no ``fork``),
-# but RQ's ``scheduler.py`` calls ``get_context('fork')`` at module level. The
-# monkey-patch below redirects those ``fork`` requests to ``spawn`` so imports
-# succeed. The workers themselves run as RQ's ``SimpleWorker`` on Windows (no
-# ``os.fork()``; each job runs in the worker process), so the full worker pool
-# runs here -- see rq_worker.py and supervisor.py.
 import multiprocessing
 _orig_get_context = multiprocessing.get_context
 def _win_get_context(method=None):
@@ -33,8 +7,6 @@ def _win_get_context(method=None):
     return _orig_get_context(method)
 multiprocessing.get_context = _win_get_context
 
-# RQ's SpawnWorker uses several ``os`` functions that only exist on POSIX.
-# Monkey-patch them all on Windows so the worker doesn't crash at runtime.
 import os as _os_patch
 if not hasattr(_os_patch, 'wait4'):
     _os_waitpid = _os_patch.waitpid
@@ -42,22 +14,16 @@ if not hasattr(_os_patch, 'wait4'):
         return _os_waitpid(pid, options) + (None,)
     _os_patch.wait4 = _win_wait4
 if not hasattr(_os_patch, 'WIFEXITED'):
-    _os_patch.WIFEXITED   = lambda status: True   # Windows: processes always exit, not signalled
+    _os_patch.WIFEXITED   = lambda status: True
 if not hasattr(_os_patch, 'WIFSIGNALED'):
-    _os_patch.WIFSIGNALED = lambda status: False  # Windows: no POSIX signals
+    _os_patch.WIFSIGNALED = lambda status: False
 if not hasattr(_os_patch, 'WTERMSIG'):
-    _os_patch.WTERMSIG    = lambda status: 0      # never called (WIFSIGNALED is always False)
+    _os_patch.WTERMSIG    = lambda status: 0
 if not hasattr(_os_patch, 'WEXITSTATUS'):
-    _os_patch.WEXITSTATUS = lambda status: status # exit code is already the raw number
+    _os_patch.WEXITSTATUS = lambda status: status
 
-# OpenTelemetry's entry-point-based context loading breaks in PyInstaller
-# frozen apps because ``importlib.metadata.entry_points()`` can raise
-# ``StopIteration`` when no entry points are found (the iterator is
-# exhausted).  Patch it to return an empty list instead, then force the
-# contextvars runtime context before any import triggers it.
 import os as _os
 _os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
-# ------------------------------------------------------------------
 
 import os
 import runpy
@@ -98,8 +64,6 @@ def _run_flask():
 
 
 def _run_role(role):
-    # Strip the launcher's own ``--role=`` flag from argv before handing control
-    # to a child module.
     sys.argv = [a for a in sys.argv if not a.startswith("--role=")]
     if role == "flask":
         _run_flask()
@@ -116,17 +80,11 @@ def _run_role(role):
         raise SystemExit(f"Unknown role: {role}")
 
 
-# --- single-instance lock (Windows named mutex instead of flock) ---
 
 _INSTANCE_LOCK = None
 
 
 def _acquire_single_instance_lock(paths):
-    """Return True if we are the only supervisor (and hold the lock).
-
-    Uses a Windows named mutex (no flock on Windows). The lock file also stores
-    the supervisor PID so ``stop`` can find it.
-    """
     global _INSTANCE_LOCK
     import ctypes
     from ctypes import wintypes
@@ -140,13 +98,12 @@ def _acquire_single_instance_lock(paths):
     handle = kernel32.CreateMutexW(None, False, mutex_name)
     if not handle:
         return False
-    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+    if ctypes.get_last_error() == 183:
         kernel32.CloseHandle(handle)
         return False
 
     _INSTANCE_LOCK = handle
 
-    # Write the supervisor PID to the lock file so ``stop`` can find us.
     lock_path = paths.supervisor_lock_path()
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     with open(lock_path, "w") as fh:
@@ -171,16 +128,6 @@ def _open_browser(url):
 
 
 def _silence_supervisor_db_probe():
-    """Quiet config.py's import-time setup_manager DB probe in the supervisor process.
-
-    The supervisor/CLI process never owns a database connection -- it only
-    orchestrates the embedded services -- but importing ``config`` (transitively,
-    via ``windows.paths``) runs ``SetupManager`` against the default container DB
-    host before the embedded PostgreSQL is up, logging spurious "could not
-    translate host name" warnings. Child processes set the embedded
-    ``DATABASE_URL`` and connect cleanly, so this only suppresses noise in the
-    supervisor's own console and leaves the children's logging untouched.
-    """
     import logging
     logging.getLogger("tasks.setup_manager").setLevel(logging.ERROR)
 
@@ -225,7 +172,6 @@ def _start_supervisor():
         return
 
     supervisor = ProcessSupervisor()
-    # Install a console control handler so Ctrl+C shuts down cleanly.
     def _on_ctrl(sig):
         print("\nShutting down...")
         supervisor.stop_all()
@@ -237,7 +183,6 @@ def _start_supervisor():
         _open_browser(WEB_URL)
         print(f"AudioMuse-AI is running at {WEB_URL}")
         print("Press Ctrl+C to stop.")
-        # Park the main thread; the supervisor runs on its own threads.
         while supervisor.is_running():
             time.sleep(1)
     except KeyboardInterrupt:
@@ -263,13 +208,12 @@ def _hide_console_if_owned():
         if kernel32.GetConsoleProcessList(buf, 2) == 1:
             hwnd = kernel32.GetConsoleWindow()
             if hwnd:
-                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                user32.ShowWindow(hwnd, 0)
     except Exception:
         pass
 
 
 def _run_tray():
-    """Run as a notification-area (tray) app: the Windows counterpart of the macOS menu bar."""
     _hide_console_if_owned()
 
     from windows import paths
@@ -340,7 +284,6 @@ def _stop_supervisor():
     import urllib.request
 
     lock_path = paths.supervisor_lock_path()
-    # Signal the running supervisor to stop via the control endpoint.
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{paths.control_port()}/stop",
@@ -350,7 +293,6 @@ def _stop_supervisor():
         urllib.request.urlopen(req, timeout=5)
         print("Stop request sent.")
     except Exception:
-        # Fall back: try to read the PID from the lock file and terminate.
         try:
             with open(lock_path, "r") as fh:
                 pid = int(fh.read().strip())
@@ -379,7 +321,6 @@ def _open_or_start():
     from windows import paths
     import urllib.request
 
-    # Check if already running.
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{paths.control_port()}/status",
@@ -391,7 +332,6 @@ def _open_or_start():
     except Exception:
         pass
 
-    # Not running -- start the supervisor.
     _start_supervisor()
 
 

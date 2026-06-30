@@ -1,28 +1,3 @@
-# Real lyrics analysis integration test
-#
-# Goal: verify that the deterministic part of the lyrics pipeline
-# (gte-multilingual-base text embedding + per-axis softmax scoring) is stable
-# across code changes.
-#
-# Strategy: skip Whisper entirely. We monkey-patch ``fetch_remote_lyrics`` to
-# return a fixed, hand-written ~200-word English lyric, so the pipeline takes
-# the API path:
-#     STEP 3 (API hit) -> STEP 6 (quality gate) -> STEP 9 (gte embedding + axis vector)
-# Because the input text is identical on every run, the resulting
-# ``embedding`` and ``axis_vector`` must be reproducible (cosine sim >= 0.98
-# vs the recorded reference; the looser-than-1.0 bound absorbs INT8 cross-CPU
-# jitter, e.g. VNNI vs non-VNNI runners).
-#
-# The gte model is loaded the same way the production code and Dockerfile do:
-# INT8 ONNX weights at ``<models>/gte-multilingual-base-int8.onnx`` and
-# tokenizer files under ``<models>/gte-multilingual-base/`` — the layout of the
-# ``lyrics_model_gte_vnni.tar.gz`` GitHub release artifact, NOT a HuggingFace cache.
-#
-# First-run behaviour: if ``test/lyrics_expected_gte_512.json`` is missing, the
-# test enters RECORD mode automatically, writes the file and passes. The CI
-# workflow (only on push to main) then commits the file back so subsequent
-# runs pin against it. The baseline is gte-specific so switching embedding
-# models is a clean re-record into a fresh file rather than an in-place edit.
 import json
 import os
 import sys
@@ -35,8 +10,6 @@ import pytest
 SIMILARITY_THRESHOLD = 0.98
 
 
-# Hand-written, deterministic, ~200-word English "lyrics" used as the fake
-# API payload. Purely synthetic so we don't ship copyrighted material.
 FAKE_LYRICS_BY_TRACK = {
     'love_song': (
         "I walk along the river when the morning light is gold\n"
@@ -130,15 +103,10 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 @pytest.mark.integration
 def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
-    """Runs analyze_lyrics with a fake API hit (deterministic English text)
-    and checks the gte-multilingual-base embedding + axis vector against
-    pre-recorded values via cosine similarity (threshold = 0.98).
-    """
     project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     expected_path = project_root / 'test' / 'lyrics_expected_gte_512.json'
 
-    # Heavy deps required by the gte ONNX path. Skip cleanly if missing.
     try:
         import onnxruntime  # noqa: F401
     except Exception as exc:  # pragma: no cover
@@ -148,9 +116,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     except Exception as exc:  # pragma: no cover
         pytest.skip(f'tokenizers not importable: {exc}')
 
-    # gte bundle layout (lyrics_model_gte_vnni.tar.gz):
-    #   <models>/gte-multilingual-base-int8.onnx     - INT8 ONNX weights
-    #   <models>/gte-multilingual-base/tokenizer.json - tokenizer + config files
     gte_onnx_path = models_dir / 'gte-multilingual-base-int8.onnx'
     gte_tokenizer_dir = models_dir / 'gte-multilingual-base'
     if not gte_onnx_path.is_file() or not (gte_tokenizer_dir / 'tokenizer.json').is_file():
@@ -161,14 +126,13 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
             f'extract it manually.'
         )
 
-    # ---- Force offline / CPU / no real HTTP API ---------------------------
     os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_OFFLINE', '1')
     os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
     os.environ.setdefault('HF_XET_DISABLE', '1')
 
-    os.environ['LYRICS_API_ENABLE'] = 'true'   # keep API path enabled
+    os.environ['LYRICS_API_ENABLE'] = 'true'
 
     os.environ['LYRICS_MODEL_DIR'] = str(models_dir)
     os.environ['LYRICS_GTE_ONNX_PATH'] = str(gte_onnx_path)
@@ -184,7 +148,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     from lyrics import lyrics_transcriber
     from lyrics.lyrics_transcriber import analyze_lyrics, axis_columns
 
-    # ---- Fake the external API: STEP 3 returns our hand-written text -----
     current = {'name': None}
 
     def _fake_fetch_remote_lyrics(artist, track, total_budget=10.0):
@@ -195,7 +158,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
     monkeypatch.setattr(lyrics_transcriber, 'fetch_remote_lyrics',
                         _fake_fetch_remote_lyrics)
 
-    # ---- Recording / replay logic -----------------------------------------
     explicit_record = os.environ.get('LYRICS_RECORD_EXPECTED', '').lower() in ('1', 'true', 'yes')
     record_mode = explicit_record or not expected_path.exists()
     expected = {}
@@ -265,7 +227,6 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
         print(f'=== Analyzing fake lyrics: {track_name}')
         print(f'{"=" * 80}')
 
-        # No source_path / audio: pipeline goes through the API branch only.
         result = analyze_lyrics(
             audio=None,
             sr=None,

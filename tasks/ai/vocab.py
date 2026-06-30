@@ -1,18 +1,3 @@
-"""Fuzzy vocabulary normalization for AI-emitted filter values.
-
-The AI router emits free-text mood/genre/scale/tempo/energy phrases. This
-module maps them to the canonical labels stored in ``score.mood_vector`` and
-``score.other_features``. Two columns matter:
-
-  * ``score.mood_vector``    -> top-5 entries from ``config.MOOD_LABELS``
-    with score > 0.5 (genre + vocal + era + descriptor tags).
-  * ``score.other_features`` -> all 6 ``config.OTHER_FEATURE_LABELS`` with
-    their CLAP cosine scores; > 0.5 means the label is "active".
-
-Some labels live in BOTH columns (``happy``, ``sad``, ``party``); the
-normalizer returns the column-classified hits so the SQL layer can query
-the right column(s).
-"""
 import functools
 import re
 from typing import List, Optional, Tuple
@@ -208,7 +193,7 @@ def _wn_lemmas(synset) -> List[str]:
         lems = synset.lemmas() or []
     except Exception:
         return []
-    return [l for l in lems if isinstance(l, str)]
+    return [lem for lem in lems if isinstance(lem, str)]
 
 
 def _wn_related(synset) -> List:
@@ -236,23 +221,6 @@ def _wn_definition(synset) -> str:
 
 @functools.lru_cache(maxsize=512)
 def _wordnet_synonyms(value: str) -> Tuple[str, ...]:
-    """Return WordNet-derived candidate phrases for `value`.
-
-    Combines four sources so we don't need to hand-list every synonym in
-    ALIAS_MOOD:
-      1. Direct synset lemmas (true synonyms in the same synset).
-      2. Hypernym lemmas -- broader categories. Essential for terms like
-         'soprano' whose IS-A chain reaches 'singer' / 'vocalist'.
-      3. 'similar' / 'also' lemmas -- adjective synonyms (joyful -> happy).
-      4. Gendered composite phrases synthesised from the synset definition:
-         when the gloss contains 'female'/'woman'/'girl' (or the male
-         equivalents) and any nearby lemma is a vocal term, we emit
-         'female singer', 'female vocalist', 'female voice' (or 'male ...').
-         These then match existing ALIAS_MOOD entries.
-
-    Lazy-imports `wn`; returns empty tuple on any error (missing install,
-    missing corpus, weird input). Caller never sees an exception.
-    """
     if not value or not isinstance(value, str):
         return ()
     try:

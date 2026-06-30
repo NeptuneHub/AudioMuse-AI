@@ -19,7 +19,6 @@ ALL_SUPERVISOR_SERVICES = FLASK_SERVICE + WORKER_SERVICES
 
 
 def publish_control_request(action):
-    """Publish a control request to worker containers via Redis."""
     try:
         redis_conn = Redis.from_url(
             config.REDIS_URL,
@@ -49,13 +48,6 @@ def publish_start_request():
 
 
 def _send_control(arguments):
-    """Forward an ``[action, *services]`` request to the standalone supervisor.
-
-    On macOS/Linux the supervisor listens on a unix socket
-    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on TCP
-    (``AUDIOMUSE_CONTROL_HOST`` / ``AUDIOMUSE_CONTROL_PORT``) because
-    ``AF_UNIX`` is not available.  The JSON-line protocol is identical.
-    """
     if not arguments:
         return False
 
@@ -114,25 +106,21 @@ def _run_supervisorctl(arguments):
         return False
 
 def stop_local_flask_service():
-    """Stop the supervised Flask service locally."""
     logger.info('Stopping supervised Flask service')
     return _run_supervisorctl(['stop'] + FLASK_SERVICE)
 
 
 def start_local_flask_service():
-    """Start the supervised Flask service locally."""
     logger.info('Starting supervised Flask service')
     return _run_supervisorctl(['start'] + FLASK_SERVICE)
 
 
 def stop_supervisor_workers():
-    """Stop supervised worker processes via supervisorctl."""
     logger.info('Stopping supervised worker services: %s', WORKER_SERVICES)
     return _run_supervisorctl(['stop'] + WORKER_SERVICES)
 
 
 def start_supervisor_workers():
-    """Start supervised worker processes via supervisorctl."""
     logger.info('Starting supervised worker services: %s', WORKER_SERVICES)
     return _run_supervisorctl(['start'] + WORKER_SERVICES)
 
@@ -164,7 +152,6 @@ def _restart_flask_program():
 
 
 def schedule_flask_restart(delay_seconds=2.5):
-    """Schedule a Flask container restart after the current response completes."""
     if os.environ.get('SERVICE_TYPE', '').lower() != 'flask':
         return False
 
@@ -178,7 +165,6 @@ def schedule_flask_restart(delay_seconds=2.5):
 
 
 def restart_supervisor_workers():
-    """Restart supervised worker programs inside the current worker container."""
     if os.environ.get('SERVICE_TYPE', '').lower() != 'worker':
         logger.info('SERVICE_TYPE is not worker; skipping supervised worker restart')
         return True

@@ -1,27 +1,9 @@
-"""
-CLAP Audio Analyzer for Text-Based Music Search
-Uses split ONNX CLAP models:
-- Audio model: For analyzing music files (worker containers)
-- Text model: For text search queries (Flask containers)
-
-Split models allow loading only what's needed, saving memory:
-- Audio analysis: ~268MB (audio model only)
-- Text search: ~478MB (text model only)
-- Combined (old): ~746MB (both models)
-
-ONNX Runtime provides:
-- ~2-3GB less RAM usage compared to PyTorch
-- Faster inference
-- Identical embeddings to the original .pt model
-"""
 
 import os
 import logging
 import numpy as np
 from typing import Tuple, Optional
 
-# Silence transformers warning about missing PyTorch/TensorFlow/Flax
-# We only use transformers for tokenizer, not for model inference
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
@@ -33,31 +15,15 @@ from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, co
 
 logger = logging.getLogger(__name__)
 
-# Global ONNX sessions (lazy loaded)
-_audio_session = None  # For audio analysis (worker containers)
-_text_session = None   # For text search (Flask containers)
+_audio_session = None
+_text_session = None
 _tokenizer = None
-# Small dictionary of text embeddings for mood/feature labels that persists
-# across jobs in the same worker process (which may be reused by RQ).
-_label_text_embeddings_cache = None  # {'mood': np.ndarray, 'feature': np.ndarray}
+_label_text_embeddings_cache = None
 
-# Every CLAP audio segment is exactly 10 s at 48 kHz; see analyze_audio_file().
-# Kept module-level so the CoreML static-shape pin and the segmenter can't drift.
 _SEGMENT_LENGTH_SAMPLES = 480000
 
 
 def _static_shape_model_bytes(model_path):
-    """Return the CLAP audio model with its dynamic time axis pinned to a fixed
-    size, serialized to bytes — or None if the model is already static.
-
-    The student model declares its mel input as ``(1, 1, n_mels, 's35')``: the
-    time axis is symbolic. CoreML's backend cannot compile a symbolic dim and
-    fails at run time with "Unable to compute the prediction (error code: -1)".
-    But every segment we feed is exactly ``_SEGMENT_LENGTH_SAMPLES`` long, so the
-    librosa (center=True) frame count is constant — ``1 + samples // hop``.
-    Pinning the symbolic dim to that value yields a fully static shape CoreML
-    can compile and run, while CPU/CUDA keep using the original dynamic model.
-    """
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
 
@@ -95,21 +61,12 @@ def _clap_session_options(label):
 
 
 def _load_audio_model():
-    """Load CLAP audio-only ONNX model for music analysis (worker containers)."""
     import onnxruntime as ort
     import gc
 
     model_path = config.CLAP_AUDIO_MODEL_PATH
     logger.info(f"Loading CLAP audio model from {model_path}...")
 
-    # --- External-data ONNX models (.onnx.data next to .onnx) ---
-    # The student model references external data by relative filename
-    # (e.g. "model_epoch_36.onnx.data").  ONNX Runtime resolves this
-    # relative to the model file's directory, so passing the model
-    # *path* (not bytes) is the most portable approach.
-    #
-    # If direct path loading fails (e.g. mismatched data-file name),
-    # fall back to loading everything into memory via the onnx library.
     data_file = model_path + ".data"
     if not os.path.exists(data_file):
         data_file = os.path.splitext(model_path)[0] + ".data"
@@ -119,14 +76,8 @@ def _load_audio_model():
 
     sess_options = _clap_session_options("Audio")
 
-    # GPU support: ONNX Runtime handles CUDA availability internally
     session = None
 
-    # Centralized provider selection: CUDA -> CoreML (Apple Silicon) -> CPU.
-    # Keep CLAP audio's original CUDA tuning (cudnn DEFAULT, no copy-in-default-
-    # stream) so the containerized GPU path stays byte-identical to before; this
-    # cuda_options override is CUDA-only and has no effect on the macOS CoreML
-    # path, which is added by allow_coreml=True.
     from tasks.analysis_helper import resolve_providers
     provider_options = resolve_providers(allow_coreml=True, cuda_options={
         'device_id': 0,
@@ -134,7 +85,6 @@ def _load_audio_model():
         'cudnn_conv_algo_search': 'DEFAULT',
     })
 
-    # Create session — pass file path so ORT resolves external data natively
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
             model_input,
@@ -148,11 +98,6 @@ def _load_audio_model():
     cpu_providers      = ['CPUExecutionProvider']
     cpu_opts           = [{}]
 
-    # CoreML cannot compile the model's symbolic time axis (it fails at run time
-    # with error -1). When CoreML is in the chain, hand ORT a copy with that axis
-    # pinned to the fixed per-segment frame count so CoreML can actually run it.
-    # CPU/CUDA keep the original dynamic model (passed by path) so external data
-    # resolves natively.
     preferred_model_input = model_path
     if 'CoreMLExecutionProvider' in preferred_providers:
         try:
@@ -164,8 +109,6 @@ def _load_audio_model():
             logger.warning(f"CoreML: could not build static-shape model ({e}); using dynamic model")
 
     try:
-        # 1) Preferred providers. For CoreML this is the static-shape model bytes;
-        #    otherwise the direct path so ORT resolves external data natively.
         session = _create_session(preferred_model_input, preferred_providers, preferred_opts)
         logger.info("OK CLAP audio model loaded successfully (direct path)")
 
@@ -173,9 +116,6 @@ def _load_audio_model():
         logger.warning(f"Direct path load failed: {direct_err}")
 
         if has_external_data:
-            # 2) In-memory fallback: load *all* external data into the proto,
-            #    serialize the self-contained blob, and hand it to ORT.
-            #    ~20 MB for the student model — well under the 2 GB protobuf limit.
             logger.info("Trying in-memory external-data fallback…")
             try:
                 import onnx as _onnx
@@ -191,7 +131,6 @@ def _load_audio_model():
         else:
             session = None
 
-        # 3) Last-resort CPU-only attempt
         if session is None:
             logger.info("Attempting final CPU-only fallback…")
             try:
@@ -209,7 +148,6 @@ def _load_audio_model():
 
 
 def _load_text_model():
-    """Load CLAP text-only ONNX model for text search (Flask containers)."""
     import onnxruntime as ort
     import gc
 
@@ -218,13 +156,6 @@ def _load_text_model():
 
     sess_options = _clap_session_options("Text")
 
-    # Provider choice depends on the process role:
-    #  - Flask (web) process: ALWAYS CPU. A CUDA ONNX session is thread-affine;
-    #    text search runs on short-lived per-request threads, so a GPU session
-    #    created on one (then-dead) thread and reused/torn-down from another
-    #    crashes the worker. CPU ONNX is thread-safe and frees GPU VRAM.
-    #  - RQ worker process: keep the original behaviour (CUDA if available) so
-    #    nothing changes for worker-side workloads.
     session = None
     available_providers = ort.get_available_providers()
     _is_worker = os.environ.get('AUDIOMUSE_ROLE') == 'worker'
@@ -249,7 +180,6 @@ def _load_text_model():
         provider_options = [('CPUExecutionProvider', {})]
         logger.info("CUDA provider not available - using CPU only")
 
-    # Create session
     try:
         session = ort.InferenceSession(
             model_path,
@@ -282,13 +212,10 @@ def _load_text_model():
 
 
 def _load_tokenizer():
-    """Load RoBERTa tokenizer for text processing."""
     from transformers import AutoTokenizer
 
     logger.info("Loading RoBERTa tokenizer...")
 
-    # roberta-base is pre-baked into /app/.cache/huggingface; force offline so
-    # a misconfigured network can never trigger a download.
     tokenizer = AutoTokenizer.from_pretrained("roberta-base", local_files_only=True)
 
     logger.info("OK Tokenizer loaded successfully")
@@ -296,7 +223,6 @@ def _load_tokenizer():
 
 
 def initialize_clap_audio_model():
-    """Initialize CLAP audio model for music analysis (worker containers only)."""
     global _audio_session
 
     if not config.CLAP_ENABLED:
@@ -321,7 +247,6 @@ def initialize_clap_audio_model():
 
 
 def initialize_clap_text_model():
-    """Initialize CLAP text model for text search (Flask containers only)."""
     global _text_session, _tokenizer
 
     if not config.CLAP_ENABLED:
@@ -347,14 +272,6 @@ def initialize_clap_text_model():
 
 
 def unload_clap_audio_only():
-    """Unload only the CLAP **audio** model, preserving the text session.
-
-    This is handy during album or batch jobs where we want to free the large
-    (~268MB) audio model between songs but keep the text model (and its small
-    cached embeddings) ready for subsequent queries.  The text model is about
-    478MB so unloading it repeatedly is expensive; the helper below exists in
-    the devel‑DCLAP branch and keeps behaviour identical.
-    """
     global _audio_session
     if _audio_session is None:
         return False
@@ -372,14 +289,12 @@ def unload_clap_audio_only():
 
 
 def unload_clap_model():
-    """Unload CLAP model from memory to free RAM and GPU VRAM."""
     global _audio_session, _text_session, _tokenizer
 
     if _audio_session is None and _text_session is None:
         return False
 
     try:
-        # Clear ONNX sessions
         freed_mb = 0
         if _audio_session is not None:
             _audio_session = None
@@ -390,12 +305,9 @@ def unload_clap_model():
 
         _tokenizer = None
 
-        # Force garbage collection
         import gc
         gc.collect()
 
-        # Aggressive CUDA cleanup after unloading CLAP
-        # This forces ONNX Runtime to release GPU memory back to CUDA
         from .memory_utils import comprehensive_memory_cleanup
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
@@ -407,17 +319,14 @@ def unload_clap_model():
 
 
 def is_clap_model_loaded():
-    """Check if any CLAP model is currently loaded in memory."""
     return _audio_session is not None or _text_session is not None
 
 
 def is_clap_text_loaded():
-    """Check if CLAP text model is currently loaded."""
     return _text_session is not None
 
 
 def get_clap_audio_model():
-    """Get the CLAP audio session, initializing if needed (lazy loading)."""
     if _audio_session is None:
         logger.info("Lazy-loading CLAP audio model on first use...")
         if not initialize_clap_audio_model():
@@ -426,7 +335,6 @@ def get_clap_audio_model():
 
 
 def get_clap_text_model():
-    """Get the CLAP text session, initializing if needed (lazy loading)."""
     if _text_session is None:
         logger.info("Lazy-loading CLAP text model on first use...")
         if not initialize_clap_text_model():
@@ -435,10 +343,8 @@ def get_clap_text_model():
 
 
 def get_tokenizer():
-    """Get the global tokenizer, initializing if needed (lazy loading)."""
 
     if _tokenizer is None:
-        # Initialize tokenizer with text model
         if not initialize_clap_text_model():
             raise RuntimeError("CLAP tokenizer could not be initialized")
     return _tokenizer
@@ -446,17 +352,6 @@ def get_tokenizer():
 
 
 def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarray:
-    """
-    Compute log mel-spectrogram from audio waveform.
-    Parameters are read from config so they match whichever ONNX audio model
-    is active (student or teacher).
-
-    Returns:
-        If CLAP_AUDIO_MEL_TRANSPOSE is False (student, default):
-            shape (1, 1, n_mels, time)   — e.g. (1, 1, 128, T)
-        If CLAP_AUDIO_MEL_TRANSPOSE is True  (teacher):
-            shape (1, 1, time, n_mels)   — e.g. (1, 1, T, 64)
-    """
     import librosa
 
     n_fft = config.CLAP_AUDIO_N_FFT
@@ -481,48 +376,28 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
         fmax=f_max
     )
 
-    # Convert to log scale (dB)
     mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
 
     if transpose:
-        # Teacher (HTSAT) layout: (1, 1, time, n_mels)
-        mel = mel.T                                # (time, n_mels)
-        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, time, n_mels)
+        mel = mel.T
+        mel = mel[np.newaxis, np.newaxis, :, :]
     else:
-        # Student (EfficientAT) layout: (1, 1, n_mels, time)
-        mel = mel[np.newaxis, np.newaxis, :, :]    # (1, 1, n_mels, time)
+        mel = mel[np.newaxis, np.newaxis, :, :]
 
     return mel.astype(np.float32)
 
 
 def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
-    """
-    Analyze an audio file and return CLAP embedding using ONNX Runtime.
-    Segments are processed one at a time (the student model was exported
-    with a fixed batch dimension of 1).  The per-segment embeddings are
-    averaged and L2-normalised to produce a single 512-dim vector.
-
-    Args:
-        audio_path: Path to audio file
-
-    Returns:
-        Tuple of (embedding_vector, duration_seconds, num_segments)
-        Returns (None, 0, 0) if CLAP is disabled or analysis fails
-    """
     if not config.CLAP_ENABLED:
         return None, 0, 0
 
     try:
-        # Get audio-only model for music analysis
         session = get_clap_audio_model()
 
-        # Audio constants (48 kHz, 10-second segments, 50 % overlap)
         SAMPLE_RATE = 48000
-        SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES   # 10 seconds at 48 kHz
-        HOP_LENGTH = 240000       # 5 seconds (50 % overlap)
+        SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES
+        HOP_LENGTH = 240000
 
-        # --- robust audio loading (pydub fallback) ---
-        # Lazy import to avoid circular dependency (analysis imports clap_analyzer)
         from tasks.analysis import robust_load_audio_with_fallback
         audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
@@ -530,14 +405,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
             return None, 0, 0
 
-        # Quantize to int16 and back (matching PyTorch CLAP preprocessing)
         audio_data = np.clip(audio_data, -1.0, 1.0)
         audio_data = (audio_data * 32767.0).astype(np.int16)
         audio_data = (audio_data / 32767.0).astype(np.float32)
 
         duration_sec = len(audio_data) / SAMPLE_RATE
 
-        # --- create overlapping segments ---
         segments = []
         total_length = len(audio_data)
 
@@ -554,18 +427,14 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         num_segments = len(segments)
         logger.info(f"CLAP: Processing {num_segments} segments ({duration_sec:.1f}s audio)")
 
-        # --- inference one segment at a time ---
-        # The student model (model_epoch_36.onnx) was exported with a fixed
-        # batch dimension of 1, so we must feed segments individually.
         all_embs = []
         for seg_idx, seg in enumerate(segments):
-            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)  # (1, 1, n_mels, time)
+            mel_spec = compute_mel_spectrogram(seg, SAMPLE_RATE)
             onnx_inputs = {'mel_spectrogram': mel_spec}
             try:
                 outputs = session.run(None, onnx_inputs)
-                emb = outputs[0]  # shape (1, 512)
+                emb = outputs[0]
             except Exception as e:
-                # Handle memory allocation errors with cleanup and retry
                 def cleanup_fn():
                     cleanup_cuda_memory(force=True)
                 def retry_fn():
@@ -604,24 +473,13 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
 
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
-    """
-    Get CLAP embedding for a text query using ONNX Runtime (text model only).
-    
-    Args:
-        query_text: Natural language query
-        
-    Returns:
-        512-dim normalized embedding vector or None if failed
-    """
     if not config.CLAP_ENABLED:
         return None
 
     try:
-        # Get text-only model for text search
         session = get_clap_text_model()
         tokenizer = get_tokenizer()
 
-        # Tokenize text (max_length=77 for CLAP)
         encoded = tokenizer(
             query_text,
             max_length=77,
@@ -633,19 +491,16 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
 
-        # Run ONNX inference (text model only needs input_ids and attention_mask)
         onnx_inputs = {
             'input_ids': input_ids,
             'attention_mask': attention_mask
         }
 
         outputs = session.run(None, onnx_inputs)
-        text_embedding = outputs[0]  # Output is text_embedding
+        text_embedding = outputs[0]
 
-        # Extract embedding (remove batch dimension)
         text_embedding = text_embedding[0]
 
-        # Should already be normalized, but ensure it
         text_embedding = text_embedding / np.linalg.norm(text_embedding)
 
         return text_embedding
@@ -656,16 +511,6 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
 
 
 def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
-    """
-    Get CLAP embeddings for multiple text queries in a single batch.
-    More efficient than calling get_text_embedding() repeatedly.
-    
-    Args:
-        query_texts: List of natural language queries
-        
-    Returns:
-        (N, 512) array of normalized embeddings or None if failed
-    """
 
     if not config.CLAP_ENABLED:
         return None
@@ -674,11 +519,9 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         return None
 
     try:
-        # Get text-only model for text search
         session = get_clap_text_model()
         tokenizer = get_tokenizer()
 
-        # Tokenize all texts at once (max_length=77 for CLAP)
         encoded = tokenizer(
             query_texts,
             max_length=77,
@@ -690,16 +533,14 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
 
-        # Run ONNX inference for batch (text model only needs input_ids and attention_mask)
         onnx_inputs = {
             'input_ids': input_ids,
             'attention_mask': attention_mask
         }
 
         outputs = session.run(None, onnx_inputs)
-        text_embeddings = outputs[0]  # Output is text_embedding (batch_size, 512)
+        text_embeddings = outputs[0]
 
-        # Normalize each embedding
         norms = np.linalg.norm(text_embeddings, axis=1, keepdims=True)
         text_embeddings = text_embeddings / norms
 
@@ -711,36 +552,14 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
 
 
 def is_clap_available() -> bool:
-    """
-    Check if CLAP is enabled and model files exist.
-    Does NOT load the model - use get_clap_audio_model() or get_clap_text_model() for lazy loading.
-    """
     if not config.CLAP_ENABLED:
         return False
 
-    # Check if split models exist
     return os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH)
 
 
-# --- CLAP-based Other Features (replaces mood-specific ONNX models) ---
 
 def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
-    """Return CLAP text embeddings for config.OTHER_FEATURE_LABELS, cached in Redis.
-
-    This function now includes the same optimised caching strategy used in
-    devel‑DCLAP:
-
-    1. In‑process cache (_label_text_embeddings_cache) avoids repeated Redis
-       round‑trips inside the same worker process (happens when RQ forks).
-    2. Redis cache stores a compact .npz blob (rather than JSON) so loading
-       is <10 ms even with many labels.  This is written once per lifecycle.
-    3. If the cache is missing or incomplete we compute the batch using
-       ``get_text_embeddings_batch`` and immediately cache it.
-
-    The external API remains unchanged (takes a redis connection, returns a
-    dict label->embedding) so callers in ``tasks/analysis.py`` continue to work
-    without modification.
-    """
     if not config.CLAP_ENABLED:
         logger.warning("CLAP is disabled, cannot compute other feature text embeddings")
         return None
@@ -752,7 +571,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
 
     cache_key = config.CLAP_OTHER_FEATURES_REDIS_KEY
 
-    # Try loading from Redis cache (store as compressed npz blob)
     try:
         cached_blob = redis_conn.get(cache_key)
         if cached_blob is not None:
@@ -760,8 +578,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
             buf = io.BytesIO(cached_blob)
             npz = np.load(buf)
             result = {label: npz[label] for label in npz.files}
-            # verify completeness
-            missing = [l for l in config.OTHER_FEATURE_LABELS if l not in result]
+            missing = [lbl for lbl in config.OTHER_FEATURE_LABELS if lbl not in result]
             if not missing:
                 logger.info(f"Loaded CLAP text embeddings from Redis cache ({len(result)} labels)")
                 _label_text_embeddings_cache = result
@@ -771,7 +588,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
 
-    # Compute text embeddings for each label
     logger.info(f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
     try:
         embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
@@ -781,7 +597,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
 
         result = {label: embeddings[i] for i, label in enumerate(config.OTHER_FEATURE_LABELS)}
         _label_text_embeddings_cache = result
-        # compress & cache to Redis
         try:
             import io
             buf = io.BytesIO()
@@ -796,7 +611,6 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         logger.exception(f"Failed to compute CLAP text embeddings for other features: {e}")
         return None
     finally:
-        # Unload text model after computing (worker only needs audio model)
         global _text_session, _tokenizer
         if _text_session is not None:
             _text_session = None
@@ -807,25 +621,8 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
 
 
 def compute_other_features_from_clap(audio_embedding: np.ndarray, label_embeddings: dict) -> dict:
-    """
-    Compute other feature scores by comparing a CLAP audio embedding against
-    pre-computed CLAP text embeddings for each feature label.
-    
-    Uses cosine similarity (dot product since both embeddings are L2-normalized).
-    Maps from cosine-similarity range [-1, 1] to probability-like [0, 1] using
-    (similarity + 1) / 2  — matching the devel-DCLAP branch behaviour.
-    
-    Args:
-        audio_embedding: 512-dim normalized CLAP audio embedding
-        label_embeddings: Dict mapping label -> 512-dim normalized text embedding
-        
-    Returns:
-        Dict mapping label -> float score in [0, 1]
-    """
     result = {}
     for label, text_emb in label_embeddings.items():
-        # Cosine similarity = dot product for L2-normalized vectors (range [-1, 1])
         similarity = float(np.dot(audio_embedding, text_emb))
-        # Map cosine similarity [-1, 1] -> probability-like [0, 1]
         result[label] = (similarity + 1.0) / 2.0
     return result

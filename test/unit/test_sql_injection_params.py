@@ -1,11 +1,3 @@
-"""Regression tests locking in SQL parameterization at the call sites.
-
-SQL is parameterized today; these tests fail loudly if a future refactor ever
-interpolates a user-controlled value into the query string. They assert that
-the user string is passed in the params tuple and never appears inside the
-executed SQL text. The heavy ``tasks.ivf_manager`` import is stubbed so the
-request-facing endpoint checks stay fast and hermetic.
-"""
 import importlib.util
 import os
 import sys

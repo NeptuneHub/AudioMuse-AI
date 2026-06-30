@@ -1,11 +1,3 @@
-"""Unit tests for app_backup.restore_backup() chunk and lock validation.
-
-Exercises the /api/backup/restore route through a Flask test client with
-multipart/form-data uploads. The module-level Redis lock helpers are patched
-(the functions, not redis), BACKUP_DIR is redirected to a pytest tmp dir, and
-no test ever completes a chunk set, so the detached restore subprocess is
-never spawned.
-"""
 import io
 import os
 from unittest.mock import MagicMock

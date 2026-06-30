@@ -10,7 +10,6 @@ PW = os.environ.get("AUDIOMUSE_PW", "admin")
 OPENAI_URL = "https://api.atlascloud.ai/v1/chat/completions"
 OPENAI_MODEL = "deepseek-ai/DeepSeek-V3-0324"
 
-# ---------------- realistic fake data ----------------
 ADJ = ["Velvet","Crimson","Neon","Hollow","Golden","Silver","Midnight","Electric","Wild","Quiet",
        "Lunar","Solar","Paper","Glass","Marble","Cobalt","Amber","Violet","Saffron","Northern",
        "Coastal","Restless","Tidal","Wandering","Ember","Faded","Brass","Scarlet","Frozen","Gilded"]
@@ -174,8 +173,8 @@ def fake_waveform():
     for i in range(250):
         amp = 0.12 + 0.85 * abs(math.sin(i * 0.075)) * (0.5 + 0.5 * math.sin(i * 0.021 + 0.6))
         amp = min(0.98, amp + (((i * 53) % 13) / 120.0))
-        peaks.append(round(-amp, 3))  # min
-        peaks.append(round(amp, 3))   # max
+        peaks.append(round(-amp, 3))
+        peaks.append(round(amp, 3))
     return {"peaks": peaks, "duration": 214.6, "title": "Endless Skyline", "author": "The Ember Echo"}
 
 def fake_chat_response():
@@ -277,7 +276,6 @@ def handle_route(route):
             try: route.continue_()
             except Exception: pass
 
-# ---------------- DOM-side masking of credential input VALUES ----------------
 INIT_JS = r"""
 () => {
   try { localStorage.setItem('menuOpen','true'); localStorage.setItem('theme','light'); } catch(e){}
@@ -312,7 +310,6 @@ INIT_JS = r"""
 }
 """
 
-# ---------------- helpers ----------------
 def shot(page, idx, key, state=''):
     name = "%02d_%s%s.png" % (idx, key, ('_' + state) if state else '')
     try:
@@ -479,9 +476,9 @@ def main():
             "els => els.map(e => ({text: e.textContent.trim(), href: e.getAttribute('href')}))"
         )
         seen, pages = set(), []
-        for l in links:
-            href = (l.get('href') or '').strip()
-            text = (l.get('text') or '').strip()
+        for link in links:
+            href = (link.get('href') or '').strip()
+            text = (link.get('text') or '').strip()
             if not href or href.startswith('#') or href.startswith('javascript'):
                 continue
             key = TEXT2KEY.get(text)

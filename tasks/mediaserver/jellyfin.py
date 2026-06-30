@@ -1,4 +1,3 @@
-# tasks/mediaserver/jellyfin.py
 
 from . import http as requests
 import logging
@@ -14,15 +13,8 @@ logger = logging.getLogger(__name__)
 REQUESTS_TIMEOUT = 300
 JELLYFIN_PLAYLIST_BATCH_SIZE = 100
 
-# ##############################################################################
-# JELLYFIN IMPLEMENTATION
-# ##############################################################################
 
 def _get_target_library_ids():
-    """
-    Parses config for library names and returns their IDs for filtering using a robust,
-    case-insensitive matching against the server's actual library configuration.
-    """
     library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
 
     if not library_names_str.strip():
@@ -30,26 +22,21 @@ def _get_target_library_ids():
 
     target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
 
-    # Use the /Library/VirtualFolders endpoint as it provides the canonical system configuration.
     url = f"{config.JELLYFIN_URL}/Library/VirtualFolders"
     try:
         r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         all_libraries = r.json()
 
-        # Build a case-insensitive map: lowercase_name -> {'name': OriginalCaseName, 'id': ItemId}
         library_map = {
             lib['Name'].lower(): {'name': lib['Name'], 'id': lib['ItemId']}
             for lib in all_libraries
             if lib.get('CollectionType') == 'music'
         }
 
-        # --- DIAGNOSTIC LOGGING ---
         available_music_libraries = [lib['name'] for lib in library_map.values()]
         logger.info(f"Available Jellyfin music libraries found: {available_music_libraries}")
-        # --- END DIAGNOSTIC LOGGING ---
 
-        # Match user's config against the map to find IDs and original names
         found_libraries = []
         unfound_names = []
         for target_name in target_names_lower:
@@ -77,14 +64,6 @@ def _get_target_library_ids():
 
 
 def list_libraries(user_creds=None):
-    """List all music libraries exposed by a Jellyfin server.
-
-    Unlike `_get_target_library_ids()`, this does NOT read `config.MUSIC_LIBRARIES`
-    and does NOT filter — it returns every music library the server reports, so the
-    UI can render a checkbox list. Accepts optional `user_creds` so the setup
-    wizard test flow and the migration assistant can probe a target without
-    mutating global config.
-    """
     base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
     url = f"{base_url}/Library/VirtualFolders"
     try:
@@ -111,7 +90,6 @@ def _jellyfin_headers_from_creds(user_creds=None):
 
 
 def _jellyfin_get_users(token):
-    """Fetches a list of all users from Jellyfin using a provided token."""
     url = f"{config.JELLYFIN_URL}/Users"
     headers = jellyfin_auth_header(token)
     try:
@@ -123,10 +101,6 @@ def _jellyfin_get_users(token):
         return None
 
 def resolve_user(identifier, token):
-    """
-    Resolves a Jellyfin username to a User ID.
-    If the identifier doesn't match any username, it's returned as is, assuming it's already an ID.
-    """
     users = _jellyfin_get_users(token)
     if users:
         for user in users:
@@ -135,18 +109,11 @@ def resolve_user(identifier, token):
                 return user['Id']
 
     logger.info(f"No username match for '{identifier}'. Assuming it is a User ID.")
-    return identifier # Return original identifier if no match is found
+    return identifier
 
-# --- ADMIN/GLOBAL JELLYFIN FUNCTIONS ---
 def get_recent_albums(limit):
-    """
-    Fetches a list of the most recently added albums from Jellyfin using pagination.
-    Uses global admin credentials.
-    If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
-    """
     target_library_ids = _get_target_library_ids()
 
-    # Case 1: Config is set, but no matching libraries were found. Scan nothing.
     if isinstance(target_library_ids, set) and not target_library_ids:
         logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
         return []
@@ -154,13 +121,11 @@ def get_recent_albums(limit):
     all_albums = []
     fetch_all = (limit == 0)
 
-    # Case 2: Config is NOT set (is None). Scan all albums from the user's root without ParentId.
     if target_library_ids is None:
         logger.info("Scanning all Jellyfin libraries for recent albums.")
         start_index = 0
         page_size = 500
         while True:
-            # We fetch full pages and apply the limit only after collecting and sorting.
             url = f"{config.JELLYFIN_URL}/Items"
             params = {
                 "userId": config.JELLYFIN_USER_ID,
@@ -185,13 +150,12 @@ def get_recent_albums(limit):
                 logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
                 break
 
-    # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
         logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
         for library_id in target_library_ids:
             start_index = 0
             page_size = 500
-            while True: # Paginate through the current library
+            while True:
                 url = f"{config.JELLYFIN_URL}/Items"
                 params = {
                     "userId": config.JELLYFIN_USER_ID,
@@ -217,18 +181,15 @@ def get_recent_albums(limit):
                     logger.error(f"Jellyfin get_recent_albums failed for library ID {library_id}: {e}", exc_info=True)
                     break
 
-    # After fetching, a final sort and trim is needed only if we fetched from multiple libraries.
     if target_library_ids is not None and len(target_library_ids) > 1:
         all_albums.sort(key=lambda x: x.get('DateCreated', ''), reverse=True)
 
-    # Apply the final limit if one was specified
     if not fetch_all:
         return all_albums[:limit]
 
     return all_albums
 
 def get_tracks_from_album(album_id, user_creds=None):
-    """Fetches all audio tracks for a given album ID from Jellyfin using admin or override credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     url = f"{_jellyfin_base_url(user_creds)}/Items"
     params = {
@@ -242,7 +203,6 @@ def get_tracks_from_album(album_id, user_creds=None):
         r.raise_for_status()
         items = r.json().get("Items") or []
 
-        # Apply artist field prioritization to each track
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
@@ -258,7 +218,6 @@ def get_tracks_from_album(album_id, user_creds=None):
         return []
 
 def download_track(temp_dir, item):
-    """Downloads a single track from Jellyfin using admin credentials."""
     try:
         track_id = item['Id']
         file_extension = detect_download_extension(item)
@@ -275,24 +234,11 @@ def download_track(temp_dir, item):
         return None
 
 def get_all_songs(user_creds=None):
-    """Fetches all songs from Jellyfin using admin or override credentials, paginated.
-
-    Jellyfin 10.11.x scales poorly on a single unbounded ``/Items`` query: for a
-    large library (tens of thousands of tracks) it exceeds the HTTP read timeout
-    even at very high ``REQUESTS_TIMEOUT`` values (issue #523). Paginating keeps
-    each request's server-side cost bounded.
-
-    On a page failure this RAISES rather than returning a partial or empty list.
-    The result feeds the migration matcher, where any score row missing from the
-    returned set is deleted as an orphan by the execute step, so a silently
-    truncated scan would destroy real analysis data. The migration probe routes
-    already wrap this call and surface the error to the user.
-    """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     url = f"{_jellyfin_base_url(user_creds)}/Items"
     all_items = []
     start_index = 0
-    limit = 500  # smaller than Emby's 1000 due to Jellyfin 10.11.x per-request DB cost
+    limit = 500
 
     while True:
         params = {
@@ -308,7 +254,6 @@ def get_all_songs(user_creds=None):
             r.raise_for_status()
             items = r.json().get("Items") or []
 
-            # Apply artist field prioritization to each item
             for item in items:
                 item['OriginalAlbumArtist'] = item.get('AlbumArtist')
                 title = item.get('Name', 'Unknown')
@@ -321,7 +266,6 @@ def get_all_songs(user_creds=None):
             all_items.extend(items)
 
             if len(items) < limit:
-                # Last (short) page reached.
                 break
 
             start_index += limit
@@ -333,7 +277,6 @@ def get_all_songs(user_creds=None):
 
 
 def search_albums(query, user_creds=None):
-    """Search Jellyfin albums using admin or override credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     url = f"{_jellyfin_base_url(user_creds)}/Items"
     params = {
@@ -364,7 +307,6 @@ def search_albums(query, user_creds=None):
 
 
 def test_connection(user_creds=None):
-    """Test Jellyfin connectivity using admin or override credentials."""
     try:
         user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
         url = f"{_jellyfin_base_url(user_creds)}/Items"
@@ -403,12 +345,6 @@ def test_connection(user_creds=None):
 
 
 def get_playlist_by_name(playlist_name):
-    """Finds a Jellyfin playlist by its exact name using admin credentials.
-
-    Jellyfin's /Items endpoint silently ignores the Name query parameter and
-    returns every playlist regardless of value, so we have to filter client-side
-    by exact match (mirrors the Emby version).
-    """
     url = f"{config.JELLYFIN_URL}/Items"
     params = {"userId": config.JELLYFIN_USER_ID, "IncludeItemTypes": "Playlist", "Recursive": True}
     try:
@@ -424,7 +360,6 @@ def get_playlist_by_name(playlist_name):
         return None
 
 def create_playlist(base_name, item_ids):
-    """Creates a new playlist on Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Playlists"
     body = {"Name": base_name, "Ids": item_ids, "UserId": config.JELLYFIN_USER_ID}
     try:
@@ -434,7 +369,6 @@ def create_playlist(base_name, item_ids):
         logger.error("Exception creating Jellyfin playlist '%s': %s", base_name, e, exc_info=True)
 
 def get_all_playlists():
-    """Fetches all playlists from Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Items"
     params = {"userId": config.JELLYFIN_USER_ID, "IncludeItemTypes": "Playlist", "Recursive": True}
     try:
@@ -446,7 +380,6 @@ def get_all_playlists():
         return []
 
 def delete_playlist(playlist_id):
-    """Deletes a playlist on Jellyfin using admin credentials."""
     url = f"{config.JELLYFIN_URL}/Items/{playlist_id}"
     try:
         r = requests.delete(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
@@ -456,9 +389,7 @@ def delete_playlist(playlist_id):
         logger.error(f"Exception deleting Jellyfin playlist ID {playlist_id}: {e}", exc_info=True)
         return False
 
-# --- USER-SPECIFIC JELLYFIN FUNCTIONS ---
 def get_top_played_songs(limit, user_creds=None):
-    """Fetches the top N most played songs from Jellyfin for a specific user."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
@@ -471,7 +402,6 @@ def get_top_played_songs(limit, user_creds=None):
         r.raise_for_status()
         items = r.json().get("Items") or []
 
-        # Apply artist field prioritization to each item
         for item in items:
             item['OriginalAlbumArtist'] = item.get('AlbumArtist')
             title = item.get('Name', 'Unknown')
@@ -487,7 +417,6 @@ def get_top_played_songs(limit, user_creds=None):
         return []
 
 def get_last_played_time(item_id, user_creds=None):
-    """Fetches the last played time for a specific track from Jellyfin for a specific user."""
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
     if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
@@ -504,17 +433,11 @@ def get_last_played_time(item_id, user_creds=None):
         return None
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
-    """Fetch embedded lyrics from Jellyfin for a given track ID.
-
-    Uses the Jellyfin Lyrics API (available since Jellyfin 10.8).
-    Returns plain text (newline-separated lines) or None.
-    """
     try:
         url = f"{config.JELLYFIN_URL}/Audio/{track_id}/Lyrics"
         r = requests.get(url, headers=config.HEADERS, timeout=timeout)
         r.raise_for_status()
         data = r.json()
-        # Response: {"Lyrics": [{"Text": "line", "Start": 0}, ...]}
         lyrics_lines = data.get('Lyrics') or []
         if not lyrics_lines:
             return None
@@ -525,16 +448,12 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
         return None
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    """Creates a new instant playlist on Jellyfin for a specific user."""
-    # Treat empty token ("") as not provided and fall back to admin token from config
     token = config.JELLYFIN_TOKEN
     if user_creds and isinstance(user_creds, dict) and user_creds.get('token'):
         token = user_creds.get('token')
     if not token:
-        # No token available even after fallback
         raise ValueError("Jellyfin Token is required.")
 
-    # Treat empty user_identifier as not provided and fall back to admin user id
     identifier = config.JELLYFIN_USER_ID
     if user_creds and isinstance(user_creds, dict) and user_creds.get('user_identifier'):
         identifier = user_creds.get('user_identifier')
@@ -557,10 +476,6 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
 
 def _fetch_playlist_items(playlist_id, user_creds=None):
-    """GETs the raw entries of a Jellyfin playlist. Each entry carries both the audio
-    item's ``Id`` and a separate ``PlaylistItemId`` (the removal handle). Returns the
-    list of entry dicts, or None on HTTP failure. Uses admin creds unless user_creds given.
-    """
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     headers = jellyfin_auth_header(user_creds.get('token')) if user_creds and user_creds.get('token') else config.HEADERS
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
@@ -575,11 +490,6 @@ def _fetch_playlist_items(playlist_id, user_creds=None):
 
 
 def _get_playlist_entry_ids(playlist_id):
-    """Fetches every PlaylistItemId for an existing Jellyfin playlist (admin creds).
-
-    Removal via ``DELETE /Playlists/{Id}/Items?entryIds=…`` requires the ``PlaylistItemId``
-    handle — passing the audio Id will silently no-op.
-    """
     items = _fetch_playlist_items(playlist_id)
     if items is None:
         return None
@@ -593,7 +503,6 @@ def _get_playlist_entry_ids(playlist_id):
 
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
-    """Returns the audio track item_ids ('Id') of a Jellyfin playlist."""
     items = _fetch_playlist_items(playlist_id, user_creds=user_creds)
     if not items:
         return []
@@ -601,9 +510,6 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
 
 
 def _remove_playlist_entries(playlist_id, entry_ids):
-    """DELETEs entries from a Jellyfin playlist in batches. Raises on HTTP failure;
-    callers must wrap in try/except if they want to handle the failure (e.g. fall
-    back to delete-and-recreate on Jellyfin < 10.11)."""
     if not entry_ids:
         return
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
@@ -615,7 +521,6 @@ def _remove_playlist_entries(playlist_id, entry_ids):
 
 
 def _add_items_to_playlist(playlist_id, item_ids):
-    """POSTs items to a Jellyfin playlist in batches (admin creds). Returns True on full success."""
     if not item_ids:
         return True
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
@@ -635,7 +540,6 @@ def _add_items_to_playlist(playlist_id, item_ids):
 
 
 def _create_fresh_playlist(playlist_name, item_ids):
-    """POST a new Jellyfin playlist with ``item_ids``. Returns the playlist dict or None."""
     url = f"{config.JELLYFIN_URL}/Playlists"
     first_batch = item_ids[:JELLYFIN_PLAYLIST_BATCH_SIZE]
     rest = item_ids[JELLYFIN_PLAYLIST_BATCH_SIZE:]
@@ -661,18 +565,6 @@ def _create_fresh_playlist(playlist_name, item_ids):
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
-    """Cron-only upsert: create the playlist if missing, or replace its contents.
-
-    Tries to preserve the playlist Id by clearing then repopulating in place. Falls back
-    to deleting the whole playlist and recreating it when the in-place clear fails — this
-    is the case on Jellyfin < 10.11 with API-token auth (jellyfin/jellyfin#13476, server
-    fix shipped in 10.11.0). The fallback yields a new Id every cron tick; upgrade
-    Jellyfin to 10.11+ to keep stable Ids.
-
-    Uses admin credentials. ``user_creds`` is accepted for dispatcher signature parity but
-    not currently used (cron always runs as admin). Returns the playlist dict (with 'Id'/'Name')
-    or None on failure.
-    """
     if not item_ids:
         return None
 
@@ -703,7 +595,6 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return _create_fresh_playlist(playlist_name, item_ids)
 
     if not _add_items_to_playlist(playlist_id, item_ids):
-        # Items were already cleared above; signal failure so the cron handler doesn't log success.
         logger.error(f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
         return None
 

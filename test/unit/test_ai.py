@@ -1,9 +1,3 @@
-"""Unit tests for the new tasks/ai_api*.py modules.
-
-Tests cover AI playlist naming functions including cleaning, API calls,
-and provider routing. These tests bypass tasks/__init__.py (which pulls
-heavy deps like librosa) by pre-loading the relevant submodules directly.
-"""
 import os
 import sys
 import types
@@ -11,9 +5,6 @@ import importlib.util
 from unittest.mock import MagicMock as _MagicMock
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap: load only the AI submodules without running tasks/__init__.py.
-# ---------------------------------------------------------------------------
 _REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 )
@@ -39,9 +30,6 @@ def _load_submodule(name: str, relpath: str):
     return mod
 
 
-# ---------------------------------------------------------------------------
-# Stub optional dependencies that aren't installed in the test env.
-# ---------------------------------------------------------------------------
 def _ensure_httpx_stub():
     if 'httpx' in sys.modules:
         return
@@ -142,78 +130,63 @@ def _reset_reasoning_cache():
 
 
 class TestCleanPlaylistName:
-    """Tests for the clean_playlist_name function"""
 
     def test_basic_ascii_name(self):
-        """Test that basic ASCII names pass through unchanged"""
         name = "Rock Classics"
         assert clean_playlist_name(name) == "Rock Classics"
 
     def test_removes_special_characters(self):
-        """Test removal of special unicode characters"""
         name = "Rock★Classics★"
         result = clean_playlist_name(name)
         assert "★" not in result
         assert result == "RockClassics"
 
     def test_preserves_allowed_punctuation(self):
-        """Test that allowed punctuation is preserved"""
         name = "Rock & Roll - 80's Hits! (Best)"
         result = clean_playlist_name(name)
         assert result == "Rock & Roll - 80's Hits! (Best)"
 
     def test_removes_trailing_number_parentheses(self):
-        """Test removal of trailing disambiguation numbers"""
         name = "My Playlist (2)"
         result = clean_playlist_name(name)
         assert result == "My Playlist"
 
     def test_handles_non_string_input(self):
-        """Test returns empty string for non-string input"""
         assert clean_playlist_name(None) == ""
         assert clean_playlist_name(123) == ""
         assert clean_playlist_name([]) == ""
 
     def test_normalizes_unicode(self):
-        """Test Unicode normalization (NFKC)"""
-        name = "Café"  # Different unicode representations
+        name = "Café"
         result = clean_playlist_name(name)
         assert isinstance(result, str)
         assert "Caf" in result
 
     def test_collapses_multiple_spaces(self):
-        """Test that multiple spaces are collapsed to single space"""
         name = "Rock    Classics"
         result = clean_playlist_name(name)
         assert result == "Rock Classics"
 
     def test_strips_leading_trailing_whitespace(self):
-        """Test whitespace stripping"""
         name = "  Rock Classics  "
         result = clean_playlist_name(name)
         assert result == "Rock Classics"
 
     def test_fixes_text_encoding(self):
-        """Test ftfy text encoding fixes"""
-        # ftfy should fix common encoding issues
         name = "Rock Classics"
         result = clean_playlist_name(name)
         assert isinstance(result, str)
 
 
 class TestGetOpenAICompatiblePlaylistName:
-    """Tests for OpenAI-compatible API function"""
 
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
-        """Test successful OpenAI format API call"""
-        # Mock streaming response
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
 
-        # Simulate SSE streaming chunks
         chunks = [
             b'data: {"choices":[{"delta":{"content":"Sunset"}}]}\n',
             b'data: {"choices":[{"delta":{"content":" Vibes"}}]}\n',
@@ -230,16 +203,14 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Sunset Vibes"
-        assert mock_sleep.called  # Should delay for rate limiting
+        assert mock_sleep.called
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_ollama_format_success(self, mock_post):
-        """Test successful Ollama format API call"""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
 
-        # Simulate Ollama streaming chunks
         chunks = [
             b'{"response":"Morning","done":false}\n',
             b'{"response":" Calm","done":false}\n',
@@ -259,7 +230,6 @@ class TestGetOpenAICompatiblePlaylistName:
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_think_tags(self, mock_post):
-        """Test extraction of text after think tags"""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -282,7 +252,6 @@ class TestGetOpenAICompatiblePlaylistName:
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_api_error(self, mock_post):
-        """Test handling of API request errors"""
         mock_post.side_effect = requests.exceptions.RequestException("Connection failed")
 
         result = get_openai_compatible_playlist_name(
@@ -297,7 +266,6 @@ class TestGetOpenAICompatiblePlaylistName:
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_handles_invalid_json(self, mock_post):
-        """Test handling of malformed JSON responses"""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -316,12 +284,10 @@ class TestGetOpenAICompatiblePlaylistName:
             api_key="no-key-needed"
         )
 
-        # Should still extract the valid chunk
         assert result == "Valid"
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_openrouter_headers(self, mock_post):
-        """Test OpenRouter-specific headers are added"""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -338,7 +304,6 @@ class TestGetOpenAICompatiblePlaylistName:
             api_key="test-key"
         )
 
-        # Check headers include OpenRouter-specific ones
         call_args = mock_post.call_args
         headers = call_args[1]['headers']
         assert "HTTP-Referer" in headers
@@ -347,15 +312,6 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_combined_content_and_finish_reason_chunk(self, mock_sleep, mock_post):
-        """Regression test for issue #467.
-
-        OpenRouter (and some providers behind it, notably Anthropic via Vertex)
-        can emit a single SSE chunk that contains both ``delta.content`` AND
-        ``finish_reason: "stop"``. The parser must extract the content from
-        such a chunk before terminating the loop. Short outputs (5-12 token
-        playlist titles) are particularly vulnerable because the entire
-        response can fit in one or two such combined chunks.
-        """
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -373,20 +329,11 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Quiet Storm"
-        # Success path must not trigger the empty-content retry/backoff.
-        # The pre-call rate-limit delay calls time.sleep once with skip_delay=False;
-        # ensure no additional retry-backoff sleeps happened.
         assert mock_sleep.call_count == 1
 
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_content_split_across_chunks_with_final_combined_chunk(self, mock_sleep, mock_post):
-        """Regression test for issue #467 (multi-chunk variant).
-
-        Some content arrives in early chunks and the LAST content fragment is
-        bundled with finish_reason='stop' in a single chunk. All fragments
-        (including the bundled one) must be captured.
-        """
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
@@ -405,21 +352,14 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Quiet Storm"
-        # Success path must not trigger the empty-content retry/backoff.
-        # Only the pre-call rate-limit delay (one sleep) is expected.
         assert mock_sleep.call_count == 1
 
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_authenticated_ollama_url_uses_ollama_format(self, mock_sleep, mock_post):
-        """Detection must use the URL, not the api_key, so a real bearer token
-        passed to an Ollama deployment (e.g. Ollama behind a reverse proxy or
-        LiteLLM with auth) still uses Ollama's request/response format.
-        """
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        # Ollama-format response chunks (response/done keys, not delta/text).
         mock_response.iter_lines.return_value = [
             b'{"response":"Quiet","done":false}\n',
             b'{"response":" Storm","done":false}\n',
@@ -435,7 +375,6 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Quiet Storm"
-        # And the request body must use Ollama's `prompt` field, not OpenAI's `messages`.
         sent_body = json.loads(mock_post.call_args[1]['data'])
         assert 'prompt' in sent_body
         assert 'messages' not in sent_body
@@ -443,21 +382,9 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_openai_format_detected_from_url_when_global_is_ollama(self, mock_sleep, mock_post):
-        """Regression test for issue #467 — provider-mismatch root cause.
-
-        When the global AI_MODEL_PROVIDER is set to OLLAMA (e.g. user's default
-        for cron jobs) but a clustering call hits OpenRouter with a real API
-        key, the parser must still treat the response as OpenAI chat-completion
-        format (delta.content / choice.text), not Ollama format (response/done).
-
-        Before the fix, the function read AI_MODEL_PROVIDER from the global
-        config and used it to decide both payload AND parser format, dropping
-        all chunks because they had `choices` instead of `response`.
-        """
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        # Real OpenRouter-via-Bedrock chunk shape: choice.text (no delta).
         mock_response.iter_lines.return_value = [
             b':' + b' OPENROUTER PROCESSING\n',
             b'data: {"choices":[{"index":0,"finish_reason":null,"text":"Late"}]}\n',
@@ -475,8 +402,6 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Late Night Blues"
-        # And the request body must use OpenAI's `messages` field, not Ollama's
-        # `prompt` field — i.e. the format detection also drove the payload.
         sent_body = json.loads(mock_post.call_args[1]['data'])
         assert 'messages' in sent_body
         assert 'prompt' not in sent_body
@@ -484,13 +409,10 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
-        """Test that rate limit errors (429) retry with exponential backoff"""
-        # First call: 429 rate limit
         mock_response_429 = Mock()
         mock_response_429.status_code = 429
         mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
 
-        # Second call: Success
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -509,20 +431,16 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Success"
-        # Should have delayed with base_delay * (2 ** 0) = 5 seconds for first retry
-        assert mock_sleep.call_count >= 2  # Initial delay + retry delay
+        assert mock_sleep.call_count >= 2
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
-        assert 5 in sleep_calls  # Exponential backoff for attempt 0
+        assert 5 in sleep_calls
 
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_aggressive_fallback_on_unsupported_parameter(self, mock_sleep, mock_post, mock_env):
-        """Test aggressive fallback removes temperature and switches to max_completion_tokens"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # First call: 400 with unsupported parameter
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
         error_response = {
@@ -536,7 +454,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400.json.return_value = error_response
         mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
 
-        # Second call: Success (content comes before finish_reason)
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -555,10 +472,8 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Fallback Success"
-        # Should be exactly 2 calls (initial + fallback retry)
         assert mock_post.call_count == 2
 
-        # Check second call has modified payload
         second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
         assert 'temperature' not in second_call_data
         assert 'max_tokens' not in second_call_data
@@ -568,11 +483,8 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_ultra_minimal_fallback_after_aggressive_fails(self, mock_sleep, mock_post, mock_env):
-        """Test ultra-minimal fallback removes max_completion_tokens if aggressive fails"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # First call: 400 with unsupported parameter
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
         error_response_1 = {
@@ -586,7 +498,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_1.json.return_value = error_response_1
         mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
 
-        # Second call: Still 400 with max_completion_tokens
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
         error_response_2 = {
@@ -600,7 +511,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_2.json.return_value = error_response_2
         mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
 
-        # Third call: Success
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -619,10 +529,8 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Ultra Minimal"
-        # Should be exactly 3 calls (initial + aggressive fallback + ultra-minimal fallback)
         assert mock_post.call_count == 3
 
-        # Check third call has minimal payload (no token limits, no temperature)
         third_call_data = json.loads(mock_post.call_args_list[2][1]['data'])
         assert 'temperature' not in third_call_data
         assert 'max_tokens' not in third_call_data
@@ -632,16 +540,12 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_rate_limit_then_parameter_error(self, mock_sleep, mock_post, mock_env):
-        """Test rate limit retry followed by parameter error fallback"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # First call: 429 rate limit
         mock_response_429 = Mock()
         mock_response_429.status_code = 429
         mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
 
-        # Second call: 400 unsupported parameter
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
         error_response = {
@@ -655,7 +559,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400.json.return_value = error_response
         mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
 
-        # Third call: Success
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -674,25 +577,18 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Combined Success"
-        # Should be exactly 3 calls (initial with 429, retry with 400, fallback success)
         assert mock_post.call_count == 3
 
-        # Check that sleep was called for rate limit (exponential backoff)
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
-        assert len(sleep_calls) >= 1  # At least one sleep for rate limit
+        assert len(sleep_calls) >= 1
 
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
-        """Test that parameter fallbacks use continue and don't increment attempt counter"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # We'll simulate: 400 (unsupported) -> 400 (still unsupported) -> timeout -> success
-        # This tests that fallbacks don't consume the retry budget
 
-        # First call: 400 with unsupported
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
         error_response_1 = {
@@ -706,7 +602,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_1.json.return_value = error_response_1
         mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
 
-        # Second call: 400 still unsupported (max_completion_tokens)
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
         error_response_2 = {
@@ -720,7 +615,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_2.json.return_value = error_response_2
         mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
 
-        # Third call: Success
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -739,17 +633,13 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Final Success"
-        # Should be exactly 3 calls total
         assert mock_post.call_count == 3
 
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     def test_existing_max_tokens_fallback_still_works(self, mock_post, mock_env):
-        """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # First call: 400 with max_tokens not supported (using proper error code)
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
         error_response = {
@@ -763,7 +653,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400.json.return_value = error_response
         mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
 
-        # Second call: Success
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -782,7 +671,6 @@ class TestGetOpenAICompatiblePlaylistName:
         )
 
         assert result == "Max Tokens Fallback"
-        # Should have switched to max_completion_tokens
         second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
         assert 'max_tokens' not in second_call_data
         assert second_call_data.get('max_completion_tokens') == 8000
@@ -790,11 +678,8 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     def test_ultra_minimal_fallback_requires_proper_error_code(self, mock_post, mock_env):
-        """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
-        # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
 
-        # First call: 400 with proper error code (triggers aggressive fallback)
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
         error_response_1 = {
@@ -808,7 +693,6 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response_400_1.json.return_value = error_response_1
         mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
 
-        # Second call: 400 but WITHOUT proper error code (should NOT trigger ultra-minimal)
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
         error_response_2 = {
@@ -816,7 +700,7 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': 'Invalid parameter: max_completion_tokens',
                 'type': 'invalid_request_error',
                 'param': 'max_completion_tokens',
-                'code': 'invalid_parameter'  # Different error code
+                'code': 'invalid_parameter'
             }
         }
         mock_response_400_2.json.return_value = error_response_2
@@ -832,19 +716,15 @@ class TestGetOpenAICompatiblePlaylistName:
             api_key="test-key"
         )
 
-        # Should return error, not trigger ultra-minimal fallback
         assert "Error" in result
-        # Should only have made 2 calls (initial + aggressive fallback, then error)
         assert mock_post.call_count == 2
 
     @patch('tasks.ai.providers.openai.os.environ.get')
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_reasoning_effort_dropped_on_null_code_400(self, mock_sleep, mock_post, mock_env):
-        """#696: non-reasoning models reject reasoning_effort with code=null; drop it and retry."""
         mock_env.side_effect = lambda key, default=None: "0" if key == "OPENAI_API_CALL_DELAY_SECONDS" else default
 
-        # First call: 400 with code=null and message naming reasoning_effort
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
         mock_response_400.json.return_value = {
@@ -857,7 +737,6 @@ class TestGetOpenAICompatiblePlaylistName:
         }
         mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
 
-        # Second call: success after dropping reasoning_effort
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
@@ -877,10 +756,8 @@ class TestGetOpenAICompatiblePlaylistName:
 
         assert result == "OK Playlist"
         assert mock_post.call_count == 2
-        # First call must actually carry reasoning_effort, else the drop is a no-op.
         first_call_data = json.loads(mock_post.call_args_list[0][1]['data'])
         assert first_call_data.get('reasoning_effort') == 'none'
-        # Only reasoning_effort dropped; temperature and max_tokens preserved.
         second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
         assert 'reasoning_effort' not in second_call_data
         assert 'temperature' in second_call_data
@@ -888,12 +765,9 @@ class TestGetOpenAICompatiblePlaylistName:
 
 
 class TestGetOllamaPlaylistName:
-    """Tests for Ollama-format generate_text (now handled directly by openai.py)"""
 
     @patch('tasks.ai.providers.openai.requests.post')
     def test_calls_with_ollama_format_url(self, mock_post):
-        """Test that generate_text handles Ollama /api/generate URLs correctly"""
-        # Simulate a successful streaming response
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.iter_lines.return_value = [
@@ -912,13 +786,10 @@ class TestGetOllamaPlaylistName:
 
 
 class TestGetGeminiPlaylistName:
-    """Tests for Google Gemini API function"""
 
     @patch('google.genai.Client')
     @patch('tasks.ai.providers.gemini.time.sleep')
     def test_successful_gemini_call(self, mock_sleep, mock_client_class):
-        """Test successful Gemini API call"""
-        # Mock response structure for new google-genai API
         mock_response = Mock()
         mock_response.text = "Chill Vibes"
 
@@ -940,7 +811,6 @@ class TestGetGeminiPlaylistName:
         assert mock_sleep.called
 
     def test_rejects_empty_api_key(self):
-        """Test that empty API key returns error"""
         result = get_gemini_playlist_name(
             api_key="",
             model_name="gemini-2.5-pro",
@@ -951,7 +821,6 @@ class TestGetGeminiPlaylistName:
         assert "missing" in result
 
     def test_rejects_placeholder_api_key(self):
-        """Test that placeholder API key returns error"""
         result = get_gemini_playlist_name(
             api_key="YOUR-GEMINI-API-KEY-HERE",
             model_name="gemini-2.5-pro",
@@ -963,7 +832,6 @@ class TestGetGeminiPlaylistName:
     @patch('google.genai.Client')
     @patch('tasks.ai.providers.gemini.time.sleep')
     def test_handles_gemini_api_error(self, mock_sleep, mock_client_class):
-        """Test handling of Gemini API errors"""
         mock_models = Mock()
         mock_models.generate_content.side_effect = Exception("API Error")
 
@@ -982,13 +850,10 @@ class TestGetGeminiPlaylistName:
 
 
 class TestGetMistralPlaylistName:
-    """Tests for Mistral API function"""
 
     @patch('mistralai.Mistral')
     @patch('tasks.ai.providers.mistral.time.sleep')
     def test_successful_mistral_call(self, mock_sleep, mock_mistral_class):
-        """Test successful Mistral API call"""
-        # Mock response structure
         mock_message = Mock()
         mock_message.content = "Electronic Dreams"
 
@@ -1015,7 +880,6 @@ class TestGetMistralPlaylistName:
         assert mock_sleep.called
 
     def test_rejects_empty_api_key(self):
-        """Test that empty API key returns error"""
         result = get_mistral_playlist_name(
             api_key="",
             model_name="ministral-3b-latest",
@@ -1026,7 +890,6 @@ class TestGetMistralPlaylistName:
         assert "missing" in result
 
     def test_rejects_placeholder_api_key(self):
-        """Test that placeholder API key returns error"""
         result = get_mistral_playlist_name(
             api_key="YOUR-MISTRAL-API-KEY-HERE",
             model_name="ministral-3b-latest",
@@ -1037,15 +900,6 @@ class TestGetMistralPlaylistName:
 
 
 class TestGetAIPlaylistName:
-    """Tests for the main AI playlist name orchestration function.
-
-    The new dispatcher signature is:
-        get_ai_playlist_name(prompt_template, song_list, other_feature_scores_dict, ai_config)
-
-    Provider routing is driven by ``ai_config['provider']`` and dispatched
-    through ``tasks.ai.api.generate_text``. Tests here mock that single entry
-    point — provider-specific transports are covered by their own test classes.
-    """
 
     @staticmethod
     def _ai_config(provider, **extra):
@@ -1116,7 +970,6 @@ class TestGetAIPlaylistName:
 
     @patch('tasks.ai.api.generate_text')
     def test_handles_none_provider(self, mock_generate):
-        """NONE provider is signalled by generate_text returning the skip sentinel."""
         mock_generate.return_value = "AI Naming Skipped"
 
         result = get_ai_playlist_name(
@@ -1131,9 +984,8 @@ class TestGetAIPlaylistName:
     @patch('tasks.ai.api.clean_playlist_name')
     @patch('tasks.ai.api.generate_text')
     def test_applies_length_constraints(self, mock_generate, mock_clean):
-        """Names shorter than MIN_LENGTH (5) cause an error after retries."""
         mock_generate.return_value = "Test"
-        mock_clean.return_value = "Test"  # 4 chars — too short
+        mock_clean.return_value = "Test"
 
         result = get_ai_playlist_name(
             creative_prompt_template,
@@ -1167,7 +1019,6 @@ class TestGetAIPlaylistName:
 
     @patch('tasks.ai.api.generate_text')
     def test_formats_song_list_in_prompt(self, mock_generate):
-        """The {song_list_sample} placeholder must contain title and author lines."""
         mock_generate.return_value = "Test Playlist Name"
         song_list = [
             {"title": "Song One", "author": "Artist A"},
@@ -1183,12 +1034,11 @@ class TestGetAIPlaylistName:
                             ollama_model="model"),
         )
 
-        prompt = mock_generate.call_args[0][0]  # first positional arg
+        prompt = mock_generate.call_args[0][0]
         assert "Song One" in prompt
         assert "Artist A" in prompt
         assert "Song Two" in prompt
         assert "Artist B" in prompt
 
     def test_prompt_includes_length_requirement(self):
-        """Ensure the prompt specifies the 5-40 character length requirement"""
         assert "The title MUST be within the range of 5 to 40 characters long." in creative_prompt_template

@@ -1,17 +1,3 @@
-"""Request-validation coverage for the chat playlist endpoints.
-
-Both /api/chatPlaylist and /api/chatPlaylistStream share the guard:
-    if not isinstance(data, dict)
-       or not isinstance(data.get('userInput'), str)
-       or not data['userInput'].strip():
-        return 400
-
-These tests assert that a body which is NOT a dict (list, number, string,
-null), a missing userInput key, a non-string userInput, and an empty /
-whitespace-only userInput all return HTTP 400 with the missing-userInput
-error -- for BOTH endpoints -- while a valid body proceeds past validation
-into the (patched-out) pipeline.
-"""
 import sys
 import types
 import json
@@ -56,7 +42,6 @@ def client(app_chat_mod):
 
 ENDPOINTS = ['/api/chatPlaylist', '/api/chatPlaylistStream']
 
-# JSON bodies that are valid JSON but NOT a dict -> must 400.
 NON_DICT_BODIES = [
     ('list', '[]'),
     ('number', '5'),
@@ -116,21 +101,17 @@ class TestInvalidUserInputRejected:
 class TestValidBodyProceeds:
     @pytest.mark.parametrize('path', ENDPOINTS)
     def test_valid_body_passes_validation(self, app_chat_mod, client, path):
-        # Patch the pipeline so the real AI stack never runs; we only assert
-        # that a valid body gets PAST the 400 guard and into the pipeline.
         called = {'run': 0}
 
         def _fake_run(data, log_messages):
             called['run'] += 1
-            yield from ()  # generator marker; never yields
+            yield from ()
             return ({'message': 'stub', 'query_results': None}, 200)
 
         with patch.object(app_chat_mod, '_run_chat_pipeline', _fake_run):
             resp = client.post(
                 path, json={'userInput': 'make me a playlist'},
                 content_type='application/json')
-            # The streaming endpoint builds a lazy generator; consume the body
-            # inside the patch so _run_chat_pipeline actually runs.
             body = resp.get_data(as_text=True)
 
         assert resp.status_code != 400

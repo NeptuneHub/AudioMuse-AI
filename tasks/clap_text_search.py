@@ -1,7 +1,3 @@
-"""
-CLAP Text Search Manager
-Provides in-memory caching and fast text-based music search using CLAP embeddings.
-"""
 
 import logging
 import sys
@@ -15,12 +11,10 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Global in-memory cache state
 _CLAP_CACHE = {
     'loaded': False
 }
 
-# Global in-memory CLAP index cache
 _CLAP_INDEX_CACHE = {
     'index': None,
     'id_map': None,
@@ -28,28 +22,21 @@ _CLAP_INDEX_CACHE = {
     'loaded': False
 }
 
-# Top queries cache (precomputed at startup)
 _TOP_QUERIES_CACHE = {
     'queries': [],
     'ready': False,
     'computing': False
 }
 
-# Warm cache timer for text search (keeps model loaded).
-# NOTE: `lock` is a REENTRANT lock and doubles as the model-use mutex: a search
-# holds it across warmup + inference, and the unload worker must hold it to
-# unload. This prevents the background unload (which tears down the CUDA/ONNX
-# pool) from running while an in-flight `session.run()` is using the model.
 _WARM_CACHE_TIMER = {
-    'expiry_time': None,  # Unix timestamp when model should unload
-    'timer_thread': None,  # Background thread for unloading
+    'expiry_time': None,
+    'timer_thread': None,
     'lock': threading.RLock(),
-    'duration_seconds': None  # Loaded from config on first use
+    'duration_seconds': None
 }
 
 
 def get_clap_cache_size() -> int:
-    """Return the number of items in the loaded CLAP index."""
     if _CLAP_INDEX_CACHE['loaded'] and _CLAP_INDEX_CACHE['id_map'] is not None:
         return len(_CLAP_INDEX_CACHE['id_map'])
     return 0
@@ -61,7 +48,6 @@ def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
 
 
 def _load_clap_index_from_db() -> bool:
-    """Load a persisted CLAP ivf index from the database."""
 
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
@@ -91,7 +77,6 @@ def _load_clap_index_from_db() -> bool:
 
 
 def build_and_store_clap_index(db_conn=None):
-    """Build a CLAP text search ivf index from stored CLAP embeddings and save it to the DB."""
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
     from .index_build_helpers import build_and_store_index_streaming
@@ -112,25 +97,13 @@ def build_and_store_clap_index(db_conn=None):
 
 
 def _unload_timer_worker():
-    """Background thread that unloads CLAP text model after timer expires.
-
-    Critical: the expiry re-check AND the unload happen while holding the lock,
-    and a search holds the same lock across warmup + inference. So (a) a search
-    that just reset the timer cancels the unload (we re-read expiry under the
-    lock, not a stale value), and (b) the unload's CUDA/ONNX-pool teardown can
-    never run concurrently with an in-flight ``session.run()`` -- which was
-    deadlocking the GPU and hanging chat/text-search requests.
-    """
 
     while True:
         with _WARM_CACHE_TIMER['lock']:
             expiry = _WARM_CACHE_TIMER['expiry_time']
             if expiry is None:
-                # Timer cancelled, exit thread
                 break
             if expiry - time.time() <= 0:
-                # Re-checked under the lock: still expired and no search is
-                # mid-flight (a search would hold this lock). Safe to unload.
                 from .clap_analyzer import unload_clap_model, is_clap_text_loaded
                 if is_clap_text_loaded():
                     logger.info("Warm cache timer expired - unloading CLAP text model")
@@ -140,19 +113,12 @@ def _unload_timer_worker():
                 break
             time_remaining = expiry - time.time()
 
-        # Sleep OUTSIDE the lock so searches can proceed; re-loop to re-check.
         time.sleep(min(1.0, max(0.05, time_remaining)))
 
 
 def warmup_text_search_model():
-    """Preload CLAP text model (not audio model) and reset warmup timer.
-    
-    Returns:
-        dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
-    """
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
 
-    # Load duration from config on first use
     if _WARM_CACHE_TIMER['duration_seconds'] is None:
         _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
 
@@ -165,7 +131,6 @@ def warmup_text_search_model():
 
         _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
 
-        # Start timer thread if not already running
         if _WARM_CACHE_TIMER['timer_thread'] is None or not _WARM_CACHE_TIMER['timer_thread'].is_alive():
             thread = threading.Thread(target=_unload_timer_worker, daemon=True)
             thread.start()
@@ -181,11 +146,6 @@ def warmup_text_search_model():
 
 
 def get_warm_cache_status() -> Dict:
-    """Get current warm cache status.
-    
-    Returns:
-        dict: Status with 'active' (bool), 'seconds_remaining' (int)
-    """
     from .clap_analyzer import is_clap_model_loaded
 
     with _WARM_CACHE_TIMER['lock']:
@@ -199,10 +159,6 @@ def get_warm_cache_status() -> Dict:
 
 
 def load_clap_cache_from_db():
-    """
-    Load the persisted CLAP IVF index from the database.
-    Returns True if successful, False otherwise.
-    """
 
     from config import CLAP_ENABLED
 
@@ -224,7 +180,6 @@ def load_clap_cache_from_db():
 
 
 def refresh_clap_cache():
-    """Force refresh of CLAP cache from database."""
     old_count = get_clap_cache_size()
     logger.info(f"Refreshing CLAP cache... (current: {old_count} songs)")
     result = load_clap_cache_from_db()
@@ -237,42 +192,24 @@ def refresh_clap_cache():
 
 
 def is_clap_cache_loaded() -> bool:
-    """Check if CLAP cache is loaded and ready."""
     return _CLAP_CACHE['loaded']
 
 
 def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
-    """
-    Search songs using natural language text query.
-    
-    Args:
-        query_text: Natural language description (e.g., "upbeat summer songs")
-        limit: Maximum number of results to return
-        
-    Returns:
-        List of dicts with item_id, title, author, similarity
-    """
     from .clap_analyzer import get_text_embedding
     from config import CLAP_ENABLED
 
     if not CLAP_ENABLED:
         return []
 
-    # CLAP search must use the persisted index only
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         logger.error("Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index.")
         return []
 
     try:
-        # Hold the warm-cache lock across warmup + inference so the background
-        # unload worker cannot tear down the CUDA/ONNX pool mid-``session.run()``
-        # (the lock is reentrant; warmup re-acquires it internally). This is what
-        # prevents the GPU deadlock / minutes-long hang.
         with _WARM_CACHE_TIMER['lock']:
-            # Auto-warmup: ensures model is loaded and resets timer
             warmup_text_search_model()
 
-            # Get text embedding (model is now guaranteed loaded)
             text_embedding = get_text_embedding(query_text)
         if text_embedding is None:
             logger.error(f"Failed to generate text embedding for: {query_text}")
@@ -280,10 +217,6 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
         from config import MAX_SONGS_PER_ARTIST
         artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-        # A large limit means the caller wants a big re-rank POOL (the chat
-        # pipeline). Skip the in-CLAP per-artist cap there -- it would inflate the
-        # ivf k to ~5x (e.g. 50 000 for a 10 000 pool) and artist diversity is
-        # applied downstream anyway. Small limits (search page) keep the cap.
         if limit >= 1000:
             artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
@@ -341,7 +274,6 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
 
 def get_cache_stats() -> Dict:
-    """Get statistics about the CLAP cache."""
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         return {
             'loaded': False,
@@ -372,10 +304,6 @@ def get_cache_stats() -> Dict:
 
 
 def ensure_text_search_queries_table():
-    """
-    Create text_search_queries table if it doesn't exist.
-    Called automatically at startup.
-    """
     from app_helper import get_db
     conn = None
     try:
@@ -398,7 +326,7 @@ def ensure_text_search_queries_table():
             finally:
                 cur.execute("SELECT pg_advisory_unlock(726354821)")
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank 
+                CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank
                 ON text_search_queries(rank)
             """)
             conn.commit()
@@ -412,22 +340,16 @@ def ensure_text_search_queries_table():
 
 
 def load_top_queries_from_db():
-    """
-    Load top queries from database into memory cache.
-    Returns True if queries were loaded, False otherwise.
-    On first startup (empty DB), this will return False and trigger generation.
-    """
     from app_helper import get_db
 
-    # Ensure table exists first
     ensure_text_search_queries_table()
 
     try:
         conn = get_db()
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("""
-                SELECT query_text, score, rank 
-                FROM text_search_queries 
+                SELECT query_text, score, rank
+                FROM text_search_queries
                 ORDER BY rank ASC
             """)
             rows = cur.fetchall()
@@ -438,7 +360,6 @@ def load_top_queries_from_db():
                 logger.info(f"Loaded {len(rows)} top queries from database")
                 return True
             else:
-                # Insert default queries if table is empty
                 logger.info("No top queries found - inserting default queries")
                 default_queries = [
                     "female vocal romantic trap",
@@ -501,7 +422,6 @@ def load_top_queries_from_db():
 
                 conn.commit()
 
-                # Load them into cache
                 _TOP_QUERIES_CACHE['queries'] = default_queries
                 _TOP_QUERIES_CACHE['ready'] = True
                 logger.info(f"Inserted and loaded {len(default_queries)} default queries")
@@ -512,10 +432,6 @@ def load_top_queries_from_db():
 
 
 def get_cached_top_queries() -> List[str]:
-    """
-    Get precomputed top queries from cache.
-    Returns empty list if not ready yet.
-    """
     if _TOP_QUERIES_CACHE['ready']:
         return _TOP_QUERIES_CACHE['queries']
     return []

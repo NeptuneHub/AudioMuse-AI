@@ -1,4 +1,3 @@
-"""Shared media server helper utilities."""
 
 import logging
 import os
@@ -6,7 +5,6 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# HTTP statuses and wording that mean "the server rejected our credentials".
 _AUTH_STATUS_CODES = {401, 403}
 _AUTH_TEXT_HINTS = (
     'unauthorized', 'unauthorised', 'forbidden', 'wrong username',
@@ -16,13 +14,6 @@ _AUTH_TEXT_HINTS = (
 
 
 def is_auth_error(exc):
-    """True when an exception (or its cause/context chain) signals a rejected
-    credentials response (HTTP 401/403) or carries auth-failure wording.
-
-    Lets every provider's test_connection report a credentials problem the same
-    way (an ``auth_failed`` flag) so the analysis task can surface an
-    authentication error instead of a misleading "0 albums found".
-    """
     seen = set()
     cur = exc
     while cur is not None and id(cur) not in seen:
@@ -38,19 +29,11 @@ def is_auth_error(exc):
 
 
 def select_best_artist(item, title="Unknown"):
-    """
-    Selects the best artist field from a Jellyfin/Emby item, prioritizing track
-    artists over album artists. This helps avoid "Various Artists" issues in
-    compilation albums.
-    Returns tuple: (artist_name, artist_id)
-    """
-    # Priority: Artists array (track artists) > AlbumArtist > fallback
-    # Jellyfin/Emby provides ArtistItems array with Id and Name
     if item.get('ArtistItems') and len(item['ArtistItems']) > 0:
         track_artist = item['ArtistItems'][0].get('Name', 'Unknown Artist')
         artist_id = item['ArtistItems'][0].get('Id')
     elif item.get('Artists') and len(item['Artists']) > 0:
-        track_artist = item['Artists'][0]  # Take first artist if multiple
+        track_artist = item['Artists'][0]
         artist_id = None
     elif item.get('AlbumArtist'):
         track_artist = item['AlbumArtist']
@@ -63,17 +46,10 @@ def select_best_artist(item, title="Unknown"):
 
 
 def detect_download_extension(item):
-    """Derive a file extension for a Jellyfin/Emby download.
-
-    Prefers the item's Container field (most reliable), falls back to the
-    Path extension, and defaults to '.tmp' so the dispatcher's magic-number
-    sniffing can rename the file after download.
-    """
     file_extension = '.tmp'
     try:
         container = item.get('Container')
         if container and isinstance(container, str) and container.strip():
-            # Ensure container value is safe (no path separators, etc.)
             safe_container = container.strip().replace('/', '').replace('\\', '')
             if safe_container:
                 file_extension = f".{safe_container}"
@@ -86,7 +62,6 @@ def detect_download_extension(item):
 
 
 def detect_path_format(tracks):
-    """Classify track path samples as absolute, relative, none, or mixed."""
     def _is_absolute_path(path):
         if not path:
             return False
@@ -103,7 +78,6 @@ def detect_path_format(tracks):
     for track in tracks or []:
         if not isinstance(track, dict):
             continue
-        # Support lowercase/uppercase path keys and legacy URL fields.
         path = (
             track.get('path')
             or track.get('Path')

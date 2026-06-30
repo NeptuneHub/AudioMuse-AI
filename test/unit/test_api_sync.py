@@ -1,8 +1,3 @@
-"""Unit tests for the /api/sync endpoint (app_sync blueprint).
-
-Mocks `get_db` and `load_map_projection` at the blueprint-module level so we
-never touch a real database.
-"""
 import base64
 import importlib.util
 import os
@@ -56,12 +51,8 @@ def mediaserver_type_jellyfin():
     config.MEDIASERVER_TYPE = saved
 
 
-# --------------------------------------------------------------------------- #
-# Fake DB plumbing
-# --------------------------------------------------------------------------- #
 
 class FakeCursor:
-    """Mock psycopg2 DictCursor that yields queued results in execute order."""
 
     def __init__(self):
         self.queries = []
@@ -141,7 +132,6 @@ def _manifest_row(item_id='track-1', fp='deadbeefcafe0001'):
 
 
 def _setup_payload(cur, tracks=None, total=None):
-    """Default payload path: COUNT(*) fetchone, then SELECT fetchall."""
     tracks = tracks if tracks is not None else []
     total = total if total is not None else len(tracks)
     cur._fetchone_queue.append(make_dict_row({'n': total}))
@@ -149,7 +139,6 @@ def _setup_payload(cur, tracks=None, total=None):
 
 
 def _setup_manifest(cur, rows=None, total=None):
-    """Manifest path: COUNT(*) fetchone, then SELECT fetchall."""
     rows = rows if rows is not None else []
     total = total if total is not None else len(rows)
     cur._fetchone_queue.append(make_dict_row({'n': total}))
@@ -157,13 +146,9 @@ def _setup_manifest(cur, rows=None, total=None):
 
 
 def _setup_ids(cur, tracks=None):
-    """ids path: only the IN SELECT fetchall (no COUNT)."""
     cur._fetchall_queue.append(tracks if tracks is not None else [])
 
 
-# --------------------------------------------------------------------------- #
-# Envelope (payload)
-# --------------------------------------------------------------------------- #
 
 class TestEnvelope:
     def test_envelope_keys_present(self, bp_mod, client, fake_db):
@@ -191,9 +176,6 @@ class TestEnvelope:
         assert client.get('/api/sync?limit=1').get_json()['total_tracks'] == 15000
 
 
-# --------------------------------------------------------------------------- #
-# Pagination (payload)
-# --------------------------------------------------------------------------- #
 
 class TestPaginationMath:
     def test_has_more_when_more_pages_exist(self, bp_mod, client, fake_db):
@@ -216,14 +198,11 @@ class TestPaginationMath:
         _, cur = fake_db
         _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?page=3&limit=100')
-        page_params = cur.query_params[1]  # [0]=COUNT, [1]=SELECT
-        assert page_params[-2] == 100   # limit
-        assert page_params[-1] == 200   # offset = (3-1)*100
+        page_params = cur.query_params[1]
+        assert page_params[-2] == 100
+        assert page_params[-1] == 200
 
 
-# --------------------------------------------------------------------------- #
-# Limit clamping
-# --------------------------------------------------------------------------- #
 
 class TestClamping:
     def test_payload_limit_cap_at_500(self, bp_mod, client, fake_db):
@@ -251,9 +230,6 @@ class TestClamping:
         assert cur.query_params[1][-1] == 0
 
 
-# --------------------------------------------------------------------------- #
-# Per-track shape
-# --------------------------------------------------------------------------- #
 
 class TestTrackShape:
     def test_artist_renamed_from_author(self, bp_mod, client, fake_db):
@@ -279,9 +255,6 @@ class TestTrackShape:
         assert 'updated_at' not in client.get('/api/sync?limit=1').get_json()['tracks'][0]
 
 
-# --------------------------------------------------------------------------- #
-# Fingerprint
-# --------------------------------------------------------------------------- #
 
 class TestFingerprint:
     def test_fp_present_on_payload_rows(self, bp_mod, client, fake_db):
@@ -293,7 +266,7 @@ class TestFingerprint:
         _, cur = fake_db
         _setup_payload(cur, total=0, tracks=[])
         client.get('/api/sync?limit=1')
-        select_sql = cur.queries[1]  # [0]=COUNT, [1]=SELECT
+        select_sql = cur.queries[1]
         assert 'md5(' in select_sql
         assert 'AS fp' in select_sql
 
@@ -307,9 +280,6 @@ class TestFingerprint:
         assert tracks[0]['fp'] != tracks[1]['fp']
 
 
-# --------------------------------------------------------------------------- #
-# Manifest mode (?fields=index)
-# --------------------------------------------------------------------------- #
 
 class TestManifest:
     def test_rows_are_id_fp_only(self, bp_mod, client, fake_db):
@@ -334,9 +304,6 @@ class TestManifest:
         assert body['next_page'] == 2
 
 
-# --------------------------------------------------------------------------- #
-# ids filter (?ids=a,b)
-# --------------------------------------------------------------------------- #
 
 class TestIdsFilter:
     def test_filters_to_set(self, bp_mod, client, fake_db):
@@ -347,7 +314,7 @@ class TestIdsFilter:
         assert [t['id'] for t in body['tracks']] == ['a', 'b']
         assert body['has_more'] is False
         assert body['next_page'] is None
-        assert 'item_id IN (' in cur.queries[0]   # no COUNT on the ids path
+        assert 'item_id IN (' in cur.queries[0]
         assert cur.query_params[0] == ('a', 'b')
 
     def test_empty_ids_runs_no_query(self, bp_mod, client, fake_db):
@@ -358,9 +325,6 @@ class TestIdsFilter:
         assert cur.queries == []
 
 
-# --------------------------------------------------------------------------- #
-# include_embeddings + CLAP toggle
-# --------------------------------------------------------------------------- #
 
 class TestIncludeEmbeddings:
     def test_default_includes_both(self, bp_mod, client, fake_db):
@@ -390,7 +354,6 @@ class TestIncludeEmbeddings:
         assert 'embedding' not in track
 
     def test_non_false_value_includes_embeddings(self, bp_mod, client, fake_db):
-        # Only literal 'false' (case-insensitive) disables; '0' does not.
         import config
         config.CLAP_ENABLED = True
         _, cur = fake_db
@@ -431,9 +394,6 @@ class TestIncludeEmbeddings:
             np.frombuffer(base64.b64decode(track['clap_embedding']), dtype=np.float32), clap_orig)
 
 
-# --------------------------------------------------------------------------- #
-# UMAP
-# --------------------------------------------------------------------------- #
 
 class TestUmap:
     def test_lookup_populates_coords(self, bp_mod, client, fake_db):
@@ -465,9 +425,6 @@ class TestUmap:
         assert track['umap_x'] is None and track['umap_y'] is None
 
 
-# --------------------------------------------------------------------------- #
-# Error handling
-# --------------------------------------------------------------------------- #
 
 class TestErrorHandling:
     def test_db_error_returns_500(self, bp_mod, client, fake_db):

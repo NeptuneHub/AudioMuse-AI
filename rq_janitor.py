@@ -6,7 +6,6 @@ import logging
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    # We need the queue objects to get their registries
     from app_helper import rq_queue_high, rq_queue_default
     from app_logging import configure_logging
 except ImportError as e:
@@ -23,7 +22,6 @@ if __name__ == '__main__':
     while True:
         try:
             for queue in queues_to_clean:
-                # 1. Clean StartedJobRegistry - orphaned jobs from dead workers
                 started_registry = queue.started_job_registry
                 started_before = started_registry.count
                 started_registry.cleanup()
@@ -32,8 +30,6 @@ if __name__ == '__main__':
                 if started_cleaned > 0:
                     logger.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
 
-                # 2. Clean FinishedJobRegistry - completed jobs older than TTL (default 500s)
-                # CRITICAL: This prevents memory/thread leaks from accumulated finished jobs
                 finished_registry = queue.finished_job_registry
                 finished_before = finished_registry.count
                 finished_registry.cleanup()
@@ -42,7 +38,6 @@ if __name__ == '__main__':
                 if finished_cleaned > 0:
                     logger.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
 
-                # 3. Clean FailedJobRegistry - failed jobs older than TTL
                 failed_registry = queue.failed_job_registry
                 failed_before = failed_registry.count
                 failed_registry.cleanup()
@@ -53,5 +48,4 @@ if __name__ == '__main__':
         except Exception as e:
             logger.exception("Error in RQ Janitor loop: %s", e)
 
-        # Sleep for the desired monitoring interval.
         time.sleep(10)

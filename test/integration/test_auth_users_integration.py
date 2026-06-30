@@ -1,20 +1,3 @@
-"""Real-Postgres integration tests for the audiomuse_users layer.
-
-Drives app_auth's user CRUD against a live ``audiomuse_users`` table so the
-argon2 hash round-trip, the ON CONFLICT duplicate guard, and the
-SELECT ... FOR UPDATE last-admin gate all run as production code paths. A
-mocked cursor cannot prove the hash verifies against what was actually stored,
-nor that the last-admin deletion is refused atomically.
-
-Database selection mirrors test_provider_migration_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_auth_users_integration.py -m integration -s -v --tb=short
-"""
 import os
 import sys
 import tempfile

@@ -1,50 +1,3 @@
-"""Real provider-migration integration test (runs against a live Postgres).
-
-Unlike a mocked-cursor unit test, this drives the *actual* migration end to
-end against a real PostgreSQL database for every combination of supported
-providers (including migrating a provider to itself):
-
-  1. build a small library exactly as the SOURCE provider's score rows look
-     (provider-specific item_id + file_path), seed it into a real ``score``
-     table plus the embedding / ivf / map-projection / artist tables the
-     migration touches,
-  2. build the same library as the TARGET provider's probe would return it,
-  3. run the real ``tasks.provider_migration_matcher.match_tracks`` to produce
-     the old_id -> new_id mapping (one source-only track stays unmatched so we
-     also exercise orphan deletion),
-  4. persist a ``migration_session`` in ``dry_run_ready`` and run the real
-     ``tasks.provider_migration_tasks.execute_provider_migration`` job (the
-     transactional id rewrite),
-  5. assert the database ended up correct: item_ids rewritten, embeddings
-     followed through the FK cascade, the orphan deleted, ivf / map
-     id_maps rewritten, provider-specific artist tables cleared, ``app_config``
-     updated with the target provider's credentials, and the session marked
-     completed.
-
-The only thing faked is the provider HTTP layer (we hand the matcher the
-probe-shaped dicts directly) and the embedding bytes — everything that touches
-the database is the production code path.
-
-Migrating a provider to itself is the most demanding case: it models a library
-re-scan that re-issues ids so the new ids overlap the existing ones, which is
-exactly what the two-pass ``_MIG_TMP_PREFIX`` rewrite in
-``_run_migration_transaction`` exists to survive. A mocked cursor can never
-prove that works; a real Postgres can.
-
-Database selection (in priority order):
-  * ``AUDIOMUSE_TEST_DATABASE_URL`` — a throwaway DB the test fully owns. The
-    test DROPs and recreates the ``public`` schema, so this MUST point at a
-    disposable database (the GitHub workflow points it at a postgres service).
-    The generic ``DATABASE_URL`` is intentionally NOT used, to avoid ever
-    dropping a real database.
-  * otherwise, an ephemeral instance via the optional ``pgserver`` package
-    (``pip install pgserver``) for zero-infra local runs.
-  * otherwise the whole module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_provider_migration_integration.py -s -v --tb=short
-"""
 import importlib.util
 import json
 import os
@@ -63,8 +16,6 @@ except Exception:  # pragma: no cover - psycopg2 is in test/requirements.txt
 
 
 def _load_module(mod_name, *rel_parts):
-    """Load a ``tasks.*`` module straight from its file (same loader the
-    provider-migration unit tests use)."""
     if mod_name in sys.modules:
         return sys.modules[mod_name]
     repo_root = os.path.normpath(
@@ -156,10 +107,6 @@ def _provider_path(provider, rel):
     return rel
 
 
-# ---------------------------------------------------------------------------
-# Schema — mirrors the tables tasks.provider_migration_tasks touches, copied
-# from app_helper.init_db so the transaction runs against a real layout.
-# ---------------------------------------------------------------------------
 
 _SCHEMA_DDL = [
     "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, "
@@ -206,7 +153,6 @@ _SCHEMA_DDL = [
 
 @pytest.fixture(scope='session')
 def pg_dsn():
-    """A libpq DSN for a throwaway Postgres the test fully owns."""
     if psycopg2 is None:
         pytest.skip("psycopg2 not importable")
 
@@ -237,7 +183,6 @@ def pg_dsn():
 
 @pytest.fixture
 def migration_db(pg_dsn):
-    """Reset the schema, wire the execute job at the real DB, yield helpers."""
     setup = psycopg2.connect(pg_dsn)
     setup.autocommit = True
     with setup.cursor() as cur:
@@ -269,9 +214,6 @@ def migration_db(pg_dsn):
 
 
 def _insert_segmented_index(cur, table, binary_col, base, id_map_json, dim, n_parts=3):
-    """Write ``id_map_json`` split across ``n_parts`` rows, mimicking the
-    large-library layout produced by ``store_ivf_index_segmented`` (each
-    row holds a partial-JSON fragment; the binary lives on part 1)."""
     step = max(1, -(-len(id_map_json) // n_parts))
     frags = [id_map_json[i:i + step] for i in range(0, len(id_map_json), step)]
     while len(frags) < n_parts:
@@ -286,17 +228,11 @@ def _insert_segmented_index(cur, table, binary_col, base, id_map_json, dim, n_pa
 
 
 def _reassemble_id_map(parts):
-    """Concatenate ``(index_name, id_map_json)`` fragments in part order."""
     ordered = sorted(parts, key=lambda p: int(re.match(r'^.*_(\d+)_\d+$', p[0]).group(1)))
     return ''.join((frag or '') for _, frag in ordered)
 
 
 def _seed_library(conn, source_rendered, segmented=False):
-    """Insert the source library into every table the migration rewrites.
-
-    With ``segmented=True`` the ivf / map-projection id_maps are written
-    split across part rows (the >~1M-song layout) instead of as a single row.
-    """
     src_ids = [r['id'] for r in source_rendered]
     ivf_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
     projection_map = json.dumps(src_ids)
@@ -348,8 +284,6 @@ def _seed_library(conn, source_rendered, segmented=False):
 
 
 def _insert_session(conn, source, target, matches, new_meta):
-    # new_meta now lives in the migration_target_meta side table (kept out of
-    # state so the wizard's per-click writes stay small), so seed it there.
     state = {
         'dry_run': {'matches': matches},
         'manual_matches': {},
@@ -379,7 +313,6 @@ def _insert_session(conn, source, target, matches, new_meta):
 @pytest.mark.parametrize('target', PROVIDERS)
 @pytest.mark.parametrize('source', PROVIDERS)
 def test_real_provider_migration(source, target, migration_db):
-    """Run the real execute transaction for one (source -> target) pair."""
     self_migration = source == target
     target_shift = 1 if self_migration else _CROSS_TARGET_SHIFT
 
@@ -511,15 +444,6 @@ def test_real_provider_migration(source, target, migration_db):
 
 @pytest.mark.integration
 def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
-    """Regression: a SEGMENTED ivf / map id_map must be rewritten end to end.
-
-    ``store_ivf_index_segmented`` splits ``id_map_json`` across part rows
-    once a library is large enough (~1M+ songs), so every segmented row holds a
-    partial-JSON fragment. The migration must reassemble + rewrite + re-split;
-    the previous per-row ``json.loads`` left every fragment untouched, leaving
-    the index pointing at deleted old-provider ids. This drives the real
-    execute job against a real Postgres with a segmented index seeded.
-    """
     source, target = 'jellyfin', 'navidrome'
 
     source_rendered = []
@@ -600,14 +524,6 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
 
 
 def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
-    """A relabel that cannot fit back into the existing part rows is a SOFT
-    failure: the migration still commits, the stale index is dropped, and
-    ``index_rebuild_needed`` is flagged so the UI can ask for a re-analysis.
-
-    Forced by shrinking ``IVF_MAX_PART_SIZE_MB`` to 0 so the rewritten
-    id_map needs far more part rows than the seeded index has, which is exactly
-    the condition ``rewrite_segmented_id_map`` raises ``ValueError`` for.
-    """
     import config
 
     source, target = 'jellyfin', 'navidrome'

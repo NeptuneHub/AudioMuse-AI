@@ -1,33 +1,3 @@
-"""Real-Postgres integration test that automates the manual auth pen test.
-
-Mounts the production ``app_auth`` request barrier (the ``before_request``
-guard that protects every route) on a Flask app backed by a live
-``audiomuse_users`` table, then drives it through Flask's test client to prove
-the security invariants a black-box pen test checks by hand:
-
-  * an unauthenticated API call is refused with 401, a page request redirects
-    to /login, and /api/health stays open without auth;
-  * a real argon2 login through /auth issues a usable HttpOnly session cookie;
-  * a tampered token (alg=none, wrong secret, or expired) is always rejected;
-  * a non-admin session is forbidden from an admin-only path while an admin
-    session and a valid Bearer API token are allowed.
-
-These exercise the real barrier, the real PyJWT round-trip and the real argon2
-verify against Postgres, so a regression that opens a hole - a skipped auth
-check, an accepted unsigned token, a broken admin gate - fails the build. A
-mocked client could not prove the signature pinning or the argon2 round-trip.
-
-Redis is not required: the barrier only reads config and the users table.
-
-Database selection mirrors test_auth_users_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL - a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_auth_barrier_integration.py -m integration -s -v --tb=short
-"""
 import base64
 import datetime
 import json

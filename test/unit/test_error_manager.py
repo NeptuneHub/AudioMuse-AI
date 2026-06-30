@@ -1,10 +1,3 @@
-"""Unit tests for the centralized error package (error/).
-
-These exercise the pure-data registry and the manager helpers without importing
-any heavy application modules. The `error` package only depends on `config`
-(lightweight env reads) and its own dictionary, so it imports as a normal
-package here.
-"""
 import os
 import sys
 

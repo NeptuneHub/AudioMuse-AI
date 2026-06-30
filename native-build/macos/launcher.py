@@ -1,11 +1,3 @@
-"""Standalone macOS entry point (the PyInstaller entry script).
-
-Double-clicked, this runs as a background menu-bar agent that supervises the
-embedded services and the app. Re-invoked by the supervisor as
-``AudioMuse-AI --role=<x>``, the same frozen binary instead runs one child
-service -- the web server (waitress serving the existing Flask app) or one of the
-RQ worker / janitor / restart-listener entry points, reused unchanged via runpy.
-"""
 
 import os
 import runpy
@@ -59,25 +51,13 @@ def _run_role(role):
         raise SystemExit(f"Unknown role: {role}")
 
 
-# Held for the life of the menu-bar process so the flock is not released early.
 _INSTANCE_LOCK = None
 
 
 def _acquire_single_instance_lock(paths):
-    """Return True if we are the only menu-bar agent (and hold the lock).
-
-    A second live supervisor is catastrophic: both manage the *same* embedded
-    Postgres/Redis, and a newly started ``redis-server`` unlinks the existing
-    unix socket out from under the running stack, knocking every worker offline.
-    An ``flock`` guarantees only one agent runs; the OS releases it if the holder
-    dies, so a crash-relaunch cleanly takes over (and reaps the orphans on boot).
-    """
     global _INSTANCE_LOCK
     import fcntl
     lock_path = os.path.join(paths.app_support_dir(), "supervisor.lock")
-    # Open with "a+" (not "w"): "w" truncates on open, which would erase the live
-    # holder's PID from the file before we even try the lock. Only rewrite the PID
-    # once we actually own the lock.
     fh = open(lock_path, "a+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -88,7 +68,7 @@ def _acquire_single_instance_lock(paths):
     fh.truncate(0)
     fh.write(str(os.getpid()))
     fh.flush()
-    _INSTANCE_LOCK = fh  # keep the handle (and thus the lock) alive
+    _INSTANCE_LOCK = fh
     return True
 
 
@@ -103,7 +83,6 @@ def _run_menubar():
     from macos import paths
     from macos.supervisor import ProcessSupervisor
 
-    # Refuse to start a second supervisor; just surface the already-running UI.
     if not _acquire_single_instance_lock(paths):
         subprocess.Popen(["open", "http://127.0.0.1:8000"])
         return
@@ -141,9 +120,6 @@ def _run_menubar():
             subprocess.Popen(["open", "-a", "Console", paths.log_file()])
 
         def on_toggle(self, _):
-            # START via start_in_background so the supervisor tracks the boot
-            # thread (_join_workers can then join it on a racing stop/quit and
-            # not leak a child spawned in the Popen->register micro-window).
             if supervisor.is_running():
                 threading.Thread(target=supervisor.stop_all, daemon=True).start()
             else:
@@ -167,9 +143,6 @@ def _run_menubar():
 
 
 def main():
-    # Mitigate the macOS NumPy int->longdouble import crash (issue #658). The
-    # decisive fix is warmup_scipy_longdouble() in _run_role(); this pin is only
-    # locale-churn hygiene. See numeric_bootstrap.py for the full mechanism.
     try:
         import numeric_bootstrap
         numeric_bootstrap.pin_numeric_locale()

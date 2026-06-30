@@ -1,8 +1,3 @@
-# tasks/analysis.py
-#
-# Public RQ entry-points and orchestration for the AudioMuse analysis pipeline.
-# Reusable building blocks (ONNX helpers, audio feature extraction, DB lookups,
-# metadata refresh, model cleanup) live in tasks/analysis_helper.py.
 
 import os
 import shutil
@@ -16,12 +11,10 @@ import platform
 import librosa
 import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
-# RQ import
 from rq import get_current_job, Retry
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
-# Import configuration from the user's provided config file
 from config import (
     TEMP_DIR, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH,
     OTHER_FEATURE_LABELS,
@@ -31,7 +24,6 @@ from config import (
 )
 
 
-# Import other project modules
 from .mediaserver import (
     get_recent_albums, get_tracks_from_album, download_track,
     test_connection as mediaserver_test_connection,
@@ -43,10 +35,6 @@ from .memory_utils import (
     comprehensive_memory_cleanup,
 )
 
-# `app_helper` is safe to import here (no module-level cycle back into
-# tasks.analysis). The Flask `app` instance lives in `flask_app` (a tiny
-# shared module) precisely so we can import it at module top without
-# creating a cycle with app.py.
 from flask_app import app
 from app_helper import (
     redis_conn, rq_queue_default, get_db, save_task_status,
@@ -69,15 +57,11 @@ from error.error_dictionary import (
     ERR_INDEX_EMPTY,
 )
 
-# Helper module — exposes refactored utilities. The explicit re-exports
-# below keep the legacy ``tasks.analysis.<symbol>`` attribute surface that
-# tests depend on (``run_inference``, ``_find_onnx_name``, ``sigmoid``).
-# Helpers consumed only inside this file go through ``_ah.<name>`` instead.
 from . import analysis_helper as _ah
 from .analysis_helper import (  # noqa: F401
     DEFINED_TENSOR_NAMES,
-    _find_onnx_name,           # re-export: tests do `from tasks.analysis import _find_onnx_name`
-    run_inference,             # re-export: tests do `from tasks.analysis import run_inference`
+    _find_onnx_name,
+    run_inference,
     sigmoid,
     extract_basic_features,
     prepare_spectrogram_patches,
@@ -91,11 +75,10 @@ from .analysis_helper import (  # noqa: F401
 
 
 from psycopg2 import OperationalError
-from redis.exceptions import TimeoutError as RedisTimeoutError  # alias
+from redis.exceptions import TimeoutError as RedisTimeoutError
 logger = logging.getLogger(__name__)
 
 
-# --- Utility Functions ---
 def clean_temp(temp_dir):
     os.makedirs(temp_dir, exist_ok=True)
     for name in os.listdir(temp_dir):
@@ -109,7 +92,6 @@ def clean_temp(temp_dir):
 def _release_freed_ram_to_os():
     gc.collect()
 
-    #malloc_trim is Linux/glibc specific
     if platform.system() != "Linux":
         return
 
@@ -126,18 +108,6 @@ def _release_freed_ram_to_os():
 
 
 def _run_all_index_builds(log_fn=None):
-    """Run every index-rebuild step. log_fn(stage, progress) is optional.
-
-    Each step announces itself via ``log_fn`` before running so the dashboard
-    shows which builder is currently active (otherwise users see "Building
-    CLAP text search index..." for the entire 95–97 % window even while the
-    lyrics or SemGrove builds are running).
-
-    The index-builder modules are imported here rather than at module top so
-    that importing ``tasks.analysis`` does not pull in the ivf / CLAP /
-    lyrics / SemGrove / artist-GMM subsystems; they are only needed when a
-    rebuild actually runs.
-    """
     from .ivf_manager import build_and_store_ivf_index
     from .clap_text_search import build_and_store_clap_index
     from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
@@ -197,7 +167,6 @@ def _run_all_index_builds(log_fn=None):
     logger.info('OK Released freed RAM back to OS after index rebuild')
 
 
-# --- Core Analysis Functions ---
 
 def _decode_audio_with_pyav(file_path, target_sr):
     import av
@@ -231,10 +200,6 @@ def _decode_audio_with_pyav(file_path, target_sr):
 
 
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
-    """
-    Try librosa.load directly; on failure or empty signal, fall back to an
-    in-process PyAV (ffmpeg) decode to mono float32 at target_sr.
-    """
     name = os.path.basename(file_path)
     try:
         audio, sr = librosa.load(file_path, sr=target_sr, mono=True, duration=AUDIO_LOAD_TIMEOUT)
@@ -255,7 +220,6 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         return None, None
 
 def rebuild_all_indexes_task():
-    """Rebuild all indexes as a standalone RQ task (enqueued on default queue)."""
     logger.info("Starting index rebuild task (enqueued as subtask)...")
     with app.app_context():
         try:
@@ -267,19 +231,8 @@ def rebuild_all_indexes_task():
             return {"status": "FAILURE", "message": str(e)}
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
-    """
-    Analyzes a single track using ONNX Runtime for inference.
-    
-    Args:
-        file_path: Path to audio file
-        mood_labels_list: List of mood labels
-        model_paths: Dict of model paths
-        onnx_sessions: Optional dict of pre-loaded ONNX sessions (for album-level reuse)
-        return_audio: If True, return the loaded audio array and sample rate as part of the result.
-    """
     logger.info(f"Starting analysis for: {os.path.basename(file_path)}")
 
-    # --- 1. Load Audio and Compute Basic Features ---
     audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
 
     if audio is None or not np.any(audio) or audio.size == 0:
@@ -288,7 +241,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
 
     tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
 
-    # --- 2. Prepare Spectrograms ---
     try:
         final_patches = prepare_spectrogram_patches(audio, sr)
         if final_patches is None:
@@ -298,15 +250,12 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         logger.error(f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return (None, None, None, None) if return_audio else (None, None)
 
-    # --- 3. Run Main Models (Embedding and Prediction) ---
     embedding_sess = None
     prediction_sess = None
     should_cleanup_sessions = False
     embeddings_per_patch = None
     mood_logits = None
     mood_probs_per_patch = None
-    # Initialized here so the finally block can always reference them safely, even
-    # if create_onnx_session raises before the in-try assignment is reached.
     original_embedding_sess = None
     original_prediction_sess = None
 
@@ -321,7 +270,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             prediction_sess = create_onnx_session(model_paths['prediction'], provider_options, label='prediction')
             should_cleanup_sessions = True
 
-        # Capture originals so we can detect OOM-fallback replacements below.
         original_embedding_sess = embedding_sess
         original_prediction_sess = prediction_sess
         embedding_feed_dict = {DEFINED_TENSOR_NAMES['embedding']['input']: final_patches}
@@ -331,14 +279,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             model_paths['embedding'], 'embedding',
             should_cleanup_sessions, os.path.basename(file_path),
         )
-        # If GPU OOM happened and we're working with a shared (album-level)
-        # session dict, rewire the dict to the new CPU session AND drop the
-        # captured-original reference. Without this, the dict keeps pinning
-        # the OOM'd GPU session: it leaks for the rest of the album, every
-        # subsequent track re-pulls it and re-OOMs, and the new CPU session
-        # we just built gets thrown away in the finally. We also drop the
-        # local `original_*` ref so GC can reclaim the GPU buffers right now
-        # rather than at album end.
         if embedding_sess is not original_embedding_sess:
             if onnx_sessions is not None:
                 onnx_sessions['embedding'] = embedding_sess
@@ -356,13 +296,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
                 onnx_sessions['prediction'] = prediction_sess
             original_prediction_sess = None
 
-        # Double-sigmoid to replicate old production behaviour:
-        # The old Essentia-exported model (msd-msd-musicnn-1.onnx) had sigmoid built
-        # into its ONNX graph, so each patch output was already a probability [0-1].
-        # The old code then applied sigmoid(mean(those probs)) on top — a
-        # "double sigmoid" that pushed values into the ~0.50-0.56 range.
-        # The new musicnn_prediction.onnx outputs raw logits, so we replicate
-        # the full old pipeline: sigmoid(logits) -> mean -> sigmoid.
         mood_probs_per_patch = sigmoid(mood_logits)
         final_mood_predictions = sigmoid(np.mean(mood_probs_per_patch, axis=0))
 
@@ -372,11 +305,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         logger.error(f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
         return (None, None, None, None) if return_audio else (None, None)
     finally:
-        # Clean up sessions we own outright. When shared sessions were
-        # provided and an OOM fallback occurred, the new CPU session has
-        # already been written back into ``onnx_sessions`` above so the
-        # album-level dict owns it — DO NOT release it here, or the next
-        # track will SEGV trying to run on a destroyed session.
         if should_cleanup_sessions:
             try:
                 cleanup_onnx_session(embedding_sess, "embedding")
@@ -385,15 +313,9 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
                 logger.debug(f"Cleaned up sessions for {os.path.basename(file_path)}")
             except Exception as cleanup_error:
                 logger.warning(f"Error during cleanup: {cleanup_error}")
-        # Belt-and-suspenders: drop the captured originals unconditionally so
-        # an OOM'd GPU session pinned only by this frame can be GC'd as the
-        # function unwinds (the dict-rewire above already nulled them on the
-        # happy fallback path, but if an exception interrupted between the
-        # first inference and the rewire, this catches that case too).
         original_embedding_sess = None
         original_prediction_sess = None
 
-    # --- 4. Final Aggregation for Storage ---
     processed_embeddings = np.mean(embeddings_per_patch, axis=0)
     analysis_result = {
         "tempo": tempo,
@@ -416,7 +338,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     return return_values
 
 
-# --- RQ Task Definitions ---
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
 
@@ -433,8 +354,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
         clap_label_embeddings = None
 
-        onnx_sessions = None  # Lazy-loaded on first song that needs MusiCNN.
-        # Recycle interval: 1 song if PER_SONG_MODEL_RELOAD else 20.
+        onnx_sessions = None
         recycle_interval = 1 if PER_SONG_MODEL_RELOAD else 20
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
         logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
@@ -511,7 +431,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
                 log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
 
-                # Store artist ID mapping for all tracks (even if already analyzed)
                 _ah.upsert_artist_mappings_for_tracks([item], album_name=album_name)
 
                 track_id_str = str(item['Id'])
@@ -544,7 +463,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     return path
 
                 try:
-                    track_processed = False  # MusiCNN | CLAP | Lyrics produced data?
+                    track_processed = False
 
                     if needs_musicnn:
                         if onnx_sessions is None:
@@ -572,7 +491,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         musicnn_analysis, musicnn_embedding = analysis, embedding
                         track_processed = True
                         session_recycler.increment()
-                        cleanup_cuda_memory(force=False)  # Prevent gradual VRAM accumulation.
+                        cleanup_cuda_memory(force=False)
                     else:
                         musicnn_analysis = musicnn_embedding = None
                         top_moods = existing_top_moods_by_id.get(track_id_str) or None
@@ -603,7 +522,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Other Features: {other_features}")
                         _ah.persist_musicnn_results(item, musicnn_analysis, top_moods, musicnn_embedding, other_features)
 
-                    # CLAP must be saved AFTER score (FK: clap_embedding.item_id -> score.item_id).
                     _ah.persist_clap_embedding(item['Id'], clap_embedding_for_track, needs_clap)
 
                     if _ah.run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
@@ -655,7 +573,6 @@ _AUTH_FAILURE_HINTS = (
 
 
 def _probe_looks_like_auth_failure(probe):
-    """True when a failed test_connection result points to a credentials problem."""
     if not probe:
         return False
     if probe.get('auth_failed'):
@@ -665,13 +582,6 @@ def _probe_looks_like_auth_failure(probe):
 
 
 def _verify_media_server_reachable():
-    """Probe the configured media server and raise AudioMuseError if it is failing.
-
-    A scan that returns zero albums is ambiguous: the library may genuinely have
-    nothing new, or the server rejected our credentials / was unreachable (the
-    provider clients swallow those and return an empty list). Probing here turns a
-    real failure into a coded error instead of a misleading "0 albums" success.
-    """
     try:
         probe = mediaserver_test_connection()
     except error_manager.AudioMuseError:
@@ -702,11 +612,9 @@ def run_analysis_task(num_recent_albums, top_n_moods):
              num_recent_albums = 0
 
         task_info = get_task_info_from_db(current_task_id)
-        # Only truly-terminal states stop a re-entry; a prior FAILURE resumes via RQ retry.
         if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, TASK_STATUS_REVOKED]:
             return {"status": task_info.get('status'), "message": "Task already in terminal state."}
 
-        # RAM-only dedup for this run; resume correctness comes from the DB, so never persisted.
         checked_album_ids = set()
 
         initial_details = {"message": "Fetching albums...", "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Main analysis task started."]}
@@ -741,28 +649,18 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             clean_temp(TEMP_DIR)
             all_albums = get_recent_albums(num_recent_albums)
             if not all_albums:
-                # Distinguish an empty library from a silent auth/connection failure.
                 _verify_media_server_reachable()
                 log_and_update_main("No new albums to analyze.", 100, albums_found=0, task_state=TASK_STATUS_SUCCESS)
                 return {"status": "SUCCESS", "message": "No new albums to analyze."}
 
             total_albums_to_check = len(all_albums)
             active_jobs = {}
-            launched_job_ids = set()  # Track job IDs launched in THIS run only
+            launched_job_ids = set()
             albums_skipped, albums_launched, albums_completed, last_rebuild_count = 0, 0, 0, 0
             albums_no_tracks = 0
-            last_monitor_db_check = float('-inf')  # -inf so the first reconcile always fires (monotonic epoch is boot-relative)
+            last_monitor_db_check = float('-inf')
 
             def monitor_and_clear_jobs():
-                """Sync `albums_completed` with terminal RQ jobs and DB child-task statuses.
-
-                Tries `Job.fetch` first; reconciles against DB child rows (the
-                authoritative source — RQ state may be missing if the worker
-                uses a different Redis namespace). Also drops stale `active_jobs`
-                entries that were never launched in this run (zombies).
-                Enqueues an index-rebuild subtask each time `REBUILD_INDEX_BATCH_SIZE`
-                fresh albums have completed.
-                """
                 nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
                 removed = 0
                 for job_id in list(active_jobs.keys()):
@@ -784,7 +682,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 if removed:
                     albums_completed += removed
 
-                # Throttled status-only reconcile (no details); RQ Job.fetch above drains active_jobs every poll.
                 now = time.monotonic()
                 if now - last_monitor_db_check >= ANALYSIS_MONITOR_DB_INTERVAL:
                     last_monitor_db_check = now
@@ -817,7 +714,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
-                # Skip before polling, so a large re-scan doesn't poll per already-done album.
                 if album['Id'] in checked_album_ids:
                     albums_skipped += 1
                     continue
@@ -846,7 +742,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                     albums_skipped += 1
                     continue
 
-                # Skip only when MusiCNN + every enabled feature is already complete.
                 if existing_count >= len(tracks) and not (needs_clap_analysis or needs_lyrics_analysis):
                     for item in tracks:
                         _ah.refresh_track_metadata(item, album.get('Name'))
@@ -905,7 +800,6 @@ def run_analysis_task(num_recent_albums, top_n_moods):
             logger.critical(f"FATAL ERROR: Main analysis task failed due to DB connection issue: {e}", exc_info=True)
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
             log_and_update_main("X Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
-            # Re-raise to allow RQ to handle retries if configured on the task itself
             raise
         except Exception as e:
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)

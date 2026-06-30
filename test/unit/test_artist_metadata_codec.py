@@ -1,20 +1,3 @@
-# test/unit/test_artist_metadata_codec.py
-"""
-Unit tests for the artist metadata storage helpers in
-``tasks/index_build_helpers.py``:
-
-- ``pack_artist_metadata`` / ``unpack_artist_metadata`` (binary codec)
-- ``store_segmented_blob`` / ``load_segmented_blob`` (segmented BYTEA storage)
-
-The codec replaces the previous JSON-of-floats storage of artist GMM
-parameters. The segmented-blob helpers decouple metadata storage from the
-IVF index storage so a single PG column value cannot exceed
-``MaxAllocSize`` (1 GB) at any realistic library size.
-
-The helper module is loaded via importlib so this file does not pull in
-``tasks/__init__.py`` (which imports librosa). Same pattern the other
-tasks unit tests use.
-"""
 
 import importlib.util
 import os
@@ -27,7 +10,6 @@ from unittest.mock import MagicMock
 
 
 def _load_helpers():
-    """Load tasks.index_build_helpers without triggering tasks/__init__.py."""
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
@@ -51,11 +33,6 @@ _helpers = _load_helpers()
 
 
 def _make_synthetic_artists(n_artists, n_features=8, rng_seed=42):
-    """Return (artist_map, artist_gmms) with random GMM params.
-
-    Mix of few-songs (1-4 components) and multi-song (5+ components) artists
-    to exercise both code paths in ``pack_artist_metadata``.
-    """
     rng = np.random.default_rng(rng_seed)
     artist_map = {}
     artist_gmms = {}
@@ -118,8 +95,6 @@ class TestPackUnpackArtistMetadata:
             )
 
     def test_covariances_and_covariance_type_never_appear_in_output(self):
-        """Even if the input still carries them (mid-migration), the codec
-        must not propagate them. covariances has zero live readers."""
         artist_map, artist_gmms = _make_synthetic_artists(3)
         for gmm in artist_gmms.values():
             gmm['covariances'] = [[0.01] * gmm['n_features']] * gmm['n_components']
@@ -185,7 +160,6 @@ class TestPackUnpackArtistMetadata:
 
 
 class TestStoreLoadSegmentedBlob:
-    """Mock psycopg2 cursor to verify the segmented-blob storage pattern."""
 
     def _captured_conn(self):
         captured = []
@@ -267,7 +241,7 @@ class TestStoreLoadSegmentedBlob:
         n_parts = len(inserts)
         for idx, (sql, params) in enumerate(inserts, start=1):
             assert "INSERT INTO artist_metadata_data" in sql
-            assert "ON CONFLICT" in sql  # segmented inserts are now idempotent (ON CONFLICT DO UPDATE)
+            assert "ON CONFLICT" in sql
             assert params[0] == f"artist_metadata_{idx}_{n_parts}"
 
     def test_load_returns_none_when_no_rows(self):

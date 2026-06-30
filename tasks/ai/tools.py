@@ -1,21 +1,3 @@
-"""MCP tool definitions and dispatcher.
-
-This module owns:
-* ``get_mcp_tools()`` -- canonical MCP tool definitions (JSON Schema) used by
-  every AI provider when calling with tools.
-* ``execute_mcp_tool(...)`` -- dispatcher that runs the actual tool body
-  (delegating to the ``_*_sync`` helpers in ``tasks.ai.tool_impl``).
-
-Surface: 4 LLM-facing tools that collapse the previous 7 into shapes a small
-self-hosted model (qwen2.5:7b-9b on Ollama) can pick reliably:
-
-* ``seed_search``     -- replaces song_similarity / artist_similarity / song_alchemy
-* ``text_match``      -- replaces text_search / lyrics_search
-* ``knowledge_lookup`` -- renamed ai_brainstorm
-* ``search_database`` -- unchanged metadata filter
-
-This module is purely MCP plumbing -- no DB queries, no AI calls.
-"""
 import logging
 import re
 from typing import Dict, List, Optional
@@ -155,7 +137,6 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
-    """Execute an MCP tool. Returns the tool's result dict."""
     try:
         if tool_name == "seed_search":
             return _dispatch_seed_search(tool_args, ai_config)
@@ -213,7 +194,6 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def get_mcp_tools() -> List[Dict]:
-    """Return the LLM-facing tool list. Gated by CLAP_ENABLED / LYRICS_ENABLED."""
     from config import CLAP_ENABLED, LYRICS_ENABLED
 
     text_match_modes = ["audio"] if CLAP_ENABLED else []

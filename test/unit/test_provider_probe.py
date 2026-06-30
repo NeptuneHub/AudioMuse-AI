@@ -1,18 +1,3 @@
-"""Unit tests for tasks.provider_probe.
-
-The probe module is a thin shim: it normalizes the provider type, delegates
-to :mod:`tasks.mediaserver` (passing ``user_creds`` / ``provider_type``
-explicitly so it never reads ``config.py``), and normalizes the per-track
-dicts returned by the mediaserver layer into a unified shape.
-
-Tests exercise the shim's actual behavior:
-  * delegation to ``tasks.mediaserver`` with the right arguments,
-  * provider-type validation (normalize + reject unsupported),
-  * unified track shape produced by ``_normalize_track``.
-
-Uses the ``importlib.util`` bypass so ``tasks/__init__.py`` (which pulls in
-heavy ML deps like librosa) isn't imported.
-"""
 import importlib.util
 import os
 import sys
@@ -28,8 +13,6 @@ def _load_probe():
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
-    # Ensure `tasks.mediaserver` and friends are importable as a real package
-    # when provider_probe does `from tasks import mediaserver`.
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     mod_path = os.path.join(repo_root, 'tasks', 'provider_probe.py')
@@ -45,9 +28,6 @@ def probe():
     return _load_probe()
 
 
-# ---------------------------------------------------------------------------
-# _normalize_track — unified track shape
-# ---------------------------------------------------------------------------
 
 class TestNormalizeTrack:
     REQUIRED_KEYS = {
@@ -105,9 +85,6 @@ class TestNormalizeTrack:
         assert set(t.keys()) == self.REQUIRED_KEYS
 
 
-# ---------------------------------------------------------------------------
-# _normalize_provider_type — validation
-# ---------------------------------------------------------------------------
 
 class TestNormalizeProviderType:
     def test_supported_providers_normalized_lowercase(self, probe):
@@ -126,9 +103,6 @@ class TestNormalizeProviderType:
             probe._normalize_provider_type('')
 
 
-# ---------------------------------------------------------------------------
-# fetch_all_tracks — delegation + normalization
-# ---------------------------------------------------------------------------
 
 class TestFetchAllTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -140,9 +114,6 @@ class TestFetchAllTracks:
         ]
         with patch.object(probe.mediaserver, 'get_all_songs', return_value=fake_items) as m:
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
-        # apply_filter=False: source provider's MUSIC_LIBRARIES filter must
-        # not be applied to the migration target during dry-run (it would
-        # zero out the target catalog whenever folder names differ).
         m.assert_called_once_with(user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False)
         assert len(tracks) == 2
         assert tracks[0]['id'] == 'a'
@@ -162,9 +133,6 @@ class TestFetchAllTracks:
         m.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# search_albums — delegation (raw pass-through)
-# ---------------------------------------------------------------------------
 
 class TestSearchAlbums:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -183,9 +151,6 @@ class TestSearchAlbums:
         m.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# get_album_tracks — delegation + normalization
-# ---------------------------------------------------------------------------
 
 class TestGetAlbumTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -204,9 +169,6 @@ class TestGetAlbumTracks:
             assert probe.get_album_tracks('lyrion', self.CREDS, 'album-1') == []
 
 
-# ---------------------------------------------------------------------------
-# test_connection — delegation (raw pass-through)
-# ---------------------------------------------------------------------------
 
 class TestTestConnection:
     CREDS = {'url': 'http://host'}

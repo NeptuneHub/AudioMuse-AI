@@ -1,21 +1,3 @@
-"""
-Shared Radius Walk helper.
-
-Provides a generalized bucketed greedy walk algorithm for reordering
-similarity search results. Used by both MusicNN (ivf_manager) and
-SemGrove (sem_grove_manager) search paths.
-
-The walk:
-1. Groups candidates into distance buckets from the anchor song
-2. Walks inside each bucket picking the next song greedily by
-   score = 0.7 * dist_prev + 0.3 * dist_anchor
-3. Enforces per-bucket artist limits (max 1 per artist per bucket)
-4. Enforces global artist cap (max N songs per artist across all buckets)
-5. Post-processes to avoid 3 same-artist songs in a row
-
-Callers are responsible for pre-filtering (distance dedup, name dedup,
-mood filtering) and for preparing candidate_data in the expected format.
-"""
 
 import logging
 import math
@@ -27,35 +9,24 @@ from config import RADIUS_INSTRUMENTATION
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configurable constants (kept small so the module stays self-contained)
-# ---------------------------------------------------------------------------
 BUCKET_SIZE = 50
 INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _normalize_string(text: str) -> str:
-    """Lowercase and strip whitespace."""
     if not text:
         return ""
     return text.strip().lower()
 
 
 def _default_distance_fn(v1: np.ndarray, v2: np.ndarray) -> float:
-    """Default Euclidean distance between two float32 vectors."""
     try:
         return float(np.linalg.norm(v1 - v2))
     except Exception:
         return float("inf")
 
 
-# ---------------------------------------------------------------------------
-# Internal: single-bucket walk (extracted to reduce cognitive complexity)
-# ---------------------------------------------------------------------------
 
 def _walk_single_bucket(
     bucket_index: int,
@@ -67,19 +38,6 @@ def _walk_single_bucket(
     max_songs_per_artist: Optional[int],
     walk_state: Dict,
 ) -> None:
-    """
-    Greedy walk constrained to one bucket's items.
-
-    Parameters
-    ----------
-    walk_state : dict
-        Mutable shared state with keys:
-        - ``playlist_ids`` (List[str])
-        - ``used_ids`` (set[str])
-        - ``selected_vectors`` (Dict[str, np.ndarray])
-        - ``artist_counts`` (Dict[str, int])
-        - ``artist_bucket_counts`` (Dict[str, int])
-    """
     bucket = buckets[bucket_index]
     items = bucket["items"]
     if not items:
@@ -153,7 +111,6 @@ def _walk_single_bucket(
     else:
         remaining[cur_idx] = False
 
-    # ---- Greedy selection loop ----
     while True:
         if len(playlist_ids) >= n:
             break
@@ -218,7 +175,6 @@ def _walk_single_bucket(
         if best_i is None:
             break
 
-        # Accept best candidate
         remaining[best_i] = False
         cid = cand_ids[best_i]
         used_ids.add(cid)
@@ -244,12 +200,8 @@ def _walk_single_bucket(
             )
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def _swap_out_artist(ids: List[str], i: int, bad_artist: str, id_to_author: Dict[str, Optional[str]]) -> bool:
-    """Try to swap ids[i+2] or ids[i+1] with a later item whose artist differs."""
     for target in (i + 2, i + 1):
         for j in range(i + 3, len(ids)):
             if id_to_author.get(ids[j]) != bad_artist:
@@ -262,20 +214,12 @@ def avoid_triple_adjacent(
     ids: List[str],
     id_to_author: Dict[str, Optional[str]],
 ) -> List[str]:
-    """
-    Post-process a playlist so no three consecutive songs share the same artist.
-
-    When a triple is found the function tries to swap with a later song
-    whose artist differs.  If no swap is possible the triple is left as-is
-    and the window advances.
-    """
     i = 0
     while i <= len(ids) - 3:
         a1 = id_to_author.get(ids[i])
         if a1 and a1 == id_to_author.get(ids[i + 1]) == id_to_author.get(ids[i + 2]):
             if not _swap_out_artist(ids, i, a1, id_to_author):
                 i += 1
-            # If swapped, re-evaluate current window (don't increment i)
         else:
             i += 1
     return ids
@@ -288,37 +232,6 @@ def execute_radius_walk(
     max_songs_per_artist: Optional[int] = None,
     get_distance_fn: Optional[Callable[[np.ndarray, np.ndarray], float]] = None,
 ) -> List[Dict]:
-    """
-    Execute the bucketed greedy radius walk on pre-filtered candidate data.
-
-    Parameters
-    ----------
-    candidate_data : list of dict
-        Each dict must have:
-        - ``item_id`` (str)
-        - ``vector`` (np.ndarray, float32)
-        - ``dist_anchor`` (float)  — distance from this candidate to the anchor song
-        Optional but strongly recommended for artist dedup:
-        - ``title`` (str)
-        - ``author`` (str)
-    n : int
-        Number of songs to return.
-    eliminate_duplicates : bool
-        When True, per-bucket artist limit (1/artist/bucket) and the global
-        artist cap (``max_songs_per_artist``) are enforced during the walk.
-    max_songs_per_artist : int or None
-        Global cap; only meaningful when *eliminate_duplicates* is True.
-        A value ≤ 0 or None disables the cap.
-    get_distance_fn : callable or None
-        ``fn(v1: np.ndarray, v2: np.ndarray) -> float``.
-        Defaults to Euclidean (L2) distance.
-
-    Returns
-    -------
-    list of dict
-        Each dict has ``item_id`` (str) and ``distance`` (float, distance to anchor).
-        The list is ordered by the walk; length ≤ *n*.
-    """
     if get_distance_fn is None:
         get_distance_fn = _default_distance_fn
 
@@ -326,14 +239,12 @@ def execute_radius_walk(
         logger.warning("Radius walk: No candidates available. Returning empty list.")
         return []
 
-    # --- Parameters ---
     buckets_to_scan = max(3, int(math.ceil(n / BUCKET_SIZE)))
     logger.info(
         "Radius walk: N=%d, BUCKET_SIZE=%d, BUCKETS_TO_SCAN=%d",
         n, BUCKET_SIZE, buckets_to_scan,
     )
 
-    # --- Sort by distance to anchor and create buckets ---
     candidate_data.sort(key=lambda x: x["dist_anchor"])
 
     num_buckets = int(math.ceil(len(candidate_data) / BUCKET_SIZE))
@@ -342,7 +253,6 @@ def execute_radius_walk(
         for i in range(num_buckets)
     ]
 
-    # Determine vector dimension from first candidate
     vec_dim = 0
     if candidate_data:
         vec_dim = candidate_data[0]["vector"].shape[0]
@@ -364,7 +274,6 @@ def execute_radius_walk(
 
     logger.info("Radius walk: Created %d buckets.", len(buckets))
 
-    # --- Initialize the walk ---
     playlist_ids: List[str] = []
     used_ids: set = set()
 
@@ -377,12 +286,10 @@ def execute_radius_walk(
         logger.warning("Radius walk: Candidate data empty, cannot start.")
         return []
 
-    # Dict of selected item_id -> vector for distance checks
     selected_vectors: Dict[str, np.ndarray] = {
         playlist_ids[0]: first_song["vector"].astype(np.float32)
     }
 
-    # Artist tracking (only used when eliminate_duplicates is True)
     cap_active = bool(
         eliminate_duplicates
         and max_songs_per_artist is not None
@@ -401,9 +308,6 @@ def execute_radius_walk(
     num_buckets = len(buckets)
     buckets_to_check = min(num_buckets, buckets_to_scan)
 
-    # ------------------------------------------------------------------
-    # Internal helper: walk a single bucket (delegates to module-level)
-    # ------------------------------------------------------------------
     walk_state = {
         "playlist_ids":        playlist_ids,
         "used_ids":            used_ids,
@@ -412,9 +316,6 @@ def execute_radius_walk(
         "artist_bucket_counts": artist_bucket_counts,
     }
 
-    # ------------------------------------------------------------------
-    # Process buckets sequentially, expanding window if needed
-    # ------------------------------------------------------------------
     processed_buckets = 0
     while len(playlist_ids) < n and processed_buckets < num_buckets:
         target = min(num_buckets, buckets_to_check)
@@ -446,13 +347,11 @@ def execute_radius_walk(
 
     logger.info("Radius walk: Walk complete. Collected %d songs.", len(playlist_ids))
 
-    # ---- Post-processing: avoid triple adjacent ----
     id_to_author: Dict[str, Optional[str]] = {
         c["item_id"]: c.get("author") for c in candidate_data
     }
     playlist_ids = avoid_triple_adjacent(playlist_ids, id_to_author)
 
-    # ---- Build final results (trim to n, map distances) ----
     playlist_ids = playlist_ids[:n]
     dist_anchor_map = {c["item_id"]: c["dist_anchor"] for c in candidate_data}
 
@@ -462,7 +361,6 @@ def execute_radius_walk(
         if dist_anchor is not None:
             final_results.append({"item_id": item_id, "distance": dist_anchor})
         else:
-            # Fallback: look up in candidate_data directly
             for c in candidate_data:
                 if c["item_id"] == item_id:
                     final_results.append({

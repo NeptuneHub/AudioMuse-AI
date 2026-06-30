@@ -7,15 +7,6 @@ logger = logging.getLogger(__name__)
 
 
 def run_radio_playlists():
-    """Generate one playlist per enabled radio (anchor + temperature + number of results).
-
-    Uses create_or_replace_playlist so the same server-side playlist (and ID,
-    where the backend allows) gets reused across runs — avoiding duplicate
-    playlists on online-first sync clients (e.g. Symfonium on Navidrome)
-    that track playlists by ID.
-
-    Falls back to create_playlist for unsupported backends.
-    """
     from database import get_alchemy_radios
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
@@ -47,7 +38,6 @@ def run_radio_playlists():
             try:
                 create_or_replace_playlist(playlist_name, item_ids)
             except NotImplementedError:
-                # Unsupported backend: fall back to plain create.
                 create_playlist(playlist_name, item_ids)
             created += 1
             logger.info(f"Radio playlist '{playlist_name}' upserted with {len(item_ids)} tracks.")

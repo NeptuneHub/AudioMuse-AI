@@ -64,8 +64,6 @@ class SetupManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Serialize concurrent app_config/table creation across
-                    # multiple processes (Flask workers, RQ workers, setup_manager).
                     cur.execute("SELECT pg_advisory_lock(726354821)")
                     try:
                         cur.execute(
@@ -191,8 +189,6 @@ class SetupManager:
         if not enabled:
             return True
 
-        # When auth is enabled, only username/password are mandatory.
-        # API_TOKEN is optional and does not control setup completeness.
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD']

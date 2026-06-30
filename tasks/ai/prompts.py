@@ -1,27 +1,8 @@
-"""Centralized AI prompt templates and prompt builders.
-
-All business-level prompts used by the AudioMuse-AI features live here, so
-that:
-
-* `tasks/ai_api*.py` stay generic transports (no embedded prompts).
-* Adding or tweaking a prompt does not require touching transport code.
-* Migrating a feature to a new provider only requires plugging the existing
-  prompt into the new transport.
-
-Public entry points:
-    creative_prompt_template          -- clustering / playlist naming prompt template
-    build_mcp_system_prompt(...)      -- canonical MCP tool-decision system prompt
-    build_ollama_tool_calling_prompt  -- Ollama-specific JSON-output framing
-    build_tool_calls_schema(tools)    -- shared JSON Schema for tool_calls (used by every transport)
-    build_ai_brainstorm_prompt(...)   -- ai_brainstorm MCP tool prompt
-    _get_dynamic_genres               -- helper, exposed for tests
-"""
 from typing import Dict, List, Optional
 
 import config
 
 
-# --- Clustering / playlist naming prompt --------------------------------------
 
 creative_prompt_template = (
     "You are an expert music collector and MUST give a title to this playlist.\n"
@@ -37,18 +18,15 @@ creative_prompt_template = (
 )
 
 
-# --- Constants shared with the rest of the AI subsystem -----------------------
 
 INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
 
 PRIMARY_INTENTS = ["seed", "text", "knowledge"]
 
 
-# --- MCP system prompt --------------------------------------------------------
 
 
 def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
-    """Return genre list from library context, falling back to defaults."""
     if library_context and library_context.get('top_genres'):
         return ', '.join(library_context['top_genres'][:10])
     return config.AI_FALLBACK_GENRES
@@ -58,7 +36,6 @@ def build_mcp_system_prompt(
     tools: List[Dict],
     library_context: Optional[Dict] = None,
 ) -> str:
-    """Build the canonical MCP system prompt used by ALL providers."""
     tool_names = {t['name'] for t in tools}
     has_seed = 'seed_search' in tool_names
     has_text = 'text_match' in tool_names
@@ -117,19 +94,12 @@ RULES:
     return prompt
 
 
-# --- Ollama-specific tool-calling framing -------------------------------------
-#
-# Ollama lacks native function calling, so we ask the model to emit a JSON
-# object with a `tool_calls` array. The framing below is a transport-level
-# adapter (it tells Ollama HOW to format its answer); the user-facing rules
-# come from build_mcp_system_prompt() and are reused verbatim.
 
 def build_ollama_tool_calling_prompt(
     user_message: str,
     tools: List[Dict],
     library_context: Optional[Dict] = None,
 ) -> str:
-    """Build the full Ollama prompt that asks the model to emit JSON tool_calls."""
     system_prompt = build_mcp_system_prompt(tools, library_context)
 
     examples = []
@@ -195,12 +165,6 @@ Request: "{user_message}"
 
 
 def build_intent_classifier_prompt(user_message: str) -> str:
-    """Tiny Stage-1 prompt: classify the request into PRIMARY intents + a filter flag.
-
-    Returned JSON shape: {"primaries": [<subset of PRIMARY_INTENTS>], "needs_filter": bool}.
-    A request may carry SEVERAL primaries (e.g. ["seed","text"]); a pure metadata
-    filter has no primary -> {"primaries": [], "needs_filter": true}.
-    """
     return f"""Classify a music request. Return ONLY JSON: {{"primaries": ["seed"|"text"|"knowledge", ...], "needs_filter": true|false}}.
 
 primaries (zero or more, the ways to FIND songs):
@@ -229,13 +193,6 @@ JSON:"""
 
 
 def build_tool_calls_schema(tools: List[Dict]) -> Dict:
-    """JSON Schema for the {tool_calls:[...]} envelope, shared by every transport.
-
-    Argument shapes are kept loose; ``tasks.ai.planner.validate_and_normalize_plan``
-    + ``tasks.ai.vocab`` are the source of truth for canonical values.
-    Long enums on argument fields slow GBNF/JSON-schema decoding without adding
-    safety we don't already have in Python.
-    """
     tool_names = [t['name'] for t in tools if t.get('name')]
     return {
         "type": "object",
@@ -260,17 +217,8 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
     }
 
 
-# --- Free-text MCP prompts (brainstorm) ---------------------------------------
 
 def build_ai_brainstorm_prompt(user_request: str) -> str:
-    """Build the grounded-recipe prompt for the knowledge_lookup tool.
-
-    The model does NOT know the library, so it must not name songs. It translates
-    the request into a search RECIPE -- metadata filters, "how it should sound"
-    descriptions (for audio similarity search), and a few seed artists -- which
-    the tool then runs against the real library and fuses. This trades the small
-    model's weak song recall for its strong understanding/categorisation.
-    """
     genres_line = ", ".join(config.STRATIFIED_GENRES)
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
     voices_line = ", ".join(config.VOICE_VOCAB)

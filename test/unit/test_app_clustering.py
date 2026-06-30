@@ -1,4 +1,3 @@
-"""Unit tests for app_clustering.py Flask blueprint"""
 
 import pytest
 from unittest.mock import Mock, patch

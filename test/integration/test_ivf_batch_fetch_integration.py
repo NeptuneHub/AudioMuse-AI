@@ -1,24 +1,3 @@
-"""Real-Postgres integration test for the cross-thread psycopg2 fix.
-
-Proves tasks.ivf_manager._fetch_details_map (driving _fetch_in_batches) returns
-a complete, correct map when the id list spans several BATCH_SIZE_DB_OPS chunks
-over a single real psycopg2 connection.
-
-The regression: the old code fanned the per-chunk fetches over a
-ThreadPoolExecutor that shared one connection. psycopg2 forbids concurrent use of
-a single connection across threads, so the multi-batch fetch could raise or
-return a partial/corrupt map. The sequential fix must read all chunks in one
-shot off the shared connection and return every requested id.
-
-Database selection mirrors test_app_endpoints_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL -- a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_ivf_batch_fetch_integration.py -m integration -s -v --tb=short
-"""
 import importlib.util
 import os
 import sys
@@ -47,7 +26,6 @@ _ROW_COUNT = 250
 
 
 def _load_ivf_manager():
-    """Load tasks.ivf_manager by file path, bypassing tasks/__init__ (pydub)."""
     mod_name = 'tasks.ivf_manager'
     if mod_name in sys.modules:
         return sys.modules[mod_name]
@@ -88,7 +66,6 @@ def pg_dsn():
 
 @pytest.fixture
 def batch_db(pg_dsn):
-    """One real connection with a freshly seeded 250-row score table."""
     conn = psycopg2.connect(pg_dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -113,8 +90,6 @@ class TestFetchDetailsMapRealDb:
         ivf = _load_ivf_manager()
         all_ids = [f"item-{i:04d}" for i in range(_ROW_COUNT)]
 
-        # > BATCH_SIZE_DB_OPS so the fetch spans at least 3 batches over the
-        # single shared connection -- the exact case the cross-thread bug broke.
         assert _ROW_COUNT > ivf.BATCH_SIZE_DB_OPS
         n_batches = (_ROW_COUNT + ivf.BATCH_SIZE_DB_OPS - 1) // ivf.BATCH_SIZE_DB_OPS
         assert n_batches >= 3
@@ -134,14 +109,12 @@ class TestFetchDetailsMapRealDb:
         all_ids = [f"item-{i:04d}" for i in range(_ROW_COUNT)]
         details = ivf._fetch_details_map(batch_db, all_ids, ivf.SCORE_DETAIL_COLUMNS)
 
-        # First, a mid-batch boundary id, and the last id all present + correct.
         assert details["item-0000"] == {"title": "Title 0", "author": "Author 0"}
         assert details["item-0100"] == {"title": "Title 100", "author": "Author 100"}
         assert details["item-0249"] == {"title": "Title 249", "author": "Author 249"}
 
     def test_partial_id_subset_spanning_batches(self, batch_db):
         ivf = _load_ivf_manager()
-        # 150 ids -> 2 batches; includes ids absent from the table (skipped).
         requested = [f"item-{i:04d}" for i in range(150)] + ["missing-a", "missing-b"]
         details = ivf._fetch_details_map(batch_db, requested, ivf.SCORE_DETAIL_COLUMNS)
 

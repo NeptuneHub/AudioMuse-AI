@@ -1,16 +1,3 @@
-"""Embedded PostgreSQL manager for the standalone Windows build (fallback).
-
-Used when ``pgserver`` has no Windows wheel. Manages a bundled relocatable
-PostgreSQL with ``initdb`` + ``pg_ctl``, exposing the same ``start`` /
-``ensure_running`` / ``stop`` surface that :mod:`windows.db_backend` routes to.
-
-The bundled server is relocatable: PostgreSQL on Windows derives its support-file
-paths from the running executable's location, so the tree works wherever the
-package is installed (``C:\\Program Files\\AudioMuse-AI\\_internal\\pgsql``).
-
-Unlike macOS/Linux, there are no Unix sockets on Windows -- PostgreSQL listens on
-TCP 127.0.0.1.
-"""
 
 import logging
 import os
@@ -25,7 +12,7 @@ from windows import paths
 logger = logging.getLogger("audiomuse.embedded_pg")
 
 _lock = threading.RLock()
-_running_proc = None  # the postgres.exe process handle
+_running_proc = None
 
 _READY_MARKER = "audiomuse_initialized"
 
@@ -54,13 +41,6 @@ def _initialized(data_dir):
 
 
 def _has_cluster_data(data_dir):
-    """True if data_dir holds an initialized PostgreSQL cluster (never auto-delete it).
-
-    Keyed on ``global/pg_control``: written at the END of initdb and required for
-    the server to start, so its presence proves a complete cluster with real data.
-    A half-built dir (interrupted initdb, no pg_control) holds no usable data and
-    is still cleared normally, so this guard never blocks first-run self-heal.
-    """
     return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
 
 
@@ -128,7 +108,6 @@ def start(data_dir, password):
             stderr=subprocess.STDOUT,
             text=True,
         )
-        # Wait for the server to be ready.
         for _ in range(60):
             result = subprocess.run(
                 [_bin("pg_isready"), "-h", "127.0.0.1", "-p", port, "-q"],

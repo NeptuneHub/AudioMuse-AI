@@ -1,12 +1,3 @@
-"""Direct unit matrix for ssrf_guard.validate_outbound_url (SSRF guard).
-
-The migration blueprint exercises this guard only indirectly. Here the
-allow/deny contract is pinned directly so it is a first-class, fast regression
-check: self-hosted servers on loopback / RFC1918 are allowed, while non-HTTP(S)
-schemes and link-local (incl. 169.254.169.254 metadata) / multicast / reserved
-/ unspecified addresses are rejected. socket.getaddrinfo is mocked so the
-result never depends on real DNS.
-"""
 import socket
 from unittest.mock import patch
 

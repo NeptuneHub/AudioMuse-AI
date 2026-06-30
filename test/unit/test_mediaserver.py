@@ -1,20 +1,10 @@
-"""Unit tests for mediaserver implementations
-
-Tests mock HTTP responses but verify real parsing, transformation, and error handling.
-If the response parsing or error handling changes, these tests will catch it.
-"""
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 import requests
 
 
-# =============================================================================
-# JELLYFIN TESTS
-# =============================================================================
 
 class TestJellyfinAuthHeader:
-    """Jellyfin 12.0 auth: Authorization: MediaBrowser scheme (legacy X-Emby-Token
-    is disabled by default on 12.0). Emby still uses X-Emby-Token."""
 
     def test_builds_authorization_header_from_token(self):
         import config
@@ -39,10 +29,8 @@ class TestJellyfinAuthHeader:
 
 
 class TestJellyfinSelectBestArtist:
-    """Test artist field prioritization logic - no mocking needed"""
 
     def test_prioritizes_artist_items_over_album_artist(self):
-        """ArtistItems should be preferred over AlbumArtist"""
         from tasks.mediaserver.jellyfin import _select_best_artist
 
         item = {
@@ -57,7 +45,6 @@ class TestJellyfinSelectBestArtist:
         assert artist_id == 'artist-123'
 
     def test_falls_back_to_artists_array(self):
-        """If no ArtistItems, use Artists array"""
         from tasks.mediaserver.jellyfin import _select_best_artist
 
         item = {
@@ -72,7 +59,6 @@ class TestJellyfinSelectBestArtist:
         assert artist_id is None
 
     def test_falls_back_to_album_artist(self):
-        """If no Artists, use AlbumArtist"""
         from tasks.mediaserver.jellyfin import _select_best_artist
 
         item = {
@@ -85,7 +71,6 @@ class TestJellyfinSelectBestArtist:
         assert artist_id is None
 
     def test_returns_unknown_when_no_artist_info(self):
-        """Returns 'Unknown Artist' when no artist info available"""
         from tasks.mediaserver.jellyfin import _select_best_artist
 
         item = {}
@@ -96,7 +81,6 @@ class TestJellyfinSelectBestArtist:
         assert artist_id is None
 
     def test_handles_empty_artist_items(self):
-        """Empty ArtistItems should fall back"""
         from tasks.mediaserver.jellyfin import _select_best_artist
 
         item = {
@@ -110,12 +94,10 @@ class TestJellyfinSelectBestArtist:
 
 
 class TestJellyfinResolveUser:
-    """Test user resolution with mocked HTTP"""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_resolves_username_to_id(self, mock_config, mock_get):
-        """Username should be resolved to User ID"""
         from tasks.mediaserver.jellyfin import resolve_user
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -131,14 +113,12 @@ class TestJellyfinResolveUser:
 
         assert result == 'user-id-456'
         mock_get.assert_called_once()
-        # Verify correct URL was called
         call_url = mock_get.call_args[0][0]
         assert '/Users' in call_url
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_identifier_if_no_match(self, mock_config, mock_get):
-        """If username not found, return original identifier (assumed to be ID)"""
         from tasks.mediaserver.jellyfin import resolve_user
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -156,7 +136,6 @@ class TestJellyfinResolveUser:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_handles_http_error(self, mock_config, mock_get):
-        """HTTP errors should return original identifier"""
         from tasks.mediaserver.jellyfin import resolve_user
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -164,17 +143,14 @@ class TestJellyfinResolveUser:
 
         result = resolve_user('some-user', 'token')
 
-        # Should return original identifier on error
         assert result == 'some-user'
 
 
 class TestJellyfinGetTracksFromAlbum:
-    """Test track fetching with artist enrichment - verifies exact behavior"""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_uses_correct_url_and_params(self, mock_config, mock_get):
-        """CRITICAL: Must use /Items with userId+ParentId (Jellyfin 12.0) - catches if URL changes"""
         from tasks.mediaserver.jellyfin import get_tracks_from_album
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -191,10 +167,8 @@ class TestJellyfinGetTracksFromAlbum:
         call_url = mock_get.call_args[0][0]
         call_params = mock_get.call_args[1].get('params', {})
 
-        # Verify exact URL (modern non-deprecated /Items endpoint; Jellyfin 12.0)
         assert call_url == 'http://jellyfin:8096/Items', \
             f"URL changed! Expected '/Items', got '{call_url}'"
-        # Verify required params
         assert call_params.get('userId') == 'user123', "userId param missing or wrong"
         assert call_params.get('ParentId') == 'album-xyz', "ParentId param missing or wrong"
         assert call_params.get('IncludeItemTypes') == 'Audio', "IncludeItemTypes param wrong"
@@ -202,7 +176,6 @@ class TestJellyfinGetTracksFromAlbum:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_enriches_tracks_with_artist_info(self, mock_config, mock_get):
-        """CRITICAL: Must add AlbumArtist and ArtistId fields - catches if enrichment changes"""
         from tasks.mediaserver.jellyfin import get_tracks_from_album
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -230,14 +203,11 @@ class TestJellyfinGetTracksFromAlbum:
         tracks = get_tracks_from_album('album123')
 
         assert len(tracks) == 2
-        # CRITICAL: Verify enrichment fields are added
         assert 'AlbumArtist' in tracks[0], "AlbumArtist field must be added"
         assert 'ArtistId' in tracks[0], "ArtistId field must be added"
-        # First track should use ArtistItems (priority)
         assert tracks[0]['AlbumArtist'] == 'Artist A', \
             "ArtistItems should be prioritized"
         assert tracks[0]['ArtistId'] == 'artist-a'
-        # Second track should fall back to AlbumArtist
         assert tracks[1]['AlbumArtist'] == 'Album Artist B', \
             "Should fall back to AlbumArtist when no ArtistItems"
         assert tracks[1]['ArtistId'] is None
@@ -245,7 +215,6 @@ class TestJellyfinGetTracksFromAlbum:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_empty_on_http_error(self, mock_config, mock_get):
-        """HTTP error should return empty list, not raise"""
         from tasks.mediaserver.jellyfin import get_tracks_from_album
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -260,7 +229,6 @@ class TestJellyfinGetTracksFromAlbum:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_handles_empty_items_response(self, mock_config, mock_get):
-        """Empty Items array should return empty list"""
         from tasks.mediaserver.jellyfin import get_tracks_from_album
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -278,12 +246,10 @@ class TestJellyfinGetTracksFromAlbum:
 
 
 class TestJellyfinGetAllPlaylists:
-    """Test playlist fetching - verifies exact URL and response parsing"""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_uses_correct_url_and_params(self, mock_config, mock_get):
-        """CRITICAL: Must use /Items with userId+IncludeItemTypes=Playlist (Jellyfin 12.0)"""
         from tasks.mediaserver.jellyfin import get_all_playlists
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -300,10 +266,8 @@ class TestJellyfinGetAllPlaylists:
         call_url = mock_get.call_args[0][0]
         call_params = mock_get.call_args[1].get('params', {})
 
-        # Verify exact URL (modern non-deprecated /Items endpoint; Jellyfin 12.0)
         assert call_url == 'http://jellyfin:8096/Items', \
             f"URL changed! Got '{call_url}'"
-        # Verify required params
         assert call_params.get('userId') == 'user123', "userId param missing or wrong"
         assert call_params.get('IncludeItemTypes') == 'Playlist', \
             "IncludeItemTypes must be 'Playlist'"
@@ -313,7 +277,6 @@ class TestJellyfinGetAllPlaylists:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_parses_items_array_from_response(self, mock_config, mock_get):
-        """CRITICAL: Must extract Items[] from response - catches if parsing changes"""
         from tasks.mediaserver.jellyfin import get_all_playlists
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -340,7 +303,6 @@ class TestJellyfinGetAllPlaylists:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_empty_on_error(self, mock_config, mock_get):
-        """Error should return empty list, not raise"""
         from tasks.mediaserver.jellyfin import get_all_playlists
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -354,7 +316,6 @@ class TestJellyfinGetAllPlaylists:
 
 
 class TestJellyfinGetPlaylistTrackIds:
-    """Test fetching a playlist's audio track item_ids (the 'Id' field, not PlaylistItemId)"""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
@@ -396,12 +357,10 @@ class TestJellyfinGetPlaylistTrackIds:
 
 
 class TestJellyfinDeletePlaylist:
-    """Test playlist deletion - verifies exact URL construction and HTTP method"""
 
     @patch('tasks.mediaserver.jellyfin.requests.delete')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_uses_correct_url_and_method(self, mock_config, mock_delete):
-        """CRITICAL: Must use DELETE method to /Items/{id} - catches if someone changes to POST"""
         from tasks.mediaserver.jellyfin import delete_playlist
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -414,19 +373,16 @@ class TestJellyfinDeletePlaylist:
         result = delete_playlist('playlist-123')
 
         assert result is True
-        # CRITICAL: Verify exact URL - will fail if path changes
         mock_delete.assert_called_once()
         call_url = mock_delete.call_args[0][0]
         assert call_url == 'http://jellyfin:8096/Items/playlist-123', \
             f"URL changed! Expected '/Items/playlist-123', got '{call_url}'"
-        # Verify headers are passed
         call_kwargs = mock_delete.call_args[1]
         assert call_kwargs.get('headers') == {'Authorization': 'MediaBrowser Token="test-token"'}
 
     @patch('tasks.mediaserver.jellyfin.requests.delete')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_false_on_http_error(self, mock_config, mock_delete):
-        """HTTP error returns False - catches if error handling changes"""
         from tasks.mediaserver.jellyfin import delete_playlist
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -440,7 +396,6 @@ class TestJellyfinDeletePlaylist:
     @patch('tasks.mediaserver.jellyfin.requests.delete')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_false_on_raise_for_status(self, mock_config, mock_delete):
-        """raise_for_status exception returns False - catches if error handling changes"""
         from tasks.mediaserver.jellyfin import delete_playlist
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -456,12 +411,10 @@ class TestJellyfinDeletePlaylist:
 
 
 class TestJellyfinGetLastPlayedTime:
-    """Test last played time extraction"""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_extracts_last_played_date(self, mock_config, mock_get):
-        """LastPlayedDate should be extracted from UserData"""
         from tasks.mediaserver.jellyfin import get_last_played_time
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -485,7 +438,6 @@ class TestJellyfinGetLastPlayedTime:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_returns_none_if_never_played(self, mock_config, mock_get):
-        """Returns None if no LastPlayedDate"""
         from tasks.mediaserver.jellyfin import get_last_played_time
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -504,15 +456,10 @@ class TestJellyfinGetLastPlayedTime:
         assert result is None
 
 
-# =============================================================================
-# NAVIDROME TESTS
-# =============================================================================
 
 class TestNavidromeCoerceToList:
-    """Test the Subsonic field normalizer used before iterating search results"""
 
     def test_single_dict_wrapped_in_list(self):
-        """A lone dict (Subsonic collapses single-element arrays) becomes a one-item list"""
         from tasks.mediaserver.navidrome import _coerce_to_list
 
         value = {'id': 'song-1', 'title': 'Track'}
@@ -536,13 +483,11 @@ class TestNavidromeCoerceToList:
         assert _coerce_to_list(value) is value
 
     def test_none_becomes_empty_list(self):
-        """An absent field (None) yields an empty list, not a [None]"""
         from tasks.mediaserver.navidrome import _coerce_to_list
 
         assert _coerce_to_list(None) == []
 
     def test_str_becomes_empty_list(self):
-        """A string is not iterable-as-records here; it must not be treated as one"""
         from tasks.mediaserver.navidrome import _coerce_to_list
 
         assert _coerce_to_list('song') == []
@@ -554,10 +499,8 @@ class TestNavidromeCoerceToList:
 
 
 class TestNavidromeSelectBestArtist:
-    """Test Navidrome artist field prioritization - no HTTP mocking needed"""
 
     def test_prioritizes_track_artist(self):
-        """Track artist should be preferred over album artist"""
         from tasks.mediaserver.navidrome import _select_best_artist
 
         song = {
@@ -573,7 +516,6 @@ class TestNavidromeSelectBestArtist:
         assert artist_id == 'track-artist-id'
 
     def test_falls_back_to_album_artist(self):
-        """Falls back to albumArtist if no artist field"""
         from tasks.mediaserver.navidrome import _select_best_artist
 
         song = {
@@ -587,7 +529,6 @@ class TestNavidromeSelectBestArtist:
         assert artist_id == 'album-artist-id'
 
     def test_returns_unknown_when_no_artist(self):
-        """Returns 'Unknown Artist' when no artist info"""
         from tasks.mediaserver.navidrome import _select_best_artist
 
         song = {'title': 'Some Song'}
@@ -599,11 +540,9 @@ class TestNavidromeSelectBestArtist:
 
 
 class TestNavidromeAuthParams:
-    """Test auth parameter generation"""
 
     @patch('tasks.mediaserver.navidrome.config')
     def test_generates_hex_encoded_password(self, mock_config):
-        """Password should be hex-encoded"""
         from tasks.mediaserver.navidrome import get_navidrome_auth_params
 
         mock_config.NAVIDROME_USER = 'testuser'
@@ -614,14 +553,12 @@ class TestNavidromeAuthParams:
 
         assert params['u'] == 'testuser'
         assert params['p'].startswith('enc:')
-        # Verify hex encoding
         hex_password = params['p'].replace('enc:', '')
         decoded = bytes.fromhex(hex_password).decode('utf-8')
         assert decoded == 'secret123'
 
     @patch('tasks.mediaserver.navidrome.config')
     def test_returns_empty_when_no_credentials(self, mock_config):
-        """Returns empty dict when credentials missing"""
         from tasks.mediaserver.navidrome import get_navidrome_auth_params
 
         mock_config.NAVIDROME_USER = ''
@@ -633,12 +570,10 @@ class TestNavidromeAuthParams:
 
 
 class TestNavidromeRequest:
-    """Test the core request helper - verifies URL construction and response parsing"""
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_constructs_correct_url_with_view_suffix(self, mock_config, mock_request):
-        """CRITICAL: URL must end with .view - Subsonic API requirement"""
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -655,9 +590,8 @@ class TestNavidromeRequest:
 
         _navidrome_request('getPlaylists')
 
-        # Verify exact URL format - catches if .view suffix is removed
         call_kwargs = mock_request.call_args
-        assert call_kwargs[0][0] == 'get'  # method
+        assert call_kwargs[0][0] == 'get'
         url = call_kwargs[0][1]
         assert url == 'http://navidrome:4533/rest/getPlaylists.view', \
             f"URL format changed! Expected '/rest/getPlaylists.view', got '{url}'"
@@ -665,7 +599,6 @@ class TestNavidromeRequest:
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_parses_subsonic_response_wrapper(self, mock_config, mock_request):
-        """CRITICAL: Must extract 'subsonic-response' key - catches if parsing changes"""
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -686,16 +619,13 @@ class TestNavidromeRequest:
 
         result = _navidrome_request('getPlaylists')
 
-        # Result should be the INNER object, not the wrapper
         assert result['status'] == 'ok'
         assert 'playlists' in result
-        # Make sure we don't return the wrapper
         assert 'subsonic-response' not in result
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_checks_status_field_for_failure(self, mock_config, mock_request):
-        """CRITICAL: Must check status=='failed' - catches if error detection changes"""
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -715,13 +645,11 @@ class TestNavidromeRequest:
 
         result = _navidrome_request('getPlaylists')
 
-        # MUST return None on API-level failure
         assert result is None, "Failed status should return None, not the response"
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_includes_auth_params_in_request(self, mock_config, mock_request):
-        """CRITICAL: Auth params must be in query string - catches if auth method changes"""
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -739,7 +667,6 @@ class TestNavidromeRequest:
         call_kwargs = mock_request.call_args[1]
         params = call_kwargs.get('params', {})
 
-        # Verify auth params are present
         assert params.get('u') == 'testuser', "Username not in params"
         assert params.get('p').startswith('enc:'), "Password not hex-encoded"
         assert params.get('f') == 'json', "Format must be json"
@@ -748,7 +675,6 @@ class TestNavidromeRequest:
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_returns_none_on_http_error(self, mock_config, mock_request):
-        """HTTP errors must return None - catches if error handling changes"""
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -764,8 +690,6 @@ class TestNavidromeRequest:
 
 
 class TestNavidromeAuthDetection:
-    """Wrong-credentials must be distinguishable from an empty library so the
-    analysis task can surface an auth error instead of '0 albums found'."""
 
     def _ok_config(self, mock_config):
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
@@ -829,9 +753,6 @@ class TestNavidromeAuthDetection:
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_request_ex_network_error_redacts_password(self, mock_config, mock_request):
-        # A transport error's str() carries the request URL, and the Subsonic
-        # password rides in the query string as p=enc:<hex>. The surfaced
-        # message must not leak it (it ends up in task status / the UI).
         from tasks.mediaserver.navidrome import _navidrome_request_ex
         self._ok_config(mock_config)
         leaky = (
@@ -850,9 +771,35 @@ class TestNavidromeAuthDetection:
 
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
+    def test_request_ex_network_error_does_not_leak_creds_to_logs(self, mock_config, mock_request):
+        # Guards against reverting logger.error -> logger.exception here: the
+        # exception traceback embeds the unredacted URL with auth params.
+        import logging
+        from tasks.mediaserver import navidrome
+        self._ok_config(mock_config)
+        leaky = (
+            "HTTPConnectionPool(host='navidrome', port=4533): Max retries exceeded "
+            "with url: /rest/search3.view?u=admin&p=enc:7365637265743132&v=1.16.1&f=json"
+        )
+        mock_request.side_effect = requests.exceptions.ConnectionError(leaky)
+
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        navidrome.logger.addHandler(handler)
+        try:
+            navidrome._navidrome_request_ex('search3')
+        finally:
+            navidrome.logger.removeHandler(handler)
+
+        fmt = logging.Formatter()
+        output = "\n".join(fmt.format(r) for r in records)
+        assert '7365637265743132' not in output, \
+            "Navidrome credentials leaked into logs (logger.exception dumped the traceback?)"
+
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
     def test_request_ex_handles_non_dict_json(self, mock_config, mock_request):
-        # A proxy error page or odd server can yield a JSON non-dict; calling
-        # .get() on it must not raise out of this boundary helper.
         from tasks.mediaserver.navidrome import _navidrome_request_ex
         self._ok_config(mock_config)
         mock_response = Mock()
@@ -900,11 +847,9 @@ class TestNavidromeAuthDetection:
 
 
 class TestNavidromeGetTracksFromAlbum:
-    """Test track fetching with parsing - verifies field transformations"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_calls_getAlbum_endpoint(self, mock_request):
-        """CRITICAL: Must use getAlbum endpoint - catches if API changes"""
         from tasks.mediaserver.navidrome import get_tracks_from_album
 
         mock_request.return_value = {
@@ -922,7 +867,6 @@ class TestNavidromeGetTracksFromAlbum:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_normalizes_field_names_to_capitalized(self, mock_request):
-        """CRITICAL: Must transform id->Id, title->Name - catches if normalization changes"""
         from tasks.mediaserver.navidrome import get_tracks_from_album
 
         mock_request.return_value = {
@@ -945,7 +889,6 @@ class TestNavidromeGetTracksFromAlbum:
         tracks = get_tracks_from_album('album123')
 
         assert len(tracks) == 1
-        # Verify EXACT field transformations - these are the contract
         assert 'Id' in tracks[0], "Missing 'Id' (capital I) - normalization broken"
         assert tracks[0]['Id'] == 'song1'
         assert 'Name' in tracks[0], "Missing 'Name' (capital N) - normalization broken"
@@ -957,7 +900,6 @@ class TestNavidromeGetTracksFromAlbum:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_artist_prioritization_applied(self, mock_request):
-        """CRITICAL: Track artist > album artist - catches if priority changes"""
         from tasks.mediaserver.navidrome import get_tracks_from_album
 
         mock_request.return_value = {
@@ -985,19 +927,16 @@ class TestNavidromeGetTracksFromAlbum:
 
         tracks = get_tracks_from_album('album123')
 
-        # First track: should use track artist (priority)
         assert tracks[0]['AlbumArtist'] == 'Track Artist', \
             "Track artist should be prioritized over album artist"
         assert tracks[0]['ArtistId'] == 'track-artist-id'
 
-        # Second track: should fall back to album artist
         assert tracks[1]['AlbumArtist'] == 'Album Artist Only', \
             "Should fall back to album artist when track artist missing"
         assert tracks[1]['ArtistId'] == 'album-only-id'
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_empty_on_missing_songs(self, mock_request):
-        """Returns empty list if no songs in album"""
         from tasks.mediaserver.navidrome import get_tracks_from_album
 
         mock_request.return_value = {
@@ -1011,7 +950,6 @@ class TestNavidromeGetTracksFromAlbum:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_empty_on_api_failure(self, mock_request):
-        """Returns empty list on API failure"""
         from tasks.mediaserver.navidrome import get_tracks_from_album
 
         mock_request.return_value = None
@@ -1022,9 +960,6 @@ class TestNavidromeGetTracksFromAlbum:
 
 
 class TestNavidromeGetTopPlayedSongsAlbumCap:
-    """Regression tests for issue #603: a single large album must not dominate
-    the sonic-fingerprint seed pool. SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM is a
-    hard maximum and must be honored regardless of the requested limit."""
 
     @staticmethod
     def _album_list_response(album_ids):
@@ -1038,8 +973,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_single_album_capped_even_with_large_limit(self, mock_config, mock_request, mock_get_tracks):
-        """A 100-track album with cap=2 must contribute at most 2 seeds, even
-        when limit//10 (the old floor) would have allowed 6."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
@@ -1055,7 +988,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_cap_honored_per_album_across_multiple_albums(self, mock_config, mock_request, mock_get_tracks):
-        """No album may contribute more than the configured cap to the pool."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
@@ -1075,8 +1007,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_fetches_enough_albums_to_reach_limit_under_tight_cap(self, mock_config, mock_request, mock_get_tracks):
-        """With a tight cap the album fetch size must scale so the pool can
-        still reach the requested limit."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 2
@@ -1093,8 +1023,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_final_selection_keeps_most_recently_played(self, mock_config, mock_request, mock_get_tracks):
-        """Step 3: from the capped pool, the most recently played tracks win.
-        Never-played tracks (no ``played``) fall to the bottom."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
@@ -1116,8 +1044,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_final_selection_falls_back_to_lastPlayed_field(self, mock_config, mock_request, mock_get_tracks):
-        """Non-OpenSubsonic servers expose recency as ``lastPlayed``; it must
-        still drive the ordering when ``played`` is absent."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 5
@@ -1136,8 +1062,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_never_played_songs_handled_without_error(self, mock_config, mock_request, mock_get_tracks):
-        """A pool where no track was ever played (no played/lastPlayed) must
-        sort and return cleanly instead of raising."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
@@ -1154,8 +1078,6 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_no_frequent_albums_returns_empty(self, mock_config, mock_request):
-        """An empty 'frequent' response (e.g. a fresh library) yields an empty
-        seed pool, not an error."""
         from tasks.mediaserver.navidrome import get_top_played_songs
 
         mock_config.SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = 3
@@ -1167,11 +1089,9 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
 
 
 class TestNavidromeGetAllPlaylists:
-    """Test playlist fetching and normalization - verifies exact response parsing"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_calls_getPlaylists_endpoint(self, mock_request):
-        """CRITICAL: Must call getPlaylists - catches if endpoint changes"""
         from tasks.mediaserver.navidrome import get_all_playlists
 
         mock_request.return_value = {
@@ -1185,7 +1105,6 @@ class TestNavidromeGetAllPlaylists:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_parses_nested_playlist_structure(self, mock_request):
-        """CRITICAL: Response is playlists.playlist[] - catches if parsing changes"""
         from tasks.mediaserver.navidrome import get_all_playlists
 
         mock_request.return_value = {
@@ -1201,16 +1120,13 @@ class TestNavidromeGetAllPlaylists:
         playlists = get_all_playlists()
 
         assert len(playlists) == 2
-        # Verify normalization to capital letters
         assert playlists[0]['Id'] == 'pl1', "Missing 'Id' normalization"
         assert playlists[0]['Name'] == 'Rock_automatic', "Missing 'Name' normalization"
-        # Original keys also preserved for compatibility
         assert playlists[0]['id'] == 'pl1', "Original 'id' should be preserved"
         assert playlists[0]['name'] == 'Rock_automatic', "Original 'name' should be preserved"
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_handles_missing_playlists_key(self, mock_request):
-        """Missing playlists key should return empty list"""
         from tasks.mediaserver.navidrome import get_all_playlists
 
         mock_request.return_value = {'status': 'ok'}
@@ -1221,7 +1137,6 @@ class TestNavidromeGetAllPlaylists:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_handles_missing_playlist_array(self, mock_request):
-        """Missing playlist array should return empty list"""
         from tasks.mediaserver.navidrome import get_all_playlists
 
         mock_request.return_value = {'status': 'ok', 'playlists': {}}
@@ -1232,7 +1147,6 @@ class TestNavidromeGetAllPlaylists:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_empty_on_failure(self, mock_request):
-        """Returns empty list on API failure"""
         from tasks.mediaserver.navidrome import get_all_playlists
 
         mock_request.return_value = None
@@ -1243,7 +1157,6 @@ class TestNavidromeGetAllPlaylists:
 
 
 class TestNavidromeGetPlaylistTrackIds:
-    """Test fetching a playlist's track item_ids via getPlaylist.entry[]"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_reads_entry_ids(self, mock_request):
@@ -1287,11 +1200,9 @@ class TestNavidromeGetPlaylistTrackIds:
 
 
 class TestNavidromeDeletePlaylist:
-    """Test playlist deletion - verifies exact endpoint and params"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_calls_correct_endpoint_with_id_param(self, mock_request):
-        """CRITICAL: Must call deletePlaylist with id param - catches if endpoint changes"""
         from tasks.mediaserver.navidrome import delete_playlist
 
         mock_request.return_value = {'status': 'ok'}
@@ -1301,32 +1212,25 @@ class TestNavidromeDeletePlaylist:
         assert result is True
         mock_request.assert_called_once()
         call_args = mock_request.call_args
-        # Verify exact endpoint name
         assert call_args[0][0] == 'deletePlaylist', \
             f"Endpoint changed! Expected 'deletePlaylist', got '{call_args[0][0]}'"
-        # Verify exact param structure
         assert call_args[0][1] == {'id': 'playlist-123'}, \
             f"Params changed! Expected {{'id': 'playlist-123'}}, got {call_args[0][1]}"
-        # Verify uses POST method
         assert call_args[1].get('method') == 'post', \
             "Method changed! Must be POST for deletePlaylist"
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_checks_status_ok_for_success(self, mock_request):
-        """CRITICAL: Must check status=='ok' - catches if success detection changes"""
         from tasks.mediaserver.navidrome import delete_playlist
 
-        # Return response without 'ok' status
         mock_request.return_value = {'status': 'something_else'}
 
         result = delete_playlist('playlist-123')
 
-        # Should return False because status is not 'ok'
         assert result is False
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_false_on_none_response(self, mock_request):
-        """None response (API failure) returns False"""
         from tasks.mediaserver.navidrome import delete_playlist
 
         mock_request.return_value = None
@@ -1337,11 +1241,9 @@ class TestNavidromeDeletePlaylist:
 
 
 class TestNavidromeGetPlaylistByName:
-    """Test playlist lookup by name"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_finds_playlist_by_exact_name(self, mock_request):
-        """Should find playlist with exact name match"""
         from tasks.mediaserver.navidrome import get_playlist_by_name
 
         mock_request.return_value = {
@@ -1363,7 +1265,6 @@ class TestNavidromeGetPlaylistByName:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_none_if_not_found(self, mock_request):
-        """Returns None if no matching playlist"""
         from tasks.mediaserver.navidrome import get_playlist_by_name
 
         mock_request.return_value = {
@@ -1381,11 +1282,9 @@ class TestNavidromeGetPlaylistByName:
 
 
 class TestNavidromeCreatePlaylist:
-    """Test playlist creation with batching"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_extracts_playlist_id_from_response(self, mock_request):
-        """Should extract playlist ID from creation response"""
         from tasks.mediaserver.navidrome import _create_playlist_batched
 
         mock_request.return_value = {
@@ -1401,12 +1300,11 @@ class TestNavidromeCreatePlaylist:
 
         assert result is not None
         assert result['id'] == 'new-pl-123'
-        assert result['Id'] == 'new-pl-123'  # Normalized key
+        assert result['Id'] == 'new-pl-123'
         assert result['Name'] == 'Test Playlist'
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_create_playlist_sets_public_after_creation(self, mock_request):
-        """Should call updatePlaylist(public=true) right after createPlaylist"""
         from tasks.mediaserver.navidrome import _create_playlist_batched
 
         mock_request.return_value = {
@@ -1416,13 +1314,11 @@ class TestNavidromeCreatePlaylist:
 
         _create_playlist_batched('Test Playlist', ['song1'])
 
-        # First call is createPlaylist
         first_call_args = mock_request.call_args_list[0][0]
         assert first_call_args[0] == 'createPlaylist'
         create_params = first_call_args[1]
         assert create_params.get('public') is None
 
-        # Second call is updatePlaylist(public=true)
         second_call_args = mock_request.call_args_list[1][0]
         assert second_call_args[0] == 'updatePlaylist'
         update_params = second_call_args[1]
@@ -1431,7 +1327,6 @@ class TestNavidromeCreatePlaylist:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_none_on_creation_failure(self, mock_request):
-        """Returns None when creation fails"""
         from tasks.mediaserver.navidrome import _create_playlist_batched
 
         mock_request.return_value = None
@@ -1442,10 +1337,9 @@ class TestNavidromeCreatePlaylist:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_handles_malformed_response(self, mock_request):
-        """Returns None on malformed response"""
         from tasks.mediaserver.navidrome import _create_playlist_batched
 
-        mock_request.return_value = {'status': 'ok'}  # Missing playlist key
+        mock_request.return_value = {'status': 'ok'}
 
         result = _create_playlist_batched('Test Playlist', ['song1'])
 
@@ -1453,11 +1347,9 @@ class TestNavidromeCreatePlaylist:
 
 
 class TestNavidromeGetLastPlayedTime:
-    """Test last played time extraction"""
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_extracts_last_played(self, mock_request):
-        """Should extract lastPlayed from song response"""
         from tasks.mediaserver.navidrome import get_last_played_time
 
         mock_request.return_value = {
@@ -1475,7 +1367,6 @@ class TestNavidromeGetLastPlayedTime:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_none_if_never_played(self, mock_request):
-        """Returns None if no lastPlayed field"""
         from tasks.mediaserver.navidrome import get_last_played_time
 
         mock_request.return_value = {
@@ -1492,15 +1383,13 @@ class TestNavidromeGetLastPlayedTime:
 
 
 class TestNavidromeGetRecentAlbums:
-    """Test recent albums parsing"""
 
     @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids')
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_normalizes_album_keys(self, mock_request, mock_folders):
-        """Albums should have Id and Name normalized"""
         from tasks.mediaserver.navidrome import get_recent_albums
 
-        mock_folders.return_value = None  # No folder filtering
+        mock_folders.return_value = None
         mock_request.return_value = {
             'status': 'ok',
             'albumList2': {
@@ -1520,10 +1409,9 @@ class TestNavidromeGetRecentAlbums:
     @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids')
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_empty_when_no_matching_folders(self, mock_request, mock_folders):
-        """Returns empty list when folder filter matches nothing"""
         from tasks.mediaserver.navidrome import get_recent_albums
 
-        mock_folders.return_value = set()  # Empty set = no matches
+        mock_folders.return_value = set()
 
         albums = get_recent_albums(10)
 
@@ -1532,25 +1420,10 @@ class TestNavidromeGetRecentAlbums:
 
 
 class TestNavidromeGetAllSongsApplyFilter:
-    """Migration probe path: dry-run must NOT apply ``config.MUSIC_LIBRARIES``
-    to the target server.
-
-    Bug: ``config.MUSIC_LIBRARIES`` holds the *source* provider's folder
-    names; applying it to the *target* during a migration probe filters
-    target tracks against names that don't exist on the target, returning
-    an empty set and zeroing out the dry-run result.
-
-    Fix: an explicit ``apply_filter`` flag on ``get_all_songs``. The
-    migration probe (``provider_probe.fetch_all_tracks``) passes
-    ``apply_filter=False``; live-provider scans default to ``True`` so the
-    user's saved selection is still honored. The flag's intent is visible
-    in code rather than implied from the presence of ``user_creds``.
-    """
 
     @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids')
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_apply_filter_false_skips_folder_lookup(self, mock_request, mock_filter):
-        """apply_filter=False must NOT call _get_target_music_folder_ids."""
         from tasks.mediaserver.navidrome import get_all_songs
 
         mock_request.return_value = {
@@ -1571,10 +1444,9 @@ class TestNavidromeGetAllSongsApplyFilter:
     @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids')
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_apply_filter_true_default_honors_filter(self, mock_request, mock_filter):
-        """apply_filter defaults to True, preserving live-provider semantics."""
         from tasks.mediaserver.navidrome import get_all_songs
 
-        mock_filter.return_value = set()  # Filter active but no matches.
+        mock_filter.return_value = set()
         mock_request.return_value = {'status': 'ok'}
 
         songs = get_all_songs(user_creds=None)
@@ -1585,10 +1457,6 @@ class TestNavidromeGetAllSongsApplyFilter:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_get_target_music_folder_ids_forwards_user_creds(self, mock_request):
-        """The folder-lookup helper must thread user_creds through to the API
-        request so callers (e.g. live-provider code paths receiving session
-        creds) hit ``getMusicFolders`` with valid auth instead of falling back
-        to empty config globals."""
         from tasks.mediaserver.navidrome import _get_target_music_folder_ids
 
         with patch('tasks.mediaserver.navidrome.config') as mock_config:
@@ -1604,16 +1472,11 @@ class TestNavidromeGetAllSongsApplyFilter:
         assert mock_request.call_args.kwargs.get('user_creds') == creds
 
 
-# =============================================================================
-# DISPATCHER TESTS (minimal - just validation logic)
-# =============================================================================
 
 class TestDispatcherValidation:
-    """Test input validation in dispatcher functions"""
 
     @patch('tasks.mediaserver.config')
     def test_get_playlist_by_name_requires_name(self, mock_config):
-        """Empty name should raise ValueError"""
         from tasks.mediaserver import get_playlist_by_name
 
         with pytest.raises(ValueError, match="Playlist name is required"):
@@ -1624,7 +1487,6 @@ class TestDispatcherValidation:
 
     @patch('tasks.mediaserver.config')
     def test_create_playlist_requires_name_and_ids(self, mock_config):
-        """Empty name or IDs should raise ValueError"""
         from tasks.mediaserver import create_playlist
 
         with pytest.raises(ValueError, match="Playlist name is required"):
@@ -1638,7 +1500,6 @@ class TestDispatcherValidation:
 
     @patch('tasks.mediaserver.config')
     def test_create_instant_playlist_requires_name_and_ids(self, mock_config):
-        """Empty name or IDs should raise ValueError"""
         from tasks.mediaserver import create_instant_playlist
 
         with pytest.raises(ValueError, match="Playlist name is required"):
@@ -1649,28 +1510,25 @@ class TestDispatcherValidation:
 
 
 class TestDispatcherAutomaticPlaylistDeletion:
-    """Test the filtering logic in delete_automatic_playlists"""
 
     @patch('tasks.mediaserver.config')
     @patch('tasks.mediaserver.jellyfin.get_all_playlists')
     @patch('tasks.mediaserver.jellyfin.delete_playlist')
     def test_only_deletes_automatic_suffix_playlists(self, mock_delete, mock_get, mock_config):
-        """Only playlists ending with '_automatic' should be deleted"""
         from tasks.mediaserver import delete_automatic_playlists
 
         mock_config.MEDIASERVER_TYPE = 'jellyfin'
         mock_get.return_value = [
             {'Id': '1', 'Name': 'Rock_automatic'},
-            {'Id': '2', 'Name': 'automatic_Rock'},  # Wrong position
+            {'Id': '2', 'Name': 'automatic_Rock'},
             {'Id': '3', 'Name': 'My Favorites'},
             {'Id': '4', 'Name': 'Jazz_automatic'},
-            {'Id': '5', 'Name': 'Pop_Automatic'},  # Case sensitive - won't match
+            {'Id': '5', 'Name': 'Pop_Automatic'},
         ]
         mock_delete.return_value = True
 
         delete_automatic_playlists()
 
-        # Only playlists 1 and 4 should be deleted
         assert mock_delete.call_count == 2
         deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
         assert '1' in deleted_ids
@@ -1682,13 +1540,12 @@ class TestDispatcherAutomaticPlaylistDeletion:
     @patch('tasks.mediaserver.navidrome.get_all_playlists')
     @patch('tasks.mediaserver.navidrome.delete_playlist')
     def test_handles_both_id_and_Id_keys(self, mock_delete, mock_get, mock_config):
-        """Should handle both 'id' and 'Id' keys (Navidrome uses lowercase)"""
         from tasks.mediaserver import delete_automatic_playlists
 
         mock_config.MEDIASERVER_TYPE = 'navidrome'
         mock_get.return_value = [
-            {'id': 'nav1', 'Name': 'Test_automatic'},  # lowercase id
-            {'Id': 'nav2', 'Name': 'Other_automatic'},  # uppercase Id
+            {'id': 'nav1', 'Name': 'Test_automatic'},
+            {'Id': 'nav2', 'Name': 'Other_automatic'},
         ]
         mock_delete.return_value = True
 
@@ -1700,33 +1557,22 @@ class TestDispatcherAutomaticPlaylistDeletion:
         assert 'nav2' in deleted_ids
 
 
-# =============================================================================
-# LYRION TESTS
-# =============================================================================
 
 class TestLyrionSelectBestArtist:
-    """Test Lyrion artist field prioritization - tests the inline logic in get_tracks_from_album"""
 
     def test_artist_priority_order(self):
-        """Verify priority: trackartist > contributor > artist > albumartist > band"""
-        # The logic is inline in get_tracks_from_album, so we test expected behavior
-        # by examining the field priority order from the code
 
-        # Priority fields in order (from examining tasks/mediaserver/lyrion.py):
         priority_fields = ['trackartist', 'contributor', 'artist', 'albumartist', 'band']
 
-        # This verifies our understanding of the priority
         assert priority_fields[0] == 'trackartist', "trackartist should be highest priority"
         assert priority_fields[-1] == 'band', "band should be lowest priority"
 
 
 class TestLyrionJsonRpcRequest:
-    """Test the core JSON-RPC request helper"""
 
     @patch('tasks.mediaserver.lyrion.requests.Session')
     @patch('tasks.mediaserver.lyrion.config')
     def test_constructs_correct_url(self, mock_config, mock_session_class):
-        """CRITICAL: URL must be /jsonrpc.js - catches if endpoint changes"""
         from tasks.mediaserver.lyrion import _jsonrpc_request
 
         mock_config.LYRION_URL = 'http://lyrion:9000'
@@ -1744,7 +1590,6 @@ class TestLyrionJsonRpcRequest:
 
         _jsonrpc_request('albums', [0, 10])
 
-        # Verify exact URL
         call_args = mock_session.post.call_args
         assert call_args[0][0] == 'http://lyrion:9000/jsonrpc.js', \
             f"URL changed! Expected '/jsonrpc.js', got '{call_args[0][0]}'"
@@ -1752,7 +1597,6 @@ class TestLyrionJsonRpcRequest:
     @patch('tasks.mediaserver.lyrion.requests.Session')
     @patch('tasks.mediaserver.lyrion.config')
     def test_uses_slim_request_method(self, mock_config, mock_session_class):
-        """CRITICAL: Must use 'slim.request' method - catches if protocol changes"""
         from tasks.mediaserver.lyrion import _jsonrpc_request
 
         mock_config.LYRION_URL = 'http://lyrion:9000'
@@ -1770,7 +1614,6 @@ class TestLyrionJsonRpcRequest:
 
         _jsonrpc_request('albums', [0, 10], player_id='player1')
 
-        # Verify JSON-RPC payload structure
         call_kwargs = mock_session.post.call_args[1]
         payload = call_kwargs.get('json', {})
 
@@ -1784,7 +1627,6 @@ class TestLyrionJsonRpcRequest:
     @patch('tasks.mediaserver.lyrion.requests.Session')
     @patch('tasks.mediaserver.lyrion.config')
     def test_extracts_result_field(self, mock_config, mock_session_class):
-        """CRITICAL: Must return 'result' field - catches if response parsing changes"""
         from tasks.mediaserver.lyrion import _jsonrpc_request
 
         mock_config.LYRION_URL = 'http://lyrion:9000'
@@ -1806,14 +1648,12 @@ class TestLyrionJsonRpcRequest:
 
         result = _jsonrpc_request('albums', [0, 10])
 
-        # Must return the 'result' content, not the whole response
         assert 'albums_loop' in result
-        assert 'id' not in result  # Should not include top-level id
+        assert 'id' not in result
 
     @patch('tasks.mediaserver.lyrion.requests.Session')
     @patch('tasks.mediaserver.lyrion.config')
     def test_raises_on_jsonrpc_error(self, mock_config, mock_session_class):
-        """CRITICAL: Must raise LyrionAPIError on error response"""
         from tasks.mediaserver.lyrion import _jsonrpc_request, LyrionAPIError
 
         mock_config.LYRION_URL = 'http://lyrion:9000'
@@ -1836,11 +1676,9 @@ class TestLyrionJsonRpcRequest:
 
 
 class TestLyrionGetAllPlaylists:
-    """Test playlist fetching and normalization"""
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_calls_playlists_command(self, mock_request):
-        """CRITICAL: Must call 'playlists' command - catches if API changes"""
         from tasks.mediaserver.lyrion import get_all_playlists
 
         mock_request.return_value = {'playlists_loop': []}
@@ -1853,7 +1691,6 @@ class TestLyrionGetAllPlaylists:
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_normalizes_playlist_keys(self, mock_request):
-        """CRITICAL: Must normalize 'id'->Id, 'playlist'->Name"""
         from tasks.mediaserver.lyrion import get_all_playlists
 
         mock_request.return_value = {
@@ -1866,13 +1703,11 @@ class TestLyrionGetAllPlaylists:
         playlists = get_all_playlists()
 
         assert len(playlists) == 2
-        # Verify normalization - Lyrion uses 'playlist' for name, not 'name'
         assert playlists[0]['Id'] == 'pl1', "Missing 'Id' normalization"
         assert playlists[0]['Name'] == 'Rock_automatic', "Missing 'Name' normalization from 'playlist' field"
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_returns_empty_on_no_playlists(self, mock_request):
-        """Returns empty list when no playlists_loop"""
         from tasks.mediaserver.lyrion import get_all_playlists
 
         mock_request.return_value = {}
@@ -1883,11 +1718,9 @@ class TestLyrionGetAllPlaylists:
 
 
 class TestLyrionDeletePlaylist:
-    """Test playlist deletion"""
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_calls_playlists_delete_command(self, mock_request):
-        """CRITICAL: Must use 'playlists' with 'delete' param - catches if API changes"""
         from tasks.mediaserver.lyrion import delete_playlist
 
         mock_request.return_value = {'count': 1}
@@ -1895,17 +1728,14 @@ class TestLyrionDeletePlaylist:
         delete_playlist('playlist-123')
 
         call_args = mock_request.call_args
-        # First arg is command
         assert call_args[0][0] == 'playlists', \
             f"Command changed! Expected 'playlists', got '{call_args[0][0]}'"
-        # Second arg is params list
         params = call_args[0][1]
         assert 'delete' in params, "Must include 'delete' param"
         assert 'playlist_id:playlist-123' in params, "Must include playlist_id param"
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_returns_true_on_success(self, mock_request):
-        """Returns True when deletion succeeds"""
         from tasks.mediaserver.lyrion import delete_playlist
 
         mock_request.return_value = {'count': 1}
@@ -1916,7 +1746,6 @@ class TestLyrionDeletePlaylist:
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_returns_false_on_failure(self, mock_request):
-        """Returns False when deletion fails"""
         from tasks.mediaserver.lyrion import delete_playlist
 
         mock_request.return_value = None
@@ -1927,11 +1756,9 @@ class TestLyrionDeletePlaylist:
 
 
 class TestLyrionGetTracksFromAlbum:
-    """Test track fetching from albums"""
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_calls_titles_command_with_album_id(self, mock_request):
-        """CRITICAL: Must use 'titles' with album_id filter"""
         from tasks.mediaserver.lyrion import get_tracks_from_album
 
         mock_request.return_value = {'titles_loop': []}
@@ -1947,7 +1774,6 @@ class TestLyrionGetTracksFromAlbum:
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_normalizes_track_fields(self, mock_request):
-        """CRITICAL: Must normalize id->Id, title->Name, add AlbumArtist"""
         from tasks.mediaserver.lyrion import get_tracks_from_album
 
         mock_request.return_value = {
@@ -1955,7 +1781,7 @@ class TestLyrionGetTracksFromAlbum:
                 {
                     'id': 'track1',
                     'title': 'Song One',
-                    'trackartist': 'Track Artist',  # Highest priority
+                    'trackartist': 'Track Artist',
                     'artist': 'Album Artist',
                     'url': '/music/song1.mp3'
                 }
@@ -1973,7 +1799,6 @@ class TestLyrionGetTracksFromAlbum:
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_artist_fallback_priority(self, mock_request):
-        """Tests artist field fallback: trackartist > contributor > artist > albumartist"""
         from tasks.mediaserver.lyrion import get_tracks_from_album
 
         mock_request.return_value = {
@@ -1981,7 +1806,7 @@ class TestLyrionGetTracksFromAlbum:
                 {
                     'id': 'track1',
                     'title': 'No TrackArtist',
-                    'contributor': 'Contributor Name',  # Should use this
+                    'contributor': 'Contributor Name',
                     'artist': 'Artist Name',
                     'albumartist': 'Album Artist'
                 },
@@ -1995,17 +1820,14 @@ class TestLyrionGetTracksFromAlbum:
 
         tracks = get_tracks_from_album('album-123')
 
-        # First track: should use contributor (2nd priority after trackartist)
         assert tracks[0]['AlbumArtist'] == 'Contributor Name', \
             "Should fall back to contributor when no trackartist"
 
-        # Second track: should use albumartist
         assert tracks[1]['AlbumArtist'] == 'Album Artist Only', \
             "Should fall back to albumartist when no higher priority fields"
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_filters_spotify_tracks(self, mock_request):
-        """CRITICAL: Spotify tracks should be filtered out"""
         from tasks.mediaserver.lyrion import get_tracks_from_album
 
         mock_request.return_value = {
@@ -2018,7 +1840,6 @@ class TestLyrionGetTracksFromAlbum:
 
         tracks = get_tracks_from_album('album-123')
 
-        # Should filter out Spotify track
         assert len(tracks) == 2
         track_ids = [t['Id'] for t in tracks]
         assert 'local1' in track_ids
@@ -2026,15 +1847,10 @@ class TestLyrionGetTracksFromAlbum:
         assert 'spotify1' not in track_ids, "Spotify tracks should be filtered"
 
 
-# =============================================================================
-# EMBY TESTS
-# =============================================================================
 
 class TestEmbySelectBestArtist:
-    """Test Emby artist field prioritization - same as Jellyfin"""
 
     def test_prioritizes_artist_items_over_album_artist(self):
-        """ArtistItems should be preferred over AlbumArtist"""
         from tasks.mediaserver.emby import _select_best_artist
 
         item = {
@@ -2049,7 +1865,6 @@ class TestEmbySelectBestArtist:
         assert artist_id == 'artist-123'
 
     def test_falls_back_to_artists_array(self):
-        """If no ArtistItems, use Artists array"""
         from tasks.mediaserver.emby import _select_best_artist
 
         item = {
@@ -2064,7 +1879,6 @@ class TestEmbySelectBestArtist:
         assert artist_id is None
 
     def test_falls_back_to_album_artist(self):
-        """If no Artists, use AlbumArtist"""
         from tasks.mediaserver.emby import _select_best_artist
 
         item = {
@@ -2077,7 +1891,6 @@ class TestEmbySelectBestArtist:
         assert artist_id is None
 
     def test_returns_unknown_when_no_artist_info(self):
-        """Returns 'Unknown Artist' when no artist info available"""
         from tasks.mediaserver.emby import _select_best_artist
 
         item = {}
@@ -2089,12 +1902,10 @@ class TestEmbySelectBestArtist:
 
 
 class TestEmbyGetAllPlaylists:
-    """Test playlist fetching - verifies URL and response parsing"""
 
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_uses_correct_url_with_emby_prefix(self, mock_config, mock_get):
-        """CRITICAL: URL must include /emby/ prefix - catches if path changes"""
         from tasks.mediaserver.emby import get_all_playlists
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2116,7 +1927,6 @@ class TestEmbyGetAllPlaylists:
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_includes_playlist_item_type(self, mock_config, mock_get):
-        """CRITICAL: Must filter by IncludeItemTypes=Playlist"""
         from tasks.mediaserver.emby import get_all_playlists
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2137,7 +1947,6 @@ class TestEmbyGetAllPlaylists:
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_parses_items_array(self, mock_config, mock_get):
-        """CRITICAL: Must extract Items[] from response"""
         from tasks.mediaserver.emby import get_all_playlists
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2162,12 +1971,10 @@ class TestEmbyGetAllPlaylists:
 
 
 class TestEmbyDeletePlaylist:
-    """Test playlist deletion - Emby uses different endpoint than Jellyfin!"""
 
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')
     def test_uses_items_delete_endpoint(self, mock_config, mock_post):
-        """CRITICAL: Emby uses /Items/Delete with POST, not DELETE to /Items/{id}"""
         from tasks.mediaserver.emby import delete_playlist
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2181,14 +1988,12 @@ class TestEmbyDeletePlaylist:
 
         assert result is True
         call_url = mock_post.call_args[0][0]
-        # CRITICAL: Emby uses /Items/Delete endpoint, not /Items/{id}
         assert call_url == 'http://emby:8096/emby/Items/Delete', \
             f"Emby deletion URL changed! Expected '/emby/Items/Delete', got '{call_url}'"
 
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')
     def test_passes_id_as_query_param(self, mock_config, mock_post):
-        """CRITICAL: Playlist ID must be in 'Ids' query param"""
         from tasks.mediaserver.emby import delete_playlist
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2207,7 +2012,6 @@ class TestEmbyDeletePlaylist:
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')
     def test_returns_false_on_error(self, mock_config, mock_post):
-        """HTTP error returns False"""
         from tasks.mediaserver.emby import delete_playlist
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2220,12 +2024,10 @@ class TestEmbyDeletePlaylist:
 
 
 class TestEmbyGetTracksFromAlbum:
-    """Test track fetching with artist enrichment"""
 
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_uses_emby_url_prefix(self, mock_config, mock_get):
-        """CRITICAL: URL must include /emby/ prefix"""
         from tasks.mediaserver.emby import get_tracks_from_album
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2245,7 +2047,6 @@ class TestEmbyGetTracksFromAlbum:
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_enriches_tracks_with_artist(self, mock_config, mock_get):
-        """CRITICAL: Must add AlbumArtist and ArtistId fields"""
         from tasks.mediaserver.emby import get_tracks_from_album
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2276,7 +2077,6 @@ class TestEmbyGetTracksFromAlbum:
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
     def test_handles_standalone_track_pseudo_albums(self, mock_config, mock_get):
-        """CRITICAL: Must handle standalone_ prefix for pseudo-albums"""
         from tasks.mediaserver.emby import get_tracks_from_album
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2292,22 +2092,18 @@ class TestEmbyGetTracksFromAlbum:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        # Call with pseudo-album ID
         get_tracks_from_album('standalone_real-track-id')
 
-        # Should fetch the track directly, not list children
         call_url = mock_get.call_args[0][0]
         assert 'real-track-id' in call_url, "Should extract real track ID from pseudo-album"
         assert 'standalone_' not in call_url, "Should NOT include 'standalone_' prefix in API call"
 
 
 class TestEmbyCreatePlaylist:
-    """Test playlist creation - Emby uses query params, not JSON body!"""
 
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')
     def test_uses_query_params_not_json_body(self, mock_config, mock_post):
-        """CRITICAL: Emby expects query params, not JSON body"""
         from tasks.mediaserver.emby import create_playlist
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2322,20 +2118,17 @@ class TestEmbyCreatePlaylist:
         create_playlist('Test Playlist', ['track1', 'track2'])
 
         call_url = mock_post.call_args[0][0]
-        # URL should contain query params
         assert 'Name=' in call_url, "Name must be in query string"
         assert 'Ids=' in call_url, "Ids must be in query string"
         assert 'UserId=' in call_url, "UserId must be in query string"
         assert 'MediaType=Audio' in call_url, "MediaType must be Audio"
 
-        # Should NOT have json body
         call_kwargs = mock_post.call_args[1]
         assert 'json' not in call_kwargs, "Emby should NOT receive JSON body"
 
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')
     def test_url_encodes_playlist_name(self, mock_config, mock_post):
-        """Playlist names with special chars must be URL encoded"""
         from tasks.mediaserver.emby import create_playlist
 
         mock_config.EMBY_URL = 'http://emby:8096'
@@ -2350,19 +2143,9 @@ class TestEmbyCreatePlaylist:
         create_playlist('Rock & Roll Mix', ['track1'])
 
         call_url = mock_post.call_args[0][0]
-        # & should be encoded
         assert 'Rock%20%26%20Roll' in call_url or 'Rock+%26+Roll' in call_url or 'Rock%20&%20Roll' not in call_url
 
 
-# =============================================================================
-# list_libraries — provider-specific helpers used by the setup wizard and
-# migration assistant to populate the "music libraries" checkbox list.
-# Each test pins that (a) the function returns every music library the server
-# reports, without applying the MUSIC_LIBRARIES filter, and (b) user_creds is
-# forwarded so the migration assistant can probe a target without mutating
-# `config` globals (same discipline that commit b426682 established for
-# Navidrome's `get_all_songs`).
-# =============================================================================
 
 class TestJellyfinListLibraries:
     @patch('tasks.mediaserver.jellyfin.requests.get')
@@ -2393,7 +2176,6 @@ class TestJellyfinListLibraries:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_forwards_user_creds_to_url_and_token(self, mock_config, mock_get):
-        """Migration target probe must use session creds, not config globals."""
         from tasks.mediaserver.jellyfin import list_libraries
 
         mock_config.JELLYFIN_URL = 'http://SHOULD-NOT-BE-USED:0000'
@@ -2466,11 +2248,6 @@ class TestEmbyListLibraries:
 class TestNavidromeListLibraries:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_returns_every_folder_without_reading_music_libraries(self, mock_req):
-        """
-        Does NOT call _get_target_music_folder_ids (which would read
-        config.MUSIC_LIBRARIES and break when the filter is set for the source
-        provider but doesn't apply to the target). Returns every folder.
-        """
         from tasks.mediaserver.navidrome import list_libraries
 
         mock_req.return_value = {
@@ -2488,7 +2265,6 @@ class TestNavidromeListLibraries:
             {'id': '1', 'name': 'Main'},
             {'id': '2', 'name': 'Podcasts'},
         ]
-        # Verify the single getMusicFolders call — no _get_target_music_folder_ids path
         mock_req.assert_called_once()
         args, kwargs = mock_req.call_args
         assert args[0] == 'getMusicFolders'
@@ -2496,8 +2272,6 @@ class TestNavidromeListLibraries:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_handles_single_dict_response(self, mock_req):
-        """Some Subsonic-compatible servers return a single dict (not a list)
-        when only one folder exists. The function must coerce to a list."""
         from tasks.mediaserver.navidrome import list_libraries
 
         mock_req.return_value = {
@@ -2512,11 +2286,6 @@ class TestNavidromeListLibraries:
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_forwards_user_creds_to_getmusicfolders(self, mock_req):
-        """
-        Migration-target path: user_creds must reach _navidrome_request so the
-        request uses the session's URL/username/password rather than
-        config.NAVIDROME_* (which are empty for a target that isn't live yet).
-        """
         from tasks.mediaserver.navidrome import list_libraries
 
         mock_req.return_value = {'musicFolders': {'musicFolder': []}}
@@ -2548,15 +2317,11 @@ class TestLyrionListLibraries:
             {'id': '11', 'name': 'Audiobooks'},
         ]
         args, kwargs = mock_rpc.call_args
-        # The CLI command is the singular ``musicfolder``. The plural
-        # ``musicfolders`` variant drops the connection on Lyrion 9.0.x.
         assert args[0] == 'musicfolder'
         assert kwargs.get('user_creds') is None
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_handles_lyrion_9_x_filename_field(self, mock_rpc):
-        """Lyrion 9.0.x returns folder entries with ``filename`` (not ``name``).
-        Older versions used ``name`` / ``folder``. Accept all three."""
         from tasks.mediaserver.lyrion import list_libraries
 
         mock_rpc.return_value = {
@@ -2576,11 +2341,6 @@ class TestLyrionListLibraries:
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
     def test_prefers_path_over_name_when_available(self, mock_rpc):
-        """Lyrion's scan-time filter (_get_target_paths_for_filtering) does a
-        substring match against album file URLs, so when the server reports
-        a real path we persist it (more deterministic match). Otherwise we
-        fall back to the folder display name (which Lyrion treats as a path
-        substring at scan time on standard layouts)."""
         from tasks.mediaserver.lyrion import list_libraries
 
         mock_rpc.return_value = {
@@ -2596,7 +2356,7 @@ class TestLyrionListLibraries:
         assert result == [
             {'id': '10', 'name': '/srv/music'},
             {'id': '11', 'name': '/srv/audiobooks'},
-            {'id': '12', 'name': 'NoPath'},  # falls back when path absent
+            {'id': '12', 'name': 'NoPath'},
         ]
 
     @patch('tasks.mediaserver.lyrion._jsonrpc_request')
@@ -2613,12 +2373,8 @@ class TestLyrionListLibraries:
         assert kwargs.get('user_creds') == creds
 
 
-# =============================================================================
-# create_or_replace_playlist (cron sonic_fingerprint upsert) — issue #336
-# =============================================================================
 
 class TestNavidromeCreateOrReplacePlaylist:
-    """Navidrome upsert: create when missing, clear+add when existing (preserve ID)."""
 
     @patch('tasks.mediaserver.navidrome._create_playlist_batched')
     @patch('tasks.mediaserver.navidrome.get_playlist_by_name')
@@ -2640,7 +2396,6 @@ class TestNavidromeCreateOrReplacePlaylist:
         from tasks.mediaserver.navidrome import create_or_replace_playlist
 
         mock_get.return_value = {'id': 'pl-existing', 'name': 'SF'}
-        # 1st call: getPlaylist returns 3 songs. 2nd+: updatePlaylist returns ok.
         mock_request.side_effect = [
             {'playlist': {'id': 'pl-existing', 'songCount': 3}},
             {'status': 'ok'},
@@ -2649,21 +2404,17 @@ class TestNavidromeCreateOrReplacePlaylist:
 
         result = create_or_replace_playlist('SF', ['new1', 'new2'])
 
-        # getPlaylist was called once
         first = mock_request.call_args_list[0]
         assert first[0][0] == 'getPlaylist'
         assert first[0][1] == {'id': 'pl-existing'}
 
-        # updatePlaylist removed indices in DESCENDING order [2, 1, 0]
         second = mock_request.call_args_list[1]
         assert second[0][0] == 'updatePlaylist'
         assert second[0][1]['playlistId'] == 'pl-existing'
         assert second[0][1]['songIndexToRemove'] == [2, 1, 0]
 
-        # Adds happened on the same playlist id
         mock_add.assert_called_once_with('pl-existing', ['new1', 'new2'], user_creds=None)
 
-        # Returned dict carries the existing ID
         assert result['Id'] == 'pl-existing'
 
     @patch('tasks.mediaserver.navidrome._add_to_playlist')
@@ -2675,13 +2426,12 @@ class TestNavidromeCreateOrReplacePlaylist:
         mock_get.return_value = {'id': 'pl-100', 'name': 'SF'}
         mock_request.side_effect = [
             {'playlist': {'id': 'pl-100', 'songCount': 100}},
-            {'status': 'ok'}, {'status': 'ok'}, {'status': 'ok'},  # 3 update batches
+            {'status': 'ok'}, {'status': 'ok'}, {'status': 'ok'},
         ]
         mock_add.return_value = True
 
         create_or_replace_playlist('SF', ['x'])
 
-        # getPlaylist + 3 updatePlaylist batches (40+40+20)
         assert len(mock_request.call_args_list) == 4
         update_calls = mock_request.call_args_list[1:]
         assert len(update_calls[0][0][1]['songIndexToRemove']) == 40
@@ -2703,7 +2453,6 @@ class TestNavidromeCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.get_playlist_by_name')
     def test_returns_none_when_add_fails_after_clear(self, mock_get, mock_request, mock_add):
-        """If clear succeeds but add fails, return None so the cron handler doesn't log success."""
         from tasks.mediaserver.navidrome import create_or_replace_playlist
 
         mock_get.return_value = {'id': 'pl-1', 'name': 'SF'}
@@ -2719,7 +2468,6 @@ class TestNavidromeCreateOrReplacePlaylist:
 
 
 class TestJellyfinCreateOrReplacePlaylist:
-    """Jellyfin upsert via /Playlists/{Id}/Items POST/DELETE/GET."""
 
     @patch('tasks.mediaserver.jellyfin.requests')
     @patch('tasks.mediaserver.jellyfin.get_playlist_by_name')
@@ -2738,7 +2486,6 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         result = create_or_replace_playlist('SF', ['s1', 's2'])
 
-        # Single POST to /Playlists with the create body
         assert mock_requests.post.call_count == 1
         post_call = mock_requests.post.call_args
         assert post_call[0][0] == 'http://jf/Playlists'
@@ -2756,7 +2503,6 @@ class TestJellyfinCreateOrReplacePlaylist:
         mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
         mock_get.return_value = {'Id': 'pl-existing', 'Name': 'SF'}
 
-        # GET items returns two entries with PlaylistItemId
         get_resp = MagicMock()
         get_resp.json.return_value = {'Items': [
             {'Id': 'song1', 'PlaylistItemId': 'entry-a'},
@@ -2768,20 +2514,16 @@ class TestJellyfinCreateOrReplacePlaylist:
 
         result = create_or_replace_playlist('SF', ['new1', 'new2'])
 
-        # GET on /Playlists/pl-existing/Items
         assert mock_requests.get.call_args[0][0] == 'http://jf/Playlists/pl-existing/Items'
-        # DELETE with entryIds
         assert mock_requests.delete.call_count == 1
         del_call = mock_requests.delete.call_args
         assert del_call[0][0] == 'http://jf/Playlists/pl-existing/Items'
         assert del_call[1]['params']['entryIds'] == 'entry-a,entry-b'
-        # POST adds new ids
         assert mock_requests.post.call_count == 1
         post_call = mock_requests.post.call_args
         assert post_call[0][0] == 'http://jf/Playlists/pl-existing/Items'
         assert post_call[1]['params']['ids'] == 'new1,new2'
         assert post_call[1]['params']['userId'] == 'admin-user'
-        # Same ID preserved
         assert result['Id'] == 'pl-existing'
 
     @patch('tasks.mediaserver.jellyfin.get_playlist_by_name')
@@ -2801,7 +2543,6 @@ class TestJellyfinCreateOrReplacePlaylist:
     def test_returns_none_when_add_fails_after_clear(
         self, mock_config, mock_get, mock_get_entries, mock_remove, mock_add
     ):
-        """If clear succeeds but add fails, return None instead of misreporting success."""
         from tasks.mediaserver.jellyfin import create_or_replace_playlist
 
         mock_config.JELLYFIN_URL = 'http://jf'
@@ -2825,8 +2566,6 @@ class TestJellyfinCreateOrReplacePlaylist:
     def test_falls_back_to_recreate_when_remove_fails(
         self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
     ):
-        """Jellyfin <10.11 + API token rejects DELETE /Playlists/{Id}/Items (jellyfin#13476).
-        When that happens, delete the whole playlist and recreate. Id will change."""
         from tasks.mediaserver.jellyfin import create_or_replace_playlist
 
         mock_config.JELLYFIN_URL = 'http://jf'
@@ -2853,7 +2592,6 @@ class TestJellyfinCreateOrReplacePlaylist:
     def test_fallback_returns_none_when_delete_playlist_fails(
         self, mock_config, mock_get, mock_get_entries, mock_remove, mock_delete, mock_create
     ):
-        """If the fallback delete itself fails, don't try to recreate — bail out."""
         from tasks.mediaserver.jellyfin import create_or_replace_playlist
 
         mock_config.JELLYFIN_URL = 'http://jf'
@@ -2871,7 +2609,6 @@ class TestJellyfinCreateOrReplacePlaylist:
 
 
 class TestEmbyCreateOrReplacePlaylist:
-    """Emby upsert under /emby/ prefix with uppercase params."""
 
     @patch('tasks.mediaserver.emby.requests')
     @patch('tasks.mediaserver.emby.get_playlist_by_name')
@@ -2891,8 +2628,6 @@ class TestEmbyCreateOrReplacePlaylist:
         mock_requests.get.return_value = get_resp
         mock_requests.delete.return_value = MagicMock()
         mock_requests.post.return_value = MagicMock()
-        # quote helper used in create branch — make it a simple passthrough so
-        # other tests in this class remain compatible if they hit it
         mock_requests.utils.quote.side_effect = lambda s: s
 
         result = create_or_replace_playlist('SF', ['n1'])
@@ -2928,7 +2663,6 @@ class TestEmbyCreateOrReplacePlaylist:
 
 
 class TestLyrionCreateOrReplacePlaylist:
-    """Lyrion upsert: deletes existing then creates fresh (ID may change — known limitation)."""
 
     @patch('tasks.mediaserver.lyrion._create_playlist_batched')
     @patch('tasks.mediaserver.lyrion.delete_playlist')
@@ -2964,7 +2698,6 @@ class TestLyrionCreateOrReplacePlaylist:
     @patch('tasks.mediaserver.lyrion.delete_playlist')
     @patch('tasks.mediaserver.lyrion.get_playlist_by_name')
     def test_aborts_when_delete_fails(self, mock_get, mock_delete, mock_create):
-        """If delete fails, return None instead of creating a duplicate playlist."""
         from tasks.mediaserver.lyrion import create_or_replace_playlist
 
         mock_get.return_value = {'Id': 99, 'Name': 'SF'}
@@ -2977,7 +2710,6 @@ class TestLyrionCreateOrReplacePlaylist:
 
 
 class TestDispatcherCreateOrReplacePlaylist:
-    """Validation + per-provider dispatching for create_or_replace_playlist."""
 
     @patch('tasks.mediaserver.config')
     def test_requires_name_and_ids(self, mock_config):
@@ -3048,23 +2780,9 @@ class TestDispatcherCreateOrReplacePlaylist:
         mock_provider.assert_called_once()
 
 
-# =============================================================================
-# Issue #523: get_all_songs must paginate AND fail loudly on a page error.
-#
-# A single unpaginated request for a large library times out on Jellyfin
-# 10.11.x (the reported bug). Pagination fixes that. But the error path matters
-# just as much: get_all_songs feeds the migration probe
-# (provider_probe.fetch_all_tracks) -> provider_migration_matcher.match_tracks,
-# where every score row NOT present in the returned list becomes "unmatched"
-# and is deleted as an orphan by the migration execute step. A silently
-# truncated (`break`) or silently empty (`return []`) result on a mid-scan
-# timeout would look like a successful migration while destroying real analysis
-# data. The contract is therefore: return ALL songs, or raise.
-# =============================================================================
 
 
 def _audio_page(n_items, start=0):
-    """Build a mock Jellyfin/Emby ``/Items`` response holding ``n_items`` rows."""
     resp = Mock()
     resp.raise_for_status = Mock()
     resp.json.return_value = {
@@ -3075,25 +2793,21 @@ def _audio_page(n_items, start=0):
 
 
 class TestJellyfinGetAllSongsPagination:
-    """Jellyfin get_all_songs: paginate, and raise rather than truncate."""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_paginates_until_short_page(self, mock_config, mock_get):
-        """A full page (== limit) triggers another request; a short page stops it."""
         from tasks.mediaserver.jellyfin import get_all_songs
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
         mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="token"'}
-        # Page 1 full (500) -> continue; page 2 short (3) -> stop.
         mock_get.side_effect = [_audio_page(500), _audio_page(3, start=500)]
 
         songs = get_all_songs()
 
         assert len(songs) == 503
         assert mock_get.call_count == 2
-        # Page 2 must advance StartIndex by the page size.
         page2_params = mock_get.call_args_list[1].kwargs['params']
         assert page2_params['StartIndex'] == 500
         assert page2_params['Limit'] == 500
@@ -3101,13 +2815,11 @@ class TestJellyfinGetAllSongsPagination:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_raises_on_midscan_failure_instead_of_truncating(self, mock_config, mock_get):
-        """A timeout on a later page must propagate, NOT return the partial list."""
         from tasks.mediaserver.jellyfin import get_all_songs
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
         mock_config.JELLYFIN_USER_ID = 'user123'
         mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="token"'}
-        # Page 1 succeeds (full -> would continue); page 2 times out.
         mock_get.side_effect = [
             _audio_page(500),
             requests.exceptions.ReadTimeout("read timed out"),
@@ -3119,7 +2831,6 @@ class TestJellyfinGetAllSongsPagination:
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')
     def test_empty_library_returns_empty_without_raising(self, mock_config, mock_get):
-        """A genuinely empty library (first page empty) returns [], does not raise."""
         from tasks.mediaserver.jellyfin import get_all_songs
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
@@ -3131,8 +2842,6 @@ class TestJellyfinGetAllSongsPagination:
 
 
 class TestEmbyGetAllSongsRaisesOnFailure:
-    """Emby is already paginated (limit=1000); on a page error it must raise,
-    not return the partial list it had accumulated."""
 
     @patch('tasks.mediaserver.emby.requests.get')
     @patch('tasks.mediaserver.emby.config')
@@ -3142,7 +2851,6 @@ class TestEmbyGetAllSongsRaisesOnFailure:
         mock_config.EMBY_URL = 'http://emby:8096'
         mock_config.EMBY_USER_ID = 'user123'
         mock_config.HEADERS = {'X-Emby-Token': 'token'}
-        # Page 1 full (1000 -> would continue); page 2 times out.
         mock_get.side_effect = [
             _audio_page(1000),
             requests.exceptions.ReadTimeout("read timed out"),
@@ -3165,11 +2873,10 @@ class TestEmbyGetAllSongsRaisesOnFailure:
 
 
 class _WrapperError(Exception):
-    """Dedicated test exception for wrapping a cause in is_auth_error tests."""
+    pass
 
 
 def _make_http_error(status_code, message='error'):
-    """Build a requests.HTTPError carrying a response with the given status."""
     resp = Mock()
     resp.status_code = status_code
     err = requests.exceptions.HTTPError(message)
@@ -3178,8 +2885,6 @@ def _make_http_error(status_code, message='error'):
 
 
 class TestIsAuthError:
-    """Shared helper that lets every provider flag a credentials failure the
-    same way, so a zero-album scan surfaces as an auth error not a silent OK."""
 
     def test_detects_401_response(self):
         from tasks.mediaserver.helper import is_auth_error
@@ -3213,8 +2918,6 @@ class TestIsAuthError:
 
 
 class TestProviderTestConnectionAuth:
-    """test_connection must report auth_failed=True on wrong credentials for
-    every provider, matching the Navidrome behavior."""
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
     @patch('tasks.mediaserver.jellyfin.config')

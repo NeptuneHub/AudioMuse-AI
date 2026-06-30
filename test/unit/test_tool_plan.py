@@ -1,4 +1,3 @@
-"""Unit tests for the single-pass plan validation + vocab normalization layer."""
 import importlib
 import sys
 import types

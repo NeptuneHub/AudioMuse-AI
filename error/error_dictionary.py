@@ -1,22 +1,3 @@
-"""Central registry of AudioMuse-AI error codes, classes and default messages.
-
-This module is pure data: it imports nothing from the rest of the application so
-it stays cheap to import and trivial to unit test. Every error surfaced to a user
-is identified by a numeric code that maps here to a short generic class label and a
-human-readable default message. Call sites pick the code (and may append a more
-specific one-line message) when they raise or record an error.
-
-Numeric ranges:
-    1000-1099  Configuration / Setup
-    1100-1199  Music Server Connection
-    2000-2099  Analysis / Model
-    3000-3099  Index / IVF
-    4000-4099  Database
-    4100-4199  Backup / Restore
-    5000-5099  Lyrics / Translation
-    6000-6099  Task Operations (clustering, cleaning, collection)
-    9000-9999  Generic / Unknown
-"""
 
 ERR_CONFIG_INVALID = 1001
 ERR_CONFIG_MEDIASERVER_CREDENTIALS = 1002
@@ -162,12 +143,10 @@ ERROR_REGISTRY = {
 
 
 def get_error_class(code):
-    """Return the generic class label for a code, falling back to Unknown Error."""
     entry = ERROR_REGISTRY.get(code) or ERROR_REGISTRY[UNKNOWN_ERROR_CODE]
     return entry["error_class"]
 
 
 def get_default_message(code):
-    """Return the default message for a code, falling back to Unknown Error."""
     entry = ERROR_REGISTRY.get(code) or ERROR_REGISTRY[UNKNOWN_ERROR_CODE]
     return entry["default_message"]

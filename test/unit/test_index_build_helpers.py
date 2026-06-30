@@ -1,18 +1,3 @@
-# test/unit/test_index_build_helpers.py
-"""
-Unit tests for tasks/index_build_helpers.py
-
-Covers the centralized helpers used by every IVF index builder:
-- stream_embeddings_to_buffer: side-connection streaming into a pre-allocated
-  numpy buffer; identifier validation; NULL/wrong-dim skipping; buffer
-  growth when the COUNT hint under-estimates due to concurrent writes.
-- store_ivf_index_segmented: single-row vs segmented persistence,
-  identifier validation, empty-bytes guard.
-- build_id_map / _split_bytes / _resolve_ivf_space / _validate_sql_identifier.
-
-The helper module is loaded via importlib so this file does not pull in
-tasks/__init__.py (which imports librosa).
-"""
 
 import importlib.util
 import json
@@ -27,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 
 def _load_helpers():
-    """Load tasks.index_build_helpers without going through tasks/__init__.py."""
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
@@ -51,7 +35,6 @@ _helpers = _load_helpers()
 
 
 class TestValidateSqlIdentifier:
-    """Strict identifier guard for table / column / cursor / index names."""
 
     def test_accepts_bare_identifiers(self):
         for ok in ("embedding", "lyrics_embedding", "axis_vector",
@@ -146,10 +129,8 @@ class TestReassembleSegmentedIdMap:
 
 
 class TestRewriteSegmentedIdMap:
-    """rewrite_segmented_id_map reassembles, rewrites, then re-splits in place."""
 
     class _FakeCursor:
-        """Minimal psycopg2-cursor stand-in backed by an ``{index_name: json}`` dict."""
 
         def __init__(self, store):
             self.store = store
@@ -392,16 +373,8 @@ class TestStoreIVFIndexSegmented:
 
 
 class TestStreamEmbeddingsToBuffer:
-    """Mock psycopg2.connect to drive the streaming code without a real DB."""
 
     def _fake_conn(self, count_value, rows):
-        """Return a MagicMock that mimics psycopg2 for one stream call.
-
-        - cursor() with no args yields a context-manager cursor whose
-          ``fetchone`` returns (count_value,) for the COUNT(*) query.
-        - cursor(name=...) yields a context-manager iterable cursor that
-          yields the supplied (item_id, blob) tuples.
-        """
         count_cur = MagicMock()
         count_cur.__enter__ = MagicMock(return_value=count_cur)
         count_cur.__exit__ = MagicMock(return_value=False)
@@ -497,10 +470,6 @@ class TestStreamEmbeddingsToBuffer:
             np.testing.assert_array_equal(buf[i], expected)
 
     def test_closes_side_connection_on_iteration_failure(self):
-        """Subclassing MagicMock + ``def __iter__`` does NOT actually
-        override iteration -- MagicMock's metaclass re-binds dunder methods
-        at instance construction. The documented way to force ``iter(m)``
-        to raise is ``m.__iter__.side_effect = ExceptionInstance``."""
         boom_cur = MagicMock()
         boom_cur.__enter__ = MagicMock(return_value=boom_cur)
         boom_cur.__exit__ = MagicMock(return_value=False)
@@ -530,14 +499,6 @@ class TestStreamEmbeddingsToBuffer:
         conn.close.assert_called_once()
 
     def test_side_session_is_read_only_and_transactional(self):
-        """The side connection must be readonly AND must NOT be autocommit.
-
-        autocommit=True + a named cursor in psycopg2 does NOT give snapshot
-        consistency: fetches can see different snapshots, defeating the
-        "concurrent writes can't corrupt this read" guarantee. Stay in the
-        default transactional mode so the named cursor inherits the
-        implicit BEGIN's snapshot for its entire lifetime.
-        """
         conn = self._fake_conn(count_value=0, rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             _helpers.stream_embeddings_to_buffer(
@@ -553,12 +514,6 @@ class TestStreamEmbeddingsToBuffer:
 
 
 class TestIterEmbeddingBatches:
-    """Tests for the batched-streaming generator.
-
-    Same snapshot-safe pattern as TestStreamEmbeddingsToBuffer but the
-    generator does NOT issue a separate COUNT(*); only the named cursor is
-    used. The mock here only needs to support the streaming cursor.
-    """
 
     def _fake_conn(self, rows):
         stream_cur = MagicMock()
@@ -656,7 +611,6 @@ class TestIterEmbeddingBatches:
         assert total_rows == 4
 
     def test_each_batch_is_a_fresh_buffer_not_a_view(self):
-        """If batches shared memory, mutating one would corrupt the next."""
         rng = np.random.default_rng(3)
         vecs = [rng.standard_normal(4).astype(np.float32) for _ in range(4)]
         rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]

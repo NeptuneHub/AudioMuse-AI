@@ -1,19 +1,3 @@
-"""TCP control server for the standalone Windows supervisor.
-
-Replaces the Unix-domain-socket ``native-build/macos/control_ipc.py`` on Windows, where
-``AF_UNIX`` is not available. The protocol is identical (JSON line -> response),
-just the transport is TCP on localhost.
-
-The web UI's "save config -> restart workers" flow publishes to Redis;
-``restart_listener`` (a supervised child) receives it and calls
-``restart_manager``, which -- on the standalone builds -- sends a single line of
-JSON (``{"action": ..., "services": [...]}``) to this server instead of shelling
-out to ``supervisorctl``. The supervisor applies the same start/stop/restart
-semantics to its managed processes.
-
-Also serves a minimal HTTP endpoint at ``/status`` and ``/stop`` for the
-``AudioMuse-AI.exe status`` and ``AudioMuse-AI.exe stop`` CLI commands.
-"""
 
 import json
 import logging
@@ -61,7 +45,6 @@ class ControlServer:
                 data = conn.recv(4096).strip()
                 text = data.decode("utf-8", errors="replace")
 
-                # Minimal HTTP handling for status/stop CLI commands.
                 if text.startswith("GET /status"):
                     state = self._supervisor.state() if self._supervisor else "unknown"
                     conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{state}".encode())
@@ -72,7 +55,6 @@ class ControlServer:
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nstopping")
                     return
 
-                # JSON control protocol (same as native-build/macos/control_ipc.py).
                 request = json.loads(text)
                 ok = bool(self._dispatch(request.get("action", ""), request.get("services", [])))
                 conn.sendall(b"ok" if ok else b"error")

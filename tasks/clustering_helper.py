@@ -1,4 +1,3 @@
-# tasks/clustering_helper.py
 
 import json
 import random
@@ -6,9 +5,7 @@ import logging
 import time
 import numpy as np
 from collections import defaultdict
-# time, re, and cdist imports moved to clustering_postprocessing.py
 
-# Sklearn imports
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans, DBSCAN, SpectralClustering
 from sklearn.decomposition import PCA
@@ -17,7 +14,6 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_har
 
 logger = logging.getLogger(__name__)
 
-# GPU clustering support (optional)
 try:
     from .clustering_gpu import get_clustering_model, get_pca_model
     GPU_CLUSTERING_AVAILABLE = True
@@ -25,7 +21,6 @@ except ImportError:
     GPU_CLUSTERING_AVAILABLE = False
     logger.debug("GPU clustering module not available, using CPU only")
 
-# RQ imports for safe result fetching
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
@@ -39,20 +34,15 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DI
                     USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS)
 from .commons import score_vector
 
-# Import AI naming for playlist helpers
 from tasks.ai.api import get_ai_playlist_name
 from tasks.ai.prompts import creative_prompt_template
 
-# Low-level DB / queue primitives, imported directly rather than via the
-# app_helper facade (keeps this helper decoupled from the blueprint layer).
 from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
 from taskqueue import redis_conn
 
 
-# --- Playlist Naming & Shuffling Helpers ---
 
 def _shuffle_playlist_songs(songs, playlist_name):
-    """Fisher-Yates shuffle a list of song tuples; log the result."""
     final_songs = songs.copy()
     n = len(final_songs)
     if n <= 1:
@@ -71,7 +61,6 @@ def _shuffle_playlist_songs(songs, playlist_name):
 
 
 def _assign_playlist_chunks(final_songs, max_songs, base_name, final_playlists):
-    """Chunk oversized playlists or store the list as-is."""
     if max_songs > 0 and len(final_songs) > max_songs:
         chunks = [final_songs[i:i + max_songs] for i in range(0, len(final_songs), max_songs)]
         for idx, chunk in enumerate(chunks, 1):
@@ -83,7 +72,6 @@ def _assign_playlist_chunks(final_songs, max_songs, base_name, final_playlists):
 def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
                           ollama_url, ollama_model, openai_url, openai_model, openai_key,
                           gemini_key, gemini_model, mistral_key, mistral_model):
-    """Attempt AI naming; return the original name on failure."""
     ai_config = {
         'provider': ai_provider,
         'ollama_url': ollama_url, 'ollama_model': ollama_model,
@@ -103,7 +91,6 @@ def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
     return original_name
 
 
-# --- Main Orchestrator for a Single Iteration ---
 
 def _perform_single_clustering_iteration(
     run_idx, item_ids_for_subset,
@@ -112,33 +99,25 @@ def _perform_single_clustering_iteration(
     max_songs_per_cluster, log_prefix,
     elite_solutions_params_list, exploitation_probability, mutation_config,
     score_weights, enable_clustering_embeddings):
-    """
-    Orchestrates a single evolutionary run of the clustering process.
-    This function is now a high-level coordinator.
-    """
     try:
-        # Local import to prevent circular dependency
         from flask_app import app
 
         if not item_ids_for_subset:
             logger.warning(f"{log_prefix} Iteration {run_idx}: Received empty item ID subset. Skipping.")
             return {"fitness_score": -1.0}
 
-        # 1. Prepare Data: Fetch full track data and create feature vectors
         with app.app_context():
             valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
                 item_ids_for_subset, active_mood_labels, enable_clustering_embeddings, log_prefix, run_idx
             )
         if valid_tracks is None:
-             return {"fitness_score": -1.0} # Error already logged in helper
+             return {"fitness_score": -1.0}
 
-        # 2. Prepare data for clustering (embeddings or features) and scale it
         data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, enable_clustering_embeddings)
         if data_to_cluster is None:
             logger.error(f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed.")
             return {"fitness_score": -1.0}
 
-        # 3. Generate Parameters: Use evolutionary approach (mutate elite or explore)
         params = _generate_evolutionary_parameters(
             elite_solutions_params_list, exploitation_probability, mutation_config,
             clustering_method, data_to_cluster, pca_params_ranges,
@@ -146,26 +125,22 @@ def _perform_single_clustering_iteration(
             log_prefix, run_idx
         )
 
-        # 4. Apply PCA if specified by the generated parameters
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
-            # Use GPU PCA if available and enabled
             if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
                 pca_model = get_pca_model(n_components=params['pca_config']['components'], use_gpu=True)
             else:
                 pca_model = PCA(n_components=params['pca_config']['components'])
 
             data_after_pca = pca_model.fit_transform(data_to_cluster)
-            params['pca_config']['components'] = pca_model.n_components_ # Update with actual components
+            params['pca_config']['components'] = pca_model.n_components_
 
-        # 5. Apply the chosen clustering model
         labels, cluster_centers_map, model = _apply_clustering_model(
             data_after_pca, params['clustering_method_config'], log_prefix, run_idx
         )
-        if labels is None: # Clustering failed
+        if labels is None:
             return {"fitness_score": -1.0}
 
-        # 6. Format results and calculate fitness score
         return _format_and_score_iteration_result(
             labels, valid_tracks, X_feat_orig, data_after_pca,
             cluster_centers_map, model, pca_model, scaler, active_mood_labels,
@@ -176,13 +151,11 @@ def _perform_single_clustering_iteration(
         logger.error(f"{log_prefix} Iteration {run_idx} failed critically", exc_info=True)
         raise
 
-# --- Step 1: Data Preparation ---
 
 def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx):
-    """Fetches track data, creates feature/embedding vectors, and ensures alignment."""
 
     logger.info(f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}")
-    rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids) # These functions are now imported locally
+    rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
     valid_tracks, X_feat_orig_list, X_embed_raw_list = [], [], []
     for row_data in (dict(r) for r in rows if r):
         try:
@@ -203,7 +176,6 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
     return valid_tracks, np.array(X_feat_orig_list), np.array(X_embed_raw_list) if use_embeddings else None
 
 def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
-    """Selects the data source for clustering (features or embeddings) and scales it."""
     data_source = X_embed if use_embeddings else X_feat
     if data_source is None or data_source.shape[0] == 0:
         return None, None
@@ -211,10 +183,8 @@ def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
     scaled_data = scaler.fit_transform(data_source)
     return scaled_data, scaler
 
-# --- Step 2: Evolutionary Parameter Generation ---
 
 def _mutate_param(value, min_val, max_val, delta, is_float=False):
-    """Applies a random mutation to a single parameter value."""
     if is_float:
         mutation = random.uniform(-delta, delta)
         new_value = value + mutation
@@ -226,14 +196,12 @@ def _mutate_param(value, min_val, max_val, delta, is_float=False):
     return int(new_value) if not is_float else new_value
 
 def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, method, data, *args):
-    """Decides to explore (random params) or exploit (mutate elite params)."""
     if elites and random.random() < exploitation_prob:
         chosen_elite = random.choice(elites)
         return _mutate_parameters(chosen_elite, mutation_cfg, method, data, *args)
     return _generate_random_parameters(method, data, *args)
 
 def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
-    """Generates a completely new set of random parameters for clustering."""
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
@@ -277,7 +245,6 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
     return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
 
 def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
-    """Takes an elite parameter set and applies small random changes."""
     elite_pca_cfg = elite_params['pca_config']
     elite_method_cfg = elite_params['clustering_method_config']
 
@@ -317,15 +284,12 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
 
     return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
 
-# --- Step 3 & 4: Apply Models ---
 
 def _apply_clustering_model(data, method_config, log_prefix, run_idx):
-    """Initializes and fits the specified clustering model (with optional GPU acceleration)."""
     method = method_config['method']
     params = method_config['params']
     model = None
     try:
-        # Validate parameters before creating model
         if method == 'kmeans':
             if params.get('n_clusters', 0) < 2:
                 return None, None, None
@@ -336,7 +300,6 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
             if params.get('n_clusters', 0) < 2 or params['n_clusters'] >= data.shape[0]:
                 return None, None, None
 
-        # Use GPU clustering if enabled and available
         use_gpu = USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE
 
         if use_gpu:
@@ -348,7 +311,6 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                 logger.warning(f"{log_prefix} GPU clustering failed, falling back to CPU: {e}")
                 use_gpu = False
 
-        # Use CPU clustering (either by choice or as fallback)
         if not use_gpu:
             if method == 'kmeans':
                 model = KMeans(n_clusters=params['n_clusters'], init='k-means++', n_init=10)
@@ -378,13 +340,12 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
 
             labels = model.fit_predict(data)
 
-        # Extract cluster centers
         centers = {}
         if hasattr(model, 'cluster_centers_') and model.cluster_centers_ is not None:
             centers = {i: center for i, center in enumerate(model.cluster_centers_)}
         elif hasattr(model, 'means_') and model.means_ is not None:
             centers = {i: mean for i, mean in enumerate(model.means_)}
-        else: # Fallback for DBSCAN and Spectral
+        else:
             unique_labels = set(labels)
             if -1 in unique_labels:
                 unique_labels.remove(-1)
@@ -400,10 +361,6 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
         return None, None, None
 
 def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
-    """
-    When clustering on embeddings, this calculates a representative centroid
-    in the original feature space for naming and analysis.
-    """
     cluster_indices = np.where(labels == label_id)[0]
     if len(cluster_indices) == 0:
         return None
@@ -412,20 +369,14 @@ def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
     feature_centroid = np.mean(feature_vectors_in_cluster, axis=0)
     return feature_centroid
 
-# --- Step 5 & 6: Formatting and Scoring ---
 
 def _format_and_score_iteration_result(
     labels, valid_tracks, X_feat_orig, data_for_metrics,
     centers, model, pca, scaler, active_moods,
     params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix):
-    """
-    Packages all results from the iteration into a dictionary and calculates the final fitness score.
-    This version includes the advanced filtering and scoring logic.
-    """
     if labels is None:
         return {"fitness_score": -1.0}
 
-    # --- 1. Filter clusters to create final playlists ---
     raw_distances = np.full(len(valid_tracks), np.inf)
     if len(set(labels) - {-1}) > 0:
         for label_id in set(labels):
@@ -450,15 +401,12 @@ def _format_and_score_iteration_result(
         if not cluster_tracks_info: continue
 
         cluster_tracks_info.sort(key=lambda x: x["distance"])
-        # Track per-artist counts using a normalized author key. Treat MAX_SONGS_PER_ARTIST <= 0
-        # or None as DISABLED (no cap), consistent with other modules (path_manager/ivf_manager).
         count_per_artist = defaultdict(int)
         selected_tracks_for_playlist = []
         for t_item_info in cluster_tracks_info:
             author = t_item_info["row"].get("author")
             author_norm = (author or "").strip().lower()
 
-            # If MAX_SONGS_PER_ARTIST is not configured or <= 0, disable per-artist cap.
             if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
                 allowed_by_artist = True
             else:
@@ -475,9 +423,7 @@ def _format_and_score_iteration_result(
             item_id_val, title_val, author_val = t_item_info_final["row"]["item_id"], t_item_info_final["row"]["title"], t_item_info_final["row"]["author"]
             filtered_clusters[cid].append((item_id_val, title_val, author_val))
 
-    # --- 2. Format final playlists and centroids ---
     named_playlists, playlist_centroids = {}, {}
-    # *** NEW: Map final playlist names to their centroid vectors for Top-N selection ***
     playlist_to_centroid_vector_map = {}
     unique_predominant_mood_scores = {}
     unique_predominant_other_feature_scores = {}
@@ -485,7 +431,7 @@ def _format_and_score_iteration_result(
 
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
-            center_vec = centers[label_id] # This is the vector in the clustered space
+            center_vec = centers[label_id]
             if use_embeddings:
                 feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig)
                 if feature_centroid_vec is None: continue
@@ -500,7 +446,6 @@ def _format_and_score_iteration_result(
 
             named_playlists[temp_name] = songs_list
             playlist_centroids[temp_name] = centroid_details
-            # *** NEW: Store the mapping from the final unique name to the centroid vector ***
             playlist_to_centroid_vector_map[temp_name] = center_vec
 
             if centroid_details and any(mood in active_moods for mood in centroid_details.keys()):
@@ -515,7 +460,6 @@ def _format_and_score_iteration_result(
                 if predominant_other_key and centroid_other_features[predominant_other_key] > OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
                      unique_predominant_other_feature_scores[predominant_other_key] = max(unique_predominant_other_feature_scores.get(predominant_other_key, 0.0), centroid_other_features[predominant_other_key])
 
-    # --- 3. Calculate All Metrics ---
     metrics = {"silhouette": 0.0, "davies_bouldin": 0.0, "calinski_harabasz": 0.0, "mood_diversity": 0.0, "mood_purity": 0.0, "other_feature_diversity": 0.0, "other_feature_purity": 0.0}
     num_clusters = len(named_playlists)
 
@@ -617,7 +561,6 @@ def _format_and_score_iteration_result(
     if mean_other_pur is not None and sd_other_pur is not None and sd_other_pur > 1e-9:
         metrics['other_feature_purity'] = (ln_other_purity - mean_other_pur) / sd_other_pur
 
-    # --- 4. Calculate Final Score ---
     final_score = sum(score_weights.get(k, 0) * v for k, v in metrics.items())
 
     log_message = (
@@ -631,7 +574,6 @@ def _format_and_score_iteration_result(
     )
     logger.info(log_message)
 
-    # --- 5. Package Final Result ---
     logger.info(f"Run {run_idx}: Created {len(named_playlists)} clusters.")
     for name, songs in named_playlists.items():
         song_titles = [f"'{s[1]}'" for s in songs[:5]]
@@ -644,20 +586,17 @@ def _format_and_score_iteration_result(
         "fitness_score": final_score,
         "named_playlists": named_playlists,
         "playlist_centroids": playlist_centroids,
-        "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map, # *** NEW: Return the map ***
+        "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
         "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()} if scaler else None,
         "pca_model_details": {"components": pca.components_.tolist(), "variance": pca.explained_variance_ratio_.tolist()} if pca else None
     }
 
 def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
-    """Generates a human-readable name for a cluster based on its centroid."""
-    # Constants for naming logic
     TOP_MOODS_IN_NAME = 3
     OTHER_FEATURE_THRESHOLD_FOR_NAME = 0.5
     MAX_OTHER_FEATURES_IN_NAME = 2
 
-    # If scaler is None, the vector is already in the original feature space (e.g., from embedding cluster)
     if scaler:
         vec = centroid_vector.reshape(1, -1)
         if pca_enabled and pca_model:
@@ -666,11 +605,9 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
     else:
         interpreted_vector = centroid_vector
 
-    # --- Extract features from the vector ---
     tempo_val = interpreted_vector[0]
     mood_values = interpreted_vector[2 : 2 + len(mood_labels)]
 
-    # --- Build Name Components ---
     tempo_label = "Slow" if tempo_val < 0.33 else "Medium" if tempo_val < 0.66 else "Fast"
 
     if len(mood_values) > 0 and np.sum(mood_values) > 0:
@@ -682,7 +619,6 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 
     base_name = f"{mood_part}_{tempo_label}"
 
-    # --- Extract "Other Features" and add them to the name and details dict ---
     details = {label: float(val) for label, val in zip(mood_labels, mood_values)}
     other_features_start = 2 + len(mood_labels)
     appended_other_features_str = ""
@@ -710,16 +646,8 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 
     return final_name, details
 
-# --- Other Helpers ---
 
 def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
-    """Safely retrieves the result of an RQ job, checking both RQ and the database.
-    
-    Always returns a dict with the same shape as the batch function's return value
-    (contains 'status', 'best_result_from_batch', 'iterations_completed_in_batch',
-    'final_subset_track_ids') so the caller can use a single code path, or None on failure.
-    """
-    # Local imports to prevent circular dependency
     from flask_app import app
 
     try:
@@ -733,10 +661,6 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
             if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, JobStatus.FINISHED]:
                 try:
                     details = json.loads(task_info.get('details'))
-                    # The DB stores the batch's internal details dict (with keys like
-                    # 'full_best_result_from_batch', 'iterations_completed_in_batch', etc.)
-                    # which is a DIFFERENT shape from the batch function's return value.
-                    # Wrap it in the same envelope so the caller doesn't need special handling.
                     batch_result = details.get('full_best_result_from_batch') or details.get('full_result')
                     if batch_result:
                         return {
@@ -750,7 +674,6 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     return None
 
 def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
-    """Generates a stratified sample of songs, perturbing a previous subset if provided."""
     new_subset, new_ids = [], set()
     if prev_ids and percent_change > 0:
         sample_size = int(len(prev_ids) * (1.0 - percent_change))
@@ -780,10 +703,8 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
     return new_subset
 
 def _get_track_primary_genre(track_data):
-    """Helper to determine the primary stratified genre for a track."""
     if 'mood_vector' in track_data and track_data['mood_vector']:
         mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in track_data['mood_vector'].split(',') if ':' in p}
         return max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
     return '__other__'
 
-# Post-processing functions have been moved to clustering_postprocessing.py for better organization

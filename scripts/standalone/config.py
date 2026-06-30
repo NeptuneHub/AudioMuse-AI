@@ -4,14 +4,6 @@ import sys
 
 
 def read_app_version(root):
-    """Return APP_VERSION from the app's config.py (leading 'v' stripped).
-
-    Parsed statically with ast -- config.py is never imported or executed, so
-    there are no import side effects and no dependency on __file__ or the
-    environment. build.py (deb/rpm version + banner) and the shared spec (macOS
-    CFBundleShortVersionString) both call this, so every platform stamps the same
-    manually-maintained version from config.py and no CI/tag value is used.
-    """
     path = os.path.join(str(root), "config.py")
     with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=path)
@@ -90,14 +82,6 @@ _SYS_PLATFORM_TO_TARGET = {
 
 
 def resolve_target(env_value):
-    """Return the build target, preferring ``AUDIOMUSE_BUILD_TARGET`` over the host.
-
-    ``build.py`` exports ``AUDIOMUSE_BUILD_TARGET`` before invoking PyInstaller, so
-    the spec reads it from here. A bare ``pyinstaller AudioMuse-AI.spec`` (no
-    orchestrator) still works for a developer by falling back to the host's
-    ``sys.platform`` -- PyInstaller cannot cross-compile, so the host OS is always
-    the correct target in that case.
-    """
     if env_value:
         target = env_value.strip().lower()
         if target in PLATFORMS:
@@ -112,13 +96,6 @@ def resolve_target(env_value):
 
 
 def normalize_arch(machine, target):
-    """Normalize ``platform.machine()`` to the vendor-dir arch name for ``target``.
-
-    Windows reports ``AMD64``/``ARM64`` (and historically ``x86_64``); the vendored
-    inputs live under ``amd64``/``arm64``, so lowercase and fold ``x86_64`` to
-    ``amd64``. macOS (``arm64``) and Linux (``x86_64``/``aarch64``) already match
-    their vendor dirs verbatim.
-    """
     if target == "windows":
         arch = machine.lower()
         return "amd64" if arch == "x86_64" else arch
@@ -126,12 +103,6 @@ def normalize_arch(machine, target):
 
 
 def use_pgserver(policy, arch):
-    """Resolve the embedded-PostgreSQL sourcing policy to a boolean.
-
-    ``always`` -> the pgserver wheel (Windows/macOS, with a runtime fallback the
-    spec applies on its own). ``arch`` -> the wheel only where it exists (Linux
-    x86_64/amd64); aarch64 has no wheel and bundles a from-source tree instead.
-    """
     if policy == "always":
         return True
     if policy == "arch":
@@ -139,14 +110,10 @@ def use_pgserver(policy, arch):
     return False
 
 
-# numkong's Windows wheel links LLVM's libomp but, unlike its mac/linux wheels,
-# does not bundle it; we vendor it per arch. Single home for both consumers:
-# the spec (bundling) and platforms/windows.py (existence check + venv staging).
 _WINDOWS_OMP_DLLS = {"amd64": "libomp140.x86_64.dll", "arm64": "libomp140.aarch64.dll"}
 
 
 def windows_omp_dll(arch):
-    """Filename of the LLVM OpenMP runtime numkong's Windows wheel needs but omits."""
     try:
         return _WINDOWS_OMP_DLLS[arch]
     except KeyError:

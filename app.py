@@ -474,9 +474,9 @@ def get_last_overall_task_status_endpoint():
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute("""
         SELECT task_id, task_type, status, progress, details, start_time, end_time
-        FROM task_status 
-        WHERE parent_task_id IS NULL 
-        ORDER BY timestamp DESC 
+        FROM task_status
+        WHERE parent_task_id IS NULL
+        ORDER BY timestamp DESC
         LIMIT 1
     """)
     last_task_row = cur.fetchone()

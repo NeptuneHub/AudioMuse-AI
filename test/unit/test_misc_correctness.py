@@ -1,16 +1,3 @@
-"""Unit tests for two correctness fixes (PR theme #13).
-
-1. tasks/ai/providers/mistral.py: the Mistral request timeout must be derived
-   from config.AI_REQUEST_TIMEOUT_SECONDS * 1000 (milliseconds), not a
-   hardcoded constant. The timeout_ms kwarg passed to chat.complete must scale
-   with the configured value.
-
-2. query/brainstorm_real_gmm_080.py: fit_gmm_bic caps the GMM component count
-   at len(X), so a GaussianMixture is never fit with n_components > sample
-   count (which would crash) even when a larger K range is requested.
-
-Heavy / missing deps are stubbed; no real network or DB access occurs.
-"""
 import importlib.util
 import os
 import sys
@@ -82,7 +69,6 @@ def _load_brainstorm_gmm():
 
 
 def _mock_mistral_client():
-    """Build a Mistral client mock whose chat.complete records its kwargs."""
     mock_message = Mock()
     mock_message.content = "Generated Name"
     mock_choice = Mock()
@@ -98,9 +84,6 @@ def _mock_mistral_client():
     return mock_client, mock_chat
 
 
-# ---------------------------------------------------------------------------
-# (1) Mistral timeout scales with config.AI_REQUEST_TIMEOUT_SECONDS
-# ---------------------------------------------------------------------------
 
 class TestMistralTimeoutScaling:
     def _invoke_and_capture_timeout(self, timeout_seconds):
@@ -125,7 +108,6 @@ class TestMistralTimeoutScaling:
         kwargs = self._invoke_and_capture_timeout(30)
         assert 'timeout_ms' in kwargs
         assert kwargs['timeout_ms'] == 30000
-        # Guard against the old hardcoded value.
         assert kwargs['timeout_ms'] != 960
 
     def test_timeout_is_300000_for_default_300_seconds(self):
@@ -140,28 +122,21 @@ class TestMistralTimeoutScaling:
         assert k60['timeout_ms'] == 4 * k15['timeout_ms']
 
     def test_timeout_not_hardcoded_960(self):
-        # The pre-fix bug hardcoded the timeout to 960; any config value other
-        # than 0.96s must therefore produce a different timeout_ms.
         for seconds in (1, 10, 45, 120):
             kwargs = self._invoke_and_capture_timeout(seconds)
             assert kwargs['timeout_ms'] == seconds * 1000
 
 
-# ---------------------------------------------------------------------------
-# (2) GMM component count is capped at len(X)
-# ---------------------------------------------------------------------------
 
 class TestGmmComponentCap:
     def test_k_capped_at_sample_count(self):
         mod = _load_brainstorm_gmm()
         X = np.array([[0.0, 0.0, 1.0], [1.0, 1.0, 0.0]], dtype=np.float64)
-        # Request many more components than samples.
         best_gmm, best_k, bic_values = mod.fit_gmm_bic(X, k_range=range(2, 50))
 
         assert best_gmm is not None
         assert best_gmm.n_components <= len(X)
         assert best_k <= len(X)
-        # No K above the sample count may have been evaluated.
         assert all(k <= len(X) for k in bic_values)
 
     def test_does_not_crash_with_tiny_X(self):
@@ -170,7 +145,6 @@ class TestGmmComponentCap:
         best_gmm, best_k, bic_values = mod.fit_gmm_bic(X, k_range=range(2, 100))
         assert best_gmm is not None
         assert best_gmm.n_components <= len(X)
-        # With exactly 2 samples and a min K of 2, only K=2 is admissible.
         assert best_k == len(X)
         assert set(bic_values) == {2}
 
@@ -179,6 +153,5 @@ class TestGmmComponentCap:
         rng = np.random.RandomState(0)
         X = rng.rand(6, 4).astype(np.float64)
         _, best_k, bic_values = mod.fit_gmm_bic(X, k_range=range(2, 5))
-        # cap = min(stop-1, len(X)) = min(4, 6) = 4; range start is 2.
         assert set(bic_values) == {2, 3, 4}
         assert best_k <= len(X)

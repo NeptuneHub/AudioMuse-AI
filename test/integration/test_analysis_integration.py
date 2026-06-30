@@ -1,17 +1,3 @@
-# Real song analysis integration test
-# 1. Create a virtual environment:
-#      python3 -m venv test/.venv
-#
-# 2. Activate the virtual environment:
-#      source test/.venv/bin/activate
-#
-# 3. Install requirements:
-#      pip install -r test/requirements.txt
-# 4. Run this script:
-#      pytest test/integration/test_analysis_integration.py -s -q
-#
-# Note: Test audio files should be in test/songs/
-#       ONNX models should be in test/models/
 import sys
 import types
 from pathlib import Path
@@ -20,10 +6,6 @@ import pytest
 
 
 def _ensure_stubs():
-    """Insert minimal runtime stubs for optional heavy packages so importing
-    `tasks.analysis` won't fail during the integration test.
-    """
-    # google.genai stub (new API)
     if 'google.genai' not in sys.modules:
         genai = types.ModuleType('google.genai')
 
@@ -33,7 +15,6 @@ def _ensure_stubs():
                 self.models = self
 
             def generate_content(self, model=None, contents=None, config=None, **kwargs):
-                """Mock generate_content for new google-genai API"""
                 return types.SimpleNamespace(text='[stubbed google.genai]')
 
         genai.Client = _Client
@@ -43,7 +24,6 @@ def _ensure_stubs():
         )
         sys.modules['google.genai'] = genai
 
-    # mistralai stub
     if 'mistralai' not in sys.modules:
         mistral_mod = types.ModuleType('mistralai')
         class Mistral:
@@ -57,7 +37,6 @@ def _ensure_stubs():
         mistral_mod.Mistral = Mistral
         sys.modules['mistralai'] = mistral_mod
 
-    # ivf stub
     if 'ivf' not in sys.modules:
         ivf_mod = types.ModuleType('ivf')
         ivf_mod.Space = types.SimpleNamespace(Cosine=0, Euclidean=1, InnerProduct=2)
@@ -87,8 +66,6 @@ def _ensure_stubs():
 
 
 def _validate_analysis_result(result, expected, track_name, tol=1e-3):
-    """Helper to validate analysis results match expected values."""
-    # Scalar checks
     assert abs(float(result.get('tempo', 0)) - expected['tempo']) <= tol, \
         f"{track_name}: tempo mismatch: {result.get('tempo')} != {expected['tempo']}"
     assert result.get('key') == expected['key'], \
@@ -96,16 +73,11 @@ def _validate_analysis_result(result, expected, track_name, tol=1e-3):
     assert result.get('scale') == expected['scale'], \
         f"{track_name}: scale mismatch: {result.get('scale')} != {expected['scale']}"
 
-    # Energy check
     assert 'energy' in result, f"{track_name}: missing feature: energy"
     assert abs(float(result['energy']) - expected['energy']) <= tol, \
         f"{track_name}: feature energy mismatch: {result['energy']} != {expected['energy']}"
 
-    # Note: other features (danceable, aggressive, happy, party, relaxed, sad)
-    # are no longer returned by analyze_track. They are now computed via CLAP
-    # text-audio similarity in analyze_album_task.
 
-    # Moods: compare each expected mood
     got_moods = result.get('moods', {})
     for mood, exp_val in expected['moods'].items():
         assert mood in got_moods, f"{track_name}: missing mood: {mood}"
@@ -116,17 +88,6 @@ def _validate_analysis_result(result, expected, track_name, tol=1e-3):
 
 @pytest.mark.integration
 def test_real_analysis_runs_and_returns_expected_shape():
-    """Integration test: runs analyze_track with ONNX models in test/models.
-    
-    Validates exact analysis results for three test tracks:
-    1. Art Flower - Art Flower - Creamy Snowflakes.mp3
-    2. Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3
-    3. Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3
-
-    This test is skipped if models are not present or onnxruntime is not
-    importable in the environment. It injects lightweight stubs for optional
-    AI/ivf libraries so module import succeeds.
-    """
     project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     required = [
@@ -136,18 +97,15 @@ def test_real_analysis_runs_and_returns_expected_shape():
     if missing:
         pytest.skip(f"Real ONNX models not present in test/models (missing: {missing})")
 
-    # Ensure onnxruntime is available
     try:
         import onnxruntime as ort  # noqa: F401
     except Exception as e:
         pytest.skip(f"onnxruntime not importable in this environment: {e}")
 
-    # Ensure the project is importable and provide stubs before import
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     _ensure_stubs()
 
-    # Now import tasks.analysis and run the real analysis on the repo MP3
     import importlib
     analysis = importlib.import_module('tasks.analysis')
     importlib.reload(analysis)
@@ -157,12 +115,10 @@ def test_real_analysis_runs_and_returns_expected_shape():
         'prediction': str(models_dir / 'musicnn_prediction.onnx'),
     }
 
-    # Print existence info (helpful when running the test)
     print('Models exist:')
     for k, p in model_paths.items():
         print(f"  {k}: {Path(p).exists()} -> {p}")
 
-    # Define test tracks with their expected values
     test_tracks = [
         {
             'path': project_root / 'test' / 'songs' / 'Art Flower - Art Flower - Creamy Snowflakes.mp3',
@@ -372,7 +328,6 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
     tol = 1e-3
 
-    # Test each track
     for track_info in test_tracks:
         track_path = track_info['path']
         track_name = track_info['name']
@@ -384,10 +339,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
         print(f'\n=== Analyzing: {track_name} ===')
 
-        # Run analysis
         result, embedding = analysis.analyze_track(str(track_path), analysis.MOOD_LABELS, model_paths)
 
-        # Print result for visibility
         try:
             print(f'\n{track_name} analysis result:')
             print(json.dumps(result, indent=2))
@@ -395,12 +348,10 @@ def test_real_analysis_runs_and_returns_expected_shape():
             print(f'\n{track_name} analysis result (repr):')
             print(repr(result))
 
-        # Validate results
         assert result is not None, f'{track_name}: analyze_track returned None for analysis_result'
         assert isinstance(result, dict), f'{track_name}: result is not a dict'
         assert 'moods' in result and isinstance(result['moods'], dict), f'{track_name}: moods missing or invalid'
 
-        # Validate embedding
         assert embedding is not None, f'{track_name}: analyze_track returned None for embedding'
         assert hasattr(embedding, 'shape') and embedding.ndim == 1, \
             f'{track_name}: expected 1-D embedding, got ndim={getattr(embedding, "ndim", None)}'
@@ -408,6 +359,5 @@ def test_real_analysis_runs_and_returns_expected_shape():
         print(f'{track_name}: embedding dimension = {emb_dim}')
         assert emb_dim > 0, f'{track_name}: Unexpected embedding dimension: {emb_dim}'
 
-        # Validate exact values
         _validate_analysis_result(result, expected, track_name, tol)
         print(f'{track_name}: OK All validations passed')

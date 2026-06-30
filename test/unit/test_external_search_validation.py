@@ -1,9 +1,3 @@
-"""Validation tests for the external /search endpoint in app_external.
-
-The heavy ``tasks.ivf_manager`` import is stubbed at module load so the
-endpoint checks stay fast and hermetic; the backend search function is patched
-per test so no database is touched.
-"""
 import sys
 import types
 from unittest.mock import MagicMock, patch

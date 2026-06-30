@@ -1,47 +1,3 @@
-"""
-Disk-paged inverted-file (IVF) vector index.
-
-This backend keeps full-precision float32 vectors out of the Flask container's
-resident heap. Vectors are partitioned by a coarse k-means quantizer into
-``nlist`` cells. Postgres (``ivf_cell``, one row per cell) is the source of
-truth, written at build time. The only always-resident state is the directory
-(centroids + id maps), tiny relative to the vectors.
-
-PRIMARY read path -- local mmap (default, IVF_DISK_CACHE_ENABLED): at index load
-each index's cells are exported once from Postgres into a single local file
-under IVF_DISK_CACHE_DIR (``<index>.<dirhash>.amivf``), and queries read cells
-zero-copy from that file via ``np.memmap``. Residency is owned by the OS page
-cache (file-backed, reclaimable, does not grow the Flask heap), and Postgres is
-never touched on the query hot path. The filename embeds a hash of the directory
-blob, so an unchanged index reuses its file across restarts and a rebuild writes
-a new versioned file (safe to swap even on Windows, where a mapped file cannot be
-overwritten). If the cache dir is unwritable / disabled, it falls back to the
-Postgres read path below.
-
-FALLBACK read path -- Postgres + caches: a query ranks the in-RAM centroids,
-reads the nearest ``nprobe`` cells from Postgres, and caches decoded cells in a
-per-request ``_CellLruCache`` (L1, thread-local) in front of a process-wide
-``_GlobalCellCache`` (L2, byte-bounded by IVF_GLOBAL_CACHE_MB, idle-dropped).
-
-Stored vectors are quantized per ``IVF_STORAGE_DTYPE`` to shrink the mmap /
-page-cache footprint and the per-query memory bandwidth: int8 for the angular
-(cosine) metric, float16 for euclidean/dot, or float32 to disable quantization
-(see :mod:`tasks.ivf_quant`). Distances are computed directly in the stored
-dtype via NumKong's SIMD kernels (NumPy fallback). Coarse centroids stay
-float32 and are ranked in full precision, so recall is unchanged. Decoded cells
-(mmap views or ``unpack_cell`` output) are read-only, so the same arrays are
-shared by reference across threads without copying; callers that mutate or
-dequantize a vector copy it first.
-
-Format is self-describing and versioned (directory magic ``AMIV``, cell-file
-magic ``AMVF``).
-
-Format is self-describing and versioned (magic ``AMIV``). The index lives in
-dedicated tables (``ivf_dir`` for the directory blob, ``ivf_cell`` for cell
-rows), separate from the legacy ivf ``*_index_data`` tables, so the two
-backends coexist and a deployment falls back to ivf until the next rebuild
-writes IVF rows.
-"""
 
 from __future__ import annotations
 
@@ -72,7 +28,6 @@ _warned_numkong_missing = False
 
 
 def _warn_numkong_missing_once(dtype_name: str) -> None:
-    # Quantized cells without the native SIMD kernels still return correct results.
     global _warned_numkong_missing
     if _warned_numkong_missing:
         return
@@ -87,10 +42,6 @@ def _warn_numkong_missing_once(dtype_name: str) -> None:
 
 _MAGIC = b"AMIV"
 _VERSION = 1
-# magic, version, metric(B), normalized(B), storage_dtype(B), pad, dim, nlist, n_items.
-# The storage_dtype byte reuses one of the old pad bytes, so blobs written before
-# quantization existed carry 0 there and read back as float32 (DTYPE_F32) -- no
-# version bump, full backward compatibility.
 _HEADER_FMT = "<4sIBBBxIII"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 
@@ -120,7 +71,6 @@ def pack_directory(
     normalized: bool = False,
     storage_dtype: int = 0,
 ) -> bytes:
-    """Serialize the resident directory (centroids + id maps) into one blob."""
     centroids = np.ascontiguousarray(centroids, dtype=np.float32)
     id2cell = np.ascontiguousarray(id2cell, dtype=np.uint32)
     nlist = centroids.shape[0]
@@ -146,13 +96,6 @@ def pack_directory(
 
 
 def unpack_directory(blob: bytes) -> Tuple[np.ndarray, np.ndarray, List[str], int, str, bool, int]:
-    """Inverse of :func:`pack_directory`.
-
-    Returns ``(centroids, id2cell, item_ids, dim, metric, normalized,
-    storage_dtype)``. Blobs written before the normalized flag / storage_dtype
-    byte existed carry zeros there and so report ``normalized=False`` and
-    ``storage_dtype=DTYPE_F32``, keeping old indexes correct.
-    """
     if len(blob) < _HEADER_SIZE:
         raise ValueError(f"directory blob too short ({len(blob)} bytes)")
     magic, version, metric_code, normalized, storage_dtype, dim, nlist, n_items = struct.unpack_from(_HEADER_FMT, blob, 0)
@@ -176,14 +119,12 @@ def unpack_directory(blob: bytes) -> Tuple[np.ndarray, np.ndarray, List[str], in
 
 
 def pack_cell(int_ids: np.ndarray, vecs: np.ndarray, storage_dtype: int = 0) -> bytes:
-    """Pack a cell as ``[n int32 ids][n*dim vectors]``, vectors in ``storage_dtype``."""
     int_ids = np.ascontiguousarray(int_ids, dtype=np.int32)
     enc = np.ascontiguousarray(quant.encode_vectors(vecs, storage_dtype))
     return int_ids.tobytes() + enc.tobytes()
 
 
 def unpack_cell(blob: bytes, dim: int, storage_dtype: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-    """Inverse of :func:`pack_cell` (vectors come back in ``storage_dtype``)."""
     record = 4 + dim * quant.elem_size(storage_dtype)
     if record <= 0 or len(blob) % record != 0:
         raise ValueError(f"cell blob size {len(blob)} not a multiple of record size {record}")
@@ -195,8 +136,8 @@ def unpack_cell(blob: bytes, dim: int, storage_dtype: int = 0) -> Tuple[np.ndarr
 
 _CELLFILE_MAGIC = b"AMVF"
 _CELLFILE_VERSION = 2
-_CELLFILE_HEADER_FMT_V1 = "<4sIIII"  # magic, version, dim, n_cells, metric (float32 cells)
-_CELLFILE_HEADER_FMT = "<4sIIIII"    # v2 adds a trailing storage_dtype code
+_CELLFILE_HEADER_FMT_V1 = "<4sIIII"
+_CELLFILE_HEADER_FMT = "<4sIIIII"
 _CELLFILE_HEADER_SIZE = struct.calcsize(_CELLFILE_HEADER_FMT)
 _CELLFILE_ROW_FMT = "<IQQ"
 _CELLFILE_ROW_SIZE = struct.calcsize(_CELLFILE_ROW_FMT)
@@ -223,12 +164,6 @@ def _prune_old_cell_files(cache_dir: str, index_name: str, keep_path: str) -> No
 
 
 def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, storage_dtype: int, path: str) -> int:
-    """Stream every cell of ``index_name`` from Postgres into a local mmap file.
-
-    Two passes keep RAM bounded: pass 1 reads only ``octet_length`` to lay out the
-    offset table; pass 2 streams the blobs in cell_id order in small chunks. Writes
-    to ``path + '.tmp'`` then atomically renames. Returns the number of cells.
-    """
     record = 4 + int(dim) * quant.elem_size(storage_dtype)
     with db_conn.cursor() as cur:
         cur.execute(
@@ -275,12 +210,6 @@ def _export_cells_to_file(db_conn, index_name: str, dim: int, metric: str, stora
 
 
 def _open_cell_file(path: str):
-    """Open a cell file as a read-only memmap; return ``(mmap, dim, offsets, storage_dtype)``.
-
-    Accepts the v1 header (float32 cells, no dtype field) and the v2 header (adds a
-    trailing storage_dtype code), so a cache file written by an older build still
-    maps and reads as float32.
-    """
     mm = np.memmap(path, dtype=np.uint8, mode="r")
     magic, version = struct.unpack_from("<4sI", bytes(mm[:8]), 0)
     if magic != _CELLFILE_MAGIC:
@@ -303,7 +232,6 @@ def _open_cell_file(path: str):
 
 
 def _vec_in_cell(ids: np.ndarray, vecs: np.ndarray, int_id: int) -> Optional[np.ndarray]:
-    """Return the row of ``vecs`` whose id is ``int_id`` (cell ids are sorted), or None."""
     if ids.size == 0:
         return None
     pos = int(np.searchsorted(ids, int_id)) if ids[0] <= int_id else -1
@@ -316,18 +244,6 @@ def _vec_in_cell(ids: np.ndarray, vecs: np.ndarray, int_id: int) -> Optional[np.
 
 
 class _CellLruCache:
-    """Byte-bounded LRU cache of decoded cells for a single request.
-
-    Holds ``cell_id -> (ids, vecs)``. ``add_cell`` evicts least-recently-used
-    cells before inserting, so ``resident_bytes() <= max_bytes`` holds whenever
-    no single cell exceeds ``max_bytes`` (the index floors the cap to at least
-    one full cell). Used on a single thread per request (IVF mode runs vector
-    post-filtering on the request thread), so no lock is required.
-
-    Point lookups go through :meth:`get_cell`: the caller already knows an item's
-    cell from the index-level ``id2cell`` map, so the cache never has to maintain
-    its own ``int_id -> cell_id`` index.
-    """
 
     def __init__(self, record_size: int, max_bytes: int):
         self._record_size = record_size
@@ -363,23 +279,6 @@ class _CellLruCache:
 
 
 class _GlobalCellCache:
-    """Process-wide byte-bounded LRU cache of decoded cells (L2).
-
-    Shared by every ``PagedIvfIndex`` in the process and keyed by
-    ``(index_name, cell_id)`` so all indexes draw from one bounded pool. A single
-    RLock guards the dict ops; it is never held while reading from Postgres, so
-    concurrent DB fetches are not serialized. Stored ``(ids, vecs)`` tuples are
-    handed out by reference and must stay read-only (see the module docstring).
-    Size is accounted with ``ndarray.nbytes`` (correct for 2-D arrays, unlike
-    ``sys.getsizeof``). ``max_bytes <= 0`` turns the cache into a no-op.
-
-    When ``idle_seconds > 0`` a background daemon drops the whole cache after that
-    many seconds with no access, so an idle process releases the RAM (mirrors the
-    CLAP/lyrics model warm-cache timers). Every get/put resets the idle clock; the
-    timer thread re-checks under the lock so a fresh access cancels a pending drop.
-    Idle-dropping is disabled (``idle_seconds=0``) when ``IVF_PRELOAD_ALL`` is on,
-    so a preloaded working set is not silently evicted and left un-rewarmed.
-    """
 
     def __init__(self, max_bytes: int, idle_seconds: int = 0):
         self._max_bytes = int(max_bytes)
@@ -477,12 +376,6 @@ class _GlobalCellCache:
 
 
 def _return_freed_heap_to_os() -> None:
-    """Best-effort: hand freed heap back to the OS so RSS drops after a big free.
-
-    glibc keeps freed allocations in its arenas, so dropping the cache frees the
-    Python objects but does not lower RSS until the heap is trimmed. Delegates to
-    the shared malloc_trim helper (Linux-only; no-op elsewhere).
-    """
     try:
         from .memory_utils import release_memory_to_os
         release_memory_to_os()
@@ -495,7 +388,6 @@ _GLOBAL_CELL_CACHE_LOCK = threading.Lock()
 
 
 def get_global_cell_cache() -> _GlobalCellCache:
-    """Return the lazily-built process-wide L2 cell cache (sized from config)."""
     global _GLOBAL_CELL_CACHE
     if _GLOBAL_CELL_CACHE is None:
         with _GLOBAL_CELL_CACHE_LOCK:
@@ -509,19 +401,12 @@ def get_global_cell_cache() -> _GlobalCellCache:
 
 
 def invalidate_global_cell_cache(index_name: str) -> None:
-    """Drop every L2 entry for ``index_name`` (call on rebuild/reload)."""
     cache = _GLOBAL_CELL_CACHE
     if cache is not None:
         cache.invalidate_index(index_name)
 
 
 def begin_query(index) -> None:
-    """Start a fresh per-request L1 cell cache on ``index`` before a query.
-
-    Shared by every query entry point so the per-request reset lives in one
-    place; a no-op when ``index`` is None or does not expose ``begin_request``
-    (e.g. a test double).
-    """
     if index is not None and hasattr(index, "begin_request"):
         index.begin_request()
 
@@ -532,15 +417,6 @@ _QUERY_THREAD_PREFIX = "ivf-query"
 
 
 def _query_worker_count() -> int:
-    """Number of threads used to score one query's probed cells.
-
-    Derived directly from the host with no env knob: half the available CPUs,
-    floored at 1 (``max(cpu // 2, 1)``). A 1-3 core host resolves to 1 (serial);
-    bigger hosts use half their cores and leave the rest free for BLAS and other
-    work. ``os.sched_getaffinity`` (Linux) honors a container's cpuset so a
-    CPU-limited container does not over-thread; elsewhere (Windows, macOS) it
-    falls back to ``os.cpu_count``.
-    """
     try:
         cpu = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -549,13 +425,6 @@ def _query_worker_count() -> int:
 
 
 def _query_thread_pool():
-    """Return the shared bounded query thread pool, or None when serial.
-
-    Uses OS threads (not processes), so it is identical and safe on Linux,
-    macOS and Windows: no fork/spawn, no pickling, no extra interpreters. The
-    pool is built once and reused. Returns None when only one worker is
-    configured so callers skip pooling entirely.
-    """
     if _query_worker_count() <= 1:
         return None
     global _QUERY_THREAD_POOL
@@ -572,18 +441,10 @@ def _query_thread_pool():
 
 
 def _in_query_pool_thread() -> bool:
-    """True when already running inside a query worker, to block self-nesting."""
     return threading.current_thread().name.startswith(_QUERY_THREAD_PREFIX)
 
 
 def shutdown_query_pool() -> None:
-    """Tear down the shared query thread pool, if any (idempotent).
-
-    Mirrors ivf_manager._shutdown_thread_pool so a clean application teardown
-    releases the query workers too instead of leaving them until interpreter
-    exit. The BLAS pin is intentionally NOT undone: it is a process-wide, set-once
-    state and there is nothing to restore safely.
-    """
     global _QUERY_THREAD_POOL
     with _QUERY_THREAD_POOL_LOCK:
         pool = _QUERY_THREAD_POOL
@@ -597,21 +458,6 @@ _BLAS_PIN_DONE = False
 
 
 def _pin_blas_single_thread() -> None:
-    """Pin this process's BLAS to one thread, ONCE and permanently (race-free).
-
-    The query pool parallelizes the distance scan at the Python-thread level, so
-    each worker's matmul must not also spawn BLAS threads or the two layers
-    oversubscribe the cores. A per-query ``threadpool_limits`` context is NOT
-    concurrency-safe -- two interleaved queries (e.g. under gunicorn gthread)
-    can corrupt the saved limit and leave BLAS globally stuck at one thread for
-    the whole process -- so we set the limit a single time, under the
-    pool-creation lock, and never restore it. The limiter is held in a module
-    global so it is never garbage-collected. The query-serving process wants
-    single-threaded BLAS for its whole life (its heavy BLAS is these queries);
-    index builds run k-means in separate worker processes that never create this
-    pool. A missing threadpoolctl is a silent no-op (the worker count already
-    leaves spare cores, so an unpinned BLAS only risks mild oversubscription).
-    """
     global _BLAS_LIMITER, _BLAS_PIN_DONE
     if _BLAS_PIN_DONE:
         return
@@ -627,12 +473,6 @@ _LIVE_INDEXES: "weakref.WeakSet[PagedIvfIndex]" = weakref.WeakSet()
 
 
 def end_all_requests() -> None:
-    """Free the per-request L1 cache of every loaded index on the current thread.
-
-    The L1 cache is thread-local, so begin_request() leaves it resident on the
-    worker thread until the next request overwrites it. Calling this from a
-    per-request teardown drops it immediately so an idle worker holds no L1.
-    """
     for idx in list(_LIVE_INDEXES):
         try:
             idx.end_request()
@@ -641,14 +481,6 @@ def end_all_requests() -> None:
 
 
 def _close_live_indexes(index_name: str) -> None:
-    """Release the memmap of any still-loaded index for ``index_name``.
-
-    A rebuild prunes the old cell file while the manager still holds the
-    previous index (it swaps in the replacement only after the load returns),
-    so that index keeps the old file mapped and Windows refuses to delete it.
-    Closing it here, before the prune, drops the mapping so the file becomes
-    deletable; the closed index degrades to Postgres reads until the swap.
-    """
     for idx in list(_LIVE_INDEXES):
         try:
             if getattr(idx, "_index_name", None) == index_name:
@@ -662,20 +494,12 @@ _IDLE_CALLBACKS_LOCK = threading.Lock()
 
 
 def register_idle_callback(fn: Callable[[], None]) -> None:
-    """Register a callback fired once when the disk-cache working set goes idle.
-
-    Lets other modules (e.g. the similarity result caches) shed their transient
-    query memory on the same idle signal that drops resident mmap pages, so an
-    idle Flask process releases everything at once instead of holding it until the
-    next request happens to evict it.
-    """
     with _IDLE_CALLBACKS_LOCK:
         if fn not in _IDLE_CALLBACKS:
             _IDLE_CALLBACKS.append(fn)
 
 
 def unregister_idle_callback(fn: Callable[[], None]) -> None:
-    """Remove a previously registered idle callback (idempotent)."""
     with _IDLE_CALLBACKS_LOCK:
         if fn in _IDLE_CALLBACKS:
             _IDLE_CALLBACKS.remove(fn)
@@ -696,16 +520,6 @@ _MMAP_IDLE_THREAD: Optional[threading.Thread] = None
 
 
 def _note_mmap_activity(index=None) -> None:
-    """Record a disk-cache read on ``index`` and ensure the idle watcher runs.
-
-    Called once per disk-cache read (not per cell), so the per-query cost is a
-    single monotonic clock read. Each index keeps its OWN last-access stamp so a
-    continuously-queried index does not keep the idle pages of the other five
-    indexes resident -- the watcher drops each index independently once it alone
-    has been quiet. Stamping under the lock pairs with the watcher reading it
-    under the same lock, so a just-faulted page is never dropped. When
-    idle-dropping is disabled this is a no-op.
-    """
     if config.IVF_DISK_CACHE_IDLE_SECONDS <= 0:
         return
     global _MMAP_IDLE_THREAD
@@ -724,12 +538,6 @@ _WIN_ERROR_NOT_LOCKED = 158
 
 
 def _win_virtual_unlock():
-    """Lazily resolve ``(VirtualUnlock, get_last_error)`` from kernel32 (Windows only).
-
-    Returns the error reader bound to the same ``use_last_error=True`` context so
-    the drop loop never references the Windows-only ``ctypes.get_last_error``
-    attribute directly (keeps it testable off-Windows). Cached for reuse.
-    """
     global _WIN_VIRTUAL_UNLOCK
     if _WIN_VIRTUAL_UNLOCK is None:
         import ctypes
@@ -742,16 +550,6 @@ def _win_virtual_unlock():
 
 
 def _drop_pages_windows(targets) -> int:
-    """Drop each index's read-only file pages from the working set via VirtualUnlock.
-
-    VirtualUnlock on pages that were never VirtualLock'd returns FALSE with
-    ERROR_NOT_LOCKED (158) but still removes them from the process working set
-    (documented behavior), so the file-backed pages move to the standby cache and
-    a later query soft-faults only the cells it probes (sub-millisecond). This is
-    the Windows analog of MADV_DONTNEED: surgical, per-index, no unmap, no dirty
-    pages to lose. ``np.memmap.ctypes.data``/``.nbytes`` give the mapping base and
-    length directly.
-    """
     try:
         unlock, last_error = _win_virtual_unlock()
     except Exception as e:
@@ -779,7 +577,6 @@ def _drop_pages_windows(targets) -> int:
 
 
 def _drop_pages_posix(targets) -> int:
-    """MADV_DONTNEED each mapping (Linux drops RSS; macOS deactivates pages)."""
     advise = getattr(mmap, "MADV_DONTNEED", None)
     if advise is None:
         return 0
@@ -805,16 +602,6 @@ def _drop_pages_posix(targets) -> int:
 
 
 def _drop_resident_mmap_pages(indexes=None) -> int:
-    """Drop each given index's cell-file pages from RSS; return how many were dropped.
-
-    ``indexes`` defaults to every live index. Drops the resident pages of the
-    disk-cache working set WITHOUT unmapping: the mapping stays valid and a later
-    query re-faults the cells it needs from the file. This never races an in-flight
-    zero-copy read -- a concurrent reader simply takes a page fault and re-reads
-    identical bytes from the read-only file (no dirty pages to lose on any
-    platform). Uses VirtualUnlock on Windows and madvise(MADV_DONTNEED) on
-    Linux/macOS.
-    """
     targets = list(_LIVE_INDEXES) if indexes is None else list(indexes)
     if not targets:
         return 0
@@ -824,7 +611,6 @@ def _drop_resident_mmap_pages(indexes=None) -> int:
 
 
 def _collect_idle_mmap_indexes(now: float, idle_seconds: float):
-    """Return (indexes idle long enough to drop, seconds until the next goes idle)."""
     to_drop = []
     next_due = None
     for idx in list(_LIVE_INDEXES):
@@ -840,17 +626,6 @@ def _collect_idle_mmap_indexes(now: float, idle_seconds: float):
 
 
 def _mmap_idle_worker() -> None:
-    """Drop each disk-cache mapping once THAT index alone has been quiet.
-
-    Per-index last-access (set by :func:`_note_mmap_activity`) is read under
-    ``_MMAP_IDLE_LOCK`` in the same critical section as the MADV_DONTNEED drop, so
-    a query that just faulted an index's pages either lands before this lock (the
-    index's idle test fails, nothing is dropped) or after the watcher cleared
-    itself (a fresh watcher starts). The drop therefore never zaps pages a
-    concurrent query just faulted, and only one watcher ever runs. The idle
-    callbacks (result-cache sweep) and the heap trim run once, after the lock is
-    released, when no index remains pending -- i.e. the whole process is idle.
-    """
     global _MMAP_IDLE_THREAD
     while True:
         sleep_for = 30.0
@@ -883,14 +658,6 @@ def _mmap_idle_worker() -> None:
 
 
 class PagedIvfIndex:
-    """IVF-compatible query surface backed by Postgres-resident IVF cells.
-
-    Exposes the subset of the ivf API the call sites rely on:
-    ``query``, ``get_vector``, ``get_vectors``, ``get_max_distance``,
-    ``__len__``, ``num_elements`` and a no-op ``ef`` setter. Cell reads use a
-    connection from ``conn_factory`` (the request-scoped Flask DB connection),
-    so all methods must be called on the request thread.
-    """
 
     def __init__(
         self,
@@ -944,15 +711,6 @@ class PagedIvfIndex:
         return self._n_items
 
     def close(self) -> None:
-        """Drop this index's reference to the memmap so its cell file can be deleted.
-
-        Only the reference is dropped: the OS unmaps the file once any in-flight
-        zero-copy read finishes, because every reader snapshots ``self._mmap``
-        before use and numpy keeps the mapping alive while a view of it exists.
-        We deliberately do not force-close the underlying buffer, which would
-        unmap memory still aliased by a concurrent query and segfault. Safe to
-        call more than once; after close, reads fall back to Postgres.
-        """
         self._mmap = None
 
     @property
@@ -973,7 +731,6 @@ class PagedIvfIndex:
         return cache
 
     def _cell_scores(self, q: np.ndarray) -> np.ndarray:
-        """Per-centroid score where SMALLER means nearer (larger means farther)."""
         if self._metric == "euclidean":
             diffs = self._centroids - q[None, :]
             return np.einsum("ij,ij->i", diffs, diffs)
@@ -983,12 +740,6 @@ class PagedIvfIndex:
         return -(self._centroids @ qn)
 
     def _rank_cells(self, q: np.ndarray) -> np.ndarray:
-        """Return the nearest ``nprobe`` cell ids, ordered nearest first.
-
-        Uses argpartition to pull the top ``nprobe`` in O(nlist) and sorts only
-        those, instead of a full argsort over every centroid. Cell selection and
-        order are identical to a full sort, so recall is unchanged.
-        """
         scores = self._cell_scores(q)
         n = scores.shape[0]
         topn = max(1, self._nprobe)
@@ -998,7 +749,6 @@ class PagedIvfIndex:
         return part[np.argsort(scores[part])]
 
     def _farthest_cells(self, q: np.ndarray, k: int) -> np.ndarray:
-        """Return the ``k`` cell ids whose centroids are FARTHEST from ``q``."""
         scores = self._cell_scores(q)
         n = scores.shape[0]
         if k >= n:
@@ -1006,12 +756,6 @@ class PagedIvfIndex:
         return np.argpartition(scores, n - k)[n - k:]
 
     def _cell_from_mmap(self, mm, offsets, cell_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Zero-copy read of one cell from a snapshotted memmap, or None if absent.
-
-        ``mm``/``offsets`` are captured by the caller before use so a concurrent
-        ``close()`` (which nulls ``self._mmap``) cannot pull the mapping out from
-        under an in-flight read.
-        """
         rec = offsets.get(int(cell_id))
         if rec is None:
             return None
@@ -1025,7 +769,6 @@ class PagedIvfIndex:
         return ids, vecs
 
     def _iter_db_cells(self, cur, cell_ids):
-        """Yield ``(cid, ids, vecs)`` decoded from ivf_cell for ``cell_ids``."""
         cur.execute(
             f"SELECT cell_id, cell_data FROM {IVF_CELL_TABLE} "
             f"WHERE index_name = %s AND cell_id = ANY(%s)",
@@ -1036,20 +779,11 @@ class PagedIvfIndex:
             yield int(cell_id), ids, vecs
 
     def _read_cells(self, cell_ids: List[int], cache: _CellLruCache) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
-        """Decode ``cell_ids`` and return ``{cell_id: (ids, vecs)}``.
-
-        When a local mmap cell file is loaded, cells are read zero-copy from it
-        (OS page cache manages residency; Postgres is not touched). Otherwise it
-        falls back to L1 -> L2 -> Postgres, fetching all DB misses in a single
-        round-trip. The returned dict holds direct references, so callers do not
-        depend on L1 retaining every cell under its byte cap.
-        """
         out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         mm = self._mmap
         offsets = self._cell_offsets
         if mm is not None:
             _note_mmap_activity(self)
-            # inputs are unique; read in file order, box to int only at the dict key
             ordered = sorted(cell_ids, key=lambda c: offsets.get(int(c), (1 << 62, 0))[0])
             for c in ordered:
                 cid = int(c)
@@ -1082,33 +816,15 @@ class PagedIvfIndex:
         return out
 
     def _prep_query(self, q: np.ndarray) -> np.ndarray:
-        """Per-query precompute reused across every probed cell.
-
-        Returns the query in the stored dtype (angular: unit-normalized then
-        scaled), so the per-cell scan compares like-typed vectors.
-        """
         return quant.prepare_query(q, self._storage_dtype, self._metric)
 
     def _cell_distances(self, qp: np.ndarray, vecs: np.ndarray) -> np.ndarray:
-        """Distances for one cell from a prepared query ``qp`` (smaller = nearer)."""
         return quant.cell_distances(self._metric, self._storage_dtype, qp, vecs, self._normalized)
 
     def _distances(self, q: np.ndarray, vecs: np.ndarray) -> np.ndarray:
         return self._cell_distances(self._prep_query(q), vecs)
 
     def _distances_over_cells(self, q: np.ndarray, vecs_list: List[np.ndarray]) -> List[np.ndarray]:
-        """Per-cell distance arrays for ``vecs_list``, aligned with the input order.
-
-        Distance computation is the only CPU-bound step of a query and is purely
-        functional -- each call reads ``q`` and one read-only cell view and returns
-        a fresh array -- so fanning it across the query thread pool needs no locking
-        and mutates no shared state. Parallelism engages only when enabled (see
-        :func:`_query_worker_count`) and when the probed cells hold at least
-        ``IVF_QUERY_PARALLEL_MIN_VECTORS`` vectors, so small queries keep the cheaper
-        serial path. It also stays serial when already inside a query worker (no
-        self-nesting). Any failure falls back to the serial scan, so behavior is
-        never worse than before.
-        """
         n_cells = len(vecs_list)
         qp = self._prep_query(q)
         if n_cells <= 1:
@@ -1139,7 +855,6 @@ class PagedIvfIndex:
             return [self._cell_distances(qp, v) for v in vecs_list]
 
     def query(self, vector, k: int):
-        """Return ``(ids, distances)`` for the ``k`` nearest items."""
         q = np.asarray(vector, dtype=np.float32).reshape(-1)
         order = self._rank_cells(q)
         cache = self._cache()
@@ -1169,13 +884,6 @@ class PagedIvfIndex:
         return all_ids[part].astype(np.int64).tolist(), all_dist[part].astype(float).tolist()
 
     def distance_to_similarity(self, distance: float) -> float:
-        """Map a query distance to a higher-is-more-similar score for this metric.
-
-        Angular distance is ``1 - cosine`` so similarity is ``1 - distance``;
-        euclidean uses ``1 / (1 + distance)``; dot stores ``-(v . q)`` so
-        similarity is ``-distance``. Keeping this on the index means callers stay
-        correct when ``IVF_METRIC`` is not angular instead of hardcoding 1 - d.
-        """
         d = float(distance)
         if self._metric == "euclidean":
             return 1.0 / (1.0 + d)
@@ -1184,15 +892,6 @@ class PagedIvfIndex:
         return 1.0 - d
 
     def get_vectors(self, int_ids) -> Dict[int, np.ndarray]:
-        """Return ``{int_id: vector}`` for the given ids, reading missing cells.
-
-        Each returned vector is an owned float32 copy, never a view into the
-        local mmap, so a result stays valid after the index is reloaded or
-        closed and never keeps the backing cell file mapped past this call. An
-        escaping mmap view would otherwise pin the old file (blocking its
-        deletion on Windows) and dangle once the mapping is released, so the
-        copy here is a correctness invariant, not an option.
-        """
         cache = self._cache()
         out: Dict[int, np.ndarray] = {}
         need_cells: Dict[int, List[int]] = {}
@@ -1221,18 +920,9 @@ class PagedIvfIndex:
         return out
 
     def get_vector(self, int_id):
-        """Return the stored vector for ``int_id`` or None."""
         return self.get_vectors([int(int_id)]).get(int(int_id))
 
     def cell_groups(self, int_ids):
-        """Group the given int_ids by their IVF cell, in memory and with no I/O.
-
-        Each item already belongs to one coarse cell (``self._id2cell``), and every cell's
-        centroid is held in RAM (``self._centroids``). Returns ``[(centroid, count), ...]``
-        for each distinct cell the items fall into, ordered most-populated first. Items
-        outside the index are skipped. This reuses the index's existing clustering instead
-        of re-clustering the vectors.
-        """
         counts: Dict[int, int] = {}
         for raw in int_ids:
             vid = int(raw)
@@ -1247,22 +937,6 @@ class PagedIvfIndex:
         ]
 
     def get_max_distance(self, int_id, nprobe: Optional[int] = None) -> Tuple[Optional[float], Optional[int]]:
-        """Maximum distance from ``int_id`` to any other item.
-
-        Returns ``(max_distance, farthest_int_id)``. By default this is an
-        APPROXIMATE farthest-neighbor: it ranks centroids and scans only the
-        ``IVF_MAX_DISTANCE_NPROBE`` cells whose centroids are farthest from the
-        anchor (the farthest point almost always lives in one of them), which is
-        far cheaper than a full scan and is intended for the UI "max distance"
-        reference value. Pass ``nprobe=0`` (or ``IVF_MAX_DISTANCE_NPROBE=0``, or
-        any value >= the cell count) for the EXACT full scan.
-
-        Cells are read zero-copy from the local mmap when present; otherwise from
-        the L2 cache / Postgres in ``read_batch`` chunks (that fallback scan does
-        NOT populate L2, to avoid evicting the hot working set with cold cells).
-        ``(None, None)`` if ``int_id`` is unknown; ``(0.0, None)`` for a
-        single-item index.
-        """
         anchor = self.get_vector(int_id)
         if anchor is None:
             return None, None
@@ -1318,12 +992,6 @@ class PagedIvfIndex:
         return state["max_d"], state["far_id"]
 
     def preload_all(self, db_conn=None) -> int:
-        """Stream every cell into the global L2 cache (opt-in in-memory mode).
-
-        No-op when a local mmap is active (the OS page cache already owns
-        residency) or when the global cache is disabled. Otherwise reads in
-        ``read_batch`` chunks bounded by the L2 byte cap.
-        """
         if self._mmap is not None:
             return 0
         gcache = get_global_cell_cache()
@@ -1349,20 +1017,6 @@ def _split_cells_over_cap(
     cap_bytes: int,
     elem_size: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, np.ndarray, np.ndarray]]]:
-    """Guarantee every cell packs to at most ``cap_bytes`` by splitting oversized ones.
-
-    A cell with more than ``cap_bytes // record_size`` records is sliced by id into
-    fixed-size chunks: the first chunk keeps the original cell id and centroid, each
-    extra chunk becomes a new cell with its own id and a centroid equal to the chunk
-    mean, and ``id2cell`` is rewritten for every moved record. Returns the (possibly
-    extended) ``(centroids, id2cell, cells)``. This is the structural backstop that
-    makes it impossible to write a cell BYTEA over the cap, no matter what the build
-    produced -- the build's smaller per-cell target normally keeps it from firing.
-    A cell packs to exactly ``record_size`` bytes per record (no header), where
-    ``record_size`` reflects the stored ``elem_size`` (1 for i8, 2 for f16, 4 for
-    f32), so a chunk of ``cap_bytes // record_size`` records is always at most
-    ``cap_bytes``.
-    """
     record_size = 4 + dim * elem_size
     cap_records = max(1, cap_bytes // record_size)
     if all(int(ids.shape[0]) <= cap_records for _cid, ids, _vecs in cells):
@@ -1405,19 +1059,6 @@ def store_paged_ivf(
     normalized: bool = False,
     storage_dtype: int = 0,
 ) -> None:
-    """Persist a built IVF index: directory blob in ``ivf_dir``, cells in ``ivf_cell``.
-
-    Replaces any existing rows for ``index_name`` in both tables in the caller's
-    transaction. Every stored BYTEA value -- each cell row and each directory
-    part -- is guaranteed to be at most ``IVF_MAX_PART_SIZE_MB``: the directory
-    blob is segmented across part rows, and any cell over the cap is split into
-    additional cells by :func:`_split_cells_over_cap` before writing (so storing
-    never fails on an oversized value, it splits). This keeps every value far below
-    PostgreSQL's 1 GB field limit at any library size. ``normalized`` records
-    whether the stored cell vectors are unit-normalized. The process-wide L2 cell
-    cache is invalidated for ``index_name`` so a rebuild never leaves stale vectors
-    resident.
-    """
     from .index_build_helpers import store_segmented_blob
 
     part_mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
@@ -1446,16 +1087,6 @@ def _bounded_cell_groups(
     base_centroid: np.ndarray,
     max_records: int,
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
-    """Split one coarse cell into ``(member_indices, centroid)`` groups under the cap.
-
-    A cell within ``max_records`` is kept whole. An oversized cell is first
-    sub-clustered with k-means for locality; any sub-cluster k-means cannot shrink
-    below the cap -- typically a block of identical vectors that always collapses
-    into a single cluster (e.g. instrumental tracks sharing one lyrics embedding) --
-    is then hard-split into fixed-size chunks by id, so the size bound always holds
-    regardless of vector distribution. Chunk centroids are the chunk mean (the
-    shared point itself when the rows are identical).
-    """
     from sklearn.cluster import MiniBatchKMeans
 
     if members.shape[0] <= max_records:
@@ -1489,13 +1120,6 @@ def build_and_store_paged_ivf(
     dim: int,
     metric: str,
 ) -> bool:
-    """Build a disk-paged IVF index from a full ``(N, dim)`` float32 matrix.
-
-    Trains a coarse k-means quantizer on a bounded sample, assigns every vector
-    to a cell, splits oversized cells so none exceeds ``IVF_MAX_CELL_MB``, packs
-    each cell, and persists via :func:`store_paged_ivf`. Returns False (without
-    writing) when the matrix is empty.
-    """
     from sklearn.cluster import MiniBatchKMeans
 
     vectors = np.ascontiguousarray(vectors, dtype=np.float32)
@@ -1578,7 +1202,6 @@ def build_and_store_paged_ivf(
 
 
 def has_paged_ivf(db_conn, index_name: str) -> bool:
-    """True if a built IVF directory exists for ``index_name``."""
     from .index_build_helpers import load_segmented_blob
 
     try:
@@ -1589,15 +1212,6 @@ def has_paged_ivf(db_conn, index_name: str) -> bool:
 
 
 def _setup_disk_cell_file(db_conn, index_name: str, dim: int, metric: str, storage_dtype: int, dir_blob: bytes, label: str):
-    """Export this index's cells to a local mmap file and open it.
-
-    The filename embeds a hash of the directory blob (which encodes the storage
-    dtype), so an unchanged index reuses the existing file across restarts (no
-    re-export) while a rebuild -- including one that changes the stored precision
-    -- produces a new file (versioned name = Windows-safe swap). Returns
-    ``(mmap, offsets)`` or ``(None, None)`` to fall back to Postgres reads when
-    the cache is disabled or the dir is not writable.
-    """
     if not config.IVF_DISK_CACHE_ENABLED:
         return None, None
     try:
@@ -1626,12 +1240,6 @@ def load_paged_ivf_index(
     conn_factory: Optional[Callable[[], "psycopg2.extensions.connection"]] = None,
     label: Optional[str] = None,
 ):
-    """Load a persisted IVF index into a ``PagedIvfIndex``.
-
-    Returns ``(index, id_map, reverse_id_map)`` mirroring
-    :func:`tasks.index_build_helpers.load_ivf_index_from_db`, or ``None`` if
-    no IVF directory is present.
-    """
     from .index_build_helpers import load_segmented_blob
 
     label = label or index_name
@@ -1644,9 +1252,6 @@ def load_paged_ivf_index(
         logger.error("IVF '%s': dimension mismatch db=%s expected=%s", label, dim, expected_dim)
         return None
 
-    # Reject a stale-metric index (e.g. the artist index switched euclidean->angular):
-    # storage dtype can still match, so without this it would load under the old metric
-    # while the caller reranks under the new one. Treat as not built so it rebuilds.
     if stored_metric and metric and str(stored_metric).lower() != str(metric).lower():
         logger.warning(
             "IVF index '%s' stored with metric '%s' but config now uses '%s'; treating as not built so it rebuilds.",
@@ -1654,7 +1259,6 @@ def load_paged_ivf_index(
         )
         return None
 
-    # Reject a stale-precision index so it is rebuilt in the current format (no mixed f32/i8 cells).
     expected_storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), stored_metric)
     if int(storage_dtype) != int(expected_storage_dtype):
         logger.warning(
@@ -1704,9 +1308,4 @@ def load_index_auto(
     metric: str,
     label: Optional[str] = None,
 ):
-    """Load a disk-paged IVF index.
-
-    Returns ``(index, id_map, reverse_id_map)`` or ``None`` if the index has not
-    been built yet.
-    """
     return load_paged_ivf_index(db_conn, index_name, expected_dim, metric, label=label)

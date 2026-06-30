@@ -1,13 +1,3 @@
-"""Unit tests for tasks.provider_migration_tasks.
-
-Tests structured in layers:
-  1. Pure functions: ``rewrite_id_map_json`` — JSON transform.
-  2. Reflective helpers: ``find_fk`` — mocked psycopg2 cursor.
-  3. Orchestration: ``execute_provider_migration`` — mocked psycopg2 connection
-     with assertion that SQL statements are issued in the expected order.
-
-Uses _import_module bypass.
-"""
 import json
 import os
 import sys
@@ -36,9 +26,6 @@ def mig():
     return _load_tasks_mod()
 
 
-# ---------------------------------------------------------------------------
-# Pure function: rewrite_id_map_json
-# ---------------------------------------------------------------------------
 
 class TestRewriteIdMapJson:
     def test_swaps_values_leaves_int_keys(self, mig):
@@ -49,8 +36,6 @@ class TestRewriteIdMapJson:
         assert parsed == {'0': 'new_a', '1': 'new_b', '2': 'new_c'}
 
     def test_drops_entries_with_no_mapping(self, mig):
-        # If an old_id was deleted as an orphan (not in mapping), drop it from the map
-        # so no dead pointers remain.
         old = json.dumps({'0': 'keep', '1': 'orphan', '2': 'keep2'})
         mapping = {'keep': 'new1', 'keep2': 'new2'}
         new = mig.rewrite_id_map_json(old, mapping)
@@ -69,9 +54,6 @@ class TestRewriteIdMapJson:
         assert parsed == {}
 
     def test_list_format_rewrites_in_place(self, mig):
-        # map_projection_data.id_map_json is a flat list where position N
-        # corresponds to row N of the projection matrix. The rewrite must
-        # keep the list length (and therefore row alignment) intact.
         old = json.dumps(['old_a', 'old_b', 'old_c'])
         mapping = {'old_a': 'new_a', 'old_b': 'new_b', 'old_c': 'new_c'}
         new = mig.rewrite_id_map_json(old, mapping)
@@ -79,15 +61,12 @@ class TestRewriteIdMapJson:
         assert parsed == ['new_a', 'new_b', 'new_c']
 
     def test_list_format_orphans_become_none(self, mig):
-        # Can't drop slots from a list — that would desync row positions
-        # from the projection matrix. Orphan slots become None and the
-        # consumer in app_map.py falls through to compute on-the-fly.
         old = json.dumps(['keep', 'orphan', 'keep2'])
         mapping = {'keep': 'new1', 'keep2': 'new2'}
         new = mig.rewrite_id_map_json(old, mapping)
         parsed = json.loads(new)
         assert parsed == ['new1', None, 'new2']
-        assert len(parsed) == 3  # length preserved
+        assert len(parsed) == 3
 
     def test_list_format_empty_mapping(self, mig):
         old = json.dumps(['a', 'b', 'c'])
@@ -96,16 +75,11 @@ class TestRewriteIdMapJson:
         assert parsed == [None, None, None]
 
     def test_unknown_top_level_type_is_left_alone(self, mig):
-        # Defensive: if someone stores a JSON scalar we don't know how to
-        # rewrite, leave the blob untouched rather than crashing the job.
         old = json.dumps('scalar_value')
         new = mig.rewrite_id_map_json(old, {'scalar_value': 'new'})
-        assert new == old  # unchanged
+        assert new == old
 
 
-# ---------------------------------------------------------------------------
-# find_fk — reflects the actual FK constraint name
-# ---------------------------------------------------------------------------
 
 class TestFindFk:
     def test_returns_constraint_name_when_found(self, mig):
@@ -113,7 +87,6 @@ class TestFindFk:
         cur.fetchone.return_value = ('embedding_item_id_fkey',)
         name = mig.find_fk(cur, 'embedding', 'item_id')
         assert name == 'embedding_item_id_fkey'
-        # Sanity: ensure the SELECT was against information_schema
         sql = cur.execute.call_args[0][0]
         assert 'information_schema' in sql
         assert 'FOREIGN KEY' in sql
@@ -125,12 +98,8 @@ class TestFindFk:
         assert name is None
 
 
-# ---------------------------------------------------------------------------
-# execute_provider_migration — sequence assertions
-# ---------------------------------------------------------------------------
 
 def _session_state(mapping, meta=None):
-    """Build a fake migration_session.state JSON blob."""
     return {
         'dry_run':        {'matches': mapping},
         'manual_matches': {},
@@ -140,7 +109,6 @@ def _session_state(mapping, meta=None):
 
 def _make_session_row(session_id=1, target='navidrome',
                       creds=None, state=None, status='dry_run_ready'):
-    """Single migration_session row as a tuple (id, target_type, target_creds, state, status)."""
     return (
         session_id,
         target,
@@ -152,24 +120,18 @@ def _make_session_row(session_id=1, target='navidrome',
 
 def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
                            authors=None, lyrics_exists=False):
-    """Install a fake psycopg2 connection on the module + mock out redis, probe, etc.
-
-    Returns (mock_conn, mock_cursor, executed_sql) for assertions.
-    """
     mock_cur = MagicMock()
-    executed = []  # list of SQL strings actually run
+    executed = []
 
     def _execute(sql, params=None):
         sql_str = sql.strip() if isinstance(sql, str) else str(sql).strip()
         executed.append(sql_str)
-        # Canned responses in the order they're asked for:
         up = sql_str.upper()
         if 'INFORMATION_SCHEMA' in up and 'FOREIGN KEY' in up:
             mock_cur.fetchone.return_value = ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
         elif 'TO_REGCLASS' in up and 'LYRICS_EMBEDDING' in up:
             mock_cur.fetchone.return_value = (lyrics_exists,)
         elif 'TO_REGCLASS' in up and 'MIGRATION_TARGET_META' in up:
-            # new_meta now lives in a side table; absent in these mocks -> {}.
             mock_cur.fetchone.return_value = (None,)
         elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
             mock_cur.fetchone.return_value = session_row
@@ -201,15 +163,12 @@ def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
     mock_conn.__enter__ = lambda self: self
     mock_conn.__exit__  = lambda self, *a: None
 
-    # Patch the module's attributes in-place
     mig._get_dedicated_conn = MagicMock(return_value=mock_conn)
 
-    # Redis stub
     fake_redis = MagicMock()
     fake_redis.get.return_value = None
     mig._get_redis = MagicMock(return_value=fake_redis)
 
-    # RQ worker stop: no-op (no live workers in test)
     mig._drain_workers_or_timeout = MagicMock()
 
     return mock_conn, mock_cur, executed
@@ -226,33 +185,21 @@ class TestExecuteProviderMigration:
         mig.execute_provider_migration(42)
 
         joined = '\n'.join(executed).upper()
-        # Advisory lock taken
         assert 'PG_ADVISORY_XACT_LOCK' in joined
-        # Temp table created
         assert 'CREATE TEMP TABLE ITEM_ID_MIGRATION_MAP' in joined
-        # Orphans deleted before rewrite
         assert 'DELETE FROM SCORE' in joined
-        # FK drops
         assert 'ALTER TABLE EMBEDDING DROP CONSTRAINT' in joined
         assert 'ALTER TABLE CLAP_EMBEDDING DROP CONSTRAINT' in joined
-        # UPDATE ... FROM rewrites
         assert 'UPDATE SCORE' in joined
         assert 'UPDATE PLAYLIST' in joined
         assert 'UPDATE EMBEDDING' in joined
         assert 'UPDATE CLAP_EMBEDDING' in joined
-        # FK re-add
         assert joined.count('ADD CONSTRAINT') >= 2
-        # Artist tables truncated
         assert 'DELETE FROM ARTIST_INDEX_DATA' in joined
         assert 'DELETE FROM ARTIST_COMPONENT_PROJECTION' in joined
         assert 'DELETE FROM ARTIST_MAPPING' in joined
-        # app_config upsert (provider credentials)
         assert 'INSERT INTO APP_CONFIG' in joined
-        # app_config table is created if missing (legacy DBs restored from
-        # backups predating the setup wizard don't have this table; the
-        # migration must create it transactionally before inserting).
         assert 'CREATE TABLE IF NOT EXISTS APP_CONFIG' in joined
-        # Session marked complete
         assert 'UPDATE MIGRATION_SESSION' in joined
 
     def test_delete_orphans_runs_before_updates(self, mig):
@@ -297,54 +244,30 @@ class TestExecuteProviderMigration:
 
         mig.execute_provider_migration(1)
 
-        # Redis set('migration:paused', '1', ...) should have been called
         fake_redis = mig._get_redis.return_value
         assert fake_redis.set.called
         paused_call_args = fake_redis.set.call_args
         assert paused_call_args[0][0] == 'migration:paused'
-        # And eventually cleared post-commit
         assert fake_redis.delete.called
         assert 'migration:paused' in [c[0][0] for c in fake_redis.delete.call_args_list]
 
     def test_vec_id_map_rewrite_happens(self, mig):
-        # Seed one ivf row with an id_map containing the old id
         ivf_rows = [('ivf_main', json.dumps({'0': 'old_1'}))]
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
         _install_fake_psycopg2(mig, session_row, ivf_rows=ivf_rows)
 
         mig.execute_provider_migration(1)
 
-        # The migration should have issued an UPDATE voyager_index_data after rewriting
-        # (we can't easily verify the exact JSON written without capturing params, but
-        #  we can verify the statement was executed)
-        # Fallback: walk the call_args_list and check sql strings
         calls = mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
         sqls = [c[0][0] for c in calls]
         upd_ivf = [s for s in sqls if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()]
         assert len(upd_ivf) >= 1
 
 
-# ---------------------------------------------------------------------------
-# _write_provider_to_app_config — MUSIC_LIBRARIES handling
-# ---------------------------------------------------------------------------
 
 class TestWriteProviderToAppConfigMusicLibraries:
-    """The migration wizard stores the user's library checkbox selection in
-    ``migration_session.state['selected_libraries']`` and
-    ``_write_provider_to_app_config`` is responsible for translating it into
-    ``app_config.MUSIC_LIBRARIES`` at commit time.
-
-    The same write must also wipe the SOURCE provider's old filter value —
-    because ``MUSIC_LIBRARIES`` is a single shared key, overwriting/deleting
-    it implicitly removes whatever the source provider had set.
-    """
 
     def _run(self, mig, selected_libraries):
-        """Invoke _write_provider_to_app_config with a fresh fake cursor.
-
-        Returns (executed_sqls, params_list) where each entry in
-        ``params_list`` is the params tuple passed to cur.execute (or None).
-        """
         cur = MagicMock()
         executed = []
         params = []
@@ -379,7 +302,6 @@ class TestWriteProviderToAppConfigMusicLibraries:
         executed, params = self._run(
             mig, selected_libraries=['Main Music', 'Podcasts'],
         )
-        # Find the MUSIC_LIBRARIES upsert
         ml_upserts = [
             (sql, p) for sql, p in zip(executed, params)
             if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
@@ -387,7 +309,6 @@ class TestWriteProviderToAppConfigMusicLibraries:
         assert len(ml_upserts) == 1, \
             "Non-empty selection must UPSERT MUSIC_LIBRARIES, not delete it."
         _, upsert_params = ml_upserts[0]
-        # params is a tuple (value,) for the INSERT statement
         assert upsert_params == ('Main Music,Podcasts',)
 
     def test_whitespace_only_entries_are_filtered(self, mig):
@@ -402,22 +323,14 @@ class TestWriteProviderToAppConfigMusicLibraries:
         assert ml_upserts[0][1] == ('Main Music,Podcasts',)
 
     def test_provider_creds_still_written_alongside(self, mig):
-        """Sanity: the existing behavior (writing MEDIASERVER_TYPE + creds) is
-        unchanged when selected_libraries is supplied."""
         executed, _ = self._run(mig, selected_libraries=['A'])
         joined = '\n'.join(executed).upper()
         assert 'INSERT INTO APP_CONFIG' in joined
-        # MEDIASERVER_TYPE and NAVIDROME_* keys should all be written
-        # (exact statement text contains them as parameter values, not SQL,
-        # but the presence of multiple INSERT statements is sufficient).
         insert_count = joined.count('INSERT INTO APP_CONFIG')
         assert insert_count >= 2, "expected multiple app_config upserts (type + creds + MUSIC_LIBRARIES)"
 
 
 class TestExecuteProviderMigrationForwardsSelectedLibraries:
-    """``execute_provider_migration`` must pull ``selected_libraries`` from the
-    session state and forward it to ``_run_migration_transaction``, otherwise
-    the checkbox selection in the UI never lands in ``app_config``."""
 
     def test_state_selected_libraries_reaches_write_provider(self, mig):
         state = _session_state({'old_1': 'new_1'})
@@ -425,8 +338,6 @@ class TestExecuteProviderMigrationForwardsSelectedLibraries:
         session_row = _make_session_row(state=state)
         _install_fake_psycopg2(mig, session_row)
 
-        # Spy on the transaction helper — we only care that selected_libraries
-        # arrives here.
         with patch.object(mig, '_run_migration_transaction') as mock_tx:
             mig.execute_provider_migration(42)
 
@@ -435,11 +346,7 @@ class TestExecuteProviderMigrationForwardsSelectedLibraries:
         assert kwargs.get('selected_libraries') == ['Main', 'Extra']
 
     def test_missing_state_selected_libraries_forwarded_as_none(self, mig):
-        """Pre-feature sessions have no ``selected_libraries`` key; the code
-        must not crash and must default to None (= DELETE MUSIC_LIBRARIES at
-        commit time, wiping any stale filter from the source provider)."""
         state = _session_state({'old_1': 'new_1'})
-        # No 'selected_libraries' key
         session_row = _make_session_row(state=state)
         _install_fake_psycopg2(mig, session_row)
 

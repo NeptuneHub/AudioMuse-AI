@@ -1,9 +1,3 @@
-"""Unit tests for tasks.provider_migration_matcher.
-
-Pure-logic tests for path normalization, metadata normalization, and the
-tiered matching algorithm. Uses _import_module bypass to avoid pulling in
-tasks/__init__.py -> librosa.
-"""
 import os
 import sys
 import importlib.util
@@ -11,7 +5,6 @@ import pytest
 
 
 def _load_matcher():
-    """Load tasks.provider_migration_matcher directly by path, bypassing package __init__."""
     mod_name = 'tasks.provider_migration_matcher'
     if mod_name in sys.modules:
         return sys.modules[mod_name]
@@ -31,9 +24,6 @@ def matcher():
     return _load_matcher()
 
 
-# ---------------------------------------------------------------------------
-# normalize_path
-# ---------------------------------------------------------------------------
 
 class TestNormalizePath:
     def test_empty_returns_none(self, matcher):
@@ -56,31 +46,24 @@ class TestNormalizePath:
         assert matcher.normalize_path('file:///mnt/data/music/Artist/Track.flac') == 'artist/track.flac'
 
     def test_url_decodes_file_uri(self, matcher):
-        # %20 is space — should be decoded
         assert matcher.normalize_path('file:///music/The%20Beatles/Abbey%20Road/Come%20Together.flac') == 'the beatles/abbey road/come together.flac'
 
     def test_backslash_to_forward_slash(self, matcher):
-        # Windows path: backslashes converted, lowercased
         assert matcher.normalize_path('C:\\Music\\Artist\\Track.flac') == 'c:/music/artist/track.flac'
 
     def test_lowercases_result(self, matcher):
         assert matcher.normalize_path('/MEDIA/MUSIC/ARTIST/TRACK.FLAC') == 'artist/track.flac'
 
     def test_no_matching_prefix_returns_lowercased_lstripped(self, matcher):
-        # No mount prefix — just normalizes case + leading slash
         assert matcher.normalize_path('/weird/path/song.mp3') == 'weird/path/song.mp3'
 
     def test_relative_path_unchanged_except_lowercase(self, matcher):
-        # Navidrome-style relative path
         assert matcher.normalize_path('Artist/Album/Song.flac') == 'artist/album/song.flac'
 
     def test_home_music_prefix(self, matcher):
         assert matcher.normalize_path('/home/music/Artist/Song.mp3') == 'artist/song.mp3'
 
 
-# ---------------------------------------------------------------------------
-# path_tail_key
-# ---------------------------------------------------------------------------
 
 class TestPathTailKey:
     def test_three_components(self, matcher):
@@ -90,7 +73,6 @@ class TestPathTailKey:
         assert matcher.path_tail_key('x/y/z.mp3') == 'x/y/z.mp3'
 
     def test_two_components(self, matcher):
-        # Fewer than 3 but at least 2 -> join all
         assert matcher.path_tail_key('album/song.flac') == 'album/song.flac'
 
     def test_single_component_returns_none(self, matcher):
@@ -109,9 +91,6 @@ class TestPathTailKey:
         assert matcher.path_tail_key('Artist/ALBUM/Song.FLAC') == 'artist/album/song.flac'
 
 
-# ---------------------------------------------------------------------------
-# normalize_meta
-# ---------------------------------------------------------------------------
 
 class TestNormalizeMeta:
     def test_empty_returns_empty(self, matcher):
@@ -155,13 +134,9 @@ class TestNormalizeMeta:
         assert matcher.normalize_meta('Too   Much  Space') == 'too much space'
 
     def test_keeps_core_title(self, matcher):
-        # Shouldn't over-strip normal words
         assert matcher.normalize_meta('Mixed Feelings') == 'mixed feelings'
 
 
-# ---------------------------------------------------------------------------
-# match_tracks
-# ---------------------------------------------------------------------------
 
 def _old(item_id, file_path=None, title=None, author=None, album=None, album_artist=None):
     return {
@@ -197,7 +172,6 @@ class TestMatchTracks:
         assert result['unmatched'] == []
 
     def test_matches_by_path_tail_when_prefixes_differ(self, matcher):
-        # Old path has prefix that's not in strip list, new has different prefix
         old_rows = [_old('old1', file_path='/unknown/prefix/Artist/Album/Track.flac',
                          title='Track', author='Artist', album='Album')]
         new_tracks = [_new('new1', path='/other/weird/Artist/Album/Track.flac',
@@ -207,7 +181,6 @@ class TestMatchTracks:
         assert result['tier_counts']['tail'] == 1
 
     def test_matches_by_exact_metadata_when_no_path(self, matcher):
-        # Navidrome RealPath=OFF case: new track has no path
         old_rows = [_old('old1', file_path='/media/music/a/b/c.flac',
                          title='Yesterday', author='The Beatles',
                          album='Help!', album_artist='The Beatles')]
@@ -219,7 +192,6 @@ class TestMatchTracks:
         assert result['tier_counts']['exact_meta'] == 1
 
     def test_matches_by_normalized_metadata(self, matcher):
-        # Title and artist differ cosmetically: "(Remastered)" and "The ..."
         old_rows = [_old('old1', file_path=None,
                          title='Hey Jude (Remastered 2015)', author='The Beatles',
                          album='Past Masters', album_artist='The Beatles')]
@@ -241,8 +213,6 @@ class TestMatchTracks:
         assert result['unmatched'][0]['item_id'] == 'old1'
 
     def test_tier_priority_path_beats_exact_meta(self, matcher):
-        # Old track has both a matchable path AND matchable metadata against DIFFERENT new tracks.
-        # Path tier should win.
         old_rows = [_old('old1', file_path='/media/music/A/B/C.flac',
                          title='Song', author='Artist', album='Album')]
         new_tracks = [
@@ -255,7 +225,6 @@ class TestMatchTracks:
         assert result['matches']['old1'] == 'new_path'
 
     def test_collision_higher_tier_wins(self, matcher):
-        # Two old rows both match the same new_id. The one with the better tier keeps it.
         old_rows = [
             _old('old_by_meta', file_path='/impossible/path/no_match.flac',
                  title='Song', author='Artist', album='Album'),
@@ -267,17 +236,11 @@ class TestMatchTracks:
                  title='Song', artist='Artist', album='Album'),
         ]
         result = matcher.match_tracks(old_rows, new_tracks)
-        # path tier old_by_path should win; old_by_meta becomes unmatched
         assert result['matches'] == {'old_by_path': 'shared'}
         assert len(result['unmatched']) == 1
         assert result['unmatched'][0]['item_id'] == 'old_by_meta'
 
     def test_multidisc_disambiguates_by_disc_track(self, matcher):
-        # Real-world shape: Navidrome vs Emby with a 2-disc "Japanese Edition"
-        # album where disc 1 and disc 2 share the same track titles. Path and
-        # tail tiers fail because Emby's directory format differs and its
-        # filenames use "1-5 Title.flac" vs Navidrome's "01-05 - Title.flac".
-        # Exact-meta tier would collide without disc/track disambiguation.
         old_rows = [
             _old('nav_d1',
                  file_path='Green Day/American Idiot (Japanese Edition)/01-05 - Are We The Waiting.flac',
@@ -303,26 +266,17 @@ class TestMatchTracks:
                  album_artist='Green Day'),
         ]
         result = matcher.match_tracks(old_rows, new_tracks)
-        # Both sides should match, each to the correct disc
         assert result['matches'] == {'nav_d1': 'emby_d1', 'nav_d2': 'emby_d2'}
         assert len(result['unmatched']) == 0
 
     def test_extract_disc_track_various_formats(self, matcher):
-        # Padded with dash
         assert matcher.extract_disc_track('01-05 - Are We The Waiting.flac') == (1, 5)
-        # Unpadded with dash, no separator before title
         assert matcher.extract_disc_track('1-5 Are We The Waiting.flac') == (1, 5)
-        # Dot separator
         assert matcher.extract_disc_track('2.4 Song.mp3') == (2, 4)
-        # Space separator
         assert matcher.extract_disc_track('2 4 Song.mp3') == (2, 4)
-        # Full path (directory stripped first)
         assert matcher.extract_disc_track('/music/Album/02-07 Song.flac') == (2, 7)
-        # Single disc-less track (no match)
         assert matcher.extract_disc_track('Song.flac') is None
-        # Single leading number is NOT disc/track
         assert matcher.extract_disc_track('07 Song.flac') is None
-        # Empty / None
         assert matcher.extract_disc_track('') is None
         assert matcher.extract_disc_track(None) is None
 
@@ -344,12 +298,8 @@ class TestMatchTracks:
 
 
 class TestTitleArtistTier:
-    """Opt-in ``title_artist`` tier: match by normalized (title, artist) only,
-    ignoring album. Only fires when all strict tiers miss."""
 
     def test_disabled_by_default_different_album_stays_unmatched(self, matcher):
-        # Same song, same artist, different album (studio vs. compilation).
-        # Default behavior: no match.
         old_rows = [_old('old1', file_path=None,
                          title='Yesterday', author='Beatles',
                          album='Help!', album_artist='Beatles')]
@@ -373,18 +323,16 @@ class TestTitleArtistTier:
         assert result['tier_counts']['title_artist'] == 1
 
     def test_lower_priority_than_norm_meta(self, matcher):
-        # Old row matches two new tracks: one by full metadata (norm_meta tier),
-        # one only by title+artist (title_artist tier). Strict tier must win.
         old_rows = [_old('old1', file_path=None,
                          title='Yesterday', author='The Beatles',
                          album='Help!', album_artist='The Beatles')]
         new_tracks = [
             _new('new_compilation', path=None,
                  title='Yesterday', artist='Beatles',
-                 album='1967-1970', album_artist='Beatles'),  # title_artist only
+                 album='1967-1970', album_artist='Beatles'),
             _new('new_studio', path=None,
                  title='Yesterday', artist='Beatles',
-                 album='Help!', album_artist='Beatles'),      # norm_meta
+                 album='Help!', album_artist='Beatles'),
         ]
         result = matcher.match_tracks(old_rows, new_tracks,
                                       allow_title_artist_only=True)
@@ -393,7 +341,6 @@ class TestTitleArtistTier:
         assert result['tier_counts']['title_artist'] == 0
 
     def test_tier_counts_include_title_artist_only_when_enabled(self, matcher):
-        # When disabled, the key isn't present in tier_counts.
         result_off = matcher.match_tracks([], [])
         assert 'title_artist' not in result_off['tier_counts']
 
@@ -403,21 +350,13 @@ class TestTitleArtistTier:
 
 
 class TestArtistHierarchy:
-    """The artist used for metadata keys must be the track-level performer,
-    not the album-level ``album_artist``. Compilation albums typically have
-    ``album_artist='Various Artists'`` while each track's ``author`` (source)
-    / ``artist`` (target) holds the real performer — matching on the album
-    field would never resolve compilations to the new provider.
-    """
 
     def test_source_prefers_author_over_various_artists_album_artist(self, matcher):
-        # Source row: compilation track where album_artist is the placeholder.
         old_rows = [_old('old1', file_path=None,
                          title='Hotel California',
                          author='Eagles',
                          album='Ultimate Rock Hits',
                          album_artist='Various Artists')]
-        # Target: same compilation, real performer in `artist`.
         new_tracks = [_new('new1', path=None,
                            title='Hotel California',
                            artist='Eagles',
@@ -428,9 +367,6 @@ class TestArtistHierarchy:
         assert result['tier_counts']['exact_meta'] == 1
 
     def test_title_artist_tier_uses_author_not_various_artists(self, matcher):
-        # Same real performer, different album versions, album_artist is the
-        # compilation placeholder. Only the title_artist tier can resolve this
-        # — and only if it reads `author` rather than `album_artist`.
         old_rows = [_old('old1', file_path=None,
                          title='Hotel California',
                          author='Eagles',
@@ -447,9 +383,6 @@ class TestArtistHierarchy:
         assert result['tier_counts']['title_artist'] == 1
 
     def test_target_prefers_artist_over_various_artists_album_artist(self, matcher):
-        # Source row has clean author; target row (e.g. Navidrome song) has
-        # album_artist='Various Artists' but artist=real performer. Matcher
-        # must use target's `artist`, not `album_artist`.
         old_rows = [_old('old1', file_path=None,
                          title='Stairway to Heaven',
                          author='Led Zeppelin',
@@ -465,9 +398,6 @@ class TestArtistHierarchy:
         assert result['tier_counts']['exact_meta'] == 1
 
     def test_source_falls_back_to_album_artist_when_author_missing(self, matcher):
-        # Defensive: ingesters that leave `author` blank but populate
-        # `album_artist` should still match when the target carries the same
-        # value in `artist`.
         old_rows = [_old('old1', file_path=None,
                          title='Bohemian Rhapsody',
                          author=None,
@@ -483,9 +413,6 @@ class TestArtistHierarchy:
         assert result['tier_counts']['exact_meta'] == 1
 
     def test_target_falls_back_to_album_artist_when_artist_missing(self, matcher):
-        # Defensive: probe that couldn't resolve a per-track artist (e.g. very
-        # thin Navidrome metadata) still matches when album_artist is
-        # populated on both sides.
         old_rows = [_old('old1', file_path=None,
                          title='Riders on the Storm',
                          author='The Doors',

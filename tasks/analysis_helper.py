@@ -1,5 +1,3 @@
-# tasks/analysis_helper.py
-"""Reusable building blocks extracted from tasks.analysis."""
 
 import gc
 import importlib
@@ -11,12 +9,6 @@ import onnxruntime as ort
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
 
-# `database` and `app_helper_artist` are safe at module top: they have no
-# import cycle back into this module, and importing the DB primitives directly
-# (rather than via the app_helper facade) keeps this helper decoupled from the
-# blueprint layer. Optional ML modules (.clap_analyzer / lyrics.lyrics_transcriber)
-# stay inline inside the per-feature helpers so workers without those models can
-# still import this module.
 from database import (
     get_db,
     get_clap_embedding,
@@ -30,7 +22,6 @@ from psycopg2 import sql as pgsql
 logger = logging.getLogger(__name__)
 
 
-# --- ONNX -------------------------------------------------------------------
 
 DEFINED_TENSOR_NAMES = {
     'embedding': {'input': 'model/Placeholder:0', 'output': 'model/dense/BiasAdd:0'},
@@ -39,7 +30,6 @@ DEFINED_TENSOR_NAMES = {
 
 
 def _find_onnx_name(candidate, names):
-    """Match a TF-style tensor name to one of the ONNX tensor names."""
     if not names:
         return None
     stripped = candidate.split(':')[0]
@@ -50,7 +40,6 @@ def _find_onnx_name(candidate, names):
 
 
 def run_inference(session, feed_dict, output_tensor_name=None):
-    """Run inference on an ONNX Runtime session, mapping TF-style names if needed."""
     input_names = [i.name for i in session.get_inputs()]
     mapped = {}
     for k, v in feed_dict.items():
@@ -73,28 +62,6 @@ def sigmoid(x):
 
 
 def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
-    """Centralized ONNX provider selection.
-
-    Returns an ordered ``[(provider_name, options), ...]`` chain following the
-    priority NVIDIA CUDA -> Apple CoreML (M1-M4) -> CPU. Providers that are not
-    available on the current machine are skipped, and CPU is always appended
-    last as the universal fallback.
-
-    Hardware accelerators are gated off when ``role == 'flask'`` because both
-    CUDA and CoreML sessions are thread-affine and the Flask web process serves
-    requests on short-lived per-request threads (see ``_load_text_model``).
-
-    ``cuda_options`` overrides the default CUDA provider options for callers
-    that need model-specific tuning (e.g. CLAP audio historically used
-    ``cudnn_conv_algo_search='DEFAULT'`` rather than the ``EXHAUSTIVE`` default
-    MusiCNN uses). CUDA-only — it has no effect on the macOS CoreML/CPU path.
-
-    CoreML is only attempted when ``allow_coreml`` is True. It ships in the
-    macOS ``onnxruntime`` wheel by default (no extra dependency), but it is not
-    a safe blanket default: it requires the ``MLProgram`` format for the dynamic
-    batch dimension our exports rely on, and unsupported ops (e.g. attention)
-    get partitioned back to CPU. So we opt in per-model only where it helps.
-    """
     available = ort.get_available_providers()
     chain = []
     accel_ok = role != 'flask'
@@ -109,8 +76,8 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
 
     if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
         chain.append(('CoreMLExecutionProvider', {
-            'MLComputeUnits': 'ALL',       # CPU + GPU + Apple Neural Engine
-            'ModelFormat': 'MLProgram',    # required for our dynamic batch dim
+            'MLComputeUnits': 'ALL',
+            'ModelFormat': 'MLProgram',
         }))
 
     chain.append(('CPUExecutionProvider', {}))
@@ -119,7 +86,6 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
 
 
 def get_provider_options(allow_coreml=False, role=None):
-    """Backwards-compatible alias for :func:`resolve_providers`."""
     return resolve_providers(allow_coreml=allow_coreml, role=role)
 
 
@@ -131,7 +97,6 @@ def _default_sess_options():
 
 
 def create_onnx_session(model_path, provider_options=None, label="", sess_options=None, allow_coreml=False):
-    """Create an InferenceSession; falls back to CPU if the preferred providers fail."""
     opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
     if sess_options is None:
         sess_options = _default_sess_options()
@@ -153,11 +118,6 @@ def create_onnx_session(model_path, provider_options=None, label="", sess_option
 
 
 def load_musicnn_sessions(model_paths):
-    """Build a {name: InferenceSession} dict for the MusiCNN models, or None on failure."""
-    # CoreML stays OFF here: MusiCNN takes a variable-length (N, 187, 96) patch
-    # tensor and CoreML can compile but NOT execute that dynamic shape — it
-    # raises "Unable to compute the prediction (error code: -1)" at run time,
-    # which our load-time/OOM fallbacks don't catch, so every track gets skipped.
     opts = resolve_providers(allow_coreml=False)
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
@@ -169,7 +129,6 @@ def load_musicnn_sessions(model_paths):
 
 
 def cleanup_musicnn_sessions(onnx_sessions, context=""):
-    """Close every MusiCNN session and run gc."""
     if not onnx_sessions:
         return
     suffix = f" ({context})" if context else ""
@@ -182,10 +141,6 @@ def cleanup_musicnn_sessions(onnx_sessions, context=""):
     gc.collect()
 
 
-# (label, module_path, is_loaded_fn, unload_fn) for each optional model.
-# ``module_path`` is fed straight into ``importlib.import_module`` (relative
-# paths use ``__package__`` = ``tasks``; absolute paths like ``'lyrics'``
-# resolve from the project root).
 _OPTIONAL_MODELS = (
     ('clap', '.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
     ('lyrics', 'lyrics', 'is_lyrics_loaded', 'unload_lyrics_models'),
@@ -193,14 +148,6 @@ _OPTIONAL_MODELS = (
 
 
 def cleanup_optional_models(context=""):
-    """Unload every optional model currently held by this worker.
-
-    Each entry is released inside its own try/except so a failure to
-    release one (e.g. import error, partial state) cannot prevent the
-    others from being freed. Called from ``analyze_album_task`` at album
-    end *and* in its surrounding ``finally`` clause — both call sites
-    expect this function to never raise.
-    """
     suffix = f" ({context})" if context else ""
     for label, mod, is_loaded_fn, unload_fn in _OPTIONAL_MODELS:
         try:
@@ -214,24 +161,6 @@ def cleanup_optional_models(context=""):
 
 def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
                                     model_path, label, owns_session, file_basename):
-    """Run inference; on GPU OOM, recreate the session on CPU and retry.
-
-    Returns ``(result, session)`` — the returned session is either the
-    original (no fallback) or a fresh CPU session (fallback occurred).
-
-    On OOM, the OOM'd GPU session's GPU buffers are freed BEFORE the CPU
-    session is allocated — this is critical when the caller passes a
-    shared session (``owns_session=False``), because creating the CPU
-    session itself allocates memory and can re-OOM if we don't reclaim
-    the GPU buffers first. The cleanup runs inside ``try/finally`` so
-    the OOM'd session is dropped even when CPU-session creation raises.
-
-    Note: dropping the local ``session`` reference here is necessary but
-    not sufficient — the caller must also drop *its* references (e.g. a
-    captured ``original_session`` local, or the shared session dict slot)
-    before GC can actually reclaim the GPU memory. See
-    ``tasks.analysis.analyze_track`` for the matching caller-side cleanup.
-    """
     try:
         return run_inference(session, feed_dict, output_tensor_name), session
     except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
@@ -240,18 +169,12 @@ def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
         logger.warning(f"GPU OOM for {file_basename} during {label} inference - falling back to CPU")
         cpu_session = None
         try:
-            # ALWAYS drop our local reference to the OOM'd session and reset the
-            # ONNX/CUDA memory pools before allocating the CPU session — even
-            # when ``owns_session=False``. The previous behavior skipped this
-            # cleanup for shared sessions, which (a) leaked the OOM'd GPU
-            # buffers for the rest of the album and (b) made the CPU session
-            # allocation more likely to re-OOM under memory pressure.
             try:
                 cleanup_onnx_session(session, label)
             except Exception:
                 logger.exception(
                     "Error cleaning up OOM'd %s session before CPU fallback", label)
-            session = None  # break this frame's reference explicitly
+            session = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
             except Exception:
@@ -265,14 +188,9 @@ def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
             logger.info(f"Successfully completed {label} inference on CPU after OOM")
             return result, cpu_session
         finally:
-            # Belt-and-suspenders: if anything above raised between the
-            # cleanup_onnx_session() call and the return, make sure our local
-            # references are gone so the OOM'd buffers can be reclaimed when
-            # the exception unwinds the frame.
             session = None
 
 
-# --- Audio features ---------------------------------------------------------
 
 _KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 _MAJOR = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
@@ -280,7 +198,6 @@ _MINOR = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
 
 
 def extract_basic_features(audio, sr):
-    """Return (tempo, energy, key, scale)."""
     tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
     energy = float(np.mean(librosa.feature.rms(y=audio)))
     chroma_mean = np.mean(librosa.feature.chroma_stft(y=audio, sr=sr), axis=1)
@@ -293,7 +210,6 @@ def extract_basic_features(audio, sr):
 
 
 def prepare_spectrogram_patches(audio, sr):
-    """Build the (N, 187, 96) float32 patch tensor MusiCNN expects, or None if too short."""
     n_mels, hop, n_fft, frame = 96, 256, 512, 187
     mel = librosa.feature.melspectrogram(
         y=audio, sr=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels,
@@ -306,14 +222,12 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
-# --- DB helpers -------------------------------------------------------------
 
 def _str_ids(ids):
     return [str(i) for i in ids]
 
 
 def get_existing_track_ids(track_ids):
-    """Return the subset of track_ids already fully analyzed by MusiCNN."""
     if not track_ids:
         return set()
     with get_db() as conn, conn.cursor() as cur:
@@ -328,13 +242,6 @@ def get_existing_track_ids(track_ids):
 
 
 def fetch_existing_top_moods(track_ids, top_n_moods):
-    """Return {track_id: {label: score}} top-N moods for already-analyzed tracks.
-
-    Tight DB-side fetch of just ``item_id`` + ``mood_vector`` from ``score``.
-    DB errors are logged and an empty dict is returned; malformed rows are
-    silently skipped. Callers must treat a missing key as 'no prior available'
-    and degrade to running the lyrics pipeline without the prior.
-    """
     if not track_ids or not top_n_moods or top_n_moods <= 0:
         return {}
     try:
@@ -368,7 +275,6 @@ def fetch_existing_top_moods(track_ids, top_n_moods):
 
 
 def get_missing_ids_in_table(table_name, track_ids):
-    """Return the subset of track_ids (as strings) with no row in `table_name`."""
     if not track_ids:
         return set()
     ids = _str_ids(track_ids)
@@ -385,7 +291,6 @@ _REFRESH_FIELDS = ('album', 'album_artist', 'year', 'rating', 'file_path')
 
 
 def refresh_track_metadata(item, album_name):
-    """COALESCE-update score metadata; never overwrite a non-null value with NULL."""
     values = (
         album_name,
         item.get('OriginalAlbumArtist'),
@@ -418,9 +323,6 @@ def refresh_track_metadata(item, album_name):
 
 
 def upsert_artist_mappings_for_tracks(tracks, album_name=None):
-    """Store distinct artist_name -> artist_id for a list of tracks. Errors are logged, never raised."""
-    # One id per name (last wins, as a per-track upsert would leave it); write the
-    # whole list in a single batch instead of one commit per track.
     last_id_by_name = {}
     for t in tracks:
         name, aid = t.get('AlbumArtist'), t.get('ArtistId')
@@ -435,10 +337,8 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
             logger.warning(f"No artist_id for '{name}'{scope}")
 
 
-# --- Per-track decision / status --------------------------------------------
 
 def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
-    """Return (needs_musicnn, needs_clap, needs_lyrics) for a single track."""
     return (
         track_id not in existing,
         track_id in missing_clap,
@@ -447,10 +347,10 @@ def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_
 
 
 def compute_album_needs(tracks, clap_available, lyrics_enabled):
-    """Return (existing_count, needs_clap, needs_lyrics) for an album."""
     ids = [str(t['Id']) for t in tracks]
     existing = len(get_existing_track_ids(ids))
-    needs_in = lambda flag, table: flag and bool(get_missing_ids_in_table(table, ids))
+    def needs_in(flag, table):
+        return flag and bool(get_missing_ids_in_table(table, ids))
     return (
         existing,
         needs_in(clap_available, 'clap_embedding'),
@@ -459,7 +359,6 @@ def compute_album_needs(tracks, clap_available, lyrics_enabled):
 
 
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    """Build the list of enabled-feature labels for skip log messages."""
     parts = ["MusiCNN"]
     if clap_available:
         parts.append("CLAP")
@@ -470,10 +369,8 @@ def build_feature_status_parts(clap_available, lyrics_enabled, include_check_mar
     return parts
 
 
-# --- CLAP / Lyrics per-track sub-tasks --------------------------------------
 
 def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_song_reload):
-    """Run CLAP audio analysis; returns the embedding or None."""
     if not (needs_clap and clap_available):
         return None
     logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
@@ -493,7 +390,6 @@ def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_so
 
 
 def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, item_id, labels):
-    """Return a 'label:0.42,label2:0.55' string from CLAP. Falls back to all-zero."""
     zero = ",".join(f"{k}:0.00" for k in labels)
     if label_embeddings is None:
         return zero
@@ -512,7 +408,6 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
 
 
 def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
-    """Save MusiCNN analysis + embedding via app_helper."""
     save_track_analysis_and_embedding(
         item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
         analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
@@ -527,7 +422,6 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
 
 
 def persist_clap_embedding(item_id, embedding, needs_clap):
-    """Save CLAP embedding (after the score row exists). Returns True on success."""
     if embedding is None or not needs_clap:
         return False
     try:
@@ -542,19 +436,6 @@ def persist_clap_embedding(item_id, embedding, needs_clap):
 def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                          needs_lyrics, lyrics_enabled, robust_load_fn,
                          top_moods=None, download_fn=None):
-    """Run lyrics analysis and persist embeddings. Returns True on save.
-
-    ``top_moods`` is the MusicNN top-N moods dict (label -> score). When it
-    includes 'instrumental', analyze_lyrics short-circuits the entire pipeline
-    (skips Whisper-small ASR + gte embedding) and writes the instrumental
-    sentinel directly. When it includes 'female vocalists' / 'male vocalists'
-    the VAD pre-pass is bypassed so quiet/low-voiced singers are not dropped.
-
-    Callers should pass the freshly computed top_moods on a full analysis
-    pass, or the moods reloaded from the ``score`` table on a MusicNN-skipped
-    pass (via fetch_existing_top_moods). Passing None is also valid and
-    simply runs the lyrics pipeline without these priors.
-    """
     if not (needs_lyrics and lyrics_enabled):
         if lyrics_enabled:
             logger.info("  - Lyrics analysis already exists or skipped")

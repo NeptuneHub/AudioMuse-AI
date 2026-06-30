@@ -1,20 +1,3 @@
-"""Real-Postgres integration tests for the read endpoints.
-
-Drives the actual external_bp / waveform_bp blueprints against a live database
-seeded with a real ``score`` / ``embedding`` layout. Beyond happy-path lookups,
-it proves the SQL-injection regression at the database level: an item id full of
-SQL metacharacters returns 404 and leaves the ``score`` table intact, which a
-mocked cursor cannot demonstrate.
-
-Database selection mirrors test_provider_migration_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_app_endpoints_integration.py -m integration -s -v --tb=short
-"""
 import os
 import sys
 import tempfile

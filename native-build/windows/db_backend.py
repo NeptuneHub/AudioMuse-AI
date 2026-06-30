@@ -1,26 +1,3 @@
-"""Embedded-database backend selector for the standalone Windows build.
-
-Two mechanisms provide the embedded PostgreSQL:
-
-* **pgserver available** -- the shared :mod:`database` module's pgserver path
-  (pgserver ships a Windows wheel with PostgreSQL + pgvector).
-* **Fallback** -- :mod:`windows.embedded_pg`, which manages a from-source,
-  relocatable PostgreSQL bundled in the package (if pgserver has no Windows wheel).
-
-Both expose the same ``start_embedded`` / ``ensure_embedded_running`` /
-``stop_embedded`` surface and return a connection-info dict
-(``host``/``port``/``user``/``password``/``dbname``), so :mod:`windows.supervisor`
-and :mod:`windows.env` build the child ``DATABASE_URL``/``POSTGRES_*`` from one
-source of truth. This keeps the platform-specific branching in one tiny place and
-changes **no shared code**.
-
-Unlike macOS/Linux (owner-only unix sockets), Windows has no AF_UNIX, so the
-cluster listens on loopback TCP, which any local process can reach. To keep the
-same "no unauthenticated local access" guarantee, the cluster is initialized with
-``scram-sha-256`` auth and a generated superuser password
-(:func:`windows.paths.db_password`) baked in at ``initdb`` time -- so the server
-is never reachable without the password and there is no trust window.
-"""
 
 import importlib
 import logging
@@ -42,7 +19,6 @@ _embedded_lock = threading.Lock()
 
 
 def _check_pgserver():
-    """Return True if pgserver can be imported (has a Windows wheel)."""
     global _USE_PGSERVER
     if _USE_PGSERVER is None:
         try:
@@ -65,7 +41,6 @@ def _conn(host, port, password, user="postgres", dbname="postgres"):
 
 
 def _conn_from_uri(uri, password):
-    """Build the conn dict from pgserver's password-less URI plus our password."""
     parsed = urlparse(uri)
     dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
     return _conn(parsed.hostname or "127.0.0.1", parsed.port or paths.pg_port(),
@@ -79,14 +54,6 @@ def _initdb_bin():
 
 
 def _preinit_scram(data_dir, password):
-    """Initialize the cluster with scram auth + ``password`` before pgserver sees it.
-
-    pgserver's ``ensure_pgdata_inited`` runs its own ``initdb --auth=trust`` only
-    when ``PG_VERSION`` is absent. Running our own scram ``initdb`` first (with
-    pgserver's own bundled binary, so the cluster is version-compatible) makes
-    pgserver skip that step and start straight into password-enforced mode -- the
-    server is never reachable without the password.
-    """
     pwfile = None
     try:
         fd, pwfile = tempfile.mkstemp(prefix="ampg_")
@@ -108,13 +75,6 @@ def _preinit_scram(data_dir, password):
 
 
 def _harden_existing(data_dir, password, uri):
-    """Best-effort upgrade of a legacy trust cluster (created before this fix).
-
-    Only triggers when ``PG_VERSION`` already existed and ``pg_hba.conf`` still
-    grants ``trust``. Sets the superuser password (PG16 stores a scram verifier by
-    default), rewrites the ``trust`` entries to ``scram-sha-256`` and reloads.
-    Never blocks startup: failures are logged and ignored.
-    """
     hba = os.path.join(data_dir, "pg_hba.conf")
     try:
         with open(hba, "r", encoding="utf-8") as fh:
@@ -152,25 +112,10 @@ def _harden_existing(data_dir, password, uri):
 
 
 def _has_cluster_data(data_dir):
-    """True if data_dir holds an initialized PostgreSQL cluster (never auto-delete it).
-
-    Keyed on ``global/pg_control``: written at the END of initdb and required for
-    the server to start, so its presence proves a complete cluster with real data.
-    A half-built dir (interrupted initdb, no pg_control) holds no usable data and
-    is still cleared normally, so this guard never blocks first-run self-heal.
-    """
     return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
 
 
 def _clear_stale_data_dir(data_dir):
-    """``initdb`` refuses to run against a non-empty target directory.
-
-    A crash mid-init -- or a partial cleanup of an earlier failed start -- can
-    leave an un-initialized data dir behind (e.g. just a ``log/`` subdir) that
-    has no ``PG_VERSION`` yet still makes the fresh ``initdb`` fail, bricking
-    every subsequent start. Wipe such leftovers before initializing -- but never
-    a dir that still holds a real cluster: surface an error instead of deleting.
-    """
     if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
         return
     if _has_cluster_data(data_dir):
@@ -185,21 +130,6 @@ def _clear_stale_data_dir(data_dir):
 
 
 def _patch_pgserver_pg_ctl():
-    """Make pgserver's ``pg_ctl start`` survive a double-click (tray) launch.
-
-    The bundled pgserver starts the cluster with ``pg_ctl -w start`` under a
-    hardcoded 10s :func:`subprocess.run` timeout and with no Windows creation
-    flags, so the spawned ``postgres`` inherits the launching console. That is
-    fine for ``AudioMuse-AI.exe start`` (supervisor on the main thread of a real
-    console), but not for a double-click, where the supervisor boots from a
-    daemon thread under a hidden console: the inherited console stalls
-    ``pg_ctl``'s readiness wait past 10s, the timeout fires, and the half-started
-    postgres is left orphaned holding the data dir -- bricking every later start.
-
-    Replace the ``pg_ctl`` symbol pgserver calls with a wrapper that runs every
-    ``start`` detached from any console and with a generous timeout. Idempotent;
-    a no-op off Windows.
-    """
     if os.name != "nt":
         return
     import pgserver.postgres_server as ps

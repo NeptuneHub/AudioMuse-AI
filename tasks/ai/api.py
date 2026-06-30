@@ -1,32 +1,3 @@
-"""Public AI API facade.
-
-Every AI call in AudioMuse-AI MUST go through this module. Callers pass an
-``ai_config`` dict (built from the user's request payload combined with
-``config.py`` defaults) and one of the public entry points below.
-
-Detection rule (per user spec):
-    1. ``ai_config['provider']`` is the source of truth.
-    2. We then validate that the URL/keys configured for that provider are
-       consistent with the chosen provider. If they are not, we log a clear
-       error and return ``"Error: ..."`` -- we do NOT silently fall back to a
-       different provider.
-
-Public entry points:
-    validate_ai_config(ai_config)
-        Returns ``(is_valid, error_message)``.
-    generate_text(prompt, ai_config, *, skip_delay=False)
-        Single-prompt freeform text completion.
-    call_with_tools(user_message, tools, ai_config, *, system_prompt=None,
-                    library_context=None, log_messages=None)
-        Provider-native (or prompt-based for Ollama) tool calling. Returns
-        ``{"tool_calls": [...]}`` or ``{"error": "..."}``.
-    clean_playlist_name(name)
-        Sanitize an AI-generated playlist name to standard ASCII.
-    get_ai_playlist_name(prompt_template, song_list, other_feature_scores_dict, ai_config)
-        High-level helper used by clustering/analysis: format prompt, call
-        ``generate_text``, validate length (5-40 chars), retry up to 3 times
-        with feedback, return cleaned name.
-"""
 import logging
 import re
 import unicodedata
@@ -47,25 +18,10 @@ logger = logging.getLogger(__name__)
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
 
 
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Provider detection / validation
-# ---------------------------------------------------------------------------
 
 def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
-    """Strictly validate that ``ai_config`` matches its declared provider.
-
-    Returns ``(True, None)`` on success, or ``(False, error_message)`` if the
-    provider is unknown or its required URL/key is missing/inconsistent. We
-    always log_error on failure and never fall back to another provider.
-
-    SECURITY: ``ai_config`` may contain API keys. Error messages returned to
-    the caller include the offending URL/provider for diagnostics, but the
-    ``logger.error`` lines log ONLY a static identifier so CodeQL's
-    clear-text-logging taint analysis cannot flag a leak via this dict.
-    """
     provider = (ai_config.get("provider") or "NONE").upper()
 
     if provider not in VALID_PROVIDERS:
@@ -150,23 +106,10 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-# ---------------------------------------------------------------------------
-# Generic dispatchers
-# ---------------------------------------------------------------------------
 
 def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
                   temperature: Optional[float] = None,
                   max_tokens: Optional[int] = None) -> str:
-    """Single-prompt freeform text completion.
-
-    Returns the model's text on success, or a string starting with ``"Error: "``
-    on failure. Returns ``"AI Naming Skipped"`` when provider is ``NONE``.
-
-    ``temperature=None`` keeps each provider's creative default; pass a value
-    (e.g. 0.0 for deterministic tasks like intent classification) to override.
-    ``max_tokens=None`` keeps the generous default (8000, for naming/brainstorm);
-    pass a value (e.g. 1024 for the chat classifier) to bound the generation.
-    """
     valid, err = validate_ai_config(ai_config)
     if not valid:
         return f"Error: {err}"
@@ -214,7 +157,6 @@ def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
             max_tokens=max_tokens,
         )
 
-    # Unreachable: validate_ai_config already rejects unknown providers.
     return f"Error: Unsupported provider {provider!r}"
 
 
@@ -227,14 +169,6 @@ def call_with_tools(
     library_context: Optional[Dict] = None,
     log_messages: Optional[List[str]] = None,
 ) -> Dict:
-    """Call AI with tool definitions and return its tool calls.
-
-    If ``system_prompt`` is None, build the canonical MCP system prompt from
-    ``tasks.ai.prompts.build_mcp_system_prompt(tools, library_context)``.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on
-    failure.
-    """
     if log_messages is None:
         log_messages = []
 
@@ -291,12 +225,8 @@ def call_with_tools(
     return {"error": f"Unsupported provider {provider!r}"}
 
 
-# ---------------------------------------------------------------------------
-# Playlist-naming helpers (high-level)
-# ---------------------------------------------------------------------------
 
 def clean_playlist_name(name: str) -> str:
-    """Sanitize an AI-generated playlist name to the allowed ASCII subset."""
     if not isinstance(name, str):
         return ""
     name = ftfy.fix_text(name)
@@ -313,16 +243,9 @@ def get_ai_playlist_name(
     other_feature_scores_dict: Optional[Dict],
     ai_config: Dict,
 ) -> str:
-    """Generate a playlist name via AI, with length validation and retry.
-
-    The prompt template MUST contain the ``{song_list_sample}`` placeholder.
-    Names are cleaned and validated against MIN_LENGTH..MAX_LENGTH (5..40);
-    on length failure the prompt is re-issued with feedback up to 3 times.
-    """
     MIN_LENGTH = 5
     MAX_LENGTH = 40
 
-    # Truncate song list to avoid token-limit issues
     max_songs = config.MAX_SONGS_IN_AI_PROMPT
     songs_for_prompt = song_list[:max_songs]
     formatted_song_list = "\n".join(

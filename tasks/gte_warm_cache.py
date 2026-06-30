@@ -1,15 +1,3 @@
-"""
-Idle warm-cache for the gte-multilingual-base lyrics-search model.
-
-Mirrors the CLAP text-search warmup pattern (tasks/clap_text_search.py): the
-Flask page warms the model on load, searches auto-warm and reset the timer, and
-a background worker unloads the model after an idle period to free RAM.
-
-The lock is a REENTRANT lock that doubles as the model-use mutex: a search holds
-it across warmup + inference, and the unload worker must hold it to unload. That
-prevents the background unload (which tears down the ONNX session) from running
-while an in-flight ``session.run()`` is using the model.
-"""
 
 import logging
 import threading
@@ -28,18 +16,10 @@ _WARM = {
 
 
 def warm_lock() -> threading.RLock:
-    """Return the reentrant model-use lock; hold it across warmup + inference."""
     return _WARM['lock']
 
 
 def _unload_timer_worker():
-    """Unload the gte model once the idle timer expires.
-
-    The expiry re-check AND the unload happen while holding the lock, and a
-    search holds the same lock across warmup + inference. So a search that just
-    reset the timer cancels the unload (expiry is re-read under the lock), and
-    the unload can never run concurrently with an in-flight embedding call.
-    """
     while True:
         with _WARM['lock']:
             expiry = _WARM['expiry_time']
@@ -63,7 +43,6 @@ def _unload_timer_worker():
 
 
 def warmup_gte_model() -> Dict:
-    """Load the gte model if needed and (re)start the idle-unload timer."""
     from lyrics import gte_onnx
 
     if not gte_onnx.is_loaded():
@@ -87,7 +66,6 @@ def warmup_gte_model() -> Dict:
 
 
 def get_gte_warm_status() -> Dict:
-    """Return whether the gte model is warm and seconds until idle-unload."""
     from lyrics import gte_onnx
 
     with _WARM['lock']:

@@ -1,21 +1,9 @@
-# ssrf_guard.py
-"""SSRF guard for user-supplied outbound URLs.
-
-A dependency-free leaf module (standard library only), so any blueprint, helper,
-or task can validate a URL without pulling in the database / task-queue / Flask
-layers. Keep it that way -- nothing here may import a project module.
-"""
 import ipaddress
 import socket
 from urllib.parse import urlparse
 
 
 def validate_outbound_url(url):
-    """SSRF guard for user-supplied outbound HTTP(S) URLs.
-
-    Returns ``(True, None)`` when the URL is safe to fetch, else
-    ``(False, reason)``.
-    """
     if not url:
         return False, 'URL is required'
     try:

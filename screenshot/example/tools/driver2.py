@@ -20,7 +20,6 @@ URLS = {
     'alchemy': '/alchemy',
 }
 
-# filled from the map-search-flows workflow output: { page_key: [ {label, steps, results_wait_selector}, ... ] }
 FLOWS = {
   "similarity": [{"label":"result","results_wait_selector":"#results-table-wrapper .song-result-list .result-item","steps":[
     {"action":"type","selector":"#search_query","value":"ar"},
@@ -87,7 +86,6 @@ FLOWS = {
     {"action":"wait_selector","selector":"#results-table-wrapper .result-item"}]}],
 }
 
-# output file name per (page_key, flow_label)
 def out_name(key, label, i):
     pref = {
         'similarity': '04_similarity_4',

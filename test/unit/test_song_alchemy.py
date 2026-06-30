@@ -4,7 +4,6 @@ import numpy as np
 import sys
 import os
 
-# Add the project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from tasks import song_alchemy
@@ -32,7 +31,6 @@ class TestSongAlchemy:
 
             mock_filter_dist.side_effect = lambda song_results, db_conn: song_results
 
-            # Setup default config values
             mock_config.ALCHEMY_DEFAULT_N_RESULTS = 10
             mock_config.ALCHEMY_MAX_N_RESULTS = 50
             mock_config.ALCHEMY_TEMPERATURE = 1.0
@@ -64,20 +62,17 @@ class TestSongAlchemy:
         assert np.allclose(centroid, [0.5, 0.5])
 
     def test_compute_centroid_from_items_artist(self, mock_dependencies):
-        # Artist with 2 components
         mock_dependencies['get_artist_gmm'].return_value = (
-            [np.array([1.0, 0.0]), np.array([3.0, 0.0])], # vectors
-            [0.5, 0.5] # weights
+            [np.array([1.0, 0.0]), np.array([3.0, 0.0])],
+            [0.5, 0.5]
         )
 
         items = [{'type': 'artist', 'id': 'a1'}]
         centroid = song_alchemy._compute_centroid_from_items(items)
 
-        # Weighted mean: (1.0*0.5 + 3.0*0.5) / (0.5+0.5) = 2.0
         assert np.allclose(centroid, [2.0, 0.0])
 
     def test_song_alchemy_basic_flow(self, mock_dependencies):
-        # Setup mocks
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
         mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
@@ -85,7 +80,7 @@ class TestSongAlchemy:
             'r1': {'item_id': 'r1', 'title': 'Result 1', 'author': 'Author 1'},
             'r2': {'item_id': 'r2', 'title': 'Result 2', 'author': 'Author 2'},
         })
-        mock_dependencies['load_map_projection'].return_value = (None, None) # Force local projection
+        mock_dependencies['load_map_projection'].return_value = (None, None)
 
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
@@ -94,12 +89,9 @@ class TestSongAlchemy:
 
         assert len(result['results']) == 2
         assert result['results'][0]['item_id'] in ['r1', 'r2']
-        # Check that projection was attempted (defaults to pca or none if few points)
         assert 'projection' in result
 
     def test_song_alchemy_subtraction(self, mock_dependencies):
-        # s1 is [1, 0], s2 (subtract) is [0, 1]
-        # r1 is [0.9, 0.1] (close to s1), r2 is [0.1, 0.9] (close to s2)
 
         def get_vec(id):
             vectors = {
@@ -122,10 +114,6 @@ class TestSongAlchemy:
         })
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
-        # Set subtract distance threshold high enough to filter r2
-        # Distance(sub1, r2) = sqrt(0.1^2 + 0.1^2) = sqrt(0.02) ~= 0.14
-        # Distance(sub1, r1) = sqrt(0.9^2 + 0.9^2) = sqrt(1.62) ~= 1.27
-        # If threshold is 0.5, r2 should be filtered out (dist < 0.5), r1 kept (dist > 0.5)
 
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
@@ -133,7 +121,6 @@ class TestSongAlchemy:
             subtract_distance=0.5
         )
 
-        # r2 is close to subtract centroid, so it should be filtered out
         result_ids = [r['item_id'] for r in result['results']]
         filtered_ids = [r['item_id'] for r in result['filtered_out']]
 
@@ -145,13 +132,11 @@ class TestSongAlchemy:
         proj = song_alchemy._project_to_2d(vectors)
         assert len(proj) == 3
         assert len(proj[0]) == 2
-        # Check values are within [-1, 1]
         for p in proj:
             assert -1.0 <= p[0] <= 1.0
             assert -1.0 <= p[1] <= 1.0
 
     def test_temperature_sampling(self, mock_dependencies):
-        # Mock neighbors
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
 
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
@@ -166,14 +151,12 @@ class TestSongAlchemy:
         })
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
-        # Test deterministic (temp=0)
         result_zero = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
             temperature=0.0
         )
         assert len(result_zero['results']) > 0
 
-        # Test high temperature
         result_high = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
             temperature=10.0

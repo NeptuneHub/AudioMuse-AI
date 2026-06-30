@@ -1,20 +1,3 @@
-"""MCP tool implementations.
-
-Synchronous bodies for every MCP tool dispatched by ``tasks.ai.tools``.
-Each function performs DB queries and/or AI calls and returns a result dict
-shaped like ``{"songs": [...], "message": "..."}``.
-
-This module contains *only* tool bodies and a small shared helper. Prompts
-live in ``tasks.ai.prompts``; AI calls go through ``tasks.ai.api``; DB
-connections come from ``tasks.mcp_helper.get_db_connection``.
-
-Dependencies on heavy submodules (``tasks.artist_gmm_manager``,
-``tasks.clap_text_search``, ``tasks.ivf_manager``, ``tasks.song_alchemy``,
-``tasks.ai.api``) are imported lazily inside each tool function. Each of those
-imports appears at most once across the module, so the lazy pattern is not
-duplication -- it is the standard way to keep this module loadable in test
-environments that stub those submodules via ``sys.modules``.
-"""
 import json
 import logging
 import re
@@ -29,16 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def _reroute_other_feature_labels(genres, moods, other_features):
-    """Move ``OTHER_FEATURE_LABELS`` mistakenly passed as ``genres`` or ``moods`` into
-    ``other_features``.
-
-    Small AI models often confuse the 6 CLAP labels (``danceable``, ``aggressive``,
-    ``happy``, ``party``, ``relaxed``, ``sad``) with genres or mood-vector tags.
-    These labels live in ``score.other_features``; only their canonical
-    ``"label:score"`` form survives the substring search there.
-
-    Returns (new_genres, new_moods, new_other_features, log_message_or_None).
-    """
     from config import OTHER_FEATURE_LABELS
     other_set = {m.lower() for m in OTHER_FEATURE_LABELS}
     canonical_by_lower = {m.lower(): m for m in OTHER_FEATURE_LABELS}
@@ -73,11 +46,6 @@ def _reroute_other_feature_labels(genres, moods, other_features):
 
 
 def _reroute_mood_labels_from_genres(genres, moods):
-    """Legacy shim: keeps the old (genres, moods) -> (genres, moods, msg) contract
-    for callers that haven't migrated to the 3-list signature. Internally now
-    routes OTHER_FEATURE_LABELS to the moods list as before (the new function
-    handles other_features routing directly).
-    """
     from config import OTHER_FEATURE_LABELS
     if not genres:
         return genres, moods, None
@@ -101,7 +69,6 @@ _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
 _FUZZY_PREFIX_LEN = 1
 
-# Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
 _MOOD_VECTOR_GE_SQL = (
     "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
 )
@@ -118,17 +85,10 @@ COALESCE(
     ),
     0
 )"""
-# Canonical regex for the instrumental label in mood_vector (musicnn output).
 _INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
 
 
 def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
-    """Fetch the scoring columns for a set of item_ids via the PK fast-path.
-
-    Returns ``{item_id: {mood_vector, other_features, tempo, energy, year,
-    scale, key, rating, author, album}}``. Empty dict when given no ids. One
-    indexed query (item_id = ANY) -- no text-column scan, no new index.
-    """
     if not item_ids:
         return {}
     db_conn = get_db_connection()
@@ -175,14 +135,6 @@ def _fuzzy_match_author_title(
     requested_author: str,
     requested_title: Optional[str] = None,
 ) -> Optional[Dict]:
-    """Last-resort fuzzy DB lookup using rapidfuzz on a narrowed candidate pool.
-
-    When the exact / ILIKE-normalized passes have failed, narrow the search to
-    rows whose author OR title shares a short prefix with the requested values
-    (cheap SQL filter), then rank candidates with token_set_ratio. Returns
-    ``{"item_id", "title", "author", "album", "score", "matched_label"}`` on a
-    confident match (score >= _FUZZY_MATCH_CUTOFF), or None.
-    """
     from rapidfuzz import fuzz
 
     if not requested_author and not requested_title:
@@ -256,14 +208,12 @@ def _fuzzy_match_author_title(
 
 
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict:
-    """Find songs by an artist plus songs by similar artists (GMM-based)."""
     from tasks.artist_gmm_manager import find_similar_artists, reverse_artist_map
 
     db_conn = get_db_connection()
     log_messages = []
 
     try:
-        # STEP 1: Fuzzy lookup in database to find correct artist name
         log_messages.append(f"Looking up artist in database: '{artist}'")
 
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
@@ -276,7 +226,6 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             result = cur.fetchone()
 
             if not result:
-                # Normalize: remove spaces, dashes, slashes to handle variations
                 artist_normalized = artist.replace(' ', '').replace('-', '').replace('\u2010', '').replace('/', '').replace("'", '')
 
                 log_messages.append(f"No exact match, trying fuzzy search for normalized: '{artist_normalized}'")
@@ -312,7 +261,6 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             else:
                 log_messages.append(f"Artist not found in database, using original: '{artist}'")
 
-        # STEP 2: Now call similarity API with correct artist name
         log_messages.append(f"Calling similarity API for: '{artist}'")
         similar_artists = find_similar_artists(artist, n=25)
 
@@ -385,13 +333,6 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
 
 
 def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int) -> Dict:
-    """CLAP audio text search -- PURE similarity, returns a large pool.
-
-    No tempo/energy/genre filtering happens here: the chat planner routes any
-    such filter through the ONE shared soft re-rank (``planner._rerank_pool``),
-    so this tool just returns the CLAP-similarity-ranked pool. ``tempo_filter`` /
-    ``energy_filter`` are accepted for signature compatibility but ignored.
-    """
     from tasks.clap_text_search import search_by_text
     from config import CLAP_ENABLED
 
@@ -428,7 +369,6 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
 
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> Dict:
-    """Find similar songs to a (title, artist) seed via IVF nearest neighbors."""
     from tasks.ivf_manager import find_nearest_neighbors_by_id
 
     get_songs = int(get_songs) if get_songs is not None else 100
@@ -520,7 +460,6 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
 
 
 def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict]] = None, get_songs: int = 100) -> Dict:
-    """Blend or subtract musical vibes via vector arithmetic over items."""
     from tasks.song_alchemy import song_alchemy
 
     log_messages = []
@@ -549,7 +488,6 @@ def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict
         songs = [{"item_id": s['item_id'], "title": s['title'], "artist": s.get('author', s.get('artist', '')), "album": s.get('album', '')} for s in raw_songs]
         log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
 
-        # --- Genre-coherence filter: remove off-genre results ---
         try:
             if songs and add_items:
                 db_conn_gc = get_db_connection()
@@ -727,7 +665,6 @@ def _database_genre_query_sync(
 
             has_instrumental_filter = False
             if instrumental is not None:
-                # Coerce string values (AI models sometimes pass 'true'/'false' as strings).
                 if isinstance(instrumental, str):
                     instrumental = instrumental.strip().lower() in ('true', '1', 'yes')
                 instrumental = bool(instrumental)
@@ -907,13 +844,6 @@ def _database_genre_query_sync(
 
 
 def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
-    """Find songs whose lyrics semantically match a free-text query.
-
-    Wraps ``tasks.lyrics_manager.search_by_text`` (the same backend that powers
-    the ``/api/lyrics/search/text`` endpoint), maps ``author`` -> ``artist`` to
-    match the shape other MCP tools return, and surfaces a clear message when
-    lyrics are disabled or the ivf index is not yet loaded.
-    """
     from config import LYRICS_ENABLED
 
     log_messages = []
@@ -950,12 +880,6 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
 
 
 def _extract_json_object(raw: str) -> Optional[Dict]:
-    """Best-effort recovery of a single JSON object from a model response.
-
-    Strips markdown code fences and any leading ``<think>...</think>`` preamble,
-    then parses the outermost ``{...}`` span. Returns the parsed dict, or ``None``
-    when no JSON object can be recovered.
-    """
     if not raw:
         return None
     text = raw.strip()
@@ -983,13 +907,6 @@ def _extract_json_object(raw: str) -> Optional[Dict]:
 
 
 def _clamp_recipe(recipe: Dict) -> Dict:
-    """Normalise a raw brainstorm recipe to safe, library-valid values.
-
-    Clamps genres/moods/voices to the known vocab (case/punctuation-insensitive),
-    coerces numeric ranges into bounds and repairs reversed min/max, and caps the
-    list fields by their config limits. Always returns the full set of keys so the
-    executor never has to defend against missing fields.
-    """
     import config
 
     def _norm(s):
@@ -1076,16 +993,6 @@ def _clamp_recipe(recipe: Dict) -> Dict:
 
 
 def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> Dict:
-    """Grounded brainstorm: the model emits a search RECIPE, not song titles.
-
-    The recipe (metadata filters + "how it sounds" descriptions + seed artists +
-    lyric themes) is executed against the real library through the existing
-    grounded channels (CLAP audio search, artist similarity, lyrics search,
-    metadata filter) and the results are fused. Small models recall specific songs
-    poorly but understand and categorise requests well, so this keeps the catalog
-    external to the model's weights (issue #643). Grounding happens inside this
-    tool, so the planner still returns the result as-is.
-    """
     import config
     from tasks.ai.api import generate_text as _ai_generate_text
     from tasks.ai.prompts import build_ai_brainstorm_prompt
@@ -1157,10 +1064,6 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
         return config.ENERGY_MIN + float(value) * (config.ENERGY_MAX - config.ENERGY_MIN)
 
     def _year_gate(songs, year_min, year_max):
-        """Keep only songs whose release year is in range. Sound/artist channels
-        match on audio/similarity and cannot honor a release-year constraint, so a
-        request like '90s rap' would otherwise leak any-era songs. No-op when no
-        year is set."""
         if year_min is None and year_max is None:
             return songs or []
         ids = [s.get("item_id") for s in (songs or []) if s.get("item_id")]

@@ -1,20 +1,16 @@
-# tasks/cleaning.py
 
 import time
 import logging
 import uuid
 from collections import defaultdict
 
-# RQ import
 from rq import get_current_job
 
-# Import configuration
 from config import CLEANING_SAFETY_LIMIT
 
 from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
-# Import other project modules
 from .mediaserver import get_recent_albums, get_tracks_from_album
 
 from psycopg2 import OperationalError
@@ -23,10 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 def identify_and_clean_orphaned_albums_task():
-    """
-    Main RQ task to identify and automatically clean orphaned albums from the database.
-    This combines identification and deletion into a single automated process.
-    """
     from flask_app import app
     from app_helper import redis_conn, get_db, save_task_status
     from config import TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE
@@ -65,9 +57,8 @@ def identify_and_clean_orphaned_albums_task():
         try:
             log_and_update_main("Starting orphaned album identification...", 5)
 
-            # Step 1: Get all albums from media server (fetch all albums with limit=0)
             log_and_update_main("Fetching all albums from media server...", 10)
-            all_media_server_albums = get_recent_albums(0)  # 0 means fetch all albums
+            all_media_server_albums = get_recent_albums(0)
 
             if not all_media_server_albums:
                 log_and_update_main("No albums found on media server.", 95, task_state=TASK_STATUS_PROGRESS)
@@ -86,7 +77,6 @@ def identify_and_clean_orphaned_albums_task():
 
             log_and_update_main(f"Found {len(all_media_server_albums)} albums on media server", 20)
 
-            # Step 2: Get all track IDs that exist on the media server
             log_and_update_main("Collecting all track IDs from media server...", 25)
             media_server_track_ids = set()
             albums_processed = 0
@@ -99,7 +89,6 @@ def identify_and_clean_orphaned_albums_task():
                             media_server_track_ids.add(str(track['Id']))
                     albums_processed += 1
 
-                    # Update progress every 10 albums
                     if idx % 10 == 0:
                         progress = 25 + int(50 * (idx / float(len(all_media_server_albums))))
                         log_and_update_main(f"Processed {albums_processed}/{len(all_media_server_albums)} albums...", progress)
@@ -110,12 +99,11 @@ def identify_and_clean_orphaned_albums_task():
 
             log_and_update_main(f"Found {len(media_server_track_ids)} total tracks on media server", 75)
 
-            # Step 3: Get all track IDs from database
             log_and_update_main("Fetching all track IDs from database...", 80)
             with get_db() as conn, conn.cursor() as cur:
                 cur.execute("""
-                    SELECT DISTINCT s.item_id, s.title, s.author 
-                    FROM score s 
+                    SELECT DISTINCT s.item_id, s.title, s.author
+                    FROM score s
                     JOIN embedding e ON s.item_id = e.item_id
                 """)
                 database_tracks = cur.fetchall()
@@ -123,11 +111,9 @@ def identify_and_clean_orphaned_albums_task():
             database_track_ids = {row[0] for row in database_tracks}
             log_and_update_main(f"Found {len(database_track_ids)} tracks in database", 85)
 
-            # Step 4: Identify orphaned tracks (in database but not on media server)
             orphaned_track_ids = database_track_ids - media_server_track_ids
             log_and_update_main(f"Identified {len(orphaned_track_ids)} orphaned tracks", 90)
 
-            # Step 5: Group orphaned tracks by artist/album for better presentation
             orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
 
             for track_data in database_tracks:
@@ -141,7 +127,6 @@ def identify_and_clean_orphaned_albums_task():
                     })
                     orphaned_albums_info[album_key]["track_count"] += 1
 
-            # Convert to list for JSON serialization
             orphaned_albums_list = []
             for artist, info in orphaned_albums_info.items():
                 orphaned_albums_list.append({
@@ -150,18 +135,14 @@ def identify_and_clean_orphaned_albums_task():
                     "tracks": info["tracks"]
                 })
 
-            # Sort by track count (albums with more tracks first)
             orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
 
-            # Safety check: limit deletion to prevent accidents
             total_orphaned_albums = len(orphaned_albums_list)
             safety_limit_applied = False
             if total_orphaned_albums > CLEANING_SAFETY_LIMIT:
                 safety_limit_applied = True
                 log_and_update_main(f"Safety limit: Found {total_orphaned_albums} orphaned albums, limiting to first {CLEANING_SAFETY_LIMIT} for safety", 92)
-                # Keep only first CLEANING_SAFETY_LIMIT albums
                 orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
-                # Recalculate track IDs for limited albums
                 limited_track_ids = set()
                 for album in orphaned_albums_list:
                     for track in album["tracks"]:
@@ -197,7 +178,6 @@ def identify_and_clean_orphaned_albums_task():
 
             log_and_update_main(f"Starting automatic deletion of {len(orphaned_track_ids)} orphaned tracks...", 93)
 
-            # Step 6: Automatically delete all orphaned tracks
             deletion_result = delete_orphaned_albums_sync(list(orphaned_track_ids))
 
             summary = {
@@ -233,7 +213,6 @@ def identify_and_clean_orphaned_albums_task():
                     final_summary_details=summary
                 )
 
-                # Only show additional cleanup message if we actually hit the safety limit
                 if safety_limit_applied:
                     remaining_count = total_orphaned_albums - len(orphaned_albums_list)
                     if remaining_count > 0:
@@ -266,16 +245,6 @@ def identify_and_clean_orphaned_albums_task():
 
 
 def delete_orphaned_albums_sync(orphaned_track_ids):
-    """
-    Synchronous function to delete orphaned albums from the database.
-    This function is called after user confirmation.
-    
-    Args:
-        orphaned_track_ids (list): List of track IDs to delete from database
-        
-    Returns:
-        dict: Result summary with deletion statistics
-    """
     from app_helper import get_db
 
     if not orphaned_track_ids:
@@ -288,9 +257,6 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
         with get_db() as conn:
             with conn.cursor() as cur:
                 def _table_exists(table_name):
-                    """Return True if a regular table with this (unqualified) name exists
-                    in the current search_path. Uses ``to_regclass`` so it never raises
-                    even if the table is missing."""
                     try:
                         cur.execute("SELECT to_regclass(%s)", (table_name,))
                         row = cur.fetchone()
@@ -300,8 +266,6 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
                         return False
 
                 def _delete_from_child_table(table_name):
-                    """Delete the orphaned track rows from a child table of `score`.
-                    Skips silently if the table doesn't exist (older deployments)."""
                     if not _table_exists(table_name):
                         logger.info(f"Skipping {table_name}: table does not exist.")
                         return
@@ -317,16 +281,10 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
                             logger.warning(f"Failed to delete {table_name} for track {track_id}: {e}")
                             failed_deletions.append({"track_id": track_id, "table": table_name, "error": str(e)})
 
-                # Delete from child tables first (foreign key constraint).
-                # All are declared with ON DELETE CASCADE on score(item_id), so this
-                # is technically redundant — but explicit cleanup gives us per-row error
-                # tracking via failed_deletions. Tables that don't exist on this
-                # deployment are skipped silently.
                 _delete_from_child_table("embedding")
                 _delete_from_child_table("lyrics_embedding")
                 _delete_from_child_table("clap_embedding")
 
-                # Delete from score table
                 logger.info(f"Deleting {len(orphaned_track_ids)} tracks from score table...")
                 for track_id in orphaned_track_ids:
                     try:
@@ -340,15 +298,12 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
                         logger.warning(f"Failed to delete score for track {track_id}: {e}")
                         failed_deletions.append({"track_id": track_id, "table": "score", "error": str(e)})
 
-                # Commit the transaction
                 conn.commit()
                 logger.info(f"Successfully deleted {deleted_count} orphaned tracks from database")
 
-        # Also clean up any related data that might reference these tracks
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
-                    # Clean up playlist entries for deleted tracks
                     for track_id in orphaned_track_ids:
                         cur.execute("DELETE FROM playlist WHERE item_id = %s", (track_id,))
                     conn.commit()
@@ -356,16 +311,14 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
         except Exception as e:
             logger.warning(f"Failed to clean up playlist references: {e}")
 
-        # Clean up orphaned artists from artist_mapping table
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
-                    # Find artists that no longer have any tracks in the score table
                     cur.execute("""
                         DELETE FROM artist_mapping
                         WHERE artist_name NOT IN (
-                            SELECT DISTINCT author 
-                            FROM score 
+                            SELECT DISTINCT author
+                            FROM score
                             WHERE author IS NOT NULL AND author != ''
                         )
                     """)

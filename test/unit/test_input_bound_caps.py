@@ -1,14 +1,3 @@
-"""Input-validation / bound-cap tests for PR.md theme #5.
-
-Covers the search 'limit' caps (500 tracks in app_ivf, 100 artists in
-app_artist_similarity), 'n' coercion+clamping (app_alchemy /api/alchemy,
-app_ivf /api/similar_tracks), and playlist/anchor name type+empty checks
-(app_ivf /api/create_playlist, app_alchemy /api/anchors).
-
-The backend index/db calls are patched per test so no real backend runs;
-every assertion checks the value actually handed to the (mocked) backend,
-or the HTTP status, so none of them are tautologies.
-"""
 from unittest.mock import patch
 import pytest
 from flask import Flask
@@ -77,7 +66,6 @@ class TestIvfSimilarTracksNCoercion:
         with patch.object(app_ivf, 'find_nearest_neighbors_by_id', return_value=[]) as backend:
             resp = client.get('/api/similar_tracks',
                               query_string={'item_id': 'x', 'n': 'notanint'})
-        # 404 because the (mocked) search found nothing -- never a 500/crash.
         assert resp.status_code != 500
         assert backend.call_args.kwargs['n'] == 10
 

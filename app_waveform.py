@@ -49,14 +49,14 @@ def generate_waveform_peaks(file_path, samples_count=500):
     """
     Generate waveform peaks data for fast visualization.
     Ultra-fast implementation using soundfile + scipy for speed.
-    
+
     Args:
         file_path: Path to the audio file
         samples_count: Number of sample pairs to generate (default 500 = 1000 values for min/max peaks)
-    
+
     Returns:
         List of float32 values representing min/max pairs, normalized to -1.0 to 1.0
-        
+
     Raises:
         RuntimeError: If required libraries are not available or audio processing fails
     """

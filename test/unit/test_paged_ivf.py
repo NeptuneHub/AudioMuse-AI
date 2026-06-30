@@ -1,8 +1,3 @@
-"""Unit tests for the disk-paged IVF format and the byte-bounded cell cache.
-
-These exercise the pure-Python pieces (no database): the directory and cell
-binary round-trips and the LRU cache's eviction invariant.
-"""
 import os
 import sys
 import threading
@@ -116,11 +111,10 @@ def test_cell_round_trip_i8_quantizes_unit_vectors_within_tolerance():
     vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
     ids = np.arange(n, dtype=np.int32)
     blob = pack_cell(ids, vecs, code)
-    assert len(blob) == n * (4 + dim)  # int8 -> 1 byte per dim + 4-byte id
+    assert len(blob) == n * (4 + dim)
     ids2, vecs2 = unpack_cell(blob, dim, code)
     assert vecs2.dtype == np.int8
     np.testing.assert_array_equal(ids2, ids)
-    # i8 stores round(unit * 127); decode_row recovers the unit vector within ~1/127.
     decoded = np.vstack([quant.decode_row(vecs2[i], code) for i in range(n)])
     np.testing.assert_allclose(decoded, vecs, atol=1.5 / 127.0)
 
@@ -142,7 +136,6 @@ def test_quant_cell_distances_i8_matches_numpy_cosine():
     got = quant.cell_distances("angular", code, qp, enc, normalized=True)
 
     assert got.shape == (n,)
-    # int8 quantization error on a unit-cosine scale stays small.
     assert float(np.max(np.abs(got - ref))) < 0.03
 
 
@@ -157,7 +150,7 @@ def test_quant_cell_distances_f16_euclidean_near_lossless():
     ref = np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
 
     code = quant.effective_code(quant.DTYPE_I8, "euclidean")
-    assert code == quant.DTYPE_F16  # i8 is invalid for euclidean -> f16
+    assert code == quant.DTYPE_F16
     enc = quant.encode_vectors(vecs, code)
     qp = quant.prepare_query(q, code, "euclidean")
     got = quant.cell_distances("euclidean", code, qp, enc, normalized=False)
@@ -182,7 +175,6 @@ def test_quant_numpy_fallback_matches_numkong(monkeypatch):
     monkeypatch.setattr(quant, "HAVE_NUMKONG", False)
     fallback = quant.cell_distances("angular", code, qp, enc, normalized=True)
 
-    # The NumPy fallback must agree with the native kernel within rounding noise.
     np.testing.assert_allclose(primary, fallback, rtol=0, atol=2e-3)
 
 
@@ -417,7 +409,6 @@ import mmap as _mmap_mod
 
 
 def _vmrss_kb():
-    """Resident set size in KB from /proc/self/status, or None off Linux."""
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -433,13 +424,6 @@ def _vmrss_kb():
     reason="MADV_DONTNEED / VmRSS only available on Linux",
 )
 def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
-    """MADV_DONTNEED on a live index's mapping must actually shrink process RSS.
-
-    This is the real fix for idle RAM not returning to baseline: the disk-cache
-    mmap pages faulted in during queries are file-backed (malloc_trim cannot free
-    them), so the idle watcher advises them away. We map a real file, fault every
-    page in, then assert the drop is reflected in VmRSS.
-    """
     import tasks.paged_ivf as pv
 
     size = 96 * 1024 * 1024
@@ -450,7 +434,7 @@ def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
             f.write(block)
 
     mm = np.memmap(str(path), dtype=np.uint8, mode="r")
-    _ = int(mm.sum(dtype=np.int64))  # touch every page -> resident
+    _ = int(mm.sum(dtype=np.int64))
 
     class _Stub:
         pass
@@ -475,7 +459,6 @@ def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
 
 
 def test_drop_pages_windows_routing(tmp_path, monkeypatch):
-    """On Windows the drop routes through VirtualUnlock; ERROR_NOT_LOCKED counts as success."""
     import tasks.paged_ivf as pv
 
     path = tmp_path / "wcells.bin"
@@ -490,7 +473,6 @@ def test_drop_pages_windows_routing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pv.platform, "system", lambda: "Windows")
 
-    # FALSE + ERROR_NOT_LOCKED(158) is the documented success path for unlocked pages.
     stub, mm = make_stub()
     calls = []
 
@@ -502,14 +484,12 @@ def test_drop_pages_windows_routing(tmp_path, monkeypatch):
     assert pv._drop_resident_mmap_pages([stub]) == 1
     assert calls == [(int(mm.ctypes.data), int(mm.nbytes))]
 
-    # A genuine failure (other error code, FALSE) must not be counted as dropped.
     stub2, _mm2 = make_stub()
     monkeypatch.setattr(pv, "_win_virtual_unlock", lambda: ((lambda addr, size: 0), lambda: 5))
     assert pv._drop_resident_mmap_pages([stub2]) == 0
 
 
 def test_mmap_idle_worker_drops_pages_and_runs_callbacks(monkeypatch):
-    """An idle disk-cache working set must fire the watcher: drop + idle callbacks."""
     import tasks.paged_ivf as pv
 
     monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 1)
@@ -543,7 +523,6 @@ def test_note_mmap_activity_noop_when_disabled(monkeypatch):
 
 
 def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
-    """A continuously-queried index must not keep an idle index's pages resident."""
     import tasks.paged_ivf as pv
 
     monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 2)
@@ -565,11 +544,11 @@ def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
 
     hot = _Stub()
     idle = _Stub()
-    idle._last_mmap_access = time.monotonic() - 100  # already well past the window
+    idle._last_mmap_access = time.monotonic() - 100
     pv._LIVE_INDEXES.add(hot)
     pv._LIVE_INDEXES.add(idle)
     try:
-        pv._note_mmap_activity(hot)  # hot is fresh; starts the watcher
+        pv._note_mmap_activity(hot)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and not captured:
             time.sleep(0.1)

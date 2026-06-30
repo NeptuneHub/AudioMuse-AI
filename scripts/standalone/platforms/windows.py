@@ -31,7 +31,6 @@ def prepare(ctx):
 
 
 def _stage_numkong_openmp(omp_dll):
-    # Drop numkong's unbundled libomp next to the installed extension.
     spec = importlib.util.find_spec("numkong")
     if not spec or not spec.origin:
         print("[WARN] numkong not installed in build venv; the i8 SIMD kernels will be absent.")

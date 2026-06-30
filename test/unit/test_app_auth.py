@@ -1,10 +1,3 @@
-"""Security-contract unit tests for app_auth (first coverage for this module).
-
-Covers the JWT cookie path (incl. the empty-secret fail-closed behaviour), the
-Bearer token constant-time path, admin-only path enforcement, and the argon2
-password hashing of the user CRUD. The DB is mocked; the auth/admin checks run
-inside a real request context so g/request/url_for behave as in production.
-"""
 from unittest.mock import MagicMock
 
 import jwt as pyjwt

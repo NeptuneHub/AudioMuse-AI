@@ -1,29 +1,3 @@
-"""Chat-pipeline orchestration: pre-extract, classifier, validation, plan execution.
-
-Single home for everything that turns a user's natural-language request into
-executed tool calls. Replaces the old split across ``tool_plan.py`` +
-``tool_planner.py`` + ``intent_classifier.py`` + ``intent_preextract.py``.
-
-Public surface (call sites elsewhere import from here):
-
-    Pre-extract:
-        extract_hints(text)            -> dict
-        format_hints_block(hints)      -> str
-
-    Plan model + validation:
-        ToolPlan                       (dataclass)
-        validate_plan_args(...)        pre-execution sanity checks
-        validate_and_normalize_plan(...) raw tool_calls -> ToolPlan
-        plan_from_tool_calls(...)      thin alias
-
-    Intent classifier (stage 1):
-        classify(user_message, ai_config, log_messages=None) -> Optional[dict]
-        tools_for_intent(primaries, needs_filter, all_tools)  -> filtered tool list
-
-    Orchestrators:
-        call_ai_for_plan(...)          one transport call, returns raw tool_calls
-        plan_and_execute_once(...)     two-stage classifier + execute pipeline
-"""
 import json
 import logging
 import re
@@ -55,15 +29,8 @@ FILTER_NAME = 'search_database'
 RELAX_THRESHOLD_STEPS = (0.5, 0.4, 0.3, 0.2)
 SCORED_FILTER_KEYS = ('genres', 'voices', 'moods', 'other_features')
 
-# Presence/identity dims the user names explicitly. In the composition re-rank
-# these act as a priority tier (songs that HAVE them rank above songs that
-# don't); the continuous dims only order songs within each tier. Everything else
-# requested (moods, energy, tempo, year, min_rating, key) is a gradient.
 CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album')
 
-# text_match carries coarse audio buckets; map them to the same filter dims the
-# soft re-rank scores, so a text_match's tempo/energy goes through the ONE
-# central re-rank (energy normalized 0..1; tempo in BPM).
 _ENERGY_BUCKET_RANGE = {'low': (0.0, 0.33), 'medium': (0.33, 0.66), 'high': (0.66, 1.0)}
 _TEMPO_BUCKET_RANGE = {'slow': (None, 90), 'medium': (90, 140), 'fast': (140, None)}
 
@@ -79,7 +46,6 @@ _KEY_PC = {
 
 
 def _key_pitch_class(k) -> Optional[int]:
-    """Map a key label ('C', 'F# minor', 'Bb') to a 0..11 pitch class, or None."""
     if not k:
         return None
     s = str(k).strip().upper().replace('♯', '#').replace('♭', 'B')
@@ -91,13 +57,6 @@ def _key_pitch_class(k) -> Optional[int]:
 
 
 def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
-    """Continuous 0..1 fit of a normalized value against a requested [lo,hi] band.
-
-    All args are in [0,1]. Directional so that 'high X' (band open at the top)
-    rewards higher values, 'low X' (band open at the bottom) rewards lower
-    values, and a bounded band rewards proximity to its centre. Always
-    differentiates, so songs never tie on a continuous feature.
-    """
     v = max(0.0, min(1.0, v_norm))
     prefer_high = req_hi >= 0.99 and req_lo > 0.01
     prefer_low = req_lo <= 0.01 and req_hi < 0.99
@@ -111,7 +70,6 @@ def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
 
 
 def _parse_tag_scores(raw: str) -> Dict[str, float]:
-    """Parse a 'label:score,label:score' column into {label_lower: float}."""
     out: Dict[str, float] = {}
     if not raw or not isinstance(raw, str):
         return out
@@ -130,15 +88,6 @@ def _parse_tag_scores(raw: str) -> Dict[str, float]:
 
 
 def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
-    """Raw 0..1 per-dimension match scores for one song (only requested dims).
-
-    Routing follows the data model: genres/voices -> mood_vector;
-    moods/other_features -> other_features; energy/tempo -> directional
-    gradient; year -> distance-decay; rating -> /5; key -> chromatic distance;
-    scale/artist/album -> identity. Keyed by dimension name so the caller can
-    min-max normalize each dimension across the pool before blending (otherwise
-    a wide-range dim like energy drowns a narrow one like a mood confidence).
-    """
     out: Dict[str, float] = {}
     if not filt or not feats:
         return out
@@ -230,12 +179,6 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
 
 
 def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]):
-    """Per-dimension truthful stats for the composition re-rank log.
-
-    Returns (human_lines, machine_dict). Tag dims report how many pool songs
-    carry the requested label(s) and the score range, noting dense
-    (other_features, every song 0..1) vs sparse (mood_vector top-5, absence=0).
-    """
     items = [feats_map.get(s.get('item_id'), {}) for s in pool_songs]
     n = len(items) or 1
     lines: List[str] = []
@@ -298,15 +241,6 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
 
 
 def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: List[str]):
-    """The ONE soft re-rank shared by every primary tool (seed_search, text_match).
-
-    Scores each pool song across ALL requested filter dimensions (genres, voices,
-    moods, energy, tempo, year, rating, scale, key, artist, album) via
-    ``_filter_dim_scores``, per-pool min-max normalizes each dim, then sorts:
-    songs matching a requested CATEGORICAL dim float to the top, continuous dims
-    order within. NEVER removes a song -- it only reorders. Returns
-    ``(ordered_songs, matched_count, moved_count)``.
-    """
     N = len(pool_songs)
     clean_filter = {k: v for k, v in filt.items() if k not in ('candidate_item_ids', 'get_songs')}
 
@@ -345,9 +279,6 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
         log_messages.append(f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}")
 
     if cat_keys:
-        # Tiered: songs matching the requested categorical(s) rank above those
-        # that don't; the continuous dims (and categorical confidence) only
-        # order songs WITHIN each tier. Soft -- non-matching songs backfill.
         matched = sum(1 for d in raw_dims if _cat_count(d) > 0)
         order = sorted(
             range(N),
@@ -369,7 +300,6 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
                 f"remaining ordered by {cont_label} (categorical priority, then gradient)"
             )
     else:
-        # Continuous-only: blend the normalized gradient dims.
         matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
         fscores = [_cont_score(d) for d in raw_dims]
         if matched == 0:
@@ -435,11 +365,6 @@ def _normalize_decade(prefix: str) -> int:
 
 
 def extract_hints(text: str) -> Dict:
-    """Return a dict of deterministically-extracted hints from raw user input.
-
-    Keys (only present when the corresponding pattern matched):
-        years, year_min, year_max, bpm, tempo_min/tempo_max, energy_min/energy_max, notes.
-    """
     if not text or not isinstance(text, str):
         return {}
 
@@ -491,7 +416,6 @@ def extract_hints(text: str) -> Dict:
         except ValueError:
             pass
 
-    # Instrumental detection: keyword-based, same pattern as tempo/energy above.
     if _INSTRUMENTAL_RE.search(text):
         hints['instrumental'] = True
         notes.append("instrumental requested")
@@ -502,7 +426,6 @@ def extract_hints(text: str) -> Dict:
 
 
 def format_hints_block(hints: Optional[Dict]) -> str:
-    """Render hints as a compact prompt block. Empty string if no hints."""
     if not hints:
         return ""
     lines: List[str] = []
@@ -635,18 +558,6 @@ def validate_plan_args(
     user_wants_rating: bool,
     log_messages: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """Pre-execution validation + coercion on a raw tool_calls list.
-
-    Drops or coerces obviously-wrong calls before they reach the executor:
-    - seed_search with no usable seeds -> dropped
-    - seed_search blend_mode='alchemy' with <2 seeds -> coerced to 'union'
-    - seed_search blend_mode='subtract' with empty 'subtract' list -> dropped
-    - text_match with empty query -> dropped; unknown mode -> coerced to 'audio'
-    - knowledge_lookup with empty user_request -> dropped
-    - search_database with year <1900 -> stripped
-    - search_database with min_rating but user didn't mention ratings -> stripped
-    - search_database with no filters at all -> dropped
-    """
     if log_messages is None:
         log_messages = []
 
@@ -828,12 +739,6 @@ def _coerce_needs_filter(value) -> bool:
 
 
 def _normalize_classifier_result(parsed: Optional[Dict]) -> Optional[Dict]:
-    """Normalize a stage-1 classifier response into {"primaries": [...], "needs_filter": bool}.
-
-    Accepts the current multi-primary shape and translates the legacy single-intent
-    shape ({"intent": ..., "needs_filter": ...}); returns None for unusable output so
-    the caller falls back to the full tool surface.
-    """
     if not isinstance(parsed, dict):
         return None
 
@@ -870,7 +775,6 @@ def classify(
     ai_config: Dict,
     log_messages: Optional[List[str]] = None,
 ) -> Optional[Dict]:
-    """Stage-1 classifier: returns {"primaries": [<class>...], "needs_filter": bool} or None on any failure."""
     if log_messages is None:
         log_messages = []
 
@@ -882,9 +786,6 @@ def classify(
 
     try:
         from tasks.ai.api import generate_text
-        # NOTE: do NOT pass a low max_tokens here. A reasoning model (e.g. qwen3.5
-        # on OpenRouter) spends tokens thinking first; a tight cap truncates it
-        # before the JSON answer -> empty -> retry loop. Keep the generous default.
         response = generate_text(prompt, ai_config, skip_delay=True, temperature=0.0)
     except Exception as e:
         logger.warning("intent_classifier transport error: %s", e)
@@ -908,11 +809,6 @@ def classify(
 
 
 def tools_for_intent(primaries: List[str], needs_filter: bool, all_tools: List[Dict]) -> List[Dict]:
-    """Filter the full tool list down to the subset the Stage-2 call should see.
-
-    Each primary intent maps to its tool; ``search_database`` is added when a
-    metadata filter is requested OR when there is no primary at all (pure filter).
-    """
     by_name = {t.get("name"): t for t in all_tools if isinstance(t, dict)}
 
     primary_map = {
@@ -939,14 +835,6 @@ def _run_search_database_with_relax(
     target_count: int,
     log_messages: List[str],
 ) -> Dict:
-    """Run search_database, progressively relaxing the score threshold until target_count is met.
-
-    Loops ``RELAX_THRESHOLD_STEPS`` (0.5 -> 0.4 -> 0.3 -> 0.2). Returns the LAST
-    result that still meets target OR the last step's result (whichever is closer
-    to target). Only relaxes when the filter actually uses a scored column
-    (genres / voices / moods / other_features); otherwise runs once at the
-    default threshold.
-    """
     from tasks.ai.tools import execute_mcp_tool
 
     has_scored = any(filter_args.get(k) for k in SCORED_FILTER_KEYS)
@@ -977,7 +865,6 @@ def call_ai_for_plan(
     log_messages: List[str],
     library_context: Optional[Dict] = None,
 ) -> Dict:
-    """Call the AI transport once and return the raw tool-calling result."""
     from tasks.ai.api import call_with_tools as _call_with_tools
     return _call_with_tools(
         user_message=user_message,
@@ -999,15 +886,6 @@ def plan_and_execute_once(
     collection_cap: int = 1000,
     target_song_count: int = 100,
 ):
-    """Two-stage orchestrator: classifier narrows tools -> single AI plan -> execute.
-
-    This is a GENERATOR: it appends progress to ``log_messages`` and ``yield``s a
-    bare tick after each blocking step (classify, plan, each tool call, the
-    re-rank) so the caller can flush new lines live. Its final ``return`` value is
-    ``{songs, song_sources, tools_used_history, tool_execution_summary,
-    detected_min_rating, plan_notes, executed_query_str, filter_applied}`` or
-    ``{"error": ...}`` (delivered via ``StopIteration.value`` -- use ``yield from``).
-    """
     from tasks.ai.tools import execute_mcp_tool
     from tasks.ai.tool_impl import _fetch_pool_features
 
@@ -1080,9 +958,6 @@ def plan_and_execute_once(
     if not plan.primaries and plan.filter is None:
         return {"error": "Plan was empty after normalization"}
 
-    # Route a primary's coarse audio buckets (text_match's tempo_filter /
-    # energy_filter) into plan.filter so they pass through the ONE central soft
-    # re-rank like every other filter -- the tool itself no longer filters.
     for p in plan.primaries:
         if not isinstance(p, dict) or p.get('name') != 'text_match':
             continue
@@ -1106,8 +981,6 @@ def plan_and_execute_once(
             plan.filter = _merge_filter(plan.filter, derived)
             log_messages.append(f"   text_match audio buckets -> filter {derived} (handled by the shared soft re-rank)")
 
-    # HARD RULE: never apply a filter/re-rank to AI brainstorming. Brainstormed
-    # (knowledge_lookup) songs are returned exactly as suggested.
     if plan.filter is not None and any(
             isinstance(p, dict) and p.get('name') == 'knowledge_lookup' for p in plan.primaries):
         log_messages.append("   AI brainstorming: filter NOT applied — knowledge results returned as-is")

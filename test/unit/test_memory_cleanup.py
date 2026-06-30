@@ -1,19 +1,10 @@
-"""
-Unit tests for memory cleanup in tasks/analysis.py
-Tests the finally blocks that ensure cleanup on all code paths.
-"""
 
 import sys
 from unittest.mock import MagicMock, patch
 
-# Ensure a 'jwt' module exists in sys.modules so that `import jwt as pyjwt`
-# in app.py succeeds even when PyJWT is not installed (e.g. CI unit-test env).
 if "jwt" not in sys.modules:
     sys.modules["jwt"] = MagicMock()
 
-# Mock psycopg2.connect so that app.py module-level DB calls (init_db,
-# bootstrap_env_config_if_empty, save_config_values for JWT_SECRET) don't
-# require a real PostgreSQL server in CI.
 _pg_connect_patcher = patch("psycopg2.connect", return_value=MagicMock())
 _pg_connect_patcher.start()
 
@@ -22,7 +13,6 @@ import numpy as np
 
 
 class TestAnalyzeTrackMemoryCleanup:
-    """Test memory cleanup in analyze_track function."""
 
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis_helper.librosa')
@@ -33,26 +23,20 @@ class TestAnalyzeTrackMemoryCleanup:
         self, mock_cuda_cleanup, mock_session_cleanup,
         mock_create_sess, mock_librosa, mock_load_audio
     ):
-        """Test that cleanup happens when inference fails."""
         from tasks.analysis import analyze_track
 
-        # Setup mocks
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
         mock_librosa.beat.beat_track.return_value = (120.0, None)
         mock_librosa.feature.rms.return_value = np.array([[0.5]])
         mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
         mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
 
-        # Mock ONNX sessions — patch create_onnx_session directly so the
-        # ort module itself stays real (needed by run_inference_with_oom_fallback).
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
         mock_create_sess.side_effect = [mock_embedding_sess, mock_prediction_sess]
 
-        # Make inference fail with non-OOM error
         mock_embedding_sess.run.side_effect = RuntimeError("Model error")
 
-        # Call analyze_track (should fail but cleanup should happen)
         result = analyze_track(
             "/tmp/test.mp3",
             ["happy", "sad"],
@@ -68,11 +52,9 @@ class TestAnalyzeTrackMemoryCleanup:
             }
         )
 
-        # Should return None due to error
         assert result == (None, None)
 
-        # Verify cleanup was called in finally block
-        assert mock_session_cleanup.call_count >= 2  # embedding and prediction
+        assert mock_session_cleanup.call_count >= 2
         assert mock_cuda_cleanup.called
 
     @patch('tasks.analysis.robust_load_audio_with_fallback')
@@ -81,23 +63,19 @@ class TestAnalyzeTrackMemoryCleanup:
     def test_no_cleanup_with_album_sessions(
         self, mock_ort, mock_librosa, mock_load_audio
     ):
-        """Test that cleanup is skipped when using album-level sessions."""
         from tasks.analysis import analyze_track
 
-        # Setup mocks
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
         mock_librosa.beat.beat_track.return_value = (120.0, None)
         mock_librosa.feature.rms.return_value = np.array([[0.5]])
         mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
         mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
 
-        # Pre-loaded sessions
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
         mock_embedding_sess.run.return_value = [np.random.randn(10, 200)]
         mock_prediction_sess.run.return_value = [np.random.randn(10, 2)]
 
-        # Create onnx_sessions dict with all required models
         onnx_sessions = {
             'embedding': mock_embedding_sess,
             'prediction': mock_prediction_sess,
@@ -109,11 +87,9 @@ class TestAnalyzeTrackMemoryCleanup:
             'sad': MagicMock()
         }
 
-        # Configure secondary model mocks
         for key in ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']:
             onnx_sessions[key].run.return_value = [np.random.randn(10, 2)]
 
-        # Call with pre-loaded sessions
         with patch('tasks.analysis.cleanup_onnx_session') as mock_cleanup:
             analyze_track(
                 "/tmp/test.mp3",
@@ -131,14 +107,10 @@ class TestAnalyzeTrackMemoryCleanup:
                 onnx_sessions=onnx_sessions
             )
 
-            # Cleanup should NOT be called for main sessions (album reuse)
-            # It should only be called for secondary models if loaded per-song
-            # Since we provided all sessions, cleanup should not happen
             assert mock_cleanup.call_count == 0
 
 
 class TestAnalyzeAlbumMemoryCleanup:
-    """Test memory cleanup in analyze_album_task function."""
 
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
@@ -156,33 +128,24 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_cuda_cleanup, mock_session_cleanup, mock_ort, mock_get_db,
         mock_analyze, mock_download, mock_get_tracks
     ):
-        """Test that cleanup happens when database error occurs."""
         from tasks.analysis import analyze_album_task
         from psycopg2 import OperationalError
 
-        # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
             {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
 
-        # Mock the database connection used during album analysis (the first DB
-        # touch is analysis_helper.get_existing_track_ids) to fail like a real
-        # connection error, so the OperationalError propagates.
         mock_get_db.side_effect = OperationalError("Connection failed")
 
-        # Mock ONNX sessions
         mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
         mock_session = MagicMock()
         mock_ort.InferenceSession.return_value = mock_session
 
-        # Try to analyze album (should fail with database error)
         with pytest.raises(OperationalError):
             analyze_album_task("album_123", "Test Album", 5, None)
 
-        # Note: cleanup may not be called if error occurs before models are loaded
-        # This test primarily verifies that OperationalError propagates correctly
 
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.comprehensive_memory_cleanup')
@@ -197,21 +160,16 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_get_job, mock_get_task_info, mock_save_task,
         mock_memory_cleanup, mock_get_tracks
     ):
-        """Test that all models are cleaned up in finally block."""
         from tasks.analysis import analyze_album_task
 
-        # Setup mocks
         mock_get_job.return_value = None
-        mock_get_tracks.return_value = []  # Empty track list
+        mock_get_tracks.return_value = []
         mock_get_db.return_value = MagicMock()
 
-        # Simulate models being loaded
         mock_clap_loaded.return_value = True
 
-        # Call function (should complete successfully)
         analyze_album_task("album_123", "Empty Album", 5, None)
 
-        # Verify all cleanup functions were called
         assert mock_memory_cleanup.called
         assert mock_clap_unload.called
 
@@ -232,30 +190,23 @@ class TestAnalyzeAlbumMemoryCleanup:
         mock_save_task, mock_cuda_cleanup, mock_session_cleanup, mock_create_sess,
         mock_get_db, mock_analyze, mock_download, mock_get_tracks
     ):
-        """Test that ONNX sessions are cleaned up after successful album analysis."""
         from tasks.analysis import analyze_album_task
 
-        # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
             {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
 
-        # Mock database
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_conn.cursor.return_value = mock_cur
-        mock_cur.fetchall.return_value = []  # No existing tracks
+        mock_cur.fetchall.return_value = []
         mock_get_db.return_value = mock_conn
 
-        # Mock ONNX session creation (used by load_musicnn_sessions in analysis_helper).
-        # cleanup_onnx_session is patched in analysis_helper so cleanup_musicnn_sessions
-        # calls are captured.
         mock_session = MagicMock()
         mock_create_sess.return_value = mock_session
 
-        # Mock analyze_track to return results including audio for lyrics analysis
         mock_analyze.return_value = (
             {
                 'tempo': 120.0,
@@ -275,13 +226,9 @@ class TestAnalyzeAlbumMemoryCleanup:
             16000
         )
 
-        # Call function
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
             analyze_album_task("album_123", "Test Album", 5, None)
 
-        # Verify session cleanup was called for all loaded sessions
-        # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)
         assert mock_session_cleanup.call_count >= 2
 
-        # Verify CUDA cleanup was called
         assert mock_cuda_cleanup.called

@@ -1,15 +1,3 @@
-"""Unit tests for the shared similar-tracks serializer and the IVF neighbor
-search error mapper.
-
-- app_helper.serialize_neighbor_results: shared response builder for the IVF
-  similarity endpoints and the sonic-fingerprint endpoint. The missing_album
-  sentinel contract (substitute vs. keep raw, incl. '') is the key refinement.
-- app_ivf._neighbor_search_error_response: maps a neighbor-search exception to a
-  generic (no-traceback) JSON error + HTTP status. Needs a Flask app context for
-  jsonify.
-
-Pure functions; the score-data lookup is mocked, no DB.
-"""
 from unittest.mock import patch
 
 import pytest
@@ -172,7 +160,6 @@ class TestAlbumArtistFlag:
 
 class TestOutputOrder:
     def test_output_follows_input_neighbor_order(self):
-        # details returned in a different order than the neighbor input
         with patch('app_helper.get_score_data_by_ids',
                    return_value=[score('3'), score('1'), score('2')]):
             out = serialize_neighbor_results(

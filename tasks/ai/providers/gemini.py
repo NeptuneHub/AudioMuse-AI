@@ -1,4 +1,3 @@
-"""Google Gemini transport (uses google-genai Client API)."""
 import logging
 import os
 import time
@@ -16,7 +15,6 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Single-prompt completion via Gemini's generate_content."""
     if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
         return "Error: Gemini API key is missing or empty. Please provide a valid API key."
 
@@ -65,7 +63,6 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call Gemini with native function calling. Returns ``{"tool_calls": [...]}`` or ``{"error": ...}``."""
     try:
         import google.genai as genai
 
@@ -101,7 +98,6 @@ def call_with_tools(
         log_messages.append(f"Gemini response type: {type(response)}")
 
         def convert_to_dict(obj):
-            """Recursively convert protobuf objects to native Python types."""
             if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes, dict)):
                 if hasattr(obj, "items"):
                     return {k: convert_to_dict(v) for k, v in obj.items()}

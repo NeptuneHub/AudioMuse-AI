@@ -1,12 +1,3 @@
-"""Unit tests for tasks/clustering_helper.py
-
-Tests evolutionary parameter generation and mutation with ACTUAL function calls:
-- Random parameter generation for exploration
-- Parameter mutation for exploitation  
-- Bounded parameter ranges
-- Stratified sampling logic
-- Clustering model application
-"""
 import numpy as np
 import random
 from unittest.mock import patch
@@ -22,10 +13,8 @@ from tasks.clustering_helper import (
 
 
 class TestMutateParam:
-    """Test the actual _mutate_param function"""
 
     def test_mutate_param_integer_within_bounds(self):
-        """Test integer parameter mutation stays within bounds"""
         random.seed(42)
         value = 10
         min_val = 5
@@ -37,7 +26,6 @@ class TestMutateParam:
         assert min_val <= mutated <= max_val
 
     def test_mutate_param_float_within_bounds(self):
-        """Test float parameter mutation stays within bounds"""
         random.seed(42)
         value = 0.5
         min_val = 0.1
@@ -49,19 +37,16 @@ class TestMutateParam:
         assert min_val <= mutated <= max_val
 
     def test_mutate_param_clamps_at_max(self):
-        """Test mutation clamps at maximum bound"""
         value = 98
         min_val = 0
         max_val = 100
         delta = 10
 
-        # Try multiple times to ensure clamping works
         for _ in range(10):
             mutated = _mutate_param(value, min_val, max_val, delta)
             assert mutated <= max_val
 
     def test_mutate_param_clamps_at_min(self):
-        """Test mutation clamps at minimum bound"""
         value = 2
         min_val = 0
         max_val = 100
@@ -73,10 +58,8 @@ class TestMutateParam:
 
 
 class TestGenerateRandomParameters:
-    """Test the actual _generate_random_parameters function"""
 
     def test_generates_kmeans_parameters(self):
-        """Test random parameter generation for K-Means"""
         data = np.random.rand(100, 50)
         method = 'kmeans'
         pca_ranges = {'components_min': 0, 'components_max': 30}
@@ -93,7 +76,6 @@ class TestGenerateRandomParameters:
         assert 2 <= n_clusters <= min(20, data.shape[0])
 
     def test_generates_dbscan_parameters(self):
-        """Test random parameter generation for DBSCAN"""
         data = np.random.rand(100, 50)
         method = 'dbscan'
         pca_ranges = {'components_min': 0, 'components_max': 30}
@@ -109,7 +91,6 @@ class TestGenerateRandomParameters:
         assert 2 <= dbscan_params['min_samples'] <= 10
 
     def test_generates_gmm_parameters(self):
-        """Test random parameter generation for GMM"""
         data = np.random.rand(100, 50)
         method = 'gmm'
         pca_ranges = {'components_min': 0, 'components_max': 30}
@@ -124,7 +105,6 @@ class TestGenerateRandomParameters:
         assert 2 <= n_components <= min(15, data.shape[0])
 
     def test_generates_spectral_parameters(self):
-        """Test random parameter generation for Spectral Clustering"""
         data = np.random.rand(100, 50)
         method = 'spectral'
         pca_ranges = {'components_min': 0, 'components_max': 30}
@@ -143,10 +123,8 @@ class TestGenerateRandomParameters:
 
 
 class TestMutateParameters:
-    """Test the actual _mutate_parameters function"""
 
     def test_mutates_kmeans_parameters(self):
-        """Test parameter mutation for K-Means"""
         elite_params = {
             'pca_config': {'enabled': True, 'components': 10},
             'clustering_method_config': {
@@ -170,7 +148,6 @@ class TestMutateParameters:
         assert 5 <= n_clusters <= 20
 
     def test_mutates_dbscan_parameters(self):
-        """Test parameter mutation for DBSCAN"""
         elite_params = {
             'pca_config': {'enabled': False, 'components': 0},
             'clustering_method_config': {
@@ -194,10 +171,8 @@ class TestMutateParameters:
 
 
 class TestPrepareAndScaleData:
-    """Test the actual _prepare_and_scale_data function"""
 
     def test_uses_embeddings_when_enabled(self):
-        """Test that embeddings are used when use_embeddings=True"""
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
 
@@ -206,7 +181,6 @@ class TestPrepareAndScaleData:
         assert scaled_data.shape == (50, 128)
 
     def test_uses_features_when_embeddings_disabled(self):
-        """Test that features are used when use_embeddings=False"""
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
 
@@ -215,7 +189,6 @@ class TestPrepareAndScaleData:
         assert scaled_data.shape == (50, 20)
 
     def test_scales_data_correctly(self):
-        """Test that data is properly scaled"""
         X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
         scaled_data, scaler = _prepare_and_scale_data(X_feat, None, use_embeddings=False)
@@ -225,11 +198,9 @@ class TestPrepareAndScaleData:
 
 
 class TestApplyClusteringModel:
-    """Test the actual _apply_clustering_model function"""
 
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_applies_kmeans_successfully(self):
-        """Test K-Means clustering application"""
         data = np.random.rand(50, 10)
         method_config = {
             'method': 'kmeans',
@@ -244,7 +215,6 @@ class TestApplyClusteringModel:
 
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_applies_dbscan_successfully(self):
-        """Test DBSCAN clustering application"""
         data = np.random.rand(50, 10)
         method_config = {
             'method': 'dbscan',
@@ -258,11 +228,10 @@ class TestApplyClusteringModel:
 
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_rejects_invalid_kmeans_params(self):
-        """Test that invalid K-Means parameters are rejected"""
         data = np.random.rand(50, 10)
         method_config = {
             'method': 'kmeans',
-            'params': {'n_clusters': 1}  # Invalid
+            'params': {'n_clusters': 1}
         }
 
         labels, centers, model = _apply_clustering_model(data, method_config, "Test", 1)
@@ -271,11 +240,8 @@ class TestApplyClusteringModel:
 
 
 class TestGetStratifiedSongSubset:
-    """Test the actual _get_stratified_song_subset function"""
 
     def test_stratified_sampling_balances_genres(self):
-        """Test that stratified sampling balances genre representation"""
-        # genre_map expects track dictionaries with item_id and mood_vector
         genre_map = {
             'Rock': [
                 {'item_id': 'r1', 'mood_vector': 'Rock:0.8,Pop:0.2'},
@@ -285,16 +251,14 @@ class TestGetStratifiedSongSubset:
                 {'item_id': 'p1', 'mood_vector': 'Pop:0.7,Rock:0.3'},
             ]
         }
-        target_per_genre = 2  # Single integer for all genres
+        target_per_genre = 2
 
         subset = _get_stratified_song_subset(genre_map, target_per_genre)
 
-        # Should return a list of track dictionaries
         assert isinstance(subset, list)
         assert len(subset) >= 0
 
     def test_excludes_previous_ids(self):
-        """Test that previously selected IDs are excluded"""
         genre_map = {
             'Rock': [
                 {'item_id': 'r1', 'mood_vector': 'Rock:0.8'},
@@ -311,27 +275,21 @@ class TestGetStratifiedSongSubset:
 
         subset = _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=prev_ids)
 
-        # Should not include prev_ids in the subset
         subset_ids = {track['item_id'] for track in subset}
         assert 'r1' not in subset_ids
         assert 'p1' not in subset_ids
 
 
 class TestGetTrackPrimaryGenre:
-    """Test the actual _get_track_primary_genre function"""
 
     def test_returns_genre_from_mood_vector(self):
-        """Test that genre is extracted from mood_vector"""
         track_data = {'mood_vector': 'Rock:0.8,Pop:0.2'}
 
         genre = _get_track_primary_genre(track_data)
 
-        # Should return the genre with highest score from STRATIFIED_GENRES
-        # Rock has 0.8 which is highest
         assert genre in ['Rock', '__other__']
 
     def test_returns_other_when_no_stratified_genre(self):
-        """Test that '__other__' is returned when no stratified genre found"""
         track_data = {'mood_vector': 'UnknownMood:0.9'}
 
         genre = _get_track_primary_genre(track_data)
@@ -339,7 +297,6 @@ class TestGetTrackPrimaryGenre:
         assert genre == '__other__'
 
     def test_returns_other_when_no_mood_vector(self):
-        """Test that '__other__' is returned when no mood_vector"""
         track_data = {}
 
         genre = _get_track_primary_genre(track_data)

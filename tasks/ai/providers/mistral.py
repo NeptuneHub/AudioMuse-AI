@@ -1,4 +1,3 @@
-"""Mistral transport (uses mistralai SDK)."""
 import json
 import logging
 import os
@@ -37,7 +36,6 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Single-prompt completion via Mistral chat.complete."""
     if not _MISTRAL_AVAILABLE:
         logger.error("Mistral provider selected but SDK is not installed: %s",
                      _MISTRAL_IMPORT_ERROR)
@@ -90,7 +88,6 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call Mistral with native function calling. Returns ``{"tool_calls": [...]}`` or ``{"error": ...}``."""
     if not _MISTRAL_AVAILABLE:
         logger.error("Mistral provider selected but SDK is not installed: %s",
                      _MISTRAL_IMPORT_ERROR)
@@ -124,8 +121,6 @@ def call_with_tools(
             tools=mistral_tools,
             tool_choice="any",
             temperature=0,
-            # Bound generation so a model can't run on forever. Matches the
-            # Ollama num_predict / OpenAI max_tokens chat cap (1024).
             max_tokens=1024,
         )
 

@@ -43,9 +43,6 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
     if completed.returncode != 0:
         raise SystemExit(f'optimum-cli export failed (rc={completed.returncode})')
 
-    # Trim files we don't need at runtime. Our greedy decode loop only consumes
-    # encoder_model.onnx + decoder_model.onnx; the merged / past variants would
-    # double the disk footprint.
     drop = (
         'decoder_model_merged.onnx',
         'decoder_model_merged.onnx_data',

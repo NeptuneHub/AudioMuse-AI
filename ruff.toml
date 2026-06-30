@@ -13,4 +13,7 @@ quote-style = "preserve"
 # (E501, whitespace, blank lines) and naming (N) are NOT gated: long strings can't
 # be auto-wrapped and renames are bug-risky; run `ruff format` / `ruff check` ad hoc
 # to see those.
-select = ["F", "E9", "E401", "E711", "E712", "E713", "E714", "E722", "W605", "TRY400"]
+select = [
+  "F", "E9", "E401", "E711", "E712", "E713", "E714", "E722", "W605", "TRY400",
+  "E731", "E741", "W291", "W293", "W292",
+]

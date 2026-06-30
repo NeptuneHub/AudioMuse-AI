@@ -1,13 +1,3 @@
-"""Process supervisor for the standalone macOS app.
-
-Owns the full lifecycle of everything the container deployment runs under
-supervisord: embedded PostgreSQL (via pgserver), embedded Redis (the bundled
-binary), the waitress/Flask web server, the two RQ workers, the janitor and the
-restart listener. It boots them in dependency order, captures every child's
-output into one rotating log, replaces children that exit while running
-(supervisord ``autorestart``), and tears the whole tree down without leaving
-orphaned Postgres/Redis processes behind.
-"""
 
 import json
 import logging
@@ -55,10 +45,6 @@ class ProcessSupervisor:
         self._control = ControlServer(paths.control_socket_path(), self.dispatch_control)
         self._health_thread = None
         self._health_stop = threading.Event()
-        # Set by stop_all() to tell an in-flight start_all() to stop spawning;
-        # _boot_thread lets stop_all() join the boot thread before teardown so a
-        # stop racing a boot can't sweep the child table mid-spawn and leak the
-        # late children as detached (start_new_session) orphans.
         self._stop_requested = threading.Event()
         self._boot_thread = None
         self._log = self._setup_logging()
@@ -67,9 +53,6 @@ class ProcessSupervisor:
         log = logging.getLogger("audiomuse.app")
         log.setLevel(logging.INFO)
         if not log.handlers:
-            # Newest line on top so opening the log shows the latest activity
-            # first. Bounded by line count (~40k) instead of a byte cap; see
-            # native-build/macos/reverse_log.py for why it's not a literal per-line prepend.
             handler = NewestFirstFileHandler(paths.log_file())
             handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
             log.addHandler(handler)
@@ -83,9 +66,6 @@ class ProcessSupervisor:
         return self._state
 
     def start_in_background(self, on_ready=None, on_error=None):
-        """Boot the stack on a daemon thread the supervisor owns, so stop_all can
-        join it before teardown (a stop racing a boot would otherwise sweep the
-        child table mid-spawn and leak the late children as orphans)."""
         def _boot():
             try:
                 self.start_all()
@@ -110,7 +90,7 @@ class ProcessSupervisor:
             self._reap_orphans()
             self._control.start()
             if self._stop_requested.is_set():
-                return  # stop arrived mid-boot; the stopper handles teardown
+                return
             self._database_url = database.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
             if self._stop_requested.is_set():
@@ -144,10 +124,6 @@ class ProcessSupervisor:
             self._stop_requested.set()
             self._desired.clear()
         self._health_stop.set()
-        # Wait for any in-flight boot/health work to stop spawning before we
-        # sweep: a child spawned after the sweep would survive as an orphan in
-        # its own session. Joining guarantees everything they started is
-        # registered in _children and gets torn down below.
         self._join_workers()
         for name in reversed(BOOT_ORDER):
             self._terminate_named(name)
@@ -163,10 +139,6 @@ class ProcessSupervisor:
         self._log.info("=== AudioMuse-AI stopped ===")
 
     def _join_workers(self):
-        """Wait for the boot and health threads to finish before teardown.
-
-        Skips the current thread so stop_all() called from within start_all()'s
-        failure handler (boot thread) never deadlocks on itself."""
         current = threading.current_thread()
         for thread in (self._boot_thread, self._health_thread):
             if thread is not None and thread is not current and thread.is_alive():
@@ -197,9 +169,6 @@ class ProcessSupervisor:
         if role is None:
             return False
         with self._lock:
-            # Refuse to spawn once a stop is in progress -- otherwise the boot
-            # loop or the health loop could create a child after stop_all's
-            # teardown sweep, leaking it as a detached orphan.
             if self._state not in ("starting", "running"):
                 return False
             self._desired.add(name)
@@ -261,7 +230,7 @@ class ProcessSupervisor:
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=5)  # reap so it doesn't linger as a zombie
+            proc.wait(timeout=5)
         except Exception:
             pass
 
@@ -274,10 +243,6 @@ class ProcessSupervisor:
         while not self._health_stop.wait(5):
             if self._state != "running":
                 continue
-            # Postgres and Redis are infrastructure, not ``_desired`` children,
-            # so the child check below never covers them. Without this, a death
-            # of either (crash, OOM, or a stale sibling unlinking Redis's shared
-            # unix socket) leaves every worker crash-looping forever.
             self._ensure_postgres_healthy()
             self._ensure_redis_healthy()
             for name in list(self._desired):
@@ -288,7 +253,6 @@ class ProcessSupervisor:
                     self.start_child(name)
 
     def _ensure_postgres_healthy(self):
-        """Restart embedded Postgres if it stopped accepting connections."""
         if self._database_url is None:
             return
         try:
@@ -302,7 +266,7 @@ class ProcessSupervisor:
                 conn.close()
             return
         except Exception:
-            pass  # unreachable -> restart below
+            pass
         self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
         try:
             self._database_url = database.ensure_embedded_running(paths.pgdata_dir())
@@ -311,8 +275,6 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded PostgreSQL")
 
     def _ensure_redis_healthy(self):
-        """Restart embedded Redis if its process died or its socket stopped
-        answering (mirrors supervisord ``autorestart`` for the broker)."""
         with self._lock:
             proc = self._children.get("redis")
         if proc is not None and proc.poll() is None:
@@ -324,7 +286,7 @@ class ProcessSupervisor:
                 ).ping():
                     return
             except Exception:
-                pass  # alive but unreachable (e.g. socket unlinked) -> restart
+                pass
         self._log.warning("Embedded Redis unhealthy; restarting it")
         try:
             self._start_redis()
@@ -333,10 +295,6 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded Redis")
 
     def dispatch_control(self, action, services):
-        """Apply a restart/stop/start request on a daemon thread and acknowledge
-        immediately: restarting several busy workers serially (each up to ~10s to
-        terminate) can outlast the control socket's 15s timeout, which would make
-        the UI report a failure for a restart that actually succeeds."""
         if action not in ("restart", "stop", "start"):
             return False
         threading.Thread(
@@ -410,9 +368,6 @@ class ProcessSupervisor:
                         proc.terminate()
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:
-                    # No psutil: verify the PID is still one of ours before
-                    # killing -- PIDs get recycled, so a stale pidfile entry could
-                    # otherwise name an unrelated process.
                     comm = subprocess.check_output(
                         ["ps", "-p", str(pid), "-o", "command="], text=True
                     ).strip()
@@ -425,13 +380,6 @@ class ProcessSupervisor:
         self._reap_stale_infra()
 
     def _reap_stale_infra(self):
-        """Kill any leftover embedded Redis/Postgres referencing *our* data dirs.
-
-        The pidfile sweep above misses processes from an unclean exit (force-quit
-        or crash, where ``stop_all`` never ran). Multiple ``redis-server``
-        instances share one unix-socket path, so a straggler unlinking that
-        socket on exit breaks the live broker -- hence we match by our own
-        socket/data paths and clear them before starting fresh."""
         try:
             import psutil
         except Exception:

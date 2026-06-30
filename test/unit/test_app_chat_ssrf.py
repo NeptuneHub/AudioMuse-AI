@@ -1,13 +1,3 @@
-"""URL-acceptance and log-masking coverage for the chat playlist endpoint.
-
-The chat endpoint accepts client-supplied ollama_server_url / openai_server_url
-and forwards them to the outbound AI layer. These tests assert the URL handling
-that must hold (LAN / omitted URLs are not over-blocked) and the API-key
-log-masking contract.
-
-The heavy AI stack (tasks.ai.tools / tasks.ai.planner / tasks.mcp_helper) is
-stubbed via sys.modules so the request runs without real models or network.
-"""
 import sys
 import types
 import logging

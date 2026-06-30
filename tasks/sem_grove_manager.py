@@ -1,31 +1,3 @@
-"""
-Semantic & Groove (SemGrove) Manager
-
-Builds and queries a merged lyrics + audio IVF index for song-by-song
-similarity that respects both lyrical meaning and acoustic genre simultaneously.
-
-Architecture
-------------
-* Fetches lyrics embeddings (gte-multilingual-base, 768-dim) from ``lyrics_embedding``
-* Fetches audio embeddings (MusicNN, N-dim) from ``embedding``
-* For every song present in **both** tables:
-    1. L2-normalise each vector to unit length
-    2. Whiten per-dimension (divide by empirical std across the library)
-    3. Re-normalise to unit length after whitening
-    4. Scale by w_L = sqrt(WEIGHT_LYRICS) and w_A = sqrt(WEIGHT_AUDIO)
-    5. Concatenate -> merged vector of dimension (lyrics_dim + audio_dim)
-* Builds a IVF Cosine index over the merged vectors
-* Persists:
-    - The index binary in ``lyrics_index_data`` (index_name='sem_grove_index')
-    - Whitening stats in the same table  (index_name='sem_grove_whitening')
-* At query time the seed song's pre-stored merged vector is fetched directly
-  from the index (no re-computation needed).
-
-Cosine similarity of two merged vectors equals:
-    cos ≈ W_L² · cos(l₁,l₂) + W_A² · cos(a₁,a₂)
-so the weight split is determined by the squared scale factors baked at
-build time.  Default: 75 % lyrics / 25 % audio.
-"""
 
 import gc
 import logging
@@ -39,31 +11,22 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Weight configuration — read from config (which reads from DB / env).
-# Values are the squared scale factors: merged_cos = W²_L·cos(l)+W²_A·cos(a)
-# ---------------------------------------------------------------------------
 def _get_weights():
-    """Read current weights from config (supports hot-reload via setup wizard)."""
     wl = max(0.0, float(config.SEM_GROVE_WEIGHT_LYRICS))
     wa = max(0.0, float(config.SEM_GROVE_WEIGHT_AUDIO))
     return math.sqrt(wl), math.sqrt(wa)
 
-# Module-level defaults used at build time
 W_LYRICS, W_AUDIO = _get_weights()
 
 SEM_GROVE_INDEX_NAME     = "sem_grove_index"
 SEM_GROVE_WHITENING_NAME = "sem_grove_whitening"
 
-# ---------------------------------------------------------------------------
-# In-memory cache (module-level singleton)
-# ---------------------------------------------------------------------------
 _SEM_GROVE_CACHE: Dict = {
-    "index":          None,   # ivf.Index
-    "id_map":         None,   # {vec_int_id: item_id_str}
-    "reverse_id_map": None,   # {item_id_str: vec_int_id}
-    "std_lyrics":     None,   # np.ndarray (lyrics_dim,)
-    "std_audio":      None,   # np.ndarray (audio_dim,)
+    "index":          None,
+    "id_map":         None,
+    "reverse_id_map": None,
+    "std_lyrics":     None,
+    "std_audio":      None,
     "lyrics_dim":     None,
     "audio_dim":      None,
     "w_lyrics":       W_LYRICS,
@@ -73,9 +36,6 @@ _SEM_GROVE_CACHE: Dict = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _make_merged_vector(
     l_vec: np.ndarray,
@@ -85,21 +45,18 @@ def _make_merged_vector(
     w_l: float,
     w_a: float,
 ) -> Optional[np.ndarray]:
-    """Whiten, normalise, weight, and concatenate one lyrics+audio pair."""
     try:
-        # --- Lyrics half ---
-        l = l_vec.astype(np.float32, copy=False)
-        n = np.linalg.norm(l)
+        lyr = l_vec.astype(np.float32, copy=False)
+        n = np.linalg.norm(lyr)
         if n == 0:
             return None
-        l = l / n
-        l = l / (std_lyrics + 1e-8)
-        n2 = np.linalg.norm(l)
+        lyr = lyr / n
+        lyr = lyr / (std_lyrics + 1e-8)
+        n2 = np.linalg.norm(lyr)
         if n2 < 1e-8:
             return None
-        l = l / n2
+        lyr = lyr / n2
 
-        # --- Audio half ---
         a = a_vec.astype(np.float32, copy=False)
         n = np.linalg.norm(a)
         if n == 0:
@@ -111,7 +68,7 @@ def _make_merged_vector(
             return None
         a = a / n2
 
-        return np.concatenate([w_l * l, w_a * a]).astype(np.float32)
+        return np.concatenate([w_l * lyr, w_a * a]).astype(np.float32)
     except Exception as exc:
         logger.debug("_make_merged_vector: %s", exc)
         return None
@@ -122,24 +79,8 @@ def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
     return fetch_track_metadata_map(item_ids)
 
 
-# ---------------------------------------------------------------------------
-# Build and persist
-# ---------------------------------------------------------------------------
 
 def build_and_store_sem_grove_index(db_conn=None) -> bool:
-    """
-    Build the merged lyrics+audio disk-paged IVF index and persist to the DB
-    (directory blob in ``ivf_dir``, cells in ``ivf_cell``).
-
-    Memory profile: lyrics and audio embeddings are each streamed into one
-    contiguous float32 buffer (no list-of-ndarrays, no vstack). Whitening
-    statistics are computed via running sum / sum-of-squares accumulators
-    instead of materializing full-library normalized matrices. The merged
-    ``(N, lyrics_dim + audio_dim)`` matrix is then materialized once -- the IVF
-    builder needs the full matrix to train the coarse quantizer -- after which
-    ``lyrics_buf`` and ``audio_buf`` are freed. Peak RAM is therefore
-    ``lyrics_buf + audio_buf + merged`` during the merge loop.
-    """
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
     from .index_build_helpers import stream_embeddings_to_buffer
@@ -252,12 +193,8 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Load
-# ---------------------------------------------------------------------------
 
 def _load_sem_grove_index_from_db() -> bool:
-    """Load the merged SemGrove disk-paged IVF index into the global cache."""
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
     from .paged_ivf import load_index_auto
@@ -301,12 +238,8 @@ def _load_sem_grove_index_from_db() -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Public cache management
-# ---------------------------------------------------------------------------
 
 def load_sem_grove_cache_from_db() -> bool:
-    """Load the SemGrove index from the DB into the global in-memory cache."""
     ok = _load_sem_grove_index_from_db()
     if not ok:
         _SEM_GROVE_CACHE.update({
@@ -322,7 +255,6 @@ def load_sem_grove_cache_from_db() -> bool:
 
 
 def refresh_sem_grove_cache() -> bool:
-    """Reload the SemGrove index from the DB (hot-reload without restart)."""
     old = _SEM_GROVE_CACHE["song_count"]
     logger.info("SemGrove: refreshing cache (current=%d songs)…", old)
     result = load_sem_grove_cache_from_db()
@@ -355,23 +287,13 @@ def get_sem_grove_stats() -> Dict:
 
 
 def get_sem_grove_item_ids() -> set:
-    """Return the set of item_ids present in the loaded SemGrove index.
-
-    Returns an empty set if the index is not loaded.
-    Used by the autocomplete endpoint to restrict suggestions to songs that
-    are actually searchable via the merged index.
-    """
     if not _SEM_GROVE_CACHE["loaded"]:
         return set()
     return set(_SEM_GROVE_CACHE["id_map"].values())
 
 
-# ---------------------------------------------------------------------------
-# Vector backend (used by Song Path's Lyrics mode)
-# ---------------------------------------------------------------------------
 
 def get_sem_grove_vector_by_id(item_id: str) -> Optional[np.ndarray]:
-    """Return the stored merged lyrics+audio vector for ``item_id``, or None."""
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
         return None
     vid = _SEM_GROVE_CACHE["reverse_id_map"].get(item_id)
@@ -385,14 +307,6 @@ def get_sem_grove_vector_by_id(item_id: str) -> Optional[np.ndarray]:
 
 
 def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]:
-    """Nearest neighbours of ``query_vector`` in merged SemGrove space.
-
-    Returns ``[{"item_id": str, "distance": float}, ...]`` mirroring the shape
-    that ``ivf_manager.find_nearest_neighbors_by_vector`` returns, so the
-    Song Path engine can use it as a drop-in vector backend. Deduplication and
-    artist-cap filtering are handled by the path engine itself, so this only
-    performs the raw index query.
-    """
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
         return []
     index  = _SEM_GROVE_CACHE["index"]
@@ -418,30 +332,14 @@ def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]
 
 
 def find_sem_grove_neighbors_by_id(item_id: str, n: int = 100) -> List[Dict]:
-    """Nearest neighbours of a song (by id) in merged SemGrove space."""
     vec = get_sem_grove_vector_by_id(item_id)
     if vec is None:
         return []
     return find_sem_grove_neighbors_by_vector(vec, n=n)
 
 
-# ---------------------------------------------------------------------------
-# Search
-# ---------------------------------------------------------------------------
 
 def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool | None = None) -> List[Dict]:
-    """
-    Find songs semantically + acoustically similar to ``seed_item_id``.
-
-    The seed song's pre-stored merged vector is retrieved directly from the
-    IVF index (no re-computation), then used as the query vector.
-    Returns a list of ``{item_id, title, author, similarity}`` dicts sorted
-    by descending merged-cosine similarity, excluding the seed itself.
-
-    When ``radius_similarity`` is True the results are reordered via a
-    bucketed greedy radius walk that enforces per-bucket artist limits
-    and avoids three consecutive songs from the same artist.
-    """
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
         logger.error("SemGrove index not loaded.")
         return []
@@ -467,16 +365,13 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     from config import MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS, DUPLICATE_DISTANCE_CHECK_LOOKBACK, SIMILARITY_RADIUS_DEFAULT
     import numpy as np
 
-    # Resolve radius_similarity default
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
 
     artist_cap    = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS  # cosine dist < this -> near-duplicate
+    dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS
     lookback_n     = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
-    # +1 because the seed itself may appear and will be skipped
     if radius_similarity:
-        # Fetch a large pool for the radius walk to have enough candidates to bucket
         fetch_size = limit + max(limit * 5, limit * 15) + 1
     else:
         fetch_size = (limit + max(20, limit * 4) + 1) if (artist_cap or lookback_n) else (limit + 1)
@@ -497,8 +392,6 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     ]
     metadata_map = _fetch_metadata([seed_item_id] + candidate_ids)
 
-    # Prepend the seed song as the first entry so callers (playlist builders, API
-    # consumers) always receive it at position 0.  The frontend hides it.
     seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
     results: List[Dict] = [{
         "item_id":    seed_item_id,
@@ -509,11 +402,11 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
         "is_seed":    True,
     }]
     artist_counts:  Dict[str, int]   = {}
-    seen_names:     set               = set()   # (title_lower, author_lower) deduplication
-    lookback_vecs:  list              = []       # recent kept vectors for distance-based dedup
+    seen_names:     set               = set()
+    lookback_vecs:  list              = []
 
     for vid, dist in zip(neighbor_ids, distances):
-        if len(results) - 1 >= limit:  # -1 to exclude the seed prepended at index 0
+        if len(results) - 1 >= limit:
             break
         item_id = id_map.get(int(vid))
         if not item_id or item_id == seed_item_id:
@@ -522,7 +415,6 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
         author = meta.get("author", "") or ""
         title  = meta.get("title",  "") or ""
 
-        # Name-based deduplication (same title+artist = likely duplicate recording)
         name_key = (title.strip().lower(), author.strip().lower())
         if name_key in seen_names:
             continue
@@ -534,8 +426,6 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
 
-        # Distance-based near-duplicate filter: skip if this song's merged vector is
-        # too close (cosine dist < dist_threshold) to any song in the lookback window.
         if lookback_n and dist_threshold > 0:
             try:
                 candidate_vec = np.array(index.get_vector(int(vid)), dtype=np.float32)
@@ -569,7 +459,6 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
 
     logger.info("SemGrove search for '%s': %d results.", seed_item_id, len(results))
 
-    # --- Radius Walk reordering (per-bucket artist limits + triple-adjacent avoidance) ---
     if radius_similarity and len(results) > 1:
         try:
             non_seed = [r for r in results if not r.get("is_seed")]
@@ -613,17 +502,15 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                         get_distance_fn=_cosine_dist,
                     )
 
-                    # Map reordered IDs back to full result dicts
                     reordered_ids = [rd["item_id"] for rd in reordered]
                     non_seed_map  = {r["item_id"]: r for r in non_seed}
 
-                    new_results = [results[0]]  # seed stays at position 0
+                    new_results = [results[0]]
                     seen_ids = {results[0]["item_id"]}
                     for rid in reordered_ids:
                         if rid in non_seed_map and rid not in seen_ids:
                             new_results.append(non_seed_map[rid])
                             seen_ids.add(rid)
-                    # Append any remaining non-seed songs not picked by the walk
                     for r in non_seed:
                         if r["item_id"] not in seen_ids:
                             new_results.append(r)

@@ -1,24 +1,3 @@
-"""Real-Postgres integration tests for the disk-paged IVF backend.
-
-Builds a paged IVF index from synthetic clustered vectors into a live database,
-reloads it through the production load path, and proves the four properties the
-design rests on:
-
-  * format round-trip: every get_vector returns the exact stored float32 vector;
-  * recall: IVF top-k matches a brute-force ground truth within tolerance;
-  * the hard RAM bound: the per-request cell cache never exceeds its byte cap,
-    even when get_vectors touches ids spread across many cells;
-  * get_max_distance is exact.
-
-Database selection mirrors test_app_endpoints_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL, or
-  * an ephemeral instance via the optional pgserver package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_paged_ivf_integration.py -m integration -s -v --tb=short
-"""
 import os
 import sys
 import tempfile
@@ -126,7 +105,6 @@ class _CountingCursor:
 
 
 class _CountingConn:
-    """Wraps a real connection and counts SELECTs against ivf_cell."""
 
     def __init__(self, conn, counter):
         self._conn = conn
@@ -141,9 +119,6 @@ class _CountingConn:
 
 def test_ivf_build_load_query_recall_and_ram_bound(ivf_db, monkeypatch):
     import config
-    # This test asserts the EXACT float32 round-trip and exact distances, so pin
-    # storage to f32 (the no-quantization path). i8/f16 behaviour is covered by
-    # test_ivf_i8_storage_recall_and_approx_roundtrip.
     monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
@@ -192,7 +167,6 @@ def test_ivf_build_load_query_recall_and_ram_bound(ivf_db, monkeypatch):
 
 
 def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
-    """int8 storage: cells are 1 byte/dim, recall holds, get_vector is approx-unit."""
     import config
     from tasks import ivf_quant as quant
     monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "i8")
@@ -203,7 +177,6 @@ def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
     item_ids = [f"i8-{i}" for i in range(n)]
     assert paged_ivf.build_and_store_paged_ivf(ivf_db, "i8_test", x, item_ids, dim, "angular")
 
-    # The stored directory must advertise int8 and cells must be 1 byte/dim.
     from tasks.paged_ivf import unpack_directory, IVF_DIR_TABLE
     from tasks.index_build_helpers import load_segmented_blob
     blob = load_segmented_blob(ivf_db, IVF_DIR_TABLE, "i8_test__ivf_dir")
@@ -227,7 +200,6 @@ def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
     for vid in rng.choice(n, 30, replace=False):
         v = index.get_vector(int(vid))
         assert v is not None
-        # dequantized i8 recovers the unit vector within the quantization step.
         np.testing.assert_allclose(v, x_unit[int(vid)], atol=2.0 / 127.0)
 
     queries = rng.choice(n, 60, replace=False)
@@ -245,8 +217,6 @@ def test_ivf_i8_storage_recall_and_approx_roundtrip(ivf_db, monkeypatch):
 
 
 def test_ivf_stale_storage_dtype_loads_as_none_so_it_rebuilds(ivf_db, monkeypatch):
-    """An index stored in a precision the current config no longer builds must load as
-    None, so the normal build path regenerates it (no mixed f32/i8 cells)."""
     import config
     monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
@@ -256,11 +226,9 @@ def test_ivf_stale_storage_dtype_loads_as_none_so_it_rebuilds(ivf_db, monkeypatc
     item_ids = [f"stale-{i}" for i in range(n)]
     assert paged_ivf.build_and_store_paged_ivf(ivf_db, "stale_test", x, item_ids, dim, "angular")
 
-    # Same config the index was built with -> loads normally.
     assert paged_ivf.load_paged_ivf_index(
         ivf_db, "stale_test", dim, "angular", conn_factory=lambda: ivf_db, label="stale_test") is not None
 
-    # Flip the configured precision: the stored f32 index is now stale and must not load.
     monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "i8")
     assert paged_ivf.load_paged_ivf_index(
         ivf_db, "stale_test", dim, "angular", conn_factory=lambda: ivf_db, label="stale_test") is None
@@ -302,7 +270,7 @@ def test_ivf_cross_request_cell_reuse(ivf_db, monkeypatch):
 def test_ivf_max_distance_uses_l2_when_preloaded(ivf_db, monkeypatch):
     import config
     monkeypatch.setattr(config, "IVF_DISK_CACHE_ENABLED", False)
-    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # exact 1e-4 distance check
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
     gcache = paged_ivf.get_global_cell_cache()
@@ -445,7 +413,7 @@ def test_ivf_disk_cache_disabled_falls_back_to_postgres(ivf_db, monkeypatch):
 
 def test_ivf_get_max_distance_exact(ivf_db, monkeypatch):
     import config
-    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # exact 1e-4 distance + exact far_id
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
     n, dim = 1500, 32
@@ -555,7 +523,6 @@ def test_ivf_directory_is_segmented_under_cap(ivf_db):
 
 def test_ivf_oversized_cell_is_split_not_rejected(ivf_db, monkeypatch):
     import config
-    # store_paged_ivf writes f32 cells here, so pin storage to f32 for a consistent load.
     monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
     from tasks import paged_ivf
 
@@ -615,7 +582,7 @@ def test_ivf_build_splits_identical_vectors_under_cap(ivf_db, monkeypatch):
 
     monkeypatch.setattr(config, "IVF_MAX_CELL_MB", 1)
     monkeypatch.setattr(config, "IVF_MAX_PART_SIZE_MB", 1)
-    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")  # asserts exact get_vectors round-trip
+    monkeypatch.setattr(config, "IVF_STORAGE_DTYPE", "f32")
 
     dim = 64
     n_dupes, n_rest = 8000, 4000

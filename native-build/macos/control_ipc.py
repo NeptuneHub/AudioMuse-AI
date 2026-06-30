@@ -1,12 +1,3 @@
-"""Unix-socket control server for the standalone supervisor.
-
-This replaces supervisord on macOS. The web UI's "save config -> restart workers"
-flow publishes to Redis; ``restart_listener`` (a supervised child) receives it and
-calls ``restart_manager``, which -- on macOS -- sends a single line of JSON
-(``{"action": ..., "services": [...]}``) to this socket instead of shelling out to
-``supervisorctl``. The supervisor applies the same start/stop/restart semantics to
-its managed processes.
-"""
 
 import json
 import logging

@@ -1,7 +1,3 @@
-"""
-Verification script to compare PyTorch .pt vs ONNX embeddings
-Ensures the ONNX model produces identical embeddings to the original PyTorch model
-"""
 
 import os
 import sys
@@ -10,17 +6,14 @@ import numpy as np
 import librosa
 import librosa.feature
 
-# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 def compare_pytorch_vs_onnx():
-    """Compare embeddings from PyTorch .pt model vs ONNX model"""
 
     print("=" * 80)
     print("CLAP Model Embedding Verification: PyTorch .pt vs ONNX")
     print("=" * 80)
 
-    # Find all test audio files
     test_songs_dir = os.path.join(os.path.dirname(__file__), "..", "songs")
     test_audio_files = []
 
@@ -32,7 +25,6 @@ def compare_pytorch_vs_onnx():
     else:
         print(f"\nWarning: test/songs directory not found at {test_songs_dir}")
 
-    # Test text queries
     test_queries = [
         "upbeat electronic dance music",
         "calm acoustic guitar",
@@ -40,9 +32,6 @@ def compare_pytorch_vs_onnx():
         "jazz piano solo"
     ]
 
-    # =========================================================================
-    # PART 1: Load PyTorch model
-    # =========================================================================
     print("\n" + "-" * 80)
     print("PART 1: Loading PyTorch .pt model")
     print("-" * 80)
@@ -51,7 +40,6 @@ def compare_pytorch_vs_onnx():
         import torch
         import laion_clap
 
-        # Try common paths
         pt_model_paths = [
             "/app/model/music_audioset_epoch_15_esc_90.14.pt",
             "../query/music_audioset_epoch_15_esc_90.14.pt",
@@ -74,7 +62,6 @@ def compare_pytorch_vs_onnx():
 
         print(f"Loading from: {pt_model_path}")
 
-        # Load PyTorch model
         pt_model = laion_clap.CLAP_Module(enable_fusion=False, amodel='HTSAT-base')
         pt_model.load_ckpt(pt_model_path)
         pt_model.eval()
@@ -89,9 +76,6 @@ def compare_pytorch_vs_onnx():
         print(f"X Failed to load PyTorch model: {e}")
         return False
 
-    # =========================================================================
-    # PART 2: Load ONNX model
-    # =========================================================================
     print("\n" + "-" * 80)
     print("PART 2: Loading ONNX model")
     print("-" * 80)
@@ -100,7 +84,6 @@ def compare_pytorch_vs_onnx():
         import onnxruntime as ort
         from transformers import AutoTokenizer
 
-        # Try common paths for split models (preferred)
         onnx_audio_model_paths = [
             "/app/model/clap_audio_model.onnx",
             "../test/models/clap_audio_model.onnx",
@@ -143,12 +126,10 @@ def compare_pytorch_vs_onnx():
         onnx_model_path = onnx_audio_model_path
         print(f"Loading from: {onnx_model_path}")
 
-        # Load ONNX session
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         onnx_session = ort.InferenceSession(onnx_model_path, sess_options=sess_options)
 
-        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained("roberta-base")
 
         print("OK ONNX model loaded successfully")
@@ -157,9 +138,6 @@ def compare_pytorch_vs_onnx():
         print(f"X Failed to load ONNX model: {e}")
         return False
 
-    # =========================================================================
-    # PART 3: Compare text embeddings
-    # =========================================================================
     print("\n" + "=" * 80)
     print("PART 3: Comparing TEXT embeddings")
     print("=" * 80)
@@ -169,13 +147,11 @@ def compare_pytorch_vs_onnx():
     for query in test_queries:
         print(f"\nQuery: '{query}'")
 
-        # PyTorch embedding
         pt_start = time.perf_counter()
         with torch.no_grad():
             pt_embedding = pt_model.get_text_embedding([query], use_tensor=False)[0]
         pt_time = time.perf_counter() - pt_start
 
-        # ONNX embedding
         onnx_start = time.perf_counter()
         tokens = tokenizer(
             query,
@@ -194,14 +170,12 @@ def compare_pytorch_vs_onnx():
         }
 
         outputs = onnx_session.run(None, onnx_inputs)
-        onnx_embedding = outputs[1][0]  # Second output is text_embedding
+        onnx_embedding = outputs[1][0]
         onnx_time = time.perf_counter() - onnx_start
 
-        # Normalize both
         pt_embedding = pt_embedding / np.linalg.norm(pt_embedding)
         onnx_embedding = onnx_embedding / np.linalg.norm(onnx_embedding)
 
-        # Compare
         diff = np.abs(pt_embedding - onnx_embedding)
         max_diff = np.max(diff)
         mean_diff = np.mean(diff)
@@ -215,7 +189,6 @@ def compare_pytorch_vs_onnx():
         speedup = pt_time / onnx_time if onnx_time > 0 else 0
         print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
 
-        # Pass criteria: max diff < 1e-5 and cosine similarity > 0.9999
         passed = max_diff < 1e-5 and cosine_sim > 0.9999
         print(f"  Status: {'OK PASS' if passed else 'X FAIL'}")
 
@@ -230,9 +203,6 @@ def compare_pytorch_vs_onnx():
             'passed': passed
         })
 
-    # =========================================================================
-    # PART 4: Compare audio embeddings (if audio file provided)
-    # =========================================================================
     audio_results = []
 
     if test_audio_files:
@@ -245,14 +215,10 @@ def compare_pytorch_vs_onnx():
             print(f"Audio file: {os.path.basename(test_audio)}")
 
             try:
-                # Load audio
                 audio_data, sr = librosa.load(test_audio, sr=48000, mono=True)
 
-                # Ensure it's a proper numpy array
                 audio_data = np.asarray(audio_data, dtype=np.float32)
 
-                # CRITICAL: PyTorch CLAP quantizes audio to int16 and back
-                # This must be done for both models to match!
                 def float32_to_int16(x):
                     x = np.clip(x, -1.0, 1.0)
                     return (x * 32767.0).astype(np.int16)
@@ -260,33 +226,24 @@ def compare_pytorch_vs_onnx():
                 def int16_to_float32(x):
                     return (x / 32767.0).astype(np.float32)
 
-                # Quantize audio (matching PyTorch CLAP preprocessing)
                 audio_data = int16_to_float32(float32_to_int16(audio_data))
 
                 print(f"Loaded: {len(audio_data)/sr:.2f}s at {sr}Hz")
 
-                # =========================================================
-                # CRITICAL: Match production segmentation logic!
-                # Both models must process audio the same way
-                # =========================================================
-                SEGMENT_LENGTH = 480000  # 10 seconds at 48kHz
-                HOP_LENGTH = 240000      # 5 seconds (50% overlap)
+                SEGMENT_LENGTH = 480000
+                HOP_LENGTH = 240000
 
-                # Create overlapping segments (same as production code)
                 segments = []
                 total_length = len(audio_data)
 
                 if total_length <= SEGMENT_LENGTH:
-                    # Pad short audio
                     padded_audio = np.pad(audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant')
                     segments.append(padded_audio)
                 else:
-                    # Create overlapping segments
                     for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
                         segment = audio_data[start:start + SEGMENT_LENGTH]
                         segments.append(segment)
 
-                    # Add final segment if needed
                     last_start = len(segments) * HOP_LENGTH
                     if last_start < total_length:
                         last_segment = audio_data[-SEGMENT_LENGTH:]
@@ -294,13 +251,10 @@ def compare_pytorch_vs_onnx():
 
                 print(f"Split into {len(segments)} segments (10s with 5s overlap)")
 
-                # =========================================================
-                # PyTorch: Process all segments
-                # =========================================================
                 pt_start = time.perf_counter()
                 pt_embeddings = []
                 for seg in segments:
-                    seg_batched = seg.reshape(1, -1)  # Shape: (1, T)
+                    seg_batched = seg.reshape(1, -1)
                     with torch.no_grad():
                         seg_embedding = pt_model.get_audio_embedding_from_data(
                             x=seg_batched,
@@ -318,42 +272,33 @@ def compare_pytorch_vs_onnx():
                                 seg_embedding = seg_embedding[0]
                         pt_embeddings.append(seg_embedding)
 
-                # Average PyTorch embeddings
                 pt_audio_embedding = np.mean(pt_embeddings, axis=0)
                 pt_time = time.perf_counter() - pt_start
 
-                # =========================================================
-                # ONNX: Process all segments
-                # =========================================================
                 onnx_start = time.perf_counter()
                 onnx_embeddings = []
                 for seg in segments:
-                    # Compute mel-spectrogram (matching CLAP HTSAT config exactly!)
                     mel_spec = librosa.feature.melspectrogram(
                         y=seg,
                         sr=sr,
                         n_fft=1024,
-                        hop_length=320,  # CRITICAL: HTSAT uses 320, not 480!
+                        hop_length=320,
                         win_length=1024,
                         window='hann',
                         center=True,
-                        pad_mode='reflect',  # HTSAT uses 'reflect'
+                        pad_mode='reflect',
                         power=2.0,
                         n_mels=64,
-                        fmin=50,  # CRITICAL: HTSAT uses 50, not 0!
+                        fmin=50,
                         fmax=14000
                     )
 
-                    # Convert to log scale (CRITICAL: must match production exactly!)
                     mel_spec = librosa.power_to_db(mel_spec, ref=1.0, amin=1e-10, top_db=None)
 
-                    # Transpose to (time_frames, mel_bins)
                     mel_spec = mel_spec.T
 
-                    # Add batch and channel dimensions: (1, 1, time_frames, 64)
                     mel_input = mel_spec[np.newaxis, np.newaxis, :, :].astype(np.float32)
 
-                    # Create dummy text inputs
                     dummy_input_ids = np.zeros((1, 77), dtype=np.int64)
                     dummy_attention_mask = np.zeros((1, 77), dtype=np.int64)
 
@@ -364,18 +309,15 @@ def compare_pytorch_vs_onnx():
                     }
 
                     outputs = onnx_session.run(None, onnx_inputs)
-                    seg_embedding = outputs[0][0]  # First output is audio_embedding
+                    seg_embedding = outputs[0][0]
                     onnx_embeddings.append(seg_embedding)
 
-                # Average ONNX embeddings
                 onnx_audio_embedding = np.mean(onnx_embeddings, axis=0)
                 onnx_time = time.perf_counter() - onnx_start
 
-                # Normalize both
                 pt_audio_embedding = pt_audio_embedding / np.linalg.norm(pt_audio_embedding)
                 onnx_audio_embedding = onnx_audio_embedding / np.linalg.norm(onnx_audio_embedding)
 
-                # Compare
                 diff = np.abs(pt_audio_embedding - onnx_audio_embedding)
                 max_diff = np.max(diff)
                 mean_diff = np.mean(diff)
@@ -389,9 +331,6 @@ def compare_pytorch_vs_onnx():
                 speedup = pt_time / onnx_time if onnx_time > 0 else 0
                 print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
 
-                # Pass criteria: cosine similarity ≥ 0.97
-                # Note: Small differences (0.97-0.99) are expected due to librosa vs torchlibrosa
-                # numerical precision differences. This is acceptable for production use.
                 audio_passed = cosine_sim >= 0.97
                 print(f"  Status: {'OK PASS' if audio_passed else 'X FAIL'}")
 
@@ -418,9 +357,6 @@ def compare_pytorch_vs_onnx():
         print("PART 4: Audio embedding test SKIPPED (no audio files in test/songs)")
         print("=" * 80)
 
-    # =========================================================================
-    # FINAL SUMMARY
-    # =========================================================================
     print("\n" + "=" * 80)
     print("FINAL VERIFICATION SUMMARY")
     print("=" * 80)

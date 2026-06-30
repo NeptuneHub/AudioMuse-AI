@@ -1,26 +1,3 @@
-"""Source-level guard that the post-task index rebuild delegates to the single
-shared orchestrator (``tasks.analysis._run_all_index_builds``) rather than the
-old partial rebuild path.
-
-History this pins:
-
-* ``collection_manager.sync_collections_task`` used to rebuild ONLY the audio
-  IVF index after a sync, leaving CLAP / lyrics / lyrics-axes / SemGrove /
-  artist and the 2D map projections stale until the next analysis run.
-* ``cleaning.identify_and_clean_orphaned_albums_task`` rebuilt a hand-maintained
-  subset of builders inline, in three separate branches.
-
-Both now route through ``_run_all_index_builds``, which builds the full set in
-the same order as the analysis task and publishes the reload message. The
-runtime behaviour of the orchestrator itself is covered by
-``test_index_rebuild_integration.py``; this file only locks in the delegation
-contract so a future edit cannot silently revert either task to a partial
-rebuild.
-
-These tests parse the source with ``ast`` -- no import of the task modules, no
-DB, no ivf/sklearn/librosa -- so they run in every environment and never
-skip.
-"""
 
 import ast
 import os
@@ -43,7 +20,6 @@ _PARTIAL_BUILDERS = (
 
 
 def _function_defs(rel_path):
-    """Return ``{function_name: FunctionDef}`` for every def in a source file."""
     path = os.path.join(REPO_ROOT, rel_path)
     with open(path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
@@ -55,7 +31,6 @@ def _function_defs(rel_path):
 
 
 def _called_names(func_node):
-    """Return the set of callee names (bare and attribute) inside a function."""
     names = set()
     for node in ast.walk(func_node):
         if isinstance(node, ast.Call):
@@ -68,7 +43,6 @@ def _called_names(func_node):
 
 
 class TestCleaningDelegatesRebuild:
-    """tasks/cleaning.py :: identify_and_clean_orphaned_albums_task"""
 
     def test_calls_run_all_index_builds(self):
         funcs = _function_defs("tasks/cleaning.py")

@@ -1,12 +1,3 @@
-"""Unit tests for app_auth._original_request_is_https and the Bearer token
-secrets.compare_digest-on-encoded-bytes check.
-
-The HTTPS-decision helper drives the Secure cookie flag, so it is exercised
-inside a real Flask test request context (direct HTTPS, plain HTTP, and the
-X-Forwarded-Proto reverse-proxy header in both directions). The token check is
-verified to encode to bytes before compare_digest so a non-ASCII token cannot
-raise. The DB is not touched; only the request context and config matter.
-"""
 import pytest
 from flask import Flask, Blueprint
 
