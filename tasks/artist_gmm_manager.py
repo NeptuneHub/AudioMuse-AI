@@ -55,11 +55,11 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
     Returns: Optimal number of components
     """
     n_samples = len(embeddings)
-    
+
     # Special case: 1 track = 1 component (no need for BIC search)
     if n_samples == 1:
         return 1
-    
+
     # Limit max components based on data size
     # For small datasets: 1 component per track, capped at configured max
     # For larger datasets: at least 5 samples per component (relaxed from 10)
@@ -69,18 +69,18 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
     else:
         # Larger dataset: at least 5 samples per component
         max_feasible = max(min_components, min(max_components, n_samples // 5))
-    
+
     # Ensure we have at least min_components (unless dataset is tiny)
     if max_feasible < min_components:
         max_feasible = min(min_components, n_samples)
-    
+
     # Must have at least 1 component
     if max_feasible < 1:
         return 1
-    
+
     best_bic = float('inf')
     best_n_components = min(min_components, max_feasible)
-    
+
     # Try different numbers of components
     for n_components in range(1, max_feasible + 1):
         try:
@@ -92,18 +92,18 @@ def select_optimal_gmm_components(embeddings: np.ndarray, min_components: int = 
                 random_state=42
             )
             gmm.fit(embeddings)
-            
+
             # Compute BIC (lower is better)
             bic = gmm.bic(embeddings)
-            
+
             if bic < best_bic:
                 best_bic = bic
                 best_n_components = n_components
-                
+
         except Exception as e:
             logger.debug(f"Failed to fit GMM with {n_components} components: {e}")
             continue
-    
+
     logger.debug(f"Selected {best_n_components} components for {n_samples} samples (BIC: {best_bic:.2f})")
     return best_n_components
 
@@ -127,18 +127,18 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
     if len(track_embeddings) < MIN_TRACKS_PER_ARTIST:
         logger.warning(f"Artist '{artist_name}' has only {len(track_embeddings)} tracks, need at least {MIN_TRACKS_PER_ARTIST}")
         return None
-    
+
     try:
         # Stack all embeddings into a single array
         all_embeddings = np.vstack(track_embeddings)
         n_samples, n_features = all_embeddings.shape
-        
+
         # For artists with few songs (< 5): use each song as its own component
         # This is simpler and more honest than trying to fit a statistical model
         if n_samples < 5:
             logger.info(f"Artist '{artist_name}' has {n_samples} tracks - using each song as a GMM component with equal weights")
-            
-            
+
+
             # Each song becomes one component with equal weight
             n_components = n_samples
             weights = [1.0 / n_components] * n_components
@@ -155,11 +155,11 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
             logger.info(f"Created {n_components}-component GMM for artist '{artist_name}' (1 component per song, equal weights)")
             return gmm_params
-        
+
         # Multi-song artist (>= 5 songs): fit GMM normally using sklearn
         # Automatically select optimal number of components for this artist
         optimal_n_components = select_optimal_gmm_components(all_embeddings)
-        
+
         # Fit GMM to the embedding vectors
         gmm = GaussianMixture(
             n_components=optimal_n_components,
@@ -168,9 +168,9 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             n_init=GMM_N_INIT,
             random_state=42
         )
-        
+
         gmm.fit(all_embeddings)
-        
+
         # Extract GMM parameters. NOTE: covariances and covariance_type were
         # previously stored too, but nothing in the live query path ever read
         # them (the entire Jeffreys -> KL Monte Carlo chain was dead code).
@@ -185,13 +185,13 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
             'n_tracks': len(track_embeddings),
             'is_few_songs': False
         }
-        
+
         logger.info(f"Fitted GMM for artist '{artist_name}' with {len(track_embeddings)} tracks, {optimal_n_components} components, {all_embeddings.shape[1]}-dim embeddings")
-        
+
         return gmm_params
-        
+
     except Exception as e:
-        logger.error(f"Failed to fit GMM for artist '{artist_name}': {e}")
+        logger.exception(f"Failed to fit GMM for artist '{artist_name}': {e}")
         return None
 
 
@@ -211,10 +211,10 @@ def serialize_gmm_for_hnsw(gmm_params: Dict) -> np.ndarray:
     """
     means = np.array(gmm_params['means'])
     weights = np.array(gmm_params['weights'])
-    
+
     # Normalize weights to ensure they sum to 1 (handle numerical errors)
     weights = weights / np.sum(weights)
-    
+
     # Compute weighted mean: sum(w_i * mean_i)
     weighted_mean = np.sum(weights[:, np.newaxis] * means, axis=0)
 
@@ -279,11 +279,11 @@ def build_and_store_artist_index(db_conn=None):
     if db_conn is None:
         from app_helper import get_db
         db_conn = get_db()
-    
+
     logger.info("Starting to build artist similarity index using GMM + IVF...")
-    
+
     cur = db_conn.cursor()
-    
+
     try:
         # Step 0: Load existing GMM params for incremental rebuild from the
         # binary blob in artist_metadata_data, yielding a {artist_name:
@@ -378,7 +378,7 @@ def build_and_store_artist_index(db_conn=None):
                         track_embeddings.append(embedding)
 
             except Exception as e:
-                logger.error(f"Failed to fetch embeddings for artist {artist_name}: {e}")
+                logger.exception(f"Failed to fetch embeddings for artist {artist_name}: {e}")
                 continue
 
             # Fit GMM for this artist
@@ -393,11 +393,11 @@ def build_and_store_artist_index(db_conn=None):
                     refitted_count += 1
 
         logger.info(f"GMM fitting complete: {refitted_count} refitted, {reused_count} reused (unchanged), {len(artist_gmms)} total")
-        
+
         if len(artist_gmms) == 0:
             logger.warning("No valid GMMs created, skipping index build")
             return
-        
+
         # Build the disk-paged IVF artist index (angular/cosine) over the weighted
         # GMM centroids. Angular makes the coarse pass use the same metric as the
         # soft-Chamfer rerank, and lets the cells store as int8 like every other index.
@@ -423,7 +423,7 @@ def build_and_store_artist_index(db_conn=None):
         logger.error(f"Failed to build artist index: {e}", exc_info=True)
         db_conn.rollback()
         raise
-    
+
     finally:
         cur.close()
 
@@ -436,19 +436,19 @@ def load_artist_index_for_querying(force_reload=False):
         force_reload: If True, force reload even if already loaded
     """
     global artist_index, artist_map, reverse_artist_map, artist_gmm_params
-    
+
     with _index_lock:
         if artist_index is not None and not force_reload:
             logger.info("Artist index already loaded in memory")
             return
-        
+
         from app_helper import get_db
-        
+
         logger.info("Loading artist similarity index from database...")
-        
+
         conn = get_db()
         cur = conn.cursor()
-        
+
         def _reset_cache():
             global artist_index, artist_map, reverse_artist_map, artist_gmm_params
             artist_index = None
@@ -495,7 +495,7 @@ def load_artist_index_for_querying(force_reload=False):
             artist_map = None
             reverse_artist_map = None
             artist_gmm_params = None
-        
+
         finally:
             cur.close()
 
@@ -515,26 +515,26 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
     Returns: List of song dictionaries with item_id, title, distance_to_component
     """
     from app_helper import get_db
-    
+
     # Get GMM parameters for this artist
     if artist_gmm_params is None or artist_name not in artist_gmm_params:
         logger.warning(f"No GMM found for artist '{artist_name}'")
         return []
-    
+
     gmm_params = artist_gmm_params[artist_name]
-    
+
     # Get the component mean (centroid)
     means = np.array(gmm_params['means'])
     if component_index >= len(means):
         logger.warning(f"Component index {component_index} out of range for artist '{artist_name}'")
         return []
-    
+
     component_mean = means[component_index]
-    
+
     # Fetch all tracks and embeddings for this artist
     conn = get_db()
     cur = conn.cursor()
-    
+
     try:
         cur.execute("""
             SELECT s.item_id, s.title, e.embedding
@@ -543,12 +543,12 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
             WHERE s.author = %s AND e.embedding IS NOT NULL
             ORDER BY s.title
         """, (artist_name,))
-        
+
         rows = cur.fetchall()
-        
+
         if not rows:
             return []
-        
+
         # Compute distances from each song to the component mean
         song_distances = []
         for item_id, title, embedding_bytes in rows:
@@ -559,15 +559,15 @@ def get_representative_songs_for_component(artist_name: str, component_index: in
                 'title': title,
                 'distance_to_component': float(distance)
             })
-        
+
         # Sort by distance and return top-k closest songs
         song_distances.sort(key=lambda x: x['distance_to_component'])
         return song_distances[:top_k]
-        
+
     except Exception as e:
-        logger.error(f"Failed to get representative songs for artist '{artist_name}': {e}")
+        logger.exception(f"Failed to get representative songs for artist '{artist_name}': {e}")
         return []
-    
+
     finally:
         cur.close()
 
@@ -594,20 +594,20 @@ def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name
     # Pairwise cosine distance D[i,j] between component i of artist1 and component j of
     # artist2 (matches the soft-Chamfer rerank and the angular IVF coarse pass).
     distances = _cosine_distance_matrix(means1, means2)
-    
+
     # Find top-k closest component pairs
     flat_indices = np.argsort(distances.ravel())[:top_k]
     matches = []
-    
+
     for flat_idx in flat_indices:
         comp1_idx = flat_idx // distances.shape[1]
         comp2_idx = flat_idx % distances.shape[1]
         distance = distances[comp1_idx, comp2_idx]
-        
+
         # Get representative songs for each component
         artist1_songs = get_representative_songs_for_component(artist1_name, comp1_idx, top_k=3)
         artist2_songs = get_representative_songs_for_component(artist2_name, comp2_idx, top_k=3)
-        
+
         matches.append({
             'component1_index': int(comp1_idx),
             'component2_index': int(comp2_idx),
@@ -617,7 +617,7 @@ def compute_component_matches(gmm1_params: Dict, gmm2_params: Dict, artist1_name
             'artist1_representative_songs': artist1_songs,
             'artist2_representative_songs': artist2_songs
         })
-    
+
     return matches
 
 
@@ -639,7 +639,7 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
     if artist_index is None or artist_map is None or artist_gmm_params is None:
         logger.error("Artist index not loaded")
         raise RuntimeError("Artist similarity index not available")
-    
+
     # Try to resolve artist ID to name if it looks like an ID (not in reverse_artist_map)
     artist_name = query_artist
     if query_artist not in reverse_artist_map:
@@ -648,17 +648,17 @@ def find_similar_artists(query_artist, n: int = 10, ef_search: Optional[int] = N
         if resolved_name:
             artist_name = resolved_name
             logger.info(f"Resolved artist ID '{query_artist}' to name '{artist_name}'")
-    
+
     if artist_name not in reverse_artist_map:
         logger.warning(f"Artist '{artist_name}' not found in index")
         return []
-    
+
     # Get query artist's IVF ID
     query_id = reverse_artist_map[artist_name]
-    
+
     # Get query GMM parameters
     query_gmm = artist_gmm_params[artist_name]
-    
+
     from .paged_ivf import begin_query
     begin_query(artist_index)
 
@@ -724,17 +724,17 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
     """
     if not query:
         return []
-    
+
     from app_helper import get_db
     from app_helper_artist import get_artist_id_by_name
-    
+
     conn = get_db()
     cur = conn.cursor()
-    
+
     try:
         # Simple case-insensitive search
         query_pattern = f"%{query}%"
-        
+
         cur.execute("""
             SELECT DISTINCT author, COUNT(*) as track_count
             FROM score
@@ -743,7 +743,7 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
             ORDER BY track_count DESC, author
             LIMIT %s OFFSET %s
         """, (query_pattern, limit, offset))
-        
+
         results = []
         for author, track_count in cur.fetchall():
             artist_id = get_artist_id_by_name(author)
@@ -752,13 +752,13 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
                 'artist_id': artist_id,
                 'track_count': track_count
             })
-        
+
         return results
-        
+
     except Exception as e:
-        logger.error(f"Failed to search artists: {e}")
+        logger.exception(f"Failed to search artists: {e}")
         return []
-    
+
     finally:
         cur.close()
 
@@ -774,17 +774,17 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
     """
     from app_helper import get_db
     from app_helper_artist import get_artist_name_by_id
-    
+
     # Try to resolve ID to name if needed
     artist_name = artist_identifier
     if artist_identifier:
         resolved_name = get_artist_name_by_id(artist_identifier)
         if resolved_name:
             artist_name = resolved_name
-    
+
     conn = get_db()
     cur = conn.cursor()
-    
+
     try:
         cur.execute("""
             SELECT item_id, title, author
@@ -792,7 +792,7 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
             WHERE author = %s
             ORDER BY title
         """, (artist_name,))
-        
+
         results = []
         for item_id, title, author in cur.fetchall():
             results.append({
@@ -800,13 +800,13 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
                 'title': title,
                 'author': author
             })
-        
+
         return results
-        
+
     except Exception as e:
-        logger.error(f"Failed to get tracks for artist '{artist_name}': {e}")
+        logger.exception(f"Failed to get tracks for artist '{artist_name}': {e}")
         return []
-    
+
     finally:
         cur.close()
 
@@ -814,7 +814,7 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
 def cleanup_resources():
     """Cleanup loaded index and release memory."""
     global artist_index, artist_map, reverse_artist_map, artist_gmm_params
-    
+
     with _index_lock:
         artist_index = None
         artist_map = None

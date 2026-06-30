@@ -107,7 +107,7 @@ def _run_supervisorctl(arguments):
         logger.exception('supervisorctl command not found at %s', SUPERVISORCTL_CMD)
         return False
     except subprocess.TimeoutExpired:
-        logger.error('supervisorctl timed out after 30s: %s', cmd)
+        logger.exception('supervisorctl timed out after 30s: %s', cmd)
         return False
     except Exception:
         logger.exception('Failed to run supervisorctl command: %s', cmd)

@@ -157,9 +157,9 @@ def _get_target_music_folder_ids():
 
     # Use the musicfolders command to get the available music folders.
     response = _jsonrpc_request("musicfolders", [0, 999999])
-    
+
     logger.info(f"DEBUG: Lyrion musicfolders response: {response}")
-    
+
     if not response:
         logger.error("Failed to fetch music folders from Lyrion or response was empty.")
         logger.warning("Since MUSIC_LIBRARIES is configured but folder detection failed, returning empty set to prevent scanning everything.")
@@ -299,12 +299,12 @@ def _get_first_player():
             if player_id:
                 logger.info(f"Found Lyrion player: {player_id}")
                 return player_id
-        
+
         # Fallback: try to use a common default or return None
         logger.warning("No Lyrion players found, using fallback player ID")
         return "10.42.6.0"  # Use the player from your example as fallback
     except Exception as e:
-        logger.error(f"Error getting Lyrion player: {e}")
+        logger.exception(f"Error getting Lyrion player: {e}")
         return "10.42.6.0"  # Use the player from your example as fallback
 
 def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None):
@@ -356,7 +356,7 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None
                 continue
             else:
                 err = f"Failed to connect to Lyrion after {max_retries} attempts: {e}"
-                logger.error(err)
+                logger.exception(err)
                 raise LyrionAPIError(err)
         except LyrionAPIError:
             # Propagate our custom errors as-is
@@ -406,22 +406,22 @@ def download_track(temp_dir, item):
         if not track_id:
             logger.error("Lyrion item does not have a track ID.")
             return None
-            
+
         # The correct, stable URL format for directly downloading a track from Lyrion/LMS by its ID.
         # This avoids issues with the /stream endpoint which is often for the currently playing track.
         download_url = f"{config.LYRION_URL}/music/{track_id}/download"
-        
+
         # A more robust way to handle the file extension.
         file_extension = item.get('Path', '.mp3')
         if file_extension and '.' in file_extension:
             file_extension = os.path.splitext(file_extension)[1]
         else:
             file_extension = '.mp3'
-        
+
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        
+
         logger.info(f"Attempting to download from URL: {download_url}")
-        
+
         # Use a new session for each download to avoid connection pooling issues.
         with requests.Session() as s:
             with s.get(download_url, stream=True, timeout=REQUESTS_TIMEOUT) as r:
@@ -576,14 +576,14 @@ def get_recent_albums(limit):
     Scans ALL albums until the requested number is found (or library is exhausted).
     """
     target_paths = _get_target_paths_for_filtering()
-    
+
     # If no filtering needed, use simple approach
     if target_paths is None:
         return _get_all_albums_simple(limit)
-    
+
     # Use file path checking approach - scan ALL albums until we find enough matches
     logger.info(f"Scanning Lyrion library for albums in configured folders (limit: {limit or 'all'})")
-    
+
     filtered_albums = []
     page_size = 100
     offset = 0
@@ -594,7 +594,7 @@ def get_recent_albums(limit):
     albums_matched = 0
     filtered_no_album_id = 0
     filtered_no_path = 0
-    
+
     # Like the simple fetcher, try 'sort:new' first but fall back to
     # unsorted pagination if that appears to return fewer albums. Only
     # perform the full comparison when fetching the entire library.
@@ -637,17 +637,17 @@ def get_recent_albums(limit):
             break
 
         pages_fetched += 1
-        
+
         # Extract albums from response
         page_albums = []
         if isinstance(response, dict) and "albums_loop" in response:
             page_albums = response["albums_loop"]
         elif isinstance(response, list):
             page_albums = response
-        
+
         if not page_albums:
             break
-        
+
         # Check each album in this batch
         for album in page_albums:
             albums_scanned += 1
@@ -678,13 +678,13 @@ def get_recent_albums(limit):
             else:
                 filtered_no_path += 1
                 logger.debug(f"Album {album_id} ('{album_name}') does not appear to have tracks in target paths (page {pages_fetched}).")
-        
+
         # If this page had fewer albums than requested, we've reached the end
         if len(page_albums) < page_size:
             break
-        
+
         offset += len(page_albums)
-    
+
     logger.info(f"Found {len(filtered_albums)} albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched}, filtered_no_path: {filtered_no_path}, filtered_no_album_id: {filtered_no_album_id})")
     return filtered_albums
 
@@ -697,15 +697,15 @@ def get_all_songs(user_creds=None):
 
     if target_paths is not None:
         logger.warning("LYRION FOLDER FILTERING IS DISABLED - fetching all songs instead")
-    
+
     # Fetch all songs without filtering
     logger.info("Fetching all songs from Lyrion")
     response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"], user_creds=user_creds)
-    
+
     all_songs = []
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
-        
+
         # Map all songs to our standard format
         for song in songs:
             # Prioritize track artist over album artist to avoid "Various Artists"
@@ -721,7 +721,7 @@ def get_all_songs(user_creds=None):
                 track_artist = song.get('band')
             else:
                 track_artist = 'Unknown Artist'
-            
+
             mapped_song = {
                 'Id': song.get('id'),
                 'Name': song.get('title'),
@@ -811,22 +811,22 @@ def test_connection(user_creds=None):
 
 def _add_to_playlist(playlist_id, item_ids):
     """Adds songs to a Lyrion playlist using the working player-based method."""
-    if not item_ids: 
+    if not item_ids:
         return True
-    
+
     logger.info(f"Adding {len(item_ids)} songs to Lyrion playlist ID '{playlist_id}'.")
-    
+
     # Get a player for the command
     player_id = _get_first_player()
     if not player_id:
         logger.error("No Lyrion player available for playlist operations.")
         return False
-    
+
     try:
         # Get the original playlist name FIRST, before any operations
         logger.debug("Step 0: Getting original playlist name before operations")
         playlist_info = _jsonrpc_request("playlists", [0, 999999])  # Get all playlists
-        
+
         original_name = None
         if playlist_info and "playlists_loop" in playlist_info:
             for pl in playlist_info["playlists_loop"]:
@@ -834,49 +834,49 @@ def _add_to_playlist(playlist_id, item_ids):
                     original_name = pl.get("playlist")
                     logger.debug(f"Found original playlist name: '{original_name}' for ID {playlist_id}")
                     break
-        
+
         if not original_name:
             logger.error(f"Could not find playlist {playlist_id} in playlists list!")
             return False
-        
+
         # Method: Load playlist to player, add tracks, then use playlists edit to update
         logger.info("Using method: Load -> Add -> Update original playlist via edit command")
-        
+
         # Step 1: Load the saved playlist into the player's current playlist
         logger.debug(f"Step 1: Loading playlist {playlist_id} to player {player_id}")
         load_response = _jsonrpc_request("playlistcontrol", [
             "cmd:load",
             f"playlist_id:{playlist_id}"
         ], player_id)
-        
+
         logger.debug(f"Load playlist response: {load_response}")
-        
+
         # Step 2: Add tracks to the player's current playlist in batches
         batch_size = 50  # Larger batches since this method works
         total_added = 0
-        
+
         for i in range(0, len(item_ids), batch_size):
             batch_ids = item_ids[i:i + batch_size]
             track_id_list = ",".join(str(track_id) for track_id in batch_ids)
-            
+
             logger.debug(f"Step 2: Adding batch {i//batch_size + 1} with {len(batch_ids)} tracks")
             add_response = _jsonrpc_request("playlistcontrol", [
                 "cmd:add",
                 f"track_id:{track_id_list}"
             ], player_id)
-            
+
             logger.debug(f"Add batch response: {add_response}")
-            
+
             if add_response and "count" in add_response:
                 batch_added = add_response.get("count", 0)
                 total_added += batch_added
                 logger.debug(f"Added {batch_added} tracks in this batch, total: {total_added}")
-            
+
             # Small delay between batches
             if i + batch_size < len(item_ids):
                 import time
                 time.sleep(0.1)
-        
+
         # Step 3: Delete the original empty playlist
         logger.debug(f"Step 3: Deleting original empty playlist {playlist_id}")
         delete_response = _jsonrpc_request("playlists", [
@@ -884,7 +884,7 @@ def _add_to_playlist(playlist_id, item_ids):
             f"playlist_id:{playlist_id}"
         ])
         logger.debug(f"Delete response: {delete_response}")
-        
+
         # Step 4: Save the current player playlist with the original name
         logger.debug(f"Step 4: Saving current playlist as '{original_name}'")
         save_response = _jsonrpc_request("playlist", [
@@ -892,9 +892,9 @@ def _add_to_playlist(playlist_id, item_ids):
             original_name,
             "silent:1"
         ], player_id)
-        
+
         logger.debug(f"Save playlist response: {save_response}")
-        
+
         # Check if we got the expected playlist ID back
         if save_response and "__playlist_id" in save_response:
             final_playlist_id = save_response["__playlist_id"]
@@ -909,7 +909,7 @@ def _add_to_playlist(playlist_id, item_ids):
                     logger.info(f"Working with new playlist ID {final_playlist_id} which has the content")
                     return True
                 except Exception as e:
-                    logger.error(f"Error handling new playlist: {e}")
+                    logger.exception(f"Error handling new playlist: {e}")
                     return False
         elif total_added > 0:
             logger.info(f"Successfully added {total_added} tracks (save response: {save_response})")
@@ -917,9 +917,9 @@ def _add_to_playlist(playlist_id, item_ids):
         else:
             logger.warning("No tracks were added to the playlist")
             return False
-            
+
     except Exception as e:
-        logger.error(f"Error in playlist update method: {e}")
+        logger.exception(f"Error in playlist update method: {e}")
         return False
 
 def _create_playlist_batched(playlist_name, item_ids):
@@ -929,29 +929,29 @@ def _create_playlist_batched(playlist_name, item_ids):
     try:
         # Step 1: Create the playlist using JSON-RPC (this part works)
         create_response = _jsonrpc_request("playlists", ["new", f"name:{playlist_name}"])
-        
+
         if create_response:
             playlist_id = (
                 create_response.get("id") or
                 create_response.get("overwritten_playlist_id") or
                 create_response.get("playlist_id")
             )
-            
+
             if playlist_id:
                 logger.info(f"Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
-                
+
                 # Step 2: Add tracks using the web interface method
                 if item_ids:
                     if _add_to_playlist(playlist_id, item_ids):
                         logger.info(f"Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'.")
                     else:
                         logger.warning(f"Playlist '{playlist_name}' created but some tracks may not have been added.")
-                
+
                 return {"Id": playlist_id, "Name": playlist_name}
-        
+
         logger.error(f"Failed to create Lyrion playlist '{playlist_name}'. Response: {create_response}")
         return None
-        
+
     except Exception as e:
         logger.error(f"Exception creating Lyrion playlist '{playlist_name}': {e}", exc_info=True)
         return None
@@ -987,7 +987,7 @@ def delete_playlist(playlist_id):
 def get_tracks_from_album(album_id, user_creds=None):
     """Fetches all audio tracks for an album from Lyrion using JSON-RPC."""
     logger.info(f"Attempting to fetch tracks for album ID: {album_id}")
-    
+
     # Lyrion's JSON-RPC doesn't have a direct "get tracks for album" call.
     # The 'titles' command with a filter is the correct way to get songs for an album.
     # We now fetch all songs and filter them by the album ID.
@@ -1053,7 +1053,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     for s in local_songs:
         id_val = s.get('id') or s.get('Id') or s.get('track_id')
         title = s.get('title') or s.get('name') or s.get('Name')
-        
+
         # Prioritize track artist over album artist to avoid "Various Artists"
         if s.get('trackartist'):
             artist = s.get('trackartist')
@@ -1067,7 +1067,7 @@ def get_tracks_from_album(album_id, user_creds=None):
             artist = s.get('band')
         else:
             artist = 'Unknown Artist'
-        
+
         path = s.get('url') or s.get('Path') or s.get('path') or ''
         mapped.append({
             'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'OriginalAlbumArtist': s.get('albumartist'),
@@ -1120,7 +1120,7 @@ def get_top_played_songs(limit):
         mapped_songs = []
         for s in songs:
             title = s.get('title', 'Unknown')
-            
+
             # Prioritize track artist over album artist to avoid "Various Artists"
             if s.get('trackartist'):
                 track_artist = s.get('trackartist')
@@ -1134,7 +1134,7 @@ def get_top_played_songs(limit):
                 track_artist = s.get('band')
             else:
                 track_artist = 'Unknown Artist'
-            
+
             mapped_songs.append({
                 'Id': s.get('id'),
                 'Name': title,

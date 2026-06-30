@@ -42,7 +42,7 @@ def clustering_task_failure_handler(job, connection, type, value, tb):
     from flask_app import app
     with app.app_context():
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
-        
+
         # --- FIX: Handle different traceback types, especially from rq-janitor ---
         tb_formatted = ""
         if isinstance(tb, traceback.StackSummary):

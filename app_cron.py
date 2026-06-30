@@ -324,10 +324,10 @@ def run_due_cron_jobs():
                                         f"(playlist_id={playlist_id}, job_id={job_id})"
                                     )
                             except Exception as e:
-                                logger.error(f"Cron: error creating/updating playlist for sonic fingerprint: {e}")
+                                logger.exception(f"Cron: error creating/updating playlist for sonic fingerprint: {e}")
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception as e:
-                        logger.error(f"Cron: error running sonic fingerprint: {e}")
+                        logger.exception(f"Cron: error running sonic fingerprint: {e}")
                 elif task_type == 'alchemy_radio':
                     from tasks.radio_manager import run_radio_playlists
                     try:

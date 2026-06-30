@@ -25,26 +25,26 @@ class TestSelectOptimalGMMComponents:
     def test_single_sample_returns_one_component(self):
         """Test that 1 sample always returns 1 component"""
         embeddings = np.random.rand(1, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings)
-        
+
         assert n_components == 1
 
     def test_two_samples_returns_valid_components(self):
         """Test that 2 samples returns valid component count"""
         embeddings = np.random.rand(2, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings)
-        
+
         # Should be between 1 and 2
         assert 1 <= n_components <= 2
 
     def test_small_dataset_respects_max_feasible(self):
         """Test that small datasets (< 5 samples) use 1 component per sample"""
         embeddings = np.random.rand(4, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings)
-        
+
         # For 4 samples, max should be 4 (or configured max, whichever is smaller)
         assert n_components <= 4
         assert n_components >= 1
@@ -52,9 +52,9 @@ class TestSelectOptimalGMMComponents:
     def test_large_dataset_respects_sample_ratio(self):
         """Test that large datasets respect the 5 samples per component rule"""
         embeddings = np.random.rand(50, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings)
-        
+
         # With 50 samples and 5 per component rule, max should be 10
         # But actual choice depends on BIC optimization
         assert 1 <= n_components <= 10
@@ -62,9 +62,9 @@ class TestSelectOptimalGMMComponents:
     def test_respects_min_components_parameter(self):
         """Test that min_components parameter is respected"""
         embeddings = np.random.rand(50, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings, min_components=3, max_components=8)
-        
+
         # Should be at least 3 (unless dataset is too small)
         assert n_components >= 1
         assert n_components <= 8
@@ -72,9 +72,9 @@ class TestSelectOptimalGMMComponents:
     def test_respects_max_components_parameter(self):
         """Test that max_components parameter is respected"""
         embeddings = np.random.rand(100, 128)
-        
+
         n_components = select_optimal_gmm_components(embeddings, min_components=2, max_components=5)
-        
+
         # Should not exceed 5 (max_components)
         assert n_components <= 5
         # Should be at least 1 (BIC optimization may select fewer than min_components)
@@ -84,19 +84,19 @@ class TestSelectOptimalGMMComponents:
         """Test that same data produces same component count"""
         np.random.seed(42)
         embeddings = np.random.rand(30, 128)
-        
+
         n1 = select_optimal_gmm_components(embeddings)
         n2 = select_optimal_gmm_components(embeddings)
-        
+
         # Should be deterministic
         assert n1 == n2
 
     def test_high_dimensional_embeddings(self):
         """Test with realistic high-dimensional embeddings"""
         embeddings = np.random.rand(25, 512)  # 512-dim embeddings
-        
+
         n_components = select_optimal_gmm_components(embeddings)
-        
+
         # Should work with high dimensions
         assert 1 <= n_components <= min(GMM_N_COMPONENTS_MAX, 25 // 5)
 
@@ -107,9 +107,9 @@ class TestFitArtistGMM:
     def test_single_track_artist(self):
         """Test GMM fitting for artist with 1 track"""
         embeddings = [np.random.rand(128)]
-        
+
         gmm_params = fit_artist_gmm("Test Artist", embeddings)
-        
+
         # Should create 1-component GMM
         assert gmm_params is not None
         assert gmm_params['n_components'] == 1
@@ -121,9 +121,9 @@ class TestFitArtistGMM:
     def test_few_tracks_artist(self):
         """Test GMM fitting for artist with < 5 tracks"""
         embeddings = [np.random.rand(128) for _ in range(3)]
-        
+
         gmm_params = fit_artist_gmm("Few Tracks Artist", embeddings)
-        
+
         # Should create 1 component per track with equal weights
         assert gmm_params is not None
         assert gmm_params['n_components'] == 3
@@ -135,9 +135,9 @@ class TestFitArtistGMM:
     def test_many_tracks_artist(self):
         """Test GMM fitting for artist with >= 5 tracks"""
         embeddings = [np.random.rand(128) for _ in range(20)]
-        
+
         gmm_params = fit_artist_gmm("Popular Artist", embeddings)
-        
+
         # Should use sklearn GMM fitting
         assert gmm_params is not None
         assert gmm_params['n_tracks'] == 20
@@ -173,18 +173,18 @@ class TestFitArtistGMM:
     def test_weights_sum_to_one(self):
         """Test that GMM weights sum to 1.0"""
         embeddings = [np.random.rand(128) for _ in range(15)]
-        
+
         gmm_params = fit_artist_gmm("Artist", embeddings)
-        
+
         weights_sum = sum(gmm_params['weights'])
         assert abs(weights_sum - 1.0) < 1e-6
 
     def test_means_shape_matches_components(self):
         """Test that means array matches number of components"""
         embeddings = [np.random.rand(128) for _ in range(8)]
-        
+
         gmm_params = fit_artist_gmm("Artist", embeddings)
-        
+
         n_components = gmm_params['n_components']
         assert len(gmm_params['means']) == n_components
         # Each mean should be 128-dimensional
@@ -194,19 +194,19 @@ class TestFitArtistGMM:
         """Test that n_features matches embedding dimensionality"""
         embedding_dim = 256
         embeddings = [np.random.rand(embedding_dim) for _ in range(10)]
-        
+
         gmm_params = fit_artist_gmm("Artist", embeddings)
-        
+
         assert gmm_params['n_features'] == embedding_dim
 
     def test_few_songs_flag_correct(self):
         """Test that is_few_songs flag is set correctly"""
         few_embeddings = [np.random.rand(128) for _ in range(3)]
         many_embeddings = [np.random.rand(128) for _ in range(10)]
-        
+
         few_params = fit_artist_gmm("Few Artist", few_embeddings)
         many_params = fit_artist_gmm("Many Artist", many_embeddings)
-        
+
         assert few_params['is_few_songs'] is True
         assert many_params['is_few_songs'] is False
 
@@ -216,19 +216,19 @@ class TestFitArtistGMM:
         embeddings1 = [np.random.rand(128) for _ in range(10)]
         np.random.seed(99)
         embeddings2 = [np.random.rand(128) for _ in range(10)]
-        
+
         gmm1 = fit_artist_gmm("Artist 1", embeddings1)
         gmm2 = fit_artist_gmm("Artist 2", embeddings2)
-        
+
         # Different data should produce different means
         assert gmm1['means'] != gmm2['means']
 
     def test_high_dimensional_embeddings(self):
         """Test with high-dimensional embeddings (like real CLAP)"""
         embeddings = [np.random.rand(512) for _ in range(15)]
-        
+
         gmm_params = fit_artist_gmm("HD Artist", embeddings)
-        
+
         assert gmm_params is not None
         assert gmm_params['n_features'] == 512
         assert all(len(mean) == 512 for mean in gmm_params['means'])
@@ -339,9 +339,9 @@ class TestEdgeCases:
     def test_empty_track_list(self):
         """Test handling of empty track list"""
         embeddings = []
-        
+
         gmm_params = fit_artist_gmm("Empty Artist", embeddings)
-        
+
         # Should return None (below minimum)
         assert gmm_params is None
 
@@ -364,7 +364,7 @@ class TestEdgeCases:
             np.random.rand(64),  # Different dimension!
             np.random.rand(128)
         ]
-        
+
         # Should either handle gracefully or raise clear error
         try:
             gmm_params = fit_artist_gmm("Mismatched Artist", embeddings)
@@ -378,7 +378,7 @@ class TestEdgeCases:
         """Test that component count is bounded even with many samples"""
         # 100 samples should still cap at GMM_N_COMPONENTS_MAX
         embeddings = [np.random.rand(128) for _ in range(100)]
-        
+
         gmm_params = fit_artist_gmm("Popular Artist", embeddings)
-        
+
         assert gmm_params['n_components'] <= GMM_N_COMPONENTS_MAX

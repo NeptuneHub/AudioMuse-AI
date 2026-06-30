@@ -310,7 +310,7 @@ def build_and_store_ivf_index(db_conn=None):
             from app_helper import get_db
             db_conn = get_db()
         except Exception:
-            logger.error("build_and_store_ivf_index: no db_conn provided and get_db() failed.")
+            logger.exception("build_and_store_ivf_index: no db_conn provided and get_db() failed.")
             return
 
     from .index_build_helpers import stream_embeddings_to_buffer
@@ -403,7 +403,7 @@ def _is_same_song(title1, artist1, title2, artist2):
     norm_title2 = _normalize_string(title2)
     norm_artist1 = _normalize_string(artist1)
     norm_artist2 = _normalize_string(artist2)
-    
+
     return norm_title1 == norm_title2 and norm_artist1 == norm_artist2
 
 # True if current_vector is within threshold of any vector in window_songs
@@ -454,7 +454,7 @@ def _filter_by_distance(song_results: list, db_conn):
 
     threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
-    
+
     filtered_songs = []
 
     # For small datasets, use sequential processing. The larger-dataset branch
@@ -472,15 +472,15 @@ def _filter_by_distance(song_results: list, db_conn):
     else:
         # For larger datasets, use parallel processing with rolling lookback
         remaining_songs = song_results.copy()
-        
+
         while remaining_songs:
             # Process next batch
             current_batch = remaining_songs[:BATCH_SIZE_VECTOR_OPS]
             remaining_songs = remaining_songs[BATCH_SIZE_VECTOR_OPS:]
-            
+
             # Get current lookback window
             lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
-            
+
             # Process batch
             batch_results = _compute_distance_batch(current_batch, lookback_window, threshold, metric_name, details_map)
             filtered_songs.extend(batch_results)
@@ -504,7 +504,7 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     # --- PERFORMANCE OPTIMIZATION: Use a set for O(1) lookups ---
     # Store normalized (title, artist) tuples
     added_songs_signatures = set()
-    
+
     # Add the original song to the set to filter it out
     original_title = _normalize_string(original_song_details.get('title'))
     original_author = _normalize_string(original_song_details.get('author'))
@@ -603,9 +603,9 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
 
     # Filter by mood similarity
     mood_features = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
-    
+
     logger.info(f"Starting mood filtering with {len(song_results)} candidates, threshold: {mood_threshold}")
-    
+
     # For small datasets, use sequential processing
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         filtered_songs = []
@@ -618,7 +618,7 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
             normalized_mood_distance = _mood_distance(target_mood_features, candidate_features, mood_features)
 
             logger.debug(f"Song {song['item_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}")
-            
+
             if normalized_mood_distance <= mood_threshold:
                 song_with_mood = song.copy()
                 song_with_mood['mood_distance'] = normalized_mood_distance
@@ -629,13 +629,13 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
     else:
         # For larger datasets, use parallel processing
         song_batches = [song_results[i:i + BATCH_SIZE_VECTOR_OPS] for i in range(0, len(song_results), BATCH_SIZE_VECTOR_OPS)]
-        
+
         executor = _get_thread_pool()
         future_to_batch = {
-            executor.submit(_compute_mood_distances_batch, batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold): batch 
+            executor.submit(_compute_mood_distances_batch, batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold): batch
             for batch in song_batches
         }
-        
+
         filtered_songs = []
         for future in as_completed(future_to_batch):
             batch_results = future.result()
@@ -681,7 +681,7 @@ def _radius_walk_get_candidates(
     5. Pre-calculating and caching vectors and distances to the anchor.
     """
     from app_helper import get_score_data_by_ids
-    
+
     # Follow the same pre-filter order used by the non-radius path:
     # 1) Distance-based de-dup (prepend original)
     # 2) Name/artist dedupe
@@ -726,7 +726,7 @@ def _radius_walk_get_candidates(
             logger.debug("Radius walk: mood-based pre-filter disabled by caller/config. Skipping.")
     except Exception:
         logger.exception("Radius walk: mood-based pre-filter failed, continuing without it.")
-    
+
     # 3. Fetch item details for remaining candidates and pre-calculate/cache data for the walk
     candidate_data = []
     if unique_results_by_song:
@@ -756,7 +756,7 @@ def _radius_walk_get_candidates(
                     "title": info.get('title'),
                     "author": info.get('author')
                 })
-            
+
     logger.info(f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates.")
     return candidate_data
 
@@ -838,7 +838,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
         try:
             query_vector = ivf_index.get_vector(target_vec_id)
         except Exception as e:
-            logger.error(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
+            logger.exception(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
             return []
 
 
@@ -932,7 +932,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
     if radius_similarity:
         # Mood similarity is explicitly *disabled* for radius walk, as it's a different discovery mode.
         logger.info(f"Starting Radius Similarity walk for {n} songs...")
-        
+
         # 1. Get the pre-filtered and pre-calculated candidate pool
         candidate_data = _radius_walk_get_candidates(
             target_item_id=target_item_id,
@@ -943,7 +943,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
             eliminate_duplicates=eliminate_duplicates, # Pass this flag to apply artist cap pre-walk
             mood_similarity=mood_similarity
         )
-        
+
         # 2. Execute the bucketed greedy walk
         # The walk itself will return exactly n items (or fewer if the pool is too small)
         final_results = _execute_radius_walk(
@@ -951,7 +951,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
             candidate_data=candidate_data,
             eliminate_duplicates=eliminate_duplicates
         )
-        
+
         # 3. Return the results. They are already in the correct "walk" order.
         # No further filtering or sorting is needed.
         _neighbor_result_cache.put(_result_key, final_results)
@@ -960,18 +960,18 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
     # --- Standard Logic (No Radius) ---
     else:
         # Apply standard filters
-        
+
         # 1. Prepend original song for distance filtering
         original_song_for_filtering = {"item_id": target_item_id, "distance": 0.0}
         results_with_original = [original_song_for_filtering] + initial_results
-        
+
         # 2. Filter by distance
         temp_filtered_results = _filter_by_distance(results_with_original, db_conn)
-        
+
         # 3. Remove original song and filter by name/artist
         distance_filtered_results = [song for song in temp_filtered_results if song['item_id'] != target_item_id]
         unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, target_song_details)
-        
+
         # 4. Apply mood similarity filtering: caller preference overrides config.
         effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood_nonradius:
@@ -979,7 +979,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
             unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn, target_other_features=target_song_details.get('other_features'))
         else:
             logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
-        
+
         # 5. Apply artist cap (eliminate_duplicates)
         if eliminate_duplicates:
             # If MAX_SONGS_PER_ARTIST <= 0, treat as disabled and skip cap enforcement
@@ -987,7 +987,7 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
                 final_results = unique_results_by_song
             else:
                 item_ids_to_check = [r['item_id'] for r in unique_results_by_song]
-                
+
                 track_details_list = get_score_data_by_ids(item_ids_to_check)
                 details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
 
@@ -1090,7 +1090,7 @@ def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 10
             continue
 
         is_duplicate = any(_is_same_song(current_details['title'], current_details['author'], added['title'], added['author']) for added in added_songs_details)
-        
+
         if not is_duplicate:
             unique_songs_by_content.append(song)
             added_songs_details.append(current_details)
@@ -1167,7 +1167,7 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
         result = cur.fetchone()
         if result:
             return result['item_id']
-        
+
         # If no exact match, try fuzzy match (partial match on both title and artist)
         query = """
             SELECT item_id, title, author, 
@@ -1182,7 +1182,7 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
         if result:
             logger.info(f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'")
             return result['item_id']
-        
+
         return None
     except Exception as e:
         logger.error(f"Error fetching item_id for '{title}' by '{artist}': {e}", exc_info=True)
@@ -1286,7 +1286,7 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
     try:
         from .mediaserver import create_instant_playlist
         created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
-        
+
         if not created_playlist:
             raise Exception("Playlist creation failed. The media server did not return a playlist object.")
 

@@ -461,7 +461,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     try:
         query_vector = index.get_vector(seed_vid)
     except Exception as exc:
-        logger.error("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
+        logger.exception("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
         return []
 
     from config import MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS, DUPLICATE_DISTANCE_CHECK_LOOKBACK, SIMILARITY_RADIUS_DEFAULT

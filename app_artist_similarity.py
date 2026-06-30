@@ -67,7 +67,7 @@ def search_artists_endpoint():
                     type: integer
     """
     query = request.args.get('query', '', type=str)
-    
+
     if not query or len(query) < 2:
         return jsonify([])
 
@@ -158,26 +158,26 @@ def get_similar_artists_endpoint():
     n = request.args.get('n', 10, type=int)
     ef_search = request.args.get('ef_search', type=int)
     include_component_matches = request.args.get('include_component_matches', 'false').lower() == 'true'
-    
+
     # Accept either artist name or artist_id
     query_artist = artist or artist_id
-    
+
     if not query_artist:
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
-    
+
     try:
         similar_artists = find_similar_artists(
-            query_artist, 
-            n=n, 
+            query_artist,
+            n=n,
             ef_search=ef_search,
             include_component_matches=include_component_matches
         )
-        
+
         if not similar_artists:
             return jsonify({"error": f"Artist '{query_artist}' not found in index or no similar artists found."}), 404
-        
+
         return jsonify(similar_artists)
-        
+
     except RuntimeError as e:
         logger.error(f"Runtime error finding similar artists for '{query_artist}': {e}", exc_info=True)
         return jsonify({"error": "The artist similarity search service is currently unavailable."}), 503
@@ -225,13 +225,13 @@ def get_artist_tracks_endpoint():
     """
     artist = request.args.get('artist')
     artist_id = request.args.get('artist_id')
-    
+
     # Accept either artist name or artist_id
     query_artist = artist or artist_id
-    
+
     if not query_artist:
         return jsonify({"error": "Missing 'artist' or 'artist_id' parameter"}), 400
-    
+
     try:
         tracks = get_artist_tracks(query_artist)
         return jsonify(tracks)

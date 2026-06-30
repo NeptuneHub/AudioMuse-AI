@@ -41,7 +41,7 @@ def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feat
     tempo = float(row['tempo']) if row['tempo'] is not None else 0.0
     energy = float(row['energy']) if row['energy'] is not None else 0.0 # Get energy
     mood_str = row['mood_vector'] or ""
-    
+
     # Normalize tempo to 0-1 range
     tempo_range = TEMPO_MAX_BPM - TEMPO_MIN_BPM
     tempo_norm = (tempo - TEMPO_MIN_BPM) / tempo_range if tempo_range > 0 else 0.0

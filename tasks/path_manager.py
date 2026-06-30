@@ -48,12 +48,12 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
     """
     v1 = np.array(v1, dtype=float)
     v2 = np.array(v2, dtype=float)
-    
+
     if metric == "angular":
         # Normalize to unit vectors
         norm_v1 = np.linalg.norm(v1)
         norm_v2 = np.linalg.norm(v2)
-        
+
         # Handle zero vectors
         if norm_v1 == 0 or norm_v2 == 0:
             logger.warning("Cannot perform angular interpolation with a zero vector. Falling back to linear.")
@@ -61,24 +61,24 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
 
         v1_u = v1 / norm_v1
         v2_u = v2 / norm_v2
-        
+
         # Compute the angle between them
         dot = np.clip(np.dot(v1_u, v2_u), -1.0, 1.0)
         theta = np.arccos(dot)
-        
+
         # If vectors are almost identical, fallback to linear
         if np.isclose(theta, 0) or np.isnan(theta):
             return np.linspace(v1, v2, num=num)
-        
+
         # Spherical linear interpolation (SLERP)
         t_vals = np.linspace(0, 1, num)
         centroids = []
         sin_theta = np.sin(theta)
-        
+
         # If sin_theta is close to 0 (vectors are collinear), use linear
         if np.isclose(sin_theta, 0):
             return np.linspace(v1, v2, num=num)
-            
+
         for t in t_vals:
             s1 = np.sin((1 - t) * theta) / sin_theta
             s2 = np.sin(t * theta) / sin_theta
@@ -86,7 +86,7 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
             magnitude = (1 - t) * norm_v1 + t * norm_v2
             centroids.append((s1 * v1_u + s2 * v2_u) * magnitude)
         return np.array(centroids)
-    
+
     else:
         # Default: Euclidean interpolation
         return np.linspace(v1, v2, num=num)
@@ -98,7 +98,7 @@ def _create_path_from_ids(path_ids):
     from app_helper import get_tracks_by_ids
     if not path_ids:
         return []
-    
+
     seen = set()
     unique_path_ids = [x for x in path_ids if not (x in seen or seen.add(x))]
 
@@ -153,7 +153,7 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
     try:
         candidates_ivf = neighbors_fn(centroid_vec, n=k_search)
     except Exception as e:
-        logger.error(f"Error finding neighbors for a centroid with k={k_search}: {e}")
+        logger.exception(f"Error finding neighbors for a centroid with k={k_search}: {e}")
         return [] # Failed to search
 
     if not candidates_ivf:
@@ -264,10 +264,10 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
                 auth = (song.get('author') or '').strip().lower()
                 if auth in artist_counts:
                     artist_counts[auth] = max(0, artist_counts.get(auth, 0) - 1)
-        
+
         # Return an empty list to signal complete failure of this job
         return []
-        
+
     # Success! Return the full list.
     logger.info(f"Successfully found {len(found_songs)} of {num_to_find} songs for centroid (k={k_search}).")
     # We already added them to used_ids/signatures inside the loop.
@@ -297,7 +297,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
              path_details = _create_path_from_ids([start_item_id])
              return path_details, 0.0
         path_details = _create_path_from_ids([start_item_id, end_item_id])
-        
+
         # Calculate distance for the 2-song path
         total_path_distance = 0.0
         v1 = get_vector_fn(start_item_id)
@@ -314,7 +314,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     if not all([start_vector is not None, end_vector is not None, start_details_list, end_details_list]):
         logger.error("Could not retrieve vectors or details for start or end song.")
         return None, 0.0
-        
+
     start_details = start_details_list[0]
     end_details = end_details_list[0]
 
@@ -336,18 +336,18 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
 
     # This list holds the start song + all *found* intermediate songs
     path_songs_details = [{**start_details, 'vector': start_vector}]
-    
+
     num_intermediate = Lreq - 2
     k_base = 10
     k_max = 1000 # Max search neighbors
-    
+
     if num_intermediate > 0:
         logger.info(f"Attempting to find {num_intermediate} intermediate songs for a total path of {Lreq}.")
         # Generate Lreq total centroids (start, ...intermediate..., end)
         all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=metric)
-        
+
         # We only want the intermediate ones
-        intermediate_centroids = all_centroids[1:-1] 
+        intermediate_centroids = all_centroids[1:-1]
 
         # Heuristic to choose initial number of centroid jobs:
         # - Sample PATH_CANDIDATES_PER_STEP neighbors near start and end
@@ -428,7 +428,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     # Scale k proportionally so total search budget roughly preserved
                     scaled_k = min(k_max, max(k_base, int(k_base * (num_intermediate / float(initial_count)))))
                     jobs.append({'vector': bucket_mid, 'k': scaled_k, 'original_indices': indices, 'num_to_find': num_to_find})
-        
+
         # Process the jobs with the merge logic (only if we actually created jobs)
         if path_fix_size and jobs:
             i = 0
@@ -498,15 +498,15 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
 
                         logger.info(f"Retrying merged job at index {i} (k={merged_k}, need to find {still_need_to_find} more songs, represents {len(merged_indices)} original centroids)")
                         # Do not increment i. We re-try the *current* job (which is now the merged job)
-    
+
     # Add the end song (it was already in used_song_ids)
     path_songs_details.append({**end_details, 'vector': end_vector})
-    
+
     # Get final list of IDs
     path_ids = [song['item_id'] for song in path_songs_details]
-    
+
     final_path_details = _create_path_from_ids(path_ids)
-    
+
     # Recalculate total distance
     total_path_distance = 0.0
     if len(final_path_details) > 1:

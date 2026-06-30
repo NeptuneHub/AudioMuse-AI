@@ -145,7 +145,7 @@ def resolve_user(identifier, token):
             if user.get('Name', '').lower() == identifier.lower():
                 logger.info(f"Matched username '{identifier}' to User ID '{user['Id']}'.")
                 return user['Id']
-    
+
     logger.info(f"No username match for '{identifier}'. Assuming it is a User ID.")
     return identifier # Return original identifier if no match is found
 
@@ -197,7 +197,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                 r.raise_for_status()
                 response_data = r.json()
                 tracks_on_page = response_data.get("Items") or []
-                
+
                 if not tracks_on_page:
                     break
 
@@ -225,7 +225,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
                 all_tracks.extend(standalone_tracks)
                 start_index += len(tracks_on_page)
-                
+
                 if not fetch_all and len(all_tracks) >= limit:
                     all_tracks = all_tracks[:limit]
                     break
@@ -254,7 +254,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                     r.raise_for_status()
                     response_data = r.json()
                     tracks_on_page = response_data.get("Items") or []
-                    
+
                     if not tracks_on_page:
                         break
 
@@ -279,7 +279,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
                     all_tracks.extend(standalone_tracks)
                     start_index += len(tracks_on_page)
-                    
+
                     if not fetch_all and len(all_tracks) >= limit:
                         all_tracks = all_tracks[:limit]
                         break
@@ -300,7 +300,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
     if all_tracks:
         logger.info(f"Found {len(all_tracks)} recent standalone tracks (not in albums)")
-    
+
     return all_tracks
 
 def _get_recent_albums_only(limit, user_creds=None):
@@ -312,7 +312,7 @@ def _get_recent_albums_only(limit, user_creds=None):
     """
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     target_library_ids = _get_target_library_ids()
-    
+
     # Case 1: Config is set, but no matching libraries were found. Scan nothing.
     if isinstance(target_library_ids, set) and not target_library_ids:
         logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
@@ -338,10 +338,10 @@ def _get_recent_albums_only(limit, user_creds=None):
                 r.raise_for_status()
                 response_data = r.json()
                 albums_on_page = response_data.get("Items") or []
-                
+
                 if not albums_on_page:
                     break
-                
+
                 all_albums.extend(albums_on_page)
                 start_index += len(albums_on_page)
 
@@ -350,7 +350,7 @@ def _get_recent_albums_only(limit, user_creds=None):
             except Exception as e:
                 logger.error(f"Emby _get_recent_albums_only failed during 'scan all': {e}", exc_info=True)
                 break
-    
+
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
         logger.info(f"Scanning {len(target_library_ids)} specific Emby libraries for recent albums (albums only).")
@@ -369,10 +369,10 @@ def _get_recent_albums_only(limit, user_creds=None):
                     r.raise_for_status()
                     response_data = r.json()
                     albums_on_page = response_data.get("Items") or []
-                    
+
                     if not albums_on_page:
                         break
-                    
+
                     all_albums.extend(albums_on_page)
                     start_index += len(albums_on_page)
 
@@ -389,7 +389,7 @@ def _get_recent_albums_only(limit, user_creds=None):
     # Apply the final limit if one was specified
     if not fetch_all:
         return all_albums[:limit]
-        
+
     return all_albums
 
 def get_recent_music_items(limit):
@@ -399,15 +399,15 @@ def get_recent_music_items(limit):
     Returns a list combining album objects and standalone track objects.
     """
     target_library_ids = _get_target_library_ids()
-    
+
     # Get recent albums (existing functionality)
     albums = _get_recent_albums_only(limit)
-    
-    # Get recent standalone tracks (new functionality) 
+
+    # Get recent standalone tracks (new functionality)
     # Use the same limit to get a reasonable number of standalone tracks
     standalone_limit = min(limit, 100) if limit > 0 else 100  # Cap standalone tracks at 100
     standalone_tracks = _get_recent_standalone_tracks(standalone_limit, target_library_ids)
-    
+
     # Create pseudo-albums for standalone tracks to maintain compatibility with analysis workflow
     pseudo_albums = []
     for track in standalone_tracks:
@@ -421,21 +421,21 @@ def get_recent_music_items(limit):
             'AlbumArtist': track.get('AlbumArtist', 'Unknown Artist')
         }
         pseudo_albums.append(pseudo_album)
-    
+
     # Combine albums and pseudo-albums
     all_items = albums + pseudo_albums
-    
+
     # Sort by date if we have multiple sources
     if albums and pseudo_albums:
         all_items.sort(key=lambda x: x.get('DateCreated', ''), reverse=True)
-    
+
     # Apply final limit if specified
     if limit > 0:
         all_items = all_items[:limit]
-    
+
     if pseudo_albums:
         logger.info(f"Found {len(albums)} regular albums and {len(pseudo_albums)} standalone tracks (combined into {len(all_items)} total items)")
-    
+
     return all_items
 
 def get_tracks_from_album(album_id, user_creds=None):
@@ -447,7 +447,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     if str(album_id).startswith('standalone_'):
         # Extract the real track ID from the pseudo-album ID
         real_track_id = album_id.replace('standalone_', '')
-        
+
         # Get the track directly by its ID
         url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{real_track_id}"
         params = {"Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists"}
@@ -469,7 +469,7 @@ def get_tracks_from_album(album_id, user_creds=None):
         except Exception as e:
             logger.error(f"Emby get_tracks_from_album failed for standalone track {real_track_id}: {e}", exc_info=True)
             return []
-    
+
     # Normal album handling
     url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     params = {
@@ -652,9 +652,9 @@ def get_playlist_by_name(playlist_name, user_creds=None):
         for playlist in playlists:
             if playlist.get("Name") == playlist_name:
                 return playlist
-        
+
         return None  # Not found
-    
+
     except Exception as e:
         logger.error(f"Emby get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
         return None
@@ -683,7 +683,7 @@ def create_playlist(playlist_name, item_ids, user_creds=None):
         # https://dev.emby.media/doc/restapi/Playlists.html
         # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
 
-        
+
         ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         url = (
             f"{config.EMBY_URL}/emby/Playlists"
@@ -845,7 +845,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         # https://dev.emby.media/doc/restapi/Playlists.html
         # https://dev.emby.media/reference/RestAPI/PlaylistService/postPlaylists.html
 
-        
+
         ids_param = ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         url = (
             f"{config.EMBY_URL}/emby/Playlists"

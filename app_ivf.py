@@ -9,7 +9,7 @@ import numpy as np
 from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
 from app_helper import serialize_neighbor_results
 from tasks.ivf_manager import (
-    find_nearest_neighbors_by_id, 
+    find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
     create_playlist_from_ids,
@@ -327,7 +327,7 @@ def get_similar_tracks_endpoint():
 
     # Optional anchor parameter
     anchor_id_param = request.args.get('anchor_id', None, type=int)
-    
+
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
@@ -394,7 +394,7 @@ def get_similar_tracks_endpoint():
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id, 
+            target_item_id,
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
             mood_similarity=mood_similarity,

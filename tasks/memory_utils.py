@@ -41,7 +41,7 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
         - Between albums or at periodic intervals
     """
     cuda_cleanup_performed = False
-    
+
     # Try PyTorch cleanup first (if available)
     try:
         import torch
@@ -60,7 +60,7 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
         pass
     except Exception as e:
         logger.warning(f"Error during PyTorch CUDA cleanup: {e}")
-    
+
     # Try CuPy cleanup if PyTorch failed/unavailable
     if not cuda_cleanup_performed:
         try:
@@ -74,13 +74,13 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
             pass
         except Exception as e:
             logger.warning(f"Error during CuPy CUDA cleanup: {e}")
-    
+
     # Always run garbage collection
     gc.collect()
-    
+
     if not cuda_cleanup_performed:
         logger.debug("No CUDA cleanup libraries available (PyTorch/CuPy)")
-    
+
     return cuda_cleanup_performed
 
 
@@ -102,7 +102,7 @@ def cleanup_onnx_session(session, name: str = "session") -> None:
     """
     if session is None:
         return
-    
+
     try:
         # ONNX Runtime InferenceSession doesn't have explicit close/dispose,
         # but deleting the reference and forcing GC helps
@@ -130,14 +130,14 @@ def reset_onnx_memory_pool() -> bool:
     """
     try:
         import onnxruntime as ort
-        
+
         # Force garbage collection first
         gc.collect()
-        
+
         # Determine available providers
         providers = ort.get_available_providers()
         preferred_provider = None
-        
+
         if 'CUDAExecutionProvider' in providers:
             preferred_provider = 'CUDAExecutionProvider'
             logger.debug("Using CUDA provider for ONNX memory pool reset")
@@ -147,38 +147,38 @@ def reset_onnx_memory_pool() -> bool:
         else:
             logger.debug("No suitable ONNX provider found for memory pool reset")
             return False
-            
+
         # Create and immediately delete a minimal session to trigger cleanup
         # This forces ONNX Runtime to cleanup its internal caches
         try:
             import tempfile
             import onnx
             from onnx import helper, TensorProto
-            
+
             # Create minimal ONNX model
             input_tensor = helper.make_tensor_value_info('input', TensorProto.FLOAT, [1, 1])
             output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 1])
             identity_node = helper.make_node('Identity', ['input'], ['output'], name='identity')
             graph = helper.make_graph([identity_node], 'reset_graph', [input_tensor], [output_tensor])
             model = helper.make_model(graph, producer_name='memory_reset')
-            
+
             with tempfile.NamedTemporaryFile(suffix='.onnx', delete=True) as tmp_file:
                 onnx.save(model, tmp_file.name)
-                
+
                 # Create and immediately destroy session to force cleanup
                 temp_session = ort.InferenceSession(tmp_file.name, providers=[preferred_provider])
                 del temp_session
                 gc.collect()
-                
+
                 logger.debug(f"ONNX {preferred_provider} memory pool reset attempted")
                 return True
-                
+
         except Exception as e:
             logger.debug(f"Detailed ONNX memory reset failed: {e}")
             # Fallback to simple garbage collection
             gc.collect()
             return True
-            
+
     except ImportError as e:
         logger.debug(f"ONNX Runtime not available for memory pool reset: {e}")
         return False
@@ -245,7 +245,7 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
     # Final garbage collection + return the freed heap to the OS so RSS drops
     results['malloc_trim'] = release_memory_to_os()
 
-    
+
     return results
 
 
@@ -295,7 +295,7 @@ def handle_onnx_memory_error(
         ...     )
     """
     error_str = str(error)
-    
+
     # Check if this is a memory allocation error
     is_memory_error = (
         "Failed to allocate memory" in error_str or
@@ -303,28 +303,28 @@ def handle_onnx_memory_error(
         "OOM" in error_str or
         "out of memory" in error_str.lower()
     )
-    
+
     if not is_memory_error:
         # Not a memory error, re-raise
         raise error
-    
+
     logger.warning(f"GPU memory allocation error detected in {context}: {error_str}")
-    
+
     # Perform cleanup if provided
     if cleanup_func:
         try:
             logger.info(f"Performing cleanup for {context}...")
             cleanup_func()
         except Exception as cleanup_error:
-            logger.error(f"Cleanup failed for {context}: {cleanup_error}")
-    
+            logger.exception(f"Cleanup failed for {context}: {cleanup_error}")
+
     # Fallback to CPU if requested
     if fallback_to_cpu and session_creator:
         try:
             logger.info(f"Falling back to CPU for {context}...")
             new_session, provider = session_creator()
             logger.info(f"Successfully created CPU session for {context}")
-            
+
             # Retry with new CPU session if retry_func provided
             if retry_func:
                 result = retry_func()
@@ -333,9 +333,9 @@ def handle_onnx_memory_error(
             else:
                 return None, new_session, provider
         except Exception as fallback_error:
-            logger.error(f"CPU fallback failed for {context}: {fallback_error}")
+            logger.exception(f"CPU fallback failed for {context}: {fallback_error}")
             raise fallback_error
-    
+
     # Retry if retry function provided (without CPU fallback)
     if retry_func:
         try:
@@ -344,7 +344,7 @@ def handle_onnx_memory_error(
             logger.info(f"Retry successful for {context}")
             return result
         except Exception as retry_error:
-            logger.error(f"Retry failed for {context}: {retry_error}")
+            logger.exception(f"Retry failed for {context}: {retry_error}")
             raise retry_error
     else:
         # No retry function, re-raise
@@ -375,7 +375,7 @@ class SessionRecycler:
         ...     result = session.run(outputs, inputs)
         ...     recycler.increment()
     """
-    
+
     def __init__(self, recycle_interval: int = 20):
         """
         Initialize session recycler.
@@ -385,11 +385,11 @@ class SessionRecycler:
         """
         self.recycle_interval = recycle_interval
         self.use_count = 0
-    
+
     def increment(self) -> None:
         """Increment the usage counter (call after each use)."""
         self.use_count += 1
-    
+
     def should_recycle(self) -> bool:
         """
         Check if session should be recycled based on usage count.
@@ -398,17 +398,17 @@ class SessionRecycler:
             True if use_count >= recycle_interval
         """
         return self.use_count >= self.recycle_interval
-    
+
     def mark_recycled(self) -> None:
         """Reset the counter after recycling (call after creating new session)."""
         old_count = self.use_count
         self.use_count = 0
         logger.info(f"Session recycled after {old_count} uses")
-    
+
     def get_use_count(self) -> int:
         """Get current usage count."""
         return self.use_count
-    
+
     def reset(self) -> None:
         """Reset counter to zero (e.g., at start of new album)."""
         self.use_count = 0

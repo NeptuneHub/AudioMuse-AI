@@ -62,11 +62,11 @@ def generate_waveform_peaks(file_path, samples_count=500):
     """
     if not LIBROSA_AVAILABLE:
         raise RuntimeError("librosa library is not installed. Please install it with: pip install librosa")
-    
+
     try:
         import soundfile as sf
         from scipy import signal
-        
+
         # ULTRA-FAST APPROACH: Use soundfile directly (10x faster than librosa.load)
         # Read audio file
         try:
@@ -76,21 +76,21 @@ def generate_waveform_peaks(file_path, samples_count=500):
             # or rename with proper extension
             logger.warning(f"soundfile failed to read {file_path}: {sf_error}. Trying librosa fallback...")
             raise ImportError("soundfile failed, using librosa fallback")
-        
+
         # Convert stereo to mono if needed (simple average, very fast)
         if y.ndim > 1:
             y = np.mean(y, axis=1)
-        
+
         # Quick downsample if sample rate is high (optional, for even more speed)
         if sr > 16000:
             # Decimate to ~8000 Hz for faster processing
             decimation_factor = sr // 8000
             if decimation_factor > 1:
                 y = signal.decimate(y, decimation_factor, ftype='fir', zero_phase=True)
-        
+
         if len(y) == 0:
             return []
-        
+
         # Vectorized peak extraction
         n = min(samples_count, len(y))
         samples_per_peak = max(1, len(y) // n)
@@ -111,17 +111,17 @@ def generate_waveform_peaks(file_path, samples_count=500):
         peaks = np.empty(n * 2, dtype=np.float32)
         peaks[0::2] = -peak_energy
         peaks[1::2] = peak_energy
-        
+
         return peaks.tolist()
-        
+
     except ImportError as e:
         # Fallback to librosa if soundfile/scipy not available
         logger.warning(f"soundfile or scipy not available, falling back to slower librosa.load: {e}")
         y, sr = librosa.load(file_path, sr=6000, mono=True, res_type='kaiser_fast')
-        
+
         if len(y) == 0:
             return []
-        
+
         n = min(samples_count, len(y))
         samples_per_peak = max(1, len(y) // n)
         trim_length = n * samples_per_peak
@@ -135,9 +135,9 @@ def generate_waveform_peaks(file_path, samples_count=500):
         peaks[0::2] = -peak_energy
         peaks[1::2] = peak_energy
         peaks = np.clip(peaks, -1.0, 1.0)
-        
+
         return peaks.tolist()
-        
+
     except Exception as e:
         raise RuntimeError(f"Failed to generate waveform: {str(e)}")
 
@@ -186,32 +186,32 @@ def get_waveform_endpoint():
         description: Server error during waveform generation
     """
     item_id = request.args.get('item_id')
-    
+
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter"}), 400
-    
+
     # Get track information from database
     db = get_db()
     cur = db.cursor()
     cur.execute("SELECT title, author FROM score WHERE item_id = %s", (item_id,))
     track_info = cur.fetchone()
     cur.close()
-    
+
     if not track_info:
         return jsonify({"error": f"Track with ID '{item_id}' not found"}), 404
-    
+
     title, author = track_info
-    
+
     # Download the track to a temporary location
     temp_file = None
     temp_dir = None
     try:
         import time
         start_time = time.time()
-        
+
         # Import download_track from the generic mediaserver module which handles all types
         from tasks.mediaserver import download_track
-        
+
         # For better compatibility, we need to fetch the full track details from the media server
         # This ensures we have all the metadata needed for proper file extension detection
         if MEDIASERVER_TYPE == "navidrome":
@@ -247,48 +247,48 @@ def get_waveform_endpoint():
                 'Name': title,
                 'Path': ''  # Will be fetched by download_track if needed
             }
-        
+
         fetch_time = time.time() - start_time
         logger.info(f"Fetched track metadata in {fetch_time:.2f}s")
-        
+
         # Create a temporary directory for this download
         temp_dir = tempfile.mkdtemp(prefix='waveform_')
-        
+
         # Download the track
         download_start = time.time()
         temp_file = download_track(temp_dir, item)
         download_time = time.time() - download_start
         logger.info(f"Downloaded track in {download_time:.2f}s")
-        
+
         if not temp_file or not os.path.exists(temp_file):
             return jsonify({"error": "Failed to download track from media server"}), 500
-        
+
         # Generate waveform peaks in a thread pool with timeout
         logger.info(f"Generating waveform with librosa for song={title}, item_id={item_id}")
-        
+
         waveform_start = time.time()
         # Submit to thread pool for parallel execution
         future = _waveform_executor.submit(generate_waveform_peaks, temp_file, 500)
-        
+
         try:
             # Wait up to 15 seconds for waveform generation
             peaks = future.result(timeout=15)
         except FuturesTimeoutError:
-            logger.error(f"Waveform generation timed out for {item_id}")
+            logger.exception(f"Waveform generation timed out for {item_id}")
             return jsonify({"error": "Waveform generation timed out (>15s). Try a shorter audio file."}), 500
-        
+
         waveform_time = time.time() - waveform_start
         total_time = time.time() - start_time
         logger.info(f"Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
-        
+
         response = {
             "peaks": peaks,
             "title": title,
             "author": author
         }
-        
+
         return jsonify(response), 200
-        
+
     except RuntimeError as e:
         logger.error(f"Runtime error generating waveform for {item_id}: {e}", exc_info=True)
         return jsonify({"error": "An error occurred during waveform generation"}), 500

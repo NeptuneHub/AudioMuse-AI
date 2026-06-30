@@ -25,9 +25,9 @@ def clap_search_page():
     """
     from config import CLAP_ENABLED, APP_VERSION
     from tasks.clap_text_search import get_cache_stats
-    
+
     cache_stats = get_cache_stats()
-    
+
     return render_template(
         'clap_search.html',
         title='Text Search - AudioMuse-AI',
@@ -99,38 +99,38 @@ def clap_search_api():
     from config import CLAP_ENABLED
     from tasks.clap_text_search import search_by_text, is_clap_cache_loaded
     from app_helper import attach_song_features
-    
+
     if not CLAP_ENABLED:
         return jsonify({
             'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
             'results': []
         }), 400
-    
+
     try:
         data = request.get_json()
-        
+
         if not data or 'query' not in data:
             return jsonify({'error': 'Missing "query" in request body'}), 400
-        
+
         query = data['query'].strip()
         limit = data.get('limit', 100)
-        
+
         if not query:
             return jsonify({'error': 'Query cannot be empty'}), 400
-        
+
         if len(query) < 1:
             return jsonify({'error': 'Query must be at least 1 character'}), 400
-        
+
         # Validate limit
         limit = min(max(1, int(limit)), 500)  # Between 1 and 500
-        
+
         # Check if cache is loaded
         if not is_clap_cache_loaded():
             return jsonify({
                 'error': 'CLAP cache not loaded. Please run song analysis first.',
                 'results': []
             }), 503
-        
+
         # Perform search
         results = search_by_text(query, limit=limit)
         attach_song_features(results)
@@ -140,7 +140,7 @@ def clap_search_api():
             'results': results,
             'count': len(results)
         })
-        
+
     except ValueError as e:
         logger.warning(f"ValueError in DCLAP search API: {e}")
         return jsonify({'error': 'Invalid or missing request parameter.'}), 400
@@ -178,13 +178,13 @@ def warmup_model_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import warmup_text_search_model
-    
+
     if not CLAP_ENABLED:
         return jsonify({
             'error': 'CLAP text search is disabled',
             'loaded': False
         }), 400
-    
+
     try:
         status = warmup_text_search_model()
         return jsonify(status)
@@ -219,15 +219,15 @@ def warmup_status_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_warm_cache_status
-    
+
     if not CLAP_ENABLED:
         return jsonify({'active': False, 'seconds_remaining': 0})
-    
+
     try:
         status = get_warm_cache_status()
         return jsonify(status)
     except Exception as e:
-        logger.error(f"Failed to get warmup status: {e}")
+        logger.exception(f"Failed to get warmup status: {e}")
         return jsonify({'active': False, 'seconds_remaining': 0})
 
 
@@ -260,14 +260,14 @@ def refresh_cache_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import refresh_clap_cache, get_cache_stats
-    
+
     if not CLAP_ENABLED:
         return jsonify({'error': 'CLAP is disabled'}), 400
-    
+
     try:
         success = refresh_clap_cache()
         stats = get_cache_stats()
-        
+
         if success:
             return jsonify({
                 'success': True,
@@ -280,9 +280,9 @@ def refresh_cache_api():
                 'message': 'Failed to refresh CLAP cache',
                 'stats': stats
             }), 500
-            
+
     except Exception as e:
-        logger.error(f"Cache refresh failed: {e}")
+        logger.exception(f"Cache refresh failed: {e}")
         return jsonify({
             'success': False,
             'error': 'An internal error occurred. Please try again later.'
@@ -314,10 +314,10 @@ def cache_stats_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cache_stats
-    
+
     stats = get_cache_stats()
     stats['clap_enabled'] = CLAP_ENABLED
-    
+
     return jsonify(stats)
 
 
@@ -349,10 +349,10 @@ def top_queries_api():
     """
     from config import CLAP_ENABLED
     from tasks.clap_text_search import get_cached_top_queries
-    
+
     if not CLAP_ENABLED:
         return jsonify({'queries': [], 'ready': False, 'message': 'CLAP disabled'}), 200
-    
+
     try:
         queries = get_cached_top_queries()
         return jsonify({

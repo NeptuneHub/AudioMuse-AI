@@ -325,7 +325,7 @@ def get_task_status_endpoint(task_id):
                 f"... ({len(log_entries) - 10} earlier log entries truncated)",
                 *log_entries[-10:]
             ]
-    
+
     state_upper = str(response.get('state') or '').upper()
     if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
         existing_error = response['details'].get('error')
@@ -495,7 +495,7 @@ def get_last_overall_task_status_endpoint():
             last_task_data['running_time_seconds'] = max(0, effective_end_time - start_time)
         else:
             last_task_data['running_time_seconds'] = 0.0
-        
+
         # Truncate log entries to last 10 entries
         if isinstance(last_task_data.get('details'), dict) and 'log' in last_task_data['details']:
             log_entries = last_task_data['details']['log']
@@ -504,14 +504,14 @@ def get_last_overall_task_status_endpoint():
                     f"... ({len(log_entries) - 10} earlier log entries truncated)",
                     *log_entries[-10:]
                 ]
-        
+
         # Clean up raw time columns before sending response
         last_task_data.pop('start_time', None)
         last_task_data.pop('end_time', None)
         last_task_data.pop('timestamp', None)
 
         return jsonify(last_task_data), 200
-        
+
     return jsonify({"task_id": None, "task_type": None, "status": "NO_PREVIOUS_MAIN_TASK", "details": {"log": ["No previous main task found."] }}), 200
 
 @app.route('/api/active_tasks', methods=['GET'])
@@ -549,7 +549,7 @@ def get_active_tasks_endpoint():
 
     if active_main_task_row:
         task_item = dict(active_main_task_row)
-        
+
         # Calculate running time in Python
         start_time = task_item.get('start_time')
         if start_time:
@@ -714,7 +714,7 @@ def listen_for_index_reloads():
             # Rebuild the map JSON cache used by the /api/map endpoint
             from app_map import build_map_cache
             build_map_cache()
-            
+
             # Reload CLAP cache (with logging)
             logger.info("Reloading CLAP embedding cache...")
             from tasks.clap_text_search import refresh_clap_cache
@@ -853,7 +853,7 @@ if not _is_worker:
         if load_clap_cache_from_db():
           logger.info("CLAP text search cache loaded at startup (embeddings only).")
           logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-        
+
         # Load top queries from database (default queries only, no computation)
         # This must run even if no CLAP embeddings exist yet (first startup)
         has_existing = load_top_queries_from_db()

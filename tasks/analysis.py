@@ -108,11 +108,11 @@ def clean_temp(temp_dir):
 
 def _release_freed_ram_to_os():
     gc.collect()
-    
+
     #malloc_trim is Linux/glibc specific
     if platform.system() != "Linux":
         return
-        
+
     try:
         import ctypes
         import ctypes.util
@@ -251,7 +251,7 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
             return None, None
         return audio, target_sr
     except Exception as e:
-        logger.error(f"PyAV fallback loading also failed for {name}: {e}")
+        logger.exception(f"PyAV fallback loading also failed for {name}: {e}")
         return None, None
 
 def rebuild_all_indexes_task():
@@ -428,7 +428,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
         current_task_logs = initial_details["log"]
-        
+
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
 
         clap_label_embeddings = None
@@ -708,7 +708,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
 
         # RAM-only dedup for this run; resume correctness comes from the DB, so never persisted.
         checked_album_ids = set()
-        
+
         initial_details = {"message": "Fetching albums...", "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Main analysis task started."]}
 
         save_task_status(current_task_id, "main_analysis", TASK_STATUS_STARTED, progress=0, details=initial_details)

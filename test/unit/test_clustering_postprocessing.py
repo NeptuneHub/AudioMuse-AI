@@ -28,9 +28,9 @@ class TestMinimumSizeFilter:
                 "Medium Playlist": [("song3", "Title 3", "Artist 3")] * 20,
             }
         }
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
-        
+
         assert "Big Playlist" in filtered["named_playlists"]
         assert "Medium Playlist" in filtered["named_playlists"]
         assert "Small Playlist" not in filtered["named_playlists"]
@@ -43,23 +43,23 @@ class TestMinimumSizeFilter:
                 "Playlist 2": [("s2", "T2", "A2")] * 30,
             }
         }
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
-        
+
         assert len(filtered["named_playlists"]) == 2
 
     def test_handles_empty_playlists(self):
         """Test handling of empty playlist dict"""
         best_result = {"named_playlists": {}}
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=10)
-        
+
         assert filtered["named_playlists"] == {}
 
     def test_handles_none_result(self):
         """Test handling of None input"""
         filtered = apply_minimum_size_filter_to_clustering_result(None, min_size=10)
-        
+
         assert filtered is None
 
     def test_min_size_zero_keeps_all(self):
@@ -70,9 +70,9 @@ class TestMinimumSizeFilter:
                 "One Song": [("s1", "T1", "A1")],
             }
         }
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=0)
-        
+
         assert len(filtered["named_playlists"]) == 2
 
     def test_preserves_exact_size_playlists(self):
@@ -83,9 +83,9 @@ class TestMinimumSizeFilter:
                 "Too Small": [("s2", "T2", "A2")] * 19,
             }
         }
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
-        
+
         assert "Exact Size" in filtered["named_playlists"]
         assert "Too Small" not in filtered["named_playlists"]
 
@@ -102,11 +102,11 @@ class TestTitleArtistDeduplication:
             {'item_id': 's2', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},  # Duplicate
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         assert len(filtered) == 1
         assert filtered[0]['item_id'] == 's1'
 
@@ -119,11 +119,11 @@ class TestTitleArtistDeduplication:
             {'item_id': 's2', 'title': 'Stairway to Heaven (Remastered 2014)', 'author': 'Led Zeppelin'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         # Should detect as duplicate after normalization
         assert len(filtered) == 1
 
@@ -136,11 +136,11 @@ class TestTitleArtistDeduplication:
             {'item_id': 's2', 'title': 'Song Title [Explicit]', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         assert len(filtered) == 1
 
     def test_keeps_different_artists(self):
@@ -152,20 +152,20 @@ class TestTitleArtistDeduplication:
             {'item_id': 's2', 'title': 'Hello', 'author': 'Lionel Richie'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         # Different artists, should keep both
         assert len(filtered) == 2
 
     def test_handles_empty_list(self):
         """Test handling of empty song list"""
         mock_db = MagicMock()
-        
+
         filtered = apply_title_artist_deduplication([], mock_db)
-        
+
         assert filtered == []
 
     def test_handles_missing_song_details(self):
@@ -174,11 +174,11 @@ class TestTitleArtistDeduplication:
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = []  # No results from DB
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         # Should skip songs without details
         assert len(filtered) == 0
 
@@ -204,11 +204,11 @@ class TestDistanceFilteringDirect:
             {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Second song should be filtered as too close
         assert len(filtered) == 1
         assert filtered[0]['item_id'] == 's1'
@@ -230,11 +230,11 @@ class TestDistanceFilteringDirect:
             {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Both should be kept
         assert len(filtered) == 2
 
@@ -245,11 +245,11 @@ class TestDistanceFilteringDirect:
         mock_db = MagicMock()
         mock_get_vectors.return_value = {}  # No vectors
         mock_title_dedup.return_value = [{'item_id': 's1'}]
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Should call title/artist deduplication
         mock_title_dedup.assert_called_once()
         assert filtered == [{'item_id': 's1'}]
@@ -259,9 +259,9 @@ class TestDistanceFilteringDirect:
         """Test that filtering is skipped when lookback is 0"""
         mock_db = MagicMock()
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Should return original list unchanged
         assert filtered == song_results
 
@@ -288,9 +288,9 @@ class TestSelectTopNDiversePlaylists:
                 "Playlist 3": np.array([1.1, 0.1, 0.0]),
             }
         }
-        
+
         selected = select_top_n_diverse_playlists(best_result, n=2)
-        
+
         # Should prefer diverse playlists 1 and 2 over similar 3
         assert len(selected["named_playlists"]) == 2
 
@@ -310,9 +310,9 @@ class TestSelectTopNDiversePlaylists:
                 "Playlist 2": np.array([0.0, 1.0]),
             }
         }
-        
+
         selected = select_top_n_diverse_playlists(best_result, n=5)
-        
+
         # Should return original result unchanged
         assert len(selected["named_playlists"]) == 2
 
@@ -335,9 +335,9 @@ class TestSelectTopNDiversePlaylists:
                 "Medium": np.array([0.5, 0.5]),
             }
         }
-        
+
         selected = select_top_n_diverse_playlists(best_result, n=2)
-        
+
         # Should include the largest playlist
         assert "Large" in selected["named_playlists"]
 
@@ -348,9 +348,9 @@ class TestEdgeCases:
     def test_minimum_size_filter_with_missing_key(self):
         """Test that missing 'named_playlists' key is handled"""
         best_result = {}  # Missing key
-        
+
         filtered = apply_minimum_size_filter_to_clustering_result(best_result, min_size=10)
-        
+
         # Should handle gracefully
         assert filtered is not None
 
@@ -363,11 +363,11 @@ class TestEdgeCases:
             {'item_id': 's2', 'title': 'Café del Mar (Remastered)', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_title_artist_deduplication(song_results, mock_db)
-        
+
         # Should normalize and detect as duplicate
         assert len(filtered) == 1
 
@@ -386,10 +386,10 @@ class TestEdgeCases:
             {'item_id': 's2', 'title': 'Song 2', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
-        
+
         song_results = [{'item_id': 's1'}, {'item_id': 's2'}]
-        
+
         filtered = apply_distance_filtering_direct(song_results, mock_db)
-        
+
         # Both should be kept (s2 kept without distance check)
         assert len(filtered) == 2

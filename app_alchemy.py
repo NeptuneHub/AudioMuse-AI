@@ -64,7 +64,7 @@ def search_artists():
                 type: object
     """
     from tasks.artist_gmm_manager import search_artists_by_name
-    
+
     query = request.args.get('query', '')
 
     # Pagination: start / end (0-based). Defaults to first 20 results.
@@ -653,17 +653,17 @@ def artist_projections_api():
         description: Failure to read cache.
     """
     from database import ARTIST_PROJECTION_CACHE
-    
+
     try:
         if not ARTIST_PROJECTION_CACHE:
             return jsonify({'components': [], 'count': 0})
-        
+
         component_map = ARTIST_PROJECTION_CACHE.get('component_map', [])
         projection = ARTIST_PROJECTION_CACHE.get('projection')
-        
+
         if projection is None or len(component_map) == 0:
             return jsonify({'components': [], 'count': 0})
-        
+
         # Build response with components and their 2D projections
         components = []
         for idx, comp_info in enumerate(component_map):
@@ -675,7 +675,7 @@ def artist_projections_api():
                     'weight': comp_info['weight'],
                     'projection': [float(projection[idx][0]), float(projection[idx][1])]
                 })
-        
+
         return jsonify({
             'components': components,
             'count': len(components)
@@ -715,7 +715,7 @@ def build_artist_projection_endpoint():
         description: Build failed.
     """
     from app_helper import build_and_store_artist_projection
-    
+
     try:
         success = build_and_store_artist_projection('artist_map')
         if success:

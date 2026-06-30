@@ -151,7 +151,7 @@ def warmup_text_search_model():
         dict: Status with 'loaded' (bool) and 'expiry_seconds' (int)
     """
     from .clap_analyzer import initialize_clap_text_model, is_clap_text_loaded
-    
+
     # Load duration from config on first use
     if _WARM_CACHE_TIMER['duration_seconds'] is None:
         _WARM_CACHE_TIMER['duration_seconds'] = config.CLAP_TEXT_SEARCH_WARMUP_DURATION
@@ -164,7 +164,7 @@ def warmup_text_search_model():
                 return {'loaded': False, 'expiry_seconds': 0}
 
         _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
-        
+
         # Start timer thread if not already running
         if _WARM_CACHE_TIMER['timer_thread'] is None or not _WARM_CACHE_TIMER['timer_thread'].is_alive():
             thread = threading.Thread(target=_unload_timer_worker, daemon=True)
@@ -173,7 +173,7 @@ def warmup_text_search_model():
             logger.info(f"Started warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
         else:
             logger.debug(f"Reset warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
-    
+
     return {
         'loaded': True,
         'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']
@@ -187,13 +187,13 @@ def get_warm_cache_status() -> Dict:
         dict: Status with 'active' (bool), 'seconds_remaining' (int)
     """
     from .clap_analyzer import is_clap_model_loaded
-    
+
     with _WARM_CACHE_TIMER['lock']:
         expiry = _WARM_CACHE_TIMER['expiry_time']
-    
+
     if expiry is None or not is_clap_model_loaded():
         return {'active': False, 'seconds_remaining': 0}
-    
+
     remaining = max(0, int(expiry - time.time()))
     return {'active': True, 'seconds_remaining': remaining}
 
@@ -203,7 +203,7 @@ def load_clap_cache_from_db():
     Load the persisted CLAP IVF index from the database.
     Returns True if successful, False otherwise.
     """
-    
+
     from config import CLAP_ENABLED
 
     if not CLAP_ENABLED:
@@ -254,15 +254,15 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
     """
     from .clap_analyzer import get_text_embedding
     from config import CLAP_ENABLED
-    
+
     if not CLAP_ENABLED:
         return []
-    
+
     # CLAP search must use the persisted index only
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
         logger.error("Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index.")
         return []
-    
+
     try:
         # Hold the warm-cache lock across warmup + inference so the background
         # unload worker cannot tear down the CUDA/ONNX pool mid-``session.run()``
@@ -334,7 +334,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
             logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})")
             return results
-        
+
     except Exception as e:
         logger.exception(f"Text search failed for '{query_text}': {e}")
         return []
@@ -405,7 +405,7 @@ def ensure_text_search_queries_table():
             logger.info("Ensured text_search_queries table exists")
             return True
     except Exception as e:
-        logger.error(f"Failed to create text_search_queries table: {e}")
+        logger.exception(f"Failed to create text_search_queries table: {e}")
         if conn:
             conn.rollback()
         return False
@@ -418,10 +418,10 @@ def load_top_queries_from_db():
     On first startup (empty DB), this will return False and trigger generation.
     """
     from app_helper import get_db
-    
+
     # Ensure table exists first
     ensure_text_search_queries_table()
-    
+
     try:
         conn = get_db()
         with conn.cursor(cursor_factory=DictCursor) as cur:
@@ -431,7 +431,7 @@ def load_top_queries_from_db():
                 ORDER BY rank ASC
             """)
             rows = cur.fetchall()
-            
+
             if rows:
                 _TOP_QUERIES_CACHE['queries'] = [row['query_text'] for row in rows]
                 _TOP_QUERIES_CACHE['ready'] = True
@@ -492,15 +492,15 @@ def load_top_queries_from_db():
                     "autotuned pop mid-tempo",
                     "pop energetic synthesizer"
                 ]
-                
+
                 for rank, query in enumerate(default_queries, start=1):
                     cur.execute("""
                         INSERT INTO text_search_queries (query_text, score, rank, created_at)
                         VALUES (%s, %s, %s, NOW())
                     """, (query, 1.0, rank))
-                
+
                 conn.commit()
-                
+
                 # Load them into cache
                 _TOP_QUERIES_CACHE['queries'] = default_queries
                 _TOP_QUERIES_CACHE['ready'] = True

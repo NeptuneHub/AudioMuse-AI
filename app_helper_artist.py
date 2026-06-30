@@ -91,13 +91,13 @@ def get_artist_id_by_name(artist_name):
     """
     if not artist_name:
         return None
-    
+
     # Sanitize artist name for query
     sanitized_name = sanitize_string_for_db(artist_name)
     if not sanitized_name:
         logger.warning(f"Artist name became empty after sanitization: {repr(artist_name)}")
         return None
-    
+
     try:
         conn = get_db()
         with conn.cursor() as cur:
@@ -115,7 +115,7 @@ def get_artist_name_by_id(artist_id):
     """
     if not artist_id:
         return None
-    
+
     try:
         conn = get_db()
         with conn.cursor() as cur:

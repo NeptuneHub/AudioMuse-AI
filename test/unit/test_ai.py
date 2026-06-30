@@ -521,7 +521,7 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test aggressive fallback removes temperature and switches to max_completion_tokens"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # First call: 400 with unsupported parameter
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
@@ -557,7 +557,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Fallback Success"
         # Should be exactly 2 calls (initial + fallback retry)
         assert mock_post.call_count == 2
-        
+
         # Check second call has modified payload
         second_call_data = json.loads(mock_post.call_args_list[1][1]['data'])
         assert 'temperature' not in second_call_data
@@ -571,7 +571,7 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test ultra-minimal fallback removes max_completion_tokens if aggressive fails"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # First call: 400 with unsupported parameter
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
@@ -621,7 +621,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Ultra Minimal"
         # Should be exactly 3 calls (initial + aggressive fallback + ultra-minimal fallback)
         assert mock_post.call_count == 3
-        
+
         # Check third call has minimal payload (no token limits, no temperature)
         third_call_data = json.loads(mock_post.call_args_list[2][1]['data'])
         assert 'temperature' not in third_call_data
@@ -635,7 +635,7 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test rate limit retry followed by parameter error fallback"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # First call: 429 rate limit
         mock_response_429 = Mock()
         mock_response_429.status_code = 429
@@ -676,7 +676,7 @@ class TestGetOpenAICompatiblePlaylistName:
         assert result == "Combined Success"
         # Should be exactly 3 calls (initial with 429, retry with 400, fallback success)
         assert mock_post.call_count == 3
-        
+
         # Check that sleep was called for rate limit (exponential backoff)
         sleep_calls = [call[0][0] for call in mock_sleep.call_args_list if call[0][0] >= 5]
         assert len(sleep_calls) >= 1  # At least one sleep for rate limit
@@ -688,10 +688,10 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test that parameter fallbacks use continue and don't increment attempt counter"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # We'll simulate: 400 (unsupported) -> 400 (still unsupported) -> timeout -> success
         # This tests that fallbacks don't consume the retry budget
-        
+
         # First call: 400 with unsupported
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
@@ -748,7 +748,7 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test that max_tokens parameter errors with error code 'unsupported_parameter' are handled"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # First call: 400 with max_tokens not supported (using proper error code)
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
@@ -793,7 +793,7 @@ class TestGetOpenAICompatiblePlaylistName:
         """Test that ultra-minimal fallback only triggers with error codes 'unsupported_parameter' or 'unsupported_value'"""
         # Disable initial delay for cleaner testing
         mock_env.return_value = "0"
-        
+
         # First call: 400 with proper error code (triggers aggressive fallback)
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400

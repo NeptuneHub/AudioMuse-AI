@@ -42,7 +42,7 @@ class TestSongAlchemy:
             mock_config.ALCHEMY_MAX_ANCHOR_POINTS = 16
             mock_config.ALCHEMY_PLAYLIST_MAX_SONGS = 500
             mock_config.ALCHEMY_PLAYLIST_MAX_CENTROIDS = 10
-            
+
             yield {
                 'get_vector_by_id': mock_get_vec,
                 'multi_query_ids': mock_multi_query,
@@ -57,10 +57,10 @@ class TestSongAlchemy:
 
     def test_compute_centroid_from_items_songs(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].side_effect = lambda x: [1.0, 0.0] if x == 's1' else [0.0, 1.0]
-        
+
         items = [{'type': 'song', 'id': 's1'}, {'type': 'song', 'id': 's2'}]
         centroid = song_alchemy._compute_centroid_from_items(items)
-        
+
         assert np.allclose(centroid, [0.5, 0.5])
 
     def test_compute_centroid_from_items_artist(self, mock_dependencies):
@@ -69,10 +69,10 @@ class TestSongAlchemy:
             [np.array([1.0, 0.0]), np.array([3.0, 0.0])], # vectors
             [0.5, 0.5] # weights
         )
-        
+
         items = [{'type': 'artist', 'id': 'a1'}]
         centroid = song_alchemy._compute_centroid_from_items(items)
-        
+
         # Weighted mean: (1.0*0.5 + 3.0*0.5) / (0.5+0.5) = 2.0
         assert np.allclose(centroid, [2.0, 0.0])
 
@@ -86,12 +86,12 @@ class TestSongAlchemy:
             'r2': {'item_id': 'r2', 'title': 'Result 2', 'author': 'Author 2'},
         })
         mock_dependencies['load_map_projection'].return_value = (None, None) # Force local projection
-        
+
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
             n_results=5
         )
-        
+
         assert len(result['results']) == 2
         assert result['results'][0]['item_id'] in ['r1', 'r2']
         # Check that projection was attempted (defaults to pca or none if few points)
@@ -100,7 +100,7 @@ class TestSongAlchemy:
     def test_song_alchemy_subtraction(self, mock_dependencies):
         # s1 is [1, 0], s2 (subtract) is [0, 1]
         # r1 is [0.9, 0.1] (close to s1), r2 is [0.1, 0.9] (close to s2)
-        
+
         def get_vec(id):
             vectors = {
                 's1': [1.0, 0.0],
@@ -109,7 +109,7 @@ class TestSongAlchemy:
                 'r2': [0.1, 0.9]
             }
             return vectors.get(id)
-            
+
         mock_dependencies['get_vector_by_id'].side_effect = get_vec
 
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
@@ -126,17 +126,17 @@ class TestSongAlchemy:
         # Distance(sub1, r2) = sqrt(0.1^2 + 0.1^2) = sqrt(0.02) ~= 0.14
         # Distance(sub1, r1) = sqrt(0.9^2 + 0.9^2) = sqrt(1.62) ~= 1.27
         # If threshold is 0.5, r2 should be filtered out (dist < 0.5), r1 kept (dist > 0.5)
-        
+
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
             subtract_items=[{'type': 'song', 'id': 'sub1'}],
             subtract_distance=0.5
         )
-        
+
         # r2 is close to subtract centroid, so it should be filtered out
         result_ids = [r['item_id'] for r in result['results']]
         filtered_ids = [r['item_id'] for r in result['filtered_out']]
-        
+
         assert 'r1' in result_ids
         assert 'r2' in filtered_ids
 
@@ -153,7 +153,7 @@ class TestSongAlchemy:
     def test_temperature_sampling(self, mock_dependencies):
         # Mock neighbors
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
-        
+
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
         mock_dependencies['find_nearest_neighbors_by_id'].return_value = [
             {'item_id': 'r1', 'score': 0.1},

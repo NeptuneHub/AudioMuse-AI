@@ -53,12 +53,12 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     # This map will only contain songs that have a valid embedding
     embeddings_map = {track['item_id']: track['embedding_vector'] for track in track_details if 'embedding_vector' in track and track['embedding_vector'].size > 0}
     logger.info(f"Found valid embeddings for {len(embeddings_map)} songs out of {len(track_details)} track details.")
-    
+
     if not embeddings_map:
         logger.error("No songs have valid embeddings in the database!")
         logger.debug(f"Track details sample: {track_details[:2] if track_details else 'None'}")
         return []
-    
+
     weighted_vectors = []
     total_weight = 0
 
@@ -69,10 +69,10 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
             continue
 
         embedding_vector = embeddings_map[song_id]
-        
+
         # Pass user credentials to get last played time
         last_played_str = get_last_played_time(song_id, user_creds=user_creds)
-        
+
         weight = 1.0
         days_since_played = "N/A"
         if last_played_str:
@@ -85,7 +85,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
 
                 last_played_dt = datetime.fromisoformat(last_played_str.replace('Z', '+00:00'))
                 days_since_played = (datetime.now(timezone.utc) - last_played_dt).days
-                
+
                 half_life = 30.0
                 decay_rate = -np.log(0.5) / half_life
                 weight = np.exp(-decay_rate * max(0, days_since_played))
@@ -138,7 +138,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
             if song_id not in final_song_ids:
                 combined_results.append({'item_id': song_id, 'distance': 0.0})
                 final_song_ids.add(song_id)
-        
+
         logger.info(f"Added {len(final_song_ids)} seed songs to the results.")
 
         # 2. Add the similar songs found by IVF, skipping duplicates, until the desired size is reached
@@ -148,7 +148,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
             if song['item_id'] not in final_song_ids:
                 combined_results.append(song)
                 final_song_ids.add(song['item_id'])
-                
+
         logger.info(f"Total unique songs in final fingerprint playlist: {len(combined_results)}")
 
         return combined_results

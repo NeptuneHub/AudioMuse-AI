@@ -31,7 +31,7 @@ if __name__ == '__main__':
                 started_cleaned = started_before - started_after
                 if started_cleaned > 0:
                     logger.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
-                
+
                 # 2. Clean FinishedJobRegistry - completed jobs older than TTL (default 500s)
                 # CRITICAL: This prevents memory/thread leaks from accumulated finished jobs
                 finished_registry = queue.finished_job_registry
@@ -41,7 +41,7 @@ if __name__ == '__main__':
                 finished_cleaned = finished_before - finished_after
                 if finished_cleaned > 0:
                     logger.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
-                
+
                 # 3. Clean FailedJobRegistry - failed jobs older than TTL
                 failed_registry = queue.failed_job_registry
                 failed_before = failed_registry.count
@@ -52,6 +52,6 @@ if __name__ == '__main__':
                     logger.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
         except Exception as e:
             logger.exception("Error in RQ Janitor loop: %s", e)
-        
+
         # Sleep for the desired monitoring interval.
         time.sleep(10)

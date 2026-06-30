@@ -75,25 +75,25 @@ class TestRunInference:
         """Test successful inference with direct name match"""
         # Create mock ONNX session
         mock_session = Mock()
-        
+
         # Mock inputs
         mock_input = Mock()
         mock_input.name = 'model/Placeholder'
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         # Mock outputs
         mock_output = Mock()
         mock_output.name = 'model/dense/BiasAdd'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         # Mock inference result
         expected_result = np.array([[0.1, 0.2, 0.3]])
         mock_session.run.return_value = [expected_result]
-        
+
         # Run inference
         feed_dict = {'model/Placeholder': np.random.rand(1, 10)}
         result = run_inference(mock_session, feed_dict, 'model/dense/BiasAdd')
-        
+
         # Verify
         assert result is not None
         np.testing.assert_array_equal(result, expected_result)
@@ -102,45 +102,45 @@ class TestRunInference:
     def test_inference_with_tensorflow_style_names(self):
         """Test inference with TensorFlow-style names (:0 suffix)"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'model_Placeholder'  # ONNX style
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output = Mock()
         mock_output.name = 'output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         expected_result = np.array([[0.5]])
         mock_session.run.return_value = [expected_result]
-        
+
         # Feed dict with TF-style name
         feed_dict = {'model/Placeholder:0': np.random.rand(1, 5)}
         result = run_inference(mock_session, feed_dict)
-        
+
         assert result is not None
         np.testing.assert_array_equal(result, expected_result)
 
     def test_inference_without_output_tensor_name(self):
         """Test inference uses first output when output_tensor_name is None"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'input'
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output1 = Mock()
         mock_output1.name = 'first_output'
         mock_output2 = Mock()
         mock_output2.name = 'second_output'
         mock_session.get_outputs.return_value = [mock_output1, mock_output2]
-        
+
         expected_result = np.array([[1.0, 2.0]])
         mock_session.run.return_value = [expected_result]
-        
+
         feed_dict = {'input': np.random.rand(1, 3)}
         result = run_inference(mock_session, feed_dict, output_tensor_name=None)
-        
+
         # Should use first_output
         assert result is not None
         mock_session.run.assert_called_with(['first_output'], {'input': feed_dict['input']})
@@ -148,26 +148,26 @@ class TestRunInference:
     def test_inference_with_multiple_inputs(self):
         """Test inference with multiple input tensors"""
         mock_session = Mock()
-        
+
         mock_input1 = Mock()
         mock_input1.name = 'input1'
         mock_input2 = Mock()
         mock_input2.name = 'input2'
         mock_session.get_inputs.return_value = [mock_input1, mock_input2]
-        
+
         mock_output = Mock()
         mock_output.name = 'output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         expected_result = np.array([[0.7]])
         mock_session.run.return_value = [expected_result]
-        
+
         feed_dict = {
             'input1': np.random.rand(1, 5),
             'input2': np.random.rand(1, 3)
         }
         result = run_inference(mock_session, feed_dict)
-        
+
         assert result is not None
         # Verify both inputs were mapped
         call_args = mock_session.run.call_args
@@ -177,98 +177,98 @@ class TestRunInference:
     def test_inference_returns_none_when_input_mapping_fails(self):
         """Test returns None when input name cannot be mapped"""
         mock_session = Mock()
-        
+
         # No inputs available
         mock_session.get_inputs.return_value = []
-        
+
         mock_output = Mock()
         mock_output.name = 'output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         feed_dict = {'unknown_input': np.random.rand(1, 5)}
         result = run_inference(mock_session, feed_dict)
-        
+
         assert result is None
 
     def test_inference_returns_none_when_no_outputs(self):
         """Test returns None when ONNX session has no outputs"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'input'
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         # No outputs
         mock_session.get_outputs.return_value = []
-        
+
         feed_dict = {'input': np.random.rand(1, 5)}
         result = run_inference(mock_session, feed_dict)
-        
+
         assert result is None
 
     def test_inference_with_path_based_name_mapping(self):
         """Test inference with path-based name extraction"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'Placeholder'  # Just the last part
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output = Mock()
         mock_output.name = 'BiasAdd'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         expected_result = np.array([[0.3, 0.4]])
         mock_session.run.return_value = [expected_result]
-        
+
         # Full TF-style path
         feed_dict = {'model/dense/Placeholder:0': np.random.rand(1, 8)}
         result = run_inference(mock_session, feed_dict, 'model/dense/BiasAdd:0')
-        
+
         assert result is not None
         np.testing.assert_array_equal(result, expected_result)
 
     def test_inference_with_underscore_conversion(self):
         """Test inference with slash to underscore conversion"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'model_Placeholder'  # Underscores
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output = Mock()
         mock_output.name = 'model_output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         expected_result = np.array([[0.6]])
         mock_session.run.return_value = [expected_result]
-        
+
         # Slashes in feed dict
         feed_dict = {'model/Placeholder': np.random.rand(1, 4)}
         result = run_inference(mock_session, feed_dict, 'model/output')
-        
+
         assert result is not None
         np.testing.assert_array_equal(result, expected_result)
 
     def test_inference_result_unwrapping(self):
         """Test that result is properly unwrapped from list"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'input'
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output = Mock()
         mock_output.name = 'output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         # ONNX runtime returns list
         expected_array = np.array([[1.0, 2.0, 3.0]])
         mock_session.run.return_value = [expected_array]
-        
+
         feed_dict = {'input': np.random.rand(1, 5)}
         result = run_inference(mock_session, feed_dict)
-        
+
         # Should unwrap the array from the list
         assert isinstance(result, np.ndarray)
         np.testing.assert_array_equal(result, expected_array)
@@ -276,21 +276,21 @@ class TestRunInference:
     def test_inference_with_empty_result_list(self):
         """Test handling of empty result list from ONNX runtime"""
         mock_session = Mock()
-        
+
         mock_input = Mock()
         mock_input.name = 'input'
         mock_session.get_inputs.return_value = [mock_input]
-        
+
         mock_output = Mock()
         mock_output.name = 'output'
         mock_session.get_outputs.return_value = [mock_output]
-        
+
         # Empty list returned
         mock_session.run.return_value = []
-        
+
         feed_dict = {'input': np.random.rand(1, 5)}
         result = run_inference(mock_session, feed_dict)
-        
+
         # Should return the empty list itself
         assert result == []
 
@@ -319,7 +319,7 @@ class TestSigmoid:
         """Test sigmoid with numpy array"""
         x = np.array([0, 1, -1, 2, -2])
         result = sigmoid(x)
-        
+
         assert len(result) == 5
         assert np.all(result > 0)
         assert np.all(result < 1)
@@ -353,9 +353,9 @@ class TestRobustLoadAudioWithFallback:
         expected_audio = np.random.rand(16000)
         expected_sr = 16000
         mock_librosa_load.return_value = (expected_audio, expected_sr)
-        
+
         audio, sr = robust_load_audio_with_fallback('test.mp3', target_sr=16000)
-        
+
         assert audio is not None
         assert sr == expected_sr
         np.testing.assert_array_equal(audio, expected_audio)
@@ -367,9 +367,9 @@ class TestRobustLoadAudioWithFallback:
         expected_audio = np.random.rand(22050)
         expected_sr = 22050
         mock_librosa_load.return_value = (expected_audio, expected_sr)
-        
+
         audio, sr = robust_load_audio_with_fallback('test.wav', target_sr=22050)
-        
+
         assert sr == 22050
         mock_librosa_load.assert_called_once_with('test.wav', sr=22050, mono=True, duration=600)
 
@@ -391,9 +391,9 @@ class TestRobustLoadAudioWithFallback:
         """Test returns None when librosa loads empty audio"""
         # Librosa returns empty array
         mock_librosa_load.return_value = (np.array([]), 16000)
-        
+
         audio, sr = robust_load_audio_with_fallback('empty.mp3')
-        
+
         assert audio is None
         assert sr is None
 
@@ -401,9 +401,9 @@ class TestRobustLoadAudioWithFallback:
     def test_returns_none_on_none_audio(self, mock_librosa_load):
         """Test returns None when librosa returns None"""
         mock_librosa_load.return_value = (None, 16000)
-        
+
         audio, sr = robust_load_audio_with_fallback('invalid.mp3')
-        
+
         assert audio is None
         assert sr is None
 
@@ -435,9 +435,9 @@ class TestRobustLoadAudioWithFallback:
     def test_uses_audio_load_timeout_config(self, mock_librosa_load):
         """Test that AUDIO_LOAD_TIMEOUT config is used"""
         mock_librosa_load.return_value = (np.random.rand(16000), 16000)
-        
+
         robust_load_audio_with_fallback('test.mp3', target_sr=16000)
-        
+
         # Verify duration parameter is passed from config
         call_args = mock_librosa_load.call_args
         assert 'duration' in call_args.kwargs
@@ -467,7 +467,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_successful_track_analysis(self, mock_audio_load, mock_mel, mock_beat, mock_rms, 
+    def test_successful_track_analysis(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
                                        mock_chroma, mock_onnx_session):
         """Test complete successful analysis flow
         
@@ -477,13 +477,13 @@ class TestAnalyzeTrack:
         # Mock audio loading
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         # Mock librosa features
         mock_beat.return_value = (120.0, np.array([0, 100, 200]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         # Mock ONNX session
         mock_session = Mock()
         mock_input = Mock()
@@ -494,7 +494,7 @@ class TestAnalyzeTrack:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.return_value = [np.random.rand(5, 200)]  # Embeddings
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy', 'sad', 'energetic', 'calm', 'aggressive']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -506,9 +506,9 @@ class TestAnalyzeTrack:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Function returns correct structure
         assert result is not None
         assert embeddings is not None
@@ -529,12 +529,12 @@ class TestAnalyzeTrack:
         """
         # Mock audio load failure
         mock_audio_load.return_value = (None, None)
-        
+
         mood_labels = ['happy', 'sad']
         model_paths = {'embedding': '/path/to/model.onnx'}
-        
+
         result, embeddings = analyze_track('bad_file.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Function returns None on failure
         assert result is None
         assert embeddings is None
@@ -547,12 +547,12 @@ class TestAnalyzeTrack:
         """
         # Mock empty audio
         mock_audio_load.return_value = (np.array([]), 16000)
-        
+
         mood_labels = ['happy']
         model_paths = {'embedding': '/path/to/model.onnx'}
-        
+
         result, embeddings = analyze_track('empty.mp3', mood_labels, model_paths)
-        
+
         assert result is None
         assert embeddings is None
 
@@ -564,12 +564,12 @@ class TestAnalyzeTrack:
         """
         # Mock silent audio (all zeros)
         mock_audio_load.return_value = (np.zeros(16000), 16000)
-        
+
         mood_labels = ['happy']
         model_paths = {'embedding': '/path/to/model.onnx'}
-        
+
         result, embeddings = analyze_track('silent.mp3', mood_labels, model_paths)
-        
+
         assert result is None
         assert embeddings is None
 
@@ -578,7 +578,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_returns_none_on_short_audio(self, mock_audio_load, mock_beat, mock_rms, 
+    def test_returns_none_on_short_audio(self, mock_audio_load, mock_beat, mock_rms,
                                          mock_chroma, mock_mel):
         """Test returns None when audio is too short for spectrograms
         
@@ -587,17 +587,17 @@ class TestAnalyzeTrack:
         # Mock very short audio
         mock_audio = np.random.rand(100)  # Very short
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 10)
         mock_mel.return_value = np.random.rand(96, 10)  # Too short for patches
-        
+
         mood_labels = ['happy']
         model_paths = {'embedding': '/path/to/model.onnx'}
-        
+
         result, embeddings = analyze_track('short.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Function detects too-short audio
         assert result is None
         assert embeddings is None
@@ -608,7 +608,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_spectrogram_dtype_conversion(self, mock_audio_load, mock_mel, mock_beat, 
+    def test_spectrogram_dtype_conversion(self, mock_audio_load, mock_mel, mock_beat,
                                           mock_rms, mock_chroma, mock_onnx_session):
         """Test spectrograms are converted to float32
         
@@ -616,17 +616,17 @@ class TestAnalyzeTrack:
         """
         mock_audio = np.random.rand(16000).astype(np.float64)  # Start with float64 to test conversion
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         # Use float64 to verify the code converts it to float32
         mock_mel.return_value = np.random.rand(96, 1000).astype(np.float64)
-        
+
         # Track what dtype is passed to ONNX for the FIRST model (embedding model)
         captured_input = None
         call_count = [0]  # Use list to allow modification in nested function
-        
+
         def capture_run(output_names, feed_dict):
             nonlocal captured_input
             call_count[0] += 1
@@ -636,7 +636,7 @@ class TestAnalyzeTrack:
                     captured_input = val
             # Return float32 to simulate real model output
             return [np.random.rand(5, 200).astype(np.float32)]
-        
+
         mock_session = Mock()
         mock_input = Mock()
         mock_input.name = 'input'
@@ -646,7 +646,7 @@ class TestAnalyzeTrack:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.side_effect = capture_run
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -658,9 +658,9 @@ class TestAnalyzeTrack:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Critical dtype conversion to float32
         # The code explicitly converts to float32 with .astype(np.float32)
         assert captured_input is not None
@@ -672,7 +672,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_key_detection_logic(self, mock_audio_load, mock_mel, mock_beat, mock_rms, 
+    def test_key_detection_logic(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
                                   mock_chroma, mock_onnx_session):
         """Test key detection algorithm executes without errors
         
@@ -681,15 +681,15 @@ class TestAnalyzeTrack:
         """
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
-        
+
         # Use any valid chroma data - we're testing the algorithm works,
         # not that it's musically accurate (that's an integration test concern)
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         mock_session = Mock()
         mock_input = Mock()
         mock_input.name = 'input'
@@ -699,7 +699,7 @@ class TestAnalyzeTrack:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.return_value = [np.random.rand(5, 200)]
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -711,9 +711,9 @@ class TestAnalyzeTrack:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Key detection produces valid results
         assert result is not None
         assert 'key' in result
@@ -729,7 +729,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_model_inference_failure_handling(self, mock_audio_load, mock_mel, mock_beat, 
+    def test_model_inference_failure_handling(self, mock_audio_load, mock_mel, mock_beat,
                                                mock_rms, mock_chroma, mock_onnx_session):
         """Test returns None when model inference fails
         
@@ -737,20 +737,20 @@ class TestAnalyzeTrack:
         """
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         # Mock ONNX to raise exception
         mock_onnx_session.side_effect = Exception("Model loading failed")
-        
+
         mood_labels = ['happy']
         model_paths = {'embedding': '/path/to/embedding.onnx'}
-        
+
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Graceful failure on model errors
         assert result is None
         assert embeddings is None
@@ -761,7 +761,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_tempo_extraction(self, mock_audio_load, mock_mel, mock_beat, mock_rms, 
+    def test_tempo_extraction(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
                                mock_chroma, mock_onnx_session):
         """Test tempo is extracted and returned as float
         
@@ -769,14 +769,14 @@ class TestAnalyzeTrack:
         """
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         # Mock specific tempo
         expected_tempo = 128.5
         mock_beat.return_value = (expected_tempo, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         mock_session = Mock()
         mock_input = Mock()
         mock_input.name = 'input'
@@ -786,7 +786,7 @@ class TestAnalyzeTrack:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.return_value = [np.random.rand(5, 200)]
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -798,9 +798,9 @@ class TestAnalyzeTrack:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Tempo value is correctly extracted and typed
         assert result is not None
         assert result['tempo'] == expected_tempo
@@ -812,7 +812,7 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_energy_calculation(self, mock_audio_load, mock_mel, mock_beat, mock_rms, 
+    def test_energy_calculation(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
                                  mock_chroma, mock_onnx_session):
         """Test energy is calculated from RMS
         
@@ -820,16 +820,16 @@ class TestAnalyzeTrack:
         """
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
-        
+
         # Mock specific RMS values
         rms_values = np.array([[0.1, 0.2, 0.3, 0.4]])
         expected_energy = np.mean(rms_values)
         mock_rms.return_value = rms_values
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         mock_session = Mock()
         mock_input = Mock()
         mock_input.name = 'input'
@@ -839,7 +839,7 @@ class TestAnalyzeTrack:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.return_value = [np.random.rand(5, 200)]
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -851,9 +851,9 @@ class TestAnalyzeTrack:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Energy is calculated as mean of RMS
         assert result is not None
         assert np.isclose(result['energy'], expected_energy)
@@ -870,26 +870,26 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_embedding_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
+    def test_embedding_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel,
                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test GPU OOM during embedding inference triggers CPU fallback
         
         TESTS: OOM detection and automatic CPU fallback for embedding model
         """
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
+
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         # Mock GPU session that fails with OOM on first run
         gpu_session_call_count = [0]
         cpu_session_call_count = [0]
-        
+
         def gpu_run(output_names, feed_dict):
             gpu_session_call_count[0] += 1
             # First call (embedding) should OOM, subsequent calls succeed
@@ -899,14 +899,14 @@ class TestOOMFallback:
                     "Failed to allocate memory for requested buffer of size 765249024"
                 )
             return [np.random.rand(5, 200)]
-        
+
         def cpu_run(output_names, feed_dict):
             cpu_session_call_count[0] += 1
             return [np.random.rand(5, 200)]
-        
+
         # Track created sessions
         sessions_created = []
-        
+
         def create_session(model_path, providers=None, provider_options=None, **kwargs):
             mock_session = Mock()
             mock_input = Mock()
@@ -927,9 +927,9 @@ class TestOOMFallback:
                 sessions_created.append('GPU')
 
             return mock_session
-        
+
         mock_onnx_session.side_effect = create_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -941,9 +941,9 @@ class TestOOMFallback:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # WHAT WE'RE TESTING: Analysis completes successfully after OOM
         assert result is not None
         assert embeddings is not None
@@ -958,25 +958,25 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_prediction_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel, 
+    def test_prediction_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel,
                                             mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test GPU OOM during prediction inference triggers CPU fallback
         
         TESTS: OOM detection and automatic CPU fallback for prediction model
         """
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
+
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         gpu_session_call_count = [0]
         cpu_session_call_count = [0]
-        
+
         def gpu_run(output_names, feed_dict):
             gpu_session_call_count[0] += 1
             # Second call (prediction) should OOM
@@ -986,13 +986,13 @@ class TestOOMFallback:
                     "Failed to allocate memory for requested buffer"
                 )
             return [np.random.rand(5, 200)]
-        
+
         def cpu_run(output_names, feed_dict):
             cpu_session_call_count[0] += 1
             return [np.random.rand(5, 200)]
-        
+
         sessions_created = []
-        
+
         def create_session(model_path, providers=None, provider_options=None, **kwargs):
             mock_session = Mock()
             mock_input = Mock()
@@ -1010,9 +1010,9 @@ class TestOOMFallback:
                 sessions_created.append('GPU')
 
             return mock_session
-        
+
         mock_onnx_session.side_effect = create_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -1024,9 +1024,9 @@ class TestOOMFallback:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         assert result is not None
         assert embeddings is not None
         assert 'CPU' in sessions_created
@@ -1043,29 +1043,29 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_non_oom_exception_is_reraised(self, mock_providers, mock_audio_load, mock_mel, 
+    def test_non_oom_exception_is_reraised(self, mock_providers, mock_audio_load, mock_mel,
                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test non-OOM exceptions are re-raised (not caught by OOM handler)
         
         TESTS: Only OOM errors trigger fallback, other errors propagate
         """
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
+
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         def gpu_run(output_names, feed_dict):
             import onnxruntime as ort
             # Raise a non-OOM ONNX exception
             raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
                 "Model execution error: Invalid input shape"
             )
-        
+
         mock_session = Mock()
         mock_input = Mock()
         mock_input.name = 'input'
@@ -1075,7 +1075,7 @@ class TestOOMFallback:
         mock_session.get_outputs.return_value = [mock_output]
         mock_session.run.side_effect = gpu_run
         mock_onnx_session.return_value = mock_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -1087,10 +1087,10 @@ class TestOOMFallback:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         # Non-OOM exception should propagate and result in None return
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
-        
+
         # Should return None due to exception (caught by outer try-except)
         assert result is None
         assert embeddings is None
@@ -1102,29 +1102,29 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_successful_gpu_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel, 
+    def test_successful_gpu_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel,
                                                   mock_beat, mock_rms, mock_chroma, mock_onnx_session):
         """Test successful GPU inference doesn't trigger CPU fallback
         
         TESTS: Normal operation - no OOM, no fallback
         """
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        
+
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
-        
+
         mock_beat.return_value = (120.0, np.array([0, 100]))
         mock_rms.return_value = np.array([[0.5]])
         mock_chroma.return_value = np.random.rand(12, 100)
         mock_mel.return_value = np.random.rand(96, 1000)
-        
+
         cpu_fallback_used = [False]
-        
+
         def create_session(model_path, providers=None, provider_options=None, **kwargs):
             # Check if this is a CPU-only fallback session
             if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
                 cpu_fallback_used[0] = True
-            
+
             mock_session = Mock()
             mock_input = Mock()
             mock_input.name = 'input'
@@ -1132,7 +1132,7 @@ class TestOOMFallback:
             mock_output.name = 'output'
             mock_session.get_inputs.return_value = [mock_input]
             mock_session.get_outputs.return_value = [mock_output]
-            
+
             # Successful inference - no OOM
             call_count = [0]
             def successful_run(output_names, feed_dict):
@@ -1141,12 +1141,12 @@ class TestOOMFallback:
                     return [np.random.rand(5, 200)]
                 else:
                     return [np.random.rand(5, 2)]
-            
+
             mock_session.run.side_effect = successful_run
             return mock_session
-        
+
         mock_onnx_session.side_effect = create_session
-        
+
         mood_labels = ['happy']
         model_paths = {
             'embedding': '/path/to/embedding.onnx',
@@ -1158,7 +1158,7 @@ class TestOOMFallback:
             'relaxed': '/path/to/relaxed.onnx',
             'sad': '/path/to/sad.onnx'
         }
-        
+
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
 
         # Analysis should succeed without CPU fallback

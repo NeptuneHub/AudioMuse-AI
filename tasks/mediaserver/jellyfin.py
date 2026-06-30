@@ -133,7 +133,7 @@ def resolve_user(identifier, token):
             if user.get('Name', '').lower() == identifier.lower():
                 logger.info(f"Matched username '{identifier}' to User ID '{user['Id']}'.")
                 return user['Id']
-    
+
     logger.info(f"No username match for '{identifier}'. Assuming it is a User ID.")
     return identifier # Return original identifier if no match is found
 
@@ -145,7 +145,7 @@ def get_recent_albums(limit):
     If MUSIC_LIBRARIES is set, it will only return albums from those libraries.
     """
     target_library_ids = _get_target_library_ids()
-    
+
     # Case 1: Config is set, but no matching libraries were found. Scan nothing.
     if isinstance(target_library_ids, set) and not target_library_ids:
         logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
@@ -172,10 +172,10 @@ def get_recent_albums(limit):
                 r.raise_for_status()
                 response_data = r.json()
                 albums_on_page = response_data.get("Items") or []
-                
+
                 if not albums_on_page:
                     break
-                
+
                 all_albums.extend(albums_on_page)
                 start_index += len(albums_on_page)
 
@@ -184,7 +184,7 @@ def get_recent_albums(limit):
             except Exception as e:
                 logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
                 break
-    
+
     # Case 3: Config is set and we have library IDs. Scan each of these libraries by using their ID as ParentId.
     else:
         logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
@@ -204,10 +204,10 @@ def get_recent_albums(limit):
                     r.raise_for_status()
                     response_data = r.json()
                     albums_on_page = response_data.get("Items") or []
-                    
+
                     if not albums_on_page:
                         break
-                    
+
                     all_albums.extend(albums_on_page)
                     start_index += len(albums_on_page)
 
@@ -224,7 +224,7 @@ def get_recent_albums(limit):
     # Apply the final limit if one was specified
     if not fetch_all:
         return all_albums[:limit]
-        
+
     return all_albums
 
 def get_tracks_from_album(album_id, user_creds=None):
@@ -542,7 +542,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError("Jellyfin User Identifier is required.")
 
     user_id = resolve_user(identifier, token)
-    
+
     final_playlist_name = f"{playlist_name.strip()}_instant"
     url = f"{config.JELLYFIN_URL}/Playlists"
     headers = jellyfin_auth_header(token)
@@ -696,7 +696,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
             f"Reuse of existing playlist '{playlist_name}' not supported from the Music Server, going to create a new one."
         )
         if not delete_playlist(playlist_id):
-            logger.error(
+            logger.exception(
                 f"Jellyfin: failed to delete playlist '{playlist_name}' (Id={playlist_id}) for fallback recreate"
             )
             return None

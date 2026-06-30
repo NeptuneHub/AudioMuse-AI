@@ -142,7 +142,7 @@ def generate_sonic_fingerprint_endpoint():
                 num_results = int(num_results)
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
-        
+
         user_creds = {}
         if MEDIASERVER_TYPE == 'jellyfin':
             user_identifier = data.get('jellyfin_user_identifier')
@@ -150,7 +150,7 @@ def generate_sonic_fingerprint_endpoint():
                 return jsonify({"error": "Jellyfin User Identifier is required."}), 400
 
             token = data.get('jellyfin_token') or JELLYFIN_TOKEN
-            
+
             if not token:
                 return jsonify({"error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."}), 400
 
@@ -158,7 +158,7 @@ def generate_sonic_fingerprint_endpoint():
             resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
             if not resolved_user_id:
                 return jsonify({"error": f"Could not resolve Jellyfin user '{user_identifier}'."}), 400
-            
+
             logger.info(f"Resolved Jellyfin user ID: '{resolved_user_id}'")
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
@@ -168,7 +168,7 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
             if not user_creds['user'] or not user_creds['password']:
                 return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
-        
+
         fingerprint_results = generate_sonic_fingerprint(
             num_neighbors=num_results,
             user_creds=user_creds

@@ -26,16 +26,16 @@ def _ensure_stubs():
     # google.genai stub (new API)
     if 'google.genai' not in sys.modules:
         genai = types.ModuleType('google.genai')
-        
+
         class _Client:
             def __init__(self, api_key=None, **kwargs):
                 self.api_key = api_key
                 self.models = self
-            
+
             def generate_content(self, model=None, contents=None, config=None, **kwargs):
                 """Mock generate_content for new google-genai API"""
                 return types.SimpleNamespace(text='[stubbed google.genai]')
-        
+
         genai.Client = _Client
         genai.types = types.SimpleNamespace(
             GenerateContentConfig=lambda *a, **k: None,
@@ -371,22 +371,22 @@ def test_real_analysis_runs_and_returns_expected_shape():
     ]
 
     tol = 1e-3
-    
+
     # Test each track
     for track_info in test_tracks:
         track_path = track_info['path']
         track_name = track_info['name']
         expected = track_info['expected']
-        
+
         if not track_path.exists():
             print(f'\n{track_name} not present in test/; skipping.')
             continue
-        
+
         print(f'\n=== Analyzing: {track_name} ===')
-        
+
         # Run analysis
         result, embedding = analysis.analyze_track(str(track_path), analysis.MOOD_LABELS, model_paths)
-        
+
         # Print result for visibility
         try:
             print(f'\n{track_name} analysis result:')
@@ -394,12 +394,12 @@ def test_real_analysis_runs_and_returns_expected_shape():
         except Exception:
             print(f'\n{track_name} analysis result (repr):')
             print(repr(result))
-        
+
         # Validate results
         assert result is not None, f'{track_name}: analyze_track returned None for analysis_result'
         assert isinstance(result, dict), f'{track_name}: result is not a dict'
         assert 'moods' in result and isinstance(result['moods'], dict), f'{track_name}: moods missing or invalid'
-        
+
         # Validate embedding
         assert embedding is not None, f'{track_name}: analyze_track returned None for embedding'
         assert hasattr(embedding, 'shape') and embedding.ndim == 1, \
@@ -407,7 +407,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
         emb_dim = int(embedding.shape[0])
         print(f'{track_name}: embedding dimension = {emb_dim}')
         assert emb_dim > 0, f'{track_name}: Unexpected embedding dimension: {emb_dim}'
-        
+
         # Validate exact values
         _validate_analysis_result(result, expected, track_name, tol)
         print(f'{track_name}: OK All validations passed')

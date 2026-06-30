@@ -1,0 +1,16 @@
+# Ruff config: formatter + linter (modern replacement for the standalone flake8 gate).
+line-length = 100
+target-version = "py311"
+extend-exclude = ["query", "dist", "model", "native-build/**/_vendor"]
+
+[format]
+# Keep the codebase's existing single quotes - do not restyle string literals.
+quote-style = "preserve"
+
+[lint]
+# Enforced gate (kept green): the flake8 rule set plus TRY400, which flake8 cannot
+# do - logging.error inside an except block must be logging.exception. Formatting
+# (E501, whitespace, blank lines) and naming (N) are NOT gated: long strings can't
+# be auto-wrapped and renames are bug-risky; run `ruff format` / `ruff check` ad hoc
+# to see those.
+select = ["F", "E9", "E401", "E711", "E712", "E713", "E714", "E722", "W605", "TRY400"]

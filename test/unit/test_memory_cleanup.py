@@ -23,7 +23,7 @@ import numpy as np
 
 class TestAnalyzeTrackMemoryCleanup:
     """Test memory cleanup in analyze_track function."""
-    
+
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis_helper.librosa')
     @patch('tasks.analysis.create_onnx_session')
@@ -48,10 +48,10 @@ class TestAnalyzeTrackMemoryCleanup:
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
         mock_create_sess.side_effect = [mock_embedding_sess, mock_prediction_sess]
-        
+
         # Make inference fail with non-OOM error
         mock_embedding_sess.run.side_effect = RuntimeError("Model error")
-        
+
         # Call analyze_track (should fail but cleanup should happen)
         result = analyze_track(
             "/tmp/test.mp3",
@@ -67,14 +67,14 @@ class TestAnalyzeTrackMemoryCleanup:
                 "sad": "/tmp/sad.onnx"
             }
         )
-        
+
         # Should return None due to error
         assert result == (None, None)
-        
+
         # Verify cleanup was called in finally block
         assert mock_session_cleanup.call_count >= 2  # embedding and prediction
         assert mock_cuda_cleanup.called
-    
+
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.librosa')
     @patch('tasks.analysis.ort')
@@ -83,20 +83,20 @@ class TestAnalyzeTrackMemoryCleanup:
     ):
         """Test that cleanup is skipped when using album-level sessions."""
         from tasks.analysis import analyze_track
-        
+
         # Setup mocks
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
         mock_librosa.beat.beat_track.return_value = (120.0, None)
         mock_librosa.feature.rms.return_value = np.array([[0.5]])
         mock_librosa.feature.chroma_stft.return_value = np.random.randn(12, 100)
         mock_librosa.feature.melspectrogram.return_value = np.random.randn(96, 500)
-        
+
         # Pre-loaded sessions
         mock_embedding_sess = MagicMock()
         mock_prediction_sess = MagicMock()
         mock_embedding_sess.run.return_value = [np.random.randn(10, 200)]
         mock_prediction_sess.run.return_value = [np.random.randn(10, 2)]
-        
+
         # Create onnx_sessions dict with all required models
         onnx_sessions = {
             'embedding': mock_embedding_sess,
@@ -108,11 +108,11 @@ class TestAnalyzeTrackMemoryCleanup:
             'relaxed': MagicMock(),
             'sad': MagicMock()
         }
-        
+
         # Configure secondary model mocks
         for key in ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']:
             onnx_sessions[key].run.return_value = [np.random.randn(10, 2)]
-        
+
         # Call with pre-loaded sessions
         with patch('tasks.analysis.cleanup_onnx_session') as mock_cleanup:
             analyze_track(
@@ -130,7 +130,7 @@ class TestAnalyzeTrackMemoryCleanup:
                 },
                 onnx_sessions=onnx_sessions
             )
-            
+
             # Cleanup should NOT be called for main sessions (album reuse)
             # It should only be called for secondary models if loaded per-song
             # Since we provided all sessions, cleanup should not happen
@@ -139,7 +139,7 @@ class TestAnalyzeTrackMemoryCleanup:
 
 class TestAnalyzeAlbumMemoryCleanup:
     """Test memory cleanup in analyze_album_task function."""
-    
+
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
@@ -159,31 +159,31 @@ class TestAnalyzeAlbumMemoryCleanup:
         """Test that cleanup happens when database error occurs."""
         from tasks.analysis import analyze_album_task
         from psycopg2 import OperationalError
-        
+
         # Setup mocks
         mock_get_job.return_value = None
         mock_get_tracks.return_value = [
             {'Id': '1', 'Name': 'Track 1', 'AlbumArtist': 'Artist 1', 'ArtistId': 'artist1'}
         ]
         mock_download.return_value = "/tmp/track.mp3"
-        
+
         # Mock the database connection used during album analysis (the first DB
         # touch is analysis_helper.get_existing_track_ids) to fail like a real
         # connection error, so the OperationalError propagates.
         mock_get_db.side_effect = OperationalError("Connection failed")
-        
+
         # Mock ONNX sessions
         mock_ort.get_available_providers.return_value = ['CPUExecutionProvider']
         mock_session = MagicMock()
         mock_ort.InferenceSession.return_value = mock_session
-        
+
         # Try to analyze album (should fail with database error)
         with pytest.raises(OperationalError):
             analyze_album_task("album_123", "Test Album", 5, None)
-        
+
         # Note: cleanup may not be called if error occurs before models are loaded
         # This test primarily verifies that OperationalError propagates correctly
-    
+
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.comprehensive_memory_cleanup')
     @patch('app_helper.save_task_status')
@@ -214,7 +214,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         # Verify all cleanup functions were called
         assert mock_memory_cleanup.called
         assert mock_clap_unload.called
-    
+
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
@@ -254,7 +254,7 @@ class TestAnalyzeAlbumMemoryCleanup:
         # calls are captured.
         mock_session = MagicMock()
         mock_create_sess.return_value = mock_session
-        
+
         # Mock analyze_track to return results including audio for lyrics analysis
         mock_analyze.return_value = (
             {
@@ -274,14 +274,14 @@ class TestAnalyzeAlbumMemoryCleanup:
             np.random.randn(16000),
             16000
         )
-        
+
         # Call function
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
             analyze_album_task("album_123", "Test Album", 5, None)
-        
+
         # Verify session cleanup was called for all loaded sessions
         # Should be called 2 times (embedding + prediction; secondary models removed in v4.0.0)
         assert mock_session_cleanup.call_count >= 2
-        
+
         # Verify CUDA cleanup was called
         assert mock_cuda_cleanup.called

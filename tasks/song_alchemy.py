@@ -22,21 +22,21 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     """
     from tasks.artist_gmm_manager import artist_gmm_params, load_artist_index_for_querying, reverse_artist_map
     from app_helper_artist import get_artist_name_by_id
-    
+
     # Ensure artist index is loaded
     if artist_gmm_params is None:
         load_artist_index_for_querying()
-    
+
     if artist_gmm_params is None:
         logger.warning(f"Artist GMM index not available for {artist_identifier}")
         return [], []
-    
+
     # Resolve artist ID to name if needed
     artist_name = artist_identifier
     resolved_name = get_artist_name_by_id(artist_identifier)
     if resolved_name:
         artist_name = resolved_name
-    
+
     gmm = artist_gmm_params.get(artist_name)
 
     # Fuzzy fallback: normalize away hyphens, en-dashes, spaces, slashes, apostrophes
@@ -57,14 +57,14 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
     if not gmm:
         logger.warning(f"No GMM found for artist '{artist_name}'")
         return [], []
-    
+
     means = np.array(gmm['means'])  # Shape: [n_components, embedding_dim]
     weights = np.array(gmm['weights'])  # Shape: [n_components]
-    
+
     # Log info about single-track artists for debugging
     if gmm.get('is_single_track', False):
         logger.info(f"Loaded single-track artist '{artist_name}' with 1 component")
-    
+
     return [means[i] for i in range(len(means))], weights.tolist()
 
 
@@ -312,7 +312,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         add_items = [{'type': 'song', 'id': aid} for aid in add_ids]
     if subtract_items is None and subtract_ids is not None:
         subtract_items = [{'type': 'song', 'id': sid} for sid in subtract_ids]
-    
+
     if not add_items or len(add_items) < 1:
         raise ValueError("At least one item must be in the ADD set")
 
@@ -369,7 +369,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     # Extract song IDs from items
     add_song_ids = [item['id'] for item in add_items if item.get('type') == 'song' and item.get('id')]
     subtract_song_ids = [item['id'] for item in (subtract_items or []) if item.get('type') == 'song' and item.get('id')]
-    
+
     if add_song_ids:
         add_set = set(add_song_ids)
         candidate_ids = [cid for cid in candidate_ids if cid not in add_set]
@@ -445,7 +445,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     proj_vectors.append(vec)
                     proj_ids.append(f'__add_anchor__{anchor_id}')
                     add_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
-        
+
         # Add mood centroids as individual points
         add_mood_items = [item for item in add_items if item.get('type') == 'mood']
         for item in add_mood_items:
@@ -523,7 +523,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     proj_vectors.append(vec)
                     proj_ids.append(f'__sub_anchor__{anchor_id}')
                     sub_meta.append({'item_id': anchor_id, 'title': anchor.get('name', 'Anchor'), 'author': '', 'type': 'anchor'})
-        
+
         # Add mood centroids as individual points
         subtract_mood_items = [item for item in subtract_items if item.get('type') == 'mood']
         for item in subtract_mood_items:
@@ -615,7 +615,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                 id_to_coord[str(iid)] = (float(coord[0]), float(coord[1]))
         except Exception:
             id_to_coord = {}
-    
+
     # Load precomputed artist component projections
     artist_comp_to_coord = {}
     try:
@@ -657,7 +657,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             coord = id_to_coord.get(str(pid))
             if coord is not None:
                 proj_map[pid] = coord
-    
+
     # Now add artist component projections from precomputed cache
     # Note: Artist components are NOT in proj_ids because we didn't add their vectors
     # We need to manually add them to proj_map
@@ -676,7 +676,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                     logger.debug(f"Added ADD artist component to proj_map: key={key}, pid={pid}, coord={coord}")
                 else:
                     logger.warning(f"No precomputed projection for ADD artist component: key={key}, available keys={list(artist_comp_to_coord.keys())[:5]}")
-    
+
     for m in sub_meta:
         if m.get('is_artist_component'):
             # Extract artist_id and component_idx from item_id format: {artist_id}_comp{comp_idx}
@@ -698,7 +698,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     def _centroid_from_member_coords(items, is_add=True):
         coords = []
         weights = []
-        
+
         # Collect song coordinates
         for item in items:
             if item.get('type') == 'song':
@@ -749,12 +749,12 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
         if not coords:
             return None
-        
+
         # Weighted mean of all coordinates
         coords_array = np.vstack(coords)
         weights_array = np.array(weights)
         weights_array = weights_array / np.sum(weights_array)  # Normalize
-        
+
         weighted_mean = np.sum(coords_array * weights_array[:, np.newaxis], axis=0)
         return (float(weighted_mean[0]), float(weighted_mean[1]))
 
@@ -769,10 +769,10 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
         if pid in ('__add_centroid__', '__subtract_centroid__'):
             # if not set from member coords, skip for now
             continue
-        
+
         # Get the actual vector for this projection ID
         vec = None
-        
+
         # resolve underlying item id for add/sub song markers
         if isinstance(pid, str) and pid.startswith('__add_id__'):
             item_id = pid.replace('__add_id__', '')
@@ -817,14 +817,14 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             # For small sets (< 50 points), skip expensive UMAP and use fast PCA
             # Artist components typically add only 2-10 points per artist
             local_projections = None
-            
+
             # Try discriminant first if we have both add/sub vectors
             if len(missing_vectors) >= 4:  # Need at least 2+2 for discriminant
                 try:
                     # Build add/sub vectors from all add/subtract items (songs + artist components)
                     local_add_vecs = []
                     local_sub_vecs = []
-                    
+
                     for pid in missing_ids:
                         idx = missing_ids.index(pid)
                         vec = missing_vectors[idx]
@@ -832,7 +832,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
                             local_add_vecs.append(vec)
                         elif pid.startswith(('__sub_id__', '__sub_artist_comp__', '__sub_playlist__')):
                             local_sub_vecs.append(vec)
-                    
+
                     if local_add_vecs and local_sub_vecs and _project_with_discriminant is not None:
                         local_projections = _project_with_discriminant(local_add_vecs, local_sub_vecs, missing_vectors)
                         projection_used = 'discriminant'
@@ -859,7 +859,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
     for pid in proj_ids:
         if pid not in proj_map:
             proj_map[pid] = (0.0, 0.0)
-    
+
     # NOW compute centroid coordinates from member coordinates (after proj_map is fully populated)
     add_centroid_2d_db = None
     subtract_centroid_2d_db = None
@@ -928,7 +928,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             temperature = float(_cfg_temp)
         except Exception:
             temperature = 1.0
-    
+
     logger.info(f"Song Alchemy: Using temperature={temperature} for probabilistic sampling of {len(scored_candidates)} candidates")
 
     # Convert distances into similarity-like scores (smaller distance => higher similarity)
@@ -1076,7 +1076,7 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
             pid = f"__sub_id__{m['item_id']}"
         coord = proj_map.get(pid)
         sub_points.append({**m, 'embedding_2d': coord})
-    
+
     logger.info(f"Returning {len(add_points)} add_points and {len(sub_points)} sub_points")
     logger.info(f"add_points artist components: {sum(1 for p in add_points if p.get('is_artist_component'))}")
     logger.info(f"sub_points artist components: {sum(1 for p in sub_points if p.get('is_artist_component'))}")

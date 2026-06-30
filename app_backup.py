@@ -311,11 +311,11 @@ def create_backup():
                 err = error_manager.build(ERR_BACKUP_FAILED, stderr)
             return jsonify({**err, 'error': err['error_message']}), 500
     except FileNotFoundError:
-        logger.error("pg_dump not found on system PATH")
+        logger.exception("pg_dump not found on system PATH")
         err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
         return jsonify({**err, 'error': err['error_message']}), 500
     except subprocess.TimeoutExpired:
-        logger.error("pg_dump timed out")
+        logger.exception("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
         err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
@@ -612,7 +612,7 @@ def restore_backup():
             })
 
     except FileNotFoundError:
-        logger.error("Python executable not found for restore runner")
+        logger.exception("Python executable not found for restore runner")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()

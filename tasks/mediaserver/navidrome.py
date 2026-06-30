@@ -37,7 +37,7 @@ def _get_target_music_folder_ids(user_creds=None):
 
     # Use the getMusicFolders endpoint to get the available music folders.
     response = _navidrome_request("getMusicFolders", user_creds=user_creds)
-    
+
     if not (response and "musicFolders" in response and "musicFolder" in response["musicFolders"]):
         logger.error("Failed to fetch music folders from Navidrome or response format unexpected.")
         return set()
@@ -106,7 +106,7 @@ def get_navidrome_auth_params(username=None, password=None):
     """Generates Navidrome auth params, using provided creds or falling back to global config."""
     auth_user = username or config.NAVIDROME_USER
     auth_pass = password or config.NAVIDROME_PASSWORD
-    if not auth_user or not auth_pass: 
+    if not auth_user or not auth_pass:
         logger.warning("Navidrome User or Password is not configured.")
         return {}
     hex_encoded_password = auth_pass.encode('utf-8').hex()
@@ -168,13 +168,13 @@ def _navidrome_request_ex(endpoint, params=None, method='get', stream=False, use
 
     except requests.exceptions.RequestException as e:
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")
+        logger.exception(f"Error calling Navidrome API endpoint '{endpoint}': {safe}")
         return None, {'kind': 'network', 'message': safe}
     except Exception as e:
         # A non-JSON body or a JSON non-dict (e.g. a proxy error page) would
         # otherwise raise out of this boundary helper; report it as a failure.
         safe = _redact_navidrome_secrets(e)
-        logger.error(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")
+        logger.exception(f"Unexpected error handling Navidrome response for '{endpoint}': {safe}")
         return None, {'kind': 'server', 'message': safe}
 
 
@@ -188,8 +188,8 @@ def _navidrome_request(endpoint, params=None, method='get', stream=False, user_c
 def download_track(temp_dir, item):
     """Downloads a single track from Navidrome using admin credentials."""
     try:
-        track_id = item['id'] 
-        
+        track_id = item['id']
+
         # Try to get format from suffix field first (Subsonic API standard)
         file_extension = '.tmp'
         try:
@@ -204,9 +204,9 @@ def download_track(temp_dir, item):
                 file_extension = os.path.splitext(item['path'])[1] or '.tmp'
         except Exception as e:
             logger.debug(f"Error getting format from suffix/path, using .tmp: {e}")
-        
+
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        
+
         response = _navidrome_request("stream", params={"id": track_id}, stream=True)
         if response:
             with response:
@@ -216,7 +216,7 @@ def download_track(temp_dir, item):
             logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
             return local_filename
     except Exception as e:
-        logger.error(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}")
+        logger.exception(f"Failed to download Navidrome track {item.get('title', 'Unknown')}: {_redact_navidrome_secrets(e)}")
     return None
 
 def get_recent_albums(limit):
@@ -225,7 +225,7 @@ def get_recent_albums(limit):
     If MUSIC_LIBRARIES is set, it will only return albums from those folders.
     """
     target_folder_ids = _get_target_music_folder_ids()
-    
+
     # Case 1: Config is set, but no matching folders were found. Scan nothing.
     if isinstance(target_folder_ids, set) and not target_folder_ids:
         logger.warning("Folder filtering is active, but no matching folders were found on the server. Returning no albums.")
@@ -248,7 +248,7 @@ def get_recent_albums(limit):
 
             if response and "albumList2" in response and "album" in response["albumList2"]:
                 albums = response["albumList2"]["album"]
-                if not albums: break 
+                if not albums: break
 
                 all_albums.extend([{**a, 'Id': a.get('id'), 'Name': a.get('name')} for a in albums])
                 offset += len(albums)
@@ -273,7 +273,7 @@ def get_recent_albums(limit):
 
                 if response and "albumList2" in response and "album" in response["albumList2"]:
                     albums = response["albumList2"]["album"]
-                    if not albums: break 
+                    if not albums: break
 
                     all_albums.extend([{**a, 'Id': a.get('id'), 'Name': a.get('name')} for a in albums])
                     offset += len(albums)
@@ -293,7 +293,7 @@ def get_recent_albums(limit):
     # Apply the final limit if one was specified
     if not fetch_all:
         return all_albums[:limit]
-        
+
     return all_albums
 
 def _select_best_artist(song_item, title="Unknown"):
@@ -313,7 +313,7 @@ def _select_best_artist(song_item, title="Unknown"):
     else:
         track_artist = 'Unknown Artist'
         artist_id = None
-    
+
     return track_artist, artist_id
 
 def get_all_songs(user_creds=None, apply_filter=True):
@@ -329,14 +329,14 @@ def get_all_songs(user_creds=None, apply_filter=True):
     contract clear for future callers.
     """
     target_folder_ids = _get_target_music_folder_ids(user_creds=user_creds) if apply_filter else None
-    
+
     # Case 1: Config is set, but no matching folders were found. Return no songs.
     if isinstance(target_folder_ids, set) and not target_folder_ids:
         logger.warning("Folder filtering is active, but no matching folders were found on the server. Returning no songs.")
         return []
 
     all_songs = []
-    
+
     # Case 2: Config is NOT set (is None). Scan all songs without folder filter.
     if target_folder_ids is None:
         logger.info("Fetching all songs from all Navidrome music folders.")
@@ -348,7 +348,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
             if response and "searchResult3" in response and "song" in response["searchResult3"]:
                 songs = response["searchResult3"]["song"]
                 if not songs: break
-                
+
                 # Note: search3 song objects don't have separate artistId/albumArtistId fields
                 # They only have 'artist' (name) and 'artistId' (which is the album artist ID)
                 # So we use the artist name and artistId (album artist) as best we can
@@ -375,7 +375,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                         'Rating': s.get('userRating') if s.get('userRating') else None,
                         'FilePath': raw_path,
                     })
-                
+
                 offset += len(songs)
                 if len(songs) < limit: break
             else:
@@ -385,7 +385,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
     # Case 3: Config is set and we have folder IDs. Get albums from folders, then songs from albums.
     else:
         logger.info(f"Fetching songs from {len(target_folder_ids)} specific Navidrome music folders.")
-        
+
         # First, get all albums from the specified folders
         target_albums = []
         for folder_id in target_folder_ids:
@@ -394,26 +394,26 @@ def get_all_songs(user_creds=None, apply_filter=True):
             while True:
                 params = {"type": "newest", "size": page_size, "offset": offset, "musicFolderId": folder_id}
                 response = _navidrome_request("getAlbumList2", params)
-                
+
                 if response and "albumList2" in response and "album" in response["albumList2"]:
                     albums = response["albumList2"]["album"]
                     if not albums: break
-                    
+
                     target_albums.extend(albums)
                     offset += len(albums)
-                    
+
                     if len(albums) < page_size: break
                 else:
                     logger.error(f"Failed to fetch albums from Navidrome folder ID {folder_id}.")
                     break
-        
+
         logger.info(f"Found {len(target_albums)} albums in specified folders. Getting songs from these albums.")
-        
+
         # Now get songs from each album
         for album in target_albums:
             album_id = album.get('id')
             if not album_id: continue
-            
+
             album_songs = get_tracks_from_album(album_id, user_creds=user_creds)
             for song in album_songs:
                 # Convert to the expected format
@@ -539,10 +539,10 @@ def _add_to_playlist(playlist_id, item_ids, user_creds=None):
             # Keep visibility in sync with Navidrome updatePlaylist expectations (public=true).
             "public": "true",
         }
-        
+
         # Note: updatePlaylist uses a POST method.
         response = _navidrome_request("updatePlaylist", params, method='post', user_creds=user_creds)
-        
+
         if not (response and response.get("status") == "ok"):
             logger.error(f"Failed to add batch of {len(batch_ids)} songs to playlist {playlist_id}.")
             return False
@@ -599,11 +599,11 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
         if not _add_to_playlist(new_playlist_id, ids_to_add_later, user_creds):
             logger.error(f"Failed to add all songs to the new playlist '{playlist_name}'. The playlist was created but may be incomplete.")
             # We still return the playlist object, as it was created.
-    
+
     # Standardize the keys to match what the rest of the app expects ('Id' with capital I)
     new_playlist['Id'] = new_playlist.get('id')
     new_playlist['Name'] = new_playlist.get('name')
-    
+
     return new_playlist
 
 
@@ -635,7 +635,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     response = _navidrome_request("getAlbum", params, user_creds=user_creds)
     if response and "album" in response and "song" in response["album"]:
         songs = response["album"]["song"]
-        
+
         # Apply artist field prioritization to each song
         result = []
         for s in songs:
@@ -677,7 +677,7 @@ def get_playlist_by_name(playlist_name, user_creds=None):
             # For the purpose of checking existence and getting an ID for deletion,
             # the summary object is sufficient.
             return playlist_summary
-    
+
     return None # No match found
 
 def _get_playlist_detail(playlist_id, user_creds=None):

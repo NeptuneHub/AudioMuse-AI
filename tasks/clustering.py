@@ -72,7 +72,7 @@ def batch_task_failure_handler(job, connection, type, value, tb):
         task_id = getattr(job, 'id', None) or getattr(job, 'get_id', lambda: None)()
         parent_id = job.kwargs.get('parent_task_id')
         batch_id_str = job.kwargs.get('batch_id_str')
-        
+
         # --- FIX: Handle different traceback types, especially from rq-janitor ---
         tb_formatted = ""
         if isinstance(tb, traceback.StackSummary):
@@ -337,13 +337,13 @@ def run_clustering_task(
 
         # Helper for logging and updating main task status, using a shared dictionary.
         def _log_and_update(message, progress, details_to_add_or_update=None, task_state=TASK_STATUS_PROGRESS):
-            
+
             logger.info(f"[MainClusteringTask-{current_task_id}] {message}")
             if details_to_add_or_update:
                 _main_task_accumulated_details.update(details_to_add_or_update)
-            
+
             _main_task_accumulated_details["status_message"] = message
-            
+
             log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
             _main_task_accumulated_details["log"].append(log_entry)
 
@@ -361,7 +361,7 @@ def run_clustering_task(
                 current_job.meta['progress'] = progress
                 current_job.meta['status_message'] = message
                 current_job.save_meta()
-            
+
             save_task_status(current_task_id, "main_clustering", task_state, progress=progress, details=details_for_db)
 
         try:
@@ -393,11 +393,11 @@ def run_clustering_task(
             if child_tasks_from_db:
                 logger.info(f"Found {len(child_tasks_from_db)} existing child tasks. Attempting state recovery.")
                 _monitor_and_process_batches(_main_task_accumulated_details, current_task_id, initial_check=True)
-                
+
                 # Determine next batch to launch based on total runs accounted for
                 runs_accounted_for = _main_task_accumulated_details["runs_completed"]
                 next_batch_to_launch = runs_accounted_for // ITERATIONS_PER_BATCH_JOB
-                
+
                 logger.info(f"Recovery complete. Resuming. Runs accounted for: {runs_accounted_for}/{num_clustering_runs}. Next batch index to launch: {next_batch_to_launch}")
 
             if not _main_task_accumulated_details["last_subset_ids"]:
@@ -440,9 +440,9 @@ def run_clustering_task(
                     if remaining_runs > 0:
                         _main_task_accumulated_details["runs_completed"] = num_clustering_runs
                         logger.warning(f"Forced completion of {remaining_runs} remaining runs due to batch failures")
-                
-                while (len(_main_task_accumulated_details["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS 
-                       and next_batch_to_launch < num_total_batches 
+
+                while (len(_main_task_accumulated_details["active_jobs"]) < MAX_CONCURRENT_BATCH_JOBS
+                       and next_batch_to_launch < num_total_batches
                        and failed_batch_count < CLUSTERING_MAX_FAILED_BATCHES):
                     _launch_batch_job(
                         _main_task_accumulated_details, current_task_id, next_batch_to_launch, num_clustering_runs,
@@ -464,15 +464,15 @@ def run_clustering_task(
                     f"Progress: {_main_task_accumulated_details['runs_completed']}/{num_clustering_runs} runs. Active batches: {len(_main_task_accumulated_details['active_jobs'])}. Best score: {_main_task_accumulated_details['best_score']:.2f}",
                     progress
                 )
-                
+
                 # If all runs are accounted for (or runs_completed is now >= total_runs due to recovery/failure counting)
                 # AND no jobs are active, we can break the loop safely.
                 if _main_task_accumulated_details["runs_completed"] >= num_clustering_runs and len(_main_task_accumulated_details["active_jobs"]) == 0:
                     _log_and_update(f"All runs ({_main_task_accumulated_details['runs_completed']}) are processed or accounted for. Forcing loop exit to prevent starvation.", progress)
                     break
-                
+
                 time.sleep(3)
-            
+
             # Ensure final state update accounts for any remaining jobs that finished right after the loop broke
             _monitor_and_process_batches(_main_task_accumulated_details, current_task_id)
 
@@ -486,18 +486,18 @@ def run_clustering_task(
             best_result = _main_task_accumulated_details["best_result"]
 
             # --- POST-PROCESSING PIPELINE: Apply filtering steps after clustering is complete ---
-            
+
             # Log initial state for debugging
             initial_playlist_count = len(best_result.get("named_playlists", {}))
             _log_and_update(f"Starting post-processing with {initial_playlist_count} playlists", 90.2)
-            
+
             # *** STEP 1: Apply duplicate filtering to remove similar songs within playlists ***
             # Uses the same distance-based filtering logic as ivf_manager to avoid duplicate tracks
             _log_and_update("Applying duplicate filtering to remove similar songs...", 90.5)
             _log_and_update(f"Before duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists", 90.5)
             best_result = apply_duplicate_filtering_to_clustering_result(best_result, log_prefix="[DuplicateFilter] ")
             _log_and_update(f"After duplicate filtering: {len(best_result.get('named_playlists', {}))} playlists", 90.5)
-            
+
             # *** STEP 2: Apply minimum size filter to remove small playlists ***
             # Removes playlists with fewer than the configured minimum number of songs
             # Use the configured minimum playlist size from config.py
@@ -513,7 +513,7 @@ def run_clustering_task(
                 _log_and_update(f"Filtering for Top {top_n_playlists_param} most diverse playlists...", 91.5)
                 best_result = select_top_n_diverse_playlists(best_result, top_n_playlists_param)
                 _main_task_accumulated_details["best_result"] = best_result # Update main dict with filtered result
-                
+
             final_playlist_count = len(best_result.get("named_playlists", {}))
             _log_and_update(f"Post-processing complete: {initial_playlist_count} -> {final_playlist_count} playlists", 91.8)
 
@@ -546,7 +546,7 @@ def run_clustering_task(
 
             # --- Final Success Reporting ---
             final_message = "Clustering task completed successfully!"
-            
+
             # Add final message to the log before preparing the summary
             log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {final_message}"
             _main_task_accumulated_details["log"].append(log_entry)
@@ -566,7 +566,7 @@ def run_clustering_task(
                 "log": truncated_log,
                 "log_storage_info": f"Log truncated to last {len(truncated_log)} entries. Original length: {len(final_log)}." if len(final_log) > 10 else "Full log."
             }
-            
+
             if current_job:
                 current_job.meta['progress'] = 100
                 current_job.meta['status_message'] = final_message
@@ -619,7 +619,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     current_time = time.time()
     timeout_seconds = CLUSTERING_BATCH_TIMEOUT_MINUTES * 60
     processed_jobs = state_dict.get("processed_job_ids", set())
-    
+
     # 1. Check for timed-out batches first - CRITICAL for preventing hangs
     timed_out_jobs = []
     for job_id, start_time in list(state_dict.get("batch_start_times", {}).items()):
@@ -647,12 +647,12 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                     state_dict["runs_completed"] += runs_to_add
                     logger.warning(f"Job {job_id} timed out. Forced runs_completed count to increase by {runs_to_add} to prevent starvation.")
         except Exception:
-            logger.error(f"Could not compute runs for timed out job {job_id}.")
+            logger.exception(f"Could not compute runs for timed out job {job_id}.")
         # mark processed and ensure it's removed from active jobs
         state_dict.setdefault("processed_job_ids", set()).add(job_id)
         if job_id in state_dict.get("active_jobs", {}):
             del state_dict["active_jobs"][job_id]
-    
+
     # 2. Get all child tasks from database
     all_child_tasks = get_child_tasks_from_db(parent_task_id)
 
@@ -661,7 +661,7 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     for task_info in all_child_tasks:
         if task_info['task_id'] not in processed_jobs:
             jobs_for_status_check.append(task_info)
-    
+
     # Add jobs known to be active in memory but might not be in the DB yet (for safety right after launch).
     for job_id in state_dict["active_jobs"].keys():
         if job_id not in processed_jobs and not any(t['task_id'] == job_id for t in jobs_for_status_check):
@@ -672,14 +672,14 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
     for task_info in jobs_for_status_check:
         job_id = task_info['task_id']
         db_status = task_info['status']
-        
+
         is_terminal_in_db = db_status in [TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED]
 
         if is_terminal_in_db:
             # If DB is terminal, we must process the result now to count the runs.
             jobs_ready_for_result_extraction.append(job_id)
             continue
-            
+
         # If DB status is non-terminal, check RQ status
         try:
             job = Job.fetch(job_id, connection=redis_conn)
@@ -689,13 +689,13 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                  # If it's active in RQ but not in memory, add it to active_jobs.
                  state_dict["active_jobs"][job_id] = job
         except NoSuchJobError:
-            # Job not in RQ (cleared) and not marked terminal in DB. 
+            # Job not in RQ (cleared) and not marked terminal in DB.
             # This is the original stuck case. We assume it's done/cleared and process it.
             logger.warning(f"Job {job_id} (status: {db_status}) not found in RQ (likely cleared). Treating as finished to prevent main task starvation.")
             jobs_ready_for_result_extraction.append(job_id)
         except Exception as e:
             # Generic error during RQ fetch (e.g., connection issue). Assume terminal to prevent starvation.
-            logger.error(f"Error checking RQ status for job {job_id}: {e}. Assuming terminal state to prevent starvation.")
+            logger.exception(f"Error checking RQ status for job {job_id}: {e}. Assuming terminal state to prevent starvation.")
             jobs_ready_for_result_extraction.append(job_id)
 
 
@@ -704,10 +704,10 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
         # Re-check processed set (shouldn't happen here, but safe)
         if job_id in processed_jobs:
             continue
-            
+
         # Try to get the result from RQ or DB.
         result = get_job_result_safely(job_id, parent_task_id, "clustering_batch")
-        
+
         # If successful, process result and count runs
         if result and result.get("status") == TASK_STATUS_SUCCESS:
             state_dict["runs_completed"] += result.get("iterations_completed_in_batch", 0)
@@ -725,28 +725,28 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
         else:
             # Track this as a failed batch
             state_dict.setdefault("failed_batches", set()).add(job_id)
-            
+
             # --- FIX: Account for runs from jobs that failed or were force-processed with no usable result ---
             # This is critical for the starvation case where 4940/5000 is stuck.
             task_info_for_runs = next((t for t in all_child_tasks if t['task_id'] == job_id), None)
-            
+
             # We must rely on the sub_type_identifier stored in the database by the batch task.
             if task_info_for_runs and task_info_for_runs.get('sub_type_identifier'):
                 if task_info_for_runs['sub_type_identifier'].startswith('Batch_'):
                     try:
                         batch_idx = int(task_info_for_runs['sub_type_identifier'].split('_')[-1])
                         total_runs = state_dict['total_runs']
-                        
+
                         start_run = batch_idx * ITERATIONS_PER_BATCH_JOB
                         num_iterations = min(ITERATIONS_PER_BATCH_JOB, total_runs - start_run)
-                        
+
                         if num_iterations > 0 and state_dict["runs_completed"] < total_runs:
                              runs_to_add = min(num_iterations, total_runs - state_dict["runs_completed"])
                              state_dict["runs_completed"] += runs_to_add
                              logger.warning(f"Job {job_id} failed/missing result. Forced runs_completed count to increase by {runs_to_add} to prevent main task starvation.")
-                             
+
                     except Exception:
-                        logger.error(f"Could not calculate runs for failed/missing job {job_id} using sub_type_identifier.")
+                        logger.exception(f"Could not calculate runs for failed/missing job {job_id} using sub_type_identifier.")
             else:
                 # no DB entry or sub_type_identifier missing: try to infer from job_id pattern
                 try:
@@ -760,8 +760,8 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                             state_dict["runs_completed"] += runs_to_add
                             logger.warning(f"Job {job_id} failed/missing result (no DB info). Inferred batch index and adjusted runs_completed by {runs_to_add}.")
                 except Exception:
-                    logger.error(f"Could not infer runs for failed/missing job {job_id} from job_id.")
-        
+                    logger.exception(f"Could not infer runs for failed/missing job {job_id} from job_id.")
+
         # Mark as processed and remove from active jobs list
         state_dict.setdefault("processed_job_ids", set()).add(job_id)
         if job_id in state_dict["active_jobs"]:
@@ -817,11 +817,11 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         "max_songs_per_cluster": max_songs_per_cluster,
         "parent_task_id": parent_task_id,
         "score_weights_dict": {
-            "mood_diversity": score_weight_diversity, 
+            "mood_diversity": score_weight_diversity,
             "silhouette": score_weight_silhouette,
-            "davies_bouldin": score_weight_davies_bouldin, 
+            "davies_bouldin": score_weight_davies_bouldin,
             "calinski_harabasz": score_weight_calinski_harabasz,
-            "mood_purity": score_weight_purity, 
+            "mood_purity": score_weight_purity,
             "other_feature_diversity": score_weight_other_feature_diversity,
             "other_feature_purity": score_weight_other_feature_purity
         },
@@ -844,10 +844,10 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         on_failure=batch_task_failure_handler
     )
     state_dict["active_jobs"][new_job.id] = new_job
-    
+
     # Record batch start time for timeout detection
     state_dict.setdefault("batch_start_times", {})[new_job.id] = time.time()
-    
+
     logger.info(f"Enqueued batch job {new_job.id} for runs {start_run}-{start_run + num_iterations - 1}.")
 
 

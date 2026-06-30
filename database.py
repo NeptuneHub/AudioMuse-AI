@@ -65,7 +65,7 @@ def get_db():
                 options='-c statement_timeout=600000'
             )
         except psycopg2.OperationalError as e:
-            logger.error(f"Failed to connect to database: {e}")
+            logger.exception(f"Failed to connect to database: {e}")
             raise
     return g.db
 
@@ -577,7 +577,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     file_path = sanitize_db_field(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
-    
+
     conn = get_db()
     cur = conn.cursor()
     try:
@@ -622,7 +622,7 @@ def save_clap_embedding(item_id, clap_embedding_vector):
     """Saves CLAP embedding for a track."""
     if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
         return
-    
+
     conn = get_db()
     cur = conn.cursor()
     try:
@@ -764,7 +764,7 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
-        
+
             # Ensure we have a searchable, accent-stripped `search_u` column.
             # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
             # so we store the value in a normal column and keep it in sync via trigger.
@@ -988,11 +988,11 @@ def init_db():
                 )
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
-        
+
             # Insert default queries if table is empty
             cur.execute("SELECT COUNT(*) FROM text_search_queries")
             count = cur.fetchone()[0]
-        
+
             if count == 0:
                 default_queries = [
                     "female vocal romantic trap",
@@ -1046,13 +1046,13 @@ def init_db():
                     "autotuned pop mid-tempo",
                     "pop energetic synthesizer"
                 ]
-            
+
                 for rank, query in enumerate(default_queries, start=1):
                     cur.execute("""
                         INSERT INTO text_search_queries (query_text, score, rank, created_at)
                         VALUES (%s, %s, %s, NOW())
                     """, (query, 1.0, rank))
-            
+
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
             db.commit()
@@ -1077,20 +1077,20 @@ def clean_up_previous_main_tasks():
     db = get_db() # This now calls the function within this file
     cur = db.cursor(cursor_factory=DictCursor)
     logger.info("Starting cleanup of all previous main tasks.")
-    
+
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS)
-    
+
     try:
         cur.execute("SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL", (non_terminal_statuses,))
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
         deleted_children_count = 0
-        
+
         for task_row in tasks_to_archive:
             task_id = task_row['task_id']
             original_status = task_row['status']
-            
+
             original_details_json = task_row['details']
             original_status_message = f"Task was in '{original_status}' state."
 
@@ -1137,10 +1137,10 @@ def clean_up_previous_main_tasks():
                 )
                 children_deleted = update_cur.rowcount
                 deleted_children_count += children_deleted
-                
+
                 if children_deleted > 0:
                     logger.info(f"Deleted {children_deleted} child tasks for parent task {task_id}")
-                
+
                 # Then archive the parent task
                 update_cur.execute(
                     "UPDATE task_status SET status = %s, details = %s, progress = 100, timestamp = NOW() WHERE task_id = %s AND status = %s",

@@ -95,7 +95,7 @@ def get_embedding_endpoint():
     item_id = request.args.get('id')
     if not item_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
-    
+
     try:
         db = get_db()
         with db.cursor(cursor_factory=DictCursor) as cur:

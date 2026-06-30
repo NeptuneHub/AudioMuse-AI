@@ -342,7 +342,7 @@ def _run_chat_pipeline(data, log_messages):
     if 'openai_api_key' in data_for_log and data_for_log['openai_api_key']:
         data_for_log['openai_api_key'] = 'API-KEY'
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
-    
+
     from tasks.ai.tools import get_mcp_tools
     from tasks.ai.planner import plan_and_execute_once
 
@@ -369,7 +369,7 @@ def _run_chat_pipeline(data, log_messages):
             "executed_query": None,
             "query_results": None
         }, 200)
-    
+
     # Build AI configuration object.
     # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
     # Any *_api_key field in the client payload is ignored to prevent token
@@ -636,16 +636,16 @@ def _run_chat_pipeline(data, log_messages):
         log_messages.append(f"\nOK SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
         log_messages.append(f"   Total songs collected: {len(all_songs)}")
         log_messages.append(f"   Tools called: {len(tools_used_history)}")
-        
+
         # Show tool contribution breakdown (collected vs final)
         log_messages.append("\nTool Contribution (Collected -> Final Playlist):")
-        
+
         # Count songs in final playlist by tool call
         final_by_call = {}
         for song in final_query_results_list:
             call_index = song_sources.get(song['item_id'], -1)
             final_by_call[call_index] = final_by_call.get(call_index, 0) + 1
-        
+
         for tool_info in tools_used_history:
             tool_name = tool_info['name']
             song_count = tool_info.get('songs', 0)
@@ -663,7 +663,7 @@ def _run_chat_pipeline(data, log_messages):
                 args_preview.append(f"moods={args['moods'][:2]}")
             if 'user_request' in args:
                 args_preview.append(f"request='{args['user_request'][:30]}...'")
-            
+
             args_str = ", ".join(args_preview) if args_preview else "no filters"
             call_index = tool_info.get('call_index', -1)
             final_count = final_by_call.get(call_index, 0)
@@ -675,7 +675,7 @@ def _run_chat_pipeline(data, log_messages):
         log_messages.append("\nNo songs collected")
         final_query_results_list = None
         final_executed_query_str = executed_query_str or "MCP single-pass: No results"
-    
+
     actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
 
     # Return final response object (caller wraps it for HTTP).

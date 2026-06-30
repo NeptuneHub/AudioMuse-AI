@@ -27,26 +27,26 @@ class TestGenerateSonicFingerprint:
             {'Id': 's2'},
             {'Id': 's3'}
         ]
-        
+
         # Mock track embeddings
         mock_get_tracks.return_value = [
             {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0, 0.0])},
             {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0, 0.0])},
             {'item_id': 's3', 'embedding_vector': np.array([0.0, 0.0, 1.0])}
         ]
-        
+
         # Mock last played times (all recent)
         mock_last_played.return_value = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        
+
         # Mock IVF results
         mock_ivf.return_value = [
             {'item_id': 's4', 'distance': 0.1},
             {'item_id': 's5', 'distance': 0.2}
         ]
-        
+
         # Generate fingerprint
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should return seed songs + IVF results
         assert len(result) == 5
         # Seed songs should come first with distance 0.0
@@ -57,9 +57,9 @@ class TestGenerateSonicFingerprint:
     def test_returns_empty_when_no_top_songs(self, mock_top_songs):
         """Test handling of empty top played songs"""
         mock_top_songs.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=10)
-        
+
         assert result == []
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
@@ -68,9 +68,9 @@ class TestGenerateSonicFingerprint:
         """Test handling when no tracks have embeddings"""
         mock_top_songs.return_value = [{'Id': 's1'}, {'Id': 's2'}]
         mock_get_tracks.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=10)
-        
+
         assert result == []
 
     @patch('tasks.sonic_fingerprint_manager.get_top_played_songs')
@@ -84,19 +84,19 @@ class TestGenerateSonicFingerprint:
             {'item_id': 's1', 'embedding_vector': np.array([1.0, 0.0])},
             {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])}
         ]
-        
+
         # s1 played 1 day ago, s2 played 60 days ago
         def last_played_side_effect(song_id, user_creds=None):
             if song_id == 's1':
                 return (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
             else:
                 return (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
-        
+
         mock_last_played.side_effect = last_played_side_effect
         mock_ivf.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=2)
-        
+
         # Should successfully generate (verifies weighting logic runs)
         assert len(result) == 2
 
@@ -110,9 +110,9 @@ class TestGenerateSonicFingerprint:
             {'item_id': f's{i}', 'embedding_vector': np.random.rand(128)} for i in range(10)
         ]
         mock_last_played.return_value = None
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should truncate to 5
         assert len(result) == 5
 
@@ -128,15 +128,15 @@ class TestGenerateSonicFingerprint:
             {'item_id': 's2', 'embedding_vector': np.array([0.0, 1.0])}
         ]
         mock_last_played.return_value = None
-        
+
         # IVF returns s1 again (duplicate) and s3 (new)
         mock_ivf.return_value = [
             {'item_id': 's1', 'distance': 0.05},  # Duplicate!
             {'item_id': 's3', 'distance': 0.1}
         ]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should have s1, s2 (seeds) and s3 (new from IVF), but not duplicate s1
         item_ids = [r['item_id'] for r in result]
         assert item_ids.count('s1') == 1  # Only once
@@ -155,9 +155,9 @@ class TestGenerateSonicFingerprint:
         ]
         mock_last_played.return_value = None
         mock_ivf.return_value = [{'item_id': 's2', 'distance': 0.5}]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=2)
-        
+
         # First result should be seed with distance 0.0
         assert result[0]['item_id'] == 's1'
         assert result[0]['distance'] == 0.0
@@ -178,9 +178,9 @@ class TestGenerateSonicFingerprint:
         # Invalid date format
         mock_last_played.return_value = "invalid-date"
         mock_ivf.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=1)
-        
+
         # Should still work, using fallback weight (0.5)
         assert len(result) == 1
 
@@ -197,9 +197,9 @@ class TestGenerateSonicFingerprint:
         ]
         mock_last_played.return_value = None
         mock_ivf.return_value = []
-        
+
         generate_sonic_fingerprint(num_neighbors=1, user_creds=user_creds)
-        
+
         # Verify user_creds were passed
         from unittest.mock import ANY
         mock_top_songs.assert_called_with(limit=ANY, user_creds=user_creds)
@@ -217,10 +217,10 @@ class TestGenerateSonicFingerprint:
         ]
         mock_last_played.return_value = None
         mock_ivf.return_value = []
-        
+
         # Call without num_neighbors (should use config default)
         result = generate_sonic_fingerprint()
-        
+
         # Should complete without error
         assert isinstance(result, list)
 
@@ -243,15 +243,15 @@ class TestWeightedAverageCalculation:
         recent_time = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         mock_last_played.return_value = recent_time
         mock_ivf.return_value = []
-        
+
         # Request more neighbors than seed songs to ensure IVF is called
         generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # IVF should be called with averaged vector
         assert mock_ivf.called
         call_args = mock_ivf.call_args
         query_vector = call_args[1]['query_vector']
-        
+
         # With equal weights, should be roughly [0.5, 0.5] (normalized)
         assert query_vector.shape == (2,)
         assert query_vector[0] > 0
@@ -270,9 +270,9 @@ class TestWeightedAverageCalculation:
         ]
         mock_last_played.return_value = None
         mock_ivf.return_value = []
-        
+
         result = generate_sonic_fingerprint(num_neighbors=1)
-        
+
         # Should only include s1
         assert len(result) == 1
         assert result[0]['item_id'] == 's1'
@@ -288,9 +288,9 @@ class TestWeightedAverageCalculation:
             {'item_id': 's1', 'embedding_vector': np.array([])}
         ]
         mock_last_played.return_value = None
-        
+
         result = generate_sonic_fingerprint(num_neighbors=1)
-        
+
         assert result == []
 
 
@@ -300,9 +300,9 @@ class TestTimestampParsing:
     def test_parse_iso_format_with_z(self):
         """Test parsing ISO format with Z suffix"""
         timestamp_str = "2024-01-15T10:30:00Z"
-        
+
         parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        
+
         assert parsed.year == 2024
         assert parsed.month == 1
         assert parsed.day == 15
@@ -310,26 +310,26 @@ class TestTimestampParsing:
     def test_parse_iso_format_with_microseconds(self):
         """Test parsing ISO format with microseconds"""
         timestamp_str = "2024-01-15T10:30:00.123456Z"
-        
+
         parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        
+
         assert parsed.microsecond == 123456
 
     def test_truncate_long_microseconds(self):
         """Test truncating microseconds longer than 6 digits"""
         # Simulate the truncation logic from the code
         timestamp_str = "2024-01-15T10:30:00.1234567890Z"
-        
+
         # Truncation logic
         if '.' in timestamp_str and timestamp_str.endswith('Z'):
             dot_index = timestamp_str.rfind('.')
             z_index = timestamp_str.rfind('Z')
             if z_index > dot_index and (z_index - dot_index - 1) > 6:
                 timestamp_str = timestamp_str[:dot_index+7] + 'Z'
-        
+
         # Should be truncated to 6 digits
         assert timestamp_str == "2024-01-15T10:30:00.123456Z"
-        
+
         parsed = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
         assert parsed.microsecond == 123456
 
@@ -337,18 +337,18 @@ class TestTimestampParsing:
         """Test calculating days since last played"""
         now = datetime.now(timezone.utc)
         last_played = now - timedelta(days=15)
-        
+
         days_since = (now - last_played).days
-        
+
         assert days_since == 15
 
     def test_days_calculation_fractional(self):
         """Test that fractional days are truncated to integers"""
         now = datetime.now(timezone.utc)
         last_played = now - timedelta(days=15, hours=18)
-        
+
         days_since = (now - last_played).days
-        
+
         # Should be 15, not 16 (truncated)
         assert days_since == 15
 
@@ -356,9 +356,9 @@ class TestTimestampParsing:
         """Test handling of future dates (negative days)"""
         now = datetime.now(timezone.utc)
         last_played = now + timedelta(days=5)
-        
+
         days_since = (now - last_played).days
-        
+
         # Should be negative (5 days in the future)
         assert days_since == -5
 
@@ -378,9 +378,9 @@ class TestIVFIntegration:
         ]
         mock_last_played.return_value = None
         mock_ivf.return_value = []
-        
+
         generate_sonic_fingerprint(num_neighbors=10)
-        
+
         # With 1 seed song and 10 desired, should ask for 9 neighbors
         mock_ivf.assert_called_once()
         call_kwargs = mock_ivf.call_args[1]
@@ -399,9 +399,9 @@ class TestIVFIntegration:
         ]
         mock_last_played.return_value = None
         mock_ivf.side_effect = Exception("IVF error")
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should return empty list on error
         assert result == []
 
@@ -422,9 +422,9 @@ class TestIVFIntegration:
             {'item_id': 's4', 'distance': 0.2},
             {'item_id': 's5', 'distance': 0.3}
         ]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should have 2 seeds + 3 from IVF = 5 total
         assert len(result) == 5
         # First two should be seeds
@@ -451,9 +451,9 @@ class TestEdgeCases:
             {'item_id': 's3', 'embedding_vector': np.array([0.5])}
         ]
         mock_last_played.return_value = None
-        
+
         result = generate_sonic_fingerprint(num_neighbors=2)
-        
+
         # Should use s1 and s3 only
         assert len(result) == 2
         item_ids = {r['item_id'] for r in result}
@@ -469,9 +469,9 @@ class TestEdgeCases:
             {'item_id': 's1', 'embedding_vector': np.array([])}  # Empty!
         ]
         mock_last_played.return_value = None
-        
+
         result = generate_sonic_fingerprint(num_neighbors=5)
-        
+
         # Should return empty
         assert result == []
 
@@ -486,9 +486,9 @@ class TestEdgeCases:
         ]
         # Timestamp with more than 6 decimal places
         mock_last_played.return_value = "2024-01-15T10:30:00.12345678901234Z"
-        
+
         result = generate_sonic_fingerprint(num_neighbors=1)
-        
+
         # Should handle truncation and parse successfully
         assert len(result) == 1
 
@@ -507,9 +507,9 @@ class TestEdgeCases:
         mock_ivf.return_value = [
             {'item_id': f'v{i}', 'distance': 0.1 * i} for i in range(20)
         ]
-        
+
         result = generate_sonic_fingerprint(num_neighbors=10)
-        
+
         # Should have exactly 10 results
         assert len(result) == 10
 

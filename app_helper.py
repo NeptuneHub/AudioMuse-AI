@@ -236,7 +236,7 @@ def build_and_store_map_projection(index_name='main_map'):
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
-        logger.error(f"Failed to build and store map projection: {e}")
+        logger.exception(f"Failed to build and store map projection: {e}")
         return False
 
 
@@ -251,13 +251,13 @@ def build_and_store_artist_projection(index_name='artist_map'):
     """
     from tasks.artist_gmm_manager import load_artist_index_for_querying
     from tasks.alchemy_projections import _project_with_umap, _project_to_2d
-    
+
     # Always reload artist GMM params from database (force reload to ensure fresh data)
     load_artist_index_for_querying(force_reload=True)
-    
+
     # Re-import after loading to get the updated global variable
     from tasks.artist_gmm_manager import artist_gmm_params as loaded_params
-    
+
     if not loaded_params:
         logger.warning("No artist GMM params available to build artist projection.")
         return False
@@ -302,7 +302,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
             row_i += 1
 
     projections = None
-    
+
     try:
         logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
         # Try UMAP first
@@ -311,7 +311,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     except Exception as e:
         logger.warning(f"UMAP projection failed for artist components: {e}")
         projections = None
-    
+
     # Fallback to PCA
     if projections is None:
         try:
@@ -320,14 +320,14 @@ def build_and_store_artist_projection(index_name='artist_map'):
         except Exception as e:
             logger.warning(f"PCA projection failed for artist components: {e}")
             projections = None
-    
+
     if projections is None:
         projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
     else:
         projections = np.array(projections, dtype=np.float32)
-    
+
     logger.info(f"Computed artist projection shape: {projections.shape}")
-    
+
     try:
         save_artist_projection(index_name, component_map, projections)
         # Update the canonical in-memory cache (read by database.load_artist_projection).
@@ -335,7 +335,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
-        logger.error(f"Failed to build and store artist projection: {e}")
+        logger.exception(f"Failed to build and store artist projection: {e}")
         return False
 
 
@@ -390,7 +390,7 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
             except NoSuchJobError:
                 logger.debug(f"Job {jid} not found in RQ during global cancel")
         except Exception as e_j:
-            logger.error(f"Error cancelling job {jid} during global cancel: {e_j}")
+            logger.exception(f"Error cancelling job {jid} during global cancel: {e_j}")
 
     # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
     try:
@@ -451,7 +451,7 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
     except Exception as e_dbdel:
         db.rollback()
-        logger.error(f"Error deleting task_status rows during global cancel: {e_dbdel}")
+        logger.exception(f"Error deleting task_status rows during global cancel: {e_dbdel}")
     finally:
         cur.close()
 
@@ -459,6 +459,6 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
         # Ensure a single REVOKED row exists for job_id
         save_task_status(job_id, 'unknown', TASK_STATUS_REVOKED, progress=100, details={"message": reason, "origin": "global_cancel"})
     except Exception as e_save:
-        logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
+        logger.exception(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
 
     return cancelled_count

@@ -38,7 +38,7 @@ def test_clap_analysis_runs_and_shows_output():
 
     Validates that cosine similarities match expected values (tolerance: 0.001).
     """
-    
+
     # Expected cosine similarities for each track and query
     # NOTE: These values are for the DCLAP distilled student model (model_epoch_36.onnx).
     # They will differ from the original teacher CLAP model values.
@@ -66,10 +66,10 @@ def test_clap_analysis_runs_and_shows_output():
     models_dir = project_root / 'test' / 'models'
     clap_audio_model = models_dir / 'model_epoch_36.onnx'
     clap_text_model = models_dir / 'clap_text_model.onnx'
-    
+
     if not clap_audio_model.exists():
         pytest.skip(f"DCLAP audio model not present in test/models: {clap_audio_model}")
-    
+
     if not clap_text_model.exists():
         pytest.skip(f"CLAP text model not present in test/models: {clap_text_model}")
 
@@ -125,37 +125,37 @@ def test_clap_analysis_runs_and_shows_output():
 
     for track_name in test_tracks:
         track_path = project_root / 'test' / 'songs' / track_name
-        
+
         if not track_path.exists():
             print(f'\n{track_name} not present in test/songs/; skipping.')
             continue
-        
+
         print(f'\n{"="*80}')
         print(f'=== Analyzing with CLAP: {track_name} ===')
         print(f'{"="*80}')
-        
+
         try:
             # Run CLAP analysis (returns tuple: embedding, duration, num_segments)
             embedding, duration, num_segments = analyze_audio_file(str(track_path))
-            
+
             # Validate embedding
             assert embedding is not None, f'{track_name}: CLAP returned None'
             assert isinstance(embedding, np.ndarray), f'{track_name}: embedding not numpy array'
             assert embedding.ndim == 1, f'{track_name}: expected 1-D embedding, got {embedding.ndim}-D'
-            
+
             emb_dim = embedding.shape[0]
             print(f'\nAudio duration: {duration:.2f} seconds')
             print(f'Number of segments: {num_segments}')
             print(f'Embedding dimension: {emb_dim}')
-            
+
             # Test text queries and compute cosine similarities
             print(f'\n{"="*80}')
             print('Text Query Similarities:')
             print(f'{"="*80}')
-            
+
             expected_sims = expected_similarities.get(track_name, {})
             all_passed = True
-            
+
             for query in test_queries:
                 # try once, then retry once on failure
                 text_embedding = None
@@ -177,10 +177,10 @@ def test_clap_analysis_runs_and_shows_output():
                     print(f'  {query:25s} - Failed to compute text embedding')
                     pytest.fail(f'{track_name}: Failed to compute text embedding for query "{query}"')
                     continue
-                
+
                 # Compute cosine similarity (dot product of normalized vectors)
                 cosine_sim = np.dot(embedding, text_embedding)
-                
+
                 # Check against expected value
                 expected_sim = expected_sims.get(query)
                 if expected_sim is not None:
@@ -188,21 +188,21 @@ def test_clap_analysis_runs_and_shows_output():
                     tolerance = 0.001
                     passed = diff <= tolerance
                     status = "OK" if passed else "X"
-                    
+
                     print(f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (expected: {expected_sim:.6f}) {status}')
-                    
+
                     if not passed:
                         all_passed = False
                         print(f'    ERROR: Difference {diff:.6f} exceeds tolerance {tolerance}')
                 else:
                     print(f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (no expected value)')
-            
+
             # Fail test if any similarities don't match
             if not all_passed:
                 pytest.fail(f'{track_name}: One or more cosine similarities differ from expected values')
-            
+
             print(f'\n{track_name}: OK CLAP analysis completed successfully')
-            
+
         except Exception as e:
             print(f'\n{track_name}: X CLAP analysis failed with error:')
             print(f'  {type(e).__name__}: {e}')

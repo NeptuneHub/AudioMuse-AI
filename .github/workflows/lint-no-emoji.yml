@@ -1,0 +1,35 @@
+name: No Emoji In Code
+
+# Decorative emoji/icons in Python source break the Windows console (cp1252) when
+# logged. This gate forbids them in .py (excluding query/). ASCII alternatives:
+# OK / X / ->. Emoji stay allowed in HTML/templates and frontend JS. Independent
+# of the test/build workflows - a red result here does not block them.
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  no-emoji:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install emoji library
+      run: |
+        python -m pip install --upgrade pip
+        pip install emoji==2.14.1
+
+    - name: Check for decorative emoji in Python source
+      run: python scripts/check_no_emoji.py
