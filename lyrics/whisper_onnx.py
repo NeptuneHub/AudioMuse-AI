@@ -740,7 +740,7 @@ def load_whisper_model() -> _OnnxWhisperPipeline:
 
 
 def transcribe(
-    wav: np.ndarray, sr: int, language: Optional[str] = None, num_threads: Optional[int] = None
+    wav: np.ndarray, sr: int, language: Optional[str] = None
 ) -> Dict[str, object]:
     if sr != SAMPLE_RATE:
         import librosa

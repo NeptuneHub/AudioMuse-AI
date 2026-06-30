@@ -824,7 +824,7 @@ def _apply_artist_cap(songs, author_resolver, warn_missing=False):
     return capped
 
 
-def _load_target_for_neighbor_search(target_item_id, db_conn, get_score_data_by_ids):
+def _load_target_for_neighbor_search(target_item_id, get_score_data_by_ids):
     target_song_details_list = get_score_data_by_ids([target_item_id])
     if not target_song_details_list:
         logger.error(
@@ -872,6 +872,28 @@ def _compute_num_to_query(n, radius_similarity, eliminate_duplicates, mood_simil
     return num_to_query
 
 
+def _build_initial_neighbor_results(neighbor_vec_ids, distances, target_item_id):
+    initial_results = []
+    for vec_id, dist in zip(neighbor_vec_ids, distances):
+        item_id = id_map.get(vec_id)
+        if item_id and item_id != target_item_id:
+            initial_results.append({"item_id": item_id, "distance": float(dist)})
+    return initial_results
+
+
+def _rerank_neighbors_by_f32(initial_results, anchor_f32, target_item_id, db_conn):
+    f32_map = _fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results])
+    if not f32_map:
+        return
+    f32_map[target_item_id] = anchor_f32
+    _prime_request_f32(f32_map)
+    for r in initial_results:
+        v = f32_map.get(r["item_id"])
+        if v is not None:
+            r["distance"] = get_direct_distance(anchor_f32, v)
+    initial_results.sort(key=lambda r: r["distance"])
+
+
 def _query_and_rerank_neighbors(query_vector, anchor_f32, num_to_query, n, target_item_id, db_conn):
     original_num_to_query = num_to_query
     if num_to_query > len(ivf_index):
@@ -897,22 +919,10 @@ def _query_and_rerank_neighbors(query_vector, anchor_f32, num_to_query, n, targe
         )
         return None
 
-    initial_results = []
-    for vec_id, dist in zip(neighbor_vec_ids, distances):
-        item_id = id_map.get(vec_id)
-        if item_id and item_id != target_item_id:
-            initial_results.append({"item_id": item_id, "distance": float(dist)})
+    initial_results = _build_initial_neighbor_results(neighbor_vec_ids, distances, target_item_id)
 
     if initial_results and anchor_f32 is not None:
-        f32_map = _fetch_f32_embeddings(db_conn, [r["item_id"] for r in initial_results])
-        if f32_map:
-            f32_map[target_item_id] = anchor_f32
-            _prime_request_f32(f32_map)
-            for r in initial_results:
-                v = f32_map.get(r["item_id"])
-                if v is not None:
-                    r["distance"] = get_direct_distance(anchor_f32, v)
-            initial_results.sort(key=lambda r: r["distance"])
+        _rerank_neighbors_by_f32(initial_results, anchor_f32, target_item_id, db_conn)
 
     return initial_results[:num_to_query]
 
@@ -1022,7 +1032,7 @@ def _find_nearest_neighbors_by_id_impl(
 
     db_conn = get_db()
 
-    loaded = _load_target_for_neighbor_search(target_item_id, db_conn, get_score_data_by_ids)
+    loaded = _load_target_for_neighbor_search(target_item_id, get_score_data_by_ids)
     if loaded is None:
         return []
     target_song_details, target_vec_id = loaded

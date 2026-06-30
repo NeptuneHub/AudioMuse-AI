@@ -330,7 +330,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             DEFINED_TENSOR_NAMES['embedding']['output'],
             model_paths['embedding'],
             'embedding',
-            should_cleanup_sessions,
             os.path.basename(file_path),
         )
         if embedding_sess is not original_embedding_sess:
@@ -345,7 +344,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             DEFINED_TENSOR_NAMES['prediction']['output'],
             model_paths['prediction'],
             'prediction',
-            should_cleanup_sessions,
             os.path.basename(file_path),
         )
         if prediction_sess is not original_prediction_sess:

@@ -990,7 +990,7 @@ def song_alchemy(
     ordered = []
     if ids:
         try:
-            if temperature is not None and float(temperature) == 0.0:
+            if temperature is not None and math.isclose(float(temperature), 0.0):
                 ids_sorted = sorted(ids, key=lambda x: distances.get(x, float('inf')))
                 for cid in ids_sorted[:n_results]:
                     item = details_map.get(cid, {})

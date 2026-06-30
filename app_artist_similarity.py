@@ -115,11 +115,6 @@ def get_similar_artists_endpoint():
         schema:
           type: integer
           default: 10
-      - name: ef_search
-        in: query
-        description: HNSW search parameter (higher = more accurate but slower).
-        schema:
-          type: integer
       - name: include_component_matches
         in: query
         description: Include component-level similarity explanation.
@@ -156,7 +151,6 @@ def get_similar_artists_endpoint():
     artist = request.args.get('artist')
     artist_id = request.args.get('artist_id')
     n = request.args.get('n', 10, type=int)
-    ef_search = request.args.get('ef_search', type=int)
     include_component_matches = (
         request.args.get('include_component_matches', 'false').lower() == 'true'
     )
@@ -171,7 +165,6 @@ def get_similar_artists_endpoint():
         similar_artists = find_similar_artists(
             query_artist,
             n=n,
-            ef_search=ef_search,
             include_component_matches=include_component_matches,
         )
 

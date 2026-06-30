@@ -176,7 +176,7 @@ def cleanup_optional_models(context=""):
 
 
 def run_inference_with_oom_fallback(
-    session, feed_dict, output_tensor_name, model_path, label, owns_session, file_basename
+    session, feed_dict, output_tensor_name, model_path, label, file_basename
 ):
     try:
         return run_inference(session, feed_dict, output_tensor_name), session

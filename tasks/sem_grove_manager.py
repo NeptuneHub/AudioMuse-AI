@@ -407,6 +407,60 @@ def _is_near_duplicate(index, vid, lookback_vecs, lookback_n, dist_threshold, ti
     return False
 
 
+def _build_seed_result(seed_item_id, metadata_map):
+    seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
+    return {
+        "item_id": seed_item_id,
+        "title": seed_meta.get("title", "") or "",
+        "author": seed_meta.get("author", "") or "",
+        "album": seed_meta.get("album", "") or "",
+        "similarity": 1.0,
+        "is_seed": True,
+    }
+
+
+def _passes_artist_cap(author, artist_cap, artist_counts):
+    if not (artist_cap and author):
+        return True
+    an = author.strip().lower()
+    if artist_counts.get(an, 0) >= artist_cap:
+        return False
+    artist_counts[an] = artist_counts.get(an, 0) + 1
+    return True
+
+
+def _accept_candidate(
+    index,
+    vid,
+    title,
+    author,
+    seen_names,
+    artist_cap,
+    artist_counts,
+    lookback_vecs,
+    lookback_n,
+    dist_threshold,
+):
+    name_key = (title.strip().lower(), author.strip().lower())
+    if name_key in seen_names:
+        return False
+    seen_names.add(name_key)
+
+    if not _passes_artist_cap(author, artist_cap, artist_counts):
+        return False
+
+    if (
+        lookback_n
+        and dist_threshold > 0
+        and _is_near_duplicate(
+            index, vid, lookback_vecs, lookback_n, dist_threshold, title, author
+        )
+    ):
+        return False
+
+    return True
+
+
 def _collect_search_results(
     index,
     id_map,
@@ -419,17 +473,7 @@ def _collect_search_results(
     dist_threshold,
     lookback_n,
 ):
-    seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
-    results: List[Dict] = [
-        {
-            "item_id": seed_item_id,
-            "title": seed_meta.get("title", "") or "",
-            "author": seed_meta.get("author", "") or "",
-            "album": seed_meta.get("album", "") or "",
-            "similarity": 1.0,
-            "is_seed": True,
-        }
-    ]
+    results: List[Dict] = [_build_seed_result(seed_item_id, metadata_map)]
     artist_counts: Dict[str, int] = {}
     seen_names: set = set()
     lookback_vecs: list = []
@@ -444,23 +488,17 @@ def _collect_search_results(
         author = meta.get("author", "") or ""
         title = meta.get("title", "") or ""
 
-        name_key = (title.strip().lower(), author.strip().lower())
-        if name_key in seen_names:
-            continue
-        seen_names.add(name_key)
-
-        if artist_cap and author:
-            an = author.strip().lower()
-            if artist_counts.get(an, 0) >= artist_cap:
-                continue
-            artist_counts[an] = artist_counts.get(an, 0) + 1
-
-        if (
-            lookback_n
-            and dist_threshold > 0
-            and _is_near_duplicate(
-                index, vid, lookback_vecs, lookback_n, dist_threshold, title, author
-            )
+        if not _accept_candidate(
+            index,
+            vid,
+            title,
+            author,
+            seen_names,
+            artist_cap,
+            artist_counts,
+            lookback_vecs,
+            lookback_n,
+            dist_threshold,
         ):
             continue
 

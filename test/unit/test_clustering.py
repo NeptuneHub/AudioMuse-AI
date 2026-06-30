@@ -73,7 +73,7 @@ class TestDataPreparationAndScaling:
         x_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
         x_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
 
-        scaled_data, scaler = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=True)
+        scaled_data, _ = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=True)
 
         assert scaled_data is not None
         assert scaled_data.shape == x_embed.shape

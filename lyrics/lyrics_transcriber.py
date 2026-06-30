@@ -451,18 +451,61 @@ def _fetch_from_configured_api(
     return _resolve_nested_field(data, lyrics_field)
 
 
+def _resolve_total_budget(total_budget: Optional[float]) -> float:
+    if total_budget is not None:
+        return total_budget
+    try:
+        import config as _cfg
+
+        return float(getattr(_cfg, 'LYRICS_API_1_TIMEOUT', 5.0) or 5.0) + float(
+            getattr(_cfg, 'LYRICS_API_2_TIMEOUT', 5.0) or 5.0
+        )
+    except Exception:
+        return 10.0
+
+
+def _resolve_slot_timeout(slot: int, remaining: float) -> float:
+    try:
+        import config as _cfg
+
+        configured_timeout = float(getattr(_cfg, f'LYRICS_API_{slot}_TIMEOUT', 5.0) or 5.0)
+    except Exception:
+        configured_timeout = 5.0
+    return min(configured_timeout, remaining)
+
+
+def _try_lyrics_slot(slot: int, artist: str, track: str, remaining: float) -> Optional[str]:
+    per_slot_timeout = _resolve_slot_timeout(slot, remaining)
+    try:
+        text = _fetch_from_configured_api(slot, artist, track, per_slot_timeout)
+    except Exception as exc:
+        logger.warning('Lyrics API slot %s failed for %r/%r: %s', slot, artist, track, exc)
+        return None
+    if not text:
+        return None
+    sanitized = _sanitize_api_lyrics(text)
+    if not sanitized:
+        logger.warning(
+            'Lyrics API slot %s returned content but sanitizer dropped it for %r/%r',
+            slot,
+            artist,
+            track,
+        )
+        return None
+    logger.info(
+        'Lyrics API slot %s returned %s chars for %r/%r',
+        slot,
+        len(sanitized),
+        artist,
+        track,
+    )
+    return sanitized
+
+
 def fetch_remote_lyrics(
     artist: Optional[str], track: Optional[str], total_budget: Optional[float] = None
 ) -> Optional[str]:
-    if total_budget is None:
-        try:
-            import config as _cfg
-
-            total_budget = float(getattr(_cfg, 'LYRICS_API_1_TIMEOUT', 5.0) or 5.0) + float(
-                getattr(_cfg, 'LYRICS_API_2_TIMEOUT', 5.0) or 5.0
-            )
-        except Exception:
-            total_budget = 10.0
+    total_budget = _resolve_total_budget(total_budget)
     import time
 
     artist = (artist or '').strip()
@@ -475,35 +518,8 @@ def fetch_remote_lyrics(
         if remaining <= 0.5:
             logger.info('Lyrics API budget exhausted before slot %s', slot)
             break
-        try:
-            import config as _cfg
-
-            configured_timeout = float(getattr(_cfg, f'LYRICS_API_{slot}_TIMEOUT', 5.0) or 5.0)
-        except Exception:
-            configured_timeout = 5.0
-        per_slot_timeout = min(configured_timeout, remaining)
-        try:
-            text = _fetch_from_configured_api(slot, artist, track, per_slot_timeout)
-        except Exception as exc:
-            logger.warning('Lyrics API slot %s failed for %r/%r: %s', slot, artist, track, exc)
-            continue
-        if text:
-            sanitized = _sanitize_api_lyrics(text)
-            if not sanitized:
-                logger.warning(
-                    'Lyrics API slot %s returned content but sanitizer dropped it for %r/%r',
-                    slot,
-                    artist,
-                    track,
-                )
-                continue
-            logger.info(
-                'Lyrics API slot %s returned %s chars for %r/%r',
-                slot,
-                len(sanitized),
-                artist,
-                track,
-            )
+        sanitized = _try_lyrics_slot(slot, artist, track, remaining)
+        if sanitized:
             return sanitized
     return None
 
@@ -657,13 +673,13 @@ def _apply_vad(audio: np.ndarray, sr: int, vocal_prior: bool = False) -> np.ndar
 
 
 def _transcribe(
-    audio: np.ndarray, sr: int, language: Optional[str] = None, num_threads: Optional[int] = None
+    audio: np.ndarray, sr: int, language: Optional[str] = None
 ) -> Dict[str, object]:
     if audio is None or len(audio) == 0:
         return {'text': '', 'language': language or '', 'duration': 0.0}
     from .whisper_onnx import transcribe as _whisper_transcribe
 
-    return _whisper_transcribe(audio, sr, language=language, num_threads=num_threads)
+    return _whisper_transcribe(audio, sr, language=language)
 
 
 def _embed_text(text: str, tokenizer, model) -> Optional[np.ndarray]:
@@ -919,7 +935,7 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
         _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(_ASR_TIMEOUT_S)
     try:
-        return _transcribe(audio_clip, sr, num_threads=threads)
+        return _transcribe(audio_clip, sr)
     except _AsrTimeout:
         logger.warning(
             'STEP 5 timeout: Whisper-small ASR exceeded %ss - returning empty transcript',

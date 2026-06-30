@@ -341,7 +341,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
 
 
 def cancel_job_and_children_recursive(
-    job_id, task_type_from_db=None, reason="Task cancellation processed by API."
+    job_id, reason="Task cancellation processed by API."
 ):
     """Helper to cancel a job and its children based on DB records.
 

@@ -555,7 +555,6 @@ def _build_similar_artist_result(
 def find_similar_artists(
     query_artist,
     n: int = 10,
-    ef_search: Optional[int] = None,
     include_component_matches: bool = False,
 ) -> List[Dict]:
     if artist_index is None or artist_map is None or artist_gmm_params is None:
