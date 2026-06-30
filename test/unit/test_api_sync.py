@@ -31,6 +31,7 @@ def bp_mod():
 @pytest.fixture
 def app(bp_mod):
     from flask import Flask
+
     app = Flask(__name__)
     app.register_blueprint(bp_mod.sync_bp)
     app.config['TESTING'] = True
@@ -45,15 +46,14 @@ def client(app):
 @pytest.fixture(autouse=True)
 def mediaserver_type_jellyfin():
     import config
+
     saved = getattr(config, 'MEDIASERVER_TYPE', 'jellyfin')
     config.MEDIASERVER_TYPE = 'jellyfin'
     yield
     config.MEDIASERVER_TYPE = saved
 
 
-
 class FakeCursor:
-
     def __init__(self):
         self.queries = []
         self.query_params = []
@@ -101,6 +101,7 @@ def make_dict_row(mapping):
                 return self[name]
             except KeyError:
                 raise AttributeError(name)
+
     return FakeRow(mapping)
 
 
@@ -149,7 +150,6 @@ def _setup_ids(cur, tracks=None):
     cur._fetchall_queue.append(tracks if tracks is not None else [])
 
 
-
 class TestEnvelope:
     def test_envelope_keys_present(self, bp_mod, client, fake_db):
         _, cur = fake_db
@@ -165,6 +165,7 @@ class TestEnvelope:
 
     def test_provider_type_from_config(self, bp_mod, client, fake_db):
         import config
+
         config.MEDIASERVER_TYPE = 'navidrome'
         _, cur = fake_db
         _setup_payload(cur, tracks=[], total=0)
@@ -176,20 +177,21 @@ class TestEnvelope:
         assert client.get('/api/sync?limit=1').get_json()['total_tracks'] == 15000
 
 
-
 class TestPaginationMath:
     def test_has_more_when_more_pages_exist(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_payload(cur, total=750,
-                       tracks=[_minimal_track_row(item_id=f't{i}') for i in range(500)])
+        _setup_payload(
+            cur, total=750, tracks=[_minimal_track_row(item_id=f't{i}') for i in range(500)]
+        )
         body = client.get('/api/sync?page=1&limit=500').get_json()
         assert body['has_more'] is True
         assert body['next_page'] == 2
 
     def test_no_has_more_on_last_page(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_payload(cur, total=750,
-                       tracks=[_minimal_track_row(item_id=f't{i}') for i in range(250)])
+        _setup_payload(
+            cur, total=750, tracks=[_minimal_track_row(item_id=f't{i}') for i in range(250)]
+        )
         body = client.get('/api/sync?page=2&limit=500').get_json()
         assert body['has_more'] is False
         assert body['next_page'] is None
@@ -201,7 +203,6 @@ class TestPaginationMath:
         page_params = cur.query_params[1]
         assert page_params[-2] == 100
         assert page_params[-1] == 200
-
 
 
 class TestClamping:
@@ -230,7 +231,6 @@ class TestClamping:
         assert cur.query_params[1][-1] == 0
 
 
-
 class TestTrackShape:
     def test_artist_renamed_from_author(self, bp_mod, client, fake_db):
         _, cur = fake_db
@@ -255,7 +255,6 @@ class TestTrackShape:
         assert 'updated_at' not in client.get('/api/sync?limit=1').get_json()['tracks'][0]
 
 
-
 class TestFingerprint:
     def test_fp_present_on_payload_rows(self, bp_mod, client, fake_db):
         _, cur = fake_db
@@ -272,13 +271,16 @@ class TestFingerprint:
 
     def test_distinct_fp_passes_through(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_payload(cur, total=2, tracks=[
-            _minimal_track_row(item_id='a', fp='1111111111111111'),
-            _minimal_track_row(item_id='b', fp='2222222222222222'),
-        ])
+        _setup_payload(
+            cur,
+            total=2,
+            tracks=[
+                _minimal_track_row(item_id='a', fp='1111111111111111'),
+                _minimal_track_row(item_id='b', fp='2222222222222222'),
+            ],
+        )
         tracks = client.get('/api/sync?limit=10').get_json()['tracks']
         assert tracks[0]['fp'] != tracks[1]['fp']
-
 
 
 class TestManifest:
@@ -304,12 +306,10 @@ class TestManifest:
         assert body['next_page'] == 2
 
 
-
 class TestIdsFilter:
     def test_filters_to_set(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_ids(cur, tracks=[_minimal_track_row(item_id='a'),
-                                _minimal_track_row(item_id='b')])
+        _setup_ids(cur, tracks=[_minimal_track_row(item_id='a'), _minimal_track_row(item_id='b')])
         body = client.get('/api/sync?ids=a,b').get_json()
         assert [t['id'] for t in body['tracks']] == ['a', 'b']
         assert body['has_more'] is False
@@ -325,20 +325,28 @@ class TestIdsFilter:
         assert cur.queries == []
 
 
-
 class TestIncludeEmbeddings:
     def test_default_includes_both(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         _, cur = fake_db
-        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
-            musicnn_blob=np.arange(200, dtype=np.float32).tobytes(),
-            clap_blob=np.arange(512, dtype=np.float32).tobytes())])
+        _setup_payload(
+            cur,
+            total=1,
+            tracks=[
+                _minimal_track_row(
+                    musicnn_blob=np.arange(200, dtype=np.float32).tobytes(),
+                    clap_blob=np.arange(512, dtype=np.float32).tobytes(),
+                )
+            ],
+        )
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
         assert 'embedding' in track and 'clap_embedding' in track
 
     def test_explicit_false_omits_keys(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         _, cur = fake_db
         _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
@@ -347,6 +355,7 @@ class TestIncludeEmbeddings:
 
     def test_case_insensitive_false(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         _, cur = fake_db
         _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
@@ -355,24 +364,37 @@ class TestIncludeEmbeddings:
 
     def test_non_false_value_includes_embeddings(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         _, cur = fake_db
-        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
-            musicnn_blob=np.arange(200, dtype=np.float32).tobytes(), clap_blob=None)])
+        _setup_payload(
+            cur,
+            total=1,
+            tracks=[
+                _minimal_track_row(
+                    musicnn_blob=np.arange(200, dtype=np.float32).tobytes(), clap_blob=None
+                )
+            ],
+        )
         track = client.get('/api/sync?limit=1&include_embeddings=0').get_json()['tracks'][0]
         assert 'embedding' in track
 
     def test_clap_disabled_omits_clap_key(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = False
         _, cur = fake_db
-        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
-            musicnn_blob=np.arange(200, dtype=np.float32).tobytes())])
+        _setup_payload(
+            cur,
+            total=1,
+            tracks=[_minimal_track_row(musicnn_blob=np.arange(200, dtype=np.float32).tobytes())],
+        )
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
         assert 'embedding' in track and 'clap_embedding' not in track
 
     def test_empty_blob_yields_null(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         _, cur = fake_db
         _setup_payload(cur, total=1, tracks=[_minimal_track_row(musicnn_blob=None, clap_blob=None)])
@@ -381,29 +403,41 @@ class TestIncludeEmbeddings:
 
     def test_base64_roundtrip(self, bp_mod, client, fake_db):
         import config
+
         config.CLAP_ENABLED = True
         original = np.arange(200, dtype=np.float32)
         clap_orig = np.linspace(-1, 1, 512, dtype=np.float32)
         _, cur = fake_db
-        _setup_payload(cur, total=1, tracks=[_minimal_track_row(
-            musicnn_blob=original.tobytes(), clap_blob=clap_orig.tobytes())])
+        _setup_payload(
+            cur,
+            total=1,
+            tracks=[
+                _minimal_track_row(musicnn_blob=original.tobytes(), clap_blob=clap_orig.tobytes())
+            ],
+        )
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
         np.testing.assert_array_equal(
-            np.frombuffer(base64.b64decode(track['embedding']), dtype=np.float32), original)
+            np.frombuffer(base64.b64decode(track['embedding']), dtype=np.float32), original
+        )
         np.testing.assert_allclose(
-            np.frombuffer(base64.b64decode(track['clap_embedding']), dtype=np.float32), clap_orig)
-
+            np.frombuffer(base64.b64decode(track['clap_embedding']), dtype=np.float32), clap_orig
+        )
 
 
 class TestUmap:
     def test_lookup_populates_coords(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        bp_mod.load_map_projection = MagicMock(return_value=(
-            ['track-A', 'track-B'],
-            np.array([[1.5, -2.5], [3.0, 4.0]], dtype=np.float32)))
-        _setup_payload(cur, total=2, tracks=[
-            _minimal_track_row(item_id='track-A'),
-            _minimal_track_row(item_id='track-B')])
+        bp_mod.load_map_projection = MagicMock(
+            return_value=(
+                ['track-A', 'track-B'],
+                np.array([[1.5, -2.5], [3.0, 4.0]], dtype=np.float32),
+            )
+        )
+        _setup_payload(
+            cur,
+            total=2,
+            tracks=[_minimal_track_row(item_id='track-A'), _minimal_track_row(item_id='track-B')],
+        )
         tracks = client.get('/api/sync?limit=10').get_json()['tracks']
         assert tracks[0]['umap_x'] == pytest.approx(1.5)
         assert tracks[0]['umap_y'] == pytest.approx(-2.5)
@@ -411,8 +445,9 @@ class TestUmap:
 
     def test_missing_track_yields_null(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        bp_mod.load_map_projection = MagicMock(return_value=(
-            ['track-A'], np.array([[1.5, -2.5]], dtype=np.float32)))
+        bp_mod.load_map_projection = MagicMock(
+            return_value=(['track-A'], np.array([[1.5, -2.5]], dtype=np.float32))
+        )
         _setup_payload(cur, total=1, tracks=[_minimal_track_row(item_id='track-NOT-IN-MAP')])
         track = client.get('/api/sync?limit=10').get_json()['tracks'][0]
         assert track['umap_x'] is None and track['umap_y'] is None
@@ -423,7 +458,6 @@ class TestUmap:
         _setup_payload(cur, total=1, tracks=[_minimal_track_row()])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
         assert track['umap_x'] is None and track['umap_y'] is None
-
 
 
 class TestErrorHandling:

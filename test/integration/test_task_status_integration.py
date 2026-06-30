@@ -93,10 +93,14 @@ class TestTaskStatusDetailsRoundTrip:
     def test_text_details_round_trip_is_json_string(self, text_details_db, monkeypatch):
         import database
         import app_helper
+
         monkeypatch.setattr(database, 'get_db', lambda: text_details_db)
 
         database.save_task_status(
-            'task-text', 'main_analysis', status='PROGRESS', progress=42,
+            'task-text',
+            'main_analysis',
+            status='PROGRESS',
+            progress=42,
             details=copy.deepcopy(_SAMPLE_DETAILS),
         )
         row = database.get_task_info_from_db('task-text')
@@ -113,10 +117,14 @@ class TestTaskStatusDetailsRoundTrip:
     def test_jsonb_details_round_trip_returns_dict_no_reparse(self, jsonb_details_db, monkeypatch):
         import database
         import app_helper
+
         monkeypatch.setattr(database, 'get_db', lambda: jsonb_details_db)
 
         database.save_task_status(
-            'task-jsonb', 'main_clustering', status='SUCCESS', progress=100,
+            'task-jsonb',
+            'main_clustering',
+            status='SUCCESS',
+            progress=100,
             details=copy.deepcopy(_SAMPLE_DETAILS),
         )
         row = database.get_task_info_from_db('task-jsonb')
@@ -128,21 +136,27 @@ class TestTaskStatusDetailsRoundTrip:
         assert surfaced == _SAMPLE_DETAILS
         assert row['running_time_seconds'] >= 0
 
-    def test_both_paths_surface_identical_content(self, text_details_db, jsonb_details_db, monkeypatch):
+    def test_both_paths_surface_identical_content(
+        self, text_details_db, jsonb_details_db, monkeypatch
+    ):
         import database
         import app_helper
 
         monkeypatch.setattr(database, 'get_db', lambda: text_details_db)
-        database.save_task_status('t-text', 'main_analysis', status='PROGRESS',
-                                  details=copy.deepcopy(_SAMPLE_DETAILS))
+        database.save_task_status(
+            't-text', 'main_analysis', status='PROGRESS', details=copy.deepcopy(_SAMPLE_DETAILS)
+        )
         text_surfaced = app_helper.coerce_db_details(
-            database.get_task_info_from_db('t-text')['details'])
+            database.get_task_info_from_db('t-text')['details']
+        )
 
         monkeypatch.setattr(database, 'get_db', lambda: jsonb_details_db)
-        database.save_task_status('t-jsonb', 'main_clustering', status='SUCCESS',
-                                  details=copy.deepcopy(_SAMPLE_DETAILS))
+        database.save_task_status(
+            't-jsonb', 'main_clustering', status='SUCCESS', details=copy.deepcopy(_SAMPLE_DETAILS)
+        )
         jsonb_surfaced = app_helper.coerce_db_details(
-            database.get_task_info_from_db('t-jsonb')['details'])
+            database.get_task_info_from_db('t-jsonb')['details']
+        )
 
         assert text_surfaced == jsonb_surfaced == _SAMPLE_DETAILS
         assert isinstance(text_surfaced['log'], list)
@@ -151,6 +165,7 @@ class TestTaskStatusDetailsRoundTrip:
     def test_null_details_surfaces_empty_dict(self, text_details_db, monkeypatch):
         import database
         import app_helper
+
         monkeypatch.setattr(database, 'get_db', lambda: text_details_db)
 
         database.save_task_status('task-null', 'main_analysis', status='PENDING', details=None)

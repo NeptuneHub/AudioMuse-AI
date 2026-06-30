@@ -29,7 +29,7 @@ def alchemy_page():
       200:
         description: HTML page rendered.
     """
-    return render_template('alchemy.html', title = 'AudioMuse-AI - Song Alchemy', active='alchemy')
+    return render_template('alchemy.html', title='AudioMuse-AI - Song Alchemy', active='alchemy')
 
 
 @alchemy_bp.route('/api/search_artists', methods=['GET'])
@@ -91,9 +91,13 @@ def _cached_all_playlists():
         return _PLAYLIST_CACHE['data']
     with _PLAYLIST_CACHE_LOCK:
         now = time.monotonic()
-        if _PLAYLIST_CACHE['data'] is not None and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL:
+        if (
+            _PLAYLIST_CACHE['data'] is not None
+            and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL
+        ):
             return _PLAYLIST_CACHE['data']
         from tasks.mediaserver import get_all_playlists
+
         data = get_all_playlists() or []
         _PLAYLIST_CACHE['data'] = data
         _PLAYLIST_CACHE['ts'] = now
@@ -200,13 +204,27 @@ def alchemy_api():
     temperature = payload.get('temperature', config.ALCHEMY_TEMPERATURE)
 
     # Separate items by operation
-    add_items = [{'type': i.get('type', 'song'), 'id': i['id']} for i in items if i.get('op', '').upper() == 'ADD' and i.get('id')]
-    subtract_items = [{'type': i.get('type', 'song'), 'id': i['id']} for i in items if i.get('op', '').upper() == 'SUBTRACT' and i.get('id')]
+    add_items = [
+        {'type': i.get('type', 'song'), 'id': i['id']}
+        for i in items
+        if i.get('op', '').upper() == 'ADD' and i.get('id')
+    ]
+    subtract_items = [
+        {'type': i.get('type', 'song'), 'id': i['id']}
+        for i in items
+        if i.get('op', '').upper() == 'SUBTRACT' and i.get('id')
+    ]
 
     # Allow optional override for subtract distance (from frontend slider)
     subtract_distance = payload.get('subtract_distance')
     try:
-        results = song_alchemy(add_items=add_items, subtract_items=subtract_items, n_results=n, subtract_distance=subtract_distance, temperature=temperature)
+        results = song_alchemy(
+            add_items=add_items,
+            subtract_items=subtract_items,
+            n_results=n,
+            subtract_distance=subtract_distance,
+            temperature=temperature,
+        )
         attach_song_features(results.get('results'))
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
@@ -248,6 +266,7 @@ def list_anchors():
         description: Database error.
     """
     from database import get_alchemy_anchors
+
     try:
         anchors = get_alchemy_anchors()
         # no centroid returned here (name-only list)
@@ -290,6 +309,7 @@ def create_anchor():
         description: Database failure.
     """
     from database import save_alchemy_anchor
+
     payload = request.get_json() or {}
     raw_name = payload.get('name')
     name = raw_name.strip() if isinstance(raw_name, str) else ''
@@ -324,6 +344,7 @@ def remove_anchor(anchor_id):
         description: Anchor not found.
     """
     from database import delete_alchemy_anchor
+
     ok = delete_alchemy_anchor(anchor_id)
     if not ok:
         return jsonify({'error': 'Anchor not found'}), 404
@@ -362,6 +383,7 @@ def rename_anchor(anchor_id):
         description: Anchor not found.
     """
     from database import update_alchemy_anchor_name
+
     payload = request.get_json() or {}
     raw_name = payload.get('name')
     name = raw_name.strip() if isinstance(raw_name, str) else ''
@@ -393,7 +415,11 @@ def _parse_radio_settings(payload):
     if temperature < 0:
         return None, None, 'Radio temperature must be 0 or greater'
     if n_results < 1 or n_results > config.ALCHEMY_MAX_N_RESULTS:
-        return None, None, f'Radio number of results must be between 1 and {config.ALCHEMY_MAX_N_RESULTS}'
+        return (
+            None,
+            None,
+            f'Radio number of results must be between 1 and {config.ALCHEMY_MAX_N_RESULTS}',
+        )
     return temperature, n_results, None
 
 
@@ -436,12 +462,24 @@ def list_radios():
         description: Database error.
     """
     from database import get_alchemy_radios
+
     try:
         radios = get_alchemy_radios()
-        return jsonify({'radios': [{
-            'id': r['id'], 'anchor_id': r['anchor_id'], 'name': r['name'],
-            'temperature': r['temperature'], 'n_results': r['n_results'], 'enabled': bool(r['enabled'])
-        } for r in radios]})
+        return jsonify(
+            {
+                'radios': [
+                    {
+                        'id': r['id'],
+                        'anchor_id': r['anchor_id'],
+                        'name': r['name'],
+                        'temperature': r['temperature'],
+                        'n_results': r['n_results'],
+                        'enabled': bool(r['enabled']),
+                    }
+                    for r in radios
+                ]
+            }
+        )
     except Exception:
         logger.exception('Failed to list radios')
         return jsonify({'radios': [], 'error': 'Unable to retrieve radios at this time.'}), 500
@@ -483,6 +521,7 @@ def create_radio():
         description: Database failure.
     """
     from database import create_alchemy_radio
+
     payload = request.get_json() or {}
     anchor_id = payload.get('anchor_id')
     try:
@@ -495,7 +534,9 @@ def create_radio():
     enabled = bool(payload.get('enabled', True))
     radio = create_alchemy_radio(anchor_id, temperature, n_results, enabled)
     if not radio:
-        return jsonify({'error': 'Failed to save radio. Check that the anchor exists and has no radio yet.'}), 400
+        return jsonify(
+            {'error': 'Failed to save radio. Check that the anchor exists and has no radio yet.'}
+        ), 400
     return jsonify({'radio': radio})
 
 
@@ -536,6 +577,7 @@ def update_radio(radio_id):
         description: Radio not found.
     """
     from database import update_alchemy_radio
+
     payload = request.get_json() or {}
     temperature, n_results, error = _parse_radio_settings(payload)
     if error:
@@ -567,6 +609,7 @@ def remove_radio(radio_id):
         description: Radio not found.
     """
     from database import delete_alchemy_radio
+
     ok = delete_alchemy_radio(radio_id)
     if not ok:
         return jsonify({'error': 'Radio not found'}), 404
@@ -603,6 +646,7 @@ def run_radio_playlists_endpoint():
         description: Run failed.
     """
     from tasks.radio_manager import run_radio_playlists
+
     try:
         summary = run_radio_playlists()
         return jsonify(summary)
@@ -668,21 +712,26 @@ def artist_projections_api():
         components = []
         for idx, comp_info in enumerate(component_map):
             if idx < len(projection):
-                components.append({
-                    'artist_id': comp_info['artist_id'],
-                    'artist_name': comp_info.get('artist_name', comp_info['artist_id']),
-                    'component_idx': comp_info['component_idx'],
-                    'weight': comp_info['weight'],
-                    'projection': [float(projection[idx][0]), float(projection[idx][1])]
-                })
+                components.append(
+                    {
+                        'artist_id': comp_info['artist_id'],
+                        'artist_name': comp_info.get('artist_name', comp_info['artist_id']),
+                        'component_idx': comp_info['component_idx'],
+                        'weight': comp_info['weight'],
+                        'projection': [float(projection[idx][0]), float(projection[idx][1])],
+                    }
+                )
 
-        return jsonify({
-            'components': components,
-            'count': len(components)
-        })
+        return jsonify({'components': components, 'count': len(components)})
     except Exception:
         logger.exception("Failed to retrieve artist projections")
-        return jsonify({'components': [], 'count': 0, 'error': 'Unable to retrieve artist projections at this time.'}), 500
+        return jsonify(
+            {
+                'components': [],
+                'count': 0,
+                'error': 'Unable to retrieve artist projections at this time.',
+            }
+        ), 500
 
 
 @alchemy_bp.route('/api/build_artist_projection', methods=['POST'])
@@ -719,18 +768,24 @@ def build_artist_projection_endpoint():
     try:
         success = build_and_store_artist_projection('artist_map')
         if success:
-            return jsonify({
-                'status': 'success',
-                'message': 'Artist component projection built and stored successfully'
-            })
+            return jsonify(
+                {
+                    'status': 'success',
+                    'message': 'Artist component projection built and stored successfully',
+                }
+            )
         else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Artist projection build returned no data (no GMM parameters found?)'
-            }), 400
+            return jsonify(
+                {
+                    'status': 'error',
+                    'message': 'Artist projection build returned no data (no GMM parameters found?)',
+                }
+            ), 400
     except Exception:
         logger.exception("Failed to build artist projection")
-        return jsonify({
-            'status': 'error',
-            'message': 'Failed to build artist projection. Please try again later.'
-        }), 500
+        return jsonify(
+            {
+                'status': 'error',
+                'message': 'Failed to build artist projection. Please try again later.',
+            }
+        ), 500

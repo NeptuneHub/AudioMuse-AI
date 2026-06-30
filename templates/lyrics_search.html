@@ -163,7 +163,7 @@
                 <div class="axes-intro">
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “— None —” to ignore it. The more axes you set, the more specific the search.</span>
+                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “- None -” to ignore it. The more axes you set, the more specific the search.</span>
                     </span>
                     <span class="axes-intro-text">Select one value for one or more axes to compose your search.</span>
                 </div>
@@ -173,7 +173,7 @@
                         <h3>{{ axis_name.split('_')[2:] | join(' ') | title }}</h3>
                         <p class="axis-desc">{{ axis_meta.description }}</p>
                         <select name="axis-{{ axis_name }}" data-axis="{{ axis_name }}">
-                            <option value="" data-desc="">— None —</option>
+                            <option value="" data-desc="">- None -</option>
                             {% for label, label_desc in axis_meta.labels.items() %}
                             <option value="{{ label }}" data-desc="{{ label_desc }}">{{ label }}</option>
                             {% endfor %}
@@ -254,7 +254,7 @@
                         Seed Song:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Type to find a song in your library. Select it, then search for songs that share both its lyrical meaning (75%) and its acoustic sound (25%). Lyrics dominate — the audio component prevents jumps across distant genres.</span>
+                            <span class="tooltip-text">Type to find a song in your library. Select it, then search for songs that share both its lyrical meaning (75%) and its acoustic sound (25%). Lyrics dominate - the audio component prevents jumps across distant genres.</span>
                         </span>
                     </label>
                     <div class="autocomplete-container" id="sg-autocomplete-container">

@@ -31,7 +31,9 @@ def test_pin_numeric_locale_sets_env_and_calls_setlocale(monkeypatch):
 
 def test_pin_numeric_locale_setlocale_error_does_not_propagate(monkeypatch):
     monkeypatch.setenv("LC_NUMERIC", "en_US.UTF-8")
-    with patch("locale.setlocale", side_effect=locale.Error("unsupported locale")) as mock_setlocale:
+    with patch(
+        "locale.setlocale", side_effect=locale.Error("unsupported locale")
+    ) as mock_setlocale:
         numeric_bootstrap.pin_numeric_locale()
     assert os.environ["LC_NUMERIC"] == "C"
     mock_setlocale.assert_called_once_with(locale.LC_NUMERIC, "C")
@@ -47,6 +49,7 @@ def test_pin_numeric_locale_generic_exception_still_sets_env_when_unset(monkeypa
 
 def test_warmup_imports_and_caches_fragile_modules():
     import sys
+
     assert numeric_bootstrap.warmup_scipy_longdouble() is True
     assert "scipy.stats" in sys.modules
     assert "sklearn.cluster" in sys.modules
@@ -54,15 +57,14 @@ def test_warmup_imports_and_caches_fragile_modules():
 
 def test_warmup_retries_transient_longdouble_failure(monkeypatch, _preserve_fragile_modules):
     import numpy
+
     calls = {"n": 0}
     real = numpy.longdouble
 
     def flaky(value):
         calls["n"] += 1
         if calls["n"] < 3:
-            raise RuntimeError(
-                "Could not parse python long as longdouble: 1 (Invalid argument)"
-            )
+            raise RuntimeError("Could not parse python long as longdouble: 1 (Invalid argument)")
         return real(value)
 
     monkeypatch.setattr(numpy, "longdouble", flaky)

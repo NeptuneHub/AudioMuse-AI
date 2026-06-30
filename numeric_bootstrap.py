@@ -10,6 +10,7 @@ def pin_numeric_locale():
     os.environ["LC_NUMERIC"] = "C"
     try:
         import locale
+
         locale.setlocale(locale.LC_NUMERIC, "C")
     except Exception:
         pass
@@ -17,10 +18,12 @@ def pin_numeric_locale():
 
 def warmup_scipy_longdouble(attempts=8, delay=0.1):
     import importlib
+
     last_error = None
     for _ in range(max(1, int(attempts))):
         try:
             import numpy
+
             numpy.longdouble(1)
             importlib.import_module("scipy.stats")
             importlib.import_module("sklearn.cluster")

@@ -1,10 +1,8 @@
-
 from unittest.mock import Mock, MagicMock, patch
 import numpy as np
 
 
 class TestSaveTrackStringSanitization:
-
     @patch('database.get_db')
     def test_sanitize_removes_nul_bytes(self, mock_get_db):
         from app_helper import save_track_analysis_and_embedding
@@ -25,8 +23,17 @@ class TestSaveTrackStringSanitization:
         embedding = np.array([0.1, 0.2, 0.3])
 
         save_track_analysis_and_embedding(
-            item_id, title, author, 120.0, key, scale,
-            moods, embedding, energy=0.5, other_features=other_features, album=album
+            item_id,
+            title,
+            author,
+            120.0,
+            key,
+            scale,
+            moods,
+            embedding,
+            energy=0.5,
+            other_features=other_features,
+            album=album,
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -56,8 +63,7 @@ class TestSaveTrackStringSanitization:
         author = "Artist\x1fName"
 
         save_track_analysis_and_embedding(
-            "test_id", title, author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            "test_id", title, author, 120.0, "C", "major", {"happy": 0.5}, np.array([0.1, 0.2])
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -76,9 +82,16 @@ class TestSaveTrackStringSanitization:
         mock_get_db.return_value = mock_conn
 
         save_track_analysis_and_embedding(
-            "test_id", None, None, 120.0, None, None,
-            {"happy": 0.5}, np.array([0.1, 0.2]),
-            energy=None, other_features=None
+            "test_id",
+            None,
+            None,
+            120.0,
+            None,
+            None,
+            {"happy": 0.5},
+            np.array([0.1, 0.2]),
+            energy=None,
+            other_features=None,
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -104,9 +117,15 @@ class TestSaveTrackStringSanitization:
         long_other = "C" * 2500
 
         save_track_analysis_and_embedding(
-            "test_id", long_title, long_author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2]),
-            other_features=long_other
+            "test_id",
+            long_title,
+            long_author,
+            120.0,
+            "C",
+            "major",
+            {"happy": 0.5},
+            np.array([0.1, 0.2]),
+            other_features=long_other,
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -126,9 +145,14 @@ class TestSaveTrackStringSanitization:
         mock_get_db.return_value = mock_conn
 
         save_track_analysis_and_embedding(
-            "test_id", "  Song Title  ", "  Artist Name  ",
-            120.0, "  C  ", "  major  ",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            "test_id",
+            "  Song Title  ",
+            "  Artist Name  ",
+            120.0,
+            "  C  ",
+            "  major  ",
+            {"happy": 0.5},
+            np.array([0.1, 0.2]),
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -152,8 +176,7 @@ class TestSaveTrackStringSanitization:
         author = "艺术家 Артист"
 
         save_track_analysis_and_embedding(
-            "test_id", title, author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            "test_id", title, author, 120.0, "C", "major", {"happy": 0.5}, np.array([0.1, 0.2])
         )
 
         call_args = mock_cur.execute.call_args_list[0]
@@ -166,7 +189,6 @@ class TestSaveTrackStringSanitization:
 
 
 class TestArtistMappingSanitization:
-
     @patch('app_helper_artist.get_db')
     def test_artist_sanitize_removes_nul_bytes(self, mock_get_db):
         from app_helper_artist import upsert_artist_mapping

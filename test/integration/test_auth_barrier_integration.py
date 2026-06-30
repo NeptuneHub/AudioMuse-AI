@@ -74,6 +74,7 @@ def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub='tester'):
 def _alg_none_token(role, sub='tester'):
     def _b64(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b'=').decode()
+
     header = _b64({'alg': 'none', 'typ': 'JWT'})
     payload = _b64({'sub': sub, 'role': role, 'exp': 9999999999})
     return f"{header}.{payload}."

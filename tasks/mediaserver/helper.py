@@ -1,4 +1,3 @@
-
 import logging
 import os
 import re
@@ -7,9 +6,16 @@ logger = logging.getLogger(__name__)
 
 _AUTH_STATUS_CODES = {401, 403}
 _AUTH_TEXT_HINTS = (
-    'unauthorized', 'unauthorised', 'forbidden', 'wrong username',
-    'wrong password', 'invalid credentials', 'invalid login',
-    'authentication failed', 'not authorized', 'permission denied',
+    'unauthorized',
+    'unauthorised',
+    'forbidden',
+    'wrong username',
+    'wrong password',
+    'invalid credentials',
+    'invalid login',
+    'authentication failed',
+    'not authorized',
+    'permission denied',
 )
 
 
@@ -78,12 +84,7 @@ def detect_path_format(tracks):
     for track in tracks or []:
         if not isinstance(track, dict):
             continue
-        path = (
-            track.get('path')
-            or track.get('Path')
-            or track.get('url')
-            or track.get('Url')
-        )
+        path = track.get('path') or track.get('Path') or track.get('url') or track.get('Url')
         if path:
             paths.append(path)
 

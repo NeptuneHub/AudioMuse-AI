@@ -1,7 +1,7 @@
 # app_chat.py
 from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context
-from flasgger import swag_from # Import swag_from
-import json # For JSON serialization of tool arguments
+from flasgger import swag_from  # Import swag_from
+import json  # For JSON serialization of tool arguments
 import logging
 import re
 import time
@@ -12,220 +12,228 @@ logger = logging.getLogger(__name__)
 import config
 
 # Create a Blueprint for chat-related routes
-chat_bp = Blueprint('chat_bp', __name__,
-                    template_folder='templates', # Specifies where to look for templates like chat.html
-                    static_folder='static')
-
+chat_bp = Blueprint(
+    'chat_bp',
+    __name__,
+    template_folder='templates',  # Specifies where to look for templates like chat.html
+    static_folder='static',
+)
 
 
 @chat_bp.route('/')
-@swag_from({
-    'tags': ['Chat UI'],
-    'summary': 'Serves the main chat interface HTML page.',
-    'responses': {
-        '200': {
-            'description': 'HTML content of the chat page.',
-            'content': {
-                'text/html': {
-                    'schema': {'type': 'string'}
-                }
+@swag_from(
+    {
+        'tags': ['Chat UI'],
+        'summary': 'Serves the main chat interface HTML page.',
+        'responses': {
+            '200': {
+                'description': 'HTML content of the chat page.',
+                'content': {'text/html': {'schema': {'type': 'string'}}},
             }
-        }
+        },
     }
-})
+)
 def chat_home():
     """
     Serves the main chat page.
     """
-    return render_template('chat.html', title = 'AudioMuse-AI - Instant Playlist', active='chat')
+    return render_template('chat.html', title='AudioMuse-AI - Instant Playlist', active='chat')
+
 
 @chat_bp.route('/api/config_defaults', methods=['GET'])
-@swag_from({
-    'tags': ['Chat Configuration'],
-    'summary': 'Get default AI configuration for the chat interface.',
-    'responses': {
-        '200': {
-            'description': 'Default AI configuration.',
-            'content': {
-                'application/json': {
-                    'schema': {
-                        'type': 'object',
-                        'properties': {
-                            'default_ai_provider': {
-                                'type': 'string', 'example': 'OLLAMA'
-                            },
-                            'default_ollama_model_name': {
-                                'type': 'string', 'example': 'mistral:7b'
-                            },
-                            'ollama_server_url': {
-                                'type': 'string', 'example': 'http://127.0.0.1:11434/api/generate'
-                            },
-                            'default_openai_model_name': {
-                                'type': 'string', 'example': 'gpt-4'
-                            },
-                            'openai_server_url': {
-                                'type': 'string', 'example': 'https://openrouter.ai/api/v1/chat/completions'
-                            },
-                            'default_gemini_model_name': {
-                                'type': 'string', 'example': 'gemini-2.5-pro'
-                            },
-                            'default_mistral_model_name': {
-                                'type': 'string', 'example': 'ministral-3b-latest'
+@swag_from(
+    {
+        'tags': ['Chat Configuration'],
+        'summary': 'Get default AI configuration for the chat interface.',
+        'responses': {
+            '200': {
+                'description': 'Default AI configuration.',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'default_ai_provider': {'type': 'string', 'example': 'OLLAMA'},
+                                'default_ollama_model_name': {
+                                    'type': 'string',
+                                    'example': 'mistral:7b',
+                                },
+                                'ollama_server_url': {
+                                    'type': 'string',
+                                    'example': 'http://127.0.0.1:11434/api/generate',
+                                },
+                                'default_openai_model_name': {'type': 'string', 'example': 'gpt-4'},
+                                'openai_server_url': {
+                                    'type': 'string',
+                                    'example': 'https://openrouter.ai/api/v1/chat/completions',
+                                },
+                                'default_gemini_model_name': {
+                                    'type': 'string',
+                                    'example': 'gemini-2.5-pro',
+                                },
+                                'default_mistral_model_name': {
+                                    'type': 'string',
+                                    'example': 'ministral-3b-latest',
+                                },
                             },
                         }
                     }
-                }
+                },
             }
-        }
+        },
     }
-})
+)
 def chat_config_defaults_api():
     """
     API endpoint to provide default configuration values for the chat interface.
     """
     # Read from config module attributes (may be overridden by DB settings via apply_settings_to_config)
     import config as cfg
-    return jsonify({
-        "default_ai_provider": cfg.AI_MODEL_PROVIDER,
-        "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
-        "ollama_server_url": cfg.OLLAMA_SERVER_URL,
-        "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
-        "openai_server_url": cfg.OPENAI_SERVER_URL,
-        "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
-        "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
-    }), 200
+
+    return jsonify(
+        {
+            "default_ai_provider": cfg.AI_MODEL_PROVIDER,
+            "default_ollama_model_name": cfg.OLLAMA_MODEL_NAME,
+            "ollama_server_url": cfg.OLLAMA_SERVER_URL,
+            "default_openai_model_name": cfg.OPENAI_MODEL_NAME,
+            "openai_server_url": cfg.OPENAI_SERVER_URL,
+            "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
+            "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
+        }
+    ), 200
 
 
 def _reject_missing_user_input(data):
     # Shared guard for both chat endpoints: 400 on non-dict body or blank userInput.
-    if not isinstance(data, dict) or not isinstance(data.get('userInput'), str) or not data['userInput'].strip():
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get('userInput'), str)
+        or not data['userInput'].strip()
+    ):
         return jsonify({"error": "Missing userInput in request"}), 400
     return None
 
 
 @chat_bp.route('/api/chatPlaylist', methods=['POST'])
-@swag_from({
-    'tags': ['Chat Interaction'],
-    'summary': 'Process user chat input to generate a playlist idea using AI.',
-    'requestBody': {
-        'description': 'User input and AI configuration for generating a playlist.',
-        'required': True,
-        'content': {
-            'application/json': {
-                'schema': {
-                    'type': 'object',
-                    'required': ['userInput'],
-                    'properties': {
-                        'userInput': {
-                            'type': 'string',
-                            'description': "The user's natural language request for a playlist.",
-                            'example': "Songs for a rainy afternoon"
-                        },
-                        'ai_provider': {
-                            'type': 'string',
-                            'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
-                            'example': 'GEMINI',
-                            'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE']
-                        },
-                        'ai_model': {
-                            'type': 'string',
-                            'description': 'The specific AI model name to use. Defaults to server config for the provider.',
-                            'example': 'gemini-2.5-pro'
-                        },
-                        'ollama_server_url': {
-                            'type': 'string',
-                            'description': 'Custom Ollama server URL (if ai_provider is OLLAMA).',
-                            'example': 'http://localhost:11434/api/generate'
-                        },
-                        'openai_server_url': {
-                            'type': 'string',
-                            'description': 'Custom OpenAI/OpenRouter server URL (if ai_provider is OPENAI).',
-                            'example': 'https://openrouter.ai/api/v1/chat/completions'
-                        },
-                        'openai_api_key': {
-                            'type': 'string',
-                            'description': 'OpenAI/OpenRouter API key (required if ai_provider is OPENAI).',
-                        },
-                        'gemini_api_key': {
-                            'type': 'string',
-                            'description': 'Custom Gemini API key (optional, defaults to server configuration).',
-                        },
-                        'mistral_api_key': {
-                            'type': 'string',
-                            'description': 'Custom Mistral API key (optional, defaults to server configuration).',
-                        }
-                    }
-                }
-            }
-        }
-    },
-    'responses': {
-        '200': {
-            'description': 'AI response containing the playlist idea, SQL query, and processing log.',
+@swag_from(
+    {
+        'tags': ['Chat Interaction'],
+        'summary': 'Process user chat input to generate a playlist idea using AI.',
+        'requestBody': {
+            'description': 'User input and AI configuration for generating a playlist.',
+            'required': True,
             'content': {
                 'application/json': {
                     'schema': {
                         'type': 'object',
+                        'required': ['userInput'],
                         'properties': {
-                            'response': {
-                                'type': 'object',
-                                'properties': {
-                                    'message': {
-                                        'type': 'string',
-                                        'description': 'Log of AI interaction and processing.'
-                                    },
-                                    'original_request': {
-                                        'type': 'string',
-                                        'description': "The user's original input."
-                                    },
-                                    'ai_provider_used': {
-                                        'type': 'string',
-                                        'description': 'The AI provider that was used for the request.'
-                                    },
-                                    'ai_model_selected': {
-                                        'type': 'string',
-                                        'description': 'The specific AI model that was selected/used.'
-                                    },
-                                    'executed_query': {
-                                        'type': 'string',
-                                        'nullable': True,
-                                        'description': 'The SQL query that was executed (or last attempted).'
-                                    },
-                                    'query_results': {
-                                        'type': 'array',
-                                        'nullable': True,
-                                        'description': 'List of songs returned by the query.',
-                                        'items': {
-                                            'type': 'object',
-                                            'properties': {
-                                                'item_id': {'type': 'string'},
-                                                'title': {'type': 'string'},
-                                                'artist': {'type': 'string'}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            'userInput': {
+                                'type': 'string',
+                                'description': "The user's natural language request for a playlist.",
+                                'example': "Songs for a rainy afternoon",
+                            },
+                            'ai_provider': {
+                                'type': 'string',
+                                'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                                'example': 'GEMINI',
+                                'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE'],
+                            },
+                            'ai_model': {
+                                'type': 'string',
+                                'description': 'The specific AI model name to use. Defaults to server config for the provider.',
+                                'example': 'gemini-2.5-pro',
+                            },
+                            'ollama_server_url': {
+                                'type': 'string',
+                                'description': 'Custom Ollama server URL (if ai_provider is OLLAMA).',
+                                'example': 'http://localhost:11434/api/generate',
+                            },
+                            'openai_server_url': {
+                                'type': 'string',
+                                'description': 'Custom OpenAI/OpenRouter server URL (if ai_provider is OPENAI).',
+                                'example': 'https://openrouter.ai/api/v1/chat/completions',
+                            },
+                            'openai_api_key': {
+                                'type': 'string',
+                                'description': 'OpenAI/OpenRouter API key (required if ai_provider is OPENAI).',
+                            },
+                            'gemini_api_key': {
+                                'type': 'string',
+                                'description': 'Custom Gemini API key (optional, defaults to server configuration).',
+                            },
+                            'mistral_api_key': {
+                                'type': 'string',
+                                'description': 'Custom Mistral API key (optional, defaults to server configuration).',
+                            },
+                        },
                     }
                 }
-            }
+            },
         },
-        '400': {
-            'description': 'Bad Request - Missing input or invalid parameters.',
-            'content': {
-                'application/json': {
-                    'schema': {
-                        'type': 'object',
-                        'properties': {
-                            'error': {'type': 'string'}
+        'responses': {
+            '200': {
+                'description': 'AI response containing the playlist idea, SQL query, and processing log.',
+                'content': {
+                    'application/json': {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'response': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'message': {
+                                            'type': 'string',
+                                            'description': 'Log of AI interaction and processing.',
+                                        },
+                                        'original_request': {
+                                            'type': 'string',
+                                            'description': "The user's original input.",
+                                        },
+                                        'ai_provider_used': {
+                                            'type': 'string',
+                                            'description': 'The AI provider that was used for the request.',
+                                        },
+                                        'ai_model_selected': {
+                                            'type': 'string',
+                                            'description': 'The specific AI model that was selected/used.',
+                                        },
+                                        'executed_query': {
+                                            'type': 'string',
+                                            'nullable': True,
+                                            'description': 'The SQL query that was executed (or last attempted).',
+                                        },
+                                        'query_results': {
+                                            'type': 'array',
+                                            'nullable': True,
+                                            'description': 'List of songs returned by the query.',
+                                            'items': {
+                                                'type': 'object',
+                                                'properties': {
+                                                    'item_id': {'type': 'string'},
+                                                    'title': {'type': 'string'},
+                                                    'artist': {'type': 'string'},
+                                                },
+                                            },
+                                        },
+                                    },
+                                }
+                            },
                         }
                     }
-                }
-            }
-        }
+                },
+            },
+            '400': {
+                'description': 'Bad Request - Missing input or invalid parameters.',
+                'content': {
+                    'application/json': {
+                        'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
+                    }
+                },
+            },
+        },
     }
-})
+)
 def chat_playlist_api():
     """
     Process user chat input to generate a playlist using AI with MCP tools.
@@ -278,7 +286,11 @@ def chat_playlist_stream_api():
             nonlocal sent
             out = ""
             while sent < len(log_messages):
-                out += "data: " + json.dumps({"type": "log", "line": log_messages[sent], "t": time.time()}) + "\n\n"
+                out += (
+                    "data: "
+                    + json.dumps({"type": "log", "line": log_messages[sent], "t": time.time()})
+                    + "\n\n"
+                )
                 sent += 1
             return out
 
@@ -300,13 +312,21 @@ def chat_playlist_stream_api():
                     yield chunk
         except Exception:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
             logger.exception("Streaming chat pipeline failed")
-            yield "data: " + json.dumps({"type": "error", "error": "An internal error has occurred.", "t": time.time()}) + "\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "error", "error": "An internal error has occurred.", "t": time.time()}
+                )
+                + "\n\n"
+            )
             return
 
         trailing = _flush()
         if trailing:
             yield trailing
-        yield "data: " + json.dumps({"type": "done", "response": resp_obj, "t": time.time()}) + "\n\n"
+        yield (
+            "data: " + json.dumps({"type": "done", "response": resp_obj, "t": time.time()}) + "\n\n"
+        )
 
     return Response(
         generate(),
@@ -348,10 +368,13 @@ def _run_chat_pipeline(data, log_messages):
 
     original_user_input = data.get('userInput')
     # Detect if user's request mentions ratings (guard against AI hallucinating rating filters)
-    _user_wants_rating = bool(re.search(
-        r'\b(rat(ed|ing|ings)|stars?|⭐|favorit|best[\s-]?rated|top[\s-]?rated|highly[\s-]?rated)\b',
-        original_user_input, re.IGNORECASE
-    ))
+    _user_wants_rating = bool(
+        re.search(
+            r'\b(rat(ed|ing|ings)|stars?|⭐|favorit|best[\s-]?rated|top[\s-]?rated|highly[\s-]?rated)\b',
+            original_user_input,
+            re.IGNORECASE,
+        )
+    )
     ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
 
@@ -361,14 +384,17 @@ def _run_chat_pipeline(data, log_messages):
 
     # Check if AI provider is NONE
     if ai_provider == "NONE":
-        return ({
-            "message": "No AI provider selected. Please configure an AI provider to use this feature.",
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": None,
-            "executed_query": None,
-            "query_results": None
-        }, 200)
+        return (
+            {
+                "message": "No AI provider selected. Please configure an AI provider to use this feature.",
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": None,
+                "executed_query": None,
+                "query_results": None,
+            },
+            200,
+        )
 
     # Build AI configuration object.
     # SECURITY: API keys come ONLY from server-side config (DB-overlaid).
@@ -423,38 +449,51 @@ def _run_chat_pipeline(data, log_messages):
     if ai_provider == "OPENAI" and not ai_secrets['openai_key']:
         error_msg = "Error: OpenAI API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return ({
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('openai_model'),
-            "executed_query": None,
-            "query_results": None
-        }, 400)
+        return (
+            {
+                "message": "\n".join(log_messages),
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": ai_config.get('openai_model'),
+                "executed_query": None,
+                "query_results": None,
+            },
+            400,
+        )
 
-    if ai_provider == "GEMINI" and (not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"):
+    if ai_provider == "GEMINI" and (
+        not ai_secrets['gemini_key'] or ai_secrets['gemini_key'] == "YOUR-GEMINI-API-KEY-HERE"
+    ):
         error_msg = "Error: Gemini API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return ({
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('gemini_model'),
-            "executed_query": None,
-            "query_results": None
-        }, 400)
+        return (
+            {
+                "message": "\n".join(log_messages),
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": ai_config.get('gemini_model'),
+                "executed_query": None,
+                "query_results": None,
+            },
+            400,
+        )
 
-    if ai_provider == "MISTRAL" and (not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"):
+    if ai_provider == "MISTRAL" and (
+        not ai_secrets['mistral_key'] or ai_secrets['mistral_key'] == "YOUR-MISTRAL-API-KEY-HERE"
+    ):
         error_msg = "Error: Mistral API key is missing. Please provide a valid API key."
         log_messages.append(error_msg)
-        return ({
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get('mistral_model'),
-            "executed_query": None,
-            "query_results": None
-        }, 400)
+        return (
+            {
+                "message": "\n".join(log_messages),
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": ai_config.get('mistral_model'),
+                "executed_query": None,
+                "query_results": None,
+            },
+            400,
+        )
 
     # ====================
     # MCP AGENTIC WORKFLOW
@@ -469,14 +508,18 @@ def _run_chat_pipeline(data, log_messages):
 
     # Fetch library context for smarter AI prompting
     from tasks.mcp_helper import get_library_context
+
     library_context = get_library_context()
     if library_context.get('total_songs', 0) > 0:
-        log_messages.append(f"Library: {library_context['total_songs']} songs, {library_context['unique_artists']} artists")
+        log_messages.append(
+            f"Library: {library_context['total_songs']} songs, {library_context['unique_artists']} artists"
+        )
 
     yield
 
     target_song_count = 100
     from config import MAX_SONGS_PER_ARTIST_PLAYLIST
+
     collection_cap = 1000
 
     plan_result = yield from plan_and_execute_once(
@@ -495,14 +538,17 @@ def _run_chat_pipeline(data, log_messages):
         # results so the user sees that the AI couldn't build a plan for this
         # request, rather than a made-up playlist.
         log_messages.append(f"AI planning failed: {plan_result['error']}")
-        return ({
-            "message": "\n".join(log_messages),
-            "original_request": original_user_input,
-            "ai_provider_used": ai_provider,
-            "ai_model_selected": ai_config.get(f'{ai_provider.lower()}_model'),
-            "executed_query": None,
-            "query_results": None,
-        }, 200)
+        return (
+            {
+                "message": "\n".join(log_messages),
+                "original_request": original_user_input,
+                "ai_provider_used": ai_provider,
+                "ai_model_selected": ai_config.get(f'{ai_provider.lower()}_model'),
+                "executed_query": None,
+                "query_results": None,
+            },
+            200,
+        )
 
     all_songs = plan_result['songs']
     song_sources = plan_result['song_sources']
@@ -538,11 +584,13 @@ def _run_chat_pipeline(data, log_messages):
 
         diversity_removed = len(all_songs) - len(diversified_pool)
         if diversity_removed > 0:
-            log_messages.append(f"\nArtist diversity: removed {diversity_removed} excess songs from pool (max {max_per_artist}/artist)")
+            log_messages.append(
+                f"\nArtist diversity: removed {diversity_removed} excess songs from pool (max {max_per_artist}/artist)"
+            )
 
         # --- Phase 2: Proportional sampling from diversified pool ---
         if len(diversified_pool) <= target_song_count:
-            # Not enough songs after diversity cap — use all, then backfill from overflow
+            # Not enough songs after diversity cap - use all, then backfill from overflow
             final_query_results_list = list(diversified_pool)
             if len(final_query_results_list) < target_song_count and diversity_overflow:
                 # Progressive cap relaxation: raise per-artist cap until we hit target or exhaust overflow
@@ -572,9 +620,11 @@ def _run_chat_pipeline(data, log_messages):
                     if backfill_added == 0:
                         break  # No progress at this cap level, stop
                 if current_cap > max_per_artist:
-                    log_messages.append(f"   Progressive cap relaxation: {max_per_artist} -> {current_cap}/artist to reach {len(final_query_results_list)} songs")
+                    log_messages.append(
+                        f"   Progressive cap relaxation: {max_per_artist} -> {current_cap}/artist to reach {len(final_query_results_list)} songs"
+                    )
         else:
-            # More diversified songs than target — sample proportionally by tool call
+            # More diversified songs than target - sample proportionally by tool call
             songs_by_call = {}
             for song in diversified_pool:
                 call_index = song_sources.get(song['item_id'], -1)
@@ -600,7 +650,9 @@ def _run_chat_pipeline(data, log_messages):
 
             final_query_results_list = final_query_results_list[:target_song_count]
 
-        log_messages.append(f"\nPool: {len(all_songs)} collected -> {len(diversified_pool)} after diversity cap -> {len(final_query_results_list)} in final playlist")
+        log_messages.append(
+            f"\nPool: {len(all_songs)} collected -> {len(diversified_pool)} after diversity cap -> {len(final_query_results_list)} in final playlist"
+        )
 
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
         # Only when NO filter drove the result. When a filter/score was applied
@@ -609,7 +661,9 @@ def _run_chat_pipeline(data, log_messages):
         # similarity. Re-sorting by tempo/energy/key here would scramble that and
         # bury the matched songs, so the scored order is preserved instead.
         if filter_applied:
-            log_messages.append("\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
+            log_messages.append(
+                "\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped"
+            )
         else:
             try:
                 from tasks.playlist_ordering import order_playlist
@@ -620,11 +674,15 @@ def _run_chat_pipeline(data, log_messages):
 
                 # Rebuild list in new order
                 id_to_song = {s['item_id']: s for s in final_query_results_list}
-                final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
+                final_query_results_list = [
+                    id_to_song[sid] for sid in ordered_ids if sid in id_to_song
+                ]
                 log_messages.append("\nPlaylist ordered for smooth transitions (tempo/energy/key)")
             except Exception:
                 logger.warning("Playlist ordering failed (non-fatal)", exc_info=True)
-                log_messages.append("\nPlaylist ordering skipped due to an internal processing issue")
+                log_messages.append(
+                    "\nPlaylist ordering skipped due to an internal processing issue"
+                )
 
         final_executed_query_str = executed_query_str
 
@@ -633,7 +691,9 @@ def _run_chat_pipeline(data, log_messages):
             for n in plan_notes:
                 log_messages.append(f"   {n}")
 
-        log_messages.append(f"\nOK SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
+        log_messages.append(
+            f"\nOK SUCCESS! Generated playlist with {len(final_query_results_list)} songs"
+        )
         log_messages.append(f"   Total songs collected: {len(all_songs)}")
         log_messages.append(f"   Tools called: {len(tools_used_history)}")
 
@@ -668,7 +728,9 @@ def _run_chat_pipeline(data, log_messages):
             call_index = tool_info.get('call_index', -1)
             final_count = final_by_call.get(call_index, 0)
             if song_count != final_count:
-                log_messages.append(f"   - {tool_name}({args_str}): {song_count} collected -> {final_count} in final playlist")
+                log_messages.append(
+                    f"   - {tool_name}({args_str}): {song_count} collected -> {final_count} in final playlist"
+                )
             else:
                 log_messages.append(f"   - {tool_name}({args_str}): {song_count} songs")
     else:
@@ -679,72 +741,73 @@ def _run_chat_pipeline(data, log_messages):
     actual_model_used = ai_config.get(f'{ai_provider.lower()}_model')
 
     # Return final response object (caller wraps it for HTTP).
-    return ({
-        "message": "\n".join(log_messages),
-        "original_request": original_user_input,
-        "ai_provider_used": ai_provider,
-        "ai_model_selected": actual_model_used,
-        "executed_query": final_executed_query_str,
-        "query_results": final_query_results_list
-    }, 200)
+    return (
+        {
+            "message": "\n".join(log_messages),
+            "original_request": original_user_input,
+            "ai_provider_used": ai_provider,
+            "ai_model_selected": actual_model_used,
+            "executed_query": final_executed_query_str,
+            "query_results": final_query_results_list,
+        },
+        200,
+    )
 
 
 @chat_bp.route('/api/create_playlist', methods=['POST'])
-@swag_from({
-    'tags': ['Chat Interaction'],
-    'summary': 'Create a playlist on the media server from a list of song item IDs.',
-    'requestBody': {
-        'description': 'Playlist name and song item IDs.',
-        'required': True,
-        'content': {
-            'application/json': {
-                'schema': {
-                    'type': 'object',
-                    'required': ['playlist_name', 'item_ids'],
-                    'properties': {
-                        'playlist_name': {
-                            'type': 'string',
-                            'description': 'The desired name for the playlist.',
-                            'example': 'My Awesome Mix'
-                        },
-                        'item_ids': {
-                            'type': 'array',
-                            'description': 'A list of item IDs for the songs to include.',
-                            'items': {'type': 'string'},
-                            'example': ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"]
-                        }
-                    }
-                }
-            }
-        }
-    },
-    'responses': {
-        '200': {
-            'description': 'Playlist successfully created.',
+@swag_from(
+    {
+        'tags': ['Chat Interaction'],
+        'summary': 'Create a playlist on the media server from a list of song item IDs.',
+        'requestBody': {
+            'description': 'Playlist name and song item IDs.',
+            'required': True,
             'content': {
                 'application/json': {
                     'schema': {
                         'type': 'object',
+                        'required': ['playlist_name', 'item_ids'],
                         'properties': {
-                            'message': {'type': 'string'}
-                        }
+                            'playlist_name': {
+                                'type': 'string',
+                                'description': 'The desired name for the playlist.',
+                                'example': 'My Awesome Mix',
+                            },
+                            'item_ids': {
+                                'type': 'array',
+                                'description': 'A list of item IDs for the songs to include.',
+                                'items': {'type': 'string'},
+                                'example': [
+                                    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                                    "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                                ],
+                            },
+                        },
                     }
                 }
-            }
+            },
         },
-        '400': {
-            'description': 'Bad Request - Missing parameters or invalid input.'
+        'responses': {
+            '200': {
+                'description': 'Playlist successfully created.',
+                'content': {
+                    'application/json': {
+                        'schema': {'type': 'object', 'properties': {'message': {'type': 'string'}}}
+                    }
+                },
+            },
+            '400': {'description': 'Bad Request - Missing parameters or invalid input.'},
+            '500': {
+                'description': 'Server Error - Failed to create playlist.',
+                'content': {  # Added content for 400 and 500 for consistency
+                    'application/json': {
+                        'schema': {'type': 'object', 'properties': {'message': {'type': 'string'}}}
+                    }
+                },
+            },
         },
-        '500': {
-            'description': 'Server Error - Failed to create playlist.',
-             'content': { # Added content for 400 and 500 for consistency
-                'application/json': {
-                    'schema': {'type': 'object', 'properties': {'message': {'type': 'string'}}}
-                }
-            }
-        }
     }
-})
+)
 def create_media_server_playlist_api():
     """
     API endpoint to create a playlist on the configured media server.
@@ -757,7 +820,7 @@ def create_media_server_playlist_api():
         return jsonify({"message": "Error: Missing playlist_name or item_ids in request"}), 400
 
     user_playlist_name = data.get('playlist_name')
-    item_ids = data.get('item_ids') # This will be a list of strings
+    item_ids = data.get('item_ids')  # This will be a list of strings
 
     if not user_playlist_name or not str(user_playlist_name).strip():
         return jsonify({"message": "Error: Playlist name cannot be empty."}), 400
@@ -770,14 +833,22 @@ def create_media_server_playlist_api():
         if not created_playlist_info:
             raise Exception("Media server did not return playlist information after creation.")
 
-        return jsonify({"message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {created_playlist_info.get('Id')}"}), 200
+        return jsonify(
+            {
+                "message": f"Successfully created playlist '{user_playlist_name}' on the media server with ID: {created_playlist_info.get('Id')}"
+            }
+        ), 200
 
     except Exception as e:
         # Log detailed error on the server
         error_details_for_server = f"Media Server API Request Exception: {str(e)}\n"
-        if hasattr(e, 'response') and e.response is not None: # type: ignore
-            try: error_details_for_server += f" - Media Server Response: {e.response.text}\n"
-            except Exception: pass # nosec
-        logger.error("Error in create_media_server_playlist_api: %s", error_details_for_server, exc_info=True)
+        if hasattr(e, 'response') and e.response is not None:  # type: ignore
+            try:
+                error_details_for_server += f" - Media Server Response: {e.response.text}\n"
+            except Exception:
+                pass  # nosec
+        logger.error(
+            "Error in create_media_server_playlist_api: %s", error_details_for_server, exc_info=True
+        )
         # Return generic error to client
         return jsonify({"message": "An internal error occurred while creating the playlist."}), 500

@@ -28,7 +28,11 @@ if __name__ == '__main__':
                 started_after = started_registry.count
                 started_cleaned = started_before - started_after
                 if started_cleaned > 0:
-                    logger.info("Janitor cleaned %d orphaned jobs from '%s' started_job_registry.", started_cleaned, queue.name)
+                    logger.info(
+                        "Janitor cleaned %d orphaned jobs from '%s' started_job_registry.",
+                        started_cleaned,
+                        queue.name,
+                    )
 
                 finished_registry = queue.finished_job_registry
                 finished_before = finished_registry.count
@@ -36,7 +40,11 @@ if __name__ == '__main__':
                 finished_after = finished_registry.count
                 finished_cleaned = finished_before - finished_after
                 if finished_cleaned > 0:
-                    logger.info("Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.", finished_cleaned, queue.name)
+                    logger.info(
+                        "Janitor cleaned %d expired finished jobs from '%s' finished_job_registry.",
+                        finished_cleaned,
+                        queue.name,
+                    )
 
                 failed_registry = queue.failed_job_registry
                 failed_before = failed_registry.count
@@ -44,7 +52,11 @@ if __name__ == '__main__':
                 failed_after = failed_registry.count
                 failed_cleaned = failed_before - failed_after
                 if failed_cleaned > 0:
-                    logger.info("Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.", failed_cleaned, queue.name)
+                    logger.info(
+                        "Janitor cleaned %d expired failed jobs from '%s' failed_job_registry.",
+                        failed_cleaned,
+                        queue.name,
+                    )
         except Exception as e:
             logger.exception("Error in RQ Janitor loop: %s", e)
 

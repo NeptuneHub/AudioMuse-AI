@@ -52,8 +52,13 @@ class TestSanitizeLogText:
 class TestLogSanitizingFilter:
     def _record(self, msg, args=None):
         return logging.LogRecord(
-            name="test", level=logging.INFO, pathname=__file__, lineno=1,
-            msg=msg, args=args, exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg=msg,
+            args=args,
+            exc_info=None,
         )
 
     def test_sanitizes_msg(self):
@@ -93,6 +98,5 @@ class TestConfigureLogging:
                     handler.filters = saved[handler]
                 else:
                     handler.filters = [
-                        f for f in handler.filters
-                        if not isinstance(f, LogSanitizingFilter)
+                        f for f in handler.filters if not isinstance(f, LogSanitizingFilter)
                     ]

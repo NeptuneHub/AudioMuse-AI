@@ -72,10 +72,7 @@ def batch_db(pg_dsn):
         cur.execute("DROP TABLE IF EXISTS embedding")
         cur.execute("DROP TABLE IF EXISTS score CASCADE")
         cur.execute(_SCORE_DDL)
-        rows = [
-            (f"item-{i:04d}", f"Title {i}", f"Author {i}")
-            for i in range(_ROW_COUNT)
-        ]
+        rows = [(f"item-{i:04d}", f"Title {i}", f"Author {i}") for i in range(_ROW_COUNT)]
         cur.executemany(
             "INSERT INTO score (item_id, title, author) VALUES (%s, %s, %s)",
             rows,

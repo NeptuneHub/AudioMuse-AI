@@ -1,4 +1,3 @@
-
 import os
 import platform
 import sys
@@ -102,7 +101,10 @@ def redis_binary():
         return os.path.join(resource_root(), "redis-server")
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "vendor", "redis", platform.machine(), "redis-server",
+        "vendor",
+        "redis",
+        platform.machine(),
+        "redis-server",
     )
 
 
@@ -115,6 +117,7 @@ def pg_install_dir():
         if getattr(sys, "frozen", False):
             return os.path.join(resource_root(), "pgserver", "pginstall")
         import pgserver
+
         return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall")
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgsql")

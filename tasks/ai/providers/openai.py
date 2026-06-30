@@ -153,19 +153,21 @@ def generate_text(
             if extracted_text:
                 logger.info(
                     "%s API returned non-empty content (length=%d chars).",
-                    provider_label, len(extracted_text),
+                    provider_label,
+                    len(extracted_text),
                 )
                 return extracted_text
             logger.warning(
                 "%s returned empty content (raw response length: %d chars).",
-                provider_label, len(full_raw_response_content),
+                provider_label,
+                len(full_raw_response_content),
             )
             logger.debug(
                 "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",
                 len(raw_sse_lines),
             )
             if attempt < max_retries:
-                sleep_time = base_delay * (2 ** attempt)
+                sleep_time = base_delay * (2**attempt)
                 logger.info("Retrying in %s seconds due to empty content...", sleep_time)
                 time.sleep(sleep_time)
                 continue
@@ -177,7 +179,7 @@ def generate_text(
                     "Rate limit exceeded (429). Attempt %d/%d", attempt + 1, max_retries + 1
                 )
                 if attempt < max_retries:
-                    sleep_time = base_delay * (2 ** attempt)
+                    sleep_time = base_delay * (2**attempt)
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
                     continue
@@ -191,9 +193,9 @@ def generate_text(
                     error_code = error_obj.get("code", "") or ""
                     error_param = error_obj.get("param", "") or ""
                     error_message = (error_obj.get("message", "") or "").lower()
-                    if ("reasoning_effort" in payload
-                            and (error_param == "reasoning_effort"
-                                 or "reasoning_effort" in error_message)):
+                    if "reasoning_effort" in payload and (
+                        error_param == "reasoning_effort" or "reasoning_effort" in error_message
+                    ):
                         logger.info("reasoning_effort rejected (400); retrying without it")
                         payload.pop("reasoning_effort", None)
                         _MODELS_REJECTING_REASONING.add(model_name)
@@ -311,7 +313,9 @@ def call_with_tools(
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
                     payload.update(shape)
-                    log_messages.append("DeepSeek rejected the thinking-disable parameter; retrying with an alternate form")
+                    log_messages.append(
+                        "DeepSeek rejected the thinking-disable parameter; retrying with an alternate form"
+                    )
                     try:
                         result = _post(payload)
                         break
@@ -321,10 +325,14 @@ def call_with_tools(
                 if result is None:
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
-                    log_messages.append("DeepSeek rejected all thinking-disable forms; retrying without them")
+                    log_messages.append(
+                        "DeepSeek rejected all thinking-disable forms; retrying without them"
+                    )
                     result = _post(payload)
             elif "reasoning_effort" in payload:
-                log_messages.append("reasoning_effort unsupported by this model; retrying without it")
+                log_messages.append(
+                    "reasoning_effort unsupported by this model; retrying without it"
+                )
                 payload.pop("reasoning_effort", None)
                 _MODELS_REJECTING_REASONING.add(model_name)
                 result = _post(payload)
@@ -349,12 +357,8 @@ def call_with_tools(
             tool_calls = tool_calls[:4]
 
         if not tool_calls:
-            text_response = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            log_messages.append(
-                f"OpenAI did not call tools. Response: {text_response[:200]}"
-            )
+            text_response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            log_messages.append(f"OpenAI did not call tools. Response: {text_response[:200]}")
             return {"error": "AI did not call any tools", "ai_response": text_response}
 
         log_messages.append(f"OpenAI called {len(tool_calls)} tools")
@@ -379,7 +383,6 @@ def call_with_tools(
     except Exception:
         logger.exception("Error calling OpenAI with tools")
         return {"error": "OpenAI service is currently unavailable."}
-
 
 
 def call_with_tools_ollama(
@@ -452,7 +455,9 @@ def call_with_tools_ollama(
                 )
             elif isinstance(parsed, list):
                 tool_calls = parsed
-                log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
+                log_messages.append(
+                    "WARN: Got array directly (expected object with tool_calls field)"
+                )
             elif isinstance(parsed, dict) and "name" in parsed:
                 tool_calls = [parsed]
                 log_messages.append(

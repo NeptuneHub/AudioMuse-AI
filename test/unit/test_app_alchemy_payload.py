@@ -32,7 +32,9 @@ class TestAlchemyApiPayloadValidation:
     @patch('app_alchemy.song_alchemy')
     def test_add_items_without_id_are_filtered_before_dispatch(self, mock_alchemy, client):
         mock_alchemy.side_effect = ValueError('At least one item must be in the ADD set')
-        response = client.post('/api/alchemy', json={'items': [{'op': 'ADD'}, {'op': 'ADD', 'id': ''}]})
+        response = client.post(
+            '/api/alchemy', json={'items': [{'op': 'ADD'}, {'op': 'ADD', 'id': ''}]}
+        )
         assert response.status_code == 400
         assert mock_alchemy.call_args.kwargs['add_items'] == []
         assert mock_alchemy.call_args.kwargs['subtract_items'] == []

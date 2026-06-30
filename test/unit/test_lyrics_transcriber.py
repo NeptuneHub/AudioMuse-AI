@@ -12,7 +12,6 @@ def lt():
     return importlib.import_module('lyrics.lyrics_transcriber')
 
 
-
 class TestAxisColumns:
     EXPECTED_TOTAL_LABELS = 27
 
@@ -80,7 +79,6 @@ class TestAxisColumns:
         assert lt.axis_columns() == lt.axis_columns()
 
 
-
 class TestScoreAxes:
     @staticmethod
     def _fake_axis_state(lt):
@@ -101,8 +99,7 @@ class TestScoreAxes:
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         assert vec.dtype == np.float32
@@ -114,14 +111,13 @@ class TestScoreAxes:
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         offset = 0
         for axis_name, meta in lt.MUSIC_ANALYSIS_AXES.items():
             n = len(meta['labels'])
-            chunk = vec[offset:offset + n]
+            chunk = vec[offset : offset + n]
             assert np.all(chunk >= 0.0), f'{axis_name}: negative softmax entry'
             assert np.all(chunk <= 1.0), f'{axis_name}: softmax entry > 1'
             assert chunk.sum() == pytest.approx(1.0, abs=1e-5), (
@@ -135,8 +131,7 @@ class TestScoreAxes:
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         cols = lt.axis_columns()
@@ -175,26 +170,22 @@ class TestScoreAxes:
             mat[target_idx] = query
             axis_embeddings[axis_name] = mat
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(query)
 
         cols = lt.axis_columns()
         offset = 0
         for axis_name, meta in lt.MUSIC_ANALYSIS_AXES.items():
             n = len(meta['labels'])
-            chunk = vec[offset:offset + n]
+            chunk = vec[offset : offset + n]
             argmax_global = offset + int(np.argmax(chunk))
             actual_axis, actual_label = cols[argmax_global]
-            assert actual_axis == axis_name, (
-                f'Argmax for {axis_name} landed in {actual_axis}'
-            )
+            assert actual_axis == axis_name, f'Argmax for {axis_name} landed in {actual_axis}'
             assert actual_label == winners[axis_name], (
                 f'{axis_name}: expected winning label {winners[axis_name]!r}, '
                 f'got {actual_label!r} (vector ordering mismatch)'
             )
             offset += n
-
 
 
 class TestSanitizeLyricsText:
@@ -234,7 +225,6 @@ class TestSanitizeLyricsText:
                 pytest.fail(f'Multiple consecutive blank lines: {lines!r}')
 
 
-
 class TestStripLrcTimestamps:
     def test_strips_leading_timestamps(self, lt):
         lrc = '[00:01.23]first line\n[00:05.67]second line'
@@ -245,7 +235,6 @@ class TestStripLrcTimestamps:
         lrc = '[00:01.00]\n[00:02.00]only content\n[00:03.00]'
         out = lt._strip_lrc_timestamps(lrc)
         assert out == 'only content'
-
 
 
 class TestSoftmax:

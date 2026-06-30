@@ -43,7 +43,15 @@ def _restore_and_smoke_test(ctx, pgserver):
     tmp = tempfile.mkdtemp()
     try:
         proc = subprocess.run(
-            [initdb, "-D", os.path.join(tmp, "d"), "--auth=trust", "--encoding=utf8", "-U", "postgres"],
+            [
+                initdb,
+                "-D",
+                os.path.join(tmp, "d"),
+                "--auth=trust",
+                "--encoding=utf8",
+                "-U",
+                "postgres",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

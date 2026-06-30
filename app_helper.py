@@ -13,6 +13,7 @@ It also re-exports the most commonly used ``database`` / ``taskqueue`` handles s
 the many modules doing ``from app_helper import get_db, redis_conn, ...`` are
 untouched.
 """
+
 import json
 import logging
 import time
@@ -22,11 +23,19 @@ import numpy as np
 
 import database
 from database import (  # noqa: F401
-    get_db, close_db, save_task_status, record_task_history, _build_task_note,
-    get_score_data_by_ids, load_map_projection, get_task_info_from_db, get_tracks_by_ids,
+    get_db,
+    close_db,
+    save_task_status,
+    record_task_history,
+    _build_task_note,
+    get_score_data_by_ids,
+    load_map_projection,
+    get_task_info_from_db,
+    get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
-    save_map_projection, save_artist_projection,
+    save_map_projection,
+    save_artist_projection,
 )
 from taskqueue import (
     redis_conn,
@@ -39,8 +48,12 @@ from taskqueue import (
 
 from config import (  # noqa: F401
     STRATIFIED_GENRES,
-    TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
-    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+    TASK_STATUS_PENDING,
+    TASK_STATUS_STARTED,
+    TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_REVOKED,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,7 +131,9 @@ def attach_song_features(rows, id_key='item_id'):
     return rows
 
 
-def serialize_neighbor_results(neighbor_results, missing_album='unknown', include_album_artist=True):
+def serialize_neighbor_results(
+    neighbor_results, missing_album='unknown', include_album_artist=True
+):
     """Build the similar-tracks JSON list from neighbor dicts carrying item_id + distance.
 
     Shared by the IVF similarity endpoints and the sonic-fingerprint endpoint so the
@@ -151,29 +166,9 @@ def serialize_neighbor_results(neighbor_results, missing_album='unknown', includ
             "top_genre": top_stratified_genre(info.get('mood_vector')),
         }
         if include_album_artist:
-            row["album_artist"] = (info.get('album_artist') or 'unknown')
+            row["album_artist"] = info.get('album_artist') or 'unknown'
         out.append(row)
     return out
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def build_and_store_map_projection(index_name='main_map'):
@@ -232,16 +227,16 @@ def build_and_store_map_projection(index_name='main_map'):
     try:
         save_map_projection(index_name, ids, projections)
         # Update the canonical in-memory cache (read by database.load_map_projection).
-        database.MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': ids, 'projection': projections}
+        database.MAP_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'id_map': ids,
+            'projection': projections,
+        }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
         logger.exception(f"Failed to build and store map projection: {e}")
         return False
-
-
-
-
 
 
 def build_and_store_artist_projection(index_name='artist_map'):
@@ -293,12 +288,14 @@ def build_and_store_artist_projection(index_name='artist_map'):
         artist_id = get_artist_id_by_name(artist_name) or artist_name
         for comp_idx in range(len(means)):
             mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
-            component_map.append({
-                'artist_id': artist_id,
-                'artist_name': artist_name,
-                'component_idx': comp_idx,
-                'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
-            })
+            component_map.append(
+                {
+                    'artist_id': artist_id,
+                    'artist_name': artist_name,
+                    'component_idx': comp_idx,
+                    'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
+                }
+            )
             row_i += 1
 
     projections = None
@@ -331,7 +328,11 @@ def build_and_store_artist_projection(index_name='artist_map'):
     try:
         save_artist_projection(index_name, component_map, projections)
         # Update the canonical in-memory cache (read by database.load_artist_projection).
-        database.ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': projections}
+        database.ARTIST_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'component_map': component_map,
+            'projection': projections,
+        }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
     except Exception as e:
@@ -339,11 +340,12 @@ def build_and_store_artist_projection(index_name='artist_map'):
         return False
 
 
-
-def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Task cancellation processed by API."):
+def cancel_job_and_children_recursive(
+    job_id, task_type_from_db=None, reason="Task cancellation processed by API."
+):
     """Helper to cancel a job and its children based on DB records.
 
-    NOTE: Minimal global behavior — when invoked from the API cancel endpoint we clear RQ queues,
+    NOTE: Minimal global behavior - when invoked from the API cancel endpoint we clear RQ queues,
     attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
     REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
     This keeps the function signature unchanged and is intentionally simple and destructive (as requested).
@@ -398,13 +400,19 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
             try:
                 if hasattr(q, 'empty'):
                     q.empty()
-                    logger.info(f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel")
+                    logger.info(
+                        f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel"
+                    )
                 else:
                     key = f"rq:queue:{getattr(q, 'name', '')}"
                     redis_conn.delete(key)
-                    logger.info(f"Deleted Redis key fallback for queue: {key} as part of global cancel")
+                    logger.info(
+                        f"Deleted Redis key fallback for queue: {key} as part of global cancel"
+                    )
             except Exception as e_q:
-                logger.warning(f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}")
+                logger.warning(
+                    f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}"
+                )
     except Exception as e_qdel:
         logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
 
@@ -435,15 +443,23 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
                             details_obj = None
                     # If the task was already in a terminal status, keep that one;
                     # otherwise mark it REVOKED.
-                    final_status = r['status'] if r['status'] in (
-                        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
-                    ) else TASK_STATUS_REVOKED
+                    final_status = (
+                        r['status']
+                        if r['status']
+                        in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+                        else TASK_STATUS_REVOKED
+                    )
                     record_task_history(
-                        r['task_id'], r['task_type'], final_status,
-                        duration_s, details=details_obj,
+                        r['task_id'],
+                        r['task_type'],
+                        final_status,
+                        duration_s,
+                        details=details_obj,
                     )
         except Exception as e_snap:
-            logger.warning(f"Global cancel: failed snapshotting task_status into task_history: {e_snap}")
+            logger.warning(
+                f"Global cancel: failed snapshotting task_status into task_history: {e_snap}"
+            )
 
         cur.execute("DELETE FROM task_status")
         deleted = cur.rowcount
@@ -457,7 +473,13 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
 
     try:
         # Ensure a single REVOKED row exists for job_id
-        save_task_status(job_id, 'unknown', TASK_STATUS_REVOKED, progress=100, details={"message": reason, "origin": "global_cancel"})
+        save_task_status(
+            job_id,
+            'unknown',
+            TASK_STATUS_REVOKED,
+            progress=100,
+            details={"message": reason, "origin": "global_cancel"},
+        )
     except Exception as e_save:
         logger.exception(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
 

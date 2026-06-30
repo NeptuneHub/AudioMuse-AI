@@ -1,4 +1,3 @@
-
 import sys
 import types
 from contextlib import ExitStack, contextmanager
@@ -18,6 +17,7 @@ def _reset_artist_globals():
         agm.artist_map = None
         agm.reverse_artist_map = None
         agm.artist_gmm_params = None
+
     _clear()
     yield
     _clear()
@@ -40,23 +40,38 @@ def _conn_returning(row):
 
 
 class TestLoadArtistIndexForQuerying:
-
     def test_ivf_path_sets_globals(self):
         conn, cur = _conn_returning(None)
         fake_map = {0: "Artist A", 1: "Artist B"}
         fake_gmm = {
-            "Artist A": {"means": [[0.1, 0.2]], "weights": [1.0], "n_components": 1,
-                          "n_features": 2, "n_tracks": 3, "is_few_songs": True, "tracks_hash": "h1"},
-            "Artist B": {"means": [[0.3, 0.4]], "weights": [1.0], "n_components": 1,
-                          "n_features": 2, "n_tracks": 7, "is_few_songs": False, "tracks_hash": "h2"},
+            "Artist A": {
+                "means": [[0.1, 0.2]],
+                "weights": [1.0],
+                "n_components": 1,
+                "n_features": 2,
+                "n_tracks": 3,
+                "is_few_songs": True,
+                "tracks_hash": "h1",
+            },
+            "Artist B": {
+                "means": [[0.3, 0.4]],
+                "weights": [1.0],
+                "n_components": 1,
+                "n_features": 2,
+                "n_tracks": 7,
+                "is_few_songs": False,
+                "tracks_hash": "h2",
+            },
         }
         fake_index = MagicMock()
         fake_index.__len__.return_value = len(fake_map)
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
-             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})), \
-             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"), \
-             patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
+            patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})),
+            patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"),
+            patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is fake_index
@@ -66,8 +81,10 @@ class TestLoadArtistIndexForQuerying:
 
     def test_no_ivf_index_resets_cache(self):
         conn, cur = _conn_returning(None)
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=False):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=False),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
@@ -78,15 +95,16 @@ class TestLoadArtistIndexForQuerying:
     def test_missing_metadata_resets_cache(self):
         conn, cur = _conn_returning(None)
         fake_index = MagicMock()
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
-             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})), \
-             patch.object(ibh, "load_segmented_blob", return_value=None):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
+            patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})),
+            patch.object(ibh, "load_segmented_blob", return_value=None),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
         assert agm.artist_map is None
-
 
 
 analysis_mod = None
@@ -123,9 +141,10 @@ _BUILDER_SOURCE_MODULES = {
 }
 
 
-@pytest.mark.skipif(analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env")
+@pytest.mark.skipif(
+    analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env"
+)
 class TestRunAllIndexBuilds:
-
     @contextmanager
     def _patched(self):
         with ExitStack() as stack:

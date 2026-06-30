@@ -1,4 +1,3 @@
-
 import importlib
 import logging
 import os
@@ -36,19 +35,20 @@ def using_pgserver():
 
 
 def _conn(host, port, password, user="postgres", dbname="postgres"):
-    return {"host": host, "port": int(port), "user": user,
-            "password": password, "dbname": dbname}
+    return {"host": host, "port": int(port), "user": user, "password": password, "dbname": dbname}
 
 
 def _conn_from_uri(uri, password):
     parsed = urlparse(uri)
     dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
-    return _conn(parsed.hostname or "127.0.0.1", parsed.port or paths.pg_port(),
-                 password, dbname=dbname)
+    return _conn(
+        parsed.hostname or "127.0.0.1", parsed.port or paths.pg_port(), password, dbname=dbname
+    )
 
 
 def _initdb_bin():
     from pgserver._commands import POSTGRES_BIN_PATH
+
     name = "initdb.exe" if os.name == "nt" else "initdb"
     return str(POSTGRES_BIN_PATH / name)
 
@@ -60,11 +60,23 @@ def _preinit_scram(data_dir, password):
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(password)
         subprocess.run(
-            [_initdb_bin(), "-D", data_dir, "-U", "postgres",
-             "--auth-host=scram-sha-256", "--auth-local=scram-sha-256",
-             "--encoding=utf8", f"--pwfile={pwfile}"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+            [
+                _initdb_bin(),
+                "-D",
+                data_dir,
+                "-U",
+                "postgres",
+                "--auth-host=scram-sha-256",
+                "--auth-local=scram-sha-256",
+                "--encoding=utf8",
+                f"--pwfile={pwfile}",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
         )
     finally:
         if pwfile and os.path.exists(pwfile):
@@ -90,6 +102,7 @@ def _harden_existing(data_dir, password, uri):
         return
     try:
         import psycopg2
+
         conn = psycopg2.connect(uri)
         try:
             conn.autocommit = True
@@ -125,6 +138,7 @@ def _clear_stale_data_dir(data_dir):
             "manually if you really want a fresh start."
         )
     import shutil
+
     logger.warning("Clearing incomplete PostgreSQL data dir %s before init", data_dir)
     shutil.rmtree(data_dir, ignore_errors=True)
 
@@ -133,6 +147,7 @@ def _patch_pgserver_pg_ctl():
     if os.name != "nt":
         return
     import pgserver.postgres_server as ps
+
     if getattr(ps, "_audiomuse_pg_ctl_patched", False):
         return
     with _patch_lock:
@@ -162,6 +177,7 @@ def start_embedded(data_dir):
     if _check_pgserver():
         _patch_pgserver_pg_ctl()
         import database
+
         fresh = not os.path.exists(os.path.join(data_dir, "PG_VERSION"))
         if fresh:
             _clear_stale_data_dir(data_dir)
@@ -172,8 +188,11 @@ def start_embedded(data_dir):
             except Exception:
                 if not fresh:
                     raise
-                logger.warning("Fresh PostgreSQL cluster failed to start — clearing and retrying once")
+                logger.warning(
+                    "Fresh PostgreSQL cluster failed to start - clearing and retrying once"
+                )
                 import shutil
+
                 shutil.rmtree(data_dir, ignore_errors=True)
                 _preinit_scram(data_dir, pw)
                 uri = database.start_embedded(data_dir)
@@ -181,6 +200,7 @@ def start_embedded(data_dir):
             _harden_existing(data_dir, pw, uri)
         return _conn_from_uri(uri, pw)
     from windows import embedded_pg
+
     return embedded_pg.start(data_dir, pw)
 
 
@@ -189,9 +209,11 @@ def ensure_embedded_running(data_dir):
     if _check_pgserver():
         _patch_pgserver_pg_ctl()
         import database
+
         with _embedded_lock:
             return _conn_from_uri(database.ensure_embedded_running(data_dir), pw)
     from windows import embedded_pg
+
     return embedded_pg.ensure_running(data_dir, pw)
 
 
@@ -199,6 +221,8 @@ def stop_embedded():
     with _embedded_lock:
         if _check_pgserver():
             import database
+
             return database.stop_embedded()
         from windows import embedded_pg
+
         return embedded_pg.stop()

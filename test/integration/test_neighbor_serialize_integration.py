@@ -76,6 +76,7 @@ def serialize_db(pg_dsn):
 
 def _bind_real_db(monkeypatch, conn):
     import database
+
     monkeypatch.setattr(database, 'get_db', lambda: conn)
 
 
@@ -99,6 +100,7 @@ def _score_count(conn):
 class TestSerializeNeighborResultsRealDb:
     def test_missing_album_sentinel_substitutes_null_and_empty(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'null-album', 'distance': 0.10},
@@ -112,6 +114,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_missing_album_none_preserves_raw_album(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'null-album', 'distance': 0.10},
@@ -125,6 +128,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_title_author_come_from_real_rows(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'normal-1', 'distance': 0.30},
@@ -140,6 +144,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_unknown_id_absent_from_db_is_skipped(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'normal-1', 'distance': 0.30},
@@ -153,6 +158,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_include_album_artist_flag_omits_field(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [{'item_id': 'normal-1', 'distance': 0.30}]
         out = app_helper.serialize_neighbor_results(neighbors, include_album_artist=False)
@@ -161,6 +167,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_injection_style_id_through_real_select_is_safe(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         before = _score_count(serialize_db)
         neighbors = [

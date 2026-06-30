@@ -8,12 +8,11 @@ from tasks.clustering_helper import (
     _prepare_and_scale_data,
     _apply_clustering_model,
     _get_stratified_song_subset,
-    _get_track_primary_genre
+    _get_track_primary_genre,
 )
 
 
 class TestMutateParam:
-
     def test_mutate_param_integer_within_bounds(self):
         random.seed(42)
         value = 10
@@ -58,16 +57,13 @@ class TestMutateParam:
 
 
 class TestGenerateRandomParameters:
-
     def test_generates_kmeans_parameters(self):
         data = np.random.rand(100, 50)
         method = 'kmeans'
         pca_ranges = {'components_min': 0, 'components_max': 30}
         num_clust_ranges = (5, 20)
 
-        params = _generate_random_parameters(
-            method, data, pca_ranges, num_clust_ranges, {}, {}, {}
-        )
+        params = _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, {}, {}, {})
 
         assert 'pca_config' in params
         assert 'clustering_method_config' in params
@@ -81,9 +77,7 @@ class TestGenerateRandomParameters:
         pca_ranges = {'components_min': 0, 'components_max': 30}
         db_ranges = {'eps_min': 0.1, 'eps_max': 2.0, 'samples_min': 2, 'samples_max': 10}
 
-        params = _generate_random_parameters(
-            method, data, pca_ranges, (), db_ranges, {}, {}
-        )
+        params = _generate_random_parameters(method, data, pca_ranges, (), db_ranges, {}, {})
 
         assert params['clustering_method_config']['method'] == 'dbscan'
         dbscan_params = params['clustering_method_config']['params']
@@ -96,9 +90,7 @@ class TestGenerateRandomParameters:
         pca_ranges = {'components_min': 0, 'components_max': 30}
         gmm_ranges = {'n_components_min': 2, 'n_components_max': 15}
 
-        params = _generate_random_parameters(
-            method, data, pca_ranges, (), {}, gmm_ranges, {}
-        )
+        params = _generate_random_parameters(method, data, pca_ranges, (), {}, gmm_ranges, {})
 
         assert params['clustering_method_config']['method'] == 'gmm'
         n_components = params['clustering_method_config']['params']['n_components']
@@ -110,9 +102,7 @@ class TestGenerateRandomParameters:
         pca_ranges = {'components_min': 0, 'components_max': 30}
         spec_ranges = {'n_clusters_min': 3, 'n_clusters_max': 12}
 
-        params = _generate_random_parameters(
-            method, data, pca_ranges, (), {}, {}, spec_ranges
-        )
+        params = _generate_random_parameters(method, data, pca_ranges, (), {}, {}, spec_ranges)
 
         assert params['clustering_method_config']['method'] == 'spectral'
         spectral_params = params['clustering_method_config']['params']
@@ -123,14 +113,10 @@ class TestGenerateRandomParameters:
 
 
 class TestMutateParameters:
-
     def test_mutates_kmeans_parameters(self):
         elite_params = {
             'pca_config': {'enabled': True, 'components': 10},
-            'clustering_method_config': {
-                'method': 'kmeans',
-                'params': {'n_clusters': 10}
-            }
+            'clustering_method_config': {'method': 'kmeans', 'params': {'n_clusters': 10}},
         }
         data = np.random.rand(100, 50)
         mutation_cfg = {'int_abs_delta': 2, 'float_abs_delta': 0.1}
@@ -138,8 +124,7 @@ class TestMutateParameters:
         num_clust_ranges = (5, 20)
 
         mutated = _mutate_parameters(
-            elite_params, mutation_cfg, 'kmeans', data,
-            pca_ranges, num_clust_ranges, {}, {}, {}
+            elite_params, mutation_cfg, 'kmeans', data, pca_ranges, num_clust_ranges, {}, {}, {}
         )
 
         assert 'pca_config' in mutated
@@ -152,8 +137,8 @@ class TestMutateParameters:
             'pca_config': {'enabled': False, 'components': 0},
             'clustering_method_config': {
                 'method': 'dbscan',
-                'params': {'eps': 0.5, 'min_samples': 5}
-            }
+                'params': {'eps': 0.5, 'min_samples': 5},
+            },
         }
         data = np.random.rand(100, 50)
         mutation_cfg = {'int_abs_delta': 1, 'float_abs_delta': 0.1}
@@ -161,8 +146,7 @@ class TestMutateParameters:
         db_ranges = {'eps_min': 0.1, 'eps_max': 2.0, 'samples_min': 2, 'samples_max': 10}
 
         mutated = _mutate_parameters(
-            elite_params, mutation_cfg, 'dbscan', data,
-            pca_ranges, (), db_ranges, {}, {}
+            elite_params, mutation_cfg, 'dbscan', data, pca_ranges, (), db_ranges, {}, {}
         )
 
         dbscan_params = mutated['clustering_method_config']['params']
@@ -171,7 +155,6 @@ class TestMutateParameters:
 
 
 class TestPrepareAndScaleData:
-
     def test_uses_embeddings_when_enabled(self):
         X_feat = np.random.rand(50, 20)
         X_embed = np.random.rand(50, 128)
@@ -198,14 +181,10 @@ class TestPrepareAndScaleData:
 
 
 class TestApplyClusteringModel:
-
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_applies_kmeans_successfully(self):
         data = np.random.rand(50, 10)
-        method_config = {
-            'method': 'kmeans',
-            'params': {'n_clusters': 5}
-        }
+        method_config = {'method': 'kmeans', 'params': {'n_clusters': 5}}
 
         labels, centers, model = _apply_clustering_model(data, method_config, "Test", 1)
 
@@ -216,10 +195,7 @@ class TestApplyClusteringModel:
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_applies_dbscan_successfully(self):
         data = np.random.rand(50, 10)
-        method_config = {
-            'method': 'dbscan',
-            'params': {'eps': 0.5, 'min_samples': 3}
-        }
+        method_config = {'method': 'dbscan', 'params': {'eps': 0.5, 'min_samples': 3}}
 
         labels, centers, model = _apply_clustering_model(data, method_config, "Test", 1)
 
@@ -229,10 +205,7 @@ class TestApplyClusteringModel:
     @patch('tasks.clustering_helper.USE_GPU_CLUSTERING', False)
     def test_rejects_invalid_kmeans_params(self):
         data = np.random.rand(50, 10)
-        method_config = {
-            'method': 'kmeans',
-            'params': {'n_clusters': 1}
-        }
+        method_config = {'method': 'kmeans', 'params': {'n_clusters': 1}}
 
         labels, centers, model = _apply_clustering_model(data, method_config, "Test", 1)
 
@@ -240,7 +213,6 @@ class TestApplyClusteringModel:
 
 
 class TestGetStratifiedSongSubset:
-
     def test_stratified_sampling_balances_genres(self):
         genre_map = {
             'Rock': [
@@ -249,7 +221,7 @@ class TestGetStratifiedSongSubset:
             ],
             'Pop': [
                 {'item_id': 'p1', 'mood_vector': 'Pop:0.7,Rock:0.3'},
-            ]
+            ],
         }
         target_per_genre = 2
 
@@ -268,7 +240,7 @@ class TestGetStratifiedSongSubset:
             'Pop': [
                 {'item_id': 'p1', 'mood_vector': 'Pop:0.8'},
                 {'item_id': 'p2', 'mood_vector': 'Pop:0.7'},
-            ]
+            ],
         }
         target_per_genre = 2
         prev_ids = ['r1', 'p1']
@@ -281,7 +253,6 @@ class TestGetStratifiedSongSubset:
 
 
 class TestGetTrackPrimaryGenre:
-
     def test_returns_genre_from_mood_vector(self):
         track_data = {'mood_vector': 'Rock:0.8,Pop:0.2'}
 
@@ -302,4 +273,3 @@ class TestGetTrackPrimaryGenre:
         genre = _get_track_primary_genre(track_data)
 
         assert genre == '__other__'
-

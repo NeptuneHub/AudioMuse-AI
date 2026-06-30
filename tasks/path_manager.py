@@ -1,8 +1,20 @@
 import logging
 import numpy as np
 
-from .ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector, find_nearest_neighbors_by_id
-from config import PATH_CANDIDATES_PER_STEP, PATH_DEFAULT_LENGTH, PATH_DISTANCE_METRIC, PATH_FIX_SIZE, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK
+from .ivf_manager import (
+    get_vector_by_id,
+    find_nearest_neighbors_by_vector,
+    find_nearest_neighbors_by_id,
+)
+from config import (
+    PATH_CANDIDATES_PER_STEP,
+    PATH_DEFAULT_LENGTH,
+    PATH_DISTANCE_METRIC,
+    PATH_FIX_SIZE,
+    DUPLICATE_DISTANCE_THRESHOLD_COSINE,
+    DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
+    DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+)
 from config import MAX_SONGS_PER_ARTIST
 
 logger = logging.getLogger(__name__)
@@ -41,7 +53,9 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
         norm_v2 = np.linalg.norm(v2)
 
         if norm_v1 == 0 or norm_v2 == 0:
-            logger.warning("Cannot perform angular interpolation with a zero vector. Falling back to linear.")
+            logger.warning(
+                "Cannot perform angular interpolation with a zero vector. Falling back to linear."
+            )
             return np.linspace(v1, v2, num=num)
 
         v1_u = v1 / norm_v1
@@ -73,6 +87,7 @@ def interpolate_centroids(v1, v2, num, metric="euclidean"):
 
 def _create_path_from_ids(path_ids):
     from app_helper import get_tracks_by_ids
+
     if not path_ids:
         return []
 
@@ -90,7 +105,9 @@ def _create_path_from_ids(path_ids):
         album_artist = song.get('album_artist')
         song['album_artist'] = album_artist if album_artist else 'Unknown'
 
-    ordered_path_details = [details_map[song_id] for song_id in unique_path_ids if song_id in details_map]
+    ordered_path_details = [
+        details_map[song_id] for song_id in unique_path_ids if song_id in details_map
+    ]
     return ordered_path_details
 
 
@@ -100,16 +117,29 @@ def _normalize_signature(artist, title):
     return (artist_norm, title_norm)
 
 
-def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_songs_details_so_far,
-                             k_search=10, num_to_find=1, artist_counts=None,
-                             get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                             metric=None, dup_threshold_cosine=None):
+def _find_best_songs_for_job(
+    centroid_vec,
+    used_song_ids,
+    used_signatures,
+    path_songs_details_so_far,
+    k_search=10,
+    num_to_find=1,
+    artist_counts=None,
+    get_vector_fn=get_vector_by_id,
+    neighbors_fn=find_nearest_neighbors_by_vector,
+    metric=None,
+    dup_threshold_cosine=None,
+):
     from app_helper import get_score_data_by_ids
 
     if metric is None:
         metric = PATH_DISTANCE_METRIC
     if metric == 'angular':
-        threshold = dup_threshold_cosine if dup_threshold_cosine is not None else DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        threshold = (
+            dup_threshold_cosine
+            if dup_threshold_cosine is not None
+            else DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        )
     else:
         threshold = DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     metric_name = 'Angular' if metric == 'angular' else 'Euclidean'
@@ -145,13 +175,21 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
         signature = _normalize_signature(details.get('author'), details.get('title'))
         if signature in used_signatures:
-            logger.debug(f"Filtering song (NAME/ID FILTER): '{details.get('title')}' by '{details.get('author')}' as it is already in the path.")
+            logger.debug(
+                f"Filtering song (NAME/ID FILTER): '{details.get('title')}' by '{details.get('author')}' as it is already in the path."
+            )
             continue
 
         author_norm = (details.get('author') or '').strip().lower()
-        if artist_counts is not None and MAX_SONGS_PER_ARTIST is not None and MAX_SONGS_PER_ARTIST > 0:
+        if (
+            artist_counts is not None
+            and MAX_SONGS_PER_ARTIST is not None
+            and MAX_SONGS_PER_ARTIST > 0
+        ):
             if artist_counts.get(author_norm, 0) >= MAX_SONGS_PER_ARTIST:
-                logger.debug(f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached.")
+                logger.debug(
+                    f"Filtering song (ARTIST CAP) '{details.get('title')}' by '{details.get('author')}' because artist cap {MAX_SONGS_PER_ARTIST} reached."
+                )
                 continue
 
         candidate_vector = get_vector_fn(candidate_id)
@@ -163,7 +201,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and path_songs_details_so_far:
             for prev_song_details in path_songs_details_so_far[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
-                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'], metric=metric)
+                    distance_from_prev = get_distance(
+                        candidate_vector, prev_song_details['vector'], metric=metric
+                    )
                     if distance_from_prev < threshold:
                         logger.debug(
                             f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
@@ -178,7 +218,9 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
         if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 and found_songs:
             for prev_song_details in found_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]:
                 if 'vector' in prev_song_details:
-                    distance_from_prev = get_distance(candidate_vector, prev_song_details['vector'], metric=metric)
+                    distance_from_prev = get_distance(
+                        candidate_vector, prev_song_details['vector'], metric=metric
+                    )
                     if distance_from_prev < threshold:
                         logger.debug(
                             f"Filtering song (INTERNAL JOB DISTANCE FILTER) with {metric_name} distance: '{details.get('title')}' by '{details.get('author')}' "
@@ -190,22 +232,25 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
             if is_too_close:
                 continue
 
-        found_songs.append({
-            "item_id": candidate_id,
-            "signature": signature,
-            "vector": candidate_vector,
-            "title": details.get('title'),
-            "author": details.get('author')
-        })
+        found_songs.append(
+            {
+                "item_id": candidate_id,
+                "signature": signature,
+                "vector": candidate_vector,
+                "title": details.get('title'),
+                "author": details.get('author'),
+            }
+        )
 
         used_song_ids.add(candidate_id)
         used_signatures.add(signature)
         if artist_counts is not None:
             artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
 
-
     if len(found_songs) < num_to_find:
-        logger.warning(f"Found only {len(found_songs)} of {num_to_find} songs for centroid (k={k_search}). Rolling back adds.")
+        logger.warning(
+            f"Found only {len(found_songs)} of {num_to_find} songs for centroid (k={k_search}). Rolling back adds."
+        )
         for song in found_songs:
             if song['item_id'] in used_song_ids:
                 used_song_ids.remove(song['item_id'])
@@ -218,24 +263,39 @@ def _find_best_songs_for_job(centroid_vec, used_song_ids, used_signatures, path_
 
         return []
 
-    logger.info(f"Successfully found {len(found_songs)} of {num_to_find} songs for centroid (k={k_search}).")
+    logger.info(
+        f"Successfully found {len(found_songs)} of {num_to_find} songs for centroid (k={k_search})."
+    )
     return found_songs
 
 
-def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH, path_fix_size=PATH_FIX_SIZE,
-                            get_vector_fn=get_vector_by_id, neighbors_fn=find_nearest_neighbors_by_vector,
-                            neighbors_by_id_fn=find_nearest_neighbors_by_id, metric=None, dup_threshold_cosine=None):
+def find_path_between_songs(
+    start_item_id,
+    end_item_id,
+    Lreq=PATH_DEFAULT_LENGTH,
+    path_fix_size=PATH_FIX_SIZE,
+    get_vector_fn=get_vector_by_id,
+    neighbors_fn=find_nearest_neighbors_by_vector,
+    neighbors_by_id_fn=find_nearest_neighbors_by_id,
+    metric=None,
+    dup_threshold_cosine=None,
+):
     from app_helper import get_score_data_by_ids
-    logger.info(f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}.")
+
+    logger.info(
+        f"Starting centroid path generation (with merge logic) from {start_item_id} to {end_item_id} with requested length {Lreq}."
+    )
 
     if metric is None:
         metric = PATH_DISTANCE_METRIC
 
     if Lreq < 2:
-        logger.warning(f"Requested path length {Lreq} is less than 2. Returning just start and end songs if different.")
+        logger.warning(
+            f"Requested path length {Lreq} is less than 2. Returning just start and end songs if different."
+        )
         if start_item_id == end_item_id:
-             path_details = _create_path_from_ids([start_item_id])
-             return path_details, 0.0
+            path_details = _create_path_from_ids([start_item_id])
+            return path_details, 0.0
         path_details = _create_path_from_ids([start_item_id, end_item_id])
 
         total_path_distance = 0.0
@@ -250,7 +310,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     start_details_list = get_score_data_by_ids([start_item_id])
     end_details_list = get_score_data_by_ids([end_item_id])
 
-    if not all([start_vector is not None, end_vector is not None, start_details_list, end_details_list]):
+    if not all(
+        [start_vector is not None, end_vector is not None, start_details_list, end_details_list]
+    ):
         logger.error("Could not retrieve vectors or details for start or end song.")
         return None, 0.0
 
@@ -260,7 +322,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     used_song_ids = {start_item_id, end_item_id}
     used_signatures = {
         _normalize_signature(start_details.get('author'), start_details.get('title')),
-        _normalize_signature(end_details.get('author'), end_details.get('title'))
+        _normalize_signature(end_details.get('author'), end_details.get('title')),
     }
 
     artist_counts = {}
@@ -278,7 +340,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
     k_max = 1000
 
     if num_intermediate > 0:
-        logger.info(f"Attempting to find {num_intermediate} intermediate songs for a total path of {Lreq}.")
+        logger.info(
+            f"Attempting to find {num_intermediate} intermediate songs for a total path of {Lreq}."
+        )
         all_centroids = interpolate_centroids(start_vector, end_vector, num=Lreq, metric=metric)
 
         intermediate_centroids = all_centroids[1:-1]
@@ -301,13 +365,25 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
             union_size = 0
 
         representative = intersection_size if intersection_size > 0 else union_size
-        initial_count = int(max(1, min(num_intermediate, representative // 2 if representative > 0 else num_intermediate)))
-        logger.info(f"Centroid heuristic: sampled {sample_n} neighbors each side -> intersection={intersection_size}, union={union_size}. Using initial centroid count {initial_count} (requested intermediate {num_intermediate}).")
+        initial_count = int(
+            max(
+                1,
+                min(
+                    num_intermediate,
+                    representative // 2 if representative > 0 else num_intermediate,
+                ),
+            )
+        )
+        logger.info(
+            f"Centroid heuristic: sampled {sample_n} neighbors each side -> intersection={intersection_size}, union={union_size}. Using initial centroid count {initial_count} (requested intermediate {num_intermediate})."
+        )
 
         jobs = []
 
         if not path_fix_size:
-            logger.info("PATH_FIX_SIZE disabled: using single-pass centroid picks (no merging). Path may be shorter than requested.")
+            logger.info(
+                "PATH_FIX_SIZE disabled: using single-pass centroid picks (no merging). Path may be shorter than requested."
+            )
             for centroid in intermediate_centroids:
                 found = _find_best_songs_for_job(
                     centroid,
@@ -320,7 +396,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     get_vector_fn=get_vector_fn,
                     neighbors_fn=neighbors_fn,
                     metric=metric,
-                    dup_threshold_cosine=dup_threshold_cosine
+                    dup_threshold_cosine=dup_threshold_cosine,
                 )
                 if found and len(found) > 0:
                     path_songs_details.extend(found)
@@ -328,7 +404,14 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
             jobs = []
             if initial_count >= num_intermediate:
                 for idx in range(num_intermediate):
-                    jobs.append({'vector': intermediate_centroids[idx], 'k': k_base, 'original_indices': [idx], 'num_to_find': 1})
+                    jobs.append(
+                        {
+                            'vector': intermediate_centroids[idx],
+                            'k': k_base,
+                            'original_indices': [idx],
+                            'num_to_find': 1,
+                        }
+                    )
             else:
                 group_size = float(num_intermediate) / float(initial_count)
                 for j in range(initial_count):
@@ -342,8 +425,17 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     bucket_vecs = [intermediate_centroids[idx] for idx in indices]
                     bucket_mid = np.mean(bucket_vecs, axis=0)
                     num_to_find = len(indices)
-                    scaled_k = min(k_max, max(k_base, int(k_base * (num_intermediate / float(initial_count)))))
-                    jobs.append({'vector': bucket_mid, 'k': scaled_k, 'original_indices': indices, 'num_to_find': num_to_find})
+                    scaled_k = min(
+                        k_max, max(k_base, int(k_base * (num_intermediate / float(initial_count))))
+                    )
+                    jobs.append(
+                        {
+                            'vector': bucket_mid,
+                            'k': scaled_k,
+                            'original_indices': indices,
+                            'num_to_find': num_to_find,
+                        }
+                    )
 
         if path_fix_size and jobs:
             i = 0
@@ -361,7 +453,7 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     get_vector_fn=get_vector_fn,
                     neighbors_fn=neighbors_fn,
                     metric=metric,
-                    dup_threshold_cosine=dup_threshold_cosine
+                    dup_threshold_cosine=dup_threshold_cosine,
                 )
 
                 num_found = len(found_songs)
@@ -372,10 +464,14 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                     i += 1
                 else:
                     num_missing = num_needed
-                    logger.warning(f"Job {i} (k={job['k']}, needed {num_needed}) failed. Merging with next job.")
+                    logger.warning(
+                        f"Job {i} (k={job['k']}, needed {num_needed}) failed. Merging with next job."
+                    )
 
                     if i + 1 >= len(jobs):
-                        logger.error(f"CRITICAL: Last centroid job failed (k={job['k']}) and cannot merge. Path will be short.")
+                        logger.error(
+                            f"CRITICAL: Last centroid job failed (k={job['k']}) and cannot merge. Path will be short."
+                        )
                         i += 1
                     else:
                         job_a = jobs[i]
@@ -387,7 +483,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                         vec_a_orig = intermediate_centroids[idx_a_start]
                         vec_b_orig = intermediate_centroids[idx_b_end]
 
-                        merged_vector = interpolate_centroids(vec_a_orig, vec_b_orig, num=3, metric=metric)[1]
+                        merged_vector = interpolate_centroids(
+                            vec_a_orig, vec_b_orig, num=3, metric=metric
+                        )[1]
 
                         merged_k = min(job_a['k'] + job_b['k'], k_max)
 
@@ -400,7 +498,9 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
                         job_a['original_indices'] = merged_indices
                         job_a['num_to_find'] = still_need_to_find
 
-                        logger.info(f"Retrying merged job at index {i} (k={merged_k}, need to find {still_need_to_find} more songs, represents {len(merged_indices)} original centroids)")
+                        logger.info(
+                            f"Retrying merged job at index {i} (k={merged_k}, need to find {still_need_to_find} more songs, represents {len(merged_indices)} original centroids)"
+                        )
 
     path_songs_details.append({**end_details, 'vector': end_vector})
 
@@ -413,14 +513,15 @@ def find_path_between_songs(start_item_id, end_item_id, Lreq=PATH_DEFAULT_LENGTH
         path_vectors = [get_vector_fn(song['item_id']) for song in final_path_details]
         for i in range(len(path_vectors) - 1):
             v1 = path_vectors[i]
-            v2 = path_vectors[i+1]
+            v2 = path_vectors[i + 1]
             if v1 is not None and v2 is not None:
                 total_path_distance += get_distance(v1, v2, metric=metric)
 
     if len(final_path_details) != Lreq:
-         logger.warning(f"Final path length is {len(final_path_details)}, but {Lreq} was requested. This can happen if the last job fails to merge and find all songs.")
+        logger.warning(
+            f"Final path length is {len(final_path_details)}, but {Lreq} was requested. This can happen if the last job fails to merge and find all songs."
+        )
     else:
         logger.info(f"Successfully generated path with exact requested length of {Lreq}.")
 
     return final_path_details, total_path_distance
-

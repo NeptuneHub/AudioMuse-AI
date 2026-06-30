@@ -1,28 +1,36 @@
-
 import multiprocessing
+
 _orig_get_context = multiprocessing.get_context
+
+
 def _win_get_context(method=None):
     if method == 'fork':
         method = 'spawn'
     return _orig_get_context(method)
+
+
 multiprocessing.get_context = _win_get_context
 
 import os as _os_patch
+
 if not hasattr(_os_patch, 'wait4'):
     _os_waitpid = _os_patch.waitpid
+
     def _win_wait4(pid, options):
         return _os_waitpid(pid, options) + (None,)
+
     _os_patch.wait4 = _win_wait4
 if not hasattr(_os_patch, 'WIFEXITED'):
-    _os_patch.WIFEXITED   = lambda status: True
+    _os_patch.WIFEXITED = lambda status: True
 if not hasattr(_os_patch, 'WIFSIGNALED'):
     _os_patch.WIFSIGNALED = lambda status: False
 if not hasattr(_os_patch, 'WTERMSIG'):
-    _os_patch.WTERMSIG    = lambda status: 0
+    _os_patch.WTERMSIG = lambda status: 0
 if not hasattr(_os_patch, 'WEXITSTATUS'):
     _os_patch.WEXITSTATUS = lambda status: status
 
 import os as _os
+
 _os.environ.setdefault("OTEL_PYTHON_CONTEXT", "contextvars_context")
 
 import os
@@ -53,6 +61,7 @@ def _command_from_argv():
 def _run_flask():
     import waitress
     import app as app_module
+
     waitress.serve(
         app_module.app,
         host="0.0.0.0",
@@ -75,10 +84,10 @@ def _run_role(role):
         runpy.run_module("rq_janitor", run_name="__main__")
     elif role == "restart-listener":
         import restart_listener
+
         restart_listener.main()
     else:
         raise SystemExit(f"Unknown role: {role}")
-
 
 
 _INSTANCE_LOCK = None
@@ -116,6 +125,7 @@ def _release_single_instance_lock():
     if _INSTANCE_LOCK is not None:
         import ctypes
         from ctypes import wintypes
+
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
@@ -129,6 +139,7 @@ def _open_browser(url):
 
 def _silence_supervisor_db_probe():
     import logging
+
     logging.getLogger("tasks.setup_manager").setLevel(logging.ERROR)
 
 
@@ -136,6 +147,7 @@ def main():
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
+
         sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
 
     role = _role_from_argv()
@@ -172,9 +184,11 @@ def _start_supervisor():
         return
 
     supervisor = ProcessSupervisor()
+
     def _on_ctrl(sig):
         print("\nShutting down...")
         supervisor.stop_all()
+
     signal.signal(signal.SIGINT, _on_ctrl)
     signal.signal(signal.SIGTERM, _on_ctrl)
 
@@ -198,6 +212,7 @@ def _hide_console_if_owned():
     try:
         import ctypes
         from ctypes import wintypes
+
         kernel32 = ctypes.windll.kernel32
         user32 = ctypes.windll.user32
         kernel32.GetConsoleWindow.restype = wintypes.HWND
@@ -227,7 +242,12 @@ def _run_tray():
         return
 
     supervisor = ProcessSupervisor()
-    _labels = {"running": "Running", "starting": "Starting...", "stopping": "Stopping...", "stopped": "Stopped"}
+    _labels = {
+        "running": "Running",
+        "starting": "Starting...",
+        "stopping": "Stopping...",
+        "stopped": "Stopped",
+    }
 
     def _status_title(_item):
         return f"Status: {_labels.get(supervisor.state(), supervisor.state())}"
@@ -255,7 +275,9 @@ def _run_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open in Browser", _on_open_browser, default=True),
         pystray.MenuItem("Start", _on_start, enabled=lambda _i: supervisor.state() == "stopped"),
-        pystray.MenuItem("Stop", _on_stop, enabled=lambda _i: supervisor.state() in ("running", "starting")),
+        pystray.MenuItem(
+            "Stop", _on_stop, enabled=lambda _i: supervisor.state() in ("running", "starting")
+        ),
         pystray.MenuItem("Open Log", _on_open_log),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", _on_quit),

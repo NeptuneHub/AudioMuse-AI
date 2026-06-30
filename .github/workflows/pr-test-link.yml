@@ -36,7 +36,7 @@ on:
       - completed
 
 # Serialize updates for a given PR head so two builds finishing at once cannot
-# clobber each other's edit. Cancel stale queued runs — only the last one runs
+# clobber each other's edit. Cancel stale queued runs - only the last one runs
 # and sees ALL completed builds, not just the one that triggered it.
 concurrency:
   group: pr-test-link-${{ github.event.workflow_run.head_branch }}
@@ -116,7 +116,7 @@ jobs:
             const lines = [];
             for (const b of builds) {
               const run = latestSuccessfulRun(b.wf);
-              if (!run) continue;                       // no successful build yet — show nothing
+              if (!run) continue;                       // no successful build yet - show nothing
               if (b.kind === 'artifact') {
                 // VERIFY the artifact exists before publishing its public link.
                 const arts = await github.paginate(

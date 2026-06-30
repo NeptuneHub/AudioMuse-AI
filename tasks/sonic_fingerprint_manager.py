@@ -9,8 +9,10 @@ from .ivf_manager import find_nearest_neighbors_by_vector
 
 logger = logging.getLogger(__name__)
 
+
 def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     from app_helper import get_tracks_by_ids
+
     logger.info("Generating sonic fingerprint...")
 
     total_desired_size = num_neighbors if num_neighbors is not None else SONIC_FINGERPRINT_NEIGHBORS
@@ -26,17 +28,27 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     logger.debug(f"Top played song IDs: {top_song_ids[:5]}...")
 
     track_details = get_tracks_by_ids(top_song_ids)
-    logger.info(f"Retrieved embeddings for {len(track_details)} out of {len(top_song_ids)} songs from database.")
+    logger.info(
+        f"Retrieved embeddings for {len(track_details)} out of {len(top_song_ids)} songs from database."
+    )
     if track_details:
-        logger.debug(f"Sample track details - item_ids: {[t['item_id'] for t in track_details[:3]]}")
+        logger.debug(
+            f"Sample track details - item_ids: {[t['item_id'] for t in track_details[:3]]}"
+        )
     else:
         logger.warning("No track details found in database for any of the top played songs!")
     if not track_details:
         logger.warning("Could not retrieve embeddings for any of the top songs.")
         return []
 
-    embeddings_map = {track['item_id']: track['embedding_vector'] for track in track_details if 'embedding_vector' in track and track['embedding_vector'].size > 0}
-    logger.info(f"Found valid embeddings for {len(embeddings_map)} songs out of {len(track_details)} track details.")
+    embeddings_map = {
+        track['item_id']: track['embedding_vector']
+        for track in track_details
+        if 'embedding_vector' in track and track['embedding_vector'].size > 0
+    }
+    logger.info(
+        f"Found valid embeddings for {len(embeddings_map)} songs out of {len(track_details)} track details."
+    )
 
     if not embeddings_map:
         logger.error("No songs have valid embeddings in the database!")
@@ -63,7 +75,7 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
                     dot_index = last_played_str.rfind('.')
                     z_index = last_played_str.rfind('Z')
                     if z_index > dot_index and (z_index - dot_index - 1) > 6:
-                        last_played_str = last_played_str[:dot_index+7] + 'Z'
+                        last_played_str = last_played_str[: dot_index + 7] + 'Z'
 
                 last_played_dt = datetime.fromisoformat(last_played_str.replace('Z', '+00:00'))
                 days_since_played = (datetime.now(timezone.utc) - last_played_dt).days
@@ -73,7 +85,9 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
                 weight = np.exp(-decay_rate * max(0, days_since_played))
 
             except (ValueError, TypeError) as e:
-                logger.warning(f"Could not parse date '{last_played_str}' for song {song_id}. Using lower weight. Error: {e}")
+                logger.warning(
+                    f"Could not parse date '{last_played_str}' for song {song_id}. Using lower weight. Error: {e}"
+                )
                 weight = 0.5
         else:
             weight = 0.25
@@ -83,11 +97,15 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         logger.info(f"Song {song_id}, days since played: {days_since_played}, weight: {weight:.4f}")
 
     if not weighted_vectors:
-        logger.error("No valid embeddings with weights could be calculated. Cannot generate fingerprint.")
+        logger.error(
+            "No valid embeddings with weights could be calculated. Cannot generate fingerprint."
+        )
         return []
 
     average_vector = np.sum(weighted_vectors, axis=0) / total_weight
-    logger.info(f"Calculated average vector (sonic fingerprint) from {len(weighted_vectors)} songs.")
+    logger.info(
+        f"Calculated average vector (sonic fingerprint) from {len(weighted_vectors)} songs."
+    )
 
     contributing_seed_ids = list(embeddings_map.keys())
     num_seed_songs = len(contributing_seed_ids)
@@ -95,16 +113,21 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
     neighbors_to_find = total_desired_size - num_seed_songs
 
     if neighbors_to_find <= 0:
-        logger.info(f"The number of seed songs ({num_seed_songs}) is >= the desired playlist size ({total_desired_size}). Returning only seed songs, truncated to the desired size.")
-        final_results = [{'item_id': song_id, 'distance': 0.0} for song_id in contributing_seed_ids[:total_desired_size]]
+        logger.info(
+            f"The number of seed songs ({num_seed_songs}) is >= the desired playlist size ({total_desired_size}). Returning only seed songs, truncated to the desired size."
+        )
+        final_results = [
+            {'item_id': song_id, 'distance': 0.0}
+            for song_id in contributing_seed_ids[:total_desired_size]
+        ]
         return final_results
 
     try:
-        logger.info(f"Searching for {neighbors_to_find} new neighbors to supplement the {num_seed_songs} seed songs.")
+        logger.info(
+            f"Searching for {neighbors_to_find} new neighbors to supplement the {num_seed_songs} seed songs."
+        )
         similar_songs_from_ivf = find_nearest_neighbors_by_vector(
-            query_vector=average_vector,
-            n=neighbors_to_find,
-            eliminate_duplicates=True
+            query_vector=average_vector, n=neighbors_to_find, eliminate_duplicates=True
         )
         logger.info(f"Found {len(similar_songs_from_ivf)} similar songs for the sonic fingerprint.")
 

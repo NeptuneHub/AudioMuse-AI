@@ -18,7 +18,6 @@ def client(app):
 
 
 class TestCleaningPage:
-
     def test_cleaning_page_returns_html(self, client):
         with patch('app_analysis.render_template') as mock_render:
             mock_render.return_value = "<html>Cleaning Page</html>"
@@ -27,14 +26,11 @@ class TestCleaningPage:
 
             assert response.status_code == 200
             mock_render.assert_called_once_with(
-                'cleaning.html',
-                title='AudioMuse-AI - Database Cleaning',
-                active='cleaning'
+                'cleaning.html', title='AudioMuse-AI - Database Cleaning', active='cleaning'
             )
 
 
 class TestStartAnalysisEndpoint:
-
     @pytest.fixture(autouse=True)
     def patch_active_analysis_task(self):
         with patch('app_analysis.get_active_main_task', return_value=None) as mock_active_task:
@@ -51,10 +47,7 @@ class TestStartAnalysisEndpoint:
         mock_job.get_status.return_value = "queued"
         mock_queue.enqueue.return_value = mock_job
 
-        response = client.post(
-            '/api/analysis/start',
-            json={}
-        )
+        response = client.post('/api/analysis/start', json={})
 
         assert response.status_code == 202
         data = response.get_json()
@@ -81,10 +74,7 @@ class TestStartAnalysisEndpoint:
         mock_job.get_status.return_value = "queued"
         mock_queue.enqueue.return_value = mock_job
 
-        response = client.post(
-            '/api/analysis/start',
-            json={}
-        )
+        response = client.post('/api/analysis/start', json={})
 
         assert response.status_code == 202
 
@@ -104,11 +94,7 @@ class TestStartAnalysisEndpoint:
         mock_queue.enqueue.return_value = mock_job
 
         response = client.post(
-            '/api/analysis/start',
-            json={
-                'num_recent_albums': 10,
-                'top_n_moods': 15
-            }
+            '/api/analysis/start', json={'num_recent_albums': 10, 'top_n_moods': 15}
         )
 
         assert response.status_code == 202
@@ -130,8 +116,7 @@ class TestStartAnalysisEndpoint:
         mock_queue.enqueue.return_value = mock_job
 
         response = client.post(
-            '/api/analysis/start',
-            json={'num_recent_albums': 3, 'top_n_moods': 5}
+            '/api/analysis/start', json={'num_recent_albums': 3, 'top_n_moods': 5}
         )
 
         assert response.status_code == 202
@@ -153,10 +138,7 @@ class TestStartAnalysisEndpoint:
         mock_job.get_status.return_value = "queued"
         mock_queue.enqueue.return_value = mock_job
 
-        response = client.post(
-            '/api/analysis/start',
-            json={}
-        )
+        response = client.post('/api/analysis/start', json={})
 
         assert response.status_code == 202
 
@@ -171,10 +153,7 @@ class TestStartAnalysisEndpoint:
         mock_job.get_status.return_value = "queued"
         mock_queue.enqueue.return_value = mock_job
 
-        response = client.post(
-            '/api/analysis/start',
-            json={}
-        )
+        response = client.post('/api/analysis/start', json={})
 
         assert response.status_code == 202
 
@@ -184,7 +163,6 @@ class TestStartAnalysisEndpoint:
 
 
 class TestStartCleaningEndpoint:
-
     @pytest.fixture(autouse=True)
     def patch_active_cleaning_task(self):
         with patch('app_analysis.get_active_main_task', return_value=None) as mock_active_task:
@@ -193,9 +171,7 @@ class TestStartCleaningEndpoint:
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')
     @patch('app_analysis.save_task_status')
-    def test_successful_cleaning_start(
-        self, mock_save_status, mock_cleanup, mock_queue, client
-    ):
+    def test_successful_cleaning_start(self, mock_save_status, mock_cleanup, mock_queue, client):
         mock_job = Mock()
         mock_job.id = "clean-job-123"
         mock_job.get_status.return_value = "queued"
@@ -231,7 +207,9 @@ class TestStartCleaningEndpoint:
         mock_queue.enqueue.assert_called_once()
         call_args = mock_queue.enqueue.call_args
         assert call_args[0][0] == 'tasks.cleaning.identify_and_clean_orphaned_albums_task'
-        assert call_args[1]['description'] == "Database Cleaning (Identify and Delete Orphaned Albums)"
+        assert (
+            call_args[1]['description'] == "Database Cleaning (Identify and Delete Orphaned Albums)"
+        )
         assert call_args[1]['job_timeout'] == -1
 
     @patch('app_analysis.rq_queue_high')
@@ -270,7 +248,10 @@ class TestStartCleaningEndpoint:
 
         mock_cleanup.assert_called_once()
 
-    @patch('app_analysis.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED'})
+    @patch(
+        'app_analysis.get_active_main_task',
+        return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED'},
+    )
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')
     @patch('app_analysis.save_task_status')
@@ -288,7 +269,6 @@ class TestStartCleaningEndpoint:
 
 
 class TestEndpointErrorHandling:
-
     @patch('app_analysis.get_active_main_task', return_value=None)
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')
@@ -301,14 +281,20 @@ class TestEndpointErrorHandling:
         with pytest.raises(Exception):
             client.post('/api/analysis/start', json={})
 
-    @patch('app_analysis.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch(
+        'app_analysis.get_active_main_task',
+        return_value={
+            'task_id': 'existing-cleaning-123',
+            'status': 'STARTED',
+            'task_type': 'cleaning',
+        },
+    )
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')
     @patch('app_analysis.save_task_status')
     def test_analysis_blocks_when_another_batch_is_active(
         self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
-
         response = client.post('/api/analysis/start', json={})
 
         assert response.status_code == 409
@@ -330,7 +316,6 @@ class TestEndpointErrorHandling:
 
 
 class TestBlueprintIntegration:
-
     def test_blueprint_registered_correctly(self, app):
         rules = [str(rule) for rule in app.url_map.iter_rules()]
 

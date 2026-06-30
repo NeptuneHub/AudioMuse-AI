@@ -30,6 +30,7 @@ def _import_app_external():
 
 def _import_app_waveform():
     import app_waveform
+
     return app_waveform
 
 
@@ -47,6 +48,7 @@ def _recording_db():
 class TestItemIdEndpointsParameterized:
     def test_score_endpoint_passes_id_as_param(self):
         import app_helper
+
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
@@ -63,6 +65,7 @@ class TestItemIdEndpointsParameterized:
 
     def test_embedding_endpoint_passes_id_as_param(self):
         import app_helper
+
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
@@ -105,7 +108,8 @@ class TestToolImplInClauseParameterized:
                 stubs[parent] = types.ModuleType(parent)
         with patch.dict(sys.modules, stubs):
             spec = importlib.util.spec_from_file_location(
-                'tasks.ai.tool_impl', _repo_path('tasks', 'ai', 'tool_impl.py'))
+                'tasks.ai.tool_impl', _repo_path('tasks', 'ai', 'tool_impl.py')
+            )
             mod = importlib.util.module_from_spec(spec)
             sys.modules['tasks.ai.tool_impl'] = mod
             spec.loader.exec_module(mod)
@@ -119,8 +123,7 @@ class TestToolImplInClauseParameterized:
         cur = MagicMock()
         cur.__enter__ = lambda self: self
         cur.__exit__ = lambda self, *a: None
-        cur.fetchone.return_value = {
-            'item_id': seed_id, 'title': 'T', 'author': 'A', 'album': ''}
+        cur.fetchone.return_value = {'item_id': seed_id, 'title': 'T', 'author': 'A', 'album': ''}
         cur.fetchall.return_value = [
             {'item_id': 'id-a', 'title': 'Ta', 'author': 'Aa', 'album': ''},
             {'item_id': 'id-b', 'title': 'Tb', 'author': 'Ab', 'album': ''},
@@ -130,13 +133,16 @@ class TestToolImplInClauseParameterized:
 
         fake_vm = types.ModuleType('tasks.ivf_manager')
         fake_vm.find_nearest_neighbors_by_id = MagicMock(
-            return_value=[{'item_id': s} for s in similar_ids + [seed_id]])
+            return_value=[{'item_id': s} for s in similar_ids + [seed_id]]
+        )
         vm_stubs = {'tasks.ivf_manager': fake_vm}
         if 'tasks' not in sys.modules:
             vm_stubs['tasks'] = types.ModuleType('tasks')
 
-        with patch.object(tool_impl, 'get_db_connection', return_value=conn), \
-                patch.dict(sys.modules, vm_stubs):
+        with (
+            patch.object(tool_impl, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, vm_stubs),
+        ):
             result = tool_impl._song_similarity_api_sync('Song', 'Artist', 2)
 
         assert 'songs' in result

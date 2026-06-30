@@ -1,4 +1,3 @@
-
 import importlib.util
 import json
 import os
@@ -25,7 +24,7 @@ def _load_helpers():
     mod_name = 'tasks.index_build_helpers'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
-        mod  = importlib.util.module_from_spec(spec)
+        mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
     return sys.modules[mod_name]
@@ -35,10 +34,16 @@ _helpers = _load_helpers()
 
 
 class TestValidateSqlIdentifier:
-
     def test_accepts_bare_identifiers(self):
-        for ok in ("embedding", "lyrics_embedding", "axis_vector",
-                   "music_library", "_underscore_start", "a", "A1_b2"):
+        for ok in (
+            "embedding",
+            "lyrics_embedding",
+            "axis_vector",
+            "music_library",
+            "_underscore_start",
+            "a",
+            "A1_b2",
+        ):
             _helpers._validate_sql_identifier(ok, "table")
 
     def test_rejects_bad_inputs(self):
@@ -129,9 +134,7 @@ class TestReassembleSegmentedIdMap:
 
 
 class TestRewriteSegmentedIdMap:
-
     class _FakeCursor:
-
         def __init__(self, store):
             self.store = store
             self._result = []
@@ -143,8 +146,7 @@ class TestRewriteSegmentedIdMap:
                 self._result = [(self.store[key],)] if key in self.store else []
             elif s.startswith("SELECT index_name, id_map_json FROM") and "LIKE" in s:
                 self._result = [
-                    (k, v) for k, v in self.store.items()
-                    if re.match(r".*_\d+_\d+$", k)
+                    (k, v) for k, v in self.store.items() if re.match(r".*_\d+_\d+$", k)
                 ]
             elif s.startswith("UPDATE") and "SET id_map_json = %s WHERE index_name = %s" in s:
                 self.store[params[1]] = params[0]
@@ -163,14 +165,18 @@ class TestRewriteSegmentedIdMap:
         def _fn(js):
             d = json.loads(js)
             return json.dumps({k: mapping[v] for k, v in d.items() if v in mapping})
+
         return _fn
 
     def test_single_row_rewrite(self):
         store = {"ivf_main": json.dumps({"0": "a", "1": "b"})}
         cur = self._FakeCursor(store)
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "ivf_main",
-            self._dict_rewriter({"a": "A", "b": "B"}), max_part_size_mb=50,
+            cur,
+            "voyager_index_data",
+            "ivf_main",
+            self._dict_rewriter({"a": "A", "b": "B"}),
+            max_part_size_mb=50,
         )
         assert changed is True
         assert json.loads(store["ivf_main"]) == {"0": "A", "1": "B"}
@@ -178,7 +184,7 @@ class TestRewriteSegmentedIdMap:
     def test_segmented_reassemble_rewrite_resplit(self):
         full = json.dumps({str(i): c for i, c in enumerate("abcdef")})
         step = max(1, -(-len(full) // 3))
-        frags = [full[i:i + step] for i in range(0, len(full), step)]
+        frags = [full[i : i + step] for i in range(0, len(full), step)]
         while len(frags) < 3:
             frags.append("")
         store = {f"ivf_main_{k}_3": frags[k - 1] for k in range(1, 4)}
@@ -188,8 +194,11 @@ class TestRewriteSegmentedIdMap:
         cur = self._FakeCursor(store)
         mapping = {c: c.upper() for c in "abcdef"}
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "ivf_main",
-            self._dict_rewriter(mapping), max_part_size_mb=50,
+            cur,
+            "voyager_index_data",
+            "ivf_main",
+            self._dict_rewriter(mapping),
+            max_part_size_mb=50,
         )
         assert changed is True
 
@@ -205,8 +214,11 @@ class TestRewriteSegmentedIdMap:
         store = {"ivf_main": full}
         cur = self._FakeCursor(store)
         changed = _helpers.rewrite_segmented_id_map(
-            cur, "voyager_index_data", "ivf_main",
-            lambda js: js, max_part_size_mb=50,
+            cur,
+            "voyager_index_data",
+            "ivf_main",
+            lambda js: js,
+            max_part_size_mb=50,
         )
         assert changed is False
         assert store["ivf_main"] == full
@@ -216,7 +228,9 @@ class TestRewriteSegmentedIdMap:
         cur = self._FakeCursor(store)
         with pytest.raises(ValueError, match="rebuild"):
             _helpers.rewrite_segmented_id_map(
-                cur, "voyager_index_data", "ivf_main",
+                cur,
+                "voyager_index_data",
+                "ivf_main",
                 self._dict_rewriter({"a": "AAAA", "b": "BBBB"}),
                 max_part_size_mb=0,
             )
@@ -373,7 +387,6 @@ class TestStoreIVFIndexSegmented:
 
 
 class TestStreamEmbeddingsToBuffer:
-
     def _fake_conn(self, count_value, rows):
         count_cur = MagicMock()
         count_cur.__enter__ = MagicMock(return_value=count_cur)
@@ -417,7 +430,9 @@ class TestStreamEmbeddingsToBuffer:
         conn = self._fake_conn(count_value=0, rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             buf, ids = _helpers.stream_embeddings_to_buffer(
-                table="embedding", column="embedding", dim=8,
+                table="embedding",
+                column="embedding",
+                dim=8,
             )
         assert buf.shape == (0, 8)
         assert ids == []
@@ -430,7 +445,9 @@ class TestStreamEmbeddingsToBuffer:
         conn = self._fake_conn(count_value=len(rows), rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             buf, ids = _helpers.stream_embeddings_to_buffer(
-                table="embedding", column="embedding", dim=8,
+                table="embedding",
+                column="embedding",
+                dim=8,
             )
         assert buf.shape == (4, 8)
         assert buf.dtype == np.float32
@@ -450,7 +467,9 @@ class TestStreamEmbeddingsToBuffer:
         conn = self._fake_conn(count_value=4, rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             buf, ids = _helpers.stream_embeddings_to_buffer(
-                table="embedding", column="embedding", dim=8,
+                table="embedding",
+                column="embedding",
+                dim=8,
             )
         assert ids == ["a", "d"]
         assert buf.shape == (2, 8)
@@ -462,7 +481,9 @@ class TestStreamEmbeddingsToBuffer:
         conn = self._fake_conn(count_value=3, rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             buf, ids = _helpers.stream_embeddings_to_buffer(
-                table="embedding", column="embedding", dim=4,
+                table="embedding",
+                column="embedding",
+                dim=4,
             )
         assert buf.shape == (6, 4)
         assert ids == [f"id-{i}" for i in range(6)]
@@ -494,7 +515,9 @@ class TestStreamEmbeddingsToBuffer:
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             with pytest.raises(RuntimeError, match="simulated"):
                 _helpers.stream_embeddings_to_buffer(
-                    table="embedding", column="embedding", dim=4,
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
                 )
         conn.close.assert_called_once()
 
@@ -502,7 +525,9 @@ class TestStreamEmbeddingsToBuffer:
         conn = self._fake_conn(count_value=0, rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             _helpers.stream_embeddings_to_buffer(
-                table="embedding", column="embedding", dim=4,
+                table="embedding",
+                column="embedding",
+                dim=4,
             )
         conn.set_session.assert_called_once()
         _, kwargs = conn.set_session.call_args
@@ -514,7 +539,6 @@ class TestStreamEmbeddingsToBuffer:
 
 
 class TestIterEmbeddingBatches:
-
     def _fake_conn(self, rows):
         stream_cur = MagicMock()
         stream_cur.__enter__ = MagicMock(return_value=stream_cur)
@@ -548,9 +572,13 @@ class TestIterEmbeddingBatches:
     def test_empty_source_yields_no_batches(self):
         conn = self._fake_conn(rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            batches = list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=8,
-            ))
+            batches = list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=8,
+                )
+            )
         assert batches == []
         conn.close.assert_called_once()
 
@@ -560,9 +588,14 @@ class TestIterEmbeddingBatches:
         rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
         conn = self._fake_conn(rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            batches = list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4, batch_size=10,
-            ))
+            batches = list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
+                    batch_size=10,
+                )
+            )
         assert len(batches) == 1
         buf, ids = batches[0]
         assert buf.shape == (3, 4)
@@ -577,9 +610,14 @@ class TestIterEmbeddingBatches:
         rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
         conn = self._fake_conn(rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            batches = list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4, batch_size=3,
-            ))
+            batches = list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
+                    batch_size=3,
+                )
+            )
         assert len(batches) == 3
         assert [b[0].shape[0] for b in batches] == [3, 3, 1]
         flat_ids = [i for _, ids in batches for i in ids]
@@ -602,9 +640,14 @@ class TestIterEmbeddingBatches:
         ]
         conn = self._fake_conn(rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            batches = list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4, batch_size=2,
-            ))
+            batches = list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
+                    batch_size=2,
+                )
+            )
         flat_ids = [i for _, ids in batches for i in ids]
         assert flat_ids == ["a", "d", "e", "g"]
         total_rows = sum(b[0].shape[0] for b in batches)
@@ -616,9 +659,14 @@ class TestIterEmbeddingBatches:
         rows = [(f"id-{i}", v.tobytes()) for i, v in enumerate(vecs)]
         conn = self._fake_conn(rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            batches = list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4, batch_size=2,
-            ))
+            batches = list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
+                    batch_size=2,
+                )
+            )
         assert len(batches) == 2
         batches[0][0].fill(99.0)
         np.testing.assert_array_equal(batches[1][0][0], vecs[2])
@@ -630,7 +678,10 @@ class TestIterEmbeddingBatches:
         conn = self._fake_conn(rows=rows)
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
             gen = _helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4, batch_size=2,
+                table="embedding",
+                column="embedding",
+                dim=4,
+                batch_size=2,
             )
             next(gen)
             gen.close()
@@ -639,11 +690,14 @@ class TestIterEmbeddingBatches:
     def test_uses_readonly_non_autocommit_side_session(self):
         conn = self._fake_conn(rows=[])
         with patch.object(_helpers.psycopg2, "connect", return_value=conn):
-            list(_helpers.iter_embedding_batches(
-                table="embedding", column="embedding", dim=4,
-            ))
+            list(
+                _helpers.iter_embedding_batches(
+                    table="embedding",
+                    column="embedding",
+                    dim=4,
+                )
+            )
         conn.set_session.assert_called_once()
         _, kwargs = conn.set_session.call_args
         assert kwargs.get("readonly") is True
         assert kwargs.get("autocommit") in (None, False)
-

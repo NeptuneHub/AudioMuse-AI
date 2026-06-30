@@ -1,4 +1,3 @@
-
 import os
 import platform
 import sys
@@ -76,11 +75,18 @@ def menubar_icon():
 def redis_binary():
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "redis-server")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "redis", platform.machine(), "redis-server")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "redis",
+        platform.machine(),
+        "redis-server",
+    )
 
 
 def pg_bin_dir():
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgserver", "pginstall", "bin")
     import pgserver
+
     return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall", "bin")

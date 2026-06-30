@@ -6,9 +6,7 @@ import time
 
 import pytest
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 NATIVE_BUILD = os.path.join(REPO_ROOT, 'native-build')
 
 SKIPS_MAIN_THREAD = {'windows'}
@@ -54,6 +52,7 @@ def _bare_supervisor(mod):
     class _Log:
         def __getattr__(self, _name):
             return lambda *a, **k: None
+
     sup._log = _Log()
     return sup
 
@@ -66,7 +65,6 @@ def supervisor_case(request):
     platform_name = request.param
     mod = _load_supervisor(platform_name)
     return platform_name, mod
-
 
 
 class TestJoinWorkersSkips:
@@ -126,7 +124,6 @@ class TestJoinWorkersSkips:
         runner.join(1)
 
 
-
 class TestStartHealthLoopClearsStop:
     def test_clears_preset_stop_and_spawns_live_thread(self, supervisor_case, monkeypatch):
         _, mod = supervisor_case
@@ -149,8 +146,10 @@ class TestStartHealthLoopClearsStop:
         assert sup._health_stop.is_set()
 
         real_event = sup._health_stop
+
         def non_blocking_wait(timeout=None):
             return real_event.is_set()
+
         monkeypatch.setattr(real_event, 'wait', non_blocking_wait)
 
         try:
@@ -162,7 +161,6 @@ class TestStartHealthLoopClearsStop:
             real_event.set()
             if sup._health_thread is not None:
                 sup._health_thread.join(2)
-
 
 
 class TestSpawnRefusedWhileStopping:
@@ -204,10 +202,15 @@ class TestSpawnRefusedWhileStopping:
             if hasattr(sup, name):
                 monkeypatch.setattr(sup, name, lambda *a, **k: None)
         if hasattr(mod, 'threading'):
-            monkeypatch.setattr(mod.threading, 'Thread', lambda *a, **k: type(
-                'T', (), {'start': lambda self: None, 'daemon': True})())
+            monkeypatch.setattr(
+                mod.threading,
+                'Thread',
+                lambda *a, **k: type('T', (), {'start': lambda self: None, 'daemon': True})(),
+            )
         if hasattr(mod, 'db_backend'):
-            monkeypatch.setattr(mod.db_backend, 'ensure_embedded_running', lambda *a, **k: 'postgresql://x')
+            monkeypatch.setattr(
+                mod.db_backend, 'ensure_embedded_running', lambda *a, **k: 'postgresql://x'
+            )
         if hasattr(mod, 'env_builder'):
             monkeypatch.setattr(mod.env_builder, 'build_child_env', lambda *a, **k: {})
         if hasattr(sup, '_ensure_redis_running'):
@@ -217,7 +220,6 @@ class TestSpawnRefusedWhileStopping:
         result = sup.start_child('flask')
         assert result is True
         assert 'flask' in sup._desired
-
 
 
 class TestStartInBackground:

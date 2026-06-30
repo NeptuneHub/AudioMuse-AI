@@ -1,4 +1,3 @@
-
 import logging
 from typing import List, Tuple
 
@@ -37,7 +36,9 @@ def _project_to_2d(vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
     return [(float(x), float(y)) for x, y in scaled]
 
 
-def _project_aligned_add_sub(vectors: List[np.ndarray], add_centroid: np.ndarray, subtract_centroid: np.ndarray) -> List[Tuple[float, float]]:
+def _project_aligned_add_sub(
+    vectors: List[np.ndarray], add_centroid: np.ndarray, subtract_centroid: np.ndarray
+) -> List[Tuple[float, float]]:
     if not vectors:
         return []
     mat = np.vstack(vectors)
@@ -87,8 +88,11 @@ def _project_aligned_add_sub(vectors: List[np.ndarray], add_centroid: np.ndarray
     return [(float(x), float(y)) for x, y in scaled]
 
 
-def _project_with_umap(vectors: List[np.ndarray], n_components: int = 2) -> List[Tuple[float, float]]:
+def _project_with_umap(
+    vectors: List[np.ndarray], n_components: int = 2
+) -> List[Tuple[float, float]]:
     import umap
+
     if not vectors:
         return []
     mat = np.vstack(vectors)
@@ -103,7 +107,9 @@ def _project_with_umap(vectors: List[np.ndarray], n_components: int = 2) -> List
     return [(float(x), float(y)) for x, y in scaled]
 
 
-def _project_with_discriminant(add_vectors: List[np.ndarray], sub_vectors: List[np.ndarray], all_vectors: List[np.ndarray]) -> List[Tuple[float, float]]:
+def _project_with_discriminant(
+    add_vectors: List[np.ndarray], sub_vectors: List[np.ndarray], all_vectors: List[np.ndarray]
+) -> List[Tuple[float, float]]:
     if LogisticRegression is None or PCA is None:
         raise RuntimeError('sklearn not available')
     if not add_vectors or not sub_vectors:

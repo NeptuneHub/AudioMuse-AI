@@ -69,10 +69,17 @@ def _send_control(arguments):
                 sock.sendall(payload + b'\n')
                 response = sock.recv(1024).strip()
         else:
-            logger.error('Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s', arguments)
+            logger.error(
+                'Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s',
+                arguments,
+            )
             return False
     except Exception:
-        target = f'{control_host}:{control_port}' if (control_host and control_port) else config.AUDIOMUSE_CONTROL_SOCKET
+        target = (
+            f'{control_host}:{control_port}'
+            if (control_host and control_port)
+            else config.AUDIOMUSE_CONTROL_SOCKET
+        )
         logger.exception('Failed to send control command %s to %s', arguments, target)
         return False
     if response == b'ok':
@@ -104,6 +111,7 @@ def _run_supervisorctl(arguments):
     except Exception:
         logger.exception('Failed to run supervisorctl command: %s', cmd)
         return False
+
 
 def stop_local_flask_service():
     logger.info('Stopping supervised Flask service')

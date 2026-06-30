@@ -103,28 +103,28 @@ Scalability & safety:
 Key environment variables that shape architecture and operational behavior (non-exhaustive):
 
 - Core infra:
-   * `REDIS_URL` — connection string for Redis used by RQ and pub/sub.
-   * `DATABASE_URL` — PostgreSQL connection string for persistent data.
-   * `TEMP_DIR` — path where audio files are downloaded/processed.
+   * `REDIS_URL` - connection string for Redis used by RQ and pub/sub.
+   * `DATABASE_URL` - PostgreSQL connection string for persistent data.
+   * `TEMP_DIR` - path where audio files are downloaded/processed.
 
 - Models & runtime tuning:
-   * `EMBEDDING_MODEL_PATH`, `PREDICTION_MODEL_PATH` — filesystem paths to ONNX model files (when not downloaded by Docker).
-   * `ORT_DISABLE_ALL_OPTIMIZATIONS`, `ORT_DISABLE_AVX512`, `ORT_FORCE_SHARED_PROVIDER` — runtime flags set in Docker to stabilize ONNX behavior across CPUs.
+   * `EMBEDDING_MODEL_PATH`, `PREDICTION_MODEL_PATH` - filesystem paths to ONNX model files (when not downloaded by Docker).
+   * `ORT_DISABLE_ALL_OPTIMIZATIONS`, `ORT_DISABLE_AVX512`, `ORT_FORCE_SHARED_PROVIDER` - runtime flags set in Docker to stabilize ONNX behavior across CPUs.
 
 - Job & queue limits:
-   * `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`, `ITERATIONS_PER_BATCH_JOB` — control parallelism and batch sizes for analysis/clustering.
-   * `REBUILD_INDEX_BATCH_SIZE` — controls how often index rebuilds occur during large analysis runs.
+   * `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`, `ITERATIONS_PER_BATCH_JOB` - control parallelism and batch sizes for analysis/clustering.
+   * `REBUILD_INDEX_BATCH_SIZE` - controls how often index rebuilds occur during large analysis runs.
 
 Additional DB & deployment knobs (explicit)
 
-* `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` — Individual components used to construct `DATABASE_URL` when an explicit `DATABASE_URL` is not provided. Useful in containerized or Kubernetes setups where secrets are mounted per-value.
-* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Optional credentials for a restricted, read-only database role used when executing AI-generated SQL from the Instant Playlist (Chat) feature. The application creates/uses a low-privilege role to run SELECT-only queries when the chat flow is enabled; document these values in the Instant Playlist section as well.
+* `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` - Individual components used to construct `DATABASE_URL` when an explicit `DATABASE_URL` is not provided. Useful in containerized or Kubernetes setups where secrets are mounted per-value.
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` - Optional credentials for a restricted, read-only database role used when executing AI-generated SQL from the Instant Playlist (Chat) feature. The application creates/uses a low-privilege role to run SELECT-only queries when the chat flow is enabled; document these values in the Instant Playlist section as well.
 
 - AI & provider settings:
-   * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — control how AI naming/chat is performed.
+   * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - control how AI naming/chat is performed.
 
 - Safety & result caps:
-   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` — enforce limits on returned/affected rows.
+   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` - enforce limits on returned/affected rows.
 
 Operational notes:
 
@@ -163,8 +163,8 @@ Implementation pointers (current code locations)
 
 Relevant environment variables and tuning knobs
 
-- `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` — tuning these directly affects parallelism, latency to first results, and fault tolerance.
-- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` — control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
+- `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` - tuning these directly affects parallelism, latency to first results, and fault tolerance.
+- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` - control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
 
 Operational recommendations
 
@@ -286,13 +286,13 @@ The Song Analysis functionality is configured by the following environment varia
 * TOP\_N\_MOODS: The default number of top-scoring moods to save in the score.mood\_vector column.  
 * EMBEDDING\_MODEL\_PATH: Filesystem path to the musicnn\_embedding.onnx model (generates embeddings).  
 * PREDICTION\_MODEL\_PATH: Filesystem path to the musicnn\_prediction.onnx model (generates mood predictions from embeddings).  
-* Other features (danceable, aggressive, happy, party, relaxed, sad) are now computed via CLAP text-audio similarity — no separate model paths needed. Text embeddings for these labels are cached in Redis on first use.
+* Other features (danceable, aggressive, happy, party, relaxed, sad) are now computed via CLAP text-audio similarity - no separate model paths needed. Text embeddings for these labels are cached in Redis on first use.
 
 Additional analysis tuning & normalization constants
 
-* `ENERGY_MIN`, `ENERGY_MAX` — Range used to normalize energy values (BPM- and loudness-derived) into a common scale used across scoring and UI visualizations.
-* `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` — Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
-* `DB_FETCH_CHUNK_SIZE` — Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
+* `ENERGY_MIN`, `ENERGY_MAX` - Range used to normalize energy values (BPM- and loudness-derived) into a common scale used across scoring and UI visualizations.
+* `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` - Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
+* `DB_FETCH_CHUNK_SIZE` - Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
 
 #### **Voyager Index Building (Used during Analysis)**
 
@@ -1133,28 +1133,28 @@ Instant Playlist (Chat) reuses many existing infra variables and adds a few chat
 
 Core / Shared
 
-* `REDIS_URL`, `DATABASE_URL`, `TEMP_DIR`, etc. — core infra used elsewhere in the app.
+* `REDIS_URL`, `DATABASE_URL`, `TEMP_DIR`, etc. - core infra used elsewhere in the app.
 
 AI / Chat Specific
 
-* `AI_MODEL_PROVIDER` — Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
-* `OLLAMA_SERVER_URL` — Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
-* `OLLAMA_MODEL_NAME` — Default Ollama model name for playlist-related prompts.
-* `GEMINI_API_KEY` — Server-side Google Gemini key used for GEMINI provider.
-* `GEMINI_MODEL_NAME` — Default Gemini model (e.g., `gemini-2.5-pro`).
-* `GEMINI_API_CALL_DELAY_SECONDS` — Optional delay to respect Gemini rate limits (used by `ai.py`).
-* `MISTRAL_API_KEY` — Server-side Mistral key used for MISTRAL provider.
-* `MISTRAL_MODEL_NAME` — Default Mistral model for playlist prompts.
-* `MISTRAL_API_CALL_DELAY_SECONDS` — Optional delay for Mistral calls.
+* `AI_MODEL_PROVIDER` - Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
+* `OLLAMA_SERVER_URL` - Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
+* `OLLAMA_MODEL_NAME` - Default Ollama model name for playlist-related prompts.
+* `GEMINI_API_KEY` - Server-side Google Gemini key used for GEMINI provider.
+* `GEMINI_MODEL_NAME` - Default Gemini model (e.g., `gemini-2.5-pro`).
+* `GEMINI_API_CALL_DELAY_SECONDS` - Optional delay to respect Gemini rate limits (used by `ai.py`).
+* `MISTRAL_API_KEY` - Server-side Mistral key used for MISTRAL provider.
+* `MISTRAL_MODEL_NAME` - Default Mistral model for playlist prompts.
+* `MISTRAL_API_CALL_DELAY_SECONDS` - Optional delay for Mistral calls.
 
 Database safety for AI chat
 
-* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` - Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
 
 Limits and Safety
 
-* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` — Caps the number of songs returned by AI-generated queries.
-* `CHAT_SQL_ALLOWED_READ_ONLY` — Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
+* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` - Caps the number of songs returned by AI-generated queries.
+* `CHAT_SQL_ALLOWED_READ_ONLY` - Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
 
 Operational Notes
 
@@ -1234,14 +1234,14 @@ The cleaning process uses core infra variables and a few cleaning-specific ones.
 
 Core Infra
 
-* `REDIS_URL` — Required by RQ for job queueing and for the background listener used elsewhere.
-* `DATABASE_URL` — Required to query and delete database rows, and to rebuild the Voyager index.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, `NAVIDROME_URL`, etc. — Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
+* `REDIS_URL` - Required by RQ for job queueing and for the background listener used elsewhere.
+* `DATABASE_URL` - Required to query and delete database rows, and to rebuild the Voyager index.
+* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, `NAVIDROME_URL`, etc. - Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
 
 Cleaning-Specific
 
-* `CLEANING_SAFETY_LIMIT` — Maximum number of orphaned albums (or a related cap) the automatic cleaning operation will delete in a single run to avoid catastrophic data loss.
-* `MAX_QUEUED_ANALYSIS_JOBS` — Imported in the task module for coordination/limits; not directly user-adjustable for cleaning but used by task orchestration logic when needed.
+* `CLEANING_SAFETY_LIMIT` - Maximum number of orphaned albums (or a related cap) the automatic cleaning operation will delete in a single run to avoid catastrophic data loss.
+* `MAX_QUEUED_ANALYSIS_JOBS` - Imported in the task module for coordination/limits; not directly user-adjustable for cleaning but used by task orchestration logic when needed.
 
 Operational Notes
 
@@ -1294,7 +1294,7 @@ Stage 3: Enqueueing Jobs
 Stage 4: Observability & Safety
 
 1. Each cron-initiated job uses the same task-status/logging machinery as manual jobs, so progress, logs, and final summaries are available in the UI.
-2. The enqueued clustering job uses conservative defaults sourced from environment/config values to avoid accidental heavy runs—these defaults can be tuned in config.
+2. The enqueued clustering job uses conservative defaults sourced from environment/config values to avoid accidental heavy runs-these defaults can be tuned in config.
 
 Error Handling & Resilience
 
@@ -1307,15 +1307,15 @@ Scheduled tasks reuse many core config values and a set of clustering/analysis d
 
 Core Infra
 
-* `DATABASE_URL`, `REDIS_URL` — Required for reading cron rows and enqueueing RQ jobs.
+* `DATABASE_URL`, `REDIS_URL` - Required for reading cron rows and enqueueing RQ jobs.
 
 Analysis & Clustering Defaults (used when enqueueing cron jobs)
 
-* `TOP_N_MOODS` — Number of moods passed to analysis jobs when scheduled.
-* `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` — Default ranges used to compose clustering kwargs.
-* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` — High-level clustering behavior used when cron enqueues clustering.
-* `SCORE_WEIGHT_*` and other scoring weights — Defaults applied to scheduled clustering runs.
-* `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — AI naming defaults applied when scheduled clustering requests automatic playlist naming.
+* `TOP_N_MOODS` - Number of moods passed to analysis jobs when scheduled.
+* `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` - Default ranges used to compose clustering kwargs.
+* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
+* `SCORE_WEIGHT_*` and other scoring weights - Defaults applied to scheduled clustering runs.
+* `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - AI naming defaults applied when scheduled clustering requests automatic playlist naming.
 
 Operational Notes
 
@@ -1371,7 +1371,7 @@ CLAP embeddings are generated as part of the song analysis pipeline, running in 
 1. **Model Architecture:** The system uses split ONNX CLAP models:
    * **Audio model** (`model_epoch_36.onnx`, ~20MB): Distilled DCLAP student model loaded in worker containers during analysis to generate embeddings from audio files. Requires companion file `model_epoch_36.onnx.data` in the same directory.
    * **Text model** (`clap_text_model.onnx`, ~478MB): Original LAION CLAP text encoder loaded in Flask containers during search to generate embeddings from text queries.
-   * This split architecture saves memory—workers only load audio, Flask only loads text.
+   * This split architecture saves memory-workers only load audio, Flask only loads text.
 2. **Audio Processing (analyze_track in tasks/analysis.py):**
    * After loading audio with librosa, if `CLAP_ENABLED=true`, the system calls `get_clap_audio_embedding` from `tasks.clap_analyzer`.
    * Audio is resampled to 48kHz mono and converted to a mel-spectrogram.

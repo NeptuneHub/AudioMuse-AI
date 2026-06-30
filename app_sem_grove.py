@@ -75,7 +75,7 @@ def sem_grove_search_api():
     from app_helper import attach_song_features
 
     try:
-        data    = request.get_json() or {}
+        data = request.get_json() or {}
         item_id = (data.get("item_id") or "").strip()
         if not item_id:
             return jsonify({"error": 'Missing "item_id".'}), 400
@@ -90,12 +90,14 @@ def sem_grove_search_api():
         # results[0] is always the seed itself; if that's the only entry, no similar songs were found
         similar_count = sum(1 for r in results if not r.get("is_seed"))
         if not results or similar_count == 0:
-            return jsonify({
-                "error": "No similar songs found. "
-                         "The song may not be in the SemGrove index yet "
-                         "(requires both lyrics and audio analysis).",
-                "results": [],
-            }), 404
+            return jsonify(
+                {
+                    "error": "No similar songs found. "
+                    "The song may not be in the SemGrove index yet "
+                    "(requires both lyrics and audio analysis).",
+                    "results": [],
+                }
+            ), 404
 
         attach_song_features(results)
         return jsonify({"results": results, "count": len(results)})

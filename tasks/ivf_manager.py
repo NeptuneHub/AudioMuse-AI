@@ -8,7 +8,23 @@ from psycopg2.extras import DictCursor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-from config import EMBEDDING_DIMENSION, INDEX_NAME, IVF_METRIC, MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE, DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN, DUPLICATE_DISTANCE_CHECK_LOOKBACK, MOOD_SIMILARITY_THRESHOLD, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_SIMILARITY_ENABLE, IVF_RESULT_CACHE_SECONDS, IVF_RESULT_CACHE_MAX, RADIUS_INSTRUMENTATION, IVF_RERANK_OVERFETCH
+from config import (
+    EMBEDDING_DIMENSION,
+    INDEX_NAME,
+    IVF_METRIC,
+    MAX_SONGS_PER_ARTIST,
+    DUPLICATE_DISTANCE_THRESHOLD_COSINE,
+    DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN,
+    DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+    MOOD_SIMILARITY_THRESHOLD,
+    SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
+    SIMILARITY_RADIUS_DEFAULT,
+    MOOD_SIMILARITY_ENABLE,
+    IVF_RESULT_CACHE_SECONDS,
+    IVF_RESULT_CACHE_MAX,
+    RADIUS_INSTRUMENTATION,
+    IVF_RERANK_OVERFETCH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +36,6 @@ reverse_id_map = None
 
 
 class _ResultCache:
-
     def __init__(self, ttl_seconds, max_entries):
         self._ttl = float(ttl_seconds)
         self._max = max(1, int(max_entries))
@@ -76,6 +91,7 @@ def _sweep_result_caches():
 
 try:
     from .paged_ivf import register_idle_callback
+
     register_idle_callback(_sweep_result_caches)
 except Exception:
     logger.debug("Could not register IVF result-cache idle sweep", exc_info=True)
@@ -89,12 +105,16 @@ BATCH_SIZE_VECTOR_OPS = 50
 BATCH_SIZE_DB_OPS = 100
 SCORE_DETAIL_COLUMNS = 'title, author'
 
+
 def _get_thread_pool():
     global _thread_pool
     with _thread_pool_lock:
         if _thread_pool is None:
-            _thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKER_THREADS, thread_name_prefix="ivf")
+            _thread_pool = ThreadPoolExecutor(
+                max_workers=MAX_WORKER_THREADS, thread_name_prefix="ivf"
+            )
         return _thread_pool
+
 
 def _shutdown_thread_pool():
     global _thread_pool
@@ -105,7 +125,9 @@ def _shutdown_thread_pool():
 
 
 def _fetch_in_batches(item_ids, fetch_batch_fn):
-    id_batches = [item_ids[i:i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)]
+    id_batches = [
+        item_ids[i : i + BATCH_SIZE_DB_OPS] for i in range(0, len(item_ids), BATCH_SIZE_DB_OPS)
+    ]
     merged = {}
     for batch in id_batches:
         merged.update(fetch_batch_fn(batch))
@@ -114,13 +136,17 @@ def _fetch_in_batches(item_ids, fetch_batch_fn):
 
 def _fetch_details_map(db_conn, item_ids, columns):
     column_keys = [c.strip() for c in columns.split(',')]
+
     def fetch_batch(id_batch):
         out = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(f"SELECT item_id, {columns} FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute(
+                f"SELECT item_id, {columns} FROM score WHERE item_id = ANY(%s)", (id_batch,)
+            )
             for row in cur.fetchall():
                 out[row['item_id']] = {c: row.get(c) for c in column_keys}
         return out
+
     return _fetch_in_batches(item_ids, fetch_batch)
 
 
@@ -142,7 +168,9 @@ def _fetch_f32_embeddings(db_conn, item_ids) -> dict:
                 if v.shape[0] == EMBEDDING_DIMENSION:
                     out[item_id] = v
     except Exception as e:
-        logger.warning("Exact-f32 rerank: could not read source embeddings (%s); using int8 vectors.", e)
+        logger.warning(
+            "Exact-f32 rerank: could not read source embeddings (%s); using int8 vectors.", e
+        )
     return out
 
 
@@ -169,6 +197,7 @@ def _get_cached_vector(item_id: str) -> np.ndarray | None:
         return ivf_index.get_vector(vec_id)
     except Exception:
         return None
+
 
 def _get_direct_euclidean_distance(v1, v2):
     if v1 is None or v2 is None:
@@ -233,16 +262,21 @@ def load_ivf_index_for_querying(force_reload=False):
 
     from app_helper import get_db
     from .paged_ivf import load_paged_ivf_index
+
     conn = get_db()
     logger.info("Loading audio IVF index from database into memory...")
     try:
-        loaded = load_paged_ivf_index(conn, INDEX_NAME, EMBEDDING_DIMENSION, IVF_METRIC, label="audio")
+        loaded = load_paged_ivf_index(
+            conn, INDEX_NAME, EMBEDDING_DIMENSION, IVF_METRIC, label="audio"
+        )
     except Exception as e:
         logger.error("Failed to load audio IVF index: %s", e, exc_info=True)
         ivf_index, id_map, reverse_id_map = None, None, None
         return
     if loaded is None:
-        logger.warning("Audio IVF index not found in the database. Cache will be empty (run analysis to build it).")
+        logger.warning(
+            "Audio IVF index not found in the database. Cache will be empty (run analysis to build it)."
+        )
         ivf_index, id_map, reverse_id_map = None, None, None
         return
     ivf_index, id_map, reverse_id_map = loaded
@@ -253,6 +287,7 @@ def build_and_store_ivf_index(db_conn=None):
     if db_conn is None:
         try:
             from app_helper import get_db
+
             db_conn = get_db()
         except Exception:
             logger.exception("build_and_store_ivf_index: no db_conn provided and get_db() failed.")
@@ -260,16 +295,21 @@ def build_and_store_ivf_index(db_conn=None):
 
     from .index_build_helpers import stream_embeddings_to_buffer
     from .paged_ivf import build_and_store_paged_ivf
+
     logger.info("Starting to build and store audio IVF index (disk-paged)...")
     try:
         buf, item_ids = stream_embeddings_to_buffer(
-            table="embedding", column="embedding", dim=EMBEDDING_DIMENSION,
+            table="embedding",
+            column="embedding",
+            dim=EMBEDDING_DIMENSION,
             where_clause="embedding IS NOT NULL",
         )
         if buf.shape[0] == 0:
             logger.warning("No valid audio embeddings found for IVF index build. Aborting.")
             return
-        if build_and_store_paged_ivf(db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC):
+        if build_and_store_paged_ivf(
+            db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC
+        ):
             db_conn.commit()
             logger.info("Audio IVF index build and database storage complete.")
     except Exception as e:
@@ -315,10 +355,12 @@ def multi_query_ids(query_vectors, per_vector_n):
                 seen.setdefault(item_id, None)
     return list(seen.keys())
 
+
 def _normalize_string(text: str) -> str:
     if not text:
         return ""
     return text.strip().lower()
+
 
 def _is_same_song(title1, artist1, title2, artist2):
     norm_title1 = _normalize_string(title1)
@@ -328,6 +370,7 @@ def _is_same_song(title1, artist1, title2, artist2):
 
     return norm_title1 == norm_title2 and norm_artist1 == norm_artist2
 
+
 def _is_too_close(current_song, current_vector, window_songs, threshold, metric_name, details_map):
     for recent_song in window_songs:
         recent_vector = _get_cached_vector(recent_song['item_id'])
@@ -335,8 +378,12 @@ def _is_too_close(current_song, current_vector, window_songs, threshold, metric_
             continue
         direct_dist = get_direct_distance(current_vector, recent_vector)
         if direct_dist < threshold:
-            current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
-            recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+            current_details = details_map.get(
+                current_song['item_id'], {'title': 'N/A', 'author': 'N/A'}
+            )
+            recent_details = details_map.get(
+                recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'}
+            )
             logger.info(
                 f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
                 f"due to direct distance of {direct_dist:.4f} from "
@@ -353,9 +400,12 @@ def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, 
         if current_vector is None:
             continue
         combined_recent = list(lookback_songs) + list(batch_results)
-        if not _is_too_close(current_song, current_vector, combined_recent, threshold, metric_name, details_map):
+        if not _is_too_close(
+            current_song, current_vector, combined_recent, threshold, metric_name, details_map
+        ):
             batch_results.append(current_song)
     return batch_results
+
 
 def _filter_by_distance(song_results: list, db_conn):
     if DUPLICATE_DISTANCE_CHECK_LOOKBACK <= 0:
@@ -367,7 +417,11 @@ def _filter_by_distance(song_results: list, db_conn):
     item_ids = [s['item_id'] for s in song_results]
     details_map = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
-    threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE if IVF_METRIC == 'angular' else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    threshold = (
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE
+        if IVF_METRIC == 'angular'
+        else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
+    )
     metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
 
     filtered_songs = []
@@ -378,7 +432,9 @@ def _filter_by_distance(song_results: list, db_conn):
             if current_vector is None:
                 continue
             lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
-            if not _is_too_close(current_song, current_vector, lookback_window, threshold, metric_name, details_map):
+            if not _is_too_close(
+                current_song, current_vector, lookback_window, threshold, metric_name, details_map
+            ):
                 filtered_songs.append(current_song)
     else:
         remaining_songs = song_results.copy()
@@ -387,9 +443,13 @@ def _filter_by_distance(song_results: list, db_conn):
             current_batch = remaining_songs[:BATCH_SIZE_VECTOR_OPS]
             remaining_songs = remaining_songs[BATCH_SIZE_VECTOR_OPS:]
 
-            lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
+            lookback_window = (
+                filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
+            )
 
-            batch_results = _compute_distance_batch(current_batch, lookback_window, threshold, metric_name, details_map)
+            batch_results = _compute_distance_batch(
+                current_batch, lookback_window, threshold, metric_name, details_map
+            )
             filtered_songs.extend(batch_results)
 
     return filtered_songs
@@ -413,7 +473,9 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
     for song in song_results:
         current_details = item_details.get(song['item_id'])
         if not current_details:
-            logger.warning(f"Could not find details for item_id {song['item_id']} during deduplication. Skipping.")
+            logger.warning(
+                f"Could not find details for item_id {song['item_id']} during deduplication. Skipping."
+            )
             continue
 
         current_title = _normalize_string(current_details.get('title'))
@@ -424,9 +486,12 @@ def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song
             unique_songs.append(song)
             added_songs_signatures.add(current_signature)
         else:
-            logger.info(f"Found duplicate (NAME FILTER): '{current_details.get('title')}' by '{current_details.get('author')}' (Distance from source: {song.get('distance', 0.0):.4f}).")
+            logger.info(
+                f"Found duplicate (NAME FILTER): '{current_details.get('title')}' by '{current_details.get('author')}' (Distance from source: {song.get('distance', 0.0):.4f})."
+            )
 
     return unique_songs
+
 
 def _mood_distance(target_mood_features, candidate_features, mood_features):
     total = sum(
@@ -436,20 +501,31 @@ def _mood_distance(target_mood_features, candidate_features, mood_features):
     return total / len(mood_features)
 
 
-def _compute_mood_distances_batch(song_batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold):
+def _compute_mood_distances_batch(
+    song_batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold
+):
     batch_results = []
     for song in song_batch:
         candidate_features = candidate_mood_features.get(song['item_id'])
         if not candidate_features:
             continue
-        normalized_mood_distance = _mood_distance(target_mood_features, candidate_features, mood_features)
+        normalized_mood_distance = _mood_distance(
+            target_mood_features, candidate_features, mood_features
+        )
         if normalized_mood_distance <= mood_threshold:
             song_with_mood = song.copy()
             song_with_mood['mood_distance'] = normalized_mood_distance
             batch_results.append(song_with_mood)
     return batch_results
 
-def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn, mood_threshold: float = None, target_other_features=None):
+
+def _filter_by_mood_similarity(
+    song_results: list,
+    target_item_id: str,
+    db_conn,
+    mood_threshold: float = None,
+    target_other_features=None,
+):
     if not song_results:
         return []
 
@@ -477,7 +553,9 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
     def fetch_mood_features_batch(id_batch):
         batch_features = {}
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (id_batch,))
+            cur.execute(
+                "SELECT item_id, other_features FROM score WHERE item_id = ANY(%s)", (id_batch,)
+            )
             rows = cur.fetchall()
             for row in rows:
                 if row['other_features']:
@@ -490,7 +568,9 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
 
     mood_features = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
 
-    logger.info(f"Starting mood filtering with {len(song_results)} candidates, threshold: {mood_threshold}")
+    logger.info(
+        f"Starting mood filtering with {len(song_results)} candidates, threshold: {mood_threshold}"
+    )
 
     if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
         filtered_songs = []
@@ -500,9 +580,13 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
                 logger.debug(f"Skipping song {song['item_id']}: no mood features found")
                 continue
 
-            normalized_mood_distance = _mood_distance(target_mood_features, candidate_features, mood_features)
+            normalized_mood_distance = _mood_distance(
+                target_mood_features, candidate_features, mood_features
+            )
 
-            logger.debug(f"Song {song['item_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}")
+            logger.debug(
+                f"Song {song['item_id']} mood distance: {normalized_mood_distance:.4f}, features: {candidate_features}"
+            )
 
             if normalized_mood_distance <= mood_threshold:
                 song_with_mood = song.copy()
@@ -510,13 +594,25 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
                 filtered_songs.append(song_with_mood)
                 logger.debug(f"  -> KEPT (distance: {normalized_mood_distance:.4f})")
             else:
-                logger.debug(f"  -> FILTERED OUT (distance: {normalized_mood_distance:.4f} > threshold: {mood_threshold})")
+                logger.debug(
+                    f"  -> FILTERED OUT (distance: {normalized_mood_distance:.4f} > threshold: {mood_threshold})"
+                )
     else:
-        song_batches = [song_results[i:i + BATCH_SIZE_VECTOR_OPS] for i in range(0, len(song_results), BATCH_SIZE_VECTOR_OPS)]
+        song_batches = [
+            song_results[i : i + BATCH_SIZE_VECTOR_OPS]
+            for i in range(0, len(song_results), BATCH_SIZE_VECTOR_OPS)
+        ]
 
         executor = _get_thread_pool()
         future_to_batch = {
-            executor.submit(_compute_mood_distances_batch, batch, target_mood_features, candidate_mood_features, mood_features, mood_threshold): batch
+            executor.submit(
+                _compute_mood_distances_batch,
+                batch,
+                target_mood_features,
+                candidate_mood_features,
+                mood_features,
+                mood_threshold,
+            ): batch
             for batch in song_batches
         }
 
@@ -525,8 +621,11 @@ def _filter_by_mood_similarity(song_results: list, target_item_id: str, db_conn,
             batch_results = future.result()
             filtered_songs.extend(batch_results)
 
-    logger.info(f"Mood filtering results: kept {len(filtered_songs)} of {len(song_results)} songs (threshold: {mood_threshold})")
+    logger.info(
+        f"Mood filtering results: kept {len(filtered_songs)} of {len(song_results)} songs (threshold: {mood_threshold})"
+    )
     return filtered_songs
+
 
 def _parse_mood_features(other_features_str: str) -> dict:
     try:
@@ -552,7 +651,6 @@ def _radius_walk_get_candidates(
 ) -> list:
     from app_helper import get_score_data_by_ids
 
-
     if not initial_results:
         return []
 
@@ -561,14 +659,22 @@ def _radius_walk_get_candidates(
         results_with_original = [original_for_filter] + initial_results
         temp_filtered = _filter_by_distance(results_with_original, db_conn)
         distance_filtered_results = [s for s in temp_filtered if s['item_id'] != target_item_id]
-        logger.info(f"Radius walk: distance-based filtering reduced candidates {len(initial_results)} -> {len(distance_filtered_results)}")
+        logger.info(
+            f"Radius walk: distance-based filtering reduced candidates {len(initial_results)} -> {len(distance_filtered_results)}"
+        )
     except Exception:
-        logger.exception("Radius walk: distance-based pre-filter failed, continuing with original candidate set.")
+        logger.exception(
+            "Radius walk: distance-based pre-filter failed, continuing with original candidate set."
+        )
         distance_filtered_results = initial_results
 
     try:
-        unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, original_song_details)
-        logger.info(f"Radius walk: name-based dedupe reduced candidates to {len(unique_results_by_song)}")
+        unique_results_by_song = _deduplicate_and_filter_neighbors(
+            distance_filtered_results, db_conn, original_song_details
+        )
+        logger.info(
+            f"Radius walk: name-based dedupe reduced candidates to {len(unique_results_by_song)}"
+        )
     except Exception:
         logger.exception("Radius walk: name-based dedupe failed, continuing without it.")
         unique_results_by_song = distance_filtered_results
@@ -577,9 +683,16 @@ def _radius_walk_get_candidates(
         effective_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
         if effective_mood:
             before_mood = len(unique_results_by_song)
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn, target_other_features=original_song_details.get('other_features'))
+            unique_results_by_song = _filter_by_mood_similarity(
+                unique_results_by_song,
+                target_item_id,
+                db_conn,
+                target_other_features=original_song_details.get('other_features'),
+            )
             after_mood = len(unique_results_by_song)
-            logger.info(f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}")
+            logger.info(
+                f"Radius walk: mood-based filtering reduced candidates {before_mood} -> {after_mood}"
+            )
         else:
             logger.debug("Radius walk: mood-based pre-filter disabled by caller/config. Skipping.")
     except Exception:
@@ -590,7 +703,15 @@ def _radius_walk_get_candidates(
         item_ids_to_fetch = [r['item_id'] for r in unique_results_by_song]
         try:
             track_details_list = get_score_data_by_ids(item_ids_to_fetch)
-            details_map = {d['item_id']: {'title': d.get('title'), 'author': d.get('author'), 'album': d.get('album'), 'album_artist': d.get('album_artist')} for d in track_details_list}
+            details_map = {
+                d['item_id']: {
+                    'title': d.get('title'),
+                    'author': d.get('author'),
+                    'album': d.get('album'),
+                    'album_artist': d.get('album_artist'),
+                }
+                for d in track_details_list
+            }
         except Exception:
             details_map = {}
 
@@ -604,23 +725,23 @@ def _radius_walk_get_candidates(
                     vector = np.array(vector, dtype=np.float32)
                 dist_to_anchor = get_direct_distance(vector, anchor_vector)
                 info = details_map.get(item_id, {'title': None, 'author': None})
-                candidate_data.append({
-                    "item_id": item_id,
-                    "vector": vector,
-                    "dist_anchor": dist_to_anchor,
-                    "title": info.get('title'),
-                    "author": info.get('author')
-                })
+                candidate_data.append(
+                    {
+                        "item_id": item_id,
+                        "vector": vector,
+                        "dist_anchor": dist_to_anchor,
+                        "title": info.get('title'),
+                        "author": info.get('author'),
+                    }
+                )
 
-    logger.info(f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates.")
+    logger.info(
+        f"Radius walk: pre-calculated vectors and distances for {len(candidate_data)} candidates."
+    )
     return candidate_data
 
 
-def _execute_radius_walk(
-    n: int,
-    candidate_data: list,
-    eliminate_duplicates: bool = False
-) -> list:
+def _execute_radius_walk(n: int, candidate_data: list, eliminate_duplicates: bool = False) -> list:
     from .radius_walk_helper import execute_radius_walk as _shared_walk
 
     return _shared_walk(
@@ -632,20 +753,39 @@ def _execute_radius_walk(
     )
 
 
-
-def find_nearest_neighbors_by_id(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
+def find_nearest_neighbors_by_id(
+    target_item_id: str,
+    n: int = 10,
+    eliminate_duplicates: bool | None = None,
+    mood_similarity: bool | None = None,
+    radius_similarity: bool | None = None,
+):
     try:
-        return _find_nearest_neighbors_by_id_impl(target_item_id, n, eliminate_duplicates, mood_similarity, radius_similarity)
+        return _find_nearest_neighbors_by_id_impl(
+            target_item_id, n, eliminate_duplicates, mood_similarity, radius_similarity
+        )
     finally:
         _clear_request_f32()
 
 
-def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, eliminate_duplicates: bool | None = None, mood_similarity: bool | None = None, radius_similarity: bool | None = None):
+def _find_nearest_neighbors_by_id_impl(
+    target_item_id: str,
+    n: int = 10,
+    eliminate_duplicates: bool | None = None,
+    mood_similarity: bool | None = None,
+    radius_similarity: bool | None = None,
+):
     if ivf_index is None or id_map is None or reverse_id_map is None:
-        raise RuntimeError("IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+        raise RuntimeError(
+            "IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup."
+        )
 
     eff_radius = SIMILARITY_RADIUS_DEFAULT if radius_similarity is None else radius_similarity
-    eff_eliminate = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT if eliminate_duplicates is None else eliminate_duplicates
+    eff_eliminate = (
+        SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+        if eliminate_duplicates is None
+        else eliminate_duplicates
+    )
     eff_mood = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
     _result_key = (target_item_id, int(n), bool(eff_eliminate), bool(eff_mood), bool(eff_radius))
     _cached = _neighbor_result_cache.get(_result_key)
@@ -656,14 +796,16 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
         ivf_index.begin_request()
 
     from app_helper import get_db, get_score_data_by_ids
+
     db_conn = get_db()
 
     target_song_details_list = get_score_data_by_ids([target_item_id])
     if not target_song_details_list:
-        logger.error(f"Could not retrieve details for the target song {target_item_id}. Aborting neighbor search.")
+        logger.error(
+            f"Could not retrieve details for the target song {target_item_id}. Aborting neighbor search."
+        )
         return []
     target_song_details = target_song_details_list[0]
-
 
     target_vec_id = reverse_id_map.get(target_item_id)
     if target_vec_id is None:
@@ -678,9 +820,10 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
         try:
             query_vector = ivf_index.get_vector(target_vec_id)
         except Exception as e:
-            logger.exception(f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}")
+            logger.exception(
+                f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}"
+            )
             return []
-
 
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
@@ -688,12 +831,13 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
     if eliminate_duplicates is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
 
-
     if radius_similarity or eliminate_duplicates:
         base_multiplier = 3
         k_increase = max(20, int(n * base_multiplier))
         num_to_query = n + k_increase + 1
-        logger.info(f"Radius similarity enabled. Fetching a large candidate pool of {num_to_query} songs.")
+        logger.info(
+            f"Radius similarity enabled. Fetching a large candidate pool of {num_to_query} songs."
+        )
     else:
         k_increase = max(3, int(n * 0.20))
         num_to_query = n + k_increase + 1
@@ -714,12 +858,17 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
     rerank_k = min(len(ivf_index), max(num_to_query * IVF_RERANK_OVERFETCH, num_to_query + 200))
     try:
         if num_to_query <= 1:
-             logger.warning(f"Number of neighbors to query ({num_to_query}) is too small. Skipping query.")
-             neighbor_vec_ids, distances = [], []
+            logger.warning(
+                f"Number of neighbors to query ({num_to_query}) is too small. Skipping query."
+            )
+            neighbor_vec_ids, distances = [], []
         else:
-             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=rerank_k)
+            neighbor_vec_ids, distances = ivf_index.query(query_vector, k=rerank_k)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during IVF query for item '{target_item_id}': {e}", exc_info=True)
+        logger.error(
+            f"An unexpected error occurred during IVF query for item '{target_item_id}': {e}",
+            exc_info=True,
+        )
         return []
 
     initial_results = []
@@ -751,34 +900,46 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
             db_conn=db_conn,
             original_song_details=target_song_details,
             eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity
+            mood_similarity=mood_similarity,
         )
 
         final_results = _execute_radius_walk(
-            n=n,
-            candidate_data=candidate_data,
-            eliminate_duplicates=eliminate_duplicates
+            n=n, candidate_data=candidate_data, eliminate_duplicates=eliminate_duplicates
         )
 
         _neighbor_result_cache.put(_result_key, final_results)
         return [dict(r) for r in final_results]
 
     else:
-
         original_song_for_filtering = {"item_id": target_item_id, "distance": 0.0}
         results_with_original = [original_song_for_filtering] + initial_results
 
         temp_filtered_results = _filter_by_distance(results_with_original, db_conn)
 
-        distance_filtered_results = [song for song in temp_filtered_results if song['item_id'] != target_item_id]
-        unique_results_by_song = _deduplicate_and_filter_neighbors(distance_filtered_results, db_conn, target_song_details)
+        distance_filtered_results = [
+            song for song in temp_filtered_results if song['item_id'] != target_item_id
+        ]
+        unique_results_by_song = _deduplicate_and_filter_neighbors(
+            distance_filtered_results, db_conn, target_song_details
+        )
 
-        effective_mood_nonradius = MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        effective_mood_nonradius = (
+            MOOD_SIMILARITY_ENABLE if mood_similarity is None else mood_similarity
+        )
         if effective_mood_nonradius:
-            logger.info(f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}")
-            unique_results_by_song = _filter_by_mood_similarity(unique_results_by_song, target_item_id, db_conn, target_other_features=target_song_details.get('other_features'))
+            logger.info(
+                f"Mood similarity filtering requested/enabled for target_item_id: {target_item_id}"
+            )
+            unique_results_by_song = _filter_by_mood_similarity(
+                unique_results_by_song,
+                target_item_id,
+                db_conn,
+                target_other_features=target_song_details.get('other_features'),
+            )
         else:
-            logger.info(f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})")
+            logger.info(
+                f"Mood filtering skipped (mood_similarity={mood_similarity}, MOOD_SIMILARITY_ENABLE={MOOD_SIMILARITY_ENABLE})"
+            )
 
         if eliminate_duplicates:
             if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
@@ -796,7 +957,9 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
                     author = details_map.get(song_id, {}).get('author')
 
                     if not author:
-                        logger.warning(f"Could not find author for item_id {song_id} during artist deduplication. Skipping.")
+                        logger.warning(
+                            f"Could not find author for item_id {song_id} during artist deduplication. Skipping."
+                        )
                         continue
 
                     current_count = artist_counts.get(author, 0)
@@ -810,14 +973,19 @@ def _find_nearest_neighbors_by_id_impl(target_item_id: str, n: int = 10, elimina
         _neighbor_result_cache.put(_result_key, final_results)
         return [dict(r) for r in final_results]
 
-def find_nearest_neighbors_by_vector(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
+
+def find_nearest_neighbors_by_vector(
+    query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None
+):
     try:
         return _find_nearest_neighbors_by_vector_impl(query_vector, n, eliminate_duplicates)
     finally:
         _clear_request_f32()
 
 
-def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None):
+def _find_nearest_neighbors_by_vector_impl(
+    query_vector: np.ndarray, n: int = 100, eliminate_duplicates: bool | None = None
+):
     if ivf_index is None or id_map is None:
         raise RuntimeError("IVF index is not loaded in memory.")
 
@@ -826,6 +994,7 @@ def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 10
     _clear_request_f32()
 
     from app_helper import get_db
+
     db_conn = get_db()
 
     if eliminate_duplicates is None:
@@ -852,7 +1021,10 @@ def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 10
         else:
             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=num_to_query)
     except Exception as e:
-        logger.error(f"An unexpected error occurred during IVF query for synthetic vector: {e}", exc_info=True)
+        logger.error(
+            f"An unexpected error occurred during IVF query for synthetic vector: {e}",
+            exc_info=True,
+        )
         return []
 
     initial_results = [
@@ -876,7 +1048,12 @@ def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 10
         if not current_details:
             continue
 
-        is_duplicate = any(_is_same_song(current_details['title'], current_details['author'], added['title'], added['author']) for added in added_songs_details)
+        is_duplicate = any(
+            _is_same_song(
+                current_details['title'], current_details['author'], added['title'], added['author']
+            )
+            for added in added_songs_details
+        )
 
         if not is_duplicate:
             unique_songs_by_content.append(song)
@@ -905,7 +1082,9 @@ def _find_nearest_neighbors_by_vector_impl(query_vector: np.ndarray, n: int = 10
 
 def get_max_distance_for_id(target_item_id: str):
     if ivf_index is None or id_map is None or reverse_id_map is None:
-        raise RuntimeError("IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup.")
+        raise RuntimeError(
+            "IVF index is not loaded in memory. It may be missing, empty, or the server failed to load it on startup."
+        )
 
     target_vec_id = reverse_id_map.get(target_item_id)
     if target_vec_id is None:
@@ -929,8 +1108,10 @@ def get_max_distance_for_id(target_item_id: str):
     _max_distance_cache.put(target_item_id, result)
     return dict(result)
 
+
 def get_item_id_by_title_and_artist(title: str, artist: str):
     from app_helper import get_db
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
@@ -951,7 +1132,9 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
         cur.execute(query, (title, artist, f"%{title}%", f"%{artist}%"))
         result = cur.fetchone()
         if result:
-            logger.info(f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'")
+            logger.info(
+                f"Fuzzy matched '{title}' by '{artist}' to '{result['title']}' by '{result['author']}'"
+            )
             return result['item_id']
 
         return None
@@ -961,9 +1144,10 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
     finally:
         cur.close()
 
-def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
-                          item_id_filter: set = None):
 
+def search_tracks_unified(
+    search_query: str, limit: int = 20, offset: int = 0, item_id_filter: set = None
+):
     from app_helper import get_db
     from psycopg2.extras import DictCursor
 
@@ -1007,7 +1191,7 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
-        all_params = params[:len(tokens)] + id_filter_params + params[len(tokens):]
+        all_params = params[: len(tokens)] + id_filter_params + params[len(tokens) :]
 
         query = f"""
             SELECT item_id, title, author, album, album_artist
@@ -1027,22 +1211,23 @@ def search_tracks_unified(search_query: str, limit: int = 20, offset: int = 0,
         results = [dict(row) for row in cur.fetchall()]
 
     except Exception as e:
-        logger.error(
-            f"Error searching tracks with query '{search_query}': {e}",
-            exc_info=True
-        )
+        logger.error(f"Error searching tracks with query '{search_query}': {e}", exc_info=True)
     finally:
         cur.close()
 
     return results
 
+
 def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
     try:
         from .mediaserver import create_instant_playlist
+
         created_playlist = create_instant_playlist(playlist_name, track_ids, user_creds=user_creds)
 
         if not created_playlist:
-            raise Exception("Playlist creation failed. The media server did not return a playlist object.")
+            raise Exception(
+                "Playlist creation failed. The media server did not return a playlist object."
+            )
 
         playlist_id = created_playlist.get('Id')
 
@@ -1054,13 +1239,14 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
     except Exception as e:
         raise e
 
+
 def cleanup_resources():
     logger.info("Cleaning up similarity manager resources...")
     _shutdown_thread_pool()
     try:
         from tasks.paged_ivf import shutdown_query_pool
+
         shutdown_query_pool()
     except Exception:
         logger.debug("IVF query pool shutdown failed during cleanup.", exc_info=True)
     logger.info("Similarity manager cleanup complete.")
-

@@ -1,6 +1,8 @@
 import sys as _sys
+
 if _sys.platform == 'win32':
     import multiprocessing as _mp
+
     _o = _mp.get_context
     _mp.get_context = lambda m=None: _o('spawn') if m == 'fork' else _o(m)
 
@@ -9,7 +11,6 @@ import sys
 import importlib.util
 import pytest
 from unittest.mock import Mock, MagicMock
-
 
 
 def _import_module(mod_name: str, relative_path: str):
@@ -26,11 +27,9 @@ def _import_module(mod_name: str, relative_path: str):
     return sys.modules[mod_name]
 
 
-
 @pytest.fixture(scope='session')
 def mcp_server_mod():
     return _import_module('tasks.mcp_helper', 'tasks/mcp_helper.py')
-
 
 
 def make_dict_row(mapping: dict):
@@ -40,6 +39,7 @@ def make_dict_row(mapping: dict):
                 return self[name]
             except KeyError:
                 raise AttributeError(name)
+
     return FakeRow(mapping)
 
 
@@ -48,7 +48,6 @@ def make_mock_connection(cursor):
     conn.cursor.return_value = cursor
     conn.close = Mock()
     return conn
-
 
 
 _CONFIG_ATTRS_TO_RESTORE = (
@@ -70,6 +69,7 @@ _CONFIG_ATTRS_TO_RESTORE = (
 @pytest.fixture(autouse=True)
 def config_restore():
     import config as cfg
+
     saved = {}
     for attr in _CONFIG_ATTRS_TO_RESTORE:
         if hasattr(cfg, attr):
@@ -79,11 +79,13 @@ def config_restore():
         setattr(cfg, attr, val)
 
 
-
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     mod = next(
-        (m for name, m in list(sys.modules.items())
-         if name == "test_import_architecture" or name.endswith(".test_import_architecture")),
+        (
+            m
+            for name, m in list(sys.modules.items())
+            if name == "test_import_architecture" or name.endswith(".test_import_architecture")
+        ),
         None,
     )
     if mod is None:

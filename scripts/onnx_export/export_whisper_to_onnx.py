@@ -3,7 +3,7 @@
 Run once at export time (with torch + optimum installed). The resulting
 ``encoder_model.onnx`` + ``decoder_model.onnx`` pair is then consumed at
 runtime by ``lyrics/whisper_onnx.py`` via raw onnxruntime + a numpy greedy
-decoder — no torch needed at runtime.
+decoder - no torch needed at runtime.
 
 Usage
 -----
@@ -32,9 +32,13 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     cmd = [
-        sys.executable, '-m', 'optimum.exporters.onnx',
-        '--model', model_id,
-        '--task', 'automatic-speech-recognition',
+        sys.executable,
+        '-m',
+        'optimum.exporters.onnx',
+        '--model',
+        model_id,
+        '--task',
+        'automatic-speech-recognition',
         '--no-post-process',
         output_dir,
     ]
@@ -59,16 +63,15 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
         full = os.path.join(output_dir, entry)
         if os.path.isfile(full):
             total += os.path.getsize(full)
-    print(f'Whisper ONNX exported to {output_dir} ({total / (1024*1024):.1f} MB)',
-          flush=True)
+    print(f'Whisper ONNX exported to {output_dir} ({total / (1024 * 1024):.1f} MB)', flush=True)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', default='openai/whisper-small',
-                        help='HF Hub id of the whisper model to export.')
-    parser.add_argument('--output', required=True,
-                        help='Destination directory for the ONNX files.')
+    parser.add_argument(
+        '--model', default='openai/whisper-small', help='HF Hub id of the whisper model to export.'
+    )
+    parser.add_argument('--output', required=True, help='Destination directory for the ONNX files.')
     args = parser.parse_args(argv)
     export_whisper_to_onnx(args.model, args.output)
     return 0

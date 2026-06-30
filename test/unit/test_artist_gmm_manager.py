@@ -13,7 +13,6 @@ def _gmm(means, weights):
 
 
 class TestSelectOptimalGMMComponents:
-
     def test_single_sample_returns_one_component(self):
         embeddings = np.random.rand(1, 128)
 
@@ -77,7 +76,6 @@ class TestSelectOptimalGMMComponents:
 
 
 class TestFitArtistGMM:
-
     def test_single_track_artist(self):
         embeddings = [np.random.rand(128)]
 
@@ -100,7 +98,7 @@ class TestFitArtistGMM:
         assert gmm_params['n_tracks'] == 3
         assert gmm_params['is_few_songs'] is True
         assert len(gmm_params['weights']) == 3
-        assert all(abs(w - 1.0/3) < 1e-10 for w in gmm_params['weights'])
+        assert all(abs(w - 1.0 / 3) < 1e-10 for w in gmm_params['weights'])
 
     def test_many_tracks_artist(self):
         embeddings = [np.random.rand(128) for _ in range(20)]
@@ -184,7 +182,6 @@ class TestFitArtistGMM:
 
 
 class TestGmmSoftChamfer:
-
     A = [1.0, 0.0, 0.0, 0.0]
     B = [0.0, 1.0, 0.0, 0.0]
     C = [0.0, 0.0, 1.0, 0.0]
@@ -210,7 +207,9 @@ class TestGmmSoftChamfer:
         query = _gmm([self.A, self.B], [0.5, 0.5])
         shares_one = _gmm([self.A, self.C], [0.5, 0.5])
         shares_none = _gmm([self.C, self.D], [0.5, 0.5])
-        assert gmm_soft_chamfer_distance(query, shares_one) < gmm_soft_chamfer_distance(query, shares_none)
+        assert gmm_soft_chamfer_distance(query, shares_one) < gmm_soft_chamfer_distance(
+            query, shares_none
+        )
 
     def test_symmetric(self):
         a = _gmm([self.A, self.B], [0.7, 0.3])
@@ -221,7 +220,9 @@ class TestGmmSoftChamfer:
         query = _gmm([self.A, self.B], [0.9, 0.1])
         shares_dominant = _gmm([self.A, self.C], [0.5, 0.5])
         shares_rare = _gmm([self.C, self.B], [0.5, 0.5])
-        assert gmm_soft_chamfer_distance(query, shares_dominant) < gmm_soft_chamfer_distance(query, shares_rare)
+        assert gmm_soft_chamfer_distance(query, shares_dominant) < gmm_soft_chamfer_distance(
+            query, shares_rare
+        )
 
     def test_single_component_artists(self):
         q = _gmm([self.A], [1.0])
@@ -232,7 +233,6 @@ class TestGmmSoftChamfer:
 
 
 class TestFindSimilarArtistsRerank:
-
     def test_reranks_candidates_and_excludes_self(self, monkeypatch):
         import sys
         import types
@@ -273,11 +273,12 @@ class TestFindSimilarArtistsRerank:
         names = [r["artist"] for r in res]
         assert names == ["near", "mid"], f"expected rerank order, got {names}"
         assert all(r["artist"] != "Q" for r in res), "self must be excluded"
-        assert res[0]["divergence"] <= res[1]["divergence"], "results must be ascending by divergence"
+        assert res[0]["divergence"] <= res[1]["divergence"], (
+            "results must be ascending by divergence"
+        )
 
 
 class TestEdgeCases:
-
     def test_empty_track_list(self):
         embeddings = []
 
@@ -289,16 +290,16 @@ class TestEdgeCases:
         try:
             embeddings = [np.array([]) for _ in range(5)]
             gmm_params = fit_artist_gmm("Invalid Artist", embeddings)
-            assert gmm_params is None or 'n_features' not in gmm_params or gmm_params['n_features'] == 0
+            assert (
+                gmm_params is None
+                or 'n_features' not in gmm_params
+                or gmm_params['n_features'] == 0
+            )
         except Exception:
             pass
 
     def test_mismatched_embedding_dimensions(self):
-        embeddings = [
-            np.random.rand(128),
-            np.random.rand(64),
-            np.random.rand(128)
-        ]
+        embeddings = [np.random.rand(128), np.random.rand(64), np.random.rand(128)]
 
         try:
             gmm_params = fit_artist_gmm("Mismatched Artist", embeddings)

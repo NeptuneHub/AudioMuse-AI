@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -79,6 +78,7 @@ class ProcessSupervisor:
                 return
             if on_ready is not None and self.is_running():
                 on_ready()
+
         self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
         self._boot_thread.start()
         return self._boot_thread
@@ -143,7 +143,12 @@ class ProcessSupervisor:
         current = threading.current_thread()
         main = threading.main_thread()
         for thread in (self._boot_thread, self._health_thread):
-            if thread is not None and thread is not current and thread is not main and thread.is_alive():
+            if (
+                thread is not None
+                and thread is not current
+                and thread is not main
+                and thread.is_alive()
+            ):
                 thread.join(timeout=30)
 
     def start_child(self, name):
@@ -173,7 +178,9 @@ class ProcessSupervisor:
         )
         with self._lock:
             self._children[name] = popen
-        threading.Thread(target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True).start()
+        threading.Thread(
+            target=self._pump, args=(name, popen), name=f"pump-{name}", daemon=True
+        ).start()
         return True
 
     def _stop_child(self, name):
@@ -215,8 +222,10 @@ class ProcessSupervisor:
         if action not in ("restart", "stop", "start"):
             return False
         threading.Thread(
-            target=self._apply_control, args=(action, list(services)),
-            name=f"control-{action}", daemon=True,
+            target=self._apply_control,
+            args=(action, list(services)),
+            name=f"control-{action}",
+            daemon=True,
         ).start()
         return True
 
@@ -234,7 +243,6 @@ class ProcessSupervisor:
             except Exception:
                 self._log.exception("Control %s failed for %s", action, svc)
 
-
     def _start_redis(self):
         redis_bin = paths.redis_binary()
         redis_dir = paths.redis_dir()
@@ -242,13 +250,20 @@ class ProcessSupervisor:
         redis_password = paths.redis_password()
         cmd = [
             redis_bin,
-            "--port", str(paths.redis_port()),
-            "--bind", "127.0.0.1",
-            "--requirepass", redis_password,
-            "--dir", redis_dir,
-            "--save", "",
-            "--appendonly", "no",
-            "--loglevel", "warning",
+            "--port",
+            str(paths.redis_port()),
+            "--bind",
+            "127.0.0.1",
+            "--requirepass",
+            redis_password,
+            "--dir",
+            redis_dir,
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+            "--loglevel",
+            "warning",
         ]
         self._redis_proc = subprocess.Popen(
             cmd,
@@ -259,8 +274,12 @@ class ProcessSupervisor:
         self._redis_url = paths.redis_url()
         for _ in range(60):
             try:
-                r = redis_lib.Redis(host="127.0.0.1", port=paths.redis_port(),
-                                    password=redis_password, socket_connect_timeout=1)
+                r = redis_lib.Redis(
+                    host="127.0.0.1",
+                    port=paths.redis_port(),
+                    password=redis_password,
+                    socket_connect_timeout=1,
+                )
                 r.ping()
                 break
             except Exception:
@@ -289,7 +308,6 @@ class ProcessSupervisor:
         self._redis_proc = None
         self._redis_url = None
 
-
     def _wait_http(self, url, timeout=180):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -314,6 +332,7 @@ class ProcessSupervisor:
                     urllib.request.urlopen(FLASK_URL, timeout=5)
                 except Exception:
                     self._log.warning("Health check failed")
+
         self._health_thread = threading.Thread(target=_loop, name="health", daemon=True)
         self._health_thread.start()
 
@@ -335,8 +354,11 @@ class ProcessSupervisor:
                 stale_redis = "redis-server" in cmd and redis_marker in cmd
                 stale_pg = ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd
                 if stale_redis or stale_pg:
-                    self._log.info("Reaping orphan %s (pid=%d) referencing our data dir",
-                                   proc.info.get("name"), proc.info["pid"])
+                    self._log.info(
+                        "Reaping orphan %s (pid=%d) referencing our data dir",
+                        proc.info.get("name"),
+                        proc.info["pid"],
+                    )
                     proc.terminate()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

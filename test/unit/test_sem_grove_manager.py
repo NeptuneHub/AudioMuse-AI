@@ -1,11 +1,9 @@
-
 import sys
 import os
 import importlib.util
 import pytest
 import numpy as np
 from unittest.mock import MagicMock, patch
-
 
 
 def _load_sem_grove():
@@ -24,7 +22,7 @@ def _load_sem_grove():
     helper_name = 'tasks.index_build_helpers'
     if helper_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(helper_name, helper_path)
-        mod  = importlib.util.module_from_spec(spec)
+        mod = importlib.util.module_from_spec(spec)
         sys.modules[helper_name] = mod
         spec.loader.exec_module(mod)
 
@@ -32,19 +30,16 @@ def _load_sem_grove():
     mod_name = 'tasks.sem_grove_manager'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
-        mod  = importlib.util.module_from_spec(spec)
+        mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
     return sys.modules[mod_name]
 
 
-
 _sgm = _load_sem_grove()
 
 
-
 class TestMakeMergedVector:
-
     def _std(self, dim):
         return np.ones(dim, dtype=np.float32)
 
@@ -113,13 +108,11 @@ class TestMakeMergedVector:
         assert abs(cos_sim - 1.0) < 1e-5
 
 
-
 class TestCacheHelpers:
-
     def _patch_cache(self, loaded, id_map=None):
         fake_cache = {
-            "loaded":   loaded,
-            "id_map":   id_map,
+            "loaded": loaded,
+            "id_map": id_map,
             "song_count": len(id_map) if id_map else 0,
         }
         return patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", fake_cache)
@@ -152,9 +145,7 @@ class TestCacheHelpers:
             assert is_sem_grove_cache_loaded() is True
 
 
-
 class TestSearchBySong:
-
     def _make_fake_index(self, n_songs, dim=12):
         rng = np.random.default_rng(42)
         vecs = []
@@ -171,7 +162,7 @@ class TestSearchBySong:
         def fake_query(qvec, k):
             scores = [float(np.dot(qvec, v)) for v in vecs]
             ranked = sorted(range(n_songs), key=lambda i: -scores[i])[:k]
-            dists  = [1.0 - scores[i] for i in ranked]
+            dists = [1.0 - scores[i] for i in ranked]
             return np.array(ranked), np.array(dists, dtype=np.float32)
 
         mock_idx.query.side_effect = fake_query
@@ -179,21 +170,18 @@ class TestSearchBySong:
 
     def _build_cache(self, n_songs, dim=12):
         idx, vecs = self._make_fake_index(n_songs, dim)
-        id_map  = {i: f"song-{i}" for i in range(n_songs)}
+        id_map = {i: f"song-{i}" for i in range(n_songs)}
         rev_map = {v: k for k, v in id_map.items()}
         return {
-            "index":          idx,
-            "id_map":         id_map,
+            "index": idx,
+            "id_map": id_map,
             "reverse_id_map": rev_map,
-            "loaded":         True,
-            "song_count":     n_songs,
+            "loaded": True,
+            "song_count": n_songs,
         }, vecs
 
     def _fake_fetch_metadata(self, item_ids):
-        return {
-            iid: {"title": f"Title {iid}", "author": f"Artist {iid}"}
-            for iid in item_ids
-        }
+        return {iid: {"title": f"Title {iid}", "author": f"Artist {iid}"} for iid in item_ids}
 
     def test_returns_empty_when_not_loaded(self):
         from tasks.sem_grove_manager import search_by_song
@@ -215,11 +203,13 @@ class TestSearchBySong:
         cache, _ = self._build_cache(n)
         seed = "song-0"
 
-        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
-             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata), \
-             patch("config.MAX_SONGS_PER_ARTIST", 0), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
+            patch("config.MAX_SONGS_PER_ARTIST", 0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed, limit=5)
 
         assert results, "search_by_song returned an empty list"
@@ -235,11 +225,13 @@ class TestSearchBySong:
         seed = "song-3"
         limit = 5
 
-        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
-             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata), \
-             patch("config.MAX_SONGS_PER_ARTIST", 0), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
+            patch("config.MAX_SONGS_PER_ARTIST", 0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed, limit=limit)
 
         non_seed = [r for r in results if not r.get("is_seed")]
@@ -252,11 +244,13 @@ class TestSearchBySong:
         cache, _ = self._build_cache(n)
         seed = "song-2"
 
-        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
-             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata), \
-             patch("config.MAX_SONGS_PER_ARTIST", 0), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=self._fake_fetch_metadata),
+            patch("config.MAX_SONGS_PER_ARTIST", 0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed, limit=8)
 
         neighbour_ids = [r["item_id"] for r in results if not r.get("is_seed")]
@@ -272,11 +266,13 @@ class TestSearchBySong:
         def same_artist_fetch(item_ids):
             return {iid: {"title": f"Title {iid}", "author": "Same Artist"} for iid in item_ids}
 
-        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
-             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=same_artist_fetch), \
-             patch("config.MAX_SONGS_PER_ARTIST", 1), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=same_artist_fetch),
+            patch("config.MAX_SONGS_PER_ARTIST", 1),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed, limit=10)
 
         neighbours = [r for r in results if not r.get("is_seed")]
@@ -298,33 +294,31 @@ class TestSearchBySong:
                     result[iid] = {"title": f"Title {iid}", "author": f"Artist {iid}"}
             return result
 
-        with patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache), \
-             patch("tasks.sem_grove_manager._fetch_metadata", side_effect=dedup_fetch), \
-             patch("config.MAX_SONGS_PER_ARTIST", 0), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._SEM_GROVE_CACHE", cache),
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=dedup_fetch),
+            patch("config.MAX_SONGS_PER_ARTIST", 0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed, limit=8)
 
-        titles_authors = [
-            (r["title"], r["author"]) for r in results if not r.get("is_seed")
-        ]
+        titles_authors = [(r["title"], r["author"]) for r in results if not r.get("is_seed")]
         assert titles_authors.count(("Dup Title", "Dup Artist")) <= 1
 
 
-
 class TestSemGroveRoundTrip:
-
     pytest.importorskip("ivf", reason="ivf package required for round-trip test")
 
     def _make_db_mock(self, n_songs, lyrics_dim=16, audio_dim=8):
         rng = np.random.default_rng(7)
 
         lyrics_rows = []
-        audio_rows  = []
+        audio_rows = []
         for i in range(n_songs):
-            lid  = f"song-{i}"
-            lv   = rng.standard_normal(lyrics_dim).astype(np.float32).tobytes()
-            av   = rng.standard_normal(audio_dim).astype(np.float32).tobytes()
+            lid = f"song-{i}"
+            lv = rng.standard_normal(lyrics_dim).astype(np.float32).tobytes()
+            av = rng.standard_normal(audio_dim).astype(np.float32).tobytes()
             lyrics_rows.append((lid, lv))
             audio_rows.append((lid, av))
 
@@ -356,11 +350,15 @@ class TestSemGroveRoundTrip:
         except ImportError:
             pytest.skip("ivf not installed")
 
-        from tasks.sem_grove_manager import build_and_store_sem_grove_index, search_by_song, _SEM_GROVE_CACHE
+        from tasks.sem_grove_manager import (
+            build_and_store_sem_grove_index,
+            search_by_song,
+            _SEM_GROVE_CACHE,
+        )
 
-        n         = 15
+        n = 15
         lyrics_dim = 16
-        audio_dim  = 8
+        audio_dim = 8
         lyrics_rows, audio_rows, ld, ad = self._make_db_mock(n, lyrics_dim, audio_dim)
 
         stored: dict = {}
@@ -395,30 +393,35 @@ class TestSemGroveRoundTrip:
             return buf, ids
 
         import types as _t
+
         _ah_stub = _t.ModuleType('app_helper')
         _ah_stub.get_db = MagicMock(return_value=mock_conn)
         _ah_stub.get_score_data_by_ids = lambda item_ids: []
 
-        with patch.dict(sys.modules, {'app_helper': _ah_stub}), \
-             patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True), \
-             patch("config.EMBEDDING_DIMENSION", audio_dim, create=True), \
-             patch("tasks.index_build_helpers.stream_embeddings_to_buffer",
-                   side_effect=fake_stream):
+        with (
+            patch.dict(sys.modules, {'app_helper': _ah_stub}),
+            patch("config.LYRICS_EMBEDDING_DIMENSION", lyrics_dim, create=True),
+            patch("config.EMBEDDING_DIMENSION", audio_dim, create=True),
+            patch("tasks.index_build_helpers.stream_embeddings_to_buffer", side_effect=fake_stream),
+        ):
             from config import IVF_MAX_PART_SIZE_MB  # noqa: F401
+
             ok = build_and_store_sem_grove_index(db_conn=mock_conn)
 
         if not ok or not stored:
-            pytest.skip("build_and_store_sem_grove_index did not store anything (likely missing config)")
+            pytest.skip(
+                "build_and_store_sem_grove_index did not store anything (likely missing config)"
+            )
 
         whitening_row = stored.get("sem_grove_whitening")
-        index_row     = stored.get("sem_grove_index")
+        index_row = stored.get("sem_grove_index")
 
         if not whitening_row or not index_row:
             pytest.skip("Expected whitening and index rows not captured")
 
         whitening_json = whitening_row[1]
-        index_binary   = index_row[0]
-        index_idmap    = index_row[1]
+        index_binary = index_row[0]
+        index_idmap = index_row[1]
 
         def fake_load():
             import json as _json
@@ -427,46 +430,49 @@ class TestSemGroveRoundTrip:
 
             whitening = _json.loads(whitening_json)
             std_lyrics = np.array(whitening["std_lyrics"], dtype=np.float32)
-            std_audio  = np.array(whitening["std_audio"],  dtype=np.float32)
-            w_l        = float(whitening["w_lyrics"])
-            w_a        = float(whitening["w_audio"])
-            ld_        = int(whitening["lyrics_dim"])
-            ad_        = int(whitening["audio_dim"])
+            std_audio = np.array(whitening["std_audio"], dtype=np.float32)
+            w_l = float(whitening["w_lyrics"])
+            w_a = float(whitening["w_audio"])
+            ld_ = int(whitening["lyrics_dim"])
+            ad_ = int(whitening["audio_dim"])
 
             stream = io.BytesIO(index_binary)
             loaded = _ivf.Index.load(stream)
             loaded.ef = IVF_QUERY_EF
 
-            id_map_        = {int(k): v for k, v in _json.loads(index_idmap).items()}
+            id_map_ = {int(k): v for k, v in _json.loads(index_idmap).items()}
             reverse_id_map = {v: k for k, v in id_map_.items()}
 
-            _SEM_GROVE_CACHE.update({
-                "index":          loaded,
-                "id_map":         id_map_,
-                "reverse_id_map": reverse_id_map,
-                "std_lyrics":     std_lyrics,
-                "std_audio":      std_audio,
-                "lyrics_dim":     ld_,
-                "audio_dim":      ad_,
-                "w_lyrics":       w_l,
-                "w_audio":        w_a,
-                "loaded":         True,
-                "song_count":     len(id_map_),
-            })
+            _SEM_GROVE_CACHE.update(
+                {
+                    "index": loaded,
+                    "id_map": id_map_,
+                    "reverse_id_map": reverse_id_map,
+                    "std_lyrics": std_lyrics,
+                    "std_audio": std_audio,
+                    "lyrics_dim": ld_,
+                    "audio_dim": ad_,
+                    "w_lyrics": w_l,
+                    "w_audio": w_a,
+                    "loaded": True,
+                    "song_count": len(id_map_),
+                }
+            )
             return True
 
         fake_load()
 
         seed_id = "song-0"
 
-
         def fake_fetch_meta(item_ids):
             return {iid: {"title": f"Title {iid}", "author": f"Artist {iid}"} for iid in item_ids}
 
-        with patch("tasks.sem_grove_manager._fetch_metadata", side_effect=fake_fetch_meta), \
-             patch("config.MAX_SONGS_PER_ARTIST", 0), \
-             patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0), \
-             patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0):
+        with (
+            patch("tasks.sem_grove_manager._fetch_metadata", side_effect=fake_fetch_meta),
+            patch("config.MAX_SONGS_PER_ARTIST", 0),
+            patch("config.DUPLICATE_DISTANCE_THRESHOLD_COSINE", 0.0),
+            patch("config.DUPLICATE_DISTANCE_CHECK_LOOKBACK", 0),
+        ):
             results = search_by_song(seed_id, limit=5)
 
         assert results, "search_by_song returned nothing after round-trip build+load"
@@ -476,4 +482,3 @@ class TestSemGroveRoundTrip:
         assert len(non_seed) <= 5
         for r in non_seed:
             assert r["item_id"] != seed_id
-

@@ -113,7 +113,9 @@ class TestBrainstormGroundedRetrievalRealDb:
         monkeypatch.setattr(tool_impl, 'get_db_connection', lambda: psycopg2.connect(brainstorm_db))
 
         with patch.dict(sys.modules, {'tasks.ai.api': _fake_ai_module(recipe)}):
-            result = tool_impl._ai_brainstorm_sync("best rock of the 90s", {"provider": "OLLAMA"}, 50)
+            result = tool_impl._ai_brainstorm_sync(
+                "best rock of the 90s", {"provider": "OLLAMA"}, 50
+            )
 
         ids = {s["item_id"] for s in result["songs"]}
         assert ids == {"r1", "r2"}

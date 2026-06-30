@@ -1,4 +1,3 @@
-
 import pytest
 from unittest.mock import Mock, MagicMock
 
@@ -11,12 +10,11 @@ from tasks.memory_utils import (
     cleanup_onnx_session,
     comprehensive_memory_cleanup,
     handle_onnx_memory_error,
-    SessionRecycler
+    SessionRecycler,
 )
 
 
 class TestSanitizeStringForDB:
-
     def test_remove_null_bytes(self):
         result = sanitize_string_for_db("hello\x00world")
         assert result == "helloworld"
@@ -55,7 +53,6 @@ class TestSanitizeStringForDB:
 
 
 class TestCleanupCudaMemory:
-
     def test_cleanup_returns_bool(self):
         result = cleanup_cuda_memory(force=False)
         assert isinstance(result, bool)
@@ -66,7 +63,6 @@ class TestCleanupCudaMemory:
 
 
 class TestCleanupOnnxSession:
-
     def test_cleanup_none_session(self):
         cleanup_onnx_session(None, "test_session")
 
@@ -79,7 +75,6 @@ class TestCleanupOnnxSession:
 
 
 class TestSessionRecycler:
-
     def test_initialization(self):
         recycler = SessionRecycler(recycle_interval=10)
         assert recycler.recycle_interval == 10
@@ -173,16 +168,13 @@ class TestSessionRecycler:
 
 
 class TestHandleOnnxMemoryError:
-
     def test_non_memory_error_reraises_same_object(self):
         err = ValueError("boom")
         cleanup = Mock()
         retry = Mock()
 
         with pytest.raises(ValueError) as excinfo:
-            handle_onnx_memory_error(
-                err, "test context", cleanup_func=cleanup, retry_func=retry
-            )
+            handle_onnx_memory_error(err, "test context", cleanup_func=cleanup, retry_func=retry)
 
         assert excinfo.value is err
         cleanup.assert_not_called()
@@ -239,7 +231,6 @@ class TestHandleOnnxMemoryError:
 
 
 class TestComprehensiveMemoryCleanup:
-
     def test_returns_expected_keys_with_bool_values(self):
         results = comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
 
@@ -260,7 +251,6 @@ class TestComprehensiveMemoryCleanup:
 
 
 class TestSanitizeJsonForDB:
-
     def test_nested_structures_are_cleaned_recursively(self):
         data = {
             "a": {"b": "Va\x00l"},
@@ -282,4 +272,3 @@ class TestSanitizeJsonForDB:
     def test_non_string_scalars_pass_through(self):
         assert sanitize_json_for_db(123) == 123
         assert sanitize_json_for_db(None) is None
-

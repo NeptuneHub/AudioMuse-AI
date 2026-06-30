@@ -18,16 +18,11 @@ logger = logging.getLogger(__name__)
 VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
 
 
-
-
-
 def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
     provider = (ai_config.get("provider") or "NONE").upper()
 
     if provider not in VALID_PROVIDERS:
-        msg = (
-            f"Unknown AI provider {provider!r}. Valid: {sorted(VALID_PROVIDERS)}"
-        )
+        msg = f"Unknown AI provider {provider!r}. Valid: {sorted(VALID_PROVIDERS)}"
         logger.error("validate_ai_config: unknown provider")
         return False, msg
 
@@ -53,7 +48,7 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
             return False, msg
 
     elif provider == "OPENAI":
-        url = (ai_config.get("openai_url") or "")
+        url = ai_config.get("openai_url") or ""
         url_l = url.lower()
         key = ai_config.get("openai_key")
         if not url:
@@ -89,8 +84,10 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
 
     elif provider == "MISTRAL":
         if not ai_api_mistral.is_available():
-            msg = ("Provider=MISTRAL but the mistralai SDK is not installed "
-                   "(currently quarantined on PyPI). Pick a different provider.")
+            msg = (
+                "Provider=MISTRAL but the mistralai SDK is not installed "
+                "(currently quarantined on PyPI). Pick a different provider."
+            )
             logger.error("validate_ai_config: mistralai SDK missing")
             return False, msg
         key = ai_config.get("mistral_key")
@@ -106,10 +103,14 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-
-def generate_text(prompt: str, ai_config: Dict, *, skip_delay: bool = False,
-                  temperature: Optional[float] = None,
-                  max_tokens: Optional[int] = None) -> str:
+def generate_text(
+    prompt: str,
+    ai_config: Dict,
+    *,
+    skip_delay: bool = False,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> str:
     valid, err = validate_ai_config(ai_config)
     if not valid:
         return f"Error: {err}"
@@ -223,7 +224,6 @@ def call_with_tools(
         )
 
     return {"error": f"Unsupported provider {provider!r}"}
-
 
 
 def clean_playlist_name(name: str) -> str:

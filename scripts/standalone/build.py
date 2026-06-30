@@ -86,8 +86,11 @@ def main():
 
     print("==> Running PyInstaller")
     env = {**os.environ, "AUDIOMUSE_BUILD_TARGET": target}
-    subprocess.run([sys.executable, "-m", "PyInstaller", "AudioMuse-AI.spec", "--noconfirm"],
-                   check=True, env=env)
+    subprocess.run(
+        [sys.executable, "-m", "PyInstaller", "AudioMuse-AI.spec", "--noconfirm"],
+        check=True,
+        env=env,
+    )
 
     out = _expected_output(ctx)
     if not out.exists():

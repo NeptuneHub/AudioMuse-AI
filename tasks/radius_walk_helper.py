@@ -1,4 +1,3 @@
-
 import logging
 import math
 from typing import Callable, Dict, List, Optional
@@ -13,7 +12,6 @@ BUCKET_SIZE = 50
 INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 
 
-
 def _normalize_string(text: str) -> str:
     if not text:
         return ""
@@ -25,7 +23,6 @@ def _default_distance_fn(v1: np.ndarray, v2: np.ndarray) -> float:
         return float(np.linalg.norm(v1 - v2))
     except Exception:
         return float("inf")
-
 
 
 def _walk_single_bucket(
@@ -114,10 +111,7 @@ def _walk_single_bucket(
     while True:
         if len(playlist_ids) >= n:
             break
-        avail_idxs = [
-            i for i, r in enumerate(remaining)
-            if r and cand_ids[i] not in used_ids
-        ]
+        avail_idxs = [i for i, r in enumerate(remaining) if r and cand_ids[i] not in used_ids]
         if not avail_idxs:
             break
 
@@ -140,7 +134,8 @@ def _walk_single_bucket(
                     if INSTRUMENT_BUCKET_SKIPS:
                         logger.debug(
                             "Bucket %d: skip idx=%d bucket-artist-limit",
-                            bucket_index, i,
+                            bucket_index,
+                            i,
                         )
                     continue
                 if auth:
@@ -151,14 +146,16 @@ def _walk_single_bucket(
                         if INSTRUMENT_BUCKET_SKIPS:
                             logger.debug(
                                 "Bucket %d: skip idx=%d bucket-count-limit",
-                                bucket_index, i,
+                                bucket_index,
+                                i,
                             )
                         continue
                     if artist_counts.get(auth, 0) >= max_songs_per_artist:
                         if INSTRUMENT_BUCKET_SKIPS:
                             logger.debug(
                                 "Bucket %d: skip idx=%d artist-cap",
-                                bucket_index, i,
+                                bucket_index,
+                                i,
                             )
                         continue
 
@@ -196,12 +193,14 @@ def _walk_single_bucket(
         if INSTRUMENT_BUCKET_SKIPS:
             logger.debug(
                 "Bucket %d: accepted idx=%d",
-                bucket_index, best_i,
+                bucket_index,
+                best_i,
             )
 
 
-
-def _swap_out_artist(ids: List[str], i: int, bad_artist: str, id_to_author: Dict[str, Optional[str]]) -> bool:
+def _swap_out_artist(
+    ids: List[str], i: int, bad_artist: str, id_to_author: Dict[str, Optional[str]]
+) -> bool:
     for target in (i + 2, i + 1):
         for j in range(i + 3, len(ids)):
             if id_to_author.get(ids[j]) != bad_artist:
@@ -242,15 +241,16 @@ def execute_radius_walk(
     buckets_to_scan = max(3, int(math.ceil(n / BUCKET_SIZE)))
     logger.info(
         "Radius walk: N=%d, BUCKET_SIZE=%d, BUCKETS_TO_SCAN=%d",
-        n, BUCKET_SIZE, buckets_to_scan,
+        n,
+        BUCKET_SIZE,
+        buckets_to_scan,
     )
 
     candidate_data.sort(key=lambda x: x["dist_anchor"])
 
     num_buckets = int(math.ceil(len(candidate_data) / BUCKET_SIZE))
     raw_buckets = [
-        candidate_data[i * BUCKET_SIZE : (i + 1) * BUCKET_SIZE]
-        for i in range(num_buckets)
+        candidate_data[i * BUCKET_SIZE : (i + 1) * BUCKET_SIZE] for i in range(num_buckets)
     ]
 
     vec_dim = 0
@@ -265,12 +265,14 @@ def execute_radius_walk(
         else:
             vecs = np.empty((0, vec_dim), dtype=np.float32)
             dist_anchor_arr = np.empty((0,), dtype=np.float32)
-        buckets.append({
-            "items": b,
-            "ids": [c["item_id"] for c in b],
-            "vecs": vecs,
-            "dist_anchor": dist_anchor_arr,
-        })
+        buckets.append(
+            {
+                "items": b,
+                "ids": [c["item_id"] for c in b],
+                "vecs": vecs,
+                "dist_anchor": dist_anchor_arr,
+            }
+        )
 
     logger.info("Radius walk: Created %d buckets.", len(buckets))
 
@@ -291,9 +293,7 @@ def execute_radius_walk(
     }
 
     cap_active = bool(
-        eliminate_duplicates
-        and max_songs_per_artist is not None
-        and max_songs_per_artist > 0
+        eliminate_duplicates and max_songs_per_artist is not None and max_songs_per_artist > 0
     )
     artist_counts: Dict[str, int] = {}
     artist_bucket_counts: Dict[str, int] = {}
@@ -309,10 +309,10 @@ def execute_radius_walk(
     buckets_to_check = min(num_buckets, buckets_to_scan)
 
     walk_state = {
-        "playlist_ids":        playlist_ids,
-        "used_ids":            used_ids,
-        "selected_vectors":    selected_vectors,
-        "artist_counts":       artist_counts,
+        "playlist_ids": playlist_ids,
+        "used_ids": used_ids,
+        "selected_vectors": selected_vectors,
+        "artist_counts": artist_counts,
         "artist_bucket_counts": artist_bucket_counts,
     }
 
@@ -347,9 +347,7 @@ def execute_radius_walk(
 
     logger.info("Radius walk: Walk complete. Collected %d songs.", len(playlist_ids))
 
-    id_to_author: Dict[str, Optional[str]] = {
-        c["item_id"]: c.get("author") for c in candidate_data
-    }
+    id_to_author: Dict[str, Optional[str]] = {c["item_id"]: c.get("author") for c in candidate_data}
     playlist_ids = avoid_triple_adjacent(playlist_ids, id_to_author)
 
     playlist_ids = playlist_ids[:n]
@@ -363,10 +361,12 @@ def execute_radius_walk(
         else:
             for c in candidate_data:
                 if c["item_id"] == item_id:
-                    final_results.append({
-                        "item_id": item_id,
-                        "distance": c["dist_anchor"],
-                    })
+                    final_results.append(
+                        {
+                            "item_id": item_id,
+                            "distance": c["dist_anchor"],
+                        }
+                    )
                     break
 
     return final_results

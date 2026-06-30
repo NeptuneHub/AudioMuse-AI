@@ -1,4 +1,4 @@
-# AudioMuse-AI — Provider Test Guide
+# AudioMuse-AI - Provider Test Guide
 
 ---
 
@@ -41,7 +41,7 @@
 
 ---
 
-## Step 0 — Prepare the environment
+## Step 0 - Prepare the environment
 
 ```bash
 cd AudioMuse-AI/testing/
@@ -54,11 +54,11 @@ Edit `.env.test` and set **`TEST_MUSIC_PATH`** to your test music directory:
 TEST_MUSIC_PATH=./providers/test_music
 ```
 
-Leave the provider credential fields blank for now — you will fill them in during setup.
+Leave the provider credential fields blank for now - you will fill them in during setup.
 
 ---
 
-## Step 1 — Start the providers
+## Step 1 - Start the providers
 
 ```bash
 docker compose -f docker-compose-test-providers.yaml --env-file .env.test up -d
@@ -72,7 +72,7 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
 
 ---
 
-## Step 2 — Configure each provider
+## Step 2 - Configure each provider
 
 ### 2A. Jellyfin (http://localhost:8096)
 
@@ -133,7 +133,7 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
 ### 2D. Lyrion Music Server (http://localhost:9010)
 
 1. Open `http://localhost:9010`.
-2. On first run, it may prompt for a music folder — confirm `/music`.
+2. On first run, it may prompt for a music folder - confirm `/music`.
 3. Go to **Settings → Basic Settings → Media Folders** and verify `/music` is listed.
 4. Trigger a rescan: **Settings → Basic Settings → Rescan**.
 5. **Lyrion requires no API key.** The AudioMuse compose already points to `http://test-lyrion:9010`.
@@ -141,7 +141,7 @@ docker compose -f docker-compose-test-providers.yaml --env-file .env.test ps
 
 ---
 
-## Step 3 — Build and start the AudioMuse instances
+## Step 3 - Build and start the AudioMuse instances
 
 The compose file builds the NVIDIA image **locally** from the repo's `Dockerfile`
 (using `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04` as the base).  The image is
@@ -178,7 +178,7 @@ docker exec test-am-flask-jellyfin nvidia-smi
 
 ---
 
-## Step 4 — Run analysis on each instance
+## Step 4 - Run analysis on each instance
 
 For **each** AudioMuse instance, trigger a full library analysis:
 

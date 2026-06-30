@@ -2,8 +2,8 @@
 
 This folder contains the whole test suite:
 
-- `unit/` — fast, mock-based unit tests (run in CI by `.github/workflows/tests.yml` with `pytest test/unit/`)
-- `integration/` — integration tests and developer scripts that exercise the real models, database or a running AudioMuse-AI instance (run in CI by `.github/workflows/test.yml`)
+- `unit/` - fast, mock-based unit tests (run in CI by `.github/workflows/tests.yml` with `pytest test/unit/`)
+- `integration/` - integration tests and developer scripts that exercise the real models, database or a running AudioMuse-AI instance (run in CI by `.github/workflows/test.yml`)
 - support assets shared by the integration tests: `songs/`, `models/` (downloaded by CI), `lyrics_expected*.json`, `requirements.txt`, `docker-compose.yaml`, `nginx-confd/`, `provider_testing_stack/`
 
 The API endpoint tests below are for developer purposes to verify the functionality of the AudioMuse-AI API endpoints. They are not included in the production Docker container and should be run from a local development machine.

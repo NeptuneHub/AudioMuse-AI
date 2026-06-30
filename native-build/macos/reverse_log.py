@@ -1,11 +1,9 @@
-
 import logging
 import os
 import threading
 
 
 class NewestFirstFileHandler(logging.Handler):
-
     def __init__(self, path, max_lines=40000, flush_interval=1.0):
         super().__init__()
         self._path = path
@@ -35,7 +33,7 @@ class NewestFirstFileHandler(logging.Handler):
             if self._closed:
                 return
             self._lines[0:0] = msg.split("\n")
-            del self._lines[self._max_lines:]
+            del self._lines[self._max_lines :]
             if self._timer is None:
                 self._timer = threading.Timer(self._flush_interval, self._flush)
                 self._timer.daemon = True

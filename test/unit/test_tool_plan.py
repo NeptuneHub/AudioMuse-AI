@@ -8,23 +8,86 @@ def _ensure_config_stub():
         return
     cfg = types.ModuleType('config')
     cfg.MOOD_LABELS = [
-        'rock', 'pop', 'alternative', 'indie', 'electronic', 'female vocalists',
-        'dance', '00s', 'alternative rock', 'jazz', 'beautiful', 'metal',
-        'chillout', 'male vocalists', 'classic rock', 'soul', 'indie rock',
-        'Mellow', 'electronica', '80s', 'folk', '90s', 'chill', 'instrumental',
-        'punk', 'oldies', 'blues', 'hard rock', 'ambient', 'acoustic',
-        'experimental', 'female vocalist', 'guitar', 'Hip-Hop', '70s', 'party',
-        'country', 'easy listening', 'sexy', 'catchy', 'funk', 'electro',
-        'heavy metal', 'Progressive rock', '60s', 'rnb', 'indie pop', 'sad',
-        'House', 'happy',
+        'rock',
+        'pop',
+        'alternative',
+        'indie',
+        'electronic',
+        'female vocalists',
+        'dance',
+        '00s',
+        'alternative rock',
+        'jazz',
+        'beautiful',
+        'metal',
+        'chillout',
+        'male vocalists',
+        'classic rock',
+        'soul',
+        'indie rock',
+        'Mellow',
+        'electronica',
+        '80s',
+        'folk',
+        '90s',
+        'chill',
+        'instrumental',
+        'punk',
+        'oldies',
+        'blues',
+        'hard rock',
+        'ambient',
+        'acoustic',
+        'experimental',
+        'female vocalist',
+        'guitar',
+        'Hip-Hop',
+        '70s',
+        'party',
+        'country',
+        'easy listening',
+        'sexy',
+        'catchy',
+        'funk',
+        'electro',
+        'heavy metal',
+        'Progressive rock',
+        '60s',
+        'rnb',
+        'indie pop',
+        'sad',
+        'House',
+        'happy',
     ]
     cfg.OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
     cfg.STRATIFIED_GENRES = [
-        'rock', 'pop', 'alternative', 'indie', 'electronic', 'jazz', 'metal',
-        'classic rock', 'soul', 'indie rock', 'electronica', 'folk', 'punk',
-        'blues', 'hard rock', 'ambient', 'acoustic', 'experimental', 'Hip-Hop',
-        'country', 'funk', 'electro', 'heavy metal', 'Progressive rock', 'rnb',
-        'indie pop', 'House',
+        'rock',
+        'pop',
+        'alternative',
+        'indie',
+        'electronic',
+        'jazz',
+        'metal',
+        'classic rock',
+        'soul',
+        'indie rock',
+        'electronica',
+        'folk',
+        'punk',
+        'blues',
+        'hard rock',
+        'ambient',
+        'acoustic',
+        'experimental',
+        'Hip-Hop',
+        'country',
+        'funk',
+        'electro',
+        'heavy metal',
+        'Progressive rock',
+        'rnb',
+        'indie pop',
+        'House',
     ]
     sys.modules['config'] = cfg
 
@@ -32,6 +95,7 @@ def _ensure_config_stub():
 def _vocab():
     _ensure_config_stub()
     import tasks.ai.vocab as v
+
     importlib.reload(v)
     return v
 
@@ -39,6 +103,7 @@ def _vocab():
 def _plan():
     _ensure_config_stub()
     import tasks.ai.planner as p
+
     importlib.reload(p)
     return p
 
@@ -120,33 +185,33 @@ class TestNormalizeVoicesList:
 class TestPlanFilterRouting:
     def test_moods_field_routed_to_voices_and_other_features(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'search_database', 'arguments': {'moods': ['female voice', 'happy']}}
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [{'name': 'search_database', 'arguments': {'moods': ['female voice', 'happy']}}]
+        )
         assert plan_obj.filter is not None
         assert 'female vocalists' in plan_obj.filter.get('voices', [])
         assert 'happy' in plan_obj.filter.get('moods', [])
 
     def test_voices_field_passes_through(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'search_database', 'arguments': {'voices': ['female voice']}}
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [{'name': 'search_database', 'arguments': {'voices': ['female voice']}}]
+        )
         assert 'female vocalists' in plan_obj.filter['voices']
 
     def test_short_female_token_remapped(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'search_database', 'arguments': {'moods': ['female']}}
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [{'name': 'search_database', 'arguments': {'moods': ['female']}}]
+        )
         assert 'female vocalists' in plan_obj.filter.get('voices', [])
         assert 'female vocalist' in plan_obj.filter.get('voices', [])
 
     def test_non_canonical_genre_dropped_with_note(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'search_database', 'arguments': {'genres': ['rock', 'definitelynotagenre']}}
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [{'name': 'search_database', 'arguments': {'genres': ['rock', 'definitelynotagenre']}}]
+        )
         assert 'rock' in plan_obj.filter['genres']
         assert any("dropped" in n.lower() or "unrecognized" in n.lower() for n in plan_obj.notes)
 
@@ -156,18 +221,29 @@ class TestValidatePlanArgs:
         p = _plan()
         log = []
         out = p.validate_plan_args(
-            [{'name': 'seed_search', 'arguments': {'seeds': [{'type': 'song', 'title': '', 'song_artist': 'X'}]}}],
-            user_wants_rating=False, log_messages=log,
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {'seeds': [{'type': 'song', 'title': '', 'song_artist': 'X'}]},
+                }
+            ],
+            user_wants_rating=False,
+            log_messages=log,
         )
         assert out == []
 
     def test_coerces_single_seed_alchemy_to_union(self):
         p = _plan()
         out = p.validate_plan_args(
-            [{'name': 'seed_search', 'arguments': {
-                'seeds': [{'type': 'artist', 'name': 'Madonna'}],
-                'blend_mode': 'alchemy',
-            }}],
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {
+                        'seeds': [{'type': 'artist', 'name': 'Madonna'}],
+                        'blend_mode': 'alchemy',
+                    },
+                }
+            ],
             user_wants_rating=False,
         )
         assert out[0]['name'] == 'seed_search'
@@ -210,19 +286,40 @@ class TestValidatePlanArgs:
 class TestMultiIntentClassification:
     def test_two_primaries_preserved(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'blink-182'}]}},
-            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'Green Day'}]}},
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {'seeds': [{'type': 'artist', 'name': 'blink-182'}]},
+                },
+                {
+                    'name': 'seed_search',
+                    'arguments': {'seeds': [{'type': 'artist', 'name': 'Green Day'}]},
+                },
+            ]
+        )
         assert len(plan_obj.primaries) == 2
         assert plan_obj.filter is None
 
     def test_primaries_plus_filter(self):
         p = _plan()
-        plan_obj = p.validate_and_normalize_plan([
-            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'song', 'title': 'By The Way', 'artist': 'Red Hot Chili Peppers'}]}},
-            {'name': 'search_database', 'arguments': {'voices': ['female voice']}},
-        ])
+        plan_obj = p.validate_and_normalize_plan(
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {
+                        'seeds': [
+                            {
+                                'type': 'song',
+                                'title': 'By The Way',
+                                'artist': 'Red Hot Chili Peppers',
+                            }
+                        ]
+                    },
+                },
+                {'name': 'search_database', 'arguments': {'voices': ['female voice']}},
+            ]
+        )
         assert len(plan_obj.primaries) == 1
         assert plan_obj.filter is not None
         assert 'female vocalists' in plan_obj.filter['voices']
@@ -232,6 +329,7 @@ class TestIntentPreextract:
     def test_year_detected(self):
         _ensure_config_stub()
         from tasks.ai.planner import extract_hints
+
         h = extract_hints("2026 songs")
         assert h['year_min'] == 2026
         assert h['year_max'] == 2026
@@ -239,6 +337,7 @@ class TestIntentPreextract:
     def test_decade_detected(self):
         _ensure_config_stub()
         from tasks.ai.planner import extract_hints
+
         h = extract_hints("90s pop")
         assert h['year_min'] == 1990
         assert h['year_max'] == 1999
@@ -246,6 +345,7 @@ class TestIntentPreextract:
     def test_energy_phrase_detected(self):
         _ensure_config_stub()
         from tasks.ai.planner import extract_hints
+
         h = extract_hints("chill jazz")
         assert h['energy_min'] == 0.0
         assert h['energy_max'] == 0.35
@@ -253,6 +353,7 @@ class TestIntentPreextract:
     def test_explicit_energy_floor(self):
         _ensure_config_stub()
         from tasks.ai.planner import extract_hints
+
         h = extract_hints("songs with energy above 0.5")
         assert h['energy_min'] == 0.5
 

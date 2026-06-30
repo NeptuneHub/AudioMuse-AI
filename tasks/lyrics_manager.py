@@ -1,4 +1,3 @@
-
 import logging
 import sys
 from typing import Dict, List, Optional
@@ -27,16 +26,16 @@ _LYRICS_AXIS_CACHE = {
 }
 
 
-
 def _fetch_lyrics_metadata(item_ids: List[str]) -> Dict[str, Dict[str, str]]:
     from .commons import fetch_track_metadata_map
+
     return fetch_track_metadata_map(item_ids)
 
 
 def _axis_columns_from_axes() -> List[tuple]:
     from lyrics.lyrics_transcriber import axis_columns
-    return list(axis_columns())
 
+    return list(axis_columns())
 
 
 def build_and_store_lyrics_index(db_conn=None) -> bool:
@@ -62,7 +61,6 @@ def build_and_store_lyrics_index(db_conn=None) -> bool:
         where_clause="embedding IS NOT NULL",
         label="lyrics",
     )
-
 
 
 def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
@@ -96,7 +94,6 @@ def build_and_store_lyrics_axes_index(db_conn=None) -> bool:
     )
 
 
-
 def _load_lyrics_index_from_db() -> bool:
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, IVF_METRIC
@@ -104,8 +101,11 @@ def _load_lyrics_index_from_db() -> bool:
 
     try:
         loaded = load_index_auto(
-            get_db(), 'lyrics_index',
-            LYRICS_EMBEDDING_DIMENSION, IVF_METRIC, label='lyrics',
+            get_db(),
+            'lyrics_index',
+            LYRICS_EMBEDDING_DIMENSION,
+            IVF_METRIC,
+            label='lyrics',
         )
         if loaded is None:
             return False
@@ -123,7 +123,6 @@ def _load_lyrics_index_from_db() -> bool:
         return False
 
 
-
 def _load_lyrics_axes_index_from_db() -> bool:
     from app_helper import get_db
     from .paged_ivf import load_index_auto
@@ -133,8 +132,11 @@ def _load_lyrics_axes_index_from_db() -> bool:
 
     try:
         loaded = load_index_auto(
-            get_db(), 'lyrics_axes_index',
-            expected_dim, 'angular', label='lyrics axes',
+            get_db(),
+            'lyrics_axes_index',
+            expected_dim,
+            'angular',
+            label='lyrics axes',
         )
         if loaded is None:
             return False
@@ -154,7 +156,6 @@ def _load_lyrics_axes_index_from_db() -> bool:
     except Exception as e:
         logger.error(f"Failed to load lyrics axes index from DB: {e}", exc_info=True)
         return False
-
 
 
 def load_lyrics_cache_from_db() -> bool:
@@ -187,28 +188,31 @@ def load_lyrics_cache_from_db() -> bool:
 def refresh_lyrics_cache() -> bool:
     old_index_count = (
         len(_LYRICS_INDEX_CACHE['id_map'])
-        if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_INDEX_CACHE['id_map'] else 0
+        if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_INDEX_CACHE['id_map']
+        else 0
     )
     old_axis_count = (
         len(_LYRICS_AXIS_CACHE['id_map'])
-        if _LYRICS_AXIS_CACHE['loaded'] and _LYRICS_AXIS_CACHE['id_map'] else 0
+        if _LYRICS_AXIS_CACHE['loaded'] and _LYRICS_AXIS_CACHE['id_map']
+        else 0
     )
     logger.info(f"Refreshing lyrics cache (index={old_index_count}, axes={old_axis_count})...")
     result = load_lyrics_cache_from_db()
     new_index_count = (
         len(_LYRICS_INDEX_CACHE['id_map'])
-        if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_INDEX_CACHE['id_map'] else 0
+        if _LYRICS_INDEX_CACHE['loaded'] and _LYRICS_INDEX_CACHE['id_map']
+        else 0
     )
     new_axis_count = (
         len(_LYRICS_AXIS_CACHE['id_map'])
-        if _LYRICS_AXIS_CACHE['loaded'] and _LYRICS_AXIS_CACHE['id_map'] else 0
+        if _LYRICS_AXIS_CACHE['loaded'] and _LYRICS_AXIS_CACHE['id_map']
+        else 0
     )
     logger.info(
         f"Lyrics cache refresh: index {old_index_count}->{new_index_count}, "
         f"axes {old_axis_count}->{new_axis_count}"
     )
     return result
-
 
 
 def get_cache_stats() -> Dict:
@@ -245,6 +249,7 @@ def get_cache_stats() -> Dict:
 
 def get_axes_definition() -> Dict:
     from lyrics.lyrics_transcriber import MUSIC_ANALYSIS_AXES
+
     return {
         axis_name: {
             'description': meta.get('description', ''),
@@ -252,7 +257,6 @@ def get_axes_definition() -> Dict:
         }
         for axis_name, meta in MUSIC_ANALYSIS_AXES.items()
     }
-
 
 
 def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
@@ -290,6 +294,7 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     metadata_map = _LYRICS_AXIS_CACHE['metadata'] or {}
 
     from .paged_ivf import begin_query
+
     begin_query(ivf_index)
 
     artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
@@ -320,13 +325,15 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
         similarity = ivf_index.distance_to_similarity(dist)
-        results.append({
-            'item_id': item_id,
-            'title': meta.get('title', ''),
-            'author': author,
-            'album': meta.get('album', ''),
-            'similarity': similarity,
-        })
+        results.append(
+            {
+                'item_id': item_id,
+                'title': meta.get('title', ''),
+                'author': author,
+                'album': meta.get('album', ''),
+                'similarity': similarity,
+            }
+        )
 
     logger.info(
         f"Lyrics axis search ({len(selected_pairs)} selections): {len(results)} results "
@@ -335,8 +342,9 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     return results
 
 
-
-def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] = None) -> List[Dict]:
+def search_by_text(
+    query_text: str, limit: int = 50, artist_cap: Optional[int] = None
+) -> List[Dict]:
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
     from lyrics.lyrics_transcriber import embed_query_text
     from tasks.gte_warm_cache import warm_lock, warmup_gte_model
@@ -367,6 +375,7 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
         ivf_index = _LYRICS_INDEX_CACHE['index']
         id_map = _LYRICS_INDEX_CACHE['id_map'] or {}
         from .paged_ivf import begin_query
+
         begin_query(ivf_index)
         num_to_query = min(fetch_size, len(ivf_index))
         if num_to_query <= 0:
@@ -393,13 +402,15 @@ def search_by_text(query_text: str, limit: int = 50, artist_cap: Optional[int] =
                     continue
                 artist_counts[an] = artist_counts.get(an, 0) + 1
             similarity = ivf_index.distance_to_similarity(dist)
-            results.append({
-                'item_id': item_id,
-                'title': meta.get('title', ''),
-                'author': author,
-                'album': meta.get('album', ''),
-                'similarity': similarity,
-            })
+            results.append(
+                {
+                    'item_id': item_id,
+                    'title': meta.get('title', ''),
+                    'author': author,
+                    'album': meta.get('album', ''),
+                    'similarity': similarity,
+                }
+            )
 
         logger.info(
             f"Lyrics text search '{query_text}': {len(results)} results "

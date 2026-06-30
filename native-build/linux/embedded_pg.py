@@ -1,4 +1,3 @@
-
 import logging
 import os
 import shutil
@@ -17,6 +16,7 @@ _READY_MARKER = "audiomuse_initialized"
 
 def _pg_env():
     from linux import env as env_builder
+
     env = env_builder.restore_native_lib_path(dict(os.environ))
     libdir = paths.pg_lib_dir()
     if libdir:
@@ -74,7 +74,9 @@ def _dsn(data_dir):
 def _is_running(data_dir, env):
     proc = subprocess.run(
         [_bin("pg_ctl"), "-D", data_dir, "status"],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     return proc.returncode == 0
 
@@ -88,8 +90,17 @@ def _run_checked(argv, env):
 
 def _init_cluster(data_dir, env):
     _run_checked(
-        [_bin("initdb"), "-D", data_dir, "-U", "postgres",
-         "--auth=trust", "-E", "UTF8", "--locale=C"],
+        [
+            _bin("initdb"),
+            "-D",
+            data_dir,
+            "-U",
+            "postgres",
+            "--auth=trust",
+            "-E",
+            "UTF8",
+            "--locale=C",
+        ],
         env,
     )
     conf = os.path.join(data_dir, "postgresql.conf")
@@ -128,7 +139,9 @@ def stop():
         try:
             subprocess.run(
                 [_bin("pg_ctl"), "-D", _data_dir, "-w", "-m", "fast", "stop"],
-                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except Exception:
             logger.exception("Error stopping embedded PostgreSQL")

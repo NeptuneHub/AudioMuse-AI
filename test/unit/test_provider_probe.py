@@ -28,11 +28,17 @@ def probe():
     return _load_probe()
 
 
-
 class TestNormalizeTrack:
     REQUIRED_KEYS = {
-        'id', 'path', 'title', 'artist', 'album_artist', 'album',
-        'year', 'track_number', 'disc_number',
+        'id',
+        'path',
+        'title',
+        'artist',
+        'album_artist',
+        'album',
+        'year',
+        'track_number',
+        'disc_number',
     }
 
     def test_none_item_returns_empty_shape(self, probe):
@@ -42,9 +48,14 @@ class TestNormalizeTrack:
 
     def test_jellyfin_style_item(self, probe):
         item = {
-            'Id': 'j1', 'Name': 'Song One', 'Album': 'Album A',
-            'AlbumArtist': 'Artist A', 'Path': '/m/a/song1.flac',
-            'Year': 2020, 'IndexNumber': 3, 'ParentIndexNumber': 1,
+            'Id': 'j1',
+            'Name': 'Song One',
+            'Album': 'Album A',
+            'AlbumArtist': 'Artist A',
+            'Path': '/m/a/song1.flac',
+            'Year': 2020,
+            'IndexNumber': 3,
+            'ParentIndexNumber': 1,
         }
         t = probe._normalize_track(item)
         assert t['id'] == 'j1'
@@ -58,9 +69,14 @@ class TestNormalizeTrack:
 
     def test_lowercase_style_item(self, probe):
         item = {
-            'id': 'n1', 'title': 'Song', 'album': 'Album',
-            'artist': 'Artist', 'path': '/m/song.flac',
-            'year': 2019, 'track_number': 5, 'disc_number': 2,
+            'id': 'n1',
+            'title': 'Song',
+            'album': 'Album',
+            'artist': 'Artist',
+            'path': '/m/song.flac',
+            'year': 2019,
+            'track_number': 5,
+            'disc_number': 2,
         }
         t = probe._normalize_track(item)
         assert t['id'] == 'n1'
@@ -85,7 +101,6 @@ class TestNormalizeTrack:
         assert set(t.keys()) == self.REQUIRED_KEYS
 
 
-
 class TestNormalizeProviderType:
     def test_supported_providers_normalized_lowercase(self, probe):
         for t in ('jellyfin', 'Jellyfin', 'EMBY', 'Navidrome', 'LYRION'):
@@ -103,7 +118,6 @@ class TestNormalizeProviderType:
             probe._normalize_provider_type('')
 
 
-
 class TestFetchAllTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
 
@@ -114,7 +128,9 @@ class TestFetchAllTracks:
         ]
         with patch.object(probe.mediaserver, 'get_all_songs', return_value=fake_items) as m:
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
-        m.assert_called_once_with(user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False)
+        m.assert_called_once_with(
+            user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False
+        )
         assert len(tracks) == 2
         assert tracks[0]['id'] == 'a'
         assert tracks[1]['id'] == 'b'
@@ -131,7 +147,6 @@ class TestFetchAllTracks:
             with pytest.raises(ValueError):
                 probe.fetch_all_tracks('plex', self.CREDS)
         m.assert_not_called()
-
 
 
 class TestSearchAlbums:
@@ -151,7 +166,6 @@ class TestSearchAlbums:
         m.assert_not_called()
 
 
-
 class TestGetAlbumTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
 
@@ -169,14 +183,16 @@ class TestGetAlbumTracks:
             assert probe.get_album_tracks('lyrion', self.CREDS, 'album-1') == []
 
 
-
 class TestTestConnection:
     CREDS = {'url': 'http://host'}
 
     def test_delegates_to_mediaserver(self, probe):
         fake_result = {
-            'ok': True, 'error': None, 'sample_count': 10,
-            'path_format': 'absolute', 'warnings': [],
+            'ok': True,
+            'error': None,
+            'sample_count': 10,
+            'path_format': 'absolute',
+            'warnings': [],
         }
         with patch.object(probe.mediaserver, 'test_connection', return_value=fake_result) as m:
             result = probe.test_connection('navidrome', self.CREDS)

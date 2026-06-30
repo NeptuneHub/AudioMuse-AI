@@ -1,6 +1,6 @@
 """Mobile sync endpoint for companion client apps.
 
-Exposes ``GET /api/sync`` — a read-only export of the analysis library
+Exposes ``GET /api/sync`` - a read-only export of the analysis library
 (metadata, mood/energy, MusiCNN + CLAP embeddings, UMAP 2D coordinates).
 
 Three modes, all read-only (no schema, no triggers, no write path):
@@ -12,6 +12,7 @@ Three modes, all read-only (no schema, no triggers, no write path):
 ``fp`` is a read-time fingerprint over the analysis columns; a client diffs
 the manifest against its local fingerprints to derive adds/updates/deletes.
 """
+
 import base64
 import logging
 
@@ -51,37 +52,59 @@ _FP_SQL = (
 
 
 @sync_bp.route('/api/sync', methods=['GET'])
-@swag_from({
-    'tags': ['Mobile Sync'],
-    'summary': 'Read-only export of the analysis library for client apps.',
-    'description': (
-        'Three modes: `?fields=index` returns a lightweight {id, fp} manifest '
-        '(<=1000/page) for client-side change detection; `?ids=a,b,c` returns full '
-        'payloads for a specific id set (<=500); default returns the full library '
-        'page by page (<=500).'
-    ),
-    'parameters': [
-        {'name': 'fields', 'in': 'query', 'required': False,
-         'description': "Set to `index` for the {id, fp} manifest.",
-         'schema': {'type': 'string', 'enum': ['index']}},
-        {'name': 'ids', 'in': 'query', 'required': False,
-         'description': 'Comma-separated mediaserver GUIDs (<=500) — full payloads for just these.',
-         'schema': {'type': 'string'}},
-        {'name': 'include_embeddings', 'in': 'query', 'required': False,
-         'description': 'Set to `false` to omit the MusiCNN/CLAP embedding payload.',
-         'schema': {'type': 'string', 'enum': ['true', 'false'], 'default': 'true'}},
-        {'name': 'page', 'in': 'query', 'required': False,
-         'description': '1-based page number.',
-         'schema': {'type': 'integer', 'minimum': 1, 'default': 1}},
-        {'name': 'limit', 'in': 'query', 'required': False,
-         'description': 'Tracks per page (payload <=500, manifest <=1000).',
-         'schema': {'type': 'integer', 'minimum': 1, 'default': 500}},
-    ],
-    'responses': {
-        '200': {'description': 'A page of the manifest or the full payload.'},
-        '500': {'description': 'Internal server error.'},
-    },
-})
+@swag_from(
+    {
+        'tags': ['Mobile Sync'],
+        'summary': 'Read-only export of the analysis library for client apps.',
+        'description': (
+            'Three modes: `?fields=index` returns a lightweight {id, fp} manifest '
+            '(<=1000/page) for client-side change detection; `?ids=a,b,c` returns full '
+            'payloads for a specific id set (<=500); default returns the full library '
+            'page by page (<=500).'
+        ),
+        'parameters': [
+            {
+                'name': 'fields',
+                'in': 'query',
+                'required': False,
+                'description': "Set to `index` for the {id, fp} manifest.",
+                'schema': {'type': 'string', 'enum': ['index']},
+            },
+            {
+                'name': 'ids',
+                'in': 'query',
+                'required': False,
+                'description': 'Comma-separated mediaserver GUIDs (<=500) - full payloads for just these.',
+                'schema': {'type': 'string'},
+            },
+            {
+                'name': 'include_embeddings',
+                'in': 'query',
+                'required': False,
+                'description': 'Set to `false` to omit the MusiCNN/CLAP embedding payload.',
+                'schema': {'type': 'string', 'enum': ['true', 'false'], 'default': 'true'},
+            },
+            {
+                'name': 'page',
+                'in': 'query',
+                'required': False,
+                'description': '1-based page number.',
+                'schema': {'type': 'integer', 'minimum': 1, 'default': 1},
+            },
+            {
+                'name': 'limit',
+                'in': 'query',
+                'required': False,
+                'description': 'Tracks per page (payload <=500, manifest <=1000).',
+                'schema': {'type': 'integer', 'minimum': 1, 'default': 500},
+            },
+        ],
+        'responses': {
+            '200': {'description': 'A page of the manifest or the full payload.'},
+            '500': {'description': 'Internal server error.'},
+        },
+    }
+)
 def sync_endpoint():
     manifest_mode = request.args.get('fields') == 'index'
     page = max(1, request.args.get('page', 1, type=int))
@@ -103,7 +126,10 @@ def sync_endpoint():
     except Exception:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
-            manifest_mode, ids_raw, page, limit,
+            manifest_mode,
+            ids_raw,
+            page,
+            limit,
         )
         return jsonify({"error": "Internal server error"}), 500
 
@@ -120,13 +146,15 @@ def _manifest_page(cur, page, limit):
     rows = cur.fetchall()
     tracks = [{"id": r['item_id'], "fp": r['fp']} for r in rows]
     has_more = (offset + len(rows)) < total_tracks
-    return jsonify({
-        "tracks": tracks,
-        "total_tracks": total_tracks,
-        "provider_type": config.MEDIASERVER_TYPE,
-        "has_more": has_more,
-        "next_page": page + 1 if has_more else None,
-    })
+    return jsonify(
+        {
+            "tracks": tracks,
+            "total_tracks": total_tracks,
+            "provider_type": config.MEDIASERVER_TYPE,
+            "has_more": has_more,
+            "next_page": page + 1 if has_more else None,
+        }
+    )
 
 
 def _payload_page(cur, page, limit, include_embeddings, id_filter):
@@ -143,8 +171,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
     base_select = (
         "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, "
         "s.year, s.tempo, s.key, s.scale, s.mood_vector, s.other_features, "
-        "s.energy, s.rating, " + _FP_SQL + " AS fp" + select_extra +
-        " FROM score s" + join_extra
+        "s.energy, s.rating, " + _FP_SQL + " AS fp" + select_extra + " FROM score s" + join_extra
     )
 
     if id_filter is not None:
@@ -175,10 +202,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
 
     id_map, proj = load_map_projection(_DEFAULT_PROJECTION_NAME)
     if id_map and proj is not None:
-        umap_lookup = {
-            iid: (float(proj[i][0]), float(proj[i][1]))
-            for i, iid in enumerate(id_map)
-        }
+        umap_lookup = {iid: (float(proj[i][0]), float(proj[i][1])) for i, iid in enumerate(id_map)}
     else:
         umap_lookup = {}
 
@@ -211,10 +235,12 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
                 t['clap_embedding'] = base64.b64encode(bytes(cb)).decode('ascii') if cb else None
         tracks.append(t)
 
-    return jsonify({
-        "tracks": tracks,
-        "total_tracks": total_tracks,
-        "provider_type": config.MEDIASERVER_TYPE,
-        "has_more": has_more,
-        "next_page": next_page,
-    })
+    return jsonify(
+        {
+            "tracks": tracks,
+            "total_tracks": total_tracks,
+            "provider_type": config.MEDIASERVER_TYPE,
+            "has_more": has_more,
+            "next_page": next_page,
+        }
+    )

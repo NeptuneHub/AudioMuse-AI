@@ -26,7 +26,6 @@ def mig():
     return _load_tasks_mod()
 
 
-
 class TestRewriteIdMapJson:
     def test_swaps_values_leaves_int_keys(self, mig):
         old = json.dumps({'0': 'old_a', '1': 'old_b', '2': 'old_c'})
@@ -80,7 +79,6 @@ class TestRewriteIdMapJson:
         assert new == old
 
 
-
 class TestFindFk:
     def test_returns_constraint_name_when_found(self, mig):
         cur = MagicMock()
@@ -98,17 +96,17 @@ class TestFindFk:
         assert name is None
 
 
-
 def _session_state(mapping, meta=None):
     return {
-        'dry_run':        {'matches': mapping},
+        'dry_run': {'matches': mapping},
         'manual_matches': {},
-        'new_meta':       meta or {},
+        'new_meta': meta or {},
     }
 
 
-def _make_session_row(session_id=1, target='navidrome',
-                      creds=None, state=None, status='dry_run_ready'):
+def _make_session_row(
+    session_id=1, target='navidrome', creds=None, state=None, status='dry_run_ready'
+):
     return (
         session_id,
         target,
@@ -118,8 +116,9 @@ def _make_session_row(session_id=1, target='navidrome',
     )
 
 
-def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
-                           authors=None, lyrics_exists=False):
+def _install_fake_psycopg2(
+    mig, session_row, ivf_rows=None, mproj_rows=None, authors=None, lyrics_exists=False
+):
     mock_cur = MagicMock()
     executed = []
 
@@ -128,7 +127,9 @@ def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
         executed.append(sql_str)
         up = sql_str.upper()
         if 'INFORMATION_SCHEMA' in up and 'FOREIGN KEY' in up:
-            mock_cur.fetchone.return_value = ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
+            mock_cur.fetchone.return_value = (
+                '{}_item_id_fkey'.format(params[0] if params else 'embedding'),
+            )
         elif 'TO_REGCLASS' in up and 'LYRICS_EMBEDDING' in up:
             mock_cur.fetchone.return_value = (lyrics_exists,)
         elif 'TO_REGCLASS' in up and 'MIGRATION_TARGET_META' in up:
@@ -156,12 +157,12 @@ def _install_fake_psycopg2(mig, session_row, ivf_rows=None, mproj_rows=None,
 
     mock_cur.execute.side_effect = _execute
     mock_cur.__enter__ = lambda self: self
-    mock_cur.__exit__  = lambda self, *a: None
+    mock_cur.__exit__ = lambda self, *a: None
 
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cur
     mock_conn.__enter__ = lambda self: self
-    mock_conn.__exit__  = lambda self, *a: None
+    mock_conn.__exit__ = lambda self, *a: None
 
     mig._get_dedicated_conn = MagicMock(return_value=mock_conn)
 
@@ -222,12 +223,13 @@ class TestExecuteProviderMigration:
         mig.execute_provider_migration(1)
 
         upper = [s.upper() for s in executed]
-        drop_idx  = next(i for i, s in enumerate(upper)
-                         if 'ALTER TABLE EMBEDDING DROP CONSTRAINT' in s)
-        upd_idx   = next(i for i, s in enumerate(upper)
-                         if s.startswith('UPDATE EMBEDDING'))
-        readd_idx = next(i for i, s in enumerate(upper)
-                         if 'ALTER TABLE EMBEDDING' in s and 'ADD CONSTRAINT' in s)
+        drop_idx = next(
+            i for i, s in enumerate(upper) if 'ALTER TABLE EMBEDDING DROP CONSTRAINT' in s
+        )
+        upd_idx = next(i for i, s in enumerate(upper) if s.startswith('UPDATE EMBEDDING'))
+        readd_idx = next(
+            i for i, s in enumerate(upper) if 'ALTER TABLE EMBEDDING' in s and 'ADD CONSTRAINT' in s
+        )
         assert drop_idx < upd_idx < readd_idx
 
     def test_rejects_session_not_in_dry_run_ready(self, mig):
@@ -260,13 +262,15 @@ class TestExecuteProviderMigration:
 
         calls = mig._get_dedicated_conn.return_value.cursor.return_value.execute.call_args_list
         sqls = [c[0][0] for c in calls]
-        upd_ivf = [s for s in sqls if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()]
+        upd_ivf = [
+            s
+            for s in sqls
+            if 'UPDATE voyager_index_data' in s or 'UPDATE VOYAGER_INDEX_DATA' in s.upper()
+        ]
         assert len(upd_ivf) >= 1
 
 
-
 class TestWriteProviderToAppConfigMusicLibraries:
-
     def _run(self, mig, selected_libraries):
         cur = MagicMock()
         executed = []
@@ -278,11 +282,14 @@ class TestWriteProviderToAppConfigMusicLibraries:
             up = sql.upper() if isinstance(sql, str) else ''
             if 'INFORMATION_SCHEMA' in up and 'APP_CONFIG' in up:
                 cur.fetchone.return_value = (True,)
+
         cur.execute.side_effect = _execute
 
         target_creds = {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
         mig._write_provider_to_app_config(
-            cur, 'navidrome', target_creds,
+            cur,
+            'navidrome',
+            target_creds,
             selected_libraries=selected_libraries,
         )
         return executed, params
@@ -290,8 +297,9 @@ class TestWriteProviderToAppConfigMusicLibraries:
     def test_none_selection_deletes_music_libraries_row(self, mig):
         executed, params = self._run(mig, selected_libraries=None)
         joined = '\n'.join(executed).upper()
-        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined, \
+        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined, (
             "None selection must DELETE the MUSIC_LIBRARIES row so post-migration scans use 'scan everything' (and the source provider's old filter is wiped)."
+        )
 
     def test_empty_list_selection_also_deletes(self, mig):
         executed, _ = self._run(mig, selected_libraries=[])
@@ -300,23 +308,28 @@ class TestWriteProviderToAppConfigMusicLibraries:
 
     def test_non_empty_selection_upserts_comma_joined_value(self, mig):
         executed, params = self._run(
-            mig, selected_libraries=['Main Music', 'Podcasts'],
+            mig,
+            selected_libraries=['Main Music', 'Podcasts'],
         )
         ml_upserts = [
-            (sql, p) for sql, p in zip(executed, params)
+            (sql, p)
+            for sql, p in zip(executed, params)
             if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
         ]
-        assert len(ml_upserts) == 1, \
+        assert len(ml_upserts) == 1, (
             "Non-empty selection must UPSERT MUSIC_LIBRARIES, not delete it."
+        )
         _, upsert_params = ml_upserts[0]
         assert upsert_params == ('Main Music,Podcasts',)
 
     def test_whitespace_only_entries_are_filtered(self, mig):
         executed, params = self._run(
-            mig, selected_libraries=['Main Music', '  ', '', 'Podcasts'],
+            mig,
+            selected_libraries=['Main Music', '  ', '', 'Podcasts'],
         )
         ml_upserts = [
-            (sql, p) for sql, p in zip(executed, params)
+            (sql, p)
+            for sql, p in zip(executed, params)
             if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
         ]
         assert len(ml_upserts) == 1
@@ -327,11 +340,12 @@ class TestWriteProviderToAppConfigMusicLibraries:
         joined = '\n'.join(executed).upper()
         assert 'INSERT INTO APP_CONFIG' in joined
         insert_count = joined.count('INSERT INTO APP_CONFIG')
-        assert insert_count >= 2, "expected multiple app_config upserts (type + creds + MUSIC_LIBRARIES)"
+        assert insert_count >= 2, (
+            "expected multiple app_config upserts (type + creds + MUSIC_LIBRARIES)"
+        )
 
 
 class TestExecuteProviderMigrationForwardsSelectedLibraries:
-
     def test_state_selected_libraries_reaches_write_provider(self, mig):
         state = _session_state({'old_1': 'new_1'})
         state['selected_libraries'] = ['Main', 'Extra']

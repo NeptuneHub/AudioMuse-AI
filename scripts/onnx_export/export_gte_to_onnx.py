@@ -35,13 +35,15 @@ import sys
 
 
 _TOKENIZER_FILES = (
-    'tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json',
-    'config.json', 'sentencepiece.bpe.model',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    'special_tokens_map.json',
+    'config.json',
+    'sentencepiece.bpe.model',
 )
 
 
-def export_gte_to_onnx(input_dir: str, output_path: str,
-                       tokenizer_out: str) -> None:
+def export_gte_to_onnx(input_dir: str, output_path: str, tokenizer_out: str) -> None:
     import torch
     from transformers import AutoModel, AutoTokenizer
 
@@ -49,10 +51,8 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
         raise SystemExit(f'Input directory not found: {input_dir}')
 
     print(f'Loading gte-multilingual-base model from {input_dir}...', flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(
-        input_dir, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        input_dir, trust_remote_code=True, low_cpu_mem_usage=False)
+    tokenizer = AutoTokenizer.from_pretrained(input_dir, trust_remote_code=True)
+    model = AutoModel.from_pretrained(input_dir, trust_remote_code=True, low_cpu_mem_usage=False)
     model = model.to('cpu').eval()
 
     dummy = tokenizer(
@@ -75,8 +75,8 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
             input_names=['input_ids', 'attention_mask'],
             output_names=['last_hidden_state'],
             dynamic_axes={
-                'input_ids':         {0: 'batch', 1: 'seq'},
-                'attention_mask':    {0: 'batch', 1: 'seq'},
+                'input_ids': {0: 'batch', 1: 'seq'},
+                'attention_mask': {0: 'batch', 1: 'seq'},
                 'last_hidden_state': {0: 'batch', 1: 'seq'},
             },
             opset_version=14,
@@ -85,6 +85,7 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
 
     print(f'Quantizing to INT8 -> {output_path}...', flush=True)
     from onnxruntime.quantization import quantize_dynamic, QuantType
+
     quantize_dynamic(
         model_input=fp32_path,
         model_output=output_path,
@@ -109,12 +110,15 @@ def export_gte_to_onnx(input_dir: str, output_path: str,
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--input', required=True,
-                        help='Path to the gte-multilingual-base HuggingFace model directory.')
-    parser.add_argument('--output', required=True,
-                        help='Destination INT8 .onnx file path.')
-    parser.add_argument('--tokenizer-out', required=True,
-                        help='Directory to copy the runtime tokenizer files into.')
+    parser.add_argument(
+        '--input',
+        required=True,
+        help='Path to the gte-multilingual-base HuggingFace model directory.',
+    )
+    parser.add_argument('--output', required=True, help='Destination INT8 .onnx file path.')
+    parser.add_argument(
+        '--tokenizer-out', required=True, help='Directory to copy the runtime tokenizer files into.'
+    )
     args = parser.parse_args(argv)
     export_gte_to_onnx(args.input, args.output, args.tokenizer_out)
     return 0

@@ -9,11 +9,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 try:
     import librosa
+
     LIBROSA_AVAILABLE = True
 except ImportError:
     LIBROSA_AVAILABLE = False
     logger = logging.getLogger(__name__)
-    logger.warning("librosa not available. Waveform generation will not work. Install with: pip install librosa")
+    logger.warning(
+        "librosa not available. Waveform generation will not work. Install with: pip install librosa"
+    )
 
 from config import MEDIASERVER_TYPE
 from database import get_db
@@ -21,7 +24,9 @@ from database import get_db
 logger = logging.getLogger(__name__)
 
 # Thread pool for parallel processing
-_waveform_executor = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 1) - 1), thread_name_prefix="waveform")
+_waveform_executor = ThreadPoolExecutor(
+    max_workers=max(1, (os.cpu_count() or 1) - 1), thread_name_prefix="waveform"
+)
 
 # Create a Blueprint for waveform related routes
 waveform_bp = Blueprint('waveform_bp', __name__, template_folder='templates')
@@ -42,7 +47,9 @@ def waveform_page():
             schema:
               type: string
     """
-    return render_template('waveform.html', title='AudioMuse-AI - Waveform Visualization', active='waveform')
+    return render_template(
+        'waveform.html', title='AudioMuse-AI - Waveform Visualization', active='waveform'
+    )
 
 
 def generate_waveform_peaks(file_path, samples_count=500):
@@ -61,7 +68,9 @@ def generate_waveform_peaks(file_path, samples_count=500):
         RuntimeError: If required libraries are not available or audio processing fails
     """
     if not LIBROSA_AVAILABLE:
-        raise RuntimeError("librosa library is not installed. Please install it with: pip install librosa")
+        raise RuntimeError(
+            "librosa library is not installed. Please install it with: pip install librosa"
+        )
 
     try:
         import soundfile as sf
@@ -74,7 +83,9 @@ def generate_waveform_peaks(file_path, samples_count=500):
         except Exception as sf_error:
             # If soundfile fails (e.g., .tmp extension), try to detect format from content
             # or rename with proper extension
-            logger.warning(f"soundfile failed to read {file_path}: {sf_error}. Trying librosa fallback...")
+            logger.warning(
+                f"soundfile failed to read {file_path}: {sf_error}. Trying librosa fallback..."
+            )
             raise ImportError("soundfile failed, using librosa fallback")
 
         # Convert stereo to mono if needed (simple average, very fast)
@@ -116,7 +127,9 @@ def generate_waveform_peaks(file_path, samples_count=500):
 
     except ImportError as e:
         # Fallback to librosa if soundfile/scipy not available
-        logger.warning(f"soundfile or scipy not available, falling back to slower librosa.load: {e}")
+        logger.warning(
+            f"soundfile or scipy not available, falling back to slower librosa.load: {e}"
+        )
         y, sr = librosa.load(file_path, sr=6000, mono=True, res_type='kaiser_fast')
 
         if len(y) == 0:
@@ -207,6 +220,7 @@ def get_waveform_endpoint():
     temp_dir = None
     try:
         import time
+
         start_time = time.time()
 
         # Import download_track from the generic mediaserver module which handles all types
@@ -217,6 +231,7 @@ def get_waveform_endpoint():
         if MEDIASERVER_TYPE == "navidrome":
             # Import Navidrome-specific function to get full song details
             from tasks.mediaserver.navidrome import _navidrome_request
+
             song_response = _navidrome_request("getSong", {"id": item_id})
             if song_response and "song" in song_response:
                 item = song_response["song"]
@@ -245,7 +260,7 @@ def get_waveform_endpoint():
                 'Id': item_id,  # Jellyfin/Emby format
                 'id': item_id,  # Navidrome/Lyrion format
                 'Name': title,
-                'Path': ''  # Will be fetched by download_track if needed
+                'Path': '',  # Will be fetched by download_track if needed
             }
 
         fetch_time = time.time() - start_time
@@ -275,17 +290,17 @@ def get_waveform_endpoint():
             peaks = future.result(timeout=15)
         except FuturesTimeoutError:
             logger.exception(f"Waveform generation timed out for {item_id}")
-            return jsonify({"error": "Waveform generation timed out (>15s). Try a shorter audio file."}), 500
+            return jsonify(
+                {"error": "Waveform generation timed out (>15s). Try a shorter audio file."}
+            ), 500
 
         waveform_time = time.time() - waveform_start
         total_time = time.time() - start_time
-        logger.info(f"Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)")
+        logger.info(
+            f"Generated {len(peaks)} waveform peaks in {waveform_time:.2f}s (total: {total_time:.2f}s)"
+        )
 
-        response = {
-            "peaks": peaks,
-            "title": title,
-            "author": author
-        }
+        response = {"peaks": peaks, "title": title, "author": author}
 
         return jsonify(response), 200
 
@@ -300,8 +315,13 @@ def get_waveform_endpoint():
             # Best-effort: keep removing siblings past a locked file (common on
             # Windows when a timed-out worker still holds the audio open).
             def _on_rmtree_error(func, path, exc_info):
-                logger.warning(f"Failed to remove {path} during waveform temp cleanup: {exc_info[1]}")
+                logger.warning(
+                    f"Failed to remove {path} during waveform temp cleanup: {exc_info[1]}"
+                )
+
             try:
                 shutil.rmtree(temp_dir, onerror=_on_rmtree_error)
             except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up temporary directory {temp_dir}: {cleanup_error}")
+                logger.warning(
+                    f"Failed to clean up temporary directory {temp_dir}: {cleanup_error}"
+                )

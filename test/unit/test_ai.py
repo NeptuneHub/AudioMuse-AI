@@ -5,9 +5,7 @@ import importlib.util
 from unittest.mock import MagicMock as _MagicMock
 
 
-_REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 
 def _ensure_namespace_pkg(name: str, sub_path: str) -> None:
@@ -21,9 +19,7 @@ def _ensure_namespace_pkg(name: str, sub_path: str) -> None:
 def _load_submodule(name: str, relpath: str):
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(_REPO_ROOT, relpath)
-    )
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_REPO_ROOT, relpath))
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
@@ -35,6 +31,7 @@ def _ensure_httpx_stub():
         return
     try:
         import httpx  # noqa: F401
+
         return
     except ImportError:
         pass
@@ -47,10 +44,17 @@ def _ensure_httpx_stub():
         pass
 
     class _Client:
-        def __init__(self, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def post(self, *a, **kw): raise NotImplementedError("stub")
+        def __init__(self, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def post(self, *a, **kw):
+            raise NotImplementedError("stub")
 
     httpx_mod.ReadTimeout = _ReadTimeout
     httpx_mod.TimeoutException = _TimeoutException
@@ -61,6 +65,7 @@ def _ensure_httpx_stub():
 def _ensure_google_genai_stub():
     try:
         import google.genai  # noqa: F401
+
         return
     except (ImportError, ModuleNotFoundError):
         pass
@@ -68,14 +73,15 @@ def _ensure_google_genai_stub():
         google_mod = types.ModuleType('google')
         google_mod.__path__ = []
         sys.modules['google'] = google_mod
-    from unittest.mock import MagicMock as _MM
+    from unittest.mock import MagicMock as _mock
+
     genai_mod = types.ModuleType('google.genai')
-    genai_mod.Client = _MM
+    genai_mod.Client = _mock
     genai_types = types.ModuleType('google.genai.types')
-    genai_types.Tool = _MM
-    genai_types.GenerateContentConfig = _MM
-    genai_types.ToolConfig = _MM
-    genai_types.FunctionCallingConfig = _MM
+    genai_types.Tool = _mock
+    genai_types.GenerateContentConfig = _mock
+    genai_types.ToolConfig = _mock
+    genai_types.FunctionCallingConfig = _mock
     genai_mod.types = genai_types
     sys.modules['google.genai'] = genai_mod
     sys.modules['google.genai.types'] = genai_types
@@ -86,6 +92,7 @@ def _ensure_mistralai_stub():
         return
     try:
         import mistralai  # noqa: F401
+
         return
     except (ImportError, ModuleNotFoundError):
         pass
@@ -101,11 +108,11 @@ _ensure_httpx_stub()
 _ensure_google_genai_stub()
 _ensure_mistralai_stub()
 for _name, _relpath in (
-    ('tasks.ai.prompts',            'tasks/ai/prompts.py'),
-    ('tasks.ai.providers.openai',   'tasks/ai/providers/openai.py'),
-    ('tasks.ai.providers.gemini',   'tasks/ai/providers/gemini.py'),
-    ('tasks.ai.providers.mistral',  'tasks/ai/providers/mistral.py'),
-    ('tasks.ai.api',                'tasks/ai/api.py'),
+    ('tasks.ai.prompts', 'tasks/ai/prompts.py'),
+    ('tasks.ai.providers.openai', 'tasks/ai/providers/openai.py'),
+    ('tasks.ai.providers.gemini', 'tasks/ai/providers/gemini.py'),
+    ('tasks.ai.providers.mistral', 'tasks/ai/providers/mistral.py'),
+    ('tasks.ai.api', 'tasks/ai/api.py'),
 ):
     _load_submodule(_name, _relpath)
 
@@ -130,7 +137,6 @@ def _reset_reasoning_cache():
 
 
 class TestCleanPlaylistName:
-
     def test_basic_ascii_name(self):
         name = "Rock Classics"
         assert clean_playlist_name(name) == "Rock Classics"
@@ -179,7 +185,6 @@ class TestCleanPlaylistName:
 
 
 class TestGetOpenAICompatiblePlaylistName:
-
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_openai_format_success(self, mock_sleep, mock_post):
@@ -190,7 +195,7 @@ class TestGetOpenAICompatiblePlaylistName:
         chunks = [
             b'data: {"choices":[{"delta":{"content":"Sunset"}}]}\n',
             b'data: {"choices":[{"delta":{"content":" Vibes"}}]}\n',
-            b'data: {"choices":[{"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"finish_reason":"stop"}]}\n',
         ]
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
@@ -199,7 +204,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4",
             full_prompt="Create a playlist name",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Sunset Vibes"
@@ -214,7 +219,7 @@ class TestGetOpenAICompatiblePlaylistName:
         chunks = [
             b'{"response":"Morning","done":false}\n',
             b'{"response":" Calm","done":false}\n',
-            b'{"response":"","done":true}\n'
+            b'{"response":"","done":true}\n',
         ]
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
@@ -223,7 +228,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="deepseek-r1:1.5b",
             full_prompt="Create a playlist name",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
         )
 
         assert result == "Morning Calm"
@@ -234,9 +239,7 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
 
-        chunks = [
-            b'{"response":"<think>reasoning here</think>Final Name","done":true}\n'
-        ]
+        chunks = [b'{"response":"<think>reasoning here</think>Final Name","done":true}\n']
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
 
@@ -244,7 +247,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="model",
             full_prompt="test",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
         )
 
         assert result == "Final Name"
@@ -255,10 +258,7 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_post.side_effect = requests.exceptions.RequestException("Connection failed")
 
         result = get_openai_compatible_playlist_name(
-            server_url="http://invalid",
-            model_name="model",
-            full_prompt="test",
-            api_key="key"
+            server_url="http://invalid", model_name="model", full_prompt="test", api_key="key"
         )
 
         assert "Error" in result
@@ -270,10 +270,7 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
 
-        chunks = [
-            b'invalid json\n',
-            b'{"response":"Valid","done":true}\n'
-        ]
+        chunks = [b'invalid json\n', b'{"response":"Valid","done":true}\n']
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
 
@@ -281,7 +278,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="http://localhost:11434/api/generate",
             model_name="model",
             full_prompt="test",
-            api_key="no-key-needed"
+            api_key="no-key-needed",
         )
 
         assert result == "Valid"
@@ -293,7 +290,7 @@ class TestGetOpenAICompatiblePlaylistName:
         mock_response.raise_for_status = Mock()
         mock_response.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Test"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
         mock_post.return_value = mock_response
 
@@ -301,7 +298,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://openrouter.ai/api/v1/chat/completions",
             model_name="openai/gpt-4",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         call_args = mock_post.call_args
@@ -411,14 +408,16 @@ class TestGetOpenAICompatiblePlaylistName:
     def test_rate_limit_retry_with_exponential_backoff(self, mock_sleep, mock_post):
         mock_response_429 = Mock()
         mock_response_429.status_code = 429
-        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
+        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_429
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Success"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_429, mock_response_success]
@@ -427,7 +426,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Success"
@@ -448,18 +447,20 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
                 'type': 'invalid_request_error',
                 'param': 'max_tokens',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400.json.return_value = error_response
-        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Fallback Success"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_400, mock_response_success]
@@ -468,7 +469,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4o-mini",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Fallback Success"
@@ -492,11 +493,13 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported value: 'temperature' does not support 0.7 with this model. Only the default (1) value is supported.",
                 'type': 'invalid_request_error',
                 'param': 'temperature',
-                'code': 'unsupported_value'
+                'code': 'unsupported_value',
             }
         }
         mock_response_400_1.json.return_value = error_response_1
-        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_1
+        )
 
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
@@ -505,18 +508,20 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
                 'type': 'invalid_request_error',
                 'param': 'max_completion_tokens',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400_2.json.return_value = error_response_2
-        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_2
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Ultra Minimal"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_400_1, mock_response_400_2, mock_response_success]
@@ -525,7 +530,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4o-mini",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Ultra Minimal"
@@ -544,7 +549,9 @@ class TestGetOpenAICompatiblePlaylistName:
 
         mock_response_429 = Mock()
         mock_response_429.status_code = 429
-        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_429)
+        mock_response_429.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_429
+        )
 
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
@@ -553,18 +560,20 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'temperature' is not supported with this model.",
                 'type': 'invalid_request_error',
                 'param': 'temperature',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400.json.return_value = error_response
-        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Combined Success"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_429, mock_response_400, mock_response_success]
@@ -573,7 +582,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4o-mini",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Combined Success"
@@ -588,7 +597,6 @@ class TestGetOpenAICompatiblePlaylistName:
     def test_parameter_fallbacks_dont_consume_retry_budget(self, mock_sleep, mock_post, mock_env):
         mock_env.return_value = "0"
 
-
         mock_response_400_1 = Mock()
         mock_response_400_1.status_code = 400
         error_response_1 = {
@@ -596,11 +604,13 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'temperature' is not supported with this model.",
                 'type': 'invalid_request_error',
                 'param': 'temperature',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400_1.json.return_value = error_response_1
-        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_1
+        )
 
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
@@ -609,18 +619,20 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
                 'type': 'invalid_request_error',
                 'param': 'max_completion_tokens',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400_2.json.return_value = error_response_2
-        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_2
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Final Success"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_400_1, mock_response_400_2, mock_response_success]
@@ -629,7 +641,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="model",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Final Success"
@@ -647,18 +659,20 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
                 'type': 'invalid_request_error',
                 'param': 'max_tokens',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400.json.return_value = error_response
-        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"Max Tokens Fallback"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_400, mock_response_success]
@@ -667,7 +681,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="model",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "Max Tokens Fallback"
@@ -687,11 +701,13 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': "Unsupported parameter: 'temperature' is not supported with this model.",
                 'type': 'invalid_request_error',
                 'param': 'temperature',
-                'code': 'unsupported_parameter'
+                'code': 'unsupported_parameter',
             }
         }
         mock_response_400_1.json.return_value = error_response_1
-        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_1)
+        mock_response_400_1.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_1
+        )
 
         mock_response_400_2 = Mock()
         mock_response_400_2.status_code = 400
@@ -700,12 +716,14 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': 'Invalid parameter: max_completion_tokens',
                 'type': 'invalid_request_error',
                 'param': 'max_completion_tokens',
-                'code': 'invalid_parameter'
+                'code': 'invalid_parameter',
             }
         }
         mock_response_400_2.json.return_value = error_response_2
         mock_response_400_2.text = 'Invalid parameter'
-        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400_2)
+        mock_response_400_2.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400_2
+        )
 
         mock_post.side_effect = [mock_response_400_1, mock_response_400_2]
 
@@ -713,7 +731,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="model",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert "Error" in result
@@ -723,7 +741,9 @@ class TestGetOpenAICompatiblePlaylistName:
     @patch('tasks.ai.providers.openai.requests.post')
     @patch('tasks.ai.providers.openai.time.sleep')
     def test_reasoning_effort_dropped_on_null_code_400(self, mock_sleep, mock_post, mock_env):
-        mock_env.side_effect = lambda key, default=None: "0" if key == "OPENAI_API_CALL_DELAY_SECONDS" else default
+        mock_env.side_effect = (
+            lambda key, default=None: "0" if key == "OPENAI_API_CALL_DELAY_SECONDS" else default
+        )
 
         mock_response_400 = Mock()
         mock_response_400.status_code = 400
@@ -732,17 +752,19 @@ class TestGetOpenAICompatiblePlaylistName:
                 'message': 'Unrecognized request argument supplied: reasoning_effort',
                 'type': 'invalid_request_error',
                 'param': None,
-                'code': None
+                'code': None,
             }
         }
-        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response_400)
+        mock_response_400.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response_400
+        )
 
         mock_response_success = Mock()
         mock_response_success.status_code = 200
         mock_response_success.raise_for_status = Mock()
         mock_response_success.iter_lines.return_value = [
             b'data: {"choices":[{"delta":{"content":"OK Playlist"}}]}\n',
-            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
         ]
 
         mock_post.side_effect = [mock_response_400, mock_response_success]
@@ -751,7 +773,7 @@ class TestGetOpenAICompatiblePlaylistName:
             server_url="https://api.openai.com/v1/chat/completions",
             model_name="gpt-4o-mini",
             full_prompt="test",
-            api_key="test-key"
+            api_key="test-key",
         )
 
         assert result == "OK Playlist"
@@ -765,14 +787,11 @@ class TestGetOpenAICompatiblePlaylistName:
 
 
 class TestGetOllamaPlaylistName:
-
     @patch('tasks.ai.providers.openai.requests.post')
     def test_calls_with_ollama_format_url(self, mock_post):
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.iter_lines.return_value = [
-            b'{"response":"Test Playlist","done":true}'
-        ]
+        mock_response.iter_lines.return_value = [b'{"response":"Test Playlist","done":true}']
         mock_post.return_value = mock_response
 
         result = get_openai_compatible_playlist_name(
@@ -786,7 +805,6 @@ class TestGetOllamaPlaylistName:
 
 
 class TestGetGeminiPlaylistName:
-
     @patch('google.genai.Client')
     @patch('tasks.ai.providers.gemini.time.sleep')
     def test_successful_gemini_call(self, mock_sleep, mock_client_class):
@@ -801,9 +819,7 @@ class TestGetGeminiPlaylistName:
         mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
-            api_key="valid-key",
-            model_name="gemini-2.5-pro",
-            full_prompt="Create a name"
+            api_key="valid-key", model_name="gemini-2.5-pro", full_prompt="Create a name"
         )
 
         assert result == "Chill Vibes"
@@ -812,9 +828,7 @@ class TestGetGeminiPlaylistName:
 
     def test_rejects_empty_api_key(self):
         result = get_gemini_playlist_name(
-            api_key="",
-            model_name="gemini-2.5-pro",
-            full_prompt="test"
+            api_key="", model_name="gemini-2.5-pro", full_prompt="test"
         )
 
         assert "Error" in result
@@ -822,9 +836,7 @@ class TestGetGeminiPlaylistName:
 
     def test_rejects_placeholder_api_key(self):
         result = get_gemini_playlist_name(
-            api_key="YOUR-GEMINI-API-KEY-HERE",
-            model_name="gemini-2.5-pro",
-            full_prompt="test"
+            api_key="YOUR-GEMINI-API-KEY-HERE", model_name="gemini-2.5-pro", full_prompt="test"
         )
 
         assert "Error" in result
@@ -840,9 +852,7 @@ class TestGetGeminiPlaylistName:
         mock_client_class.return_value = mock_client
 
         result = get_gemini_playlist_name(
-            api_key="valid-key",
-            model_name="gemini-2.5-pro",
-            full_prompt="test"
+            api_key="valid-key", model_name="gemini-2.5-pro", full_prompt="test"
         )
 
         assert "Error" in result
@@ -850,7 +860,6 @@ class TestGetGeminiPlaylistName:
 
 
 class TestGetMistralPlaylistName:
-
     @patch('mistralai.Mistral')
     @patch('tasks.ai.providers.mistral.time.sleep')
     def test_successful_mistral_call(self, mock_sleep, mock_mistral_class):
@@ -871,9 +880,7 @@ class TestGetMistralPlaylistName:
         mock_mistral_class.return_value = mock_client
 
         result = get_mistral_playlist_name(
-            api_key="valid-key",
-            model_name="ministral-3b-latest",
-            full_prompt="Create a name"
+            api_key="valid-key", model_name="ministral-3b-latest", full_prompt="Create a name"
         )
 
         assert result == "Electronic Dreams"
@@ -881,9 +888,7 @@ class TestGetMistralPlaylistName:
 
     def test_rejects_empty_api_key(self):
         result = get_mistral_playlist_name(
-            api_key="",
-            model_name="ministral-3b-latest",
-            full_prompt="test"
+            api_key="", model_name="ministral-3b-latest", full_prompt="test"
         )
 
         assert "Error" in result
@@ -893,14 +898,13 @@ class TestGetMistralPlaylistName:
         result = get_mistral_playlist_name(
             api_key="YOUR-MISTRAL-API-KEY-HERE",
             model_name="ministral-3b-latest",
-            full_prompt="test"
+            full_prompt="test",
         )
 
         assert "Error" in result
 
 
 class TestGetAIPlaylistName:
-
     @staticmethod
     def _ai_config(provider, **extra):
         cfg = {"provider": provider}
@@ -915,9 +919,11 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             [{"title": "Song 1", "author": "Artist 1"}],
             {"energy": 0.8},
-            self._ai_config("OLLAMA",
-                            ollama_url="http://localhost:11434/api/generate",
-                            ollama_model="deepseek-r1:1.5b"),
+            self._ai_config(
+                "OLLAMA",
+                ollama_url="http://localhost:11434/api/generate",
+                ollama_model="deepseek-r1:1.5b",
+            ),
         )
 
         assert result == "Test Playlist"
@@ -945,7 +951,9 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             [{"title": "Symphony", "author": "Beethoven"}],
             {},
-            self._ai_config("MISTRAL", mistral_key="valid-key", mistral_model="ministral-3b-latest"),
+            self._ai_config(
+                "MISTRAL", mistral_key="valid-key", mistral_model="ministral-3b-latest"
+            ),
         )
 
         assert result == "Mistral Playlist"
@@ -959,10 +967,12 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             [{"title": "Track", "author": "Artist"}],
             {},
-            self._ai_config("OPENAI",
-                            openai_url="https://api.openai.com/v1/chat/completions",
-                            openai_model="gpt-4",
-                            openai_key="test-key"),
+            self._ai_config(
+                "OPENAI",
+                openai_url="https://api.openai.com/v1/chat/completions",
+                openai_model="gpt-4",
+                openai_key="test-key",
+            ),
         )
 
         assert result == "OpenAI Playlist"
@@ -991,9 +1001,9 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             [{"title": "Test", "author": "Artist"}],
             {},
-            self._ai_config("OLLAMA",
-                            ollama_url="http://localhost:11434/api/generate",
-                            ollama_model="model"),
+            self._ai_config(
+                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
+            ),
         )
 
         assert "Error" in result
@@ -1009,9 +1019,9 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             [{"title": "Test", "author": "Artist"}],
             {},
-            self._ai_config("OLLAMA",
-                            ollama_url="http://localhost:11434/api/generate",
-                            ollama_model="model"),
+            self._ai_config(
+                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
+            ),
         )
 
         mock_clean.assert_called_once()
@@ -1029,9 +1039,9 @@ class TestGetAIPlaylistName:
             creative_prompt_template,
             song_list,
             {},
-            self._ai_config("OLLAMA",
-                            ollama_url="http://localhost:11434/api/generate",
-                            ollama_model="model"),
+            self._ai_config(
+                "OLLAMA", ollama_url="http://localhost:11434/api/generate", ollama_model="model"
+            ),
         )
 
         prompt = mock_generate.call_args[0][0]
@@ -1041,4 +1051,7 @@ class TestGetAIPlaylistName:
         assert "Artist B" in prompt
 
     def test_prompt_includes_length_requirement(self):
-        assert "The title MUST be within the range of 5 to 40 characters long." in creative_prompt_template
+        assert (
+            "The title MUST be within the range of 5 to 40 characters long."
+            in creative_prompt_template
+        )

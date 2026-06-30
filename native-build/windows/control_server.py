@@ -1,4 +1,3 @@
-
 import json
 import logging
 import socket
@@ -36,7 +35,9 @@ class ControlServer:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._handle, args=(conn, addr), name=f"ctrl-{addr}", daemon=True).start()
+            threading.Thread(
+                target=self._handle, args=(conn, addr), name=f"ctrl-{addr}", daemon=True
+            ).start()
 
     def _handle(self, conn, addr):
         with conn:
@@ -47,7 +48,9 @@ class ControlServer:
 
                 if text.startswith("GET /status"):
                     state = self._supervisor.state() if self._supervisor else "unknown"
-                    conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{state}".encode())
+                    conn.sendall(
+                        f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{state}".encode()
+                    )
                     return
                 if text.startswith("POST /stop"):
                     if self._supervisor:

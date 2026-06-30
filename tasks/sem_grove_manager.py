@@ -1,4 +1,3 @@
-
 import gc
 import logging
 import math
@@ -11,30 +10,31 @@ import config
 
 logger = logging.getLogger(__name__)
 
+
 def _get_weights():
     wl = max(0.0, float(config.SEM_GROVE_WEIGHT_LYRICS))
     wa = max(0.0, float(config.SEM_GROVE_WEIGHT_AUDIO))
     return math.sqrt(wl), math.sqrt(wa)
 
+
 W_LYRICS, W_AUDIO = _get_weights()
 
-SEM_GROVE_INDEX_NAME     = "sem_grove_index"
+SEM_GROVE_INDEX_NAME = "sem_grove_index"
 SEM_GROVE_WHITENING_NAME = "sem_grove_whitening"
 
 _SEM_GROVE_CACHE: Dict = {
-    "index":          None,
-    "id_map":         None,
+    "index": None,
+    "id_map": None,
     "reverse_id_map": None,
-    "std_lyrics":     None,
-    "std_audio":      None,
-    "lyrics_dim":     None,
-    "audio_dim":      None,
-    "w_lyrics":       W_LYRICS,
-    "w_audio":        W_AUDIO,
-    "loaded":         False,
-    "song_count":     0,
+    "std_lyrics": None,
+    "std_audio": None,
+    "lyrics_dim": None,
+    "audio_dim": None,
+    "w_lyrics": W_LYRICS,
+    "w_audio": W_AUDIO,
+    "loaded": False,
+    "song_count": 0,
 }
-
 
 
 def _make_merged_vector(
@@ -76,8 +76,8 @@ def _make_merged_vector(
 
 def _fetch_metadata(item_ids: List[str]) -> Dict[str, Dict]:
     from .commons import fetch_track_metadata_map
-    return fetch_track_metadata_map(item_ids)
 
+    return fetch_track_metadata_map(item_ids)
 
 
 def build_and_store_sem_grove_index(db_conn=None) -> bool:
@@ -90,7 +90,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         db_conn = get_db()
 
     lyrics_dim = LYRICS_EMBEDDING_DIMENSION
-    audio_dim  = EMBEDDING_DIMENSION
+    audio_dim = EMBEDDING_DIMENSION
     merged_dim = lyrics_dim + audio_dim
 
     W_LYRICS, W_AUDIO = _get_weights()
@@ -119,42 +119,48 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             return False
 
         lyrics_pos = {item_id: i for i, item_id in enumerate(lyrics_ids)}
-        audio_pos  = {item_id: i for i, item_id in enumerate(audio_ids)}
+        audio_pos = {item_id: i for i, item_id in enumerate(audio_ids)}
         common_ids = sorted(set(lyrics_ids) & set(audio_ids))
         if not common_ids:
             logger.warning("SemGrove: no songs have both lyrics and audio embeddings; aborting.")
             return False
         logger.info(
             "SemGrove: %d songs have both embeddings (lyrics=%d, audio=%d).",
-            len(common_ids), lyrics_buf.shape[0], audio_buf.shape[0],
+            len(common_ids),
+            lyrics_buf.shape[0],
+            audio_buf.shape[0],
         )
 
         logger.info("SemGrove: computing whitening statistics (streaming)…")
-        sum_l   = np.zeros(lyrics_dim, dtype=np.float64)
+        sum_l = np.zeros(lyrics_dim, dtype=np.float64)
         sumsq_l = np.zeros(lyrics_dim, dtype=np.float64)
-        sum_a   = np.zeros(audio_dim,  dtype=np.float64)
-        sumsq_a = np.zeros(audio_dim,  dtype=np.float64)
+        sum_a = np.zeros(audio_dim, dtype=np.float64)
+        sumsq_a = np.zeros(audio_dim, dtype=np.float64)
         n_stats = 0
         for item_id in common_ids:
             lv = lyrics_buf[lyrics_pos[item_id]]
             av = audio_buf[audio_pos[item_id]]
             lv_n = lv / (np.linalg.norm(lv) + 1e-8)
             av_n = av / (np.linalg.norm(av) + 1e-8)
-            sum_l   += lv_n
+            sum_l += lv_n
             sumsq_l += lv_n * lv_n
-            sum_a   += av_n
+            sum_a += av_n
             sumsq_a += av_n * av_n
             n_stats += 1
         mean_l = sum_l / n_stats
         mean_a = sum_a / n_stats
-        var_l  = np.maximum(sumsq_l / n_stats - mean_l * mean_l, 0.0)
-        var_a  = np.maximum(sumsq_a / n_stats - mean_a * mean_a, 0.0)
+        var_l = np.maximum(sumsq_l / n_stats - mean_l * mean_l, 0.0)
+        var_a = np.maximum(sumsq_a / n_stats - mean_a * mean_a, 0.0)
         std_lyrics = np.sqrt(var_l).astype(np.float32)
-        std_audio  = np.sqrt(var_a).astype(np.float32)
+        std_audio = np.sqrt(var_a).astype(np.float32)
         del sum_l, sumsq_l, sum_a, sumsq_a, mean_l, mean_a, var_l, var_a
         gc.collect()
 
-        logger.info("SemGrove: building disk-paged IVF index for up to %d items (dim=%d)...", len(common_ids), merged_dim)
+        logger.info(
+            "SemGrove: building disk-paged IVF index for up to %d items (dim=%d)...",
+            len(common_ids),
+            merged_dim,
+        )
         merged = np.empty((len(common_ids), merged_dim), dtype=np.float32)
         kept_ids: List[str] = []
         w = 0
@@ -162,7 +168,10 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             mv = _make_merged_vector(
                 lyrics_buf[lyrics_pos[item_id]],
                 audio_buf[audio_pos[item_id]],
-                std_lyrics, std_audio, W_LYRICS, W_AUDIO,
+                std_lyrics,
+                std_audio,
+                W_LYRICS,
+                W_AUDIO,
             )
             if mv is None:
                 continue
@@ -176,7 +185,9 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             return False
         merged = merged[:w]
 
-        ok = build_and_store_paged_ivf(db_conn, SEM_GROVE_INDEX_NAME, merged, kept_ids, merged_dim, "angular")
+        ok = build_and_store_paged_ivf(
+            db_conn, SEM_GROVE_INDEX_NAME, merged, kept_ids, merged_dim, "angular"
+        )
         if not ok:
             db_conn.rollback()
             return False
@@ -193,7 +204,6 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         return False
 
 
-
 def _load_sem_grove_index_from_db() -> bool:
     from app_helper import get_db
     from config import LYRICS_EMBEDDING_DIMENSION, EMBEDDING_DIMENSION
@@ -206,31 +216,34 @@ def _load_sem_grove_index_from_db() -> bool:
     try:
         conn = get_db()
         loaded = load_index_auto(
-            conn, SEM_GROVE_INDEX_NAME,
-            merged_dim, 'angular', label='SemGrove',
+            conn,
+            SEM_GROVE_INDEX_NAME,
+            merged_dim,
+            'angular',
+            label='SemGrove',
         )
         if loaded is None:
             logger.info("SemGrove: IVF index not found; not built yet.")
             return False
         loaded_index, id_map, reverse_id_map = loaded
 
-        _SEM_GROVE_CACHE.update({
-            "index":          loaded_index,
-            "id_map":         id_map,
-            "reverse_id_map": reverse_id_map,
-            "std_lyrics":     None,
-            "std_audio":      None,
-            "lyrics_dim":     lyrics_dim,
-            "audio_dim":      audio_dim,
-            "w_lyrics":       W_LYRICS,
-            "w_audio":        W_AUDIO,
-            "loaded":         True,
-            "song_count":     len(id_map),
-        })
-
-        logger.info(
-            "SemGrove index loaded: %d items, dim=%d.", len(id_map), merged_dim
+        _SEM_GROVE_CACHE.update(
+            {
+                "index": loaded_index,
+                "id_map": id_map,
+                "reverse_id_map": reverse_id_map,
+                "std_lyrics": None,
+                "std_audio": None,
+                "lyrics_dim": lyrics_dim,
+                "audio_dim": audio_dim,
+                "w_lyrics": W_LYRICS,
+                "w_audio": W_AUDIO,
+                "loaded": True,
+                "song_count": len(id_map),
+            }
         )
+
+        logger.info("SemGrove index loaded: %d items, dim=%d.", len(id_map), merged_dim)
         return True
 
     except Exception as exc:
@@ -238,19 +251,20 @@ def _load_sem_grove_index_from_db() -> bool:
         return False
 
 
-
 def load_sem_grove_cache_from_db() -> bool:
     ok = _load_sem_grove_index_from_db()
     if not ok:
-        _SEM_GROVE_CACHE.update({
-            "index":          None,
-            "id_map":         None,
-            "reverse_id_map": None,
-            "std_lyrics":     None,
-            "std_audio":      None,
-            "loaded":         False,
-            "song_count":     0,
-        })
+        _SEM_GROVE_CACHE.update(
+            {
+                "index": None,
+                "id_map": None,
+                "reverse_id_map": None,
+                "std_lyrics": None,
+                "std_audio": None,
+                "loaded": False,
+                "song_count": 0,
+            }
+        )
     return ok
 
 
@@ -260,7 +274,8 @@ def refresh_sem_grove_cache() -> bool:
     result = load_sem_grove_cache_from_db()
     logger.info(
         "SemGrove: cache refreshed (%d -> %d songs).",
-        old, _SEM_GROVE_CACHE["song_count"],
+        old,
+        _SEM_GROVE_CACHE["song_count"],
     )
     return result
 
@@ -271,18 +286,18 @@ def is_sem_grove_cache_loaded() -> bool:
 
 def get_sem_grove_stats() -> Dict:
     loaded = _SEM_GROVE_CACHE["loaded"]
-    idx    = _SEM_GROVE_CACHE.get("index")
+    idx = _SEM_GROVE_CACHE.get("index")
     mem_mb = 0
     if loaded and idx is not None:
         mem_mb = round(sys.getsizeof(idx) / (1024 * 1024), 2)
     return {
-        "loaded":     loaded,
+        "loaded": loaded,
         "song_count": _SEM_GROVE_CACHE["song_count"],
         "lyrics_dim": _SEM_GROVE_CACHE.get("lyrics_dim"),
-        "audio_dim":  _SEM_GROVE_CACHE.get("audio_dim"),
-        "w_lyrics":   round(_SEM_GROVE_CACHE["w_lyrics"] ** 2, 2) if loaded else None,
-        "w_audio":    round(_SEM_GROVE_CACHE["w_audio"]  ** 2, 2) if loaded else None,
-        "memory_mb":  mem_mb,
+        "audio_dim": _SEM_GROVE_CACHE.get("audio_dim"),
+        "w_lyrics": round(_SEM_GROVE_CACHE["w_lyrics"] ** 2, 2) if loaded else None,
+        "w_audio": round(_SEM_GROVE_CACHE["w_audio"] ** 2, 2) if loaded else None,
+        "memory_mb": mem_mb,
     }
 
 
@@ -290,7 +305,6 @@ def get_sem_grove_item_ids() -> set:
     if not _SEM_GROVE_CACHE["loaded"]:
         return set()
     return set(_SEM_GROVE_CACHE["id_map"].values())
-
 
 
 def get_sem_grove_vector_by_id(item_id: str) -> Optional[np.ndarray]:
@@ -309,9 +323,10 @@ def get_sem_grove_vector_by_id(item_id: str) -> Optional[np.ndarray]:
 def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]:
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
         return []
-    index  = _SEM_GROVE_CACHE["index"]
+    index = _SEM_GROVE_CACHE["index"]
     id_map = _SEM_GROVE_CACHE["id_map"]
     from .paged_ivf import begin_query
+
     begin_query(index)
     num_to_query = min(max(1, int(n)), len(index))
     if num_to_query <= 0:
@@ -338,17 +353,19 @@ def find_sem_grove_neighbors_by_id(item_id: str, n: int = 100) -> List[Dict]:
     return find_sem_grove_neighbors_by_vector(vec, n=n)
 
 
-
-def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool | None = None) -> List[Dict]:
+def search_by_song(
+    seed_item_id: str, limit: int = 50, radius_similarity: bool | None = None
+) -> List[Dict]:
     if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
         logger.error("SemGrove index not loaded.")
         return []
 
-    index          = _SEM_GROVE_CACHE["index"]
-    id_map         = _SEM_GROVE_CACHE["id_map"]
+    index = _SEM_GROVE_CACHE["index"]
+    id_map = _SEM_GROVE_CACHE["id_map"]
     reverse_id_map = _SEM_GROVE_CACHE["reverse_id_map"]
 
     from .paged_ivf import begin_query
+
     begin_query(index)
 
     seed_vid = reverse_id_map.get(seed_item_id)
@@ -362,15 +379,20 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
         logger.exception("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
         return []
 
-    from config import MAX_SONGS_PER_ARTIST, DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS, DUPLICATE_DISTANCE_CHECK_LOOKBACK, SIMILARITY_RADIUS_DEFAULT
+    from config import (
+        MAX_SONGS_PER_ARTIST,
+        DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
+        DUPLICATE_DISTANCE_CHECK_LOOKBACK,
+        SIMILARITY_RADIUS_DEFAULT,
+    )
     import numpy as np
 
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
 
-    artist_cap    = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+    artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
     dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS
-    lookback_n     = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
+    lookback_n = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
     if radius_similarity:
         fetch_size = limit + max(limit * 5, limit * 15) + 1
     else:
@@ -393,17 +415,19 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
     metadata_map = _fetch_metadata([seed_item_id] + candidate_ids)
 
     seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
-    results: List[Dict] = [{
-        "item_id":    seed_item_id,
-        "title":      seed_meta.get("title",  "") or "",
-        "author":     seed_meta.get("author", "") or "",
-        "album":      seed_meta.get("album",  "") or "",
-        "similarity": 1.0,
-        "is_seed":    True,
-    }]
-    artist_counts:  Dict[str, int]   = {}
-    seen_names:     set               = set()
-    lookback_vecs:  list              = []
+    results: List[Dict] = [
+        {
+            "item_id": seed_item_id,
+            "title": seed_meta.get("title", "") or "",
+            "author": seed_meta.get("author", "") or "",
+            "album": seed_meta.get("album", "") or "",
+            "similarity": 1.0,
+            "is_seed": True,
+        }
+    ]
+    artist_counts: Dict[str, int] = {}
+    seen_names: set = set()
+    lookback_vecs: list = []
 
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) - 1 >= limit:
@@ -411,9 +435,9 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
         item_id = id_map.get(int(vid))
         if not item_id or item_id == seed_item_id:
             continue
-        meta   = metadata_map.get(item_id, {"title": "", "author": "", "album": ""})
+        meta = metadata_map.get(item_id, {"title": "", "author": "", "album": ""})
         author = meta.get("author", "") or ""
-        title  = meta.get("title",  "") or ""
+        title = meta.get("title", "") or ""
 
         name_key = (title.strip().lower(), author.strip().lower())
         if name_key in seen_names:
@@ -439,7 +463,10 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                         logger.debug(
                             "SemGrove: dropping near-duplicate '%s' by '%s' "
                             "(cosine dist %.4f < threshold %.4f).",
-                            title, author, cosine_dist, dist_threshold,
+                            title,
+                            author,
+                            cosine_dist,
+                            dist_threshold,
                         )
                         too_close = True
                         break
@@ -449,13 +476,15 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
             except Exception as _vec_exc:
                 logger.debug("SemGrove: could not fetch vector for distance check: %s", _vec_exc)
 
-        results.append({
-            "item_id":    item_id,
-            "title":      title,
-            "author":     author,
-            "album":      meta.get("album", "") or "",
-            "similarity": max(0.0, 1.0 - float(dist)),
-        })
+        results.append(
+            {
+                "item_id": item_id,
+                "title": title,
+                "author": author,
+                "album": meta.get("album", "") or "",
+                "similarity": max(0.0, 1.0 - float(dist)),
+            }
+        )
 
     logger.info("SemGrove search for '%s': %d results.", seed_item_id, len(results))
 
@@ -474,13 +503,15 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                         if norm_val > 0:
                             vec = vec / norm_val
                         dist_anchor = max(0.0, 1.0 - r.get("similarity", 0.0))
-                        candidate_data.append({
-                            "item_id":    r["item_id"],
-                            "vector":     vec,
-                            "dist_anchor": dist_anchor,
-                            "title":      r.get("title"),
-                            "author":     r.get("author"),
-                        })
+                        candidate_data.append(
+                            {
+                                "item_id": r["item_id"],
+                                "vector": vec,
+                                "dist_anchor": dist_anchor,
+                                "title": r.get("title"),
+                                "author": r.get("author"),
+                            }
+                        )
                     except Exception:
                         continue
 
@@ -503,7 +534,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                     )
 
                     reordered_ids = [rd["item_id"] for rd in reordered]
-                    non_seed_map  = {r["item_id"]: r for r in non_seed}
+                    non_seed_map = {r["item_id"]: r for r in non_seed}
 
                     new_results = [results[0]]
                     seen_ids = {results[0]["item_id"]}
@@ -518,7 +549,8 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
                     results = new_results
                     logger.info(
                         "SemGrove radius walk: reordered %d results for seed '%s'.",
-                        len(results) - 1, seed_item_id,
+                        len(results) - 1,
+                        seed_item_id,
                     )
         except Exception:
             logger.exception("SemGrove radius walk failed; returning standard order.")

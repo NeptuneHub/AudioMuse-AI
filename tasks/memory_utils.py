@@ -1,4 +1,3 @@
-
 import gc
 import logging
 from typing import Optional, Dict, Any, Callable
@@ -11,6 +10,7 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
 
     try:
         import torch
+
         if torch.cuda.is_available():
             if force:
                 torch.cuda.empty_cache()
@@ -27,6 +27,7 @@ def cleanup_cuda_memory(force: bool = False) -> bool:
     if not cuda_cleanup_performed:
         try:
             import cupy
+
             if force:
                 cupy.get_default_memory_pool().free_all_blocks()
                 cupy.get_default_pinned_memory_pool().free_all_blocks()
@@ -84,7 +85,9 @@ def reset_onnx_memory_pool() -> bool:
             input_tensor = helper.make_tensor_value_info('input', TensorProto.FLOAT, [1, 1])
             output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 1])
             identity_node = helper.make_node('Identity', ['input'], ['output'], name='identity')
-            graph = helper.make_graph([identity_node], 'reset_graph', [input_tensor], [output_tensor])
+            graph = helper.make_graph(
+                [identity_node], 'reset_graph', [input_tensor], [output_tensor]
+            )
             model = helper.make_model(graph, producer_name='memory_reset')
 
             with tempfile.NamedTemporaryFile(suffix='.onnx', delete=True) as tmp_file:
@@ -113,11 +116,13 @@ def reset_onnx_memory_pool() -> bool:
 def release_memory_to_os() -> bool:
     gc.collect()
     import platform
+
     if platform.system() != "Linux":
         return False
     try:
         import ctypes
         import ctypes.util
+
         libc_name = ctypes.util.find_library("c")
         if not libc_name:
             return False
@@ -127,13 +132,10 @@ def release_memory_to_os() -> bool:
         return False
 
 
-def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool = True) -> Dict[str, bool]:
-    results = {
-        'cuda': False,
-        'onnx_pool': False,
-        'gc': True,
-        'malloc_trim': False
-    }
+def comprehensive_memory_cleanup(
+    force_cuda: bool = True, reset_onnx_pool: bool = True
+) -> Dict[str, bool]:
+    results = {'cuda': False, 'onnx_pool': False, 'gc': True, 'malloc_trim': False}
 
     if force_cuda:
         results['cuda'] = cleanup_cuda_memory(force=True)
@@ -142,7 +144,6 @@ def comprehensive_memory_cleanup(force_cuda: bool = True, reset_onnx_pool: bool 
         results['onnx_pool'] = reset_onnx_memory_pool()
 
     results['malloc_trim'] = release_memory_to_os()
-
 
     return results
 
@@ -153,15 +154,15 @@ def handle_onnx_memory_error(
     cleanup_func: Optional[Callable] = None,
     retry_func: Optional[Callable] = None,
     fallback_to_cpu: bool = False,
-    session_creator: Optional[Callable] = None
+    session_creator: Optional[Callable] = None,
 ) -> Optional[Any]:
     error_str = str(error)
 
     is_memory_error = (
-        "Failed to allocate memory" in error_str or
-        "BFCArena" in error_str or
-        "OOM" in error_str or
-        "out of memory" in error_str.lower()
+        "Failed to allocate memory" in error_str
+        or "BFCArena" in error_str
+        or "OOM" in error_str
+        or "out of memory" in error_str.lower()
     )
 
     if not is_memory_error:
@@ -206,7 +207,6 @@ def handle_onnx_memory_error(
 
 
 class SessionRecycler:
-
     def __init__(self, recycle_interval: int = 20):
         self.recycle_interval = recycle_interval
         self.use_count = 0

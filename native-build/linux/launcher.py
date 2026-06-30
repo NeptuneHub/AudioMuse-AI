@@ -1,4 +1,3 @@
-
 import os
 import runpy
 import signal
@@ -28,6 +27,7 @@ def _command_from_argv():
 def _run_flask():
     import waitress
     import app as app_module
+
     waitress.serve(
         app_module.app,
         host="0.0.0.0",
@@ -50,6 +50,7 @@ def _run_role(role):
         runpy.run_module("rq_janitor", run_name="__main__")
     elif role == "restart-listener":
         import restart_listener
+
         restart_listener.main()
     else:
         raise SystemExit(f"Unknown role: {role}")
@@ -61,6 +62,7 @@ _INSTANCE_LOCK = None
 def _acquire_single_instance_lock(paths):
     global _INSTANCE_LOCK
     import fcntl
+
     lock_path = paths.supervisor_lock_path()
     fh = open(lock_path, "a+")
     try:
@@ -78,6 +80,7 @@ def _acquire_single_instance_lock(paths):
 
 def _running_supervisor_pid(paths):
     import fcntl
+
     lock_path = paths.supervisor_lock_path()
     if not os.path.exists(lock_path):
         return None
@@ -152,6 +155,7 @@ def _run_supervisor(open_browser=True):
 
 def _cmd_stop():
     from linux import paths
+
     pid = _running_supervisor_pid(paths)
     if pid is None:
         print("AudioMuse-AI is not running.")
@@ -174,6 +178,7 @@ def _cmd_stop():
 
 def _cmd_status():
     from linux import paths
+
     pid = _running_supervisor_pid(paths)
     if pid is None:
         print("AudioMuse-AI: stopped")
@@ -184,6 +189,7 @@ def _cmd_status():
 
 def _cmd_open():
     from linux import paths
+
     if _running_supervisor_pid(paths) is None:
         open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"
         return _run_supervisor(open_browser=open_browser)
@@ -208,6 +214,7 @@ def main():
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
+
         sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
 
     role = _role_from_argv()

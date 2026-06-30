@@ -72,7 +72,9 @@ def test_directory_storage_dtype_round_trip():
 
     for name in ("f32", "f16", "i8"):
         code = quant.dtype_code(name)
-        blob = pack_directory(centroids, id2cell, item_ids, dim, "angular", normalized=True, storage_dtype=code)
+        blob = pack_directory(
+            centroids, id2cell, item_ids, dim, "angular", normalized=True, storage_dtype=code
+        )
         *_rest, storage_dtype = unpack_directory(blob)
         assert storage_dtype == code, f"{name} dtype did not round-trip"
 
@@ -277,7 +279,9 @@ def test_split_cells_over_cap_noop_when_under():
         (0, np.array([0, 1], dtype=np.int32), np.random.randn(2, dim).astype(np.float32)),
         (1, np.array([2], dtype=np.int32), np.random.randn(1, dim).astype(np.float32)),
     ]
-    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, cells, dim, 100 * record)
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(
+        centroids, id2cell, cells, dim, 100 * record
+    )
     assert out_c.shape[0] == 2
     assert len(out_cells) == 2
     np.testing.assert_array_equal(out_id2cell, id2cell)
@@ -294,7 +298,9 @@ def test_split_cells_over_cap_splits_and_stays_under_cap():
     centroids = np.random.randn(1, dim).astype(np.float32)
     id2cell = np.zeros(n, dtype=np.uint32)
 
-    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, [(0, ids, vecs)], dim, cap_bytes)
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(
+        centroids, id2cell, [(0, ids, vecs)], dim, cap_bytes
+    )
 
     assert all(c.shape[0] <= cap_records for _cid, c, _v in out_cells)
     assert all(c.shape[0] * record <= cap_bytes for _cid, c, _v in out_cells)
@@ -429,7 +435,7 @@ def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
     size = 96 * 1024 * 1024
     path = tmp_path / "cells.bin"
     with open(path, "wb") as f:
-        block = (b"\xab" * (4 * 1024 * 1024))
+        block = b"\xab" * (4 * 1024 * 1024)
         for _ in range(size // len(block)):
             f.write(block)
 
@@ -480,7 +486,9 @@ def test_drop_pages_windows_routing(tmp_path, monkeypatch):
         calls.append((addr, size))
         return 0
 
-    monkeypatch.setattr(pv, "_win_virtual_unlock", lambda: (unlock_not_locked, lambda: pv._WIN_ERROR_NOT_LOCKED))
+    monkeypatch.setattr(
+        pv, "_win_virtual_unlock", lambda: (unlock_not_locked, lambda: pv._WIN_ERROR_NOT_LOCKED)
+    )
     assert pv._drop_resident_mmap_pages([stub]) == 1
     assert calls == [(int(mm.ctypes.data), int(mm.nbytes))]
 

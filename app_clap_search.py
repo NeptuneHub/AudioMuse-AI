@@ -34,7 +34,7 @@ def clap_search_page():
         active='clap_search',
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
-        cache_stats=cache_stats
+        cache_stats=cache_stats,
     )
 
 
@@ -101,10 +101,12 @@ def clap_search_api():
     from app_helper import attach_song_features
 
     if not CLAP_ENABLED:
-        return jsonify({
-            'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
-            'results': []
-        }), 400
+        return jsonify(
+            {
+                'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
+                'results': [],
+            }
+        ), 400
 
     try:
         data = request.get_json()
@@ -126,20 +128,15 @@ def clap_search_api():
 
         # Check if cache is loaded
         if not is_clap_cache_loaded():
-            return jsonify({
-                'error': 'CLAP cache not loaded. Please run song analysis first.',
-                'results': []
-            }), 503
+            return jsonify(
+                {'error': 'CLAP cache not loaded. Please run song analysis first.', 'results': []}
+            ), 503
 
         # Perform search
         results = search_by_text(query, limit=limit)
         attach_song_features(results)
 
-        return jsonify({
-            'query': query,
-            'results': results,
-            'count': len(results)
-        })
+        return jsonify({'query': query, 'results': results, 'count': len(results)})
 
     except ValueError as e:
         logger.warning(f"ValueError in DCLAP search API: {e}")
@@ -180,20 +177,14 @@ def warmup_model_api():
     from tasks.clap_text_search import warmup_text_search_model
 
     if not CLAP_ENABLED:
-        return jsonify({
-            'error': 'CLAP text search is disabled',
-            'loaded': False
-        }), 400
+        return jsonify({'error': 'CLAP text search is disabled', 'loaded': False}), 400
 
     try:
         status = warmup_text_search_model()
         return jsonify(status)
     except Exception:
         logger.exception("Model warmup failed")
-        return jsonify({
-            'error': 'Warmup failed.',
-            'loaded': False
-        }), 500
+        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
 
 
 @clap_search_bp.route('/api/clap/warmup/status', methods=['GET'])
@@ -269,24 +260,19 @@ def refresh_cache_api():
         stats = get_cache_stats()
 
         if success:
-            return jsonify({
-                'success': True,
-                'message': 'CLAP cache refreshed successfully',
-                'stats': stats
-            })
+            return jsonify(
+                {'success': True, 'message': 'CLAP cache refreshed successfully', 'stats': stats}
+            )
         else:
-            return jsonify({
-                'success': False,
-                'message': 'Failed to refresh CLAP cache',
-                'stats': stats
-            }), 500
+            return jsonify(
+                {'success': False, 'message': 'Failed to refresh CLAP cache', 'stats': stats}
+            ), 500
 
     except Exception as e:
         logger.exception(f"Cache refresh failed: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'An internal error occurred. Please try again later.'
-        }), 500
+        return jsonify(
+            {'success': False, 'error': 'An internal error occurred. Please try again later.'}
+        ), 500
 
 
 @clap_search_bp.route('/api/clap/stats', methods=['GET'])
@@ -355,11 +341,13 @@ def top_queries_api():
 
     try:
         queries = get_cached_top_queries()
-        return jsonify({
-            'queries': queries,
-            'ready': len(queries) > 0
-        }), 200
+        return jsonify({'queries': queries, 'ready': len(queries) > 0}), 200
     except Exception:
         logger.exception("Failed to get top queries")
-        return jsonify({'error': 'An internal error occurred. Please try again later.', 'queries': [], 'ready': False}), 500
-
+        return jsonify(
+            {
+                'error': 'An internal error occurred. Please try again later.',
+                'queries': [],
+                'ready': False,
+            }
+        ), 500

@@ -16,15 +16,11 @@ def app():
 
 class TestOriginalRequestIsHttps:
     def test_direct_https_request_is_true(self, app):
-        with app.test_request_context(
-            '/auth', base_url='https://example.test'
-        ):
+        with app.test_request_context('/auth', base_url='https://example.test'):
             assert app_auth._original_request_is_https() is True
 
     def test_plain_http_no_header_is_false(self, app):
-        with app.test_request_context(
-            '/auth', base_url='http://example.test'
-        ):
+        with app.test_request_context('/auth', base_url='http://example.test'):
             assert app_auth._original_request_is_https() is False
 
     def test_forwarded_proto_https_is_true(self, app):
@@ -63,6 +59,7 @@ class TestOriginalRequestIsHttps:
 class TestBearerTokenCompareDigest:
     def test_unicode_token_does_not_raise(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', 'tok-123')
         unicode_token = 'tok-é中'
@@ -77,6 +74,7 @@ class TestBearerTokenCompareDigest:
     def test_unicode_token_matches_when_correct(self, app, monkeypatch):
         import config
         from flask import g
+
         unicode_token = 'tok-é中'
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', unicode_token)
@@ -91,22 +89,20 @@ class TestBearerTokenCompareDigest:
     def test_correct_token_authenticates(self, app, monkeypatch):
         import config
         from flask import g
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', 'tok-123')
-        with app.test_request_context(
-            '/api/foo', headers={'Authorization': 'Bearer tok-123'}
-        ):
+        with app.test_request_context('/api/foo', headers={'Authorization': 'Bearer tok-123'}):
             result = app_auth.check_auth_needed('s')
             assert result is None
             assert g.auth_role == 'admin'
 
     def test_wrong_token_rejected(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', 'tok-123')
-        with app.test_request_context(
-            '/api/foo', headers={'Authorization': 'Bearer wrong'}
-        ):
+        with app.test_request_context('/api/foo', headers={'Authorization': 'Bearer wrong'}):
             result = app_auth.check_auth_needed('s')
         assert result is not None
         assert result[1] == 401

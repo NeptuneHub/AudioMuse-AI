@@ -64,12 +64,23 @@ def _stage(ctx):
     (stage / "opt").mkdir(parents=True)
     (stage / "usr" / "share" / "applications").mkdir(parents=True)
     (stage / "usr" / "lib" / "systemd" / "user").mkdir(parents=True)
-    subprocess.run(["cp", "-a", str(ctx.bundle_dir), str(stage / "opt" / "AudioMuse-AI")], check=True)
+    subprocess.run(
+        ["cp", "-a", str(ctx.bundle_dir), str(stage / "opt" / "AudioMuse-AI")], check=True
+    )
 
     pkg = ctx.root / "native-build" / "linux" / "packaging"
-    shutil.copy2(pkg / "AudioMuse-AI.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI.desktop")
-    shutil.copy2(pkg / "AudioMuse-AI-stop.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI-stop.desktop")
-    shutil.copy2(pkg / "audiomuse-ai.service", stage / "usr" / "lib" / "systemd" / "user" / "audiomuse-ai.service")
+    shutil.copy2(
+        pkg / "AudioMuse-AI.desktop",
+        stage / "usr" / "share" / "applications" / "AudioMuse-AI.desktop",
+    )
+    shutil.copy2(
+        pkg / "AudioMuse-AI-stop.desktop",
+        stage / "usr" / "share" / "applications" / "AudioMuse-AI-stop.desktop",
+    )
+    shutil.copy2(
+        pkg / "audiomuse-ai.service",
+        stage / "usr" / "lib" / "systemd" / "user" / "audiomuse-ai.service",
+    )
 
     for size in _ICON_SIZES:
         src = pkg / "icons" / f"audiomuse-ai_{size}.png"
@@ -104,8 +115,16 @@ def package(ctx):
     pkg.mkdir(parents=True, exist_ok=True)
     for packager in ("deb", "rpm"):
         subprocess.run(
-            ["nfpm", "package", "--config", str(ctx.dist_dir / "nfpm.yaml"),
-             "--packager", packager, "--target", str(pkg) + "/"],
+            [
+                "nfpm",
+                "package",
+                "--config",
+                str(ctx.dist_dir / "nfpm.yaml"),
+                "--packager",
+                packager,
+                "--target",
+                str(pkg) + "/",
+            ],
             check=True,
             cwd=str(ctx.root),
         )

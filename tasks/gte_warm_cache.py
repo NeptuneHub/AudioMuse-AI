@@ -1,4 +1,3 @@
-
 import logging
 import threading
 import time
@@ -27,11 +26,13 @@ def _unload_timer_worker():
                 break
             if expiry - time.time() <= 0:
                 from lyrics import gte_onnx
+
                 if gte_onnx.is_loaded():
                     logger.info("GTE warm cache expired - unloading lyrics embedding model")
                     gte_onnx.reset_session()
                     try:
                         from tasks.memory_utils import comprehensive_memory_cleanup
+
                         comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
                     except Exception as e:
                         logger.debug("GTE unload cleanup failed: %s", e)

@@ -281,7 +281,7 @@
                                 centroidSelect.value = best.centroidIndex;
                                 const path = findNodePath(tree, node);
                                 if (path) {
-                                    selectedMoodLabel = path.map(capitalizeLabel).join(' — ');
+                                    selectedMoodLabel = path.map(capitalizeLabel).join(' - ');
                                     selectedMoodLabelForPlaylist = path.map(capitalizeLabel).join('/');
                                 } else {
                                     selectedMoodLabel = capitalizeLabel(node.mood || '');
@@ -486,7 +486,7 @@
                 }
             });
 
-            // Graph visualization removed — kept UI and results table only.
+            // Graph visualization removed - kept UI and results table only.
 
             // --- Main Form Submission ---
             similarityForm.addEventListener('submit', async function (event) {
@@ -586,16 +586,16 @@
                                             if (tdResp.ok) {
                                                 const td = await tdResp.json();
                                                 if (td && (td.title || td.author)) {
-                                                    text += ' — Farthest track: "' + (td.title || 'Unknown title') + '" by ' + (td.author || 'Unknown artist');
+                                                    text += ' - Farthest track: "' + (td.title || 'Unknown title') + '" by ' + (td.author || 'Unknown artist');
                                                 } else {
-                                                    text += ' — Farthest track ID: ' + farId;
+                                                    text += ' - Farthest track ID: ' + farId;
                                                 }
                                             } else {
-                                                text += ' — Farthest track ID: ' + farId;
+                                                text += ' - Farthest track ID: ' + farId;
                                             }
                                         } catch (errInner) {
                                             console.error('Failed to fetch farthest track metadata:', errInner);
-                                            text += ' — Farthest track ID: ' + farId;
+                                            text += ' - Farthest track ID: ' + farId;
                                         }
                                     }
                                     maxDistDiv.textContent = text;

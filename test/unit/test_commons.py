@@ -2,13 +2,12 @@ from tasks.commons import score_vector
 
 
 class TestScoreVector:
-
     def test_basic_score_vector(self):
         row = {
             'tempo': 120.0,
             'energy': 0.5,
             'mood_vector': "happy:0.8,sad:0.2",
-            'other_features': "danceability:0.7"
+            'other_features': "danceability:0.7",
         }
         mood_labels = ["happy", "sad", "energetic"]
         other_labels = ["danceability", "aggressive"]
@@ -19,12 +18,7 @@ class TestScoreVector:
         assert len(result) == 2 + len(mood_labels) + len(other_labels)
 
     def test_score_vector_with_none_values(self):
-        row = {
-            'tempo': None,
-            'energy': None,
-            'mood_vector': None,
-            'other_features': ""
-        }
+        row = {'tempo': None, 'energy': None, 'mood_vector': None, 'other_features': ""}
         mood_labels = ["happy", "sad"]
         other_labels = ["danceability"]
 
@@ -35,12 +29,7 @@ class TestScoreVector:
         assert result[1] == 0.0
 
     def test_score_vector_normalization(self):
-        row = {
-            'tempo': 120.0,
-            'energy': 0.5,
-            'mood_vector': "",
-            'other_features': ""
-        }
+        row = {'tempo': 120.0, 'energy': 0.5, 'mood_vector': "", 'other_features': ""}
         mood_labels = []
         other_labels = []
 
@@ -54,14 +43,14 @@ class TestScoreVector:
             'tempo': 100.0,
             'energy': 0.3,
             'mood_vector': "happy:0.9,sad:0.1,energetic:0.5",
-            'other_features': ""
+            'other_features': "",
         }
         mood_labels = ["happy", "sad", "energetic"]
         other_labels = []
 
         result = score_vector(row, mood_labels, other_labels)
 
-        mood_scores = result[2:2+len(mood_labels)]
+        mood_scores = result[2 : 2 + len(mood_labels)]
         assert mood_scores[0] == 0.9
         assert mood_scores[1] == 0.1
         assert mood_scores[2] == 0.5
@@ -71,14 +60,14 @@ class TestScoreVector:
             'tempo': 100.0,
             'energy': 0.3,
             'mood_vector': "happy:0.8,unknown_mood:0.5",
-            'other_features': ""
+            'other_features': "",
         }
         mood_labels = ["happy", "sad"]
         other_labels = []
 
         result = score_vector(row, mood_labels, other_labels)
 
-        mood_scores = result[2:2+len(mood_labels)]
+        mood_scores = result[2 : 2 + len(mood_labels)]
         assert mood_scores[0] == 0.8
         assert mood_scores[1] == 0.0
 
@@ -87,13 +76,13 @@ class TestScoreVector:
             'tempo': 100.0,
             'energy': 0.3,
             'mood_vector': "happy:not_a_number,sad:0.5,invalid_no_colon",
-            'other_features': ""
+            'other_features': "",
         }
         mood_labels = ["happy", "sad"]
         other_labels = []
 
         result = score_vector(row, mood_labels, other_labels)
 
-        mood_scores = result[2:2+len(mood_labels)]
+        mood_scores = result[2 : 2 + len(mood_labels)]
         assert mood_scores[0] == 0.0
         assert mood_scores[1] == 0.5

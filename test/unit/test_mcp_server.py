@@ -7,7 +7,6 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 
 
-
 def _import_mcp_server():
     mod_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', '..', 'tasks', 'mcp_helper.py'
@@ -53,7 +52,6 @@ def _import_mcp_impl():
     return sys.modules[mod_name]
 
 
-
 def _make_dict_row(mapping: dict):
     class FakeRow(dict):
         def __getattr__(self, name):
@@ -61,6 +59,7 @@ def _make_dict_row(mapping: dict):
                 return self[name]
             except KeyError:
                 raise AttributeError(name)
+
     return FakeRow(mapping)
 
 
@@ -71,10 +70,8 @@ def _make_connection(cursor):
     return conn
 
 
-
 @pytest.mark.unit
 class TestGenreRegexPattern:
-
     def _matches(self, genre, mood_vector):
         pattern = f"(?i)(?:^|,)\\s*{re.escape(genre)}:(\\d+\\.?\\d*)"
         return bool(re.search(pattern, mood_vector))
@@ -124,10 +121,8 @@ class TestGenreRegexPattern:
         assert self._matches("ROCK", "rock:0.82,pop:0.45")
 
 
-
 @pytest.mark.unit
 class TestGetLibraryContext:
-
     def _reset_cache(self):
         mod = _import_mcp_server()
         mod._library_context_cache = None
@@ -139,17 +134,27 @@ class TestGetLibraryContext:
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
 
-        cur.fetchone = Mock(side_effect=[
-            _make_dict_row({"cnt": 500, "artists": 80}),
-            _make_dict_row({"ymin": 1965, "ymax": 2024}),
-            _make_dict_row({"rated": 200}),
-        ])
+        cur.fetchone = Mock(
+            side_effect=[
+                _make_dict_row({"cnt": 500, "artists": 80}),
+                _make_dict_row({"ymin": 1965, "ymax": 2024}),
+                _make_dict_row({"rated": 200}),
+            ]
+        )
 
-        cur.fetchall = Mock(side_effect=[
-            [_make_dict_row({"name": "rock", "cnt": 120}), _make_dict_row({"name": "pop", "cnt": 90})],
-            [_make_dict_row({"scale": "major"}), _make_dict_row({"scale": "minor"})],
-            [_make_dict_row({"name": "danceable", "cnt": 80}), _make_dict_row({"name": "happy", "cnt": 60})],
-        ])
+        cur.fetchall = Mock(
+            side_effect=[
+                [
+                    _make_dict_row({"name": "rock", "cnt": 120}),
+                    _make_dict_row({"name": "pop", "cnt": 90}),
+                ],
+                [_make_dict_row({"scale": "major"}), _make_dict_row({"scale": "minor"})],
+                [
+                    _make_dict_row({"name": "danceable", "cnt": 80}),
+                    _make_dict_row({"name": "happy", "cnt": 60}),
+                ],
+            ]
+        )
 
         conn = _make_connection(cur)
 
@@ -173,7 +178,11 @@ class TestGetLibraryContext:
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
-        cur.fetchone = Mock(return_value=_make_dict_row({"cnt": 100, "artists": 10, "ymin": 2000, "ymax": 2020, "rated": 50}))
+        cur.fetchone = Mock(
+            return_value=_make_dict_row(
+                {"cnt": 100, "artists": 10, "ymin": 2000, "ymax": 2020, "rated": 50}
+            )
+        )
         cur.__iter__ = Mock(return_value=iter([]))
         cur.fetchall = Mock(return_value=[])
         conn = _make_connection(cur)
@@ -192,7 +201,11 @@ class TestGetLibraryContext:
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
-        cur.fetchone = Mock(return_value=_make_dict_row({"cnt": 0, "artists": 0, "ymin": None, "ymax": None, "rated": 0}))
+        cur.fetchone = Mock(
+            return_value=_make_dict_row(
+                {"cnt": 0, "artists": 0, "ymin": None, "ymax": None, "rated": 0}
+            )
+        )
         cur.__iter__ = Mock(return_value=iter([]))
         cur.fetchall = Mock(return_value=[])
         conn = _make_connection(cur)
@@ -205,10 +218,8 @@ class TestGetLibraryContext:
         assert ctx["has_ratings"] is False
 
 
-
 @pytest.mark.unit
 class TestEnergyNormalization:
-
     def test_zero_maps_to_energy_min(self):
         e_min, e_max = 0.01, 0.15
         raw = e_min + 0.0 * (e_max - e_min)
@@ -235,10 +246,8 @@ class TestEnergyNormalization:
         assert raw == pytest.approx(0.115)
 
 
-
 @pytest.mark.unit
 class TestDatabaseGenreQuery:
-
     def _setup_mock_conn(self):
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
@@ -349,8 +358,14 @@ class TestDatabaseGenreQuery:
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
             mod._database_genre_query_sync(
-                genres=["rock"], tempo_min=120, energy_min=0.05,
-                key="C", scale="major", year_min=2000, min_rating=3, get_songs=10
+                genres=["rock"],
+                tempo_min=120,
+                energy_min=0.05,
+                key="C",
+                scale="major",
+                year_min=2000,
+                min_rating=3,
+                get_songs=10,
             )
 
         sql = cur.execute.call_args[0][0]
@@ -359,12 +374,25 @@ class TestDatabaseGenreQuery:
     def test_results_returned_as_list(self):
         mod = _import_mcp_impl()
         conn, cur = self._setup_mock_conn()
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "1", "title": "Song A", "author": "Artist A",
-                           "album": "Album", "album_artist": "AA", "tempo": 120,
-                           "key": "C", "scale": "major", "energy": 0.08,
-                           "mood_vector": "rock:0.82", "other_features": "danceable"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row(
+                    {
+                        "item_id": "1",
+                        "title": "Song A",
+                        "author": "Artist A",
+                        "album": "Album",
+                        "album_artist": "AA",
+                        "tempo": 120,
+                        "key": "C",
+                        "scale": "major",
+                        "energy": 0.08,
+                        "mood_vector": "rock:0.82",
+                        "other_features": "danceable",
+                    }
+                ),
+            ]
+        )
 
         with patch.object(mod, 'get_db_connection', return_value=conn):
             result = mod._database_genre_query_sync(genres=["rock"], get_songs=10)
@@ -383,7 +411,6 @@ class TestDatabaseGenreQuery:
 
 @pytest.mark.unit
 class TestRerouteMoodLabelsFromGenres:
-
     def test_no_genres_is_noop(self):
         mod = _import_mcp_impl()
         g, m, msg = mod._reroute_mood_labels_from_genres(None, ["happy"])
@@ -407,9 +434,7 @@ class TestRerouteMoodLabelsFromGenres:
 
     def test_mixed_keeps_real_genres_reroutes_mood(self):
         mod = _import_mcp_impl()
-        g, m, msg = mod._reroute_mood_labels_from_genres(
-            ["rock", "aggressive", "metal"], None
-        )
+        g, m, msg = mod._reroute_mood_labels_from_genres(["rock", "aggressive", "metal"], None)
         assert g == ["rock", "metal"]
         assert m == ["aggressive"]
         assert msg is not None
@@ -444,10 +469,8 @@ class TestRerouteMoodLabelsFromGenres:
         assert "Rerouted" in result["message"]
 
 
-
 @pytest.mark.unit
 class TestExtractJsonObject:
-
     def _fn(self):
         return _import_mcp_impl()._extract_json_object
 
@@ -475,7 +498,6 @@ class TestExtractJsonObject:
 
 @pytest.mark.unit
 class TestClampRecipe:
-
     def _fn(self):
         return _import_mcp_impl()._clamp_recipe
 
@@ -500,11 +522,14 @@ class TestClampRecipe:
 
     def test_lists_deduped_and_capped(self):
         import config as cfg
-        out = self._fn()({
-            "sound_descriptions": ["a", "a", "b", "c", "d", "e"],
-            "seed_artists": ["X", "x", "Y", "Z", "W", "V"],
-            "lyric_themes": ["t1", "t2", "t3"],
-        })
+
+        out = self._fn()(
+            {
+                "sound_descriptions": ["a", "a", "b", "c", "d", "e"],
+                "seed_artists": ["X", "x", "Y", "Z", "W", "V"],
+                "lyric_themes": ["t1", "t2", "t3"],
+            }
+        )
         assert out["sound_descriptions"][:2] == ["a", "b"]
         assert len(out["sound_descriptions"]) <= cfg.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX
         assert len(out["seed_artists"]) <= cfg.AI_BRAINSTORM_SEED_ARTISTS_MAX
@@ -525,30 +550,30 @@ class TestClampRecipe:
     def test_seed_artists_suppressed_when_disabled(self):
         mod = _import_mcp_impl()
         import config as cfg
+
         with patch.object(cfg, "AI_BRAINSTORM_USE_ARTIST_SEEDS", False):
             out = mod._clamp_recipe({"seed_artists": ["Nas", "Jay-Z"]})
         assert out["seed_artists"] == []
 
 
-
 @pytest.mark.unit
 class TestExecuteMcpToolEnergyConversion:
-
     def test_search_database_energy_conversion(self):
         ai_mod = _import_ai_mcp_client()
 
         mock_query = Mock(return_value={"songs": []})
         import config as cfg
+
         orig_min, orig_max = cfg.ENERGY_MIN, cfg.ENERGY_MAX
         try:
             cfg.ENERGY_MIN = 0.01
             cfg.ENERGY_MAX = 0.15
             with patch.object(ai_mod, '_database_genre_query_sync', mock_query):
-                ai_mod.execute_mcp_tool("search_database", {
-                    "genres": ["rock"],
-                    "energy_min": 0.5,
-                    "energy_max": 0.8
-                }, {})
+                ai_mod.execute_mcp_tool(
+                    "search_database",
+                    {"genres": ["rock"], "energy_min": 0.5, "energy_max": 0.8},
+                    {},
+                )
 
         finally:
             cfg.ENERGY_MIN = orig_min
@@ -560,29 +585,33 @@ class TestExecuteMcpToolEnergyConversion:
         assert "error" in result
 
 
-
 @pytest.mark.unit
 class TestSongSimilarityLookup:
-
     def test_exact_match_case_insensitive(self):
         mod = _import_mcp_impl()
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
         cur.__exit__ = Mock(return_value=False)
-        cur.fetchone = Mock(return_value=_make_dict_row({
-            "item_id": "123", "title": "Bohemian Rhapsody", "author": "Queen"
-        }))
+        cur.fetchone = Mock(
+            return_value=_make_dict_row(
+                {"item_id": "123", "title": "Bohemian Rhapsody", "author": "Queen"}
+            )
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        mock_nn = Mock(return_value=[
-            {"item_id": "123", "distance": 0.0},
-            {"item_id": "456", "distance": 0.1},
-        ])
+        mock_nn = Mock(
+            return_value=[
+                {"item_id": "123", "distance": 0.0},
+                {"item_id": "456", "distance": 0.1},
+            ]
+        )
         mock_ivf = MagicMock()
         mock_ivf.find_nearest_neighbors_by_id = mock_nn
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.ivf_manager': mock_ivf}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.ivf_manager': mock_ivf}),
+        ):
             mod._song_similarity_api_sync("bohemian rhapsody", "queen", 10)
 
         assert cur.execute.called
@@ -604,10 +633,8 @@ class TestSongSimilarityLookup:
             assert len(result.get("songs", [])) == 0
 
 
-
 @pytest.mark.unit
 class TestArtistSimilarityApiSync:
-
     def _setup_cursor(self):
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
@@ -625,19 +652,21 @@ class TestArtistSimilarityApiSync:
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Radiohead"}))
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "1", "title": "Creep", "author": "Radiohead"}),
-            _make_dict_row({"item_id": "2", "title": "Paranoid Android", "author": "Muse"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row({"item_id": "1", "title": "Creep", "author": "Radiohead"}),
+                _make_dict_row({"item_id": "2", "title": "Paranoid Android", "author": "Muse"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "Muse", "distance": 0.1}]
-        )
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Muse", "distance": 0.1}])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("Radiohead", count=5, get_songs=10)
 
         assert "songs" in result
@@ -647,22 +676,26 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(side_effect=[
-            None,
-            _make_dict_row({"author": "AC/DC", "len": 5}),
-        ])
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "10", "title": "Back in Black", "author": "AC/DC"}),
-        ])
+        cur.fetchone = Mock(
+            side_effect=[
+                None,
+                _make_dict_row({"author": "AC/DC", "len": 5}),
+            ]
+        )
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row({"item_id": "10", "title": "Back in Black", "author": "AC/DC"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "Guns N' Roses", "distance": 0.2}]
-        )
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Guns N' Roses", "distance": 0.2}])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("AC DC", count=5, get_songs=10)
 
         assert "songs" in result
@@ -678,8 +711,10 @@ class TestArtistSimilarityApiSync:
 
         gmm_mod = self._setup_gmm_module(find_return=[])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("ZZZ Unknown", count=5, get_songs=10)
 
         assert result["songs"] == []
@@ -690,21 +725,27 @@ class TestArtistSimilarityApiSync:
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Queen"}))
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "5", "title": "We Will Rock You", "author": "Queen"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row({"item_id": "5", "title": "We Will Rock You", "author": "Queen"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
         gmm_mod = MagicMock()
-        gmm_mod.find_similar_artists = Mock(side_effect=[
-            [],
-            [{"artist": "David Bowie", "distance": 0.3}],
-        ])
+        gmm_mod.find_similar_artists = Mock(
+            side_effect=[
+                [],
+                [{"artist": "David Bowie", "distance": 0.3}],
+            ]
+        )
         gmm_mod.reverse_artist_map = {"queen": 0, "david bowie": 1}
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("Queen", count=5, get_songs=10)
 
         assert gmm_mod.find_similar_artists.call_count >= 2
@@ -715,21 +756,27 @@ class TestArtistSimilarityApiSync:
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "P!nk"}))
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "20", "title": "So What", "author": "P!nk"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row({"item_id": "20", "title": "So What", "author": "P!nk"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
         gmm_mod = MagicMock()
-        gmm_mod.find_similar_artists = Mock(side_effect=[
-            [],
-            [{"artist": "Kelly Clarkson", "distance": 0.4}],
-        ])
+        gmm_mod.find_similar_artists = Mock(
+            side_effect=[
+                [],
+                [{"artist": "Kelly Clarkson", "distance": 0.4}],
+            ]
+        )
         gmm_mod.reverse_artist_map = {}
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("P!nk", count=5, get_songs=10)
 
         assert gmm_mod.find_similar_artists.call_count >= 2
@@ -740,19 +787,23 @@ class TestArtistSimilarityApiSync:
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "Nirvana"}))
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "30", "title": "Smells Like Teen Spirit", "author": "Nirvana"}),
-            _make_dict_row({"item_id": "31", "title": "Everlong", "author": "Foo Fighters"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row(
+                    {"item_id": "30", "title": "Smells Like Teen Spirit", "author": "Nirvana"}
+                ),
+                _make_dict_row({"item_id": "31", "title": "Everlong", "author": "Foo Fighters"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "Foo Fighters", "distance": 0.15}]
-        )
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Foo Fighters", "distance": 0.15}])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("Nirvana", count=5, get_songs=10)
 
         assert "songs" in result
@@ -765,24 +816,24 @@ class TestArtistSimilarityApiSync:
         cur = self._setup_cursor()
 
         cur.fetchone = Mock(return_value=_make_dict_row({"author": "The Beatles"}))
-        cur.fetchall = Mock(return_value=[
-            _make_dict_row({"item_id": "40", "title": "Hey Jude", "author": "The Beatles"}),
-            _make_dict_row({"item_id": "41", "title": "Imagine", "author": "John Lennon"}),
-        ])
+        cur.fetchall = Mock(
+            return_value=[
+                _make_dict_row({"item_id": "40", "title": "Hey Jude", "author": "The Beatles"}),
+                _make_dict_row({"item_id": "41", "title": "Imagine", "author": "John Lennon"}),
+            ]
+        )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "John Lennon", "distance": 0.1}]
-        )
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "John Lennon", "distance": 0.1}])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             result = mod._artist_similarity_api_sync("The Beatles", count=5, get_songs=10)
 
-        original_entries = [
-            c for c in result["component_matches"] if c.get("is_original") is True
-        ]
+        original_entries = [c for c in result["component_matches"] if c.get("is_original") is True]
         assert len(original_entries) >= 1
         assert original_entries[0]["artist"] == "The Beatles"
 
@@ -799,12 +850,12 @@ class TestArtistSimilarityApiSync:
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "U2", "distance": 0.2}]
-        )
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "U2", "distance": 0.2}])
 
-        with patch.object(mod, 'get_db_connection', return_value=conn), \
-             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}):
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
             mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
 
         execute_calls = cur.execute.call_args_list
@@ -815,10 +866,8 @@ class TestArtistSimilarityApiSync:
                 break
 
 
-
 @pytest.mark.unit
 class TestSongAlchemySync:
-
     def _setup_alchemy_module(self, return_value=None, side_effect=None):
         mock_mod = MagicMock()
         if side_effect:
@@ -840,9 +889,7 @@ class TestSongAlchemySync:
             result = mod._song_alchemy_sync(add_items=add, subtract_items=sub, get_songs=10)
 
         alchemy_mod.song_alchemy.assert_called_once_with(
-            add_items=add,
-            subtract_items=sub,
-            n_results=10
+            add_items=add, subtract_items=sub, n_results=10
         )
         assert "songs" in result
 
@@ -864,9 +911,7 @@ class TestSongAlchemySync:
 
         with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}):
             result = mod._song_alchemy_sync(
-                add_items=[{"type": "song", "id": "s1"}],
-                subtract_items=None,
-                get_songs=10
+                add_items=[{"type": "song", "id": "s1"}], subtract_items=None, get_songs=10
             )
 
         assert result["songs"] == []
@@ -880,19 +925,14 @@ class TestSongAlchemySync:
         )
 
         with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}):
-            result = mod._song_alchemy_sync(
-                add_items=[{"type": "song", "id": "s1"}],
-                get_songs=10
-            )
+            result = mod._song_alchemy_sync(add_items=[{"type": "song", "id": "s1"}], get_songs=10)
 
         assert "songs" in result
         assert "message" in result
 
 
-
 @pytest.mark.unit
 class TestAiBrainstormSync:
-
     def _make_ai_module(self, response):
         mock_mod = MagicMock()
         mock_mod.generate_text = Mock(return_value=response)
@@ -914,10 +954,20 @@ class TestAiBrainstormSync:
     def _patch_channels(self, mod, audio=None, artist=None, lyrics=None, filt=None):
         empty = {"songs": []}
         return (
-            patch.object(mod, '_text_search_sync', return_value=audio if audio is not None else empty),
-            patch.object(mod, '_artist_similarity_api_sync', return_value=artist if artist is not None else empty),
-            patch.object(mod, '_lyrics_search_sync', return_value=lyrics if lyrics is not None else empty),
-            patch.object(mod, '_database_genre_query_sync', return_value=filt if filt is not None else empty),
+            patch.object(
+                mod, '_text_search_sync', return_value=audio if audio is not None else empty
+            ),
+            patch.object(
+                mod,
+                '_artist_similarity_api_sync',
+                return_value=artist if artist is not None else empty,
+            ),
+            patch.object(
+                mod, '_lyrics_search_sync', return_value=lyrics if lyrics is not None else empty
+            ),
+            patch.object(
+                mod, '_database_genre_query_sync', return_value=filt if filt is not None else empty
+            ),
         )
 
     def test_ai_error_returns_empty(self):
@@ -944,8 +994,13 @@ class TestAiBrainstormSync:
             artist={"songs": [{"item_id": "2", "title": "B", "artist": "Nirvana"}]},
             filt={"songs": [{"item_id": "3", "title": "C", "artist": "Z"}]},
         )
-        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), \
-             p_audio as a, p_artist as ar, p_lyrics, p_filt as f:
+        with (
+            patch.dict(sys.modules, {'tasks.ai.api': ai_mod}),
+            p_audio as a,
+            p_artist as ar,
+            p_lyrics,
+            p_filt as f,
+        ):
             result = mod._ai_brainstorm_sync("90s rock like Nirvana", self._make_ai_config(), 50)
         ids = sorted(s["item_id"] for s in result["songs"])
         assert ids == ["1", "2", "3"]
@@ -955,7 +1010,9 @@ class TestAiBrainstormSync:
         mod = _import_mcp_impl()
         ai_mod = self._make_ai_module(self._recipe(seed_artists=["Nirvana"]))
         dup = {"songs": [{"item_id": "1", "title": "A", "artist": "X"}]}
-        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(mod, audio=dup, artist=dup, filt=dup)
+        p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(
+            mod, audio=dup, artist=dup, filt=dup
+        )
         with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), p_audio, p_artist, p_lyrics, p_filt:
             result = mod._ai_brainstorm_sync("x", self._make_ai_config(), 50)
         assert len(result["songs"]) == 1
@@ -963,7 +1020,9 @@ class TestAiBrainstormSync:
     def test_get_songs_cap_respected(self):
         mod = _import_mcp_impl()
         ai_mod = self._make_ai_module(self._recipe())
-        many = {"songs": [{"item_id": str(i), "title": f"T{i}", "artist": f"A{i}"} for i in range(100)]}
+        many = {
+            "songs": [{"item_id": str(i), "title": f"T{i}", "artist": f"A{i}"} for i in range(100)]
+        }
         p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(mod, audio=many)
         with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), p_audio, p_artist, p_lyrics, p_filt:
             result = mod._ai_brainstorm_sync("x", self._make_ai_config(), 10)
@@ -979,29 +1038,41 @@ class TestAiBrainstormSync:
 
     def test_year_gate_excludes_out_of_era_sound_results(self):
         mod = _import_mcp_impl()
-        ai_mod = self._make_ai_module(json.dumps({
-            "filters": {"genres": ["rock"], "year_min": 1990, "year_max": 1999},
-            "sound_descriptions": ["driving guitar rock"],
-            "seed_artists": [],
-            "lyric_themes": [],
-        }))
-        audio = {"songs": [
-            {"item_id": "in", "title": "In Era", "artist": "X"},
-            {"item_id": "out", "title": "Out Era", "artist": "Y"},
-        ]}
+        ai_mod = self._make_ai_module(
+            json.dumps(
+                {
+                    "filters": {"genres": ["rock"], "year_min": 1990, "year_max": 1999},
+                    "sound_descriptions": ["driving guitar rock"],
+                    "seed_artists": [],
+                    "lyric_themes": [],
+                }
+            )
+        )
+        audio = {
+            "songs": [
+                {"item_id": "in", "title": "In Era", "artist": "X"},
+                {"item_id": "out", "title": "Out Era", "artist": "Y"},
+            ]
+        }
         in_era = {"in"}
 
         def _db(*args, **kwargs):
             cids = kwargs.get("candidate_item_ids")
             if cids:
-                return {"songs": [s for s in audio["songs"] if s["item_id"] in cids and s["item_id"] in in_era]}
+                return {
+                    "songs": [
+                        s for s in audio["songs"] if s["item_id"] in cids and s["item_id"] in in_era
+                    ]
+                }
             return {"songs": []}
 
-        with patch.dict(sys.modules, {'tasks.ai.api': ai_mod}), \
-             patch.object(mod, '_text_search_sync', return_value=audio), \
-             patch.object(mod, '_artist_similarity_api_sync', return_value={"songs": []}), \
-             patch.object(mod, '_lyrics_search_sync', return_value={"songs": []}), \
-             patch.object(mod, '_database_genre_query_sync', side_effect=_db):
+        with (
+            patch.dict(sys.modules, {'tasks.ai.api': ai_mod}),
+            patch.object(mod, '_text_search_sync', return_value=audio),
+            patch.object(mod, '_artist_similarity_api_sync', return_value={"songs": []}),
+            patch.object(mod, '_lyrics_search_sync', return_value={"songs": []}),
+            patch.object(mod, '_database_genre_query_sync', side_effect=_db),
+        ):
             result = mod._ai_brainstorm_sync("best rock of the 90s", self._make_ai_config(), 50)
 
         ids = {s["item_id"] for s in result["songs"]}
@@ -1009,10 +1080,8 @@ class TestAiBrainstormSync:
         assert "out" not in ids
 
 
-
 @pytest.mark.unit
 class TestTextSearchSync:
-
     def _setup_cursor(self):
         cur = MagicMock()
         cur.__enter__ = Mock(return_value=cur)
@@ -1036,11 +1105,14 @@ class TestTextSearchSync:
 
         clap_mod = self._make_clap_module()
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = False
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("dreamy soundscape", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1056,11 +1128,14 @@ class TestTextSearchSync:
 
         clap_mod = self._make_clap_module()
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1075,11 +1150,14 @@ class TestTextSearchSync:
 
         clap_mod = self._make_clap_module(results=[])
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("ambient forest", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1098,11 +1176,14 @@ class TestTextSearchSync:
         ]
         clap_mod = self._make_clap_module(results=clap_results)
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("ambient dreamy", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1123,11 +1204,14 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("chill music", "slow", None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1148,11 +1232,14 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("energetic music", None, "high", 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1174,11 +1261,14 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("upbeat dance", "fast", "high", 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1193,17 +1283,19 @@ class TestTextSearchSync:
         conn.cursor = Mock(return_value=cur)
 
         clap_results = [
-            {"item_id": f"c{i}", "title": f"Song {i}", "author": f"Artist {i}"}
-            for i in range(10)
+            {"item_id": f"c{i}", "title": f"Song {i}", "author": f"Artist {i}"} for i in range(10)
         ]
         clap_mod = self._make_clap_module(results=clap_results)
 
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("anything", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig
@@ -1220,11 +1312,14 @@ class TestTextSearchSync:
         clap_mod = self._make_clap_module(side_effect=RuntimeError("CLAP model not loaded"))
 
         import config as cfg
+
         orig = cfg.CLAP_ENABLED
         try:
             cfg.CLAP_ENABLED = True
-            with patch.object(mod, 'get_db_connection', return_value=conn), \
-                 patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+            with (
+                patch.object(mod, 'get_db_connection', return_value=conn),
+                patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}),
+            ):
                 result = mod._text_search_sync("test query", None, None, 10)
         finally:
             cfg.CLAP_ENABLED = orig

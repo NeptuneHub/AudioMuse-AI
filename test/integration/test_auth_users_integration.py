@@ -58,6 +58,7 @@ def users_db(pg_dsn, monkeypatch):
         cur.execute(_USERS_DDL)
     conn.commit()
     import app_auth
+
     monkeypatch.setattr(app_auth, '_get_db', lambda: conn)
     yield conn, app_auth
     conn.close()

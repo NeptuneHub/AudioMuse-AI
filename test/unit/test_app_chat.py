@@ -1,7 +1,4 @@
-
-
 class TestPreValidation:
-
     def test_song_similarity_empty_title_rejected(self):
         title = ""
 
@@ -23,32 +20,80 @@ class TestPreValidation:
 
     def test_search_database_zero_filters_rejected(self):
         filters = {}
-        filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                       'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+        filter_keys = [
+            'genres',
+            'moods',
+            'tempo_min',
+            'tempo_max',
+            'energy_min',
+            'energy_max',
+            'key',
+            'scale',
+            'year_min',
+            'year_max',
+            'min_rating',
+            'album',
+        ]
 
         has_filter = any(filters.get(k) for k in filter_keys)
         assert not has_filter
 
     def test_search_database_album_only_filter_accepted(self):
         filters = {'album': 'Dark Side of the Moon'}
-        filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                       'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+        filter_keys = [
+            'genres',
+            'moods',
+            'tempo_min',
+            'tempo_max',
+            'energy_min',
+            'energy_max',
+            'key',
+            'scale',
+            'year_min',
+            'year_max',
+            'min_rating',
+            'album',
+        ]
 
         has_filter = any(filters.get(k) for k in filter_keys)
         assert has_filter
 
     def test_search_database_genres_filter_accepted(self):
         filters = {'genres': ['rock', 'metal']}
-        filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                       'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+        filter_keys = [
+            'genres',
+            'moods',
+            'tempo_min',
+            'tempo_max',
+            'energy_min',
+            'energy_max',
+            'key',
+            'scale',
+            'year_min',
+            'year_max',
+            'min_rating',
+            'album',
+        ]
 
         has_filter = any(filters.get(k) for k in filter_keys)
         assert has_filter
 
     def test_search_database_year_filter_accepted(self):
         filters = {'year_min': 1990}
-        filter_keys = ['genres', 'moods', 'tempo_min', 'tempo_max', 'energy_min', 'energy_max',
-                       'key', 'scale', 'year_min', 'year_max', 'min_rating', 'album']
+        filter_keys = [
+            'genres',
+            'moods',
+            'tempo_min',
+            'tempo_max',
+            'energy_min',
+            'energy_max',
+            'key',
+            'scale',
+            'year_min',
+            'year_max',
+            'min_rating',
+            'album',
+        ]
 
         has_filter = any(filters.get(k) for k in filter_keys)
         assert has_filter
@@ -72,7 +117,6 @@ class TestPreValidation:
 
 
 class TestArtistDiversityEnforcement:
-
     def _apply_diversity_logic(self, songs, max_per_artist, target_count):
         artist_song_counts = {}
         diverse_list = []
@@ -122,10 +166,7 @@ class TestArtistDiversityEnforcement:
         assert len(result) == 5
 
     def test_exact_cap_songs_all_included(self):
-        songs = [
-            {'item_id': f'{i}', 'artist': 'Artist1', 'title': f'Song{i}'}
-            for i in range(1, 6)
-        ]
+        songs = [{'item_id': f'{i}', 'artist': 'Artist1', 'title': f'Song{i}'} for i in range(1, 6)]
 
         result = self._apply_diversity_logic(songs, max_per_artist=5, target_count=10)
 
@@ -191,7 +232,6 @@ class TestArtistDiversityEnforcement:
 
 
 class TestIterationMessage:
-
     def test_iteration_0_message_is_minimal_request(self):
         user_input = "songs like Radiohead"
         target = 100
@@ -228,7 +268,9 @@ What we have so far:
         unique_artists = 15
         diversity_ratio = unique_artists / max(current_song_count, 1)
 
-        ai_context = f"Artist diversity: {unique_artists} unique artists (ratio: {diversity_ratio:.2f})"
+        ai_context = (
+            f"Artist diversity: {unique_artists} unique artists (ratio: {diversity_ratio:.2f})"
+        )
 
         assert "Artist diversity:" in ai_context
         assert f"{unique_artists}" in ai_context

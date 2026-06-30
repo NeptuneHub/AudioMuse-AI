@@ -1,4 +1,4 @@
-"""Provider migration tool — Flask blueprint.
+"""Provider migration tool - Flask blueprint.
 
 This module is the single add-on entry point for switching the active media
 server provider on a running AudioMuse-AI install. It adds a wizard page at
@@ -11,6 +11,7 @@ and manual matching steps of the wizard. On successful execution the migration
 task writes the new provider settings to ``app_config`` and triggers a config
 reload + process restart via ``restart_manager``.
 """
+
 import csv
 import io
 import json
@@ -20,7 +21,7 @@ from flask import Blueprint, jsonify, render_template, request
 from psycopg2 import sql as pgsql
 
 # App-level singletons (DB connection, Redis, RQ queues). Importing here keeps
-# the blueprint file self-contained — the rest of the app doesn't need to hand
+# the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
 from database import get_db
 from taskqueue import redis_conn, rq_queue_high
@@ -33,9 +34,10 @@ migration_bp = Blueprint('migration_bp', __name__)
 
 
 # ---------------------------------------------------------------------------
-# Lazy provider_probe import — keeps the _import_module bypass test happy
+# Lazy provider_probe import - keeps the _import_module bypass test happy
 # because we don't trigger ``tasks/__init__.py`` at module-load time.
 # ---------------------------------------------------------------------------
+
 
 class _LazyProbe:
     """Lazy-imports ``tasks.provider_probe`` on first attribute access.
@@ -43,11 +45,13 @@ class _LazyProbe:
     Tests replace ``provider_probe`` on the module directly with a MagicMock,
     so the lazy loader never fires during tests.
     """
+
     _real = None
 
     def _load(self):
         if self._real is None:
             import importlib
+
             self._real = importlib.import_module('tasks.provider_probe')
         return self._real
 
@@ -72,6 +76,7 @@ _SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion'})
 # the downstream probe.
 # ---------------------------------------------------------------------------
 
+
 def _validate_probe_url(creds):
     """Return (True, None) if ``creds['url']`` is safe to fetch, else (False, reason)."""
     url = (creds or {}).get('url')
@@ -81,7 +86,7 @@ def _validate_probe_url(creds):
 
 
 # ---------------------------------------------------------------------------
-# Source path sanity check — matching tiers 1 (path) and 2 (path tail) need
+# Source path sanity check - matching tiers 1 (path) and 2 (path tail) need
 # absolute filesystem paths in ``score.file_path``. If the user's current
 # provider stored garbage (Navidrome without Report Real Path, Lyrion stream
 # URIs, etc.), we can re-probe the current provider to get real paths and
@@ -120,23 +125,24 @@ def _current_provider_creds():
     provider isn't one we can re-probe.
     """
     import config as cfg
+
     t = (getattr(cfg, 'MEDIASERVER_TYPE', '') or '').lower()
     if t == 'jellyfin':
         return t, {
-            'url':     getattr(cfg, 'JELLYFIN_URL', ''),
+            'url': getattr(cfg, 'JELLYFIN_URL', ''),
             'user_id': getattr(cfg, 'JELLYFIN_USER_ID', ''),
-            'token':   getattr(cfg, 'JELLYFIN_TOKEN', ''),
+            'token': getattr(cfg, 'JELLYFIN_TOKEN', ''),
         }
     if t == 'emby':
         return t, {
-            'url':     getattr(cfg, 'EMBY_URL', ''),
+            'url': getattr(cfg, 'EMBY_URL', ''),
             'user_id': getattr(cfg, 'EMBY_USER_ID', ''),
-            'token':   getattr(cfg, 'EMBY_TOKEN', ''),
+            'token': getattr(cfg, 'EMBY_TOKEN', ''),
         }
     if t == 'navidrome':
         return t, {
-            'url':      getattr(cfg, 'NAVIDROME_URL', ''),
-            'user':     getattr(cfg, 'NAVIDROME_USER', ''),
+            'url': getattr(cfg, 'NAVIDROME_URL', ''),
+            'user': getattr(cfg, 'NAVIDROME_USER', ''),
             'password': getattr(cfg, 'NAVIDROME_PASSWORD', ''),
         }
     if t == 'lyrion':
@@ -160,8 +166,9 @@ def _apply_source_path_overrides(old_rows, overrides):
 
 
 # ---------------------------------------------------------------------------
-# Routes — wizard page
+# Routes - wizard page
 # ---------------------------------------------------------------------------
+
 
 @migration_bp.route('/provider-migration')
 def provider_migration_page():
@@ -193,7 +200,8 @@ def provider_migration_page():
     except Exception as e:
         logger.warning(
             "provider_migration_page: failed to look up active session: %s",
-            e, exc_info=True,
+            e,
+            exc_info=True,
         )
         active_session_id = None
 
@@ -206,8 +214,9 @@ def provider_migration_page():
 
 
 # ---------------------------------------------------------------------------
-# Routes — session CRUD
+# Routes - session CRUD
 # ---------------------------------------------------------------------------
+
 
 @migration_bp.route('/api/migration/session/start', methods=['POST'])
 def session_start():
@@ -256,15 +265,14 @@ def session_start():
         return jsonify({'error': f'target_creds url is not allowed: {reason}'}), 400
 
     import config
+
     source_type = getattr(config, 'MEDIASERVER_TYPE', '') or ''
 
     db = get_db()
     with db.cursor() as cur:
         # Prune terminal rows so the table does not grow unboundedly.
         # Safe: never touches in-flight sessions (in_progress / dry_run_ready).
-        cur.execute(
-            "DELETE FROM migration_session WHERE status IN ('completed', 'failed')"
-        )
+        cur.execute("DELETE FROM migration_session WHERE status IN ('completed', 'failed')")
         cur.execute(
             "INSERT INTO migration_session "
             "(source_type, target_type, target_creds, state, status) "
@@ -332,18 +340,21 @@ def session_get(session_id):
             state = json.loads(state)
         except Exception:
             state = {}
-    return jsonify({
-        'id': _id,
-        'source_type': source_type,
-        'target_type': target_type,
-        'status': status,
-        'state': state,
-    })
+    return jsonify(
+        {
+            'id': _id,
+            'source_type': source_type,
+            'target_type': target_type,
+            'status': status,
+            'state': state,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
-# Routes — probe (delegates to tasks.provider_probe, passes creds explicitly)
+# Routes - probe (delegates to tasks.provider_probe, passes creds explicitly)
 # ---------------------------------------------------------------------------
+
 
 @migration_bp.route('/api/migration/session/<int:session_id>', methods=['DELETE'])
 def session_discard(session_id):
@@ -354,7 +365,7 @@ def session_discard(session_id):
       - Provider Migration
     summary: Delete a non-terminal session row (used by the wizard's Discard button).
     description: |
-      Refuses to touch sessions in `completed` or `failed` status — those are
+      Refuses to touch sessions in `completed` or `failed` status - those are
       pruned automatically on the next `session_start`.
     parameters:
       - name: session_id
@@ -434,18 +445,33 @@ def probe_test():
     creds = payload.get('creds') or {}
     ok, reason = _validate_probe_url(creds)
     if not ok:
-        return jsonify({'ok': False, 'error': reason, 'path_format': 'none',
-                        'sample_count': 0, 'warnings': []}), 200
+        return jsonify(
+            {'ok': False, 'error': reason, 'path_format': 'none', 'sample_count': 0, 'warnings': []}
+        ), 200
     try:
         result = provider_probe.test_connection(t, creds)
     except NotImplementedError:
         logger.warning("test_connection not supported for provider type %s", t)
-        return jsonify({'ok': False, 'error': 'Connection testing is not supported for this provider.',
-                        'path_format': 'none', 'sample_count': 0, 'warnings': []}), 200
+        return jsonify(
+            {
+                'ok': False,
+                'error': 'Connection testing is not supported for this provider.',
+                'path_format': 'none',
+                'sample_count': 0,
+                'warnings': [],
+            }
+        ), 200
     except Exception:
         logger.warning("test_connection failed for provider type %s", t, exc_info=True)
-        return jsonify({'ok': False, 'error': 'Connection test failed. Check the container logs for details.',
-                        'path_format': 'none', 'sample_count': 0, 'warnings': []}), 200
+        return jsonify(
+            {
+                'ok': False,
+                'error': 'Connection test failed. Check the container logs for details.',
+                'path_format': 'none',
+                'sample_count': 0,
+                'warnings': [],
+            }
+        ), 200
     return jsonify(result)
 
 
@@ -456,7 +482,7 @@ def libraries_list():
     ---
     tags:
       - Provider Migration
-    summary: Step 2 — return the target provider's libraries plus the user's prior checkbox selection.
+    summary: Step 2 - return the target provider's libraries plus the user's prior checkbox selection.
     description: Uses session-stored credentials, never `config`, so the live provider keeps working.
     requestBody:
       required: true
@@ -508,17 +534,21 @@ def libraries_list():
         result = provider_probe.list_libraries(target_type, creds)
     except Exception as e:
         logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
-        return jsonify({
-            'libraries': [],
-            'unsupported': False,
+        return jsonify(
+            {
+                'libraries': [],
+                'unsupported': False,
+                'selected_libraries': selected,
+                'error': 'Failed to list libraries. Check the container logs for details.',
+            }
+        ), 200
+    return jsonify(
+        {
+            'libraries': result.get('libraries', []),
+            'unsupported': bool(result.get('unsupported', False)),
             'selected_libraries': selected,
-            'error': 'Failed to list libraries. Check the container logs for details.',
-        }), 200
-    return jsonify({
-        'libraries': result.get('libraries', []),
-        'unsupported': bool(result.get('unsupported', False)),
-        'selected_libraries': selected,
-    }), 200
+        }
+    ), 200
 
 
 @migration_bp.route('/api/migration/libraries/select', methods=['POST'])
@@ -528,7 +558,7 @@ def libraries_select():
     ---
     tags:
       - Provider Migration
-    summary: Step 2 — save the user's library checkbox selection (null = no filter, [] = normalized to null).
+    summary: Step 2 - save the user's library checkbox selection (null = no filter, [] = normalized to null).
     description: |
       Library names cannot contain commas because `MUSIC_LIBRARIES` is stored
       as a comma-separated string and split at scan time.
@@ -643,8 +673,9 @@ def search_albums():
 
 
 # ---------------------------------------------------------------------------
-# Routes — dry run, manual match, finalize
+# Routes - dry run, manual match, finalize
 # ---------------------------------------------------------------------------
+
 
 @migration_bp.route('/api/migration/source-paths/refresh', methods=['POST'])
 def source_paths_refresh():
@@ -703,10 +734,12 @@ def source_paths_refresh():
     # source-catalog fetch is offloaded to an RQ worker like the dry-run.
     source_type, _ = _current_provider_creds()
     if not source_type:
-        return jsonify({
-            'ok': False,
-            'error': 'The current provider does not support path refresh.',
-        }), 400
+        return jsonify(
+            {
+                'ok': False,
+                'error': 'The current provider does not support path refresh.',
+            }
+        ), 400
 
     job = rq_queue_high.enqueue(
         'tasks.provider_migration_tasks.source_refresh_provider_migration',
@@ -728,11 +761,7 @@ def run_source_refresh_core(session_id):
     tracks = provider_probe.fetch_all_tracks(source_type, creds)
 
     path_format = _detect_path_format(tracks)
-    overrides = {
-        t['id']: t['path']
-        for t in tracks
-        if t.get('id') and t.get('path')
-    }
+    overrides = {t['id']: t['path'] for t in tracks if t.get('id') and t.get('path')}
 
     warnings = []
     if path_format != 'absolute':
@@ -743,14 +772,13 @@ def run_source_refresh_core(session_id):
             'also proceed with metadata-only matching.'
         )
 
-    _update_state(session_id, source_path_overrides=overrides,
-                  source_refresh_task_id=None)
+    _update_state(session_id, source_path_overrides=overrides, source_refresh_task_id=None)
     return {
-        'ok':              True,
-        'source_type':     source_type,
-        'path_format':     path_format,
+        'ok': True,
+        'source_type': source_type,
+        'path_format': path_format,
         'overrides_count': len(overrides),
-        'warnings':        warnings,
+        'warnings': warnings,
     }
 
 
@@ -761,7 +789,7 @@ def dry_run():
     ---
     tags:
       - Provider Migration
-    summary: Step 3 — match score rows against the target provider's tracks and persist the result.
+    summary: Step 3 - match score rows against the target provider's tracks and persist the result.
     description: |
       Source `score.file_path` values are sanity-checked first. If they don't
       look like absolute filesystem paths, the endpoint returns **409** with
@@ -818,7 +846,7 @@ def dry_run():
     if session is None:
         return jsonify({'error': 'session not found'}), 404
 
-    # Gate on source path quality (cheap — samples 100 rows). Stays in the
+    # Gate on source path quality (cheap - samples 100 rows). Stays in the
     # request so the UI can prompt for a refresh. Skip if the user has already
     # refreshed (overrides present) or opted into metadata-only matching.
     state = _load_state(session_id) or {}
@@ -827,24 +855,27 @@ def dry_run():
         source_format = _detect_source_path_format()
         if source_format != 'absolute':
             source_type, _ = _current_provider_creds()
-            return jsonify({
-                'needs_source_refresh': True,
-                'current_source_type':  source_type,
-                'path_format':          source_format,
-                'hint': (
-                    'Your score.file_path values are not absolute filesystem '
-                    'paths. Automatic path-based matching will fall back to '
-                    'metadata only. Refresh source paths, or proceed with '
-                    'metadata-only matching.'
-                ),
-            }), 409
+            return jsonify(
+                {
+                    'needs_source_refresh': True,
+                    'current_source_type': source_type,
+                    'path_format': source_format,
+                    'hint': (
+                        'Your score.file_path values are not absolute filesystem '
+                        'paths. Automatic path-based matching will fall back to '
+                        'metadata only. Refresh source paths, or proceed with '
+                        'metadata-only matching.'
+                    ),
+                }
+            ), 409
 
     # The heavy work (fetch the whole target catalog + match every score row +
-    # persist) can take minutes on 100k+ libraries — far past the gunicorn
-    # request timeout — so it runs in an RQ worker; the UI polls the status.
+    # persist) can take minutes on 100k+ libraries - far past the gunicorn
+    # request timeout - so it runs in an RQ worker; the UI polls the status.
     job = rq_queue_high.enqueue(
         'tasks.provider_migration_tasks.dry_run_provider_migration',
-        session_id, allow_title_artist_only,
+        session_id,
+        allow_title_artist_only,
         job_timeout=3600,
     )
     _patch_state_keys(session_id, dry_run_task_id=job.id)
@@ -874,14 +905,18 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
     if not new_tracks:
         logger.warning(
             "provider migration dry-run: target '%s' returned 0 tracks; aborting "
-            "to avoid orphaning the whole library (session %s)", target_type, session_id,
+            "to avoid orphaning the whole library (session %s)",
+            target_type,
+            session_id,
         )
         _patch_state_keys(session_id, dry_run_task_id=None)
-        return {'error': (
-            'The new provider returned 0 tracks. Aborting so your library is '
-            'not deleted as orphans. Check the connection / library selection '
-            'and run automatic matching again.'
-        )}
+        return {
+            'error': (
+                'The new provider returned 0 tracks. Aborting so your library is '
+                'not deleted as orphans. Check the connection / library selection '
+                'and run automatic matching again.'
+            )
+        }
 
     state = _load_state(session_id) or {}
     source_overrides = state.get('source_path_overrides') or {}
@@ -889,39 +924,47 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
     _apply_source_path_overrides(old_rows, source_overrides)
 
     import importlib
+
     matcher = importlib.import_module('tasks.provider_migration_matcher')
     result = matcher.match_tracks(
-        old_rows, new_tracks,
+        old_rows,
+        new_tracks,
         allow_title_artist_only=allow_title_artist_only,
     )
 
     state_dry_run = {
-        'matches':          result['matches'],
-        'tier_counts':      result['tier_counts'],
+        'matches': result['matches'],
+        'tier_counts': result['tier_counts'],
         'unmatched_albums': _albums_payload(result['unmatched_by_album']),
         # Full count so the wizard can warn when the rendered list is a sample.
         'unmatched_albums_total': len(result['unmatched_by_album']),
     }
     new_meta = {
         n['id']: {
-            'path':         n.get('path'),
-            'title':        n.get('title'),
-            'artist':       n.get('artist'),
-            'album':        n.get('album'),
+            'path': n.get('path'),
+            'title': n.get('title'),
+            'artist': n.get('artist'),
+            'album': n.get('album'),
             'album_artist': n.get('album_artist'),
-            'year':         n.get('year'),
+            'year': n.get('year'),
         }
-        for n in new_tracks if n.get('id')
+        for n in new_tracks
+        if n.get('id')
     }
     _store_target_meta(session_id, new_meta)
-    _update_state(session_id, dry_run=state_dry_run,
-                  manual_matches={}, manual_unmatches=[],
-                  final_counts=None, dry_run_task_id=None)
+    _update_state(
+        session_id,
+        dry_run=state_dry_run,
+        manual_matches={},
+        manual_unmatches=[],
+        final_counts=None,
+        dry_run_task_id=None,
+    )
 
     return {
         'tier_counts': result['tier_counts'],
-        'matched':     len(result['matches']),
-        'unmatched':   len(result['unmatched']),
+        'matched': len(result['matches']),
+        'unmatched': len(result['unmatched']),
         'unmatched_albums_count': len(result['unmatched_by_album']),
     }
 
@@ -933,7 +976,7 @@ def match_album():
     ---
     tags:
       - Provider Migration
-    summary: Step 4 — user picked a target album; auto-match its tracks by title (or rematch existing auto-matches).
+    summary: Step 4 - user picked a target album; auto-match its tracks by title (or rematch existing auto-matches).
     description: |
       With `rematch=true`, the endpoint reprocesses rows that were already
       auto-matched for this album: any auto-match for the album is discarded
@@ -995,9 +1038,12 @@ def match_album():
         new_tracks = provider_probe.get_album_tracks(target_type, creds, new_album_id)
     except Exception:
         logger.warning("get_album_tracks failed for session %s", session_id, exc_info=True)
-        return jsonify({'error': 'Failed to fetch album tracks. Check the container logs for details.'}), 500
+        return jsonify(
+            {'error': 'Failed to fetch album tracks. Check the container logs for details.'}
+        ), 500
 
     import importlib
+
     matcher = importlib.import_module('tasks.provider_migration_matcher')
 
     old_album_tuple = tuple(old_album_key) if isinstance(old_album_key, list) else old_album_key
@@ -1033,11 +1079,13 @@ def match_album():
         _rematch_album_rows(session_id, newly_matched, still_unmatched)
     else:
         _merge_manual_matches(session_id, newly_matched)
-    return jsonify({
-        'matched':   len(newly_matched),
-        'unmatched': len(still_unmatched),
-        'unmatched_item_ids': still_unmatched,
-    })
+    return jsonify(
+        {
+            'matched': len(newly_matched),
+            'unmatched': len(still_unmatched),
+            'unmatched_item_ids': still_unmatched,
+        }
+    )
 
 
 @migration_bp.route('/api/migration/skip-album', methods=['POST'])
@@ -1047,7 +1095,7 @@ def skip_album():
     ---
     tags:
       - Provider Migration
-    summary: Step 4 — orphan an album so its score rows will be deleted by execute.
+    summary: Step 4 - orphan an album so its score rows will be deleted by execute.
     description: |
       First-time skips (unmatched albums) just need a ledger note. Rematch
       skips (`rematch=true`) push every row in the album into
@@ -1152,6 +1200,7 @@ def finalize_dry_run():
     dry = state.get('dry_run') or {}
 
     import importlib
+
     mig_tasks = importlib.import_module('tasks.provider_migration_tasks')
     merged, dropped = mig_tasks.build_mapping(state)
 
@@ -1165,6 +1214,7 @@ def finalize_dry_run():
     orphans = max(0, total_score - matched - collisions)
 
     import config
+
     collision_details_total = collisions
     # Build human-readable collision details so the UI can tell the user
     # exactly which albums to rematch. Only the capped subset is rendered, so
@@ -1172,7 +1222,7 @@ def finalize_dry_run():
     # whole catalog.
     collision_details = []
     if dropped:
-        dropped_for_details = dropped[:config.MIGRATION_MAX_COLLISION_DETAILS]
+        dropped_for_details = dropped[: config.MIGRATION_MAX_COLLISION_DETAILS]
         needed_old_ids = set()
         needed_new_ids = set()
         for loser_old_id, new_id, winner_old_id in dropped_for_details:
@@ -1185,28 +1235,30 @@ def finalize_dry_run():
             loser = old_by_id.get(loser_old_id) or {}
             winner = old_by_id.get(winner_old_id) or {}
             tgt = meta_by_id.get(str(new_id)) or {}
-            collision_details.append({
-                'loser_title':   loser.get('title') or '',
-                'loser_artist':  loser.get('album_artist') or loser.get('author') or '',
-                'loser_album':   loser.get('album') or '',
-                'loser_path':    loser.get('file_path') or '',
-                'winner_title':  winner.get('title') or '',
-                'winner_artist': winner.get('album_artist') or winner.get('author') or '',
-                'winner_album':  winner.get('album') or '',
-                'winner_path':   winner.get('file_path') or '',
-                'target_title':  tgt.get('title') or '',
-                'target_artist': tgt.get('artist') or '',
-                'target_album':  tgt.get('album') or '',
-                'target_path':   tgt.get('path') or '',
-            })
+            collision_details.append(
+                {
+                    'loser_title': loser.get('title') or '',
+                    'loser_artist': loser.get('album_artist') or loser.get('author') or '',
+                    'loser_album': loser.get('album') or '',
+                    'loser_path': loser.get('file_path') or '',
+                    'winner_title': winner.get('title') or '',
+                    'winner_artist': winner.get('album_artist') or winner.get('author') or '',
+                    'winner_album': winner.get('album') or '',
+                    'winner_path': winner.get('file_path') or '',
+                    'target_title': tgt.get('title') or '',
+                    'target_artist': tgt.get('artist') or '',
+                    'target_album': tgt.get('album') or '',
+                    'target_path': tgt.get('path') or '',
+                }
+            )
 
     final_counts = {
-        'matched':                 matched,
-        'orphans':                 orphans,
-        'collisions':              collisions,
-        'collision_details':       collision_details,
+        'matched': matched,
+        'orphans': orphans,
+        'collisions': collisions,
+        'collision_details': collision_details,
         'collision_details_total': collision_details_total,
-        'tier_counts':             dry.get('tier_counts') or {},
+        'tier_counts': dry.get('tier_counts') or {},
     }
 
     db = get_db()
@@ -1223,8 +1275,9 @@ def finalize_dry_run():
 
 
 # ---------------------------------------------------------------------------
-# Routes — execute gate + status
+# Routes - execute gate + status
 # ---------------------------------------------------------------------------
+
 
 @migration_bp.route('/api/migration/execute', methods=['POST'])
 def execute():
@@ -1233,7 +1286,7 @@ def execute():
     ---
     tags:
       - Provider Migration
-    summary: Step 5 — gate on backup checkbox + confirmation phrase, then enqueue the execute job.
+    summary: Step 5 - gate on backup checkbox + confirmation phrase, then enqueue the execute job.
     description: |
       Requires the session to be in `dry_run_ready` status. The confirmation
       phrase must equal exactly:
@@ -1292,17 +1345,20 @@ def execute():
 
     expected = f"I want to migrate to {target_type} and delete unmatched tracks"
     if confirmation_text != expected:
-        return jsonify({
-            'error': f'Confirmation text does not match. Expected exactly: "{expected}"'
-        }), 400
+        return jsonify(
+            {'error': f'Confirmation text does not match. Expected exactly: "{expected}"'}
+        ), 400
     if status != 'dry_run_ready':
-        return jsonify({
-            'error': f'Dry run must be finalized first. Session status is "{status}", '
-                     f'expected "dry_run_ready".'
-        }), 400
+        return jsonify(
+            {
+                'error': f'Dry run must be finalized first. Session status is "{status}", '
+                f'expected "dry_run_ready".'
+            }
+        ), 400
 
     # Enqueue the execute job
     from rq.job import Job  # noqa: F401  (used by enqueue internals)
+
     job = rq_queue_high.enqueue(
         'tasks.provider_migration_tasks.execute_provider_migration',
         session_id,
@@ -1318,7 +1374,10 @@ def execute():
         logger.warning(
             "provider_migration execute: failed to persist exec_task_id "
             "for session %s (job %s): %s",
-            session_id, job.id, e, exc_info=True,
+            session_id,
+            job.id,
+            e,
+            exc_info=True,
         )
         try:
             db.rollback()
@@ -1375,13 +1434,16 @@ def job_status(task_id):
     """
     try:
         from rq.job import Job
+
         job = Job.fetch(task_id, connection=redis_conn)
         status = job.get_status()
         restart_scheduled = False
         # Only the EXECUTE job changes the active provider and needs the
         # config-reload + Flask restart. The dry-run / source-refresh jobs
         # share this status endpoint but must NOT restart Flask.
-        is_execute_job = (getattr(job, 'func_name', '') or '').endswith('execute_provider_migration')
+        is_execute_job = (getattr(job, 'func_name', '') or '').endswith(
+            'execute_provider_migration'
+        )
         # The execute worker reloads its own config and publishes a restart
         # request for other workers, but Flask (this process) isn't on that
         # pub/sub path. Reload here when the job finishes so subsequent
@@ -1391,12 +1453,14 @@ def job_status(task_id):
         if status == 'finished' and is_execute_job:
             try:
                 import config as _cfg
+
                 _cfg.refresh_config()
             except Exception as _e:
                 logger.warning("post-migration config reload failed: %s", _e)
             if task_id not in _restart_scheduled_for_tasks:
                 try:
                     import restart_manager
+
                     if restart_manager.schedule_flask_restart():
                         restart_scheduled = True
                         _restart_scheduled_for_tasks.add(task_id)
@@ -1404,13 +1468,17 @@ def job_status(task_id):
                     logger.warning("post-migration Flask restart scheduling failed: %s", _e)
             else:
                 restart_scheduled = True
-        return jsonify({
-            'id': job.id,
-            'status': status,
-            'result': job.result if job.is_finished else None,
-            'error': 'Job failed. Check the container logs for details.' if job.is_failed else None,
-            'restart_scheduled': restart_scheduled,
-        })
+        return jsonify(
+            {
+                'id': job.id,
+                'status': status,
+                'result': job.result if job.is_finished else None,
+                'error': 'Job failed. Check the container logs for details.'
+                if job.is_failed
+                else None,
+                'restart_scheduled': restart_scheduled,
+            }
+        )
     except Exception:
         logger.warning("migration job status fetch failed for task %s", task_id, exc_info=True)
         return jsonify({'error': 'Job not found.'}), 404
@@ -1448,10 +1516,10 @@ def dry_run_report(session_id):
         return jsonify({'error': 'session not found'}), 404
 
     dry_run = state.get('dry_run') or {}
-    auto_matches     = dry_run.get('matches') or {}
-    manual_matches   = state.get('manual_matches') or {}
+    auto_matches = dry_run.get('matches') or {}
+    manual_matches = state.get('manual_matches') or {}
     manual_unmatches = set(state.get('manual_unmatches') or [])
-    new_meta         = _load_target_meta(session_id)
+    new_meta = _load_target_meta(session_id)
 
     # Same effective-merge logic as finalize: drop auto rows the user
     # force-orphaned, then manual_matches wins on any remaining conflict.
@@ -1465,11 +1533,23 @@ def dry_run_report(session_id):
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([
-        'old_id', 'old_artist', 'old_album', 'old_album_artist', 'old_track', 'old_path',
-        'new_id', 'new_artist', 'new_album', 'new_album_artist', 'new_track', 'new_path',
-        'match_source',
-    ])
+    writer.writerow(
+        [
+            'old_id',
+            'old_artist',
+            'old_album',
+            'old_album_artist',
+            'old_track',
+            'old_path',
+            'new_id',
+            'new_artist',
+            'new_album',
+            'new_album_artist',
+            'new_track',
+            'new_path',
+            'match_source',
+        ]
+    )
     for old in old_rows:
         old_id = old.get('item_id')
         new_id = matches.get(old_id)
@@ -1480,29 +1560,31 @@ def dry_run_report(session_id):
             source = 'auto'
         else:
             source = 'orphan'
-        writer.writerow([
-            old_id,
-            old.get('author') or old.get('album_artist') or '',
-            old.get('album') or '',
-            old.get('album_artist') or '',
-            old.get('title') or '',
-            old.get('file_path') or '',
-            new_id or '',
-            (meta or {}).get('artist') or '',
-            (meta or {}).get('album') or '',
-            (meta or {}).get('album_artist') or '',
-            (meta or {}).get('title') or '',
-            (meta or {}).get('path') or '',
-            source,
-        ])
+        writer.writerow(
+            [
+                old_id,
+                old.get('author') or old.get('album_artist') or '',
+                old.get('album') or '',
+                old.get('album_artist') or '',
+                old.get('title') or '',
+                old.get('file_path') or '',
+                new_id or '',
+                (meta or {}).get('artist') or '',
+                (meta or {}).get('album') or '',
+                (meta or {}).get('album_artist') or '',
+                (meta or {}).get('title') or '',
+                (meta or {}).get('path') or '',
+                source,
+            ]
+        )
 
     from flask import Response
+
     return Response(
         buf.getvalue(),
         mimetype='text/csv',
         headers={
-            'Content-Disposition':
-                f'attachment; filename=migration_session_{session_id}_dry_run.csv',
+            'Content-Disposition': f'attachment; filename=migration_session_{session_id}_dry_run.csv',
         },
     )
 
@@ -1514,7 +1596,7 @@ def matched_albums(session_id):
     ---
     tags:
       - Provider Migration
-    summary: Step 4 review — return albums grouped by old (album_artist, album) with their target album, used for the wizard's correction view.
+    summary: Step 4 review - return albums grouped by old (album_artist, album) with their target album, used for the wizard's correction view.
     description: |
       Auto-matched rows are skipped to keep the review list focused on
       albums the user (or rematch flows) explicitly modified. New-side
@@ -1541,7 +1623,7 @@ def matched_albums(session_id):
         description: Session not found.
     """
     # The review list only ever shows manually re-targeted albums, so we need
-    # just ``manual_matches`` (small) — not the full state blob, the auto-match
+    # just ``manual_matches`` (small) - not the full state blob, the auto-match
     # map, or the whole score table. Load only those rows + their target meta.
     found, manual_matches = _read_state_key(session_id, 'manual_matches')
     if not found:
@@ -1569,7 +1651,10 @@ def matched_albums(session_id):
         tally = {}  # (new_artist, new_album) -> count
         for new_id in g['new_ids']:
             meta = new_meta.get(str(new_id)) or new_meta.get(new_id) or {}
-            tally_key = (meta.get('album_artist') or meta.get('artist') or '', meta.get('album') or '')
+            tally_key = (
+                meta.get('album_artist') or meta.get('artist') or '',
+                meta.get('album') or '',
+            )
             tally[tally_key] = tally.get(tally_key, 0) + 1
         if tally:
             (new_artist, new_album), _ = max(tally.items(), key=lambda kv: kv[1])
@@ -1578,20 +1663,26 @@ def matched_albums(session_id):
         tier_tally = {}
         for t in g['tiers']:
             tier_tally[t] = tier_tally.get(t, 0) + 1
-        dominant_tier = max(tier_tally.items(), key=lambda kv: kv[1])[0] if tier_tally else 'unknown'
-        albums.append({
-            'old_album_artist': old_artist,
-            'old_album':        old_album,
-            'track_count':      g['count'],
-            'new_album_artist': new_artist,
-            'new_album':        new_album,
-            'tier':             dominant_tier,
-        })
+        dominant_tier = (
+            max(tier_tally.items(), key=lambda kv: kv[1])[0] if tier_tally else 'unknown'
+        )
+        albums.append(
+            {
+                'old_album_artist': old_artist,
+                'old_album': old_album,
+                'track_count': g['count'],
+                'new_album_artist': new_artist,
+                'new_album': new_album,
+                'tier': dominant_tier,
+            }
+        )
 
-    albums.sort(key=lambda a: (
-        (a['old_album_artist'] or '').lower(),
-        (a['old_album'] or '').lower(),
-    ))
+    albums.sort(
+        key=lambda a: (
+            (a['old_album_artist'] or '').lower(),
+            (a['old_album'] or '').lower(),
+        )
+    )
     return jsonify({'albums': albums})
 
 
@@ -1599,6 +1690,7 @@ def matched_albums(session_id):
 # Small DB helpers (kept near the routes that use them so behavior + SQL live
 # together; these are also why the test suite patches ``get_db``).
 # ---------------------------------------------------------------------------
+
 
 def _fetch_session_creds(session_id):
     db = get_db()
@@ -1620,11 +1712,11 @@ def _fetch_session_creds(session_id):
 
 def _row_to_score_dict(r):
     return {
-        'item_id':      r[0],
-        'file_path':    r[1],
-        'title':        r[2],
-        'author':       r[3],
-        'album':        r[4],
+        'item_id': r[0],
+        'file_path': r[1],
+        'title': r[2],
+        'author': r[3],
+        'album': r[4],
         'album_artist': r[5],
     }
 
@@ -1662,6 +1754,7 @@ def _load_score_rows_by_ids(item_ids):
 
 def _sanitize_text(value):
     from sanitization import sanitize_string_for_db
+
     return sanitize_string_for_db(value)
 
 
@@ -1690,7 +1783,7 @@ def _store_target_meta(session_id, new_meta):
             for new_id, meta in (new_meta or {}).items()
         ]
         for i in range(0, len(rows), 500):
-            chunk = rows[i:i + 500]
+            chunk = rows[i : i + 500]
             placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
             flat = [v for row in chunk for v in row]
             cur.execute(
@@ -1727,8 +1820,12 @@ def _load_target_meta(session_id, new_ids=None):
         rows = cur.fetchall() or []
     return {
         r[0]: {
-            'path': r[1], 'title': r[2], 'artist': r[3],
-            'album': r[4], 'album_artist': r[5], 'year': r[6],
+            'path': r[1],
+            'title': r[2],
+            'artist': r[3],
+            'album': r[4],
+            'album_artist': r[5],
+            'year': r[6],
         }
         for r in rows
     }
@@ -1744,8 +1841,10 @@ def _load_rows_for_album(album_key):
     ``or``) and null-safe ``IS NOT DISTINCT FROM`` so a NULL artist/album
     matches a NULL key instead of silently dropping the row.
     """
-    target_artist, target_album = (album_key[0] if album_key else None,
-                                   album_key[1] if album_key and len(album_key) > 1 else None)
+    target_artist, target_album = (
+        album_key[0] if album_key else None,
+        album_key[1] if album_key and len(album_key) > 1 else None,
+    )
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
@@ -1785,18 +1884,21 @@ def _albums_payload(unmatched_by_album):
     to keep the persisted state and the step-4 review page bounded.
     """
     import config
+
     limit = config.MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT
     out = []
     for key, rows in unmatched_by_album.items():
         if len(out) >= limit:
             break
         album_artist, album = key[0], key[1] if len(key) > 1 else None
-        out.append({
-            'album_artist': album_artist,
-            'album':        album,
-            'track_count':  len(rows),
-            'sample_titles': [r.get('title') for r in rows[:5]],
-        })
+        out.append(
+            {
+                'album_artist': album_artist,
+                'album': album,
+                'track_count': len(rows),
+                'sample_titles': [r.get('title') for r in rows[:5]],
+            }
+        )
     return out
 
 
@@ -1822,6 +1924,7 @@ def _load_state(session_id):
 def _sanitize_json_value(value):
     """Local alias for the shared JSON sanitizer in :mod:`sanitization`."""
     from sanitization import sanitize_json_for_db
+
     return sanitize_json_for_db(value)
 
 
@@ -1866,7 +1969,7 @@ def _update_state(session_id, **patch):
 
 def _read_state_key(session_id, key):
     """Return a single top-level ``state`` key (parsed) without loading the
-    whole blob. Returns ``(found, value)`` — ``found`` is False when the
+    whole blob. Returns ``(found, value)`` - ``found`` is False when the
     session row doesn't exist."""
     db = get_db()
     with db.cursor() as cur:

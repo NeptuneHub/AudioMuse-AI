@@ -142,6 +142,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
         sys.path.insert(0, str(project_root))
 
     import config
+
     config.LYRICS_API_ENABLE = True
     config.LYRICS_MODEL_DIR = str(models_dir)
 
@@ -155,8 +156,7 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
         assert text is not None, f'No fake lyrics registered for {current["name"]!r}'
         return text
 
-    monkeypatch.setattr(lyrics_transcriber, 'fetch_remote_lyrics',
-                        _fake_fetch_remote_lyrics)
+    monkeypatch.setattr(lyrics_transcriber, 'fetch_remote_lyrics', _fake_fetch_remote_lyrics)
 
     explicit_record = os.environ.get('LYRICS_RECORD_EXPECTED', '').lower() in ('1', 'true', 'yes')
     record_mode = explicit_record or not expected_path.exists()
@@ -218,7 +218,9 @@ def test_real_lyrics_analysis_runs_and_matches_expected_vectors(monkeypatch):
                 'or restore the model the baseline was recorded with.'
             )
         if expected_meta:
-            print(f'  baseline sha256 : {baseline_sha} [{"MATCH" if baseline_sha == model_sha else "MISMATCH"}]')
+            print(
+                f'  baseline sha256 : {baseline_sha} [{"MATCH" if baseline_sha == model_sha else "MISMATCH"}]'
+            )
             print(f'  baseline tokenizers : {expected_meta.get("tokenizers")}')
 
     for track_name in FAKE_LYRICS_BY_TRACK:

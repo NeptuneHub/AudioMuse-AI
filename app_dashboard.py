@@ -7,6 +7,7 @@ startup and then once per hour, and persisted in the singleton
 ``dashboard_stats`` table. The summary endpoint only reads that row and
 combines it with the cheap, always-live bits (workers, recent tasks, cron).
 """
+
 import json
 import logging
 import time
@@ -73,6 +74,7 @@ def _table_exists(cur, name):
 def _get_musicnn_index_count():
     try:
         from tasks.ivf_manager import ivf_index, id_map
+
         if id_map is not None:
             return len(id_map)
         if ivf_index is not None:
@@ -85,6 +87,7 @@ def _get_musicnn_index_count():
 def _get_clap_index_count():
     try:
         from tasks.clap_text_search import is_clap_cache_loaded, get_clap_cache_size
+
         if is_clap_cache_loaded():
             return get_clap_cache_size()
     except Exception:
@@ -95,6 +98,7 @@ def _get_clap_index_count():
 def _get_gmm_index_count():
     try:
         from tasks.artist_gmm_manager import artist_map, artist_index
+
         if artist_map is not None:
             return len(artist_map)
         if artist_index is not None:
@@ -110,6 +114,7 @@ def _collect_workers():
     workers_info = []
     try:
         from rq import Worker
+
         workers = Worker.all(connection=redis_conn)
         for w in workers:
             try:
@@ -121,14 +126,16 @@ def _collect_workers():
                 current_job_id = current_job.id if current_job else None
             except Exception:
                 current_job_id = None
-            workers_info.append({
-                'hostname': getattr(w, 'hostname', None),
-                'queues': [q.name for q in getattr(w, 'queues', [])],
-                'state': state,
-                'current_job_id': current_job_id,
-                'successful_jobs': getattr(w, 'successful_job_count', 0),
-                'failed_jobs': getattr(w, 'failed_job_count', 0),
-            })
+            workers_info.append(
+                {
+                    'hostname': getattr(w, 'hostname', None),
+                    'queues': [q.name for q in getattr(w, 'queues', [])],
+                    'state': state,
+                    'current_job_id': current_job_id,
+                    'successful_jobs': getattr(w, 'successful_job_count', 0),
+                    'failed_jobs': getattr(w, 'failed_job_count', 0),
+                }
+            )
     except Exception as e:
         logger.warning(f"dashboard: failed to enumerate RQ workers: {e}")
     return workers_info
@@ -149,14 +156,18 @@ def _collect_task_metrics(cur):
                 LIMIT 10
             """)
             for r in cur.fetchall():
-                recent.append({
-                    'task_id': r['task_id'],
-                    'task_type': r['task_type'],
-                    'status': r['status'],
-                    'duration_seconds': float(r['duration_seconds']) if r['duration_seconds'] is not None else None,
-                    'note': r['note'] or '',
-                    'timestamp': to_local_str(r['recorded_at']),
-                })
+                recent.append(
+                    {
+                        'task_id': r['task_id'],
+                        'task_type': r['task_type'],
+                        'status': r['status'],
+                        'duration_seconds': float(r['duration_seconds'])
+                        if r['duration_seconds'] is not None
+                        else None,
+                        'note': r['note'] or '',
+                        'timestamp': to_local_str(r['recorded_at']),
+                    }
+                )
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
             _safe_rollback(cur)
@@ -166,8 +177,12 @@ def _collect_task_metrics(cur):
 def _collect_content_metrics(cur):
     metrics = {
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
-        'distinct_artists': _safe_count(cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"),
-        'distinct_albums': _safe_count(cur, "SELECT COUNT(DISTINCT album) FROM score WHERE album IS NOT NULL"),
+        'distinct_artists': _safe_count(
+            cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"
+        ),
+        'distinct_albums': _safe_count(
+            cur, "SELECT COUNT(DISTINCT album) FROM score WHERE album IS NOT NULL"
+        ),
         'musicnn_indexed': _get_musicnn_index_count(),
         'clap_indexed': _get_clap_index_count(),
         'gmm_indexed': _get_gmm_index_count(),
@@ -223,9 +238,7 @@ def _collect_content_metrics(cur):
     # Moods Coverage: emotional mood vector (other_features):
     # danceable / aggressive / happy / party / relaxed / sad.
     emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
-    metrics['moods_coverage'] = [
-        {'label': k, 'score': round(v, 2)} for k, v in emotional
-    ]
+    metrics['moods_coverage'] = [{'label': k, 'score': round(v, 2)} for k, v in emotional]
 
     # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always
     # populate the key so the UI can render a real (possibly-zero) chart
@@ -286,7 +299,7 @@ def _parse_keyval(s):
         try:
             out[k] = float(v)
         except (ValueError, TypeError):
-            # Malformed numeric field — skip silently.
+            # Malformed numeric field - skip silently.
             continue
     return out
 
@@ -306,14 +319,16 @@ def _collect_cron(cur):
                     last_run_iso = time.strftime(LOCAL_TZ_FMT, time.localtime(float(r['last_run'])))
             except Exception:
                 pass
-            rows.append({
-                'id': r['id'],
-                'name': r['name'],
-                'task_type': r['task_type'],
-                'cron_expr': r['cron_expr'],
-                'enabled': bool(r['enabled']),
-                'last_run': last_run_iso,
-            })
+            rows.append(
+                {
+                    'id': r['id'],
+                    'name': r['name'],
+                    'task_type': r['task_type'],
+                    'cron_expr': r['cron_expr'],
+                    'enabled': bool(r['enabled']),
+                    'last_run': last_run_iso,
+                }
+            )
     except Exception as e:
         logger.debug(f"dashboard: cron query failed: {e}")
         _safe_rollback(cur)
@@ -327,7 +342,7 @@ def dashboard_summary():
     ---
     tags:
       - Dashboard
-    summary: Aggregated dashboard data — library stats, worker status, recent tasks, cron entries.
+    summary: Aggregated dashboard data - library stats, worker status, recent tasks, cron entries.
     description: |
       Heavy library aggregates (the `content` block) are read from the
       precomputed `dashboard_stats` singleton row and NOT recomputed on each
@@ -369,14 +384,16 @@ def dashboard_summary():
 
     workers = _collect_workers()
 
-    return jsonify({
-        'generated_at': time.strftime(LOCAL_TZ_FMT),
-        'stats_updated_at': stats_updated_at,
-        'workers': workers,
-        'recent_tasks': recent,
-        'content': content,
-        'cron': cron_rows,
-    })
+    return jsonify(
+        {
+            'generated_at': time.strftime(LOCAL_TZ_FMT),
+            'stats_updated_at': stats_updated_at,
+            'workers': workers,
+            'recent_tasks': recent,
+            'content': content,
+            'cron': cron_rows,
+        }
+    )
 
 
 def _load_dashboard_stats(cur):
@@ -425,7 +442,9 @@ def refresh_dashboard_stats(app):
                     )
                 except psycopg2.Error as e:
                     if getattr(e, 'pgcode', None) == '42P10' or 'ON CONFLICT' in str(e):
-                        logger.warning("dashboard_stats upsert fallback due missing unique constraint: %s", e)
+                        logger.warning(
+                            "dashboard_stats upsert fallback due missing unique constraint: %s", e
+                        )
                         _safe_rollback(cur2)
                         cur2.execute("DELETE FROM dashboard_stats WHERE id = 1")
                         cur2.execute(
@@ -442,4 +461,3 @@ def refresh_dashboard_stats(app):
         logger.info(f"dashboard_stats refreshed in {elapsed:.1f}s")
     except Exception:
         logger.exception("refresh_dashboard_stats failed")
-

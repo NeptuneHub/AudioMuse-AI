@@ -4,7 +4,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from proxy_prefix import StripDuplicatedScriptName
 
 
-
 def _run(environ):
     captured = {}
 
@@ -45,7 +44,6 @@ class TestStripDuplicatedScriptName:
     def test_similar_but_unrelated_path_untouched(self):
         out = _run({'SCRIPT_NAME': '/am', 'PATH_INFO': '/amazing'})
         assert out['PATH_INFO'] == '/amazing'
-
 
 
 def _barrier_app(with_fix):

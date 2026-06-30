@@ -8,13 +8,20 @@ os.environ['AUDIOMUSE_ROLE'] = 'worker'
 
 _cpu_count = os.cpu_count() or 1
 _max_threads = max(1, _cpu_count // 3)
-for _env_key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+for _env_key in (
+    'OMP_NUM_THREADS',
+    'MKL_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS',
+    'VECLIB_MAXIMUM_THREADS',
+    'NUMEXPR_NUM_THREADS',
+):
     os.environ[_env_key] = str(_max_threads)
 os.environ.setdefault('GOMP_SPINCOUNT', '0')
 os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
 print(f"High-priority worker CPU thread cap = {_max_threads} (cpu_count // 3, min 1)")
 
 from rq import SimpleWorker, Worker
+
 WorkerClass = SimpleWorker if sys.platform == 'win32' else Worker
 
 try:
@@ -32,15 +39,13 @@ logger = logging.getLogger(__name__)
 queues_to_listen = ['high']
 
 if __name__ == '__main__':
-    logger.info(f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}")
+    logger.info(
+        f"HIGH PRIORITY RQ Worker starting. Version: {APP_VERSION}. Listening ONLY on queues: {queues_to_listen}"
+    )
     logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
-
     worker = WorkerClass(
-        queues_to_listen,
-        connection=redis_conn,
-        worker_ttl=30,
-        job_monitoring_interval=10
+        queues_to_listen, connection=redis_conn, worker_ttl=30, job_monitoring_interval=10
     )
 
     max_jobs_before_restart = RQ_MAX_JOBS_HIGH

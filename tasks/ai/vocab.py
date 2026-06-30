@@ -8,25 +8,66 @@ import config
 
 
 _MOOD_VOCAB_FROM_MOODVECTOR_RAW = [
-    'female vocalists', 'female vocalist', 'male vocalists',
-    '60s', '70s', '80s', '90s', '00s',
-    'beautiful', 'chillout', 'chill', 'Mellow', 'sexy', 'catchy',
-    'oldies', 'easy listening', 'instrumental', 'guitar',
-    'sad', 'happy', 'party',
+    'female vocalists',
+    'female vocalist',
+    'male vocalists',
+    '60s',
+    '70s',
+    '80s',
+    '90s',
+    '00s',
+    'beautiful',
+    'chillout',
+    'chill',
+    'Mellow',
+    'sexy',
+    'catchy',
+    'oldies',
+    'easy listening',
+    'instrumental',
+    'guitar',
+    'sad',
+    'happy',
+    'party',
 ]
 MOOD_VOCAB_FROM_MOODVECTOR = [m for m in _MOOD_VOCAB_FROM_MOODVECTOR_RAW if m in config.MOOD_LABELS]
 
 OTHER_FEATURE_VOCAB = list(config.OTHER_FEATURE_LABELS)
 
 _GENRE_FROM_MOODS_RAW = [
-    'rock', 'pop', 'alternative', 'indie', 'electronic', 'dance',
-    'alternative rock', 'jazz', 'metal', 'classic rock', 'soul',
-    'indie rock', 'electronica', 'folk', 'punk', 'blues',
-    'hard rock', 'ambient', 'acoustic', 'experimental',
-    'Hip-Hop', 'country', 'funk', 'electro', 'heavy metal',
-    'Progressive rock', 'rnb', 'indie pop', 'House',
+    'rock',
+    'pop',
+    'alternative',
+    'indie',
+    'electronic',
+    'dance',
+    'alternative rock',
+    'jazz',
+    'metal',
+    'classic rock',
+    'soul',
+    'indie rock',
+    'electronica',
+    'folk',
+    'punk',
+    'blues',
+    'hard rock',
+    'ambient',
+    'acoustic',
+    'experimental',
+    'Hip-Hop',
+    'country',
+    'funk',
+    'electro',
+    'heavy metal',
+    'Progressive rock',
+    'rnb',
+    'indie pop',
+    'House',
 ]
-_GENRE_VOCAB_SET = set(config.STRATIFIED_GENRES) | {g for g in _GENRE_FROM_MOODS_RAW if g in config.MOOD_LABELS}
+_GENRE_VOCAB_SET = set(config.STRATIFIED_GENRES) | {
+    g for g in _GENRE_FROM_MOODS_RAW if g in config.MOOD_LABELS
+}
 GENRE_VOCAB = sorted(_GENRE_VOCAB_SET, key=lambda s: s.lower())
 
 
@@ -185,7 +226,9 @@ _FUZZY_REMAP_MIN_LEN = 4
 
 _GENDER_FEMALE_RE = re.compile(r'\b(female|woman|women|girl|girls|lady|ladies)\b')
 _GENDER_MALE_RE = re.compile(r'\b(male|man|men|boy|boys|gentleman|gentlemen)\b')
-_VOCAL_HINT_RE = re.compile(r'\b(singer|singers|vocalist|vocalists|vocaliser|vocalizer|voice|voices|vocal|vocals)\b')
+_VOCAL_HINT_RE = re.compile(
+    r'\b(singer|singers|vocalist|vocalists|vocaliser|vocalizer|voice|voices|vocal|vocals)\b'
+)
 
 
 def _wn_lemmas(synset) -> List[str]:
@@ -225,6 +268,7 @@ def _wordnet_synonyms(value: str) -> Tuple[str, ...]:
         return ()
     try:
         import wn
+
         synsets = wn.synsets(value.strip(), lang='en')
     except Exception:
         return ()
@@ -297,12 +341,16 @@ def normalize_mood(value: str, notes: Optional[List[str]] = None) -> Tuple[List[
 
     candidates = list(_MOOD_VOCAB_LOWER.keys()) + list(_OTHER_FEATURE_VOCAB_LOWER.keys())
     if len(key) >= _FUZZY_REMAP_MIN_LEN:
-        hit = process.extractOne(key, candidates, scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF)
+        hit = process.extractOne(
+            key, candidates, scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF
+        )
         if hit:
             mv2, of2 = _classify_label(hit[0])
             if notes is not None and (mv2 or of2):
-                target = (mv2 or of2)
-                notes.append(f"vocab_normalizer remapped mood '{value}' -> {target} (fuzzy {int(hit[1])})")
+                target = mv2 or of2
+                notes.append(
+                    f"vocab_normalizer remapped mood '{value}' -> {target} (fuzzy {int(hit[1])})"
+                )
             return mv2, of2
 
     for syn in _wordnet_synonyms(key):
@@ -345,11 +393,18 @@ def normalize_genre(value: str, notes: Optional[List[str]] = None) -> Optional[s
         return _GENRE_VOCAB_LOWER[key]
 
     if len(key) >= _FUZZY_REMAP_MIN_LEN:
-        hit = process.extractOne(key, list(_GENRE_VOCAB_LOWER.keys()), scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF)
+        hit = process.extractOne(
+            key,
+            list(_GENRE_VOCAB_LOWER.keys()),
+            scorer=fuzz.WRatio,
+            score_cutoff=_FUZZY_REMAP_CUTOFF,
+        )
         if hit:
             mapped = _GENRE_VOCAB_LOWER[hit[0]]
             if notes is not None:
-                notes.append(f"vocab_normalizer remapped genre '{value}' -> '{mapped}' (fuzzy {int(hit[1])})")
+                notes.append(
+                    f"vocab_normalizer remapped genre '{value}' -> '{mapped}' (fuzzy {int(hit[1])})"
+                )
             return mapped
     return None
 
@@ -380,10 +435,17 @@ _VOICE_LABELS_SET = {'female vocalists', 'female vocalist', 'male vocalists'}
 
 def normalize_mood_list(values) -> dict:
     if not values:
-        return {'mood_vector': [], 'voices': [], 'other_features': [],
-                'energy_min': None, 'energy_max': None,
-                'tempo_min': None, 'tempo_max': None,
-                'dropped': [], 'notes': []}
+        return {
+            'mood_vector': [],
+            'voices': [],
+            'other_features': [],
+            'energy_min': None,
+            'energy_max': None,
+            'tempo_min': None,
+            'tempo_max': None,
+            'dropped': [],
+            'notes': [],
+        }
     mv_all: List[str] = []
     voices_all: List[str] = []
     of_all: List[str] = []

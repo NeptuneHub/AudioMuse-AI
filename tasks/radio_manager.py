@@ -20,14 +20,16 @@ def run_radio_playlists():
             outcome = song_alchemy(
                 add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],
                 n_results=int(radio['n_results']),
-                temperature=float(radio['temperature'])
+                temperature=float(radio['temperature']),
             )
             item_ids = [r['item_id'] for r in (outcome.get('results') or []) if r.get('item_id')]
             if item_ids:
                 generated.append((playlist_name, item_ids))
             else:
                 failed.append(playlist_name)
-                logger.warning(f"Radio '{radio['name']}' produced no results; skipping playlist creation.")
+                logger.warning(
+                    f"Radio '{radio['name']}' produced no results; skipping playlist creation."
+                )
         except Exception:
             failed.append(playlist_name)
             logger.exception(f"Radio '{radio['name']}' failed; skipping playlist creation.")

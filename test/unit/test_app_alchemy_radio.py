@@ -23,16 +23,46 @@ class TestListRadios:
     @patch('database.get_alchemy_radios')
     def test_returns_radio_list(self, mock_get, client):
         mock_get.return_value = [
-            {'id': 1, 'anchor_id': 5, 'name': 'Chill', 'temperature': 1.0, 'n_results': 100, 'enabled': True},
-            {'id': 2, 'anchor_id': 7, 'name': 'Rock', 'temperature': 0.5, 'n_results': 50, 'enabled': False},
+            {
+                'id': 1,
+                'anchor_id': 5,
+                'name': 'Chill',
+                'temperature': 1.0,
+                'n_results': 100,
+                'enabled': True,
+            },
+            {
+                'id': 2,
+                'anchor_id': 7,
+                'name': 'Rock',
+                'temperature': 0.5,
+                'n_results': 50,
+                'enabled': False,
+            },
         ]
         response = client.get('/api/radios')
         assert response.status_code == 200
         payload = response.get_json()
-        assert payload == {'radios': [
-            {'id': 1, 'anchor_id': 5, 'name': 'Chill', 'temperature': 1.0, 'n_results': 100, 'enabled': True},
-            {'id': 2, 'anchor_id': 7, 'name': 'Rock', 'temperature': 0.5, 'n_results': 50, 'enabled': False},
-        ]}
+        assert payload == {
+            'radios': [
+                {
+                    'id': 1,
+                    'anchor_id': 5,
+                    'name': 'Chill',
+                    'temperature': 1.0,
+                    'n_results': 100,
+                    'enabled': True,
+                },
+                {
+                    'id': 2,
+                    'anchor_id': 7,
+                    'name': 'Rock',
+                    'temperature': 0.5,
+                    'n_results': 50,
+                    'enabled': False,
+                },
+            ]
+        }
 
 
 class TestCreateRadioValidation:
@@ -59,14 +89,18 @@ class TestCreateRadioValidation:
 
     @patch('database.create_alchemy_radio')
     def test_non_numeric_temperature_returns_400(self, mock_create, client):
-        response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': 'hot', 'n_results': 100})
+        response = client.post(
+            '/api/radios', json={'anchor_id': 5, 'temperature': 'hot', 'n_results': 100}
+        )
         assert response.status_code == 400
         assert response.get_json() == {'error': 'Radio temperature must be a number'}
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')
     def test_negative_temperature_returns_400(self, mock_create, client):
-        response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': -1, 'n_results': 100})
+        response = client.post(
+            '/api/radios', json={'anchor_id': 5, 'temperature': -1, 'n_results': 100}
+        )
         assert response.status_code == 400
         assert response.get_json() == {'error': 'Radio temperature must be 0 or greater'}
         mock_create.assert_not_called()
@@ -74,9 +108,13 @@ class TestCreateRadioValidation:
     @patch('database.create_alchemy_radio')
     def test_non_finite_temperature_returns_400(self, mock_create, client):
         for bad_value in ('NaN', 'Infinity', 'inf'):
-            response = client.post('/api/radios',
-                                   data='{"anchor_id": 5, "temperature": ' + ('"' + bad_value + '"' if bad_value == 'inf' else bad_value) + ', "n_results": 100}',
-                                   content_type='application/json')
+            response = client.post(
+                '/api/radios',
+                data='{"anchor_id": 5, "temperature": '
+                + ('"' + bad_value + '"' if bad_value == 'inf' else bad_value)
+                + ', "n_results": 100}',
+                content_type='application/json',
+            )
             assert response.status_code == 400
             assert response.get_json() == {'error': 'Radio temperature must be a finite number'}
         mock_create.assert_not_called()
@@ -84,22 +122,42 @@ class TestCreateRadioValidation:
     @patch('database.create_alchemy_radio')
     def test_n_results_out_of_range_returns_400(self, mock_create, client):
         for bad_value in (0, config.ALCHEMY_MAX_N_RESULTS + 1):
-            response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': bad_value})
+            response = client.post(
+                '/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': bad_value}
+            )
             assert response.status_code == 400
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')
     def test_valid_payload_creates_radio(self, mock_create, client):
-        mock_create.return_value = {'id': 1, 'anchor_id': 5, 'temperature': 1.0, 'n_results': 100, 'enabled': True}
-        response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': 100})
+        mock_create.return_value = {
+            'id': 1,
+            'anchor_id': 5,
+            'temperature': 1.0,
+            'n_results': 100,
+            'enabled': True,
+        }
+        response = client.post(
+            '/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': 100}
+        )
         assert response.status_code == 200
-        assert response.get_json() == {'radio': {'id': 1, 'anchor_id': 5, 'temperature': 1.0, 'n_results': 100, 'enabled': True}}
+        assert response.get_json() == {
+            'radio': {
+                'id': 1,
+                'anchor_id': 5,
+                'temperature': 1.0,
+                'n_results': 100,
+                'enabled': True,
+            }
+        }
         mock_create.assert_called_once_with(5, 1.0, 100, True)
 
     @patch('database.create_alchemy_radio')
     def test_duplicate_anchor_returns_400(self, mock_create, client):
         mock_create.return_value = None
-        response = client.post('/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': 100})
+        response = client.post(
+            '/api/radios', json={'anchor_id': 5, 'temperature': 1.0, 'n_results': 100}
+        )
         assert response.status_code == 400
         assert 'error' in response.get_json()
 
@@ -114,13 +172,23 @@ class TestUpdateRadio:
     @patch('database.update_alchemy_radio')
     def test_unknown_radio_returns_404(self, mock_update, client):
         mock_update.return_value = None
-        response = client.put('/api/radios/3', json={'temperature': 0.5, 'n_results': 20, 'enabled': False})
+        response = client.put(
+            '/api/radios/3', json={'temperature': 0.5, 'n_results': 20, 'enabled': False}
+        )
         assert response.status_code == 404
 
     @patch('database.update_alchemy_radio')
     def test_valid_update_saves_disabled_state(self, mock_update, client):
-        mock_update.return_value = {'id': 3, 'anchor_id': 5, 'temperature': 0.5, 'n_results': 20, 'enabled': False}
-        response = client.put('/api/radios/3', json={'temperature': 0.5, 'n_results': 20, 'enabled': False})
+        mock_update.return_value = {
+            'id': 3,
+            'anchor_id': 5,
+            'temperature': 0.5,
+            'n_results': 20,
+            'enabled': False,
+        }
+        response = client.put(
+            '/api/radios/3', json={'temperature': 0.5, 'n_results': 20, 'enabled': False}
+        )
         assert response.status_code == 200
         mock_update.assert_called_once_with(3, 0.5, 20, False)
 
@@ -144,8 +212,12 @@ class TestDeleteRadio:
 class TestRunRadioPlaylistsEndpoint:
     @patch('tasks.radio_manager.run_radio_playlists')
     def test_returns_summary(self, mock_run, client):
-        mock_run.return_value = {'message': 'Created 2 radio playlist(s) from 2 enabled radio(s).',
-                                 'radios_enabled': 2, 'playlists_created': 2, 'failed': []}
+        mock_run.return_value = {
+            'message': 'Created 2 radio playlist(s) from 2 enabled radio(s).',
+            'radios_enabled': 2,
+            'playlists_created': 2,
+            'failed': [],
+        }
         response = client.post('/api/radios/run')
         assert response.status_code == 200
         assert response.get_json()['playlists_created'] == 2
@@ -162,14 +234,21 @@ class TestRunRadioPlaylistsEndpoint:
 
 class TestRunRadioPlaylists:
     def _radio(self, radio_id, anchor_id, name, temperature=1.0, n_results=100, enabled=True):
-        return {'id': radio_id, 'anchor_id': anchor_id, 'name': name,
-                'temperature': temperature, 'n_results': n_results, 'enabled': enabled}
+        return {
+            'id': radio_id,
+            'anchor_id': anchor_id,
+            'name': name,
+            'temperature': temperature,
+            'n_results': n_results,
+            'enabled': enabled,
+        }
 
     @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_creates_playlists_for_enabled_radios_only(self, mock_alchemy, mock_upsert,
-                                                       mock_get_radios):
+    def test_creates_playlists_for_enabled_radios_only(
+        self, mock_alchemy, mock_upsert, mock_get_radios
+    ):
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [
@@ -181,7 +260,8 @@ class TestRunRadioPlaylists:
         summary = run_radio_playlists()
 
         mock_alchemy.assert_called_once_with(
-            add_items=[{'type': 'anchor', 'id': 10}], n_results=30, temperature=0.5)
+            add_items=[{'type': 'anchor', 'id': 10}], n_results=30, temperature=0.5
+        )
         mock_upsert.assert_called_once_with('Chill', ['a', 'b'])
         assert summary['playlists_created'] == 1
         assert summary['radios_enabled'] == 1
@@ -189,8 +269,7 @@ class TestRunRadioPlaylists:
     @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_upserts_after_generation(self, mock_alchemy, mock_upsert,
-                                       mock_get_radios):
+    def test_upserts_after_generation(self, mock_alchemy, mock_upsert, mock_get_radios):
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
@@ -207,8 +286,9 @@ class TestRunRadioPlaylists:
     @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_one_failing_radio_does_not_block_others(self, mock_alchemy, mock_upsert,
-                                                     mock_get_radios):
+    def test_one_failing_radio_does_not_block_others(
+        self, mock_alchemy, mock_upsert, mock_get_radios
+    ):
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [
@@ -226,8 +306,9 @@ class TestRunRadioPlaylists:
     @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.create_or_replace_playlist')
     @patch('tasks.radio_manager.song_alchemy')
-    def test_radio_with_no_results_creates_no_playlist(self, mock_alchemy, mock_upsert,
-                                                       mock_get_radios):
+    def test_radio_with_no_results_creates_no_playlist(
+        self, mock_alchemy, mock_upsert, mock_get_radios
+    ):
         from tasks.radio_manager import run_radio_playlists
 
         mock_get_radios.return_value = [self._radio(1, 10, 'Empty')]

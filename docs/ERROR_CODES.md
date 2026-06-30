@@ -5,9 +5,9 @@ it fires, where in the code it is raised, and how it can be handled.
 
 The error subsystem lives in [error/](../error/):
 
-- [error/error_dictionary.py](../error/error_dictionary.py) — pure data. Every code
+- [error/error_dictionary.py](../error/error_dictionary.py) - pure data. Every code
   maps to a generic `error_class` label and a `default_message`.
-- [error/error_manager.py](../error/error_manager.py) — turns a code (plus an
+- [error/error_manager.py](../error/error_manager.py) - turns a code (plus an
   optional one-line detail) into the canonical structured error the frontend renders:
 
   ```json
@@ -38,20 +38,20 @@ internal detail leaks to the frontend.
 | Code | Class | Fires when… | Where | How to handle |
 |------|-------|-------------|-------|---------------|
 | 1101 | Music Server Connection Error | Setup "Test connection" can't reach the server / returns nothing; also analysis network failures classified as `HTTPError` / `MaxRetryError` / `LyrionAPIError` | [app_setup.py](../app_setup.py), [error/error_manager.py](../error/error_manager.py) | Check the server URL is correct and reachable from the container; confirm the server is running and the network/DNS path is open. |
-| 1102 | Music Server Connection Error | A task throws `ConnectionError` / `ConnectionRefusedError` / `NewConnectionError` (server down / refused) | classify map → analysis / clustering / cleaning / collection excepts | Server is down or refusing connections — start it, verify the port, check firewall rules. |
+| 1102 | Music Server Connection Error | A task throws `ConnectionError` / `ConnectionRefusedError` / `NewConnectionError` (server down / refused) | classify map → analysis / clustering / cleaning / collection excepts | Server is down or refusing connections - start it, verify the port, check firewall rules. |
 | 1103 | Music Server Connection Error | A task throws `ReadTimeout` / `ConnectTimeout` / `Timeout` (#523 slow server) | classify map ([error/error_manager.py](../error/error_manager.py)) | Server is too slow to respond; reduce load, raise client timeouts, or improve the network path. |
 | 1105 | Music Server Library Error | Analysis runs but the server returns 0 tracks for every album (#552) | [tasks/analysis.py](../tasks/analysis.py) (no-tracks check) | Verify the library actually contains scannable music and that the configured user/library has read access to the tracks. |
 | 2001 | Analysis Error | Main analysis task fails for any non-classified reason | [tasks/analysis.py](../tasks/analysis.py) main except | Inspect the container log for the real cause; this is the catch-all for the analysis run. |
 | 2002 | Analysis Error | A per-album analysis task fails | [tasks/analysis.py](../tasks/analysis.py) album except | One album failed; check the log for the album/track and re-run analysis. |
 | 3001 | Index Error | Final Voyager index rebuild fails (non-empty) | [tasks/analysis.py](../tasks/analysis.py) index wrap | Inspect the log for the rebuild failure; verify disk space and that embeddings exist. |
-| 3002 | Index Error | Final index rebuild raises `EmptyIndexError` | [tasks/analysis.py](../tasks/analysis.py) index wrap | Nothing was indexed — confirm analysis produced embeddings before the index step ran. |
-| 4001 | Database Error | `OperationalError` in analysis / album / cleaning (DB down mid-task) | classify map + `OperationalError` branches ([tasks/analysis.py](../tasks/analysis.py), [tasks/cleaning.py](../tasks/cleaning.py)) | PostgreSQL is unreachable or dropped the connection — confirm the DB is up, credentials are valid, and the connection pool isn't exhausted. |
+| 3002 | Index Error | Final index rebuild raises `EmptyIndexError` | [tasks/analysis.py](../tasks/analysis.py) index wrap | Nothing was indexed - confirm analysis produced embeddings before the index step ran. |
+| 4001 | Database Error | `OperationalError` in analysis / album / cleaning (DB down mid-task) | classify map + `OperationalError` branches ([tasks/analysis.py](../tasks/analysis.py), [tasks/cleaning.py](../tasks/cleaning.py)) | PostgreSQL is unreachable or dropped the connection - confirm the DB is up, credentials are valid, and the connection pool isn't exhausted. |
 | 4101 | Backup Error | `pg_dump` reports a server version mismatch (#540) | [app_backup.py](../app_backup.py) | Match the `pg_dump` client version to the PostgreSQL server version. |
 | 4102 | Backup Error | `pg_dump` exits non-zero, is not installed, or timed out (600 s) | [app_backup.py](../app_backup.py) | Ensure `pg_dump` is installed and on PATH, the DB is reachable, and the dump fits the timeout. |
 | 6001 | Clustering Error | A clustering batch / main task fails | [tasks/clustering.py](../tasks/clustering.py), [app_clustering.py](../app_clustering.py) | Check the log for the clustering failure; verify embeddings/index are present and parameters are valid. |
 | 6002 | Cleaning Error | The cleaning task fails | [tasks/cleaning.py](../tasks/cleaning.py) | Check the log; if it was a DB outage it surfaces as 4001 instead. |
 | 6003 | Collection Sync Error | A collection sync task fails | [tasks/collection_manager.py](../tasks/collection_manager.py), [app_collection.py](../app_collection.py) | Check the log; connection failures to the media server surface as 1102/1103 instead. |
-| 9999 | Unknown Error | Any failed task that didn't record a structured error (legacy / un-migrated jobs) | [app.py](../app.py) `/api/status` fallback | Open the container log — the generic message intentionally hides specifics from the frontend. Migrate the call site to record a structured code. |
+| 9999 | Unknown Error | Any failed task that didn't record a structured error (legacy / un-migrated jobs) | [app.py](../app.py) `/api/status` fallback | Open the container log - the generic message intentionally hides specifics from the frontend. Migrate the call site to record a structured code. |
 
 ## Errors that are defined but not yet wired
 
@@ -112,7 +112,7 @@ route returns when it raises an `AudioMuseError`:
 - **`/api/status`** returns the stored structured error. If a job is `FAILED`/`FAILURE`
   but has no structured `error` recorded (legacy/un-migrated jobs), it backfills `9999`
   so the frontend always receives a well-formed error object.
-- The traceback is **never** placed in the returned dict — it lives only in the
+- The traceback is **never** placed in the returned dict - it lives only in the
   container log.
 
 ## Adding a new error code

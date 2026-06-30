@@ -7,9 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 import numpy as np
 
 
-_REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 
 def _ensure_namespace_pkg(name: str, sub_path: str) -> None:
@@ -25,6 +23,7 @@ def _ensure_mistralai_stub():
         return
     try:
         import mistralai  # noqa: F401
+
         return
     except ImportError:
         pass
@@ -36,9 +35,7 @@ def _ensure_mistralai_stub():
 def _load_submodule(name: str, relpath: str):
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(_REPO_ROOT, relpath)
-    )
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_REPO_ROOT, relpath))
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
@@ -50,9 +47,7 @@ _ensure_namespace_pkg('tasks.ai', 'tasks/ai')
 _ensure_namespace_pkg('tasks.ai.providers', 'tasks/ai/providers')
 _ensure_mistralai_stub()
 
-mistral_mod = _load_submodule(
-    'tasks.ai.providers.mistral', 'tasks/ai/providers/mistral.py'
-)
+mistral_mod = _load_submodule('tasks.ai.providers.mistral', 'tasks/ai/providers/mistral.py')
 
 
 def _load_brainstorm_gmm():
@@ -84,15 +79,17 @@ def _mock_mistral_client():
     return mock_client, mock_chat
 
 
-
 class TestMistralTimeoutScaling:
     def _invoke_and_capture_timeout(self, timeout_seconds):
         import config as cfg
+
         cfg.AI_REQUEST_TIMEOUT_SECONDS = timeout_seconds
 
         mock_client, mock_chat = _mock_mistral_client()
-        with patch('mistralai.Mistral', return_value=mock_client), \
-                patch.object(mistral_mod.time, 'sleep'):
+        with (
+            patch('mistralai.Mistral', return_value=mock_client),
+            patch.object(mistral_mod.time, 'sleep'),
+        ):
             result = mistral_mod.generate_text(
                 api_key="valid-key",
                 model_name="ministral-3b-latest",
@@ -125,7 +122,6 @@ class TestMistralTimeoutScaling:
         for seconds in (1, 10, 45, 120):
             kwargs = self._invoke_and_capture_timeout(seconds)
             assert kwargs['timeout_ms'] == seconds * 1000
-
 
 
 class TestGmmComponentCap:

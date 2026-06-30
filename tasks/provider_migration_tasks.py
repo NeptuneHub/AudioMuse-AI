@@ -15,7 +15,6 @@ _DRAIN_TIMEOUT_SECONDS = 60
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
 
-
 def rewrite_id_map_json(id_map_json, mapping):
     if not id_map_json:
         return id_map_json
@@ -63,10 +62,10 @@ def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
     return row[0] if row else None
 
 
-
 def _get_dedicated_conn():
     import psycopg2
     import config  # noqa: F401  (lazy so tests don't need live env vars)
+
     return psycopg2.connect(
         host=getattr(config, 'POSTGRES_HOST', 'localhost'),
         port=getattr(config, 'POSTGRES_PORT', '5432'),
@@ -78,6 +77,7 @@ def _get_dedicated_conn():
 
 def _get_redis():
     from app_helper import redis_conn
+
     return redis_conn
 
 
@@ -86,7 +86,6 @@ def _drain_workers_or_timeout(seconds=_DRAIN_TIMEOUT_SECONDS):
     while time.time() < deadline:
         time.sleep(1)
         break
-
 
 
 def execute_provider_migration(session_id):
@@ -121,7 +120,7 @@ def execute_provider_migration(session_id):
         selected_libraries = state.get('selected_libraries')
         logger.info("provider migration: %d tracks will be rewritten", len(mapping))
 
-        fk_embedding      = find_fk(cur, 'embedding', 'item_id')
+        fk_embedding = find_fk(cur, 'embedding', 'item_id')
         fk_clap_embedding = find_fk(cur, 'clap_embedding', 'item_id')
         cur.execute("SELECT to_regclass('public.lyrics_embedding') IS NOT NULL")
         lyrics_exists = bool(cur.fetchone()[0])
@@ -163,10 +162,10 @@ def execute_provider_migration(session_id):
             pass
 
 
-
 def _pause_and_drain_workers(redis):
     try:
-        from rq import Worker  # pragma: no cover — optional import in tests
+        from rq import Worker  # pragma: no cover - optional import in tests
+
         for w in Worker.all(connection=redis):
             try:
                 w.send_stop_signal()
@@ -179,8 +178,7 @@ def _pause_and_drain_workers(redis):
 
 def _load_session(cur, session_id):
     cur.execute(
-        "SELECT id, target_type, target_creds, state, status "
-        "FROM migration_session WHERE id = %s",
+        "SELECT id, target_type, target_creds, state, status FROM migration_session WHERE id = %s",
         (session_id,),
     )
     row = cur.fetchone()
@@ -188,7 +186,11 @@ def _load_session(cur, session_id):
         raise RuntimeError(f"migration_session {session_id} not found")
     _id, target_type, target_creds_json, state_json, status = row
     try:
-        creds = json.loads(target_creds_json) if isinstance(target_creds_json, str) else target_creds_json
+        creds = (
+            json.loads(target_creds_json)
+            if isinstance(target_creds_json, str)
+            else target_creds_json
+        )
     except Exception:
         creds = {}
     try:
@@ -196,11 +198,11 @@ def _load_session(cur, session_id):
     except Exception:
         state = {}
     return {
-        'id':            _id,
-        'target_type':   target_type,
-        'target_creds':  creds,
-        'state':         state or {},
-        'status':        status,
+        'id': _id,
+        'target_type': target_type,
+        'target_creds': creds,
+        'state': state or {},
+        'status': status,
     }
 
 
@@ -236,7 +238,8 @@ def _merge_mapping(state):
             "provider migration: dropped %d mapping(s) that collided on "
             "new_id (multiple source rows pointed at the same target id); "
             "those rows will be orphaned on execute. First 10: %s",
-            len(dropped), dropped[:10],
+            len(dropped),
+            dropped[:10],
         )
     return deduped
 
@@ -251,19 +254,31 @@ def _load_new_meta_from_table(cur, session_id):
         (session_id,),
     )
     out = {}
-    for r in (cur.fetchall() or []):
+    for r in cur.fetchall() or []:
         out[r[0]] = {
-            'path': r[1], 'title': r[2], 'artist': r[3],
-            'album': r[4], 'album_artist': r[5], 'year': r[6],
+            'path': r[1],
+            'title': r[2],
+            'artist': r[3],
+            'album': r[4],
+            'album_artist': r[5],
+            'year': r[6],
         }
     return out
 
 
-def _run_migration_transaction(cur, mapping, new_meta,
-                               fk_embedding, fk_clap_embedding,
-                               fk_lyrics_embedding, lyrics_exists,
-                               target_type, target_creds, session_id,
-                               selected_libraries=None):
+def _run_migration_transaction(
+    cur,
+    mapping,
+    new_meta,
+    fk_embedding,
+    fk_clap_embedding,
+    fk_lyrics_embedding,
+    lyrics_exists,
+    target_type,
+    target_creds,
+    session_id,
+    selected_libraries=None,
+):
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
 
     cur.execute(
@@ -274,7 +289,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
     )
     _rows = list(mapping.items())
     for i in range(0, len(_rows), 1000):
-        chunk = _rows[i:i + 1000]
+        chunk = _rows[i : i + 1000]
         placeholders = ",".join(["(%s,%s)"] * len(chunk))
         flat = [v for pair in chunk for v in pair]
         cur.execute(
@@ -352,19 +367,21 @@ def _run_migration_transaction(cur, mapping, new_meta,
         )
         _metas = list(new_meta.items())
         for i in range(0, len(_metas), 500):
-            chunk = _metas[i:i + 500]
+            chunk = _metas[i : i + 500]
             placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
             flat = []
             for new_id, meta in chunk:
-                flat.extend((
-                    _sanitize_text(new_id),
-                    _sanitize_text(meta.get('path')),
-                    _sanitize_text(meta.get('title')),
-                    _sanitize_text(meta.get('artist')),
-                    _sanitize_text(meta.get('album')),
-                    _sanitize_text(meta.get('album_artist')),
-                    meta.get('year'),
-                ))
+                flat.extend(
+                    (
+                        _sanitize_text(new_id),
+                        _sanitize_text(meta.get('path')),
+                        _sanitize_text(meta.get('title')),
+                        _sanitize_text(meta.get('artist')),
+                        _sanitize_text(meta.get('album')),
+                        _sanitize_text(meta.get('album_artist')),
+                        meta.get('year'),
+                    )
+                )
             cur.execute(
                 "INSERT INTO migration_new_meta "
                 "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
@@ -383,6 +400,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
         )
 
     from tasks.index_build_helpers import rewrite_segmented_id_map
+
     _seg_base = re.compile(r"^(.*)_\d+_\d+$")
     index_rebuild_needed = []
     for table in ('voyager_index_data', 'map_projection_data'):
@@ -391,7 +409,7 @@ def _run_migration_transaction(cur, mapping, new_meta,
             continue
         cur.execute(f"SELECT DISTINCT index_name FROM {table}")
         bases = set()
-        for (name,) in (cur.fetchall() or []):
+        for (name,) in cur.fetchall() or []:
             m = _seg_base.match(name)
             bases.add(m.group(1) if m else name)
         for base in sorted(bases):
@@ -403,12 +421,14 @@ def _run_migration_transaction(cur, mapping, new_meta,
                 logger.warning(
                     "provider migration: id_map for '%s' in %s could not be "
                     "relabelled in place; dropping the stale index so it "
-                    "rebuilds on the next analysis", base, table, exc_info=True,
+                    "rebuilds on the next analysis",
+                    base,
+                    table,
+                    exc_info=True,
                 )
                 like_pattern = base.replace("_", r"\_") + r"\_%\_%"
                 cur.execute(
-                    f"DELETE FROM {table} WHERE index_name = %s "
-                    f"OR index_name LIKE %s ESCAPE '\\'",
+                    f"DELETE FROM {table} WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
                     (base, like_pattern),
                 )
                 index_rebuild_needed.append(f"{table}:{base}")
@@ -418,17 +438,22 @@ def _run_migration_transaction(cur, mapping, new_meta,
         if cur.fetchone()[0] is not None:
             cur.execute(f"DELETE FROM {ivf_table}")
 
-    for artist_table in ('artist_index_data', 'artist_metadata_data',
-                         'artist_component_projection', 'artist_mapping'):
+    for artist_table in (
+        'artist_index_data',
+        'artist_metadata_data',
+        'artist_component_projection',
+        'artist_mapping',
+    ):
         cur.execute("SELECT to_regclass(%s)", (artist_table,))
         if cur.fetchone()[0] is not None:
             cur.execute(f"DELETE FROM {artist_table}")
 
-    _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=selected_libraries)
+    _write_provider_to_app_config(
+        cur, target_type, target_creds, selected_libraries=selected_libraries
+    )
 
     cur.execute(
-        "UPDATE migration_session SET status = 'completed', completed_at = NOW() "
-        "WHERE id = %s",
+        "UPDATE migration_session SET status = 'completed', completed_at = NOW() WHERE id = %s",
         (session_id,),
     )
 
@@ -436,10 +461,14 @@ def _run_migration_transaction(cur, mapping, new_meta,
 
 
 _CREDS_TO_CONFIG = {
-    'jellyfin':  {'url': 'JELLYFIN_URL', 'user_id': 'JELLYFIN_USER_ID', 'token': 'JELLYFIN_TOKEN'},
-    'emby':      {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
-    'navidrome': {'url': 'NAVIDROME_URL', 'user': 'NAVIDROME_USER', 'password': 'NAVIDROME_PASSWORD'},
-    'lyrion':    {'url': 'LYRION_URL'},
+    'jellyfin': {'url': 'JELLYFIN_URL', 'user_id': 'JELLYFIN_USER_ID', 'token': 'JELLYFIN_TOKEN'},
+    'emby': {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
+    'navidrome': {
+        'url': 'NAVIDROME_URL',
+        'user': 'NAVIDROME_USER',
+        'password': 'NAVIDROME_PASSWORD',
+    },
+    'lyrion': {'url': 'LYRION_URL'},
 }
 
 
@@ -499,27 +528,33 @@ def _write_provider_to_app_config(cur, target_type, target_creds, selected_libra
 def _post_commit_reload(redis):
     try:
         import config
+
         config.refresh_config()
     except Exception as e:
         logger.warning("config.refresh_config() failed: %s", e)
     try:
         import restart_manager
+
         restart_manager.publish_restart_request()
     except Exception as e:
         logger.warning("restart_manager.publish_restart_request() failed: %s", e)
 
 
-
 def dry_run_provider_migration(session_id, allow_title_artist_only=False):
     from app import app
+
     with app.app_context():
         import app_provider_migration
+
         return app_provider_migration.run_dry_run_core(
-            session_id, allow_title_artist_only=allow_title_artist_only)
+            session_id, allow_title_artist_only=allow_title_artist_only
+        )
 
 
 def source_refresh_provider_migration(session_id):
     from app import app
+
     with app.app_context():
         import app_provider_migration
+
         return app_provider_migration.run_source_refresh_core(session_id)

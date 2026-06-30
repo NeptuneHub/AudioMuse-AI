@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 from tasks.setup_manager import SetupManager
 
 
-
 def _mgr(database_url="postgresql://test:test@localhost:5432/testdb"):
     return SetupManager(database_url=database_url)
 
@@ -16,9 +15,7 @@ def _cfg(**attrs):
     return types.SimpleNamespace(**attrs)
 
 
-
 class TestLooksLikePlaceholder:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -62,9 +59,7 @@ class TestLooksLikePlaceholder:
         assert self.mgr._looks_like_placeholder("No-Key-Needed") is True
 
 
-
 class TestIsValidString:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -87,9 +82,7 @@ class TestIsValidString:
         assert self.mgr._is_valid_string([]) is False
 
 
-
 class TestIsArgon2PasswordHash:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -110,9 +103,7 @@ class TestIsArgon2PasswordHash:
         assert self.mgr._is_argon2_password_hash(123) is False
 
 
-
 class TestCastValue:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -158,9 +149,7 @@ class TestCastValue:
         assert self.mgr.cast_value("default", "") == ""
 
 
-
 class TestFormatValue:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -189,9 +178,7 @@ class TestFormatValue:
         assert self.mgr.format_value({}) == "{}"
 
 
-
 class TestCastFormatRoundTrip:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -202,9 +189,7 @@ class TestCastFormatRoundTrip:
         assert recovered == original
 
 
-
 class TestGetDatabaseUrl:
-
     def test_uses_database_url_env(self):
         with patch.dict("os.environ", {"DATABASE_URL": "postgresql://u:p@h:5/d"}, clear=False):
             url = _mgr(database_url=None)._get_database_url()
@@ -252,9 +237,7 @@ class TestGetDatabaseUrl:
                 os.environ["DATABASE_URL"] = old
 
 
-
 class TestIsValidServerConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -343,9 +326,7 @@ class TestIsValidServerConfig:
         assert self.mgr._is_valid_server_config(cfg) is False
 
 
-
 class TestIsValidAuthConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -376,7 +357,9 @@ class TestIsValidAuthConfig:
         assert self.mgr._is_valid_auth_config(cfg) is True
 
     def test_auth_enabled_placeholder_user(self):
-        cfg = _cfg(AUTH_ENABLED=True, AUDIOMUSE_USER="your_default_user", AUDIOMUSE_PASSWORD="secret")
+        cfg = _cfg(
+            AUTH_ENABLED=True, AUDIOMUSE_USER="your_default_user", AUDIOMUSE_PASSWORD="secret"
+        )
         assert self.mgr._is_valid_auth_config(cfg) is False
 
     def test_api_token_not_required(self):
@@ -388,9 +371,7 @@ class TestIsValidAuthConfig:
         assert self.mgr._is_valid_auth_config(cfg) is False
 
 
-
 class TestIsValidEnvConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -444,9 +425,7 @@ class TestIsValidEnvConfig:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-
 class TestIsSetupComplete:
-
     def test_delegates_to_is_valid_env_config(self):
         mgr = _mgr()
         good = _cfg(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000", AUTH_ENABLED=False)
@@ -456,9 +435,7 @@ class TestIsSetupComplete:
         assert mgr.is_setup_complete(bad) is False
 
 
-
 class TestGetEnvConfigValues:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -501,9 +478,7 @@ class TestGetEnvConfigValues:
         assert "MY_KEY" in values
 
 
-
 class TestGetConnection:
-
     def test_raises_if_no_database_url(self):
         mgr = SetupManager.__new__(SetupManager)
         mgr.database_url = None
@@ -512,9 +487,7 @@ class TestGetConnection:
             mgr.get_connection()
 
 
-
 class TestSaveConfigValuesValidation:
-
     def test_rejects_non_dict(self):
         mgr = _mgr()
         with pytest.raises(ValueError, match="Expected a dictionary"):
@@ -531,18 +504,14 @@ class TestSaveConfigValuesValidation:
             mgr.save_config_values(None)
 
 
-
 class TestDeleteConfigValuesNoop:
-
     @patch("tasks.setup_manager.SetupManager.get_connection")
     def test_noop_for_empty_keys(self, mock_get_conn):
         _mgr().delete_config_values([])
         mock_get_conn.assert_not_called()
 
 
-
 class TestPlaceholderFieldsRejectAllServers:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -578,9 +547,7 @@ class TestPlaceholderFieldsRejectAllServers:
         assert self.mgr.is_valid_env_config(cfg) is False
 
 
-
 class TestServerTypeSwitching:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -609,9 +576,7 @@ class TestServerTypeSwitching:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-
 class TestAuthTransitions:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -619,11 +584,15 @@ class TestAuthTransitions:
         return dict(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000")
 
     def test_enable_auth_requires_credentials(self):
-        cfg = _cfg(**self._valid_server(), AUTH_ENABLED=True, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
+        cfg = _cfg(
+            **self._valid_server(), AUTH_ENABLED=True, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD=""
+        )
         assert self.mgr.is_valid_env_config(cfg) is False
 
     def test_disable_auth_clears_requirement(self):
-        cfg = _cfg(**self._valid_server(), AUTH_ENABLED=False, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
+        cfg = _cfg(
+            **self._valid_server(), AUTH_ENABLED=False, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD=""
+        )
         assert self.mgr.is_valid_env_config(cfg) is True
 
     def test_argon2_hash_is_valid_password(self):
@@ -636,17 +605,17 @@ class TestAuthTransitions:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-
 class TestModuleConstants:
-
     def test_basic_server_fields_is_set(self):
         from tasks.setup_manager import BASIC_SERVER_FIELDS
+
         assert isinstance(BASIC_SERVER_FIELDS, set)
         assert 'MEDIASERVER_TYPE' in BASIC_SERVER_FIELDS
         assert 'JELLYFIN_URL' in BASIC_SERVER_FIELDS
 
     def test_auth_fields_is_set(self):
         from tasks.setup_manager import AUTH_FIELDS
+
         assert isinstance(AUTH_FIELDS, set)
         assert 'AUTH_ENABLED' in AUTH_FIELDS
         assert 'AUDIOMUSE_USER' in AUTH_FIELDS
@@ -655,5 +624,6 @@ class TestModuleConstants:
 
     def test_server_required_fields_matches_config(self):
         import config
+
         mgr = _mgr()
         assert mgr.SERVER_REQUIRED_FIELDS == config.MEDIASERVER_FIELDS_BY_TYPE

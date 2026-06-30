@@ -454,7 +454,7 @@
                 }
             });
 
-            // Mood sunburst — init when mood type is set (triggered lazily)
+            // Mood sunburst - init when mood type is set (triggered lazily)
             let _sbInitialized = false;
             const _initSunburstOnce = () => {
                 if (_sbInitialized) return;
@@ -531,7 +531,7 @@
                                 return;
                             }
                             idEl.value = track.item_id;
-                            selectedSongNameEl.textContent = `${track.title} — ${track.author}`;
+                            selectedSongNameEl.textContent = `${track.title} - ${track.author}`;
                             resultsEl.classList.add('hidden');
                         });
                         resultsEl.appendChild(itemDiv);
@@ -843,7 +843,7 @@
                         const plotEl = document.getElementById('alchemy-plot');
                         if (plotEl && (data.centroid_2d || (data.results && data.results.length) || (data.filtered_out && data.filtered_out.length))) {
                             // Build datasets
-                            const fullLabel = (item) => (item.title ? `${item.title} — ${item.author || ''}` : item.item_id);
+                            const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
                             const kept = (data.results || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
                             const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
@@ -962,9 +962,9 @@
                                             callbacks: {
                                                 label: (ctx) => {
                                                     const label = ctx.raw.label || '';
-                                                    const parts = label.split(' — ');
+                                                    const parts = label.split(' - ');
                                                     if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' — ')}`];
+                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' - ')}`];
                                                     }
                                                     return label;
                                                 }
@@ -1019,7 +1019,7 @@
                      try {
                         const plotEl = document.getElementById('alchemy-plot');
                         if (plotEl && (data.centroid_2d || (data.filtered_out && data.filtered_out.length) || (data.add_points && data.add_points.length) || (data.sub_points && data.sub_points.length))) {
-                            const fullLabel = (item) => (item.title ? `${item.title} — ${item.author || ''}` : item.item_id);
+                            const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
                             const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
                             const kept = [];
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
@@ -1137,9 +1137,9 @@
                                             callbacks: {
                                                 label: (ctx) => {
                                                     const label = ctx.raw.label || '';
-                                                    const parts = label.split(' — ');
+                                                    const parts = label.split(' - ');
                                                     if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' — ')}`];
+                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' - ')}`];
                                                     }
                                                     return label;
                                                 }
@@ -1398,7 +1398,7 @@
                     showMessageBox('Radio Saved', `Saved ${saved} radio(s).`);
                 } else {
                     if (saved > 0) await loadRadios();
-                    showMessageBox('Radio', `Saved ${saved} radio(s). Problems — ${problems.join('; ')}`);
+                    showMessageBox('Radio', `Saved ${saved} radio(s). Problems - ${problems.join('; ')}`);
                 }
             } finally {
                 updateSaveRadiosState();

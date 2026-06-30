@@ -1,5 +1,3 @@
-
-
 class StripDuplicatedScriptName:
     def __init__(self, app):
         self.app = app
@@ -9,5 +7,5 @@ class StripDuplicatedScriptName:
         if prefix:
             path_info = environ.get('PATH_INFO', '')
             if path_info == prefix or path_info.startswith(prefix + '/'):
-                environ['PATH_INFO'] = path_info[len(prefix):] or '/'
+                environ['PATH_INFO'] = path_info[len(prefix) :] or '/'
         return self.app(environ, start_response)

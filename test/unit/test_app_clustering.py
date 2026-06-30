@@ -1,4 +1,3 @@
-
 import pytest
 from unittest.mock import Mock, patch
 from flask import Flask
@@ -41,7 +40,10 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_called_once()
         mock_save_status.assert_called_once()
 
-    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'})
+    @patch(
+        'app_clustering.get_active_main_task',
+        return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'},
+    )
     @patch('app_clustering.rq_queue_high')
     @patch('app_clustering.clean_up_previous_main_tasks')
     @patch('app_clustering.save_task_status')
@@ -57,7 +59,14 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
 
-    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch(
+        'app_clustering.get_active_main_task',
+        return_value={
+            'task_id': 'existing-cleaning-123',
+            'status': 'STARTED',
+            'task_type': 'cleaning',
+        },
+    )
     @patch('app_clustering.rq_queue_high')
     @patch('app_clustering.clean_up_previous_main_tasks')
     @patch('app_clustering.save_task_status')

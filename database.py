@@ -1,4 +1,3 @@
-
 import json
 import logging
 import sys
@@ -43,7 +42,7 @@ def get_db():
                 keepalives_idle=600,
                 keepalives_interval=30,
                 keepalives_count=3,
-                options='-c statement_timeout=600000'
+                options='-c statement_timeout=600000',
             )
         except psycopg2.OperationalError as e:
             logger.exception(f"Failed to connect to database: {e}")
@@ -60,6 +59,7 @@ def close_db(e=None):
 def start_embedded(data_dir):
     global _embedded_server
     import pgserver
+
     _embedded_server = pgserver.get_server(data_dir)
     return _embedded_server.get_uri()
 
@@ -70,6 +70,7 @@ def ensure_embedded_running(data_dir):
         return start_embedded(data_dir)
     import pgserver
     from pathlib import Path
+
     try:
         pgserver.PostgresServer._instances.pop(Path(data_dir).expanduser().resolve(), None)
     except Exception:
@@ -83,7 +84,6 @@ def stop_embedded():
     if _embedded_server is not None:
         _embedded_server.cleanup()
         _embedded_server = None
-
 
 
 def _build_task_note(task_type, details_obj, db):
@@ -116,22 +116,33 @@ def _build_task_note(task_type, details_obj, db):
                     continue
             if songs > 0:
                 return f"Songs analyzed: {songs}"
-            albums = details_obj.get('albums_completed') or details_obj.get('total_albums_processed')
+            albums = details_obj.get('albums_completed') or details_obj.get(
+                'total_albums_processed'
+            )
             if albums:
                 return f"Albums analyzed: {albums}"
             return ''
 
         if 'clean' in t:
-            for k in ('tracks_deleted', 'orphans_removed', 'songs_cleaned',
-                     'tracks_removed', 'deleted_count', 'cleaned_tracks'):
+            for k in (
+                'tracks_deleted',
+                'orphans_removed',
+                'songs_cleaned',
+                'tracks_removed',
+                'deleted_count',
+                'cleaned_tracks',
+            ):
                 v = details_obj.get(k)
                 if isinstance(v, (int, float)):
                     return f"Songs cleaned: {int(v)}"
             return ''
 
         if 'cluster' in t:
-            sampled = (details_obj.get('best_params') or {}).get('initial_subset_size') \
-                if isinstance(details_obj.get('best_params'), dict) else None
+            sampled = (
+                (details_obj.get('best_params') or {}).get('initial_subset_size')
+                if isinstance(details_obj.get('best_params'), dict)
+                else None
+            )
             if sampled is None:
                 sampled = details_obj.get('sampled_songs') or details_obj.get('num_sampled_songs')
             n_clusters = details_obj.get('num_playlists_created') or details_obj.get('num_clusters')
@@ -160,10 +171,7 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
                 note = details_obj.get('status_message') or details_obj.get('message') or ''
 
         with db.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM task_history WHERE task_id = %s LIMIT 1",
-                (task_id,)
-            )
+            cur.execute("SELECT 1 FROM task_history WHERE task_id = %s LIMIT 1", (task_id,))
             if cur.fetchone():
                 return
             cur.execute(
@@ -191,7 +199,15 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             pass
 
 
-def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task_id=None, sub_type_identifier=None, progress=0, details=None):
+def save_task_status(
+    task_id,
+    task_type,
+    status=TASK_STATUS_PENDING,
+    parent_task_id=None,
+    sub_type_identifier=None,
+    progress=0,
+    details=None,
+):
     db = get_db()
     current_unix_time = time.time()
 
@@ -201,19 +217,26 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
             if len(log_list) > MAX_LOG_ENTRIES_STORED:
                 original_log_length = len(log_list)
                 details['log'] = log_list[-MAX_LOG_ENTRIES_STORED:]
-                details['log_storage_info'] = f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
+                details['log_storage_info'] = (
+                    f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
+                )
             else:
                 details.pop('log_storage_info', None)
         elif status == TASK_STATUS_SUCCESS:
             details.pop('log_storage_info', None)
-            if 'log' not in details or not isinstance(details.get('log'), list) or not details.get('log'):
+            if (
+                'log' not in details
+                or not isinstance(details.get('log'), list)
+                or not details.get('log')
+            ):
                 details['log'] = ["Task completed successfully."]
 
     details_json = json.dumps(details) if details is not None else None
 
     cur = db.cursor()
     try:
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time)
             VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s IN ('SUCCESS', 'FAILURE', 'REVOKED') THEN %s ELSE NULL END)
             ON CONFLICT (task_id) DO UPDATE SET
@@ -229,7 +252,22 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
                                 THEN %s
                                 ELSE task_status.end_time
                            END
-        """, (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details_json, current_unix_time, status, current_unix_time, current_unix_time, current_unix_time))
+        """,
+            (
+                task_id,
+                parent_task_id,
+                task_type,
+                sub_type_identifier,
+                status,
+                progress,
+                details_json,
+                current_unix_time,
+                status,
+                current_unix_time,
+                current_unix_time,
+                current_unix_time,
+            ),
+        )
         db.commit()
     except psycopg2.Error:
         logger.exception(f"DB Error saving task status for {task_id}")
@@ -245,7 +283,8 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
         if (
             parent_task_id is None
             and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            and task_type and task_type != 'unknown'
+            and task_type
+            and task_type != 'unknown'
         ):
             duration_s = None
             try:
@@ -268,12 +307,15 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
 def get_task_info_from_db(task_id):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
-    cur.execute("""
+    cur.execute(
+        """
         SELECT
             task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time
         FROM task_status
         WHERE task_id = %s
-    """, (task_id,))
+    """,
+        (task_id,),
+    )
     row = cur.fetchone()
     cur.close()
     if not row:
@@ -292,7 +334,6 @@ def get_task_info_from_db(task_id):
         row_dict['running_time_seconds'] = max(0, effective_end_time - start_time)
 
     return row_dict
-
 
 
 def get_score_data_by_ids(item_ids_list):
@@ -348,7 +389,11 @@ def get_tracks_by_ids(item_ids_list):
 
 def load_map_projection(index_name, force_reload=False):
     global MAP_PROJECTION_CACHE
-    if not force_reload and MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
+    if (
+        not force_reload
+        and MAP_PROJECTION_CACHE
+        and MAP_PROJECTION_CACHE.get('index_name') == index_name
+    ):
         logger.info(f"Map projection '{index_name}' already loaded in cache. Skipping reload.")
         return MAP_PROJECTION_CACHE.get('id_map'), MAP_PROJECTION_CACHE.get('projection')
 
@@ -356,20 +401,26 @@ def load_map_projection(index_name, force_reload=False):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
+        cur.execute(
+            "SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s",
+            (index_name,),
+        )
         row = cur.fetchone()
         if row and row[0] is not None:
             proj_blob, id_map_json = row[0], row[1]
         else:
             import re
             from tasks.index_build_helpers import reassemble_segmented_id_map
+
             cur.execute(
                 "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
                 (index_name.replace('_', r'\_') + r"\_%\_%",),
             )
             candidates = cur.fetchall()
             if not candidates:
-                logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
+                logger.warning(
+                    f"Map projection '{index_name}' not found in the database. Cache will be empty."
+                )
                 return None, None
             seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
             parts = []
@@ -383,11 +434,15 @@ def load_map_projection(index_name, force_reload=False):
                 if total_expected is None:
                     total_expected = total
                 elif total_expected != total:
-                    logger.error(f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load.")
+                    logger.error(
+                        f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load."
+                    )
                     return None, None
                 parts.append((part_no, part_blob, part_id_map))
             if total_expected is None or len(parts) != total_expected:
-                logger.error(f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load.")
+                logger.error(
+                    f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load."
+                )
                 return None, None
             parts.sort(key=lambda p: p[0])
             proj_blob = b"".join(bytes(p[1]) for p in parts if p[1])
@@ -397,7 +452,9 @@ def load_map_projection(index_name, force_reload=False):
             proj = proj.reshape((-1, 2))
         id_map = json.loads(id_map_json)
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
-        logger.info(f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory.")
+        logger.info(
+            f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory."
+        )
         return id_map, proj
     except Exception:
         logger.exception("Failed to load map projection")
@@ -406,9 +463,23 @@ def load_map_projection(index_name, force_reload=False):
         cur.close()
 
 
-
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
-
+def save_track_analysis_and_embedding(
+    item_id,
+    title,
+    author,
+    tempo,
+    key,
+    scale,
+    moods,
+    embedding_vector,
+    energy=None,
+    other_features=None,
+    album=None,
+    album_artist=None,
+    year=None,
+    rating=None,
+    file_path=None,
+):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
     album = sanitize_db_field(album, max_length=200, field_name="album")
@@ -474,7 +545,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
@@ -491,14 +563,34 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
                 file_path = EXCLUDED.file_path
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
+        """,
+            (
+                item_id,
+                title,
+                author,
+                tempo,
+                key,
+                scale,
+                mood_str,
+                energy,
+                other_features,
+                album,
+                album_artist,
+                year,
+                rating,
+                file_path,
+            ),
+        )
 
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-            """, (item_id, psycopg2.Binary(embedding_blob)))
+            """,
+                (item_id, psycopg2.Binary(embedding_blob)),
+            )
 
         conn.commit()
     except Exception:
@@ -510,17 +602,22 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
 
 
 def save_clap_embedding(item_id, clap_embedding_vector):
-    if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
+    if clap_embedding_vector is None or (
+        isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0
+    ):
         return
 
     conn = get_db()
     cur = conn.cursor()
     try:
         embedding_blob = clap_embedding_vector.astype(np.float32).tobytes()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO clap_embedding (item_id, embedding) VALUES (%s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
+        """,
+            (item_id, psycopg2.Binary(embedding_blob)),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -547,23 +644,39 @@ def get_clap_embedding(item_id):
 
 
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
-    if lyrics_embedding_vector is None or (isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0):
+    if lyrics_embedding_vector is None or (
+        isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0
+    ):
         return
 
     conn = get_db()
     cur = conn.cursor()
     try:
-        embedding_blob = lyrics_embedding_vector.astype(np.float32).tobytes() if isinstance(lyrics_embedding_vector, np.ndarray) else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        embedding_blob = (
+            lyrics_embedding_vector.astype(np.float32).tobytes()
+            if isinstance(lyrics_embedding_vector, np.ndarray)
+            else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        )
         axis_blob = None
         if axis_vector is not None:
-            arr = axis_vector if isinstance(axis_vector, np.ndarray) else np.asarray(axis_vector, dtype=np.float32)
+            arr = (
+                axis_vector
+                if isinstance(axis_vector, np.ndarray)
+                else np.asarray(axis_vector, dtype=np.float32)
+            )
             if arr.size > 0:
                 axis_blob = arr.astype(np.float32, copy=False).tobytes()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO lyrics_embedding (item_id, embedding, axis_vector) VALUES (%s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding, axis_vector = EXCLUDED.axis_vector, updated_at = CURRENT_TIMESTAMP
-        """, (item_id, psycopg2.Binary(embedding_blob),
-              psycopg2.Binary(axis_blob) if axis_blob is not None else None))
+        """,
+            (
+                item_id,
+                psycopg2.Binary(embedding_blob),
+                psycopg2.Binary(axis_blob) if axis_blob is not None else None,
+            ),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -574,7 +687,6 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
 
 
 ARTIST_PROJECTION_CACHE = None
-
 
 
 def init_db():
@@ -594,42 +706,62 @@ def init_db():
             else:
                 cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
                 cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
-            cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'energy' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'other_features' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'album' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'album_artist' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'year' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'rating' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
 
-            cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
+            cur.execute(
+                "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"
+            )
             row = cur.fetchone()
-            search_u_generated = (row and row[0] == 'ALWAYS')
+            search_u_generated = row and row[0] == 'ALWAYS'
 
             if search_u_generated:
-                logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
+                logger.info(
+                    "Dropping legacy generated 'search_u' column to replace it with a trigger-updated column."
+                )
                 cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
                 row = None
 
@@ -640,7 +772,9 @@ def init_db():
             if sys.platform == 'win32':
                 cur.execute("SAVEPOINT search_setup")
                 try:
-                    cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                    cur.execute(
+                        "CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;"
+                    )
                     cur.execute("""
                         CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
                         BEGIN
@@ -656,14 +790,22 @@ def init_db():
                         FOR EACH ROW
                         EXECUTE FUNCTION score_search_u_sync();
                     """)
-                    cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
-                    cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                    cur.execute(
+                        "UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)"
+                    )
                     cur.execute("RELEASE SAVEPOINT search_setup")
                 except Exception:
-                    logger.warning("unaccent/pg_trgm extensions not available -- accent-insensitive search disabled")
+                    logger.warning(
+                        "unaccent/pg_trgm extensions not available -- accent-insensitive search disabled"
+                    )
                     cur.execute("ROLLBACK TO SAVEPOINT search_setup")
             else:
-                cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                cur.execute(
+                    "CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;"
+                )
                 cur.execute("""
                     CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
                     BEGIN
@@ -679,18 +821,34 @@ def init_db():
                     FOR EACH ROW
                     EXECUTE FUNCTION score_search_u_sync();
                 """)
-                cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
-                cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                cur.execute(
+                    "UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)"
+                )
 
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
+            )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
 
-            cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
-            cur.execute("CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)"
+            )
             for col_name in ['start_time', 'end_time']:
-                cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
-                if not cur.fetchone(): cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
+                cur.execute(
+                    "SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s",
+                    (col_name,),
+                )
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS task_history (
                     id SERIAL PRIMARY KEY,
@@ -702,33 +860,72 @@ def init_db():
                     note TEXT
                 )
             """)
-            cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
-            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute(
+                    "ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_axes_index_data")
             cur.execute("DROP TABLE IF EXISTS artist_index_data")
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))"
+            )
             cur.execute("ALTER TABLE ivf_cell ALTER COLUMN cell_data SET STORAGE EXTERNAL")
-            cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"
+            )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS dashboard_stats ("
                 "id INTEGER PRIMARY KEY, "
@@ -743,10 +940,16 @@ def init_db():
             )
             row = cur.fetchone()
             if row and row[0] == 0:
-                logger.info("Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id")
+                logger.info(
+                    "Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id"
+                )
                 cur.execute("DELETE FROM dashboard_stats")
-                cur.execute("ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)")
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
+                cur.execute(
+                    "ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)"
+                )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)"
+            )
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config')"
             )
@@ -756,8 +959,12 @@ def init_db():
                     "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
                     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
                 )
-            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS migration_session (
                     id           SERIAL PRIMARY KEY,
@@ -793,7 +1000,9 @@ def init_db():
                     UNIQUE(rank)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)"
+            )
 
             cur.execute("SELECT COUNT(*) FROM text_search_queries")
             count = cur.fetchone()[0]
@@ -849,14 +1058,17 @@ def init_db():
                     "orchestra whispered romantic",
                     "belting mid-tempo progressive rock",
                     "autotuned pop mid-tempo",
-                    "pop energetic synthesizer"
+                    "pop energetic synthesizer",
                 ]
 
                 for rank, query in enumerate(default_queries, start=1):
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO text_search_queries (query_text, score, rank, created_at)
                         VALUES (%s, %s, %s, NOW())
-                    """, (query, 1.0, rank))
+                    """,
+                        (query, 1.0, rank),
+                    )
 
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
@@ -865,17 +1077,23 @@ def init_db():
             cur.execute("SELECT pg_advisory_unlock(726354821)")
 
 
-
-
 def clean_up_previous_main_tasks():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     logger.info("Starting cleanup of all previous main tasks.")
 
-    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS)
+    non_terminal_statuses = (
+        TASK_STATUS_PENDING,
+        TASK_STATUS_STARTED,
+        TASK_STATUS_PROGRESS,
+        TASK_STATUS_SUCCESS,
+    )
 
     try:
-        cur.execute("SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL", (non_terminal_statuses,))
+        cur.execute(
+            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL",
+            (non_terminal_statuses,),
+        )
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
@@ -892,19 +1110,30 @@ def clean_up_previous_main_tasks():
             if original_details_json:
                 try:
                     original_details_dict = json.loads(original_details_json)
-                    original_status_message = original_details_dict.get("status_message", original_status_message)
+                    original_status_message = original_details_dict.get(
+                        "status_message", original_status_message
+                    )
                 except (json.JSONDecodeError, TypeError):
-                     logger.warning(f"Could not parse original details for task {task_id} during archival.")
+                    logger.warning(
+                        f"Could not parse original details for task {task_id} during archival."
+                    )
 
             try:
                 duration_s = None
                 if task_row['start_time'] is not None:
                     end = task_row['end_time'] if task_row['end_time'] is not None else time.time()
                     duration_s = max(0.0, float(end) - float(task_row['start_time']))
-                final_status = TASK_STATUS_SUCCESS if original_status == TASK_STATUS_SUCCESS else TASK_STATUS_REVOKED
+                final_status = (
+                    TASK_STATUS_SUCCESS
+                    if original_status == TASK_STATUS_SUCCESS
+                    else TASK_STATUS_REVOKED
+                )
                 record_task_history(
-                    task_id, task_row['task_type'], final_status,
-                    duration_s, details=original_details_dict,
+                    task_id,
+                    task_row['task_type'],
+                    final_status,
+                    duration_s,
+                    details=original_details_dict,
                 )
             except Exception as e_hist:
                 logger.debug(f"history record skipped during archive of {task_id}: {e_hist}")
@@ -915,17 +1144,16 @@ def clean_up_previous_main_tasks():
                 archival_reason = f"New main task started, stale task (status: {original_status}) has been archived."
 
             archived_details = {
-                "log": [f"[Archived] {archival_reason}. Original summary: {original_status_message}"],
+                "log": [
+                    f"[Archived] {archival_reason}. Original summary: {original_status_message}"
+                ],
                 "original_status_before_archival": original_status,
-                "archival_reason": archival_reason
+                "archival_reason": archival_reason,
             }
             archived_details_json = json.dumps(archived_details)
 
             with db.cursor() as update_cur:
-                update_cur.execute(
-                    "DELETE FROM task_status WHERE parent_task_id = %s",
-                    (task_id,)
-                )
+                update_cur.execute("DELETE FROM task_status WHERE parent_task_id = %s", (task_id,))
                 children_deleted = update_cur.rowcount
                 deleted_children_count += children_deleted
 
@@ -934,13 +1162,15 @@ def clean_up_previous_main_tasks():
 
                 update_cur.execute(
                     "UPDATE task_status SET status = %s, details = %s, progress = 100, timestamp = NOW() WHERE task_id = %s AND status = %s",
-                    (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status)
+                    (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status),
                 )
             archived_count += 1
 
         if archived_count > 0:
             db.commit()
-            logger.info(f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks.")
+            logger.info(
+                f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks."
+            )
         else:
             logger.info("No previous main tasks found to clean up.")
     except Exception:
@@ -949,41 +1179,50 @@ def clean_up_previous_main_tasks():
     finally:
         cur.close()
 
+
 def get_active_main_task(task_type=None):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
 
     if task_type:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT task_id, task_type, status, details
             FROM task_status
             WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (task_type, non_terminal_statuses))
+        """,
+            (task_type, non_terminal_statuses),
+        )
     else:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT task_id, task_type, status, details
             FROM task_status
             WHERE status IN %s AND parent_task_id IS NULL
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (non_terminal_statuses,))
+        """,
+            (non_terminal_statuses,),
+        )
 
     active_task = cur.fetchone()
     cur.close()
     return dict(active_task) if active_task else None
 
+
 def get_child_tasks_from_db(parent_task_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute("SELECT task_id, status, sub_type_identifier FROM task_status WHERE parent_task_id = %s", (parent_task_id,))
+    cur.execute(
+        "SELECT task_id, status, sub_type_identifier FROM task_status WHERE parent_task_id = %s",
+        (parent_task_id,),
+    )
     tasks = cur.fetchall()
     cur.close()
     return [dict(row) for row in tasks]
-
-
 
 
 def save_alchemy_anchor(name, centroid):
@@ -997,7 +1236,7 @@ def save_alchemy_anchor(name, centroid):
             "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
             "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
             "RETURNING id, name, created_at",
-            (name, centroid_json)
+            (name, centroid_json),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1008,6 +1247,7 @@ def save_alchemy_anchor(name, centroid):
         return None
     finally:
         cur.close()
+
 
 def get_alchemy_anchors():
     conn = get_db()
@@ -1021,6 +1261,7 @@ def get_alchemy_anchors():
         return []
     finally:
         cur.close()
+
 
 def delete_alchemy_anchor(anchor_id):
     conn = get_db()
@@ -1036,11 +1277,14 @@ def delete_alchemy_anchor(anchor_id):
     finally:
         cur.close()
 
+
 def get_alchemy_anchor_by_id(anchor_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
-        cur.execute("SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        cur.execute(
+            "SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,)
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -1057,6 +1301,7 @@ def get_alchemy_anchor_by_id(anchor_id):
     finally:
         cur.close()
 
+
 def update_alchemy_anchor_name(anchor_id, name):
     if not name or not isinstance(name, str):
         return None
@@ -1065,7 +1310,7 @@ def update_alchemy_anchor_name(anchor_id, name):
     try:
         cur.execute(
             "UPDATE alchemy_anchors SET name = %s WHERE id = %s RETURNING id, name",
-            (name.strip(), anchor_id)
+            (name.strip(), anchor_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1078,6 +1323,7 @@ def update_alchemy_anchor_name(anchor_id, name):
         return None
     finally:
         cur.close()
+
 
 def get_alchemy_radios():
     conn = get_db()
@@ -1096,6 +1342,7 @@ def get_alchemy_radios():
     finally:
         cur.close()
 
+
 def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1103,7 +1350,7 @@ def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
         cur.execute(
             "INSERT INTO alchemy_radios (anchor_id, temperature, n_results, enabled) "
             "VALUES (%s, %s, %s, %s) RETURNING id, anchor_id, temperature, n_results, enabled",
-            (anchor_id, temperature, n_results, bool(enabled))
+            (anchor_id, temperature, n_results, bool(enabled)),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1115,6 +1362,7 @@ def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
     finally:
         cur.close()
 
+
 def update_alchemy_radio(radio_id, temperature, n_results, enabled):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1122,7 +1370,7 @@ def update_alchemy_radio(radio_id, temperature, n_results, enabled):
         cur.execute(
             "UPDATE alchemy_radios SET temperature = %s, n_results = %s, enabled = %s "
             "WHERE id = %s RETURNING id, anchor_id, temperature, n_results, enabled",
-            (temperature, n_results, bool(enabled), radio_id)
+            (temperature, n_results, bool(enabled), radio_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1133,6 +1381,7 @@ def update_alchemy_radio(radio_id, temperature, n_results, enabled):
         return None
     finally:
         cur.close()
+
 
 def delete_alchemy_radio(radio_id):
     conn = get_db()
@@ -1147,8 +1396,6 @@ def delete_alchemy_radio(radio_id):
         return False
     finally:
         cur.close()
-
-
 
 
 def save_map_projection(index_name, id_map, projection_array):
@@ -1166,6 +1413,7 @@ def save_map_projection(index_name, id_map, projection_array):
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
         from tasks.index_build_helpers import store_ivf_index_segmented
+
         store_ivf_index_segmented(
             conn,
             target_table="map_projection_data",
@@ -1178,7 +1426,9 @@ def save_map_projection(index_name, id_map, projection_array):
         conn.commit()
         try:
             id_count = len(id_map) if hasattr(id_map, '__len__') else None
-            logger.info(f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}")
+            logger.info(
+                f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}"
+            )
         except Exception:
             logger.debug("Saved map projection but failed to compute size/id_count for log.")
     except Exception:
@@ -1186,28 +1436,46 @@ def save_map_projection(index_name, id_map, projection_array):
         logger.exception("Failed to save map projection")
         raise
 
+
 def load_artist_projection(index_name='artist_map', force_reload=False):
     global ARTIST_PROJECTION_CACHE
-    if not force_reload and ARTIST_PROJECTION_CACHE and ARTIST_PROJECTION_CACHE.get('index_name') == index_name:
+    if (
+        not force_reload
+        and ARTIST_PROJECTION_CACHE
+        and ARTIST_PROJECTION_CACHE.get('index_name') == index_name
+    ):
         logger.info(f"Artist projection '{index_name}' already loaded in cache. Skipping reload.")
-        return ARTIST_PROJECTION_CACHE.get('component_map'), ARTIST_PROJECTION_CACHE.get('projection')
+        return ARTIST_PROJECTION_CACHE.get('component_map'), ARTIST_PROJECTION_CACHE.get(
+            'projection'
+        )
 
     logger.info(f"Attempting to load artist projection '{index_name}' from database into memory...")
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT projection_data, artist_component_map_json FROM artist_component_projection WHERE index_name = %s", (index_name,))
+        cur.execute(
+            "SELECT projection_data, artist_component_map_json FROM artist_component_projection WHERE index_name = %s",
+            (index_name,),
+        )
         row = cur.fetchone()
         if not row:
-            logger.warning(f"Artist projection '{index_name}' not found in the database. Cache will be empty.")
+            logger.warning(
+                f"Artist projection '{index_name}' not found in the database. Cache will be empty."
+            )
             return None, None
         proj_blob, component_map_json = row[0], row[1]
         proj = np.frombuffer(proj_blob, dtype=np.float32)
         if proj.size % 2 == 0:
             proj = proj.reshape((-1, 2))
         component_map = json.loads(component_map_json)
-        ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': proj}
-        logger.info(f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory.")
+        ARTIST_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'component_map': component_map,
+            'projection': proj,
+        }
+        logger.info(
+            f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory."
+        )
         return component_map, proj
     except Exception:
         logger.exception("Failed to load artist projection")
@@ -1215,22 +1483,26 @@ def load_artist_projection(index_name='artist_map', force_reload=False):
     finally:
         cur.close()
 
+
 def save_artist_projection(index_name, component_map, projections):
     conn = get_db()
     cur = conn.cursor()
     try:
         component_map_json = json.dumps(component_map)
         proj_blob = projections.astype(np.float32).tobytes()
-        cur.execute("INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP", (index_name, proj_blob, component_map_json))
+        cur.execute(
+            "INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP",
+            (index_name, proj_blob, component_map_json),
+        )
         conn.commit()
-        logger.info(f"Saved artist projection '{index_name}' with {len(component_map)} components to database.")
+        logger.info(
+            f"Saved artist projection '{index_name}' with {len(component_map)} components to database."
+        )
     except Exception:
         conn.rollback()
         logger.exception("Failed to save artist projection")
     finally:
         cur.close()
-
-
 
 
 def update_playlist_table(playlists):
@@ -1240,7 +1512,10 @@ def update_playlist_table(playlists):
         cur.execute("DELETE FROM playlist")
         for name, cluster in playlists.items():
             for item_id, title, author in cluster:
-                cur.execute("INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING", (name, item_id, title, author))
+                cur.execute(
+                    "INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING",
+                    (name, item_id, title, author),
+                )
         conn.commit()
     except Exception:
         conn.rollback()

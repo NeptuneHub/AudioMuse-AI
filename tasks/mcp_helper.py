@@ -13,17 +13,23 @@ _library_context_cache = None
 
 def _build_ai_chat_db_url():
     from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
+
     if not AI_CHAT_DB_USER_NAME:
         return DATABASE_URL
     parsed = urlparse(DATABASE_URL)
     host = parsed.hostname or ''
     if parsed.port:
         host = f"{host}:{parsed.port}"
-    return urlunparse((
-        parsed.scheme,
-        f"{quote(AI_CHAT_DB_USER_NAME,safe='')}:{quote(AI_CHAT_DB_USER_PASSWORD,safe='')}@{host}",
-        parsed.path or '', parsed.params or '', parsed.query or '', parsed.fragment or ''
-    ))
+    return urlunparse(
+        (
+            parsed.scheme,
+            f"{quote(AI_CHAT_DB_USER_NAME, safe='')}:{quote(AI_CHAT_DB_USER_PASSWORD, safe='')}@{host}",
+            parsed.path or '',
+            parsed.params or '',
+            parsed.query or '',
+            parsed.fragment or '',
+        )
+    )
 
 
 _ai_chat_db_user_configured = False
@@ -34,23 +40,46 @@ def _ensure_ai_chat_db_user():
     if _ai_chat_db_user_configured:
         return
     from config import AI_CHAT_DB_USER_NAME, AI_CHAT_DB_USER_PASSWORD, DATABASE_URL
+
     if not AI_CHAT_DB_USER_NAME or not AI_CHAT_DB_USER_PASSWORD:
         return
     try:
         with psycopg2.connect(DATABASE_URL) as admin_conn, admin_conn.cursor() as cur:
             cur.execute('SELECT 1 FROM pg_roles WHERE rolname = %s', (AI_CHAT_DB_USER_NAME,))
             if cur.fetchone() is None:
-                cur.execute(sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+                cur.execute(
+                    sql.SQL('CREATE USER {} WITH LOGIN PASSWORD %s').format(
+                        sql.Identifier(AI_CHAT_DB_USER_NAME)
+                    ),
+                    [AI_CHAT_DB_USER_PASSWORD],
+                )
             else:
                 try:
                     psycopg2.connect(_build_ai_chat_db_url()).close()
                 except OperationalError:
-                    cur.execute(sql.SQL('ALTER USER {} WITH PASSWORD %s').format(sql.Identifier(AI_CHAT_DB_USER_NAME)), [AI_CHAT_DB_USER_PASSWORD])
+                    cur.execute(
+                        sql.SQL('ALTER USER {} WITH PASSWORD %s').format(
+                            sql.Identifier(AI_CHAT_DB_USER_NAME)
+                        ),
+                        [AI_CHAT_DB_USER_PASSWORD],
+                    )
             dbname = admin_conn.get_dsn_parameters().get('dbname')
             if dbname:
-                cur.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(sql.Identifier(dbname), sql.Identifier(AI_CHAT_DB_USER_NAME)))
-            cur.execute(sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
-            cur.execute(sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(sql.Identifier(AI_CHAT_DB_USER_NAME)))
+                cur.execute(
+                    sql.SQL('GRANT CONNECT ON DATABASE {} TO {}').format(
+                        sql.Identifier(dbname), sql.Identifier(AI_CHAT_DB_USER_NAME)
+                    )
+                )
+            cur.execute(
+                sql.SQL('GRANT USAGE ON SCHEMA public TO {}').format(
+                    sql.Identifier(AI_CHAT_DB_USER_NAME)
+                )
+            )
+            cur.execute(
+                sql.SQL('GRANT SELECT ON ALL TABLES IN SCHEMA public TO {}').format(
+                    sql.Identifier(AI_CHAT_DB_USER_NAME)
+                )
+            )
             admin_conn.commit()
             _ai_chat_db_user_configured = True
     except Exception as exc:
@@ -59,10 +88,12 @@ def _ensure_ai_chat_db_user():
 
 def get_db_connection():
     from config import AI_CHAT_DB_USER_NAME
+
     if AI_CHAT_DB_USER_NAME:
         _ensure_ai_chat_db_user()
         return psycopg2.connect(_build_ai_chat_db_url())
     from config import DATABASE_URL
+
     return psycopg2.connect(DATABASE_URL)
 
 
@@ -74,17 +105,23 @@ def get_library_context(force_refresh: bool = False) -> Dict:
     db_conn = get_db_connection()
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT COUNT(*) AS cnt, COUNT(DISTINCT author) AS artists FROM public.score")
+            cur.execute(
+                "SELECT COUNT(*) AS cnt, COUNT(DISTINCT author) AS artists FROM public.score"
+            )
             row = cur.fetchone()
             total_songs = row['cnt']
             unique_artists = row['artists']
 
-            cur.execute("SELECT MIN(year) AS ymin, MAX(year) AS ymax FROM public.score WHERE year IS NOT NULL AND year > 0")
+            cur.execute(
+                "SELECT MIN(year) AS ymin, MAX(year) AS ymax FROM public.score WHERE year IS NOT NULL AND year > 0"
+            )
             yr = cur.fetchone()
             year_min = yr['ymin']
             year_max = yr['ymax']
 
-            cur.execute("SELECT COUNT(*) AS rated FROM public.score WHERE rating IS NOT NULL AND rating > 0")
+            cur.execute(
+                "SELECT COUNT(*) AS rated FROM public.score WHERE rating IS NOT NULL AND rating > 0"
+            )
             rated_count = cur.fetchone()['rated']
             rated_pct = round(100.0 * rated_count / total_songs, 1) if total_songs > 0 else 0
 
@@ -102,7 +139,9 @@ def get_library_context(force_refresh: bool = False) -> Dict:
             """)
             top_genres = [r['name'] for r in cur.fetchall() if r['name']]
 
-            cur.execute("SELECT DISTINCT scale FROM public.score WHERE scale IS NOT NULL AND scale != '' ORDER BY scale")
+            cur.execute(
+                "SELECT DISTINCT scale FROM public.score WHERE scale IS NOT NULL AND scale != '' ORDER BY scale"
+            )
             scales = [r['scale'] for r in cur.fetchall()]
 
             cur.execute("""
@@ -135,9 +174,15 @@ def get_library_context(force_refresh: bool = False) -> Dict:
     except Exception as e:
         logger.warning(f"Failed to get library context: {e}")
         return {
-            'total_songs': 0, 'unique_artists': 0, 'top_genres': [],
-            'top_moods': [], 'year_min': None, 'year_max': None,
-            'has_ratings': False, 'rated_songs_pct': 0, 'scales': [],
+            'total_songs': 0,
+            'unique_artists': 0,
+            'top_genres': [],
+            'top_moods': [],
+            'year_min': None,
+            'year_max': None,
+            'has_ratings': False,
+            'rated_songs_pct': 0,
+            'scales': [],
         }
     finally:
         db_conn.close()

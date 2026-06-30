@@ -17,7 +17,8 @@ def _is_banned(ch):
 def main():
     out = subprocess.check_output(["git", "ls-files", "-z", "*.py"]).decode()
     files = [
-        f for f in out.split("\0")
+        f
+        for f in out.split("\0")
         if f
         and not f.startswith("query/")
         and f not in SKIP_FILES

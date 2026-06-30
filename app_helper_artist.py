@@ -38,12 +38,15 @@ def upsert_artist_mapping(artist_name, artist_id):
     try:
         conn = get_db()
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO artist_mapping (artist_name, artist_id)
                 VALUES (%s, %s)
                 ON CONFLICT (artist_name)
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
-            """, (artist_name, artist_id))
+            """,
+                (artist_name, artist_id),
+            )
             conn.commit()
     except Exception:
         logger.exception(f"Failed to upsert artist mapping for '{artist_name}'")
@@ -70,12 +73,16 @@ def upsert_artist_mappings(pairs):
     try:
         conn = get_db()
         with conn.cursor() as cur:
-            execute_values(cur, """
+            execute_values(
+                cur,
+                """
                 INSERT INTO artist_mapping (artist_name, artist_id)
                 VALUES %s
                 ON CONFLICT (artist_name)
                 DO UPDATE SET artist_id = EXCLUDED.artist_id
-            """, list(by_name.items()))
+            """,
+                list(by_name.items()),
+            )
             conn.commit()
     except Exception:
         logger.exception(f"Failed to bulk upsert {len(by_name)} artist mappings")
@@ -83,6 +90,7 @@ def upsert_artist_mappings(pairs):
             conn.rollback()
         except Exception:
             pass
+
 
 def get_artist_id_by_name(artist_name):
     """
@@ -101,12 +109,15 @@ def get_artist_id_by_name(artist_name):
     try:
         conn = get_db()
         with conn.cursor() as cur:
-            cur.execute("SELECT artist_id FROM artist_mapping WHERE artist_name = %s", (sanitized_name,))
+            cur.execute(
+                "SELECT artist_id FROM artist_mapping WHERE artist_name = %s", (sanitized_name,)
+            )
             row = cur.fetchone()
             return row[0] if row else None
     except Exception:
         logger.exception(f"Failed to get artist_id for '{sanitized_name}'")
         return None
+
 
 def get_artist_name_by_id(artist_id):
     """

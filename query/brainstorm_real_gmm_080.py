@@ -197,11 +197,11 @@ def main():
             mask = scores >= SCORE_THRESHOLD
             above_idx = np.where(mask)[0]
             n_musicnn = len(above_idx)
-            print(f"  Stage 1 — MusiCNN > {SCORE_THRESHOLD}: {n_musicnn} songs "
+            print(f"  Stage 1 - MusiCNN > {SCORE_THRESHOLD}: {n_musicnn} songs "
                   f"({100*n_musicnn/len(all_X):.1f}% of library)")
         else:
             above_idx = np.arange(len(all_X))
-            print(f"  Stage 1 — MusiCNN OFF: keeping all {len(above_idx)} songs")
+            print(f"  Stage 1 - MusiCNN OFF: keeping all {len(above_idx)} songs")
 
         if USE_CLAP:
             clap_label = MOOD_CLAP_LABEL[mood]
@@ -214,11 +214,11 @@ def main():
                         clap_pass.append(idx)
             clap_pass = np.array(clap_pass)
             n_pass = len(clap_pass)
-            print(f"  Stage 2 — CLAP '{clap_label}' > {CLAP_THRESHOLD}: {n_pass} songs remain")
+            print(f"  Stage 2 - CLAP '{clap_label}' > {CLAP_THRESHOLD}: {n_pass} songs remain")
         else:
             clap_pass = above_idx
             n_pass = len(clap_pass)
-            print(f"  Stage 2 — CLAP OFF: keeping {n_pass} songs")
+            print(f"  Stage 2 - CLAP OFF: keeping {n_pass} songs")
 
         if n_pass > MAX_SONGS_PER_MOOD:
             top_idx = clap_pass[np.argsort(scores[clap_pass])[-MAX_SONGS_PER_MOOD:]]

@@ -1,4 +1,3 @@
-
 from redis import Redis
 from rq import Queue, get_current_job
 from rq.job import Job
@@ -24,6 +23,7 @@ __all__ = [
     "redis_socket_options",
 ]
 
+
 def redis_socket_options(url):
     return {} if str(url).startswith("unix://") else {"socket_keepalive": True}
 
@@ -37,19 +37,29 @@ redis_conn = Redis.from_url(
     **redis_socket_options(config.REDIS_URL),
 )
 
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
+rq_queue_high = Queue(
+    'high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class
+)
+rq_queue_default = Queue(
+    'default', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class
+)
 
 
 def build_embedded_redis_argv(server_binary, socket_path, data_dir):
     argv = [
         server_binary,
-        "--unixsocket", socket_path,
-        "--unixsocketperm", "700",
-        "--port", "0",
-        "--save", "",
-        "--appendonly", "no",
-        "--dir", data_dir,
+        "--unixsocket",
+        socket_path,
+        "--unixsocketperm",
+        "700",
+        "--port",
+        "0",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--dir",
+        data_dir,
     ]
     redis_url = f"unix://{socket_path}?db=0"
     return argv, redis_url

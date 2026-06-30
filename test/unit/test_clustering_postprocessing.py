@@ -4,12 +4,11 @@ from tasks.clustering_postprocessing import (
     apply_minimum_size_filter_to_clustering_result,
     apply_title_artist_deduplication,
     apply_distance_filtering_direct,
-    select_top_n_diverse_playlists
+    select_top_n_diverse_playlists,
 )
 
 
 class TestMinimumSizeFilter:
-
     def test_filters_out_small_playlists(self):
         best_result = {
             "named_playlists": {
@@ -76,7 +75,6 @@ class TestMinimumSizeFilter:
 
 
 class TestTitleArtistDeduplication:
-
     def test_removes_duplicate_titles(self):
         mock_db = MagicMock()
         mock_cursor = MagicMock()
@@ -98,7 +96,11 @@ class TestTitleArtistDeduplication:
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
             {'item_id': 's1', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
-            {'item_id': 's2', 'title': 'Stairway to Heaven (Remastered 2014)', 'author': 'Led Zeppelin'},
+            {
+                'item_id': 's2',
+                'title': 'Stairway to Heaven (Remastered 2014)',
+                'author': 'Led Zeppelin',
+            },
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
 
@@ -159,7 +161,6 @@ class TestTitleArtistDeduplication:
 
 
 class TestDistanceFilteringDirect:
-
     @patch('config.IVF_METRIC', 'euclidean')
     @patch('config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 0.1)
     @patch('config.DUPLICATE_DISTANCE_CHECK_LOOKBACK', 5)
@@ -168,7 +169,7 @@ class TestDistanceFilteringDirect:
         mock_db = MagicMock()
         mock_get_vectors.return_value = {
             's1': np.array([1.0, 0.0, 0.0]),
-            's2': np.array([1.01, 0.0, 0.0])
+            's2': np.array([1.01, 0.0, 0.0]),
         }
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
@@ -192,7 +193,7 @@ class TestDistanceFilteringDirect:
         mock_db = MagicMock()
         mock_get_vectors.return_value = {
             's1': np.array([1.0, 0.0, 0.0]),
-            's2': np.array([0.0, 1.0, 0.0])
+            's2': np.array([0.0, 1.0, 0.0]),
         }
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
@@ -232,7 +233,6 @@ class TestDistanceFilteringDirect:
 
 
 class TestSelectTopNDiversePlaylists:
-
     def test_selects_diverse_playlists(self):
         best_result = {
             "playlist_to_centroid_vector_map": {
@@ -249,7 +249,7 @@ class TestSelectTopNDiversePlaylists:
                 "Playlist 1": np.array([1.0, 0.0, 0.0]),
                 "Playlist 2": np.array([0.0, 1.0, 0.0]),
                 "Playlist 3": np.array([1.1, 0.1, 0.0]),
-            }
+            },
         }
 
         selected = select_top_n_diverse_playlists(best_result, n=2)
@@ -269,7 +269,7 @@ class TestSelectTopNDiversePlaylists:
             "playlist_centroids": {
                 "Playlist 1": np.array([1.0, 0.0]),
                 "Playlist 2": np.array([0.0, 1.0]),
-            }
+            },
         }
 
         selected = select_top_n_diverse_playlists(best_result, n=5)
@@ -292,7 +292,7 @@ class TestSelectTopNDiversePlaylists:
                 "Small": np.array([1.0, 0.0]),
                 "Large": np.array([0.0, 1.0]),
                 "Medium": np.array([0.5, 0.5]),
-            }
+            },
         }
 
         selected = select_top_n_diverse_playlists(best_result, n=2)
@@ -301,7 +301,6 @@ class TestSelectTopNDiversePlaylists:
 
 
 class TestEdgeCases:
-
     def test_minimum_size_filter_with_missing_key(self):
         best_result = {}
 

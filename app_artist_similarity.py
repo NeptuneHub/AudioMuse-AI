@@ -12,11 +12,7 @@ Provides endpoints for:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 
-from tasks.artist_gmm_manager import (
-    find_similar_artists,
-    search_artists_by_name,
-    get_artist_tracks
-)
+from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +31,11 @@ def artist_similarity_page():
       200:
         description: HTML content of the artist similarity page.
     """
-    return render_template('artist_similarity.html', title='AudioMuse-AI - Artist Similarity', active='artist_similarity')
+    return render_template(
+        'artist_similarity.html',
+        title='AudioMuse-AI - Artist Similarity',
+        active='artist_similarity',
+    )
 
 
 @artist_similarity_bp.route('/api/search_artists', methods=['GET'])
@@ -157,7 +157,9 @@ def get_similar_artists_endpoint():
     artist_id = request.args.get('artist_id')
     n = request.args.get('n', 10, type=int)
     ef_search = request.args.get('ef_search', type=int)
-    include_component_matches = request.args.get('include_component_matches', 'false').lower() == 'true'
+    include_component_matches = (
+        request.args.get('include_component_matches', 'false').lower() == 'true'
+    )
 
     # Accept either artist name or artist_id
     query_artist = artist or artist_id
@@ -170,19 +172,29 @@ def get_similar_artists_endpoint():
             query_artist,
             n=n,
             ef_search=ef_search,
-            include_component_matches=include_component_matches
+            include_component_matches=include_component_matches,
         )
 
         if not similar_artists:
-            return jsonify({"error": f"Artist '{query_artist}' not found in index or no similar artists found."}), 404
+            return jsonify(
+                {
+                    "error": f"Artist '{query_artist}' not found in index or no similar artists found."
+                }
+            ), 404
 
         return jsonify(similar_artists)
 
     except RuntimeError as e:
-        logger.error(f"Runtime error finding similar artists for '{query_artist}': {e}", exc_info=True)
-        return jsonify({"error": "The artist similarity search service is currently unavailable."}), 503
+        logger.error(
+            f"Runtime error finding similar artists for '{query_artist}': {e}", exc_info=True
+        )
+        return jsonify(
+            {"error": "The artist similarity search service is currently unavailable."}
+        ), 503
     except Exception as e:
-        logger.error(f"Unexpected error finding similar artists for '{query_artist}': {e}", exc_info=True)
+        logger.error(
+            f"Unexpected error finding similar artists for '{query_artist}': {e}", exc_info=True
+        )
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 

@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -37,7 +36,9 @@ class ControlServer:
                     conn.settimeout(15)
                     data = conn.recv(4096).strip()
                     request = json.loads(data.decode("utf-8"))
-                    ok = bool(self._dispatch(request.get("action", ""), request.get("services", [])))
+                    ok = bool(
+                        self._dispatch(request.get("action", ""), request.get("services", []))
+                    )
                     conn.sendall(b"ok" if ok else b"error")
                 except Exception:
                     logger.exception("Control request failed")

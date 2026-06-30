@@ -1,4 +1,3 @@
-
 import os
 import logging
 import numpy as np
@@ -7,11 +6,16 @@ from typing import Tuple, Optional
 os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
+
 try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
     AUDIO_LOAD_TIMEOUT = None
-from tasks.memory_utils import cleanup_cuda_memory, handle_onnx_memory_error, comprehensive_memory_cleanup
+from tasks.memory_utils import (
+    cleanup_cuda_memory,
+    handle_onnx_memory_error,
+    comprehensive_memory_cleanup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ def _static_shape_model_bytes(model_path):
 
 def _clap_session_options(label):
     import onnxruntime as ort
+
     sess_options = ort.SessionOptions()
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     sess_options.log_severity_level = 3
@@ -79,11 +84,15 @@ def _load_audio_model():
     session = None
 
     from tasks.analysis_helper import resolve_providers
-    provider_options = resolve_providers(allow_coreml=True, cuda_options={
-        'device_id': 0,
-        'arena_extend_strategy': 'kSameAsRequested',
-        'cudnn_conv_algo_search': 'DEFAULT',
-    })
+
+    provider_options = resolve_providers(
+        allow_coreml=True,
+        cuda_options={
+            'device_id': 0,
+            'arena_extend_strategy': 'kSameAsRequested',
+            'cudnn_conv_algo_search': 'DEFAULT',
+        },
+    )
 
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -94,9 +103,9 @@ def _load_audio_model():
         )
 
     preferred_providers = [p[0] for p in provider_options]
-    preferred_opts     = [p[1] for p in provider_options]
-    cpu_providers      = ['CPUExecutionProvider']
-    cpu_opts           = [{}]
+    preferred_opts = [p[1] for p in provider_options]
+    cpu_providers = ['CPUExecutionProvider']
+    cpu_opts = [{}]
 
     preferred_model_input = model_path
     if 'CoreMLExecutionProvider' in preferred_providers:
@@ -119,6 +128,7 @@ def _load_audio_model():
             logger.info("Trying in-memory external-data fallback…")
             try:
                 import onnx as _onnx
+
                 _model_proto = _onnx.load(model_path, load_external_data=True)
                 _model_bytes = _model_proto.SerializeToString()
                 del _model_proto
@@ -162,7 +172,9 @@ def _load_text_model():
 
     if not _is_worker:
         provider_options = [('CPUExecutionProvider', {})]
-        logger.info("CLAP text model: CPU only (Flask process) - thread-safe across request threads")
+        logger.info(
+            "CLAP text model: CPU only (Flask process) - thread-safe across request threads"
+        )
     elif 'CUDAExecutionProvider' in available_providers:
         gpu_device_id = 0
         cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
@@ -175,7 +187,9 @@ def _load_text_model():
             'cudnn_conv_algo_search': 'DEFAULT',
         }
         provider_options = [('CUDAExecutionProvider', cuda_options), ('CPUExecutionProvider', {})]
-        logger.info(f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})")
+        logger.info(
+            f"CUDA provider available - will attempt to use GPU (device_id={gpu_device_id})"
+        )
     else:
         provider_options = [('CPUExecutionProvider', {})]
         logger.info("CUDA provider not available - using CPU only")
@@ -185,7 +199,7 @@ def _load_text_model():
             model_path,
             sess_options=sess_options,
             providers=[p[0] for p in provider_options],
-            provider_options=[p[1] for p in provider_options]
+            provider_options=[p[1] for p in provider_options],
         )
 
         logger.info("OK CLAP text model loaded successfully (~478MB)")
@@ -195,9 +209,7 @@ def _load_text_model():
         logger.info("Attempting final CPU-only fallback...")
         try:
             session = ort.InferenceSession(
-                model_path,
-                sess_options=sess_options,
-                providers=['CPUExecutionProvider']
+                model_path, sess_options=sess_options, providers=['CPUExecutionProvider']
             )
             logger.info("OK CLAP text model loaded successfully (CPU fallback)")
         except Exception as cpu_error:
@@ -278,8 +290,10 @@ def unload_clap_audio_only():
     try:
         _audio_session = None
         import gc
+
         gc.collect()
         from .memory_utils import cleanup_cuda_memory
+
         cleanup_cuda_memory(force=True)
         logger.info("OK CLAP audio model unloaded (~268MB freed), text cache preserved")
         return True
@@ -306,12 +320,16 @@ def unload_clap_model():
         _tokenizer = None
 
         import gc
+
         gc.collect()
 
         from .memory_utils import comprehensive_memory_cleanup
+
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
 
-        logger.info(f"OK CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)")
+        logger.info(
+            f"OK CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)"
+        )
         return True
     except Exception as e:
         logger.exception(f"Error unloading CLAP model: {e}")
@@ -343,12 +361,9 @@ def get_clap_text_model():
 
 
 def get_tokenizer():
-
-    if _tokenizer is None:
-        if not initialize_clap_text_model():
-            raise RuntimeError("CLAP tokenizer could not be initialized")
+    if _tokenizer is None and not initialize_clap_text_model():
+        raise RuntimeError("CLAP tokenizer could not be initialized")
     return _tokenizer
-
 
 
 def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarray:
@@ -373,7 +388,7 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
         power=2.0,
         n_mels=n_mels,
         fmin=f_min,
-        fmax=f_max
+        fmax=f_max,
     )
 
     mel = librosa.power_to_db(mel, ref=1.0, amin=1e-10, top_db=None)
@@ -399,6 +414,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         HOP_LENGTH = 240000
 
         from tasks.analysis import robust_load_audio_with_fallback
+
         audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
         if audio_data is None or audio_data.size == 0:
@@ -419,7 +435,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
             segments.append(padded)
         else:
             for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                segments.append(audio_data[start:start + SEGMENT_LENGTH])
+                segments.append(audio_data[start : start + SEGMENT_LENGTH])
             last_start = len(segments) * HOP_LENGTH
             if last_start < total_length:
                 segments.append(audio_data[-SEGMENT_LENGTH:])
@@ -435,13 +451,18 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 outputs = session.run(None, onnx_inputs)
                 emb = outputs[0]
             except Exception as e:
+
                 def cleanup_fn():
                     cleanup_cuda_memory(force=True)
+
                 def retry_fn():
                     return session.run(None, onnx_inputs)
+
                 result = handle_onnx_memory_error(
-                    e, f"CLAP segment {seg_idx}/{num_segments}",
-                    cleanup_func=cleanup_fn, retry_func=retry_fn
+                    e,
+                    f"CLAP segment {seg_idx}/{num_segments}",
+                    cleanup_func=cleanup_fn,
+                    retry_func=retry_fn,
                 )
                 if result is not None:
                     emb = result[0]
@@ -469,6 +490,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         return None, 0, 0
     finally:
         import gc
+
         gc.collect()
 
 
@@ -481,20 +503,13 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
         tokenizer = get_tokenizer()
 
         encoded = tokenizer(
-            query_text,
-            max_length=77,
-            padding='max_length',
-            truncation=True,
-            return_tensors='np'
+            query_text, max_length=77, padding='max_length', truncation=True, return_tensors='np'
         )
 
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
 
-        onnx_inputs = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask
-        }
+        onnx_inputs = {'input_ids': input_ids, 'attention_mask': attention_mask}
 
         outputs = session.run(None, onnx_inputs)
         text_embedding = outputs[0]
@@ -511,7 +526,6 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
 
 
 def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
-
     if not config.CLAP_ENABLED:
         return None
 
@@ -523,20 +537,13 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
         tokenizer = get_tokenizer()
 
         encoded = tokenizer(
-            query_texts,
-            max_length=77,
-            padding='max_length',
-            truncation=True,
-            return_tensors='np'
+            query_texts, max_length=77, padding='max_length', truncation=True, return_tensors='np'
         )
 
         input_ids = encoded['input_ids'].astype(np.int64)
         attention_mask = encoded['attention_mask'].astype(np.int64)
 
-        onnx_inputs = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask
-        }
+        onnx_inputs = {'input_ids': input_ids, 'attention_mask': attention_mask}
 
         outputs = session.run(None, onnx_inputs)
         text_embeddings = outputs[0]
@@ -555,8 +562,9 @@ def is_clap_available() -> bool:
     if not config.CLAP_ENABLED:
         return False
 
-    return os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(config.CLAP_TEXT_MODEL_PATH)
-
+    return os.path.exists(config.CLAP_AUDIO_MODEL_PATH) and os.path.exists(
+        config.CLAP_TEXT_MODEL_PATH
+    )
 
 
 def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
@@ -575,6 +583,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         cached_blob = redis_conn.get(cache_key)
         if cached_blob is not None:
             import io
+
             buf = io.BytesIO(cached_blob)
             npz = np.load(buf)
             result = {label: npz[label] for label in npz.files}
@@ -588,7 +597,9 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"Failed to read CLAP text embeddings from Redis: {e}")
 
-    logger.info(f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}")
+    logger.info(
+        f"Computing CLAP text embeddings for config.OTHER_FEATURE_LABELS: {config.OTHER_FEATURE_LABELS}"
+    )
     try:
         embeddings = get_text_embeddings_batch(config.OTHER_FEATURE_LABELS)
         if embeddings is None:
@@ -599,6 +610,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         _label_text_embeddings_cache = result
         try:
             import io
+
             buf = io.BytesIO()
             np.savez_compressed(buf, **result)
             buf.seek(0)
@@ -616,6 +628,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
             _text_session = None
             _tokenizer = None
             import gc
+
             gc.collect()
             logger.info("Unloaded CLAP text model after computing other feature embeddings")
 

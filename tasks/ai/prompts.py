@@ -3,7 +3,6 @@ from typing import Dict, List, Optional
 import config
 
 
-
 creative_prompt_template = (
     "You are an expert music collector and MUST give a title to this playlist.\n"
     "The title MUST represent the mood and the activity of when you are listening to the playlist.\n"
@@ -18,12 +17,9 @@ creative_prompt_template = (
 )
 
 
-
 INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
 
 PRIMARY_INTENTS = ["seed", "text", "knowledge"]
-
-
 
 
 def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
@@ -92,7 +88,6 @@ RULES:
 6. A topic/scenario the song should be ABOUT ("about summer", "roadtrip", "songs about heartbreak") -> text_match(mode='lyrics'); any genre/voice/energy/tempo/year mentioned ALONGSIDE -> ALSO a search_database call. Keep BOTH."""
 
     return prompt
-
 
 
 def build_ollama_tool_calling_prompt(
@@ -215,7 +210,6 @@ def build_tool_calls_schema(tools: List[Dict]) -> Dict:
         },
         "required": ["tool_calls"],
     }
-
 
 
 def build_ai_brainstorm_prompt(user_request: str) -> str:

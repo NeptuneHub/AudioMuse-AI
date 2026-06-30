@@ -1,4 +1,3 @@
-
 import os
 import runpy
 import subprocess
@@ -16,6 +15,7 @@ def _role_from_argv():
 def _run_flask():
     import waitress
     import app as app_module
+
     waitress.serve(
         app_module.app,
         host="0.0.0.0",
@@ -33,6 +33,7 @@ def _run_role(role):
     if role not in _NO_LONGDOUBLE_WARMUP_ROLES:
         try:
             import numeric_bootstrap
+
             numeric_bootstrap.warmup_scipy_longdouble()
         except Exception:
             pass
@@ -46,6 +47,7 @@ def _run_role(role):
         runpy.run_module("rq_janitor", run_name="__main__")
     elif role == "restart-listener":
         import restart_listener
+
         restart_listener.main()
     else:
         raise SystemExit(f"Unknown role: {role}")
@@ -57,6 +59,7 @@ _INSTANCE_LOCK = None
 def _acquire_single_instance_lock(paths):
     global _INSTANCE_LOCK
     import fcntl
+
     lock_path = os.path.join(paths.app_support_dir(), "supervisor.lock")
     fh = open(lock_path, "a+")
     try:
@@ -74,8 +77,10 @@ def _acquire_single_instance_lock(paths):
 
 def _run_menubar():
     import rumps
+
     try:
         from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+
         NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     except Exception:
         pass
@@ -145,6 +150,7 @@ def _run_menubar():
 def main():
     try:
         import numeric_bootstrap
+
         numeric_bootstrap.pin_numeric_locale()
     except Exception:
         pass
@@ -152,6 +158,7 @@ def main():
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
+
         sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
 
     role = _role_from_argv()

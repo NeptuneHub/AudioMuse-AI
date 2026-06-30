@@ -1,11 +1,8 @@
-
 import ast
 import os
 
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 _PARTIAL_BUILDERS = (
     "build_and_store_ivf_index",
@@ -43,7 +40,6 @@ def _called_names(func_node):
 
 
 class TestCleaningDelegatesRebuild:
-
     def test_calls_run_all_index_builds(self):
         funcs = _function_defs("tasks/cleaning.py")
         assert "identify_and_clean_orphaned_albums_task" in funcs

@@ -212,7 +212,7 @@ async function loadAndPlot(n_or_pct) {
         const pct = String(n_or_pct || '25');
         const data = await fetchMapParam(pct);
     const items = data.items || [];
-    // Do NOT store items or last requested percent in page memory — always re-fetch when needed.
+    // Do NOT store items or last requested percent in page memory - always re-fetch when needed.
         document.getElementById('map-projection-label').textContent = data.projection || '';
 
         // Build arrays and grouping
@@ -244,7 +244,7 @@ async function loadAndPlot(n_or_pct) {
         // Build a single trace with per-point color and customdata mapping using displayPts
         const colors = displayPts.map(p => colorMap[p.genre] || '#888');
     // include genre in hover text so hover shows [genre] title - artist
-    const texts = displayPts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+    const texts = displayPts.map(p => `${p.genre} - ${p.title} - ${p.artist}`);
         const ids = displayPts.map(p => p.id);
 
         // marker options tuned for WebGL performance when rendering many points
@@ -333,7 +333,7 @@ async function loadAndPlot(n_or_pct) {
             // update status with customdata info
             try {
                 const cdlen = (gd.data && gd.data[0] && gd.data[0].customdata) ? gd.data[0].customdata.length : 0;
-                document.getElementById('map-status').textContent = `Showing ${pts.length} songs — customdata ${cdlen}`;
+                document.getElementById('map-status').textContent = `Showing ${pts.length} songs - customdata ${cdlen}`;
             } catch(e) {}
         }).catch((e)=>{
             console.warn('Plotly.react promise rejected', e);
@@ -409,7 +409,7 @@ function applyGenreFilterAndRerender() {
     const colorMap = window._colorMap || {};
     const colors = pts.map(p => colorMap[p.genre] || '#888');
     // include genre in hover text so hover shows [genre] title - artist
-    const texts = pts.map(p => `${p.genre} — ${p.title} - ${p.artist}`);
+    const texts = pts.map(p => `${p.genre} - ${p.title} - ${p.artist}`);
     const ids = pts.map(p => p.id);
     const markerOpts = { size: 3, opacity: 0.85, line: { width: 0 }, symbol: 'circle' };
     const trace = {
@@ -631,7 +631,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     function selectMapTrack(t){
         selectedItemId = t.item_id;
         const searchEl = document.getElementById('search_query_map');
-        if (searchEl) { searchEl.value = `${t.title || ''} — ${t.author || ''}`; searchEl.setAttribute('aria-expanded', 'false'); searchEl.removeAttribute('aria-activedescendant'); }
+        if (searchEl) { searchEl.value = `${t.title || ''} - ${t.author || ''}`; searchEl.setAttribute('aria-expanded', 'false'); searchEl.removeAttribute('aria-activedescendant'); }
         const res = document.getElementById('map_autocomplete_results');
         if (res) res.classList.add('hidden');
         acActive = -1;
@@ -807,7 +807,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         try { addHighlightOverlay(id); } catch(e) { /* ignore */ }
 
         // Do NOT auto-zoom or pan the map on search; only show the highlight overlay per user request.
-        document.getElementById('map-status').textContent = `Highlighted: ${p.title || ''} — ${p.artist || ''}`;
+        document.getElementById('map-status').textContent = `Highlighted: ${p.title || ''} - ${p.artist || ''}`;
     }
 
     // Wire inputs/buttons
@@ -840,7 +840,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             const t = list[0];
             // set field and selected id
             selectedItemId = t.item_id;
-            document.getElementById('search_query_map').value = `${t.title || ''} — ${t.author || ''}`;
+            document.getElementById('search_query_map').value = `${t.title || ''} - ${t.author || ''}`;
             // add to selection and highlight (Search click triggers add)
             try { if (!window._plotSelection) window._plotSelection = []; if (!window._plotSelection.includes(String(t.item_id))) window._plotSelection.push(String(t.item_id)); renderSelectionPanel(); } catch(e){}
             highlightSongById(t.item_id);
@@ -1138,7 +1138,7 @@ function drawPathOnMap(pathItems, color) {
             const step = xs_used.length; // order among plotted coords
             const title = (it.title || '') || (findPointById(it.item_id) || {}).title || '(unknown)';
             const artist = (it.artist || it.author) || (findPointById(it.item_id) || {}).artist || '';
-            hovers.push(`Step ${step} — [${genre}] ${title} - ${artist}`);
+            hovers.push(`Step ${step} - [${genre}] ${title} - ${artist}`);
 
             // ensure metadata present in _plotPointsFull for selection listing
             try {

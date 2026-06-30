@@ -57,13 +57,16 @@ class TestRestoreValidation:
         assert resp.status_code == 400
         assert 'must be integers' in resp.get_json()['error']
 
-    @pytest.mark.parametrize('chunk_num,total_chunks', [
-        (0, 3),
-        (4, 3),
-        (2, 1),
-        (-1, 3),
-        (0, 0),
-    ])
+    @pytest.mark.parametrize(
+        'chunk_num,total_chunks',
+        [
+            (0, 3),
+            (4, 3),
+            (2, 1),
+            (-1, 3),
+            (0, 0),
+        ],
+    )
     def test_chunk_num_out_of_range_is_400(self, client, chunk_num, total_chunks):
         resp = _post(client, chunk_num=chunk_num, total_chunks=total_chunks)
         assert resp.status_code == 400

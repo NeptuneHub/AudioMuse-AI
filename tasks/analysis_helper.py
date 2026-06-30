@@ -1,4 +1,3 @@
-
 import gc
 import importlib
 import logging
@@ -20,7 +19,6 @@ from app_helper_artist import upsert_artist_mappings
 from psycopg2 import sql as pgsql
 
 logger = logging.getLogger(__name__)
-
 
 
 DEFINED_TENSOR_NAMES = {
@@ -49,7 +47,11 @@ def run_inference(session, feed_dict, output_tensor_name=None):
             return None
         mapped[name] = v
     output_names = [o.name for o in session.get_outputs()]
-    out = _find_onnx_name(output_tensor_name, output_names) if output_tensor_name else (output_names[0] if output_names else None)
+    out = (
+        _find_onnx_name(output_tensor_name, output_names)
+        if output_tensor_name
+        else (output_names[0] if output_names else None)
+    )
     if out is None:
         logger.error("No ONNX output name available to run inference.")
         return None
@@ -67,18 +69,29 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
     accel_ok = role != 'flask'
 
     if accel_ok and 'CUDAExecutionProvider' in available:
-        chain.append(('CUDAExecutionProvider', cuda_options or {
-            'device_id': 0,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'EXHAUSTIVE',
-            'do_copy_in_default_stream': True,
-        }))
+        chain.append(
+            (
+                'CUDAExecutionProvider',
+                cuda_options
+                or {
+                    'device_id': 0,
+                    'arena_extend_strategy': 'kSameAsRequested',
+                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                    'do_copy_in_default_stream': True,
+                },
+            )
+        )
 
     if accel_ok and allow_coreml and 'CoreMLExecutionProvider' in available:
-        chain.append(('CoreMLExecutionProvider', {
-            'MLComputeUnits': 'ALL',
-            'ModelFormat': 'MLProgram',
-        }))
+        chain.append(
+            (
+                'CoreMLExecutionProvider',
+                {
+                    'MLComputeUnits': 'ALL',
+                    'ModelFormat': 'MLProgram',
+                },
+            )
+        )
 
     chain.append(('CPUExecutionProvider', {}))
     logger.info("ONNX provider chain: %s", [p[0] for p in chain])
@@ -96,7 +109,9 @@ def _default_sess_options():
     return opts
 
 
-def create_onnx_session(model_path, provider_options=None, label="", sess_options=None, allow_coreml=False):
+def create_onnx_session(
+    model_path, provider_options=None, label="", sess_options=None, allow_coreml=False
+):
     opts = provider_options or resolve_providers(allow_coreml=allow_coreml)
     if sess_options is None:
         sess_options = _default_sess_options()
@@ -159,37 +174,39 @@ def cleanup_optional_models(context=""):
             logger.warning(f"Error cleaning up {label.upper()} model: {e}")
 
 
-def run_inference_with_oom_fallback(session, feed_dict, output_tensor_name,
-                                    model_path, label, owns_session, file_basename):
+def run_inference_with_oom_fallback(
+    session, feed_dict, output_tensor_name, model_path, label, owns_session, file_basename
+):
     try:
         return run_inference(session, feed_dict, output_tensor_name), session
     except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
         if "Failed to allocate memory" not in str(e):
             raise
-        logger.warning(f"GPU OOM for {file_basename} during {label} inference - falling back to CPU")
+        logger.warning(
+            f"GPU OOM for {file_basename} during {label} inference - falling back to CPU"
+        )
         cpu_session = None
         try:
             try:
                 cleanup_onnx_session(session, label)
             except Exception:
-                logger.exception(
-                    "Error cleaning up OOM'd %s session before CPU fallback", label)
+                logger.exception("Error cleaning up OOM'd %s session before CPU fallback", label)
             session = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
             except Exception:
-                logger.exception(
-                    "Error during memory cleanup before %s CPU fallback", label)
+                logger.exception("Error during memory cleanup before %s CPU fallback", label)
 
             cpu_session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
             result = run_inference(cpu_session, feed_dict, output_tensor_name)
             if result is None:
-                raise RuntimeError(f"CPU fallback inference returned None for {label} ({file_basename})")
+                raise RuntimeError(
+                    f"CPU fallback inference returned None for {label} ({file_basename})"
+                )
             logger.info(f"Successfully completed {label} inference on CPU after OOM")
             return result, cpu_session
         finally:
             session = None
-
 
 
 _KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -212,15 +229,22 @@ def extract_basic_features(audio, sr):
 def prepare_spectrogram_patches(audio, sr):
     n_mels, hop, n_fft, frame = 96, 256, 512, 187
     mel = librosa.feature.melspectrogram(
-        y=audio, sr=sr, n_fft=n_fft, hop_length=hop, n_mels=n_mels,
-        window='hann', center=False, power=2.0, norm='slaney', htk=False,
+        y=audio,
+        sr=sr,
+        n_fft=n_fft,
+        hop_length=hop,
+        n_mels=n_mels,
+        window='hann',
+        center=False,
+        power=2.0,
+        norm='slaney',
+        htk=False,
     )
     log_mel = np.log10(1 + 10000 * np.maximum(mel, 0.0))
-    patches = [log_mel[:, i:i + frame] for i in range(0, log_mel.shape[1] - frame + 1, frame)]
+    patches = [log_mel[:, i : i + frame] for i in range(0, log_mel.shape[1] - frame + 1, frame)]
     if not patches:
         return None
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
-
 
 
 def _str_ids(ids):
@@ -280,7 +304,9 @@ def get_missing_ids_in_table(table_name, track_ids):
     ids = _str_ids(track_ids)
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
-            pgsql.SQL("SELECT item_id FROM {} WHERE item_id IN %s").format(pgsql.Identifier(table_name)),
+            pgsql.SQL("SELECT item_id FROM {} WHERE item_id IN %s").format(
+                pgsql.Identifier(table_name)
+            ),
             (tuple(ids),),
         )
         existing = {row[0] for row in cur.fetchall()}
@@ -308,8 +334,9 @@ def refresh_track_metadata(item, album_name):
         pgsql.SQL("(%s IS NOT NULL AND {} IS DISTINCT FROM %s)").format(pgsql.Identifier(f))
         for f in _REFRESH_FIELDS
     )
-    query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})")\
-        .format(set_parts, where_parts)
+    query = pgsql.SQL("UPDATE score SET {} WHERE item_id = %s AND ({})").format(
+        set_parts, where_parts
+    )
     params = (*values, str(item['Id']), *(p for v in values for p in (v, v)))
     try:
         with get_db() as conn, conn.cursor() as cur:
@@ -337,7 +364,6 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
             logger.warning(f"No artist_id for '{name}'{scope}")
 
 
-
 def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_enabled):
     return (
         track_id not in existing,
@@ -349,8 +375,10 @@ def decide_track_needs(track_id, existing, missing_clap, missing_lyrics, lyrics_
 def compute_album_needs(tracks, clap_available, lyrics_enabled):
     ids = [str(t['Id']) for t in tracks]
     existing = len(get_existing_track_ids(ids))
+
     def needs_in(flag, table):
         return flag and bool(get_missing_ids_in_table(table, ids))
+
     return (
         existing,
         needs_in(clap_available, 'clap_embedding'),
@@ -369,17 +397,18 @@ def build_feature_status_parts(clap_available, lyrics_enabled, include_check_mar
     return parts
 
 
-
 def run_clap_for_track(path, track_name_full, needs_clap, clap_available, per_song_reload):
     if not (needs_clap and clap_available):
         return None
     logger.info(f"  - Starting CLAP analysis for {track_name_full}...")
     try:
         from .clap_analyzer import analyze_audio_file
+
         emb, _, _ = analyze_audio_file(path)
         if per_song_reload:
             try:
                 from .clap_analyzer import unload_clap_audio_only
+
                 unload_clap_audio_only()
             except Exception as e:
                 logger.debug(f"  - CLAP audio unload skipped: {e}")
@@ -395,6 +424,7 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
         return zero
     try:
         from .clap_analyzer import compute_other_features_from_clap
+
         emb = clap_embedding
         if emb is None and not needs_clap:
             emb = get_clap_embedding(item_id)
@@ -409,12 +439,20 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
 
 def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
     save_track_analysis_and_embedding(
-        item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
-        analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
+        item['Id'],
+        item['Name'],
+        item.get('AlbumArtist', 'Unknown'),
+        analysis['tempo'],
+        analysis['key'],
+        analysis['scale'],
+        top_moods,
+        embedding,
         energy=analysis['energy'],
         other_features=other_features_str,
         album=item.get('Album') or item.get('album'),
-        album_artist=item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist'),
+        album_artist=item.get('OriginalAlbumArtist')
+        or item.get('originalAlbumArtist')
+        or item.get('album_artist'),
         year=item.get('Year'),
         rating=item.get('Rating'),
         file_path=item.get('FilePath'),
@@ -433,9 +471,18 @@ def persist_clap_embedding(item_id, embedding, needs_clap):
         return False
 
 
-def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
-                         needs_lyrics, lyrics_enabled, robust_load_fn,
-                         top_moods=None, download_fn=None):
+def run_lyrics_for_track(
+    item,
+    path,
+    track_audio,
+    track_sr,
+    track_name_full,
+    needs_lyrics,
+    lyrics_enabled,
+    robust_load_fn,
+    top_moods=None,
+    download_fn=None,
+):
     if not (needs_lyrics and lyrics_enabled):
         if lyrics_enabled:
             logger.info("  - Lyrics analysis already exists or skipped")
@@ -443,6 +490,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
     logger.info(f"  - Starting lyrics analysis for {track_name_full}...")
     try:
         from lyrics.lyrics_transcriber import analyze_lyrics
+
         audio_loader = None
         if track_audio is None or track_sr is None:
             if path is not None:
@@ -451,6 +499,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                 if track_audio is None or track_audio.size == 0 or track_sr is None:
                     raise RuntimeError("Failed to load audio for lyrics analysis")
             else:
+
                 def audio_loader():  # noqa: F811
                     p = download_fn() if download_fn is not None else None
                     if not p:
@@ -459,12 +508,16 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                     if a is None or a.size == 0 or s is None:
                         raise RuntimeError("Failed to load audio for lyrics ASR")
                     return a, s, str(p)
+
         result = analyze_lyrics(
-            audio=track_audio, sr=track_sr,
+            audio=track_audio,
+            sr=track_sr,
             source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
-            track=item.get('Name'), track_id=item.get('Id') or item.get('id'),
-            top_moods=top_moods, audio_loader=audio_loader,
+            track=item.get('Name'),
+            track_id=item.get('Id') or item.get('id'),
+            top_moods=top_moods,
+            audio_loader=audio_loader,
         )
         emb = result.get('embedding')
         if emb is None or getattr(emb, 'size', 0) == 0:

@@ -1,9 +1,7 @@
 import os
 import sys
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -15,8 +13,7 @@ def _named_codes():
     return [
         value
         for name, value in vars(ed).items()
-        if (name.startswith('ERR_') or name == 'UNKNOWN_ERROR_CODE')
-        and isinstance(value, int)
+        if (name.startswith('ERR_') or name == 'UNKNOWN_ERROR_CODE') and isinstance(value, int)
     ]
 
 
@@ -33,7 +30,10 @@ class TestRegistry:
 
     def test_unknown_code_helpers_fall_back(self):
         assert ed.get_error_class(123456) == 'Unknown Error'
-        assert ed.get_default_message(123456) == ed.ERROR_REGISTRY[ed.UNKNOWN_ERROR_CODE]['default_message']
+        assert (
+            ed.get_default_message(123456)
+            == ed.ERROR_REGISTRY[ed.UNKNOWN_ERROR_CODE]['default_message']
+        )
 
 
 class TestBuild:
@@ -75,7 +75,9 @@ class TestClassify:
         class ReadTimeout(Exception):
             pass
 
-        assert em.classify(ReadTimeout('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+        assert (
+            em.classify(ReadTimeout('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+        )
 
     def test_unknown_exception_uses_default(self):
         assert em.classify(ValueError('x'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_ANALYSIS_FAILED

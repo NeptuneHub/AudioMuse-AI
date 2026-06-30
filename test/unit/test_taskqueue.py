@@ -72,6 +72,7 @@ def test_queue_names_connection_and_default_timeout():
 
 def test_app_helper_reexports_taskqueue_handles():
     import app_helper
+
     assert app_helper.redis_conn is taskqueue.redis_conn
     assert app_helper.rq_queue_high is taskqueue.rq_queue_high
     assert app_helper.rq_queue_default is taskqueue.rq_queue_default

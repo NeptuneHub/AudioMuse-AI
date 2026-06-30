@@ -1,4 +1,3 @@
-
 import os
 import sys
 import time
@@ -8,8 +7,8 @@ import librosa.feature
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-def compare_pytorch_vs_onnx():
 
+def compare_pytorch_vs_onnx():
     print("=" * 80)
     print("CLAP Model Embedding Verification: PyTorch .pt vs ONNX")
     print("=" * 80)
@@ -29,7 +28,7 @@ def compare_pytorch_vs_onnx():
         "upbeat electronic dance music",
         "calm acoustic guitar",
         "heavy metal with distortion",
-        "jazz piano solo"
+        "jazz piano solo",
     ]
 
     print("\n" + "-" * 80)
@@ -44,7 +43,7 @@ def compare_pytorch_vs_onnx():
             "/app/model/music_audioset_epoch_15_esc_90.14.pt",
             "../query/music_audioset_epoch_15_esc_90.14.pt",
             "query/music_audioset_epoch_15_esc_90.14.pt",
-            os.path.expanduser("~/Music/AudioMuse-AI/query/music_audioset_epoch_15_esc_90.14.pt")
+            os.path.expanduser("~/Music/AudioMuse-AI/query/music_audioset_epoch_15_esc_90.14.pt"),
         ]
 
         pt_model_path = None
@@ -88,14 +87,14 @@ def compare_pytorch_vs_onnx():
             "/app/model/clap_audio_model.onnx",
             "../test/models/clap_audio_model.onnx",
             "test/models/clap_audio_model.onnx",
-            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_audio_model.onnx")
+            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_audio_model.onnx"),
         ]
 
         onnx_text_model_paths = [
             "/app/model/clap_text_model.onnx",
             "../test/models/clap_text_model.onnx",
             "test/models/clap_text_model.onnx",
-            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_text_model.onnx")
+            os.path.expanduser("~/Music/AudioMuse-AI/test/models/clap_text_model.onnx"),
         ]
 
         onnx_audio_model_path = None
@@ -154,11 +153,7 @@ def compare_pytorch_vs_onnx():
 
         onnx_start = time.perf_counter()
         tokens = tokenizer(
-            query,
-            padding='max_length',
-            truncation=True,
-            max_length=77,
-            return_tensors='np'
+            query, padding='max_length', truncation=True, max_length=77, return_tensors='np'
         )
 
         dummy_mel = np.zeros((1, 1, 1001, 64), dtype=np.float32)
@@ -166,7 +161,7 @@ def compare_pytorch_vs_onnx():
         onnx_inputs = {
             'mel_spectrogram': dummy_mel,
             'input_ids': tokens['input_ids'].astype(np.int64),
-            'attention_mask': tokens['attention_mask'].astype(np.int64)
+            'attention_mask': tokens['attention_mask'].astype(np.int64),
         }
 
         outputs = onnx_session.run(None, onnx_inputs)
@@ -184,24 +179,28 @@ def compare_pytorch_vs_onnx():
         print(f"  Max difference:  {max_diff:.2e}")
         print(f"  Mean difference: {mean_diff:.2e}")
         print(f"  Cosine similarity: {cosine_sim:.10f}")
-        print(f"  PyTorch time: {pt_time*1000:.2f}ms")
-        print(f"  ONNX time:    {onnx_time*1000:.2f}ms")
+        print(f"  PyTorch time: {pt_time * 1000:.2f}ms")
+        print(f"  ONNX time:    {onnx_time * 1000:.2f}ms")
         speedup = pt_time / onnx_time if onnx_time > 0 else 0
-        print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
+        print(
+            f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}"
+        )
 
         passed = max_diff < 1e-5 and cosine_sim > 0.9999
         print(f"  Status: {'OK PASS' if passed else 'X FAIL'}")
 
-        text_results.append({
-            'query': query,
-            'max_diff': max_diff,
-            'mean_diff': mean_diff,
-            'cosine_sim': cosine_sim,
-            'pt_time': pt_time,
-            'onnx_time': onnx_time,
-            'speedup': speedup,
-            'passed': passed
-        })
+        text_results.append(
+            {
+                'query': query,
+                'max_diff': max_diff,
+                'mean_diff': mean_diff,
+                'cosine_sim': cosine_sim,
+                'pt_time': pt_time,
+                'onnx_time': onnx_time,
+                'speedup': speedup,
+                'passed': passed,
+            }
+        )
 
     audio_results = []
 
@@ -228,7 +227,7 @@ def compare_pytorch_vs_onnx():
 
                 audio_data = int16_to_float32(float32_to_int16(audio_data))
 
-                print(f"Loaded: {len(audio_data)/sr:.2f}s at {sr}Hz")
+                print(f"Loaded: {len(audio_data) / sr:.2f}s at {sr}Hz")
 
                 SEGMENT_LENGTH = 480000
                 HOP_LENGTH = 240000
@@ -237,11 +236,13 @@ def compare_pytorch_vs_onnx():
                 total_length = len(audio_data)
 
                 if total_length <= SEGMENT_LENGTH:
-                    padded_audio = np.pad(audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant')
+                    padded_audio = np.pad(
+                        audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant'
+                    )
                     segments.append(padded_audio)
                 else:
                     for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                        segment = audio_data[start:start + SEGMENT_LENGTH]
+                        segment = audio_data[start : start + SEGMENT_LENGTH]
                         segments.append(segment)
 
                     last_start = len(segments) * HOP_LENGTH
@@ -257,8 +258,7 @@ def compare_pytorch_vs_onnx():
                     seg_batched = seg.reshape(1, -1)
                     with torch.no_grad():
                         seg_embedding = pt_model.get_audio_embedding_from_data(
-                            x=seg_batched,
-                            use_tensor=False
+                            x=seg_batched, use_tensor=False
                         )
                         if isinstance(seg_embedding, np.ndarray):
                             if seg_embedding.ndim == 2:
@@ -290,7 +290,7 @@ def compare_pytorch_vs_onnx():
                         power=2.0,
                         n_mels=64,
                         fmin=50,
-                        fmax=14000
+                        fmax=14000,
                     )
 
                     mel_spec = librosa.power_to_db(mel_spec, ref=1.0, amin=1e-10, top_db=None)
@@ -305,7 +305,7 @@ def compare_pytorch_vs_onnx():
                     onnx_inputs = {
                         'mel_spectrogram': mel_input,
                         'input_ids': dummy_input_ids,
-                        'attention_mask': dummy_attention_mask
+                        'attention_mask': dummy_attention_mask,
                     }
 
                     outputs = onnx_session.run(None, onnx_inputs)
@@ -329,29 +329,31 @@ def compare_pytorch_vs_onnx():
                 print(f"  PyTorch time: {pt_time:.3f}s ({len(segments)} segments)")
                 print(f"  ONNX time:    {onnx_time:.3f}s ({len(segments)} segments)")
                 speedup = pt_time / onnx_time if onnx_time > 0 else 0
-                print(f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}")
+                print(
+                    f"  Speedup:      {speedup:.2f}x {'(ONNX faster)' if speedup > 1 else '(PyTorch faster)'}"
+                )
 
                 audio_passed = cosine_sim >= 0.97
                 print(f"  Status: {'OK PASS' if audio_passed else 'X FAIL'}")
 
-                audio_results.append({
-                    'file': os.path.basename(test_audio),
-                    'max_diff': max_diff,
-                    'mean_diff': mean_diff,
-                    'cosine_sim': cosine_sim,
-                    'pt_time': pt_time,
-                    'onnx_time': onnx_time,
-                    'speedup': speedup,
-                    'passed': audio_passed
-                })
+                audio_results.append(
+                    {
+                        'file': os.path.basename(test_audio),
+                        'max_diff': max_diff,
+                        'mean_diff': mean_diff,
+                        'cosine_sim': cosine_sim,
+                        'pt_time': pt_time,
+                        'onnx_time': onnx_time,
+                        'speedup': speedup,
+                        'passed': audio_passed,
+                    }
+                )
 
             except Exception as e:
                 print(f"  X ERROR: {e}")
-                audio_results.append({
-                    'file': os.path.basename(test_audio),
-                    'error': str(e),
-                    'passed': False
-                })
+                audio_results.append(
+                    {'file': os.path.basename(test_audio), 'error': str(e), 'passed': False}
+                )
     else:
         print("\n" + "=" * 80)
         print("PART 4: Audio embedding test SKIPPED (no audio files in test/songs)")
@@ -363,20 +365,28 @@ def compare_pytorch_vs_onnx():
 
     all_text_passed = all(r['passed'] for r in text_results)
 
-    print(f"\nText embeddings: {'OK ALL PASS' if all_text_passed else 'X SOME FAILED'} ({len(text_results)} queries)")
+    print(
+        f"\nText embeddings: {'OK ALL PASS' if all_text_passed else 'X SOME FAILED'} ({len(text_results)} queries)"
+    )
     for r in text_results:
         status = "OK" if r['passed'] else "X"
-        print(f"  {status} '{r['query']}' - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
+        print(
+            f"  {status} '{r['query']}' - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x"
+        )
 
     if audio_results:
         all_audio_passed = all(r['passed'] for r in audio_results)
-        print(f"\nAudio embeddings: {'OK ALL PASS' if all_audio_passed else 'X SOME FAILED'} ({len(audio_results)} files)")
+        print(
+            f"\nAudio embeddings: {'OK ALL PASS' if all_audio_passed else 'X SOME FAILED'} ({len(audio_results)} files)"
+        )
         for r in audio_results:
             if 'error' in r:
                 print(f"  X {r['file']} - ERROR: {r['error']}")
             else:
                 status = "OK" if r['passed'] else "X"
-                print(f"  {status} {r['file']} - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x")
+                print(
+                    f"  {status} {r['file']} - cos_sim={r['cosine_sim']:.6f}, speedup={r['speedup']:.2f}x"
+                )
     else:
         all_audio_passed = True
         print("\nAudio embeddings: SKIPPED (no test files)")

@@ -42,8 +42,7 @@ def wait_for_success(task_id, timeout=1200):
 def test_analysis_smoke_flow():
     start_time = time.time()
     resp = requests.post(
-        f'{BASE_URL}/api/analysis/start',
-        json={'num_recent_albums': 1, 'top_n_moods': 5}
+        f'{BASE_URL}/api/analysis/start', json={'num_recent_albums': 1, 'top_n_moods': 5}
     )
     assert resp.status_code == 202
     data = resp.json()
@@ -65,30 +64,50 @@ def test_instant_playlist_functionality():
     chat_payload = {
         "userInput": "High energy song",
         "ai_provider": "GEMINI",
-        "ai_model": "gemini-2.5-pro"
+        "ai_model": "gemini-2.5-pro",
     }
-    chat_resp = requests.post(f'{chat_base_url}/chat/api/chatPlaylist', json=chat_payload, timeout=120)
+    chat_resp = requests.post(
+        f'{chat_base_url}/chat/api/chatPlaylist', json=chat_payload, timeout=120
+    )
     assert chat_resp.status_code == 200, f"Status: {chat_resp.status_code}, Body: {chat_resp.text}"
     chat_data = chat_resp.json()
     assert "response" in chat_data, f"Missing 'response' key: {chat_data}"
     resp_obj = chat_data["response"]
-    expected_keys = {"ai_model_selected", "ai_provider_used", "executed_query", "message", "original_request", "query_results"}
+    expected_keys = {
+        "ai_model_selected",
+        "ai_provider_used",
+        "executed_query",
+        "message",
+        "original_request",
+        "query_results",
+    }
     missing_keys = expected_keys - set(resp_obj.keys())
     if missing_keys:
-        warnings.warn(f"Shape warning: chatPlaylist response missing keys: {missing_keys} in {resp_obj}")
+        warnings.warn(
+            f"Shape warning: chatPlaylist response missing keys: {missing_keys} in {resp_obj}"
+        )
     results = resp_obj.get("query_results", [])
-    assert isinstance(results, list) and results, f"No query_results in chatPlaylist response: {resp_obj}"
+    assert isinstance(results, list) and results, (
+        f"No query_results in chatPlaylist response: {resp_obj}"
+    )
     for track in results:
-        assert all(k in track for k in ("item_id", "title", "artist")), f"Track missing keys: {track}"
+        assert all(k in track for k in ("item_id", "title", "artist")), (
+            f"Track missing keys: {track}"
+        )
     item_ids = [track["item_id"] for track in results]
     pl_payload = {"playlist_name": "functional_test", "item_ids": item_ids}
-    pl_resp = requests.post(f'{chat_base_url}/chat/api/create_playlist', json=pl_payload, timeout=120)
+    pl_resp = requests.post(
+        f'{chat_base_url}/chat/api/create_playlist', json=pl_payload, timeout=120
+    )
     assert pl_resp.status_code == 200, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
     assert "message" in pl_data, f"Missing 'message' in playlist creation response: {pl_data}"
-    assert "created playlist" in pl_data["message"].lower(), f"Unexpected playlist creation message: {pl_data['message']}"
-    print(f"[TIMING] Instant Playlist test completed successfully. Playlist message: {pl_data['message']}")
-
+    assert "created playlist" in pl_data["message"].lower(), (
+        f"Unexpected playlist creation message: {pl_data['message']}"
+    )
+    print(
+        f"[TIMING] Instant Playlist test completed successfully. Playlist message: {pl_data['message']}"
+    )
 
 
 def test_sonic_fingerprint_and_playlist():
@@ -105,7 +124,7 @@ def test_sonic_fingerprint_and_playlist():
     pl_resp = requests.post(
         f'{BASE_URL}/api/create_playlist',
         json={'playlist_name': 'TestSonicFingerprint', 'track_ids': track_ids},
-        timeout=120
+        timeout=120,
     )
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
@@ -116,18 +135,24 @@ def test_sonic_fingerprint_and_playlist():
     elapsed = time.time() - start_time
     print(f"[TIMING] Sonic Fingerprint test completed in {elapsed:.2f} seconds")
 
+
 def test_song_alchemy_and_playlist():
     start_time = time.time()
+
     def find_song_id(artist, title):
         resp = get_with_retries(
-            f"{BASE_URL}/api/search_tracks",
-            params={"artist": artist, "title": title}
+            f"{BASE_URL}/api/search_tracks", params={"artist": artist, "title": title}
         )
-        assert resp.status_code == 200, f"Search failed: Status: {resp.status_code}, Body: {resp.text}"
+        assert resp.status_code == 200, (
+            f"Search failed: Status: {resp.status_code}, Body: {resp.text}"
+        )
         results = resp.json()
         for song in results:
             song_artist = song.get("author") or song.get("artist") or ""
-            if song_artist.lower() == artist.lower() and song.get("title", "").lower() == title.lower():
+            if (
+                song_artist.lower() == artist.lower()
+                and song.get("title", "").lower() == title.lower()
+            ):
                 return song["item_id"]
         if results and "item_id" in results[0]:
             return results[0]["item_id"]
@@ -137,18 +162,24 @@ def test_song_alchemy_and_playlist():
     sub_id = find_song_id('System of a Down', 'Attack')
 
     payload = {
-        "items": [
-            {"id": add_id, "op": "ADD"},
-            {"id": sub_id, "op": "SUBTRACT"}
-        ],
+        "items": [{"id": add_id, "op": "ADD"}, {"id": sub_id, "op": "SUBTRACT"}],
         "n": 10,
         "temperature": 1,
-        "subtract_distance": 0.2
+        "subtract_distance": 0.2,
     }
     resp = requests.post(f'{BASE_URL}/api/alchemy', json=payload, timeout=120)
     assert resp.status_code == 200, f"Status: {resp.status_code}, Body: {resp.text}"
     data = resp.json()
-    expected_keys = {"add_centroid_2d", "add_points", "centroid_2d", "filtered_out", "projection", "results", "sub_points", "subtract_centroid_2d"}
+    expected_keys = {
+        "add_centroid_2d",
+        "add_points",
+        "centroid_2d",
+        "filtered_out",
+        "projection",
+        "results",
+        "sub_points",
+        "subtract_centroid_2d",
+    }
     if not (isinstance(data, dict) and expected_keys.issubset(data.keys())):
         warnings.warn(f"Shape warning: /api/alchemy response shape unexpected: {data}")
     results = data.get('results', [])
@@ -159,7 +190,7 @@ def test_song_alchemy_and_playlist():
     pl_resp = requests.post(
         f'{BASE_URL}/api/create_playlist',
         json={'playlist_name': 'TestSongAlchemy', 'track_ids': track_ids},
-        timeout=120
+        timeout=120,
     )
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
@@ -167,6 +198,7 @@ def test_song_alchemy_and_playlist():
 
     elapsed = time.time() - start_time
     print(f"[TIMING] Song Alchemy test completed in {elapsed:.2f} seconds")
+
 
 def test_map_visualization():
     start_time = time.time()
@@ -177,7 +209,7 @@ def test_map_visualization():
 
     sim_resp = get_with_retries(
         f'{BASE_URL}/api/similar_tracks',
-        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1}
+        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1},
     )
     assert sim_resp.status_code == 200, f"Status: {sim_resp.status_code}, Body: {sim_resp.text}"
     sim_data = sim_resp.json()
@@ -187,7 +219,7 @@ def test_map_visualization():
 
     pl_resp = requests.post(
         f'{BASE_URL}/api/create_playlist',
-        json={'playlist_name': 'TestPlaylist', 'track_ids': [item_id]}
+        json={'playlist_name': 'TestPlaylist', 'track_ids': [item_id]},
     )
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
@@ -196,11 +228,12 @@ def test_map_visualization():
     elapsed = time.time() - start_time
     print(f"[TIMING] Map Visualization test completed in {elapsed:.2f} seconds")
 
+
 def test_annoy_similarity_and_playlist():
     start_time = time.time()
     sim_resp = get_with_retries(
         f'{BASE_URL}/api/similar_tracks',
-        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1}
+        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1},
     )
     assert sim_resp.status_code == 200, f"Status: {sim_resp.status_code}, Body: {sim_resp.text}"
     sim_data = sim_resp.json()
@@ -210,7 +243,7 @@ def test_annoy_similarity_and_playlist():
 
     pl_resp = requests.post(
         f'{BASE_URL}/api/create_playlist',
-        json={'playlist_name': 'TestPlaylist', 'track_ids': [item_id]}
+        json={'playlist_name': 'TestPlaylist', 'track_ids': [item_id]},
     )
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
@@ -219,18 +252,24 @@ def test_annoy_similarity_and_playlist():
     elapsed = time.time() - start_time
     print(f"[TIMING] Similar Song test completed in {elapsed:.2f} seconds")
 
+
 def test_song_path_and_playlist():
     start_time = time.time()
+
     def find_song_id(artist, title):
         resp = get_with_retries(
-            f"{BASE_URL}/api/search_tracks",
-            params={"artist": artist, "title": title}
+            f"{BASE_URL}/api/search_tracks", params={"artist": artist, "title": title}
         )
-        assert resp.status_code == 200, f"Search failed: Status: {resp.status_code}, Body: {resp.text}"
+        assert resp.status_code == 200, (
+            f"Search failed: Status: {resp.status_code}, Body: {resp.text}"
+        )
         results = resp.json()
         for song in results:
             song_artist = song.get("author") or song.get("artist") or ""
-            if song_artist.lower() == artist.lower() and song.get("title", "").lower() == title.lower():
+            if (
+                song_artist.lower() == artist.lower()
+                and song.get("title", "").lower() == title.lower()
+            ):
                 return song["item_id"]
         if results and "item_id" in results[0]:
             return results[0]["item_id"]
@@ -244,11 +283,7 @@ def test_song_path_and_playlist():
     start_song_id = find_song_id(start_artist, start_title)
     end_song_id = find_song_id(end_artist, end_title)
 
-    params = {
-        'start_song_id': start_song_id,
-        'end_song_id': end_song_id,
-        'max_steps': 25
-    }
+    params = {'start_song_id': start_song_id, 'end_song_id': end_song_id, 'max_steps': 25}
     resp = requests.get(f'{BASE_URL}/api/find_path', params=params, timeout=120)
     assert resp.status_code == 200, f"Status: {resp.status_code}, Body: {resp.text}"
     data = resp.json()
@@ -263,7 +298,7 @@ def test_song_path_and_playlist():
     pl_resp = requests.post(
         f'{BASE_URL}/api/create_playlist',
         json={'playlist_name': 'TestSongPath', 'track_ids': track_ids},
-        timeout=120
+        timeout=120,
     )
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
@@ -272,26 +307,28 @@ def test_song_path_and_playlist():
     elapsed = time.time() - start_time
     print(f"[TIMING] Song Path test completed in {elapsed:.2f} seconds")
 
-@pytest.mark.parametrize('algorithm,use_embedding,pca_max', [
-    ('kmeans', True, 199),
-    ('gmm', True, 199),
-    ('spectral', True, 199),
-    ('dbscan', True, 199),
-])
+
+@pytest.mark.parametrize(
+    'algorithm,use_embedding,pca_max',
+    [
+        ('kmeans', True, 199),
+        ('gmm', True, 199),
+        ('spectral', True, 199),
+        ('dbscan', True, 199),
+    ],
+)
 def test_clustering_smoke_flow(algorithm, use_embedding, pca_max):
     start_time = time.time()
     payload = {
         'clustering_method': algorithm,
         'enable_clustering_embeddings': use_embedding,
         'clustering_runs': 20,
-        'stratified_sampling_target_percentile': 1
+        'stratified_sampling_target_percentile': 1,
     }
     if use_embedding:
         payload['pca_components_max'] = pca_max
 
-    resp = requests.post(
-        f'{BASE_URL}/api/clustering/start', json=payload
-    )
+    resp = requests.post(f'{BASE_URL}/api/clustering/start', json=payload)
     assert resp.status_code == 202
     data = resp.json()
     assert data.get('task_type') == 'main_clustering'
@@ -310,9 +347,13 @@ def test_clustering_smoke_flow(algorithm, use_embedding, pca_max):
     assert num_playlists is not None, "Number of playlists created not found in details"
 
     elapsed = time.time() - start_time
-    print(f"[RESULT] Algorithm={algorithm} | BestScore={best_score} | PlaylistsCreated={num_playlists} | Time={elapsed:.2f}s")
+    print(
+        f"[RESULT] Algorithm={algorithm} | BestScore={best_score} | PlaylistsCreated={num_playlists} | Time={elapsed:.2f}s"
+    )
     time.sleep(10)
+
 
 if __name__ == '__main__':
     import sys
+
     sys.exit(pytest.main(['-v', '-s', __file__]))

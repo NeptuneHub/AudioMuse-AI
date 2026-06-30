@@ -11,7 +11,11 @@ from app_helper import load_map_projection
 
 # Try to reuse the shared projection helpers
 try:
-    from tasks.alchemy_projections import _project_with_umap, _project_to_2d, _project_with_discriminant
+    from tasks.alchemy_projections import (
+        _project_with_umap,
+        _project_to_2d,
+        _project_with_discriminant,
+    )
 except Exception:
     # Fallbacks will be used if import fails
     _project_with_umap = None
@@ -71,7 +75,8 @@ def _sample_items(items, fraction):
     seen = set()
     out = []
     for i in idxs:
-        if i in seen: continue
+        if i in seen:
+            continue
         seen.add(int(i))
         out.append(items[int(i)])
     return out
@@ -115,7 +120,15 @@ def build_map_cache():
                 emb = np.array(r[4], dtype=np.float32)
             except Exception:
                 continue
-        items.append({'item_id': str(item_id), 'title': title, 'artist': author, 'mood_vector': mood_vector, 'embedding': emb})
+        items.append(
+            {
+                'item_id': str(item_id),
+                'title': title,
+                'artist': author,
+                'mood_vector': mood_vector,
+                'embedding': emb,
+            }
+        )
 
     if not items:
         # empty cache
@@ -150,13 +163,20 @@ def build_map_cache():
             projections = None
             used = 'none'
             # prefer UMAP helper if present
-            if '_project_with_umap' in globals() and globals().get('_project_with_umap') is not None:
+            if (
+                '_project_with_umap' in globals()
+                and globals().get('_project_with_umap') is not None
+            ):
                 try:
                     projections = globals()['_project_with_umap']([v for v in mat])
                     used = 'umap'
                 except Exception as e:
                     logger.debug('UMAP helper failed during cache build: %s', e)
-            if projections is None and '_project_to_2d' in globals() and globals().get('_project_to_2d') is not None:
+            if (
+                projections is None
+                and '_project_to_2d' in globals()
+                and globals().get('_project_to_2d') is not None
+            ):
                 try:
                     projections = globals()['_project_to_2d']([v for v in mat])
                     used = 'pca'
@@ -187,7 +207,7 @@ def build_map_cache():
             'embedding_2d': _round_coord(coord),
             'item_id': iid,
             'mood_vector': _pick_top_mood(it.get('mood_vector')),
-            'title': it.get('title') or ''
+            'title': it.get('title') or '',
         }
         full_light.append(light)
     del items
@@ -210,7 +230,11 @@ def build_map_cache():
         new_cache[k] = entry
 
     MAP_JSON_CACHE = new_cache
-    logger.info('Map JSON cache built: %d total items; cache sizes: %s', n, {k: v['count'] for k, v in MAP_JSON_CACHE.items()})
+    logger.info(
+        'Map JSON cache built: %d total items; cache sizes: %s',
+        n,
+        {k: v['count'] for k, v in MAP_JSON_CACHE.items()},
+    )
 
 
 def init_map_cache():
@@ -233,10 +257,11 @@ def map_ui():
       200:
         description: HTML page rendered with no-cache headers.
     """
-    resp = render_template('map.html', title = 'AudioMuse-AI - Music Map', active='map')
+    resp = render_template('map.html', title='AudioMuse-AI - Music Map', active='map')
     # Ensure the rendered page is not cached by browsers or intermediary caches.
     # We return a Response object below so Flask will set the appropriate headers.
     from flask import make_response
+
     response = make_response(resp)
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
@@ -255,7 +280,7 @@ def map_api():
     description: |
       Served exclusively from the in-memory `MAP_JSON_CACHE` built at startup
       (or rebuilt via `/api/rebuild_map_cache`). Supports four sampling
-      buckets — 25/50/75/100 percent of the cached set — plus a legacy `n`
+      buckets - 25/50/75/100 percent of the cached set - plus a legacy `n`
       parameter that maps the closest bucket. Honors `Accept-Encoding: gzip`
       when the cache contains a precompressed payload.
     parameters:
@@ -272,7 +297,7 @@ def map_api():
       - name: n
         in: query
         schema: { type: integer }
-        description: Legacy parameter — mapped to the nearest available bucket.
+        description: Legacy parameter - mapped to the nearest available bucket.
     responses:
       200:
         description: JSON payload with `items` (each having `embedding_2d`, `title`, `author`, `mood_vector`, `other_features`) and `projection` name.
@@ -386,7 +411,11 @@ def map_cache_status():
         info = {}
         for k, v in MAP_JSON_CACHE.items():
             payload = v.get('json_gzip_bytes') or v.get('json_bytes') or b''
-            info[k] = {'count': v.get('count', 0), 'json_bytes': len(payload), 'projection': v.get('projection')}
+            info[k] = {
+                'count': v.get('count', 0),
+                'json_bytes': len(payload),
+                'projection': v.get('projection'),
+            }
         return jsonify({'ok': True, 'buckets': info}), 200
     except Exception:
         # Log the full exception (including stack) for diagnostics, but do not expose

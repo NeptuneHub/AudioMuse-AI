@@ -4,14 +4,29 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 CIRCLE_OF_FIFTHS = {
-    'C': 0, 'G': 1, 'D': 2, 'A': 3, 'E': 4, 'B': 5,
-    'F#': 6, 'GB': 6, 'DB': 7, 'C#': 7, 'AB': 8, 'G#': 8,
-    'EB': 9, 'D#': 9, 'BB': 10, 'A#': 10, 'F': 11,
+    'C': 0,
+    'G': 1,
+    'D': 2,
+    'A': 3,
+    'E': 4,
+    'B': 5,
+    'F#': 6,
+    'GB': 6,
+    'DB': 7,
+    'C#': 7,
+    'AB': 8,
+    'G#': 8,
+    'EB': 9,
+    'D#': 9,
+    'BB': 10,
+    'A#': 10,
+    'F': 11,
 }
 
 
-def _key_distance(key1: Optional[str], scale1: Optional[str],
-                  key2: Optional[str], scale2: Optional[str]) -> float:
+def _key_distance(
+    key1: Optional[str], scale1: Optional[str], key2: Optional[str], scale2: Optional[str]
+) -> float:
     if not key1 or not key2:
         return 0.5
 
@@ -31,10 +46,9 @@ def _key_distance(key1: Optional[str], scale1: Optional[str],
     return dist
 
 
-def _composite_distance(song_a: Dict, song_b: Dict,
-                        w_tempo: float = 0.35,
-                        w_energy: float = 0.35,
-                        w_key: float = 0.30) -> float:
+def _composite_distance(
+    song_a: Dict, song_b: Dict, w_tempo: float = 0.35, w_energy: float = 0.35, w_key: float = 0.30
+) -> float:
     tempo_a = song_a.get('tempo') or 0
     tempo_b = song_b.get('tempo') or 0
     tempo_diff = min(abs(tempo_a - tempo_b) / 80.0, 1.0)
@@ -44,8 +58,7 @@ def _composite_distance(song_a: Dict, song_b: Dict,
     energy_diff = min(abs(energy_a - energy_b) / 0.14, 1.0)
 
     key_dist = _key_distance(
-        song_a.get('key'), song_a.get('scale'),
-        song_b.get('key'), song_b.get('scale')
+        song_a.get('key'), song_a.get('scale'), song_b.get('key'), song_b.get('scale')
     )
 
     return w_tempo * tempo_diff + w_energy * energy_diff + w_key * key_dist
@@ -62,11 +75,14 @@ def order_playlist(song_ids: List[str], energy_arc: bool = False) -> List[str]:
     try:
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             placeholders = ','.join(['%s'] * len(song_ids))
-            cur.execute(f"""
+            cur.execute(
+                f"""
                 SELECT item_id, tempo, energy, key, scale
                 FROM public.score
                 WHERE item_id IN ({placeholders})
-            """, song_ids)
+            """,
+                song_ids,
+            )
             rows = cur.fetchall()
     finally:
         db_conn.close()
@@ -123,18 +139,18 @@ def _apply_energy_arc(ordered_ids: List[str], song_data: Dict) -> List[str]:
 
     third = n // 3
     low = by_energy[:third]
-    mid = by_energy[third:2*third]
-    high = by_energy[2*third:]
+    mid = by_energy[third : 2 * third]
+    high = by_energy[2 * third :]
 
     half_low = len(low) // 2
     half_mid = len(mid) // 2
 
     arc = (
-        low[:half_low] +
-        mid[:half_mid] +
-        high +
-        list(reversed(mid[half_mid:])) +
-        list(reversed(low[half_low:]))
+        low[:half_low]
+        + mid[:half_mid]
+        + high
+        + list(reversed(mid[half_mid:]))
+        + list(reversed(low[half_low:]))
     )
 
     return arc

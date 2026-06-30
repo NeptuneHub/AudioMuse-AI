@@ -35,9 +35,9 @@ def lyrics_search_page():
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
     from tasks.sem_grove_manager import get_sem_grove_stats
 
-    cache_stats      = get_cache_stats()
-    axes             = get_axes_definition() if LYRICS_ENABLED else {}
-    sem_grove_stats  = get_sem_grove_stats()
+    cache_stats = get_cache_stats()
+    axes = get_axes_definition() if LYRICS_ENABLED else {}
+    sem_grove_stats = get_sem_grove_stats()
 
     return render_template(
         'lyrics_search.html',
@@ -241,6 +241,7 @@ def lyrics_warmup_api():
 
     try:
         from tasks.gte_warm_cache import warmup_gte_model
+
         return jsonify(warmup_gte_model())
     except Exception:
         logger.exception("Lyrics model warmup failed")
@@ -266,6 +267,7 @@ def lyrics_warmup_status_api():
 
     try:
         from tasks.gte_warm_cache import get_gte_warm_status
+
         return jsonify(get_gte_warm_status())
     except Exception:
         logger.exception("Failed to get lyrics warmup status")

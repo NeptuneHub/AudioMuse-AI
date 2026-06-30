@@ -34,11 +34,11 @@ def normalize_path(raw):
         return None
     p = str(raw)
     if p.startswith('file://'):
-        p = unquote(p[len('file://'):])
+        p = unquote(p[len('file://') :])
     p = p.replace('\\', '/').lower()
     for prefix in _MOUNT_PREFIXES_TO_STRIP:
         if p.startswith(prefix):
-            p = p[len(prefix):]
+            p = p[len(prefix) :]
             break
     return p.lstrip('/')
 
@@ -74,18 +74,30 @@ def extract_disc_track(path):
 
 
 _META_NOISE_WORDS = (
-    'remaster', 'remastered',
-    'feat', 'ft', 'featuring',
-    'explicit', 'clean',
-    'radio edit', 'radio version',
-    'single version', 'album version',
-    'extended', 'club mix',
-    'acoustic', 'live', 'demo',
-    'version', 'mix',
+    'remaster',
+    'remastered',
+    'feat',
+    'ft',
+    'featuring',
+    'explicit',
+    'clean',
+    'radio edit',
+    'radio version',
+    'single version',
+    'album version',
+    'extended',
+    'club mix',
+    'acoustic',
+    'live',
+    'demo',
+    'version',
+    'mix',
 )
 _META_NOISE_ALT = '|'.join(re.escape(w) for w in _META_NOISE_WORDS)
 _META_NOISE_PAREN_RE = re.compile(r'\s*\([^)]*(?:' + _META_NOISE_ALT + r')[^)]*\)', re.IGNORECASE)
-_META_NOISE_BRACKET_RE = re.compile(r'\s*\[[^\]]*(?:' + _META_NOISE_ALT + r')[^\]]*\]', re.IGNORECASE)
+_META_NOISE_BRACKET_RE = re.compile(
+    r'\s*\[[^\]]*(?:' + _META_NOISE_ALT + r')[^\]]*\]', re.IGNORECASE
+)
 _LEADING_THE_RE = re.compile(r'^the\s+', re.IGNORECASE)
 _COLLAPSE_WS_RE = re.compile(r'\s+')
 

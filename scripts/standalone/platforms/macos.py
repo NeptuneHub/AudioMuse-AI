@@ -25,8 +25,16 @@ def _sign_nested(app, entitlements):
         for name in files:
             if name.endswith(_SIGN_SUFFIXES) or name in _SIGN_NAMES:
                 subprocess.run(
-                    ["codesign", "--force", "--timestamp=none", "--sign", "-",
-                     "--entitlements", entitlements, os.path.join(root, name)],
+                    [
+                        "codesign",
+                        "--force",
+                        "--timestamp=none",
+                        "--sign",
+                        "-",
+                        "--entitlements",
+                        entitlements,
+                        os.path.join(root, name),
+                    ],
                     stderr=subprocess.DEVNULL,
                 )
 
@@ -39,8 +47,17 @@ def package(ctx):
 
     print("==> Ad-hoc signing the bundle")
     subprocess.run(
-        ["codesign", "--force", "--deep", "--timestamp=none", "--sign", "-",
-         "--entitlements", entitlements, str(app)],
+        [
+            "codesign",
+            "--force",
+            "--deep",
+            "--timestamp=none",
+            "--sign",
+            "-",
+            "--entitlements",
+            entitlements,
+            str(app),
+        ],
         check=True,
     )
 
@@ -52,7 +69,12 @@ def package(ctx):
     subprocess.run(["rm", "-rf", str(stage)], check=True)
     stage.mkdir(parents=True)
     staged_app = stage / "AudioMuse-AI.app"
-    if subprocess.run(["cp", "-cR", str(app), str(staged_app)], stderr=subprocess.DEVNULL).returncode != 0:
+    if (
+        subprocess.run(
+            ["cp", "-cR", str(app), str(staged_app)], stderr=subprocess.DEVNULL
+        ).returncode
+        != 0
+    ):
         subprocess.run(["ditto", str(app), str(staged_app)], check=True)
     (stage / "readme.md").write_text(_README)
 

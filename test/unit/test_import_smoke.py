@@ -8,8 +8,18 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 EXCLUDED_DIRS = {
-    ".git", ".venv", ".venv-windows", "node_modules", "__pycache__",
-    "build", "dist", "pginstall", "native-build", "test", "scripts", "screenshot",
+    ".git",
+    ".venv",
+    ".venv-windows",
+    "node_modules",
+    "__pycache__",
+    "build",
+    "dist",
+    "pginstall",
+    "native-build",
+    "test",
+    "scripts",
+    "screenshot",
 }
 
 _OPTIONAL_DEPS = ("cuml", "cupy", "ivf", "faiss", "tensorflow")

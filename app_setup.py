@@ -13,14 +13,22 @@ from error.error_manager import AudioMuseError
 from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
-    field
-    for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values()
-    for field in fields
+    field for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values() for field in fields
 ]
 
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
-SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
+SECRET_FIELDS = {
+    "AUDIOMUSE_PASSWORD",
+    "API_TOKEN",
+    "JELLYFIN_TOKEN",
+    "EMBY_TOKEN",
+    "NAVIDROME_PASSWORD",
+    "JWT_SECRET",
+    "AI_CHAT_DB_USER_PASSWORD",
+    "LYRICS_API_1_APIKEY_VALUE",
+    "LYRICS_API_2_APIKEY_VALUE",
+}
 # Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
 # through the admin-user path, JWT_SECRET blank means "auto-generate". Every
 # other secret treats a blank submission as "keep the stored value".
@@ -28,11 +36,19 @@ BLANK_KEEP_EXCLUDED_SECRETS = {"AUDIOMUSE_PASSWORD", "JWT_SECRET"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
 
 LYRICS_API_CONFIG_FIELDS = [
-    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
-    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_URL_TEMPLATE',
+    'LYRICS_API_1_ARTIST_PARAM',
+    'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD',
+    'LYRICS_API_1_APIKEY_PARAM',
+    'LYRICS_API_1_APIKEY_VALUE',
     'LYRICS_API_1_TIMEOUT',
-    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
-    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_URL_TEMPLATE',
+    'LYRICS_API_2_ARTIST_PARAM',
+    'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD',
+    'LYRICS_API_2_APIKEY_PARAM',
+    'LYRICS_API_2_APIKEY_VALUE',
     'LYRICS_API_2_TIMEOUT',
 ]
 
@@ -161,11 +177,19 @@ HIDDEN_ADVANCED_FIELDS = {
     'PATH_CANDIDATES_PER_STEP',
     'PATH_LCORE_MULTIPLIER',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
-    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
-    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_URL_TEMPLATE',
+    'LYRICS_API_1_ARTIST_PARAM',
+    'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD',
+    'LYRICS_API_1_APIKEY_PARAM',
+    'LYRICS_API_1_APIKEY_VALUE',
     'LYRICS_API_1_TIMEOUT',
-    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
-    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_URL_TEMPLATE',
+    'LYRICS_API_2_ARTIST_PARAM',
+    'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD',
+    'LYRICS_API_2_APIKEY_PARAM',
+    'LYRICS_API_2_APIKEY_VALUE',
     'LYRICS_API_2_TIMEOUT',
 }
 
@@ -227,7 +251,10 @@ def _test_media_server_connection(filtered_values):
         probe_limit = config.PROBE_TOP_PLAYED_LIMIT
         items = mediaserver.get_top_played_songs(probe_limit)
         if not items:
-            raise AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.")
+            raise AudioMuseError(
+                ERR_MEDIASERVER_UNREACHABLE,
+                f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.",
+            )
         return {
             'type': media_type,
             'probe_count': len(items),
@@ -236,7 +263,9 @@ def _test_media_server_connection(filtered_values):
     except AudioMuseError:
         raise
     except Exception as exc:
-        raise AudioMuseError(error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc) from exc
+        raise AudioMuseError(
+            error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc
+        ) from exc
     finally:
         _restore_config(original_config)
 
@@ -284,6 +313,7 @@ def _has_admin_user():
     """Return True if at least one admin exists in audiomuse_users."""
     try:
         from app_auth import count_admin_users
+
         return count_admin_users() > 0
     except Exception as exc:
         app.logger.error(
@@ -292,6 +322,7 @@ def _has_admin_user():
             exc_info=True,
         )
         return False
+
 
 @app.route('/setup')
 def setup_page():
@@ -306,8 +337,14 @@ def setup_page():
         description: HTML page rendered.
     """
     from config import LYRICS_ENABLED
-    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
-                           lyrics_enabled=LYRICS_ENABLED)
+
+    return render_template(
+        'setup.html',
+        title='AudioMuse-AI - Setup Wizard',
+        active='setup',
+        lyrics_enabled=LYRICS_ENABLED,
+    )
+
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
@@ -394,16 +431,22 @@ def setup_api():
             if is_secret:
                 lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': '', 'secret': True}
             else:
-                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': raw_val, 'secret': False}
+                lyrics_api_data[fname] = {
+                    'has_value': bool(raw_val),
+                    'value': raw_val,
+                    'secret': False,
+                }
 
-        return jsonify({
-            'basic_fields': basic_fields,
-            'advanced_fields': advanced_fields,
-            'music_libraries': music_libraries_value,
-            'lyrics_api_fields': lyrics_api_data,
-            'setup_saved': not check_setup_needed(),
-            'has_admin_user': _has_admin_user(),
-        })
+        return jsonify(
+            {
+                'basic_fields': basic_fields,
+                'advanced_fields': advanced_fields,
+                'music_libraries': music_libraries_value,
+                'lyrics_api_fields': lyrics_api_data,
+                'setup_saved': not check_setup_needed(),
+                'has_admin_user': _has_admin_user(),
+            }
+        )
 
     data = request.get_json(silent=True) or {}
     config_values = data.get('config')
@@ -424,7 +467,11 @@ def setup_api():
     if not is_test_connection:
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
-                return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+                return jsonify(
+                    {
+                        'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'
+                    }
+                ), 400
 
         # A blank secret means "keep the stored value" so re-saving the wizard
         # (e.g. to add an API token) never wipes an already-configured
@@ -445,18 +492,22 @@ def setup_api():
                 if url_val:
                     is_safe, reason = validate_outbound_url(url_val)
                     if not is_safe:
-                        return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
+                        return jsonify(
+                            {'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}
+                        ), 400
 
     try:
         if is_test_connection:
             result = _test_media_server_connection(filtered_values)
-            return jsonify({
-                'status': 'ok',
-                'test_connection': True,
-                'media_server': result['type'],
-                'probe_count': result['probe_count'],
-                'probe_limit_hit': result.get('probe_limit_hit', False),
-            }), 200
+            return jsonify(
+                {
+                    'status': 'ok',
+                    'test_connection': True,
+                    'media_server': result['type'],
+                    'probe_count': result['probe_count'],
+                    'probe_limit_hit': result.get('probe_limit_hit', False),
+                }
+            ), 200
 
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
         if isinstance(new_server_type, str):
@@ -464,8 +515,9 @@ def setup_api():
         obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
 
         auth_val = filtered_values.get('AUTH_ENABLED')
-        auth_being_disabled = (auth_val is False or
-            (isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')))
+        auth_being_disabled = auth_val is False or (
+            isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')
+        )
 
         # The setup form collects the install-time admin via AUDIOMUSE_USER /
         # AUDIOMUSE_PASSWORD, but we store admins in audiomuse_users, not in
@@ -503,6 +555,7 @@ def setup_api():
         # via the form (new_admin_user + new_admin_password).
         from app_auth import count_admin_users, upsert_admin_user
         from database import get_db
+
         auth_will_be_enabled = not auth_being_disabled
         if isinstance(simulated.AUTH_ENABLED, str):
             auth_will_be_enabled = simulated.AUTH_ENABLED.strip().lower() == 'true'
@@ -520,7 +573,9 @@ def setup_api():
                 return jsonify({'error': 'Database error while verifying admin count.'}), 500
             provided_admin = bool(new_admin_user and new_admin_password)
             if existing_admins <= 0 and not provided_admin:
-                return jsonify({'error': 'Cannot save: auth is enabled but no admin account was provided.'}), 400
+                return jsonify(
+                    {'error': 'Cannot save: auth is enabled but no admin account was provided.'}
+                ), 400
 
         # Validation passed - apply changes to the database
         if obsolete_fields:
@@ -535,7 +590,9 @@ def setup_api():
                     cur.execute("DELETE FROM audiomuse_users")
                 db.commit()
             except Exception as exc:
-                app.logger.error('Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True)
+                app.logger.error(
+                    'Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True
+                )
         elif new_admin_user and new_admin_password:
             try:
                 if count_admin_users() > 0:
@@ -546,7 +603,11 @@ def setup_api():
                     exc,
                     exc_info=True,
                 )
-                return jsonify({'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'}), 500
+                return jsonify(
+                    {
+                        'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'
+                    }
+                ), 500
             ok, err = upsert_admin_user(new_admin_user, new_admin_password)
             if not ok:
                 return jsonify({'error': err or 'Failed to save admin account.'}), 400
@@ -562,14 +623,23 @@ def setup_api():
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
-            return jsonify({'error': 'Unable to get top player song. Check the server log for details.'}), 500
-        return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
+            return jsonify(
+                {'error': 'Unable to get top player song. Check the server log for details.'}
+            ), 500
+        return jsonify(
+            {'error': 'Unable to save configuration. Check the server log for details.'}
+        ), 500
 
-    response = make_response(jsonify({
-        'status': 'ok',
-        'saved_keys': list(filtered_values.keys()),
-        'restart_requested': restart_requested,
-    }), 200)
+    response = make_response(
+        jsonify(
+            {
+                'status': 'ok',
+                'saved_keys': list(filtered_values.keys()),
+                'restart_requested': restart_requested,
+            }
+        ),
+        200,
+    )
 
     @after_this_request
     def schedule_restart(response):
@@ -641,12 +711,16 @@ def setup_provider_libraries_api():
         result = _list_provider_libraries(filtered_values)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
-        return jsonify({'error': 'Unable to list libraries. Check the server log for details.'}), 500
+        return jsonify(
+            {'error': 'Unable to list libraries. Check the server log for details.'}
+        ), 500
 
-    return jsonify({
-        'libraries': result.get('libraries', []),
-        'unsupported': bool(result.get('unsupported', False)),
-    }), 200
+    return jsonify(
+        {
+            'libraries': result.get('libraries', []),
+            'unsupported': bool(result.get('unsupported', False)),
+        }
+    ), 200
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
@@ -730,10 +804,35 @@ def setup_lyrics_api_analyze():
 
     # Auto-detect likely roles for each query param
     _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}
-    _TITLE  = {'track', 'track_name', 'trackname', 'title', 'song', 'song_name', 't', 'name', 's', 'q'}
-    _APIKEY = {'apikey', 'api_key', 'key', 'token', 'access_token', 'api_token', 'usertoken', 'user_token'}
-    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None,
-               'path_roles': {}}
+    _TITLE = {
+        'track',
+        'track_name',
+        'trackname',
+        'title',
+        'song',
+        'song_name',
+        't',
+        'name',
+        's',
+        'q',
+    }
+    _APIKEY = {
+        'apikey',
+        'api_key',
+        'key',
+        'token',
+        'access_token',
+        'api_token',
+        'usertoken',
+        'user_token',
+    }
+    guesses = {
+        'artist_param': None,
+        'title_param': None,
+        'apikey_param': None,
+        'lyrics_field': None,
+        'path_roles': {},
+    }
     for pname in flat_params:
         plow = pname.lower().replace('-', '_')
         if plow in _ARTIST and not guesses['artist_param']:
@@ -751,8 +850,24 @@ def setup_lyrics_api_analyze():
     # user with stray dropdowns.
     _PATH_PREFIX_RE = re.compile(r'^(?:api|v\d+|api[-_]?v\d+)$', re.IGNORECASE)
     _PATH_VERBS = {
-        'get', 'search', 'lookup', 'find', 'fetch', 'query', 'lyrics', 'lyric', 'song', 'songs',
-        'track', 'tracks', 'artist', 'artists', 'album', 'albums', 'public', 'rest',
+        'get',
+        'search',
+        'lookup',
+        'find',
+        'fetch',
+        'query',
+        'lyrics',
+        'lyric',
+        'song',
+        'songs',
+        'track',
+        'tracks',
+        'artist',
+        'artists',
+        'album',
+        'albums',
+        'public',
+        'rest',
     }
     path_parts = [p for p in parsed.path.split('/') if p]
     path_segments = []
@@ -785,6 +900,7 @@ def setup_lyrics_api_analyze():
         except Exception:
             ctx = None
         import time as _time
+
         _t0 = _time.monotonic()
         with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
             raw_bytes = resp.read(512 * 1024)
@@ -801,29 +917,45 @@ def setup_lyrics_api_analyze():
             pass
 
     # Auto-detect lyrics field by common names + string length heuristic
-    _LYRICS_NAMES = {'lyrics', 'plainlyrics', 'syncedlyrics', 'lyric', 'lyricbody',
-                     'text', 'words', 'content', 'translation'}
+    _LYRICS_NAMES = {
+        'lyrics',
+        'plainlyrics',
+        'syncedlyrics',
+        'lyric',
+        'lyricbody',
+        'text',
+        'words',
+        'content',
+        'translation',
+    }
     if isinstance(json_obj, dict):
+
         def _find_lyrics(obj, prefix=''):
             if guesses['lyrics_field'] or not isinstance(obj, dict):
                 return
             for k, v in obj.items():
                 path = (prefix + '.' + k) if prefix else k
-                if k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES \
-                        and isinstance(v, str) and len(v) > 20:
+                if (
+                    k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES
+                    and isinstance(v, str)
+                    and len(v) > 20
+                ):
                     guesses['lyrics_field'] = path
                     return
                 elif isinstance(v, dict):
                     _find_lyrics(v, path)
+
         _find_lyrics(json_obj)
 
     display_raw = (raw_text or '')[:16384] + ('...' if raw_text and len(raw_text) > 16384 else '')
-    return jsonify({
-        'params':        flat_params,
-        'path_segments': path_segments,
-        'guesses':       guesses,
-        'json_obj':      json_obj,
-        'raw_json':      display_raw,
-        'elapsed_ms':    round(elapsed_ms) if elapsed_ms is not None else None,
-        'error':         'Failed to fetch or parse the API response.' if http_error else None,
-    }), 200
+    return jsonify(
+        {
+            'params': flat_params,
+            'path_segments': path_segments,
+            'guesses': guesses,
+            'json_obj': json_obj,
+            'raw_json': display_raw,
+            'elapsed_ms': round(elapsed_ms) if elapsed_ms is not None else None,
+            'error': 'Failed to fetch or parse the API response.' if http_error else None,
+        }
+    ), 200

@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Create a Blueprint for external API routes
 external_bp = Blueprint('external_bp', __name__)
 
+
 @external_bp.route('/get_score', methods=['GET'])
 def get_score_endpoint():
     """

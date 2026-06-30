@@ -18,6 +18,7 @@ I8_SCALE = np.float32(127.0)
 
 try:
     import numkong as _nk
+
     HAVE_NUMKONG = True
 except Exception:  # pragma: no cover - exercised only on builds without the wheel
     _nk = None
@@ -100,7 +101,11 @@ def _cell_distances_nk(metric, qp, vecs) -> np.ndarray:
 def _cell_distances_np(metric, code, qp, vecs, normalized) -> np.ndarray:
     metric = (metric or "angular").lower()
     q = decode_row(qp, code)
-    v = np.asarray(vecs, dtype=np.float32) if code != DTYPE_I8 else (np.asarray(vecs, dtype=np.float32) / I8_SCALE)
+    v = (
+        np.asarray(vecs, dtype=np.float32)
+        if code != DTYPE_I8
+        else (np.asarray(vecs, dtype=np.float32) / I8_SCALE)
+    )
     if metric == "euclidean":
         diffs = v - q[None, :]
         return np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)

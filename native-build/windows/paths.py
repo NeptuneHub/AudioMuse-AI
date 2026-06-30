@@ -1,4 +1,3 @@
-
 import os
 import platform
 import secrets
@@ -28,7 +27,9 @@ def _ensure(path):
 
 
 def app_support_dir():
-    local_appdata = os.environ.get("LOCALAPPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+    local_appdata = os.environ.get(
+        "LOCALAPPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    )
     root = os.path.join(local_appdata, APP_NAME)
     if " " in root:
         root = os.path.join(os.environ.get("PROGRAMDATA", "C:\\ProgramData"), APP_NAME)
@@ -126,7 +127,13 @@ def model_dir():
 def redis_binary():
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "redis-server.exe")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "redis", platform.machine().lower(), "redis-server.exe")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "redis",
+        platform.machine().lower(),
+        "redis-server.exe",
+    )
 
 
 def _pgserver_pginstall():
@@ -135,6 +142,7 @@ def _pgserver_pginstall():
         return cand if os.path.isdir(cand) else None
     try:
         import pgserver
+
         cand = os.path.join(os.path.dirname(pgserver.__file__), "pginstall")
         return cand if os.path.isdir(cand) else None
     except Exception:
@@ -147,7 +155,13 @@ def pg_bin_dir():
         return os.path.join(pginstall, "bin")
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgsql", "bin")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "postgres", platform.machine().lower(), "bin")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "postgres",
+        platform.machine().lower(),
+        "bin",
+    )
 
 
 def pg_lib_dir():
@@ -156,4 +170,10 @@ def pg_lib_dir():
         return os.path.join(pginstall, "lib")
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgsql", "lib")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "postgres", platform.machine().lower(), "lib")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "postgres",
+        platform.machine().lower(),
+        "lib",
+    )

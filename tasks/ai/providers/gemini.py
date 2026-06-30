@@ -117,9 +117,7 @@ def call_with_tools(
                         if hasattr(fc, "args"):
                             args_dict = dict(fc.args) if fc.args else {}
                         elif hasattr(fc, "arguments"):
-                            args_dict = (
-                                fc.arguments if isinstance(fc.arguments, dict) else {}
-                            )
+                            args_dict = fc.arguments if isinstance(fc.arguments, dict) else {}
                         tool_calls.append(
                             {"name": fc.name, "arguments": convert_to_dict(args_dict)}
                         )

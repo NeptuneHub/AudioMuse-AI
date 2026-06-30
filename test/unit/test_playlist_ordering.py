@@ -1,4 +1,3 @@
-
 from test.unit.conftest import _import_module
 
 
@@ -7,7 +6,6 @@ def _load_playlist_ordering():
 
 
 class TestKeyDistance:
-
     def test_identical_keys_same_scale(self):
         mod = _load_playlist_ordering()
         dist = mod._key_distance('C', 'major', 'C', 'major')
@@ -16,7 +14,7 @@ class TestKeyDistance:
     def test_adjacent_keys_without_scale_bonus(self):
         mod = _load_playlist_ordering()
         dist = mod._key_distance('C', None, 'G', None)
-        assert abs(dist - 1/6) < 0.01
+        assert abs(dist - 1 / 6) < 0.01
 
     def test_missing_key_returns_neutral(self):
         mod = _load_playlist_ordering()
@@ -36,7 +34,6 @@ class TestKeyDistance:
 
 
 class TestCompositeDistance:
-
     def test_identical_songs(self):
         mod = _load_playlist_ordering()
         song = {'tempo': 120, 'energy': 0.08, 'key': 'C', 'scale': 'major'}
@@ -66,7 +63,6 @@ class TestCompositeDistance:
 
 
 class TestOrderPlaylist:
-
     def test_single_song_unchanged(self):
         mod = _load_playlist_ordering()
         result = mod.order_playlist(['only_id'])
@@ -84,4 +80,3 @@ class TestOrderPlaylist:
 
     def test_minimum_songs_no_ordering(self):
         _load_playlist_ordering()
-

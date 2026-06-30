@@ -1,4 +1,3 @@
-
 from . import http as requests
 import logging
 import os
@@ -20,7 +19,9 @@ def _get_target_library_ids():
     if not library_names_str.strip():
         return None
 
-    target_names_lower = {name.strip().lower() for name in library_names_str.split(',') if name.strip()}
+    target_names_lower = {
+        name.strip().lower() for name in library_names_str.split(',') if name.strip()
+    }
 
     url = f"{config.JELLYFIN_URL}/Library/VirtualFolders"
     try:
@@ -46,34 +47,49 @@ def _get_target_library_ids():
                 unfound_names.append(target_name)
 
         if unfound_names:
-            logger.warning(f"Jellyfin config specified library names that were not found: {list(unfound_names)}")
+            logger.warning(
+                f"Jellyfin config specified library names that were not found: {list(unfound_names)}"
+            )
 
         if not found_libraries:
-            logger.warning(f"No matching music libraries found for configured names: {list(target_names_lower)}. No albums will be analyzed.")
+            logger.warning(
+                f"No matching music libraries found for configured names: {list(target_names_lower)}. No albums will be analyzed."
+            )
             return set()
 
         music_library_ids = {lib['id'] for lib in found_libraries}
         found_names_original_case = [lib['name'] for lib in found_libraries]
 
-        logger.info(f"Filtering analysis to {len(music_library_ids)} Jellyfin libraries: {found_names_original_case}")
+        logger.info(
+            f"Filtering analysis to {len(music_library_ids)} Jellyfin libraries: {found_names_original_case}"
+        )
         return music_library_ids
 
     except Exception as e:
-        logger.error(f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True)
+        logger.error(
+            f"Failed to fetch or parse Jellyfin virtual folders at '{url}': {e}", exc_info=True
+        )
         return set()
 
 
 def list_libraries(user_creds=None):
-    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+    base_url = (
+        user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL
+    ).rstrip('/')
     url = f"{base_url}/Library/VirtualFolders"
     try:
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT)
+        r = requests.get(
+            url, headers=_jellyfin_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT
+        )
         r.raise_for_status()
         all_libraries = r.json() or []
         return [
             {'id': lib.get('ItemId'), 'name': lib.get('Name')}
             for lib in all_libraries
-            if isinstance(lib, dict) and lib.get('CollectionType') == 'music' and lib.get('ItemId') and lib.get('Name')
+            if isinstance(lib, dict)
+            and lib.get('CollectionType') == 'music'
+            and lib.get('ItemId')
+            and lib.get('Name')
         ]
     except Exception as e:
         logger.error(f"Jellyfin list_libraries failed at '{url}': {e}", exc_info=True)
@@ -81,11 +97,15 @@ def list_libraries(user_creds=None):
 
 
 def _jellyfin_base_url(user_creds=None):
-    return (user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL).rstrip('/')
+    return (
+        user_creds.get('url') if user_creds and user_creds.get('url') else config.JELLYFIN_URL
+    ).rstrip('/')
 
 
 def _jellyfin_headers_from_creds(user_creds=None):
-    token = (user_creds.get('token') if user_creds else None) or getattr(config, 'JELLYFIN_TOKEN', None)
+    token = (user_creds.get('token') if user_creds else None) or getattr(
+        config, 'JELLYFIN_TOKEN', None
+    )
     return jellyfin_auth_header(token)
 
 
@@ -100,6 +120,7 @@ def _jellyfin_get_users(token):
         logger.error(f"Jellyfin get_users failed: {e}", exc_info=True)
         return None
 
+
 def resolve_user(identifier, token):
     users = _jellyfin_get_users(token)
     if users:
@@ -111,15 +132,18 @@ def resolve_user(identifier, token):
     logger.info(f"No username match for '{identifier}'. Assuming it is a User ID.")
     return identifier
 
+
 def get_recent_albums(limit):
     target_library_ids = _get_target_library_ids()
 
     if isinstance(target_library_ids, set) and not target_library_ids:
-        logger.warning("Library filtering is active, but no matching libraries were found on the server. Returning no albums.")
+        logger.warning(
+            "Library filtering is active, but no matching libraries were found on the server. Returning no albums."
+        )
         return []
 
     all_albums = []
-    fetch_all = (limit == 0)
+    fetch_all = limit == 0
 
     if target_library_ids is None:
         logger.info("Scanning all Jellyfin libraries for recent albums.")
@@ -129,11 +153,17 @@ def get_recent_albums(limit):
             url = f"{config.JELLYFIN_URL}/Items"
             params = {
                 "userId": config.JELLYFIN_USER_ID,
-                "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
-                "Recursive": True, "Limit": page_size, "StartIndex": start_index
+                "IncludeItemTypes": "MusicAlbum",
+                "SortBy": "DateCreated",
+                "SortOrder": "Descending",
+                "Recursive": True,
+                "Limit": page_size,
+                "StartIndex": start_index,
             }
             try:
-                r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                r = requests.get(
+                    url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                )
                 r.raise_for_status()
                 response_data = r.json()
                 albums_on_page = response_data.get("Items") or []
@@ -147,11 +177,15 @@ def get_recent_albums(limit):
                 if len(albums_on_page) < page_size:
                     break
             except Exception as e:
-                logger.error(f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True)
+                logger.error(
+                    f"Jellyfin get_recent_albums failed during 'scan all': {e}", exc_info=True
+                )
                 break
 
     else:
-        logger.info(f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums.")
+        logger.info(
+            f"Scanning {len(target_library_ids)} specific Jellyfin libraries for recent albums."
+        )
         for library_id in target_library_ids:
             start_index = 0
             page_size = 500
@@ -159,12 +193,18 @@ def get_recent_albums(limit):
                 url = f"{config.JELLYFIN_URL}/Items"
                 params = {
                     "userId": config.JELLYFIN_USER_ID,
-                    "IncludeItemTypes": "MusicAlbum", "SortBy": "DateCreated", "SortOrder": "Descending",
-                    "Recursive": True, "Limit": page_size, "StartIndex": start_index,
-                    "ParentId": library_id
+                    "IncludeItemTypes": "MusicAlbum",
+                    "SortBy": "DateCreated",
+                    "SortOrder": "Descending",
+                    "Recursive": True,
+                    "Limit": page_size,
+                    "StartIndex": start_index,
+                    "ParentId": library_id,
                 }
                 try:
-                    r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+                    r = requests.get(
+                        url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                    )
                     r.raise_for_status()
                     response_data = r.json()
                     albums_on_page = response_data.get("Items") or []
@@ -178,7 +218,10 @@ def get_recent_albums(limit):
                     if len(albums_on_page) < page_size:
                         break
                 except Exception as e:
-                    logger.error(f"Jellyfin get_recent_albums failed for library ID {library_id}: {e}", exc_info=True)
+                    logger.error(
+                        f"Jellyfin get_recent_albums failed for library ID {library_id}: {e}",
+                        exc_info=True,
+                    )
                     break
 
     if target_library_ids is not None and len(target_library_ids) > 1:
@@ -188,6 +231,7 @@ def get_recent_albums(limit):
         return all_albums[:limit]
 
     return all_albums
+
 
 def get_tracks_from_album(album_id, user_creds=None):
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
@@ -199,7 +243,12 @@ def get_tracks_from_album(album_id, user_creds=None):
         "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
     }
     try:
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(
+            url,
+            headers=_jellyfin_headers_from_creds(user_creds),
+            params=params,
+            timeout=REQUESTS_TIMEOUT,
+        )
         r.raise_for_status()
         items = r.json().get("Items") or []
 
@@ -214,8 +263,11 @@ def get_tracks_from_album(album_id, user_creds=None):
 
         return items
     except Exception as e:
-        logger.error(f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
+        logger.error(
+            f"Jellyfin get_tracks_from_album failed for album {album_id}: {e}", exc_info=True
+        )
         return []
+
 
 def download_track(temp_dir, item):
     try:
@@ -223,15 +275,19 @@ def download_track(temp_dir, item):
         file_extension = detect_download_extension(item)
         download_url = f"{config.JELLYFIN_URL}/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        with requests.get(download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT) as r:
+        with requests.get(
+            download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT
+        ) as r:
             r.raise_for_status()
             with open(local_filename, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
         logger.info(f"Downloaded '{item['Name']}' to '{local_filename}'")
         return local_filename
     except Exception as e:
         logger.error(f"Failed to download track {item.get('Name', 'Unknown')}: {e}", exc_info=True)
         return None
+
 
 def get_all_songs(user_creds=None):
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
@@ -250,7 +306,12 @@ def get_all_songs(user_creds=None):
             "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
         }
         try:
-            r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+            r = requests.get(
+                url,
+                headers=_jellyfin_headers_from_creds(user_creds),
+                params=params,
+                timeout=REQUESTS_TIMEOUT,
+            )
             r.raise_for_status()
             items = r.json().get("Items") or []
 
@@ -270,7 +331,9 @@ def get_all_songs(user_creds=None):
 
             start_index += limit
         except Exception as e:
-            logger.error(f"Jellyfin get_all_songs failed at index {start_index}: {e}", exc_info=True)
+            logger.error(
+                f"Jellyfin get_all_songs failed at index {start_index}: {e}", exc_info=True
+            )
             raise
 
     return all_items
@@ -288,15 +351,20 @@ def search_albums(query, user_creds=None):
         "Fields": "ChildCount,ProductionYear,AlbumArtist",
     }
     try:
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(
+            url,
+            headers=_jellyfin_headers_from_creds(user_creds),
+            params=params,
+            timeout=REQUESTS_TIMEOUT,
+        )
         r.raise_for_status()
         items = r.json().get("Items") or []
         return [
             {
-                'id':          item.get('Id'),
-                'name':        item.get('Name'),
-                'artist':      item.get('AlbumArtist'),
-                'year':        item.get('ProductionYear'),
+                'id': item.get('Id'),
+                'name': item.get('Name'),
+                'artist': item.get('AlbumArtist'),
+                'year': item.get('ProductionYear'),
                 'track_count': item.get('ChildCount'),
             }
             for item in items
@@ -318,18 +386,25 @@ def test_connection(user_creds=None):
             "StartIndex": 0,
             "Limit": 100,
         }
-        r = requests.get(url, headers=_jellyfin_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(
+            url,
+            headers=_jellyfin_headers_from_creds(user_creds),
+            params=params,
+            timeout=REQUESTS_TIMEOUT,
+        )
         r.raise_for_status()
         items = r.json().get('Items', []) or []
         sample = []
         for item in items:
             track_artist, _ = _select_best_artist(item, item.get('Name', 'Unknown'))
-            sample.append({
-                'Id': item.get('Id'),
-                'Path': item.get('Path'),
-                'Name': item.get('Name'),
-                'AlbumArtist': track_artist,
-            })
+            sample.append(
+                {
+                    'Id': item.get('Id'),
+                    'Path': item.get('Path'),
+                    'Name': item.get('Name'),
+                    'AlbumArtist': track_artist,
+                }
+            )
         path_format = detect_path_format(sample)
         return {
             'ok': True,
@@ -340,8 +415,14 @@ def test_connection(user_creds=None):
         }
     except Exception as e:
         logger.warning(f"Jellyfin test_connection failed: {e}")
-        return {'ok': False, 'error': str(e), 'auth_failed': is_auth_error(e),
-                'sample_count': 0, 'path_format': 'none', 'warnings': []}
+        return {
+            'ok': False,
+            'error': str(e),
+            'auth_failed': is_auth_error(e),
+            'sample_count': 0,
+            'path_format': 'none',
+            'warnings': [],
+        }
 
 
 def get_playlist_by_name(playlist_name):
@@ -356,17 +437,22 @@ def get_playlist_by_name(playlist_name):
                 return playlist
         return None
     except Exception as e:
-        logger.error(f"Jellyfin get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
+        logger.error(
+            f"Jellyfin get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True
+        )
         return None
+
 
 def create_playlist(base_name, item_ids):
     url = f"{config.JELLYFIN_URL}/Playlists"
     body = {"Name": base_name, "Ids": item_ids, "UserId": config.JELLYFIN_USER_ID}
     try:
         r = requests.post(url, headers=config.HEADERS, json=body, timeout=REQUESTS_TIMEOUT)
-        if r.ok: logger.info("Created Jellyfin playlist '%s'", base_name)
+        if r.ok:
+            logger.info("Created Jellyfin playlist '%s'", base_name)
     except Exception as e:
         logger.error("Exception creating Jellyfin playlist '%s': %s", base_name, e, exc_info=True)
+
 
 def get_all_playlists():
     url = f"{config.JELLYFIN_URL}/Items"
@@ -379,6 +465,7 @@ def get_all_playlists():
         logger.error(f"Jellyfin get_all_playlists failed: {e}", exc_info=True)
         return []
 
+
 def delete_playlist(playlist_id):
     url = f"{config.JELLYFIN_URL}/Items/{playlist_id}"
     try:
@@ -389,14 +476,24 @@ def delete_playlist(playlist_id):
         logger.error(f"Exception deleting Jellyfin playlist ID {playlist_id}: {e}", exc_info=True)
         return False
 
+
 def get_top_played_songs(limit, user_creds=None):
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
-    if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
+    if not user_id or not token:
+        raise ValueError("Jellyfin User ID and Token are required.")
 
     url = f"{config.JELLYFIN_URL}/Items"
     headers = jellyfin_auth_header(token)
-    params = {"userId": user_id, "IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
+    params = {
+        "userId": user_id,
+        "IncludeItemTypes": "Audio",
+        "SortBy": "PlayCount",
+        "SortOrder": "Descending",
+        "Recursive": True,
+        "Limit": limit,
+        "Fields": "UserData,Path,ProductionYear",
+    }
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -416,10 +513,12 @@ def get_top_played_songs(limit, user_creds=None):
         logger.error(f"Jellyfin get_all_songs failed: {e}", exc_info=True)
         return []
 
+
 def get_last_played_time(item_id, user_creds=None):
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
     token = user_creds.get('token') if user_creds else config.JELLYFIN_TOKEN
-    if not user_id or not token: raise ValueError("Jellyfin User ID and Token are required.")
+    if not user_id or not token:
+        raise ValueError("Jellyfin User ID and Token are required.")
 
     url = f"{config.JELLYFIN_URL}/Items/{item_id}"
     headers = jellyfin_auth_header(token)
@@ -429,8 +528,12 @@ def get_last_played_time(item_id, user_creds=None):
         r.raise_for_status()
         return r.json().get("UserData", {}).get("LastPlayedDate")
     except Exception as e:
-        logger.error(f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}", exc_info=True)
+        logger.error(
+            f"Jellyfin get_last_played_time failed for item {item_id}, user {user_id}: {e}",
+            exc_info=True,
+        )
         return None
+
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
     try:
@@ -446,6 +549,7 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
     except Exception as exc:
         logger.debug('Jellyfin get_lyrics failed for %s: %s', track_id, exc)
         return None
+
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     token = config.JELLYFIN_TOKEN
@@ -471,13 +575,23 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        logger.error("Exception creating Jellyfin instant playlist '%s' for user %s: %s", playlist_name, user_id, e, exc_info=True)
+        logger.error(
+            "Exception creating Jellyfin instant playlist '%s' for user %s: %s",
+            playlist_name,
+            user_id,
+            e,
+            exc_info=True,
+        )
         return None
 
 
 def _fetch_playlist_items(playlist_id, user_creds=None):
     user_id = user_creds.get('user_id') if user_creds else config.JELLYFIN_USER_ID
-    headers = jellyfin_auth_header(user_creds.get('token')) if user_creds and user_creds.get('token') else config.HEADERS
+    headers = (
+        jellyfin_auth_header(user_creds.get('token'))
+        if user_creds and user_creds.get('token')
+        else config.HEADERS
+    )
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:
@@ -497,7 +611,7 @@ def _get_playlist_entry_ids(playlist_id):
     if len(entry_ids) != len(items):
         logger.warning(
             f"Jellyfin _get_playlist_entry_ids: playlist {playlist_id} had "
-            f"{len(items) - len(entry_ids)} items missing PlaylistItemId — they will not be removed"
+            f"{len(items) - len(entry_ids)} items missing PlaylistItemId - they will not be removed"
         )
     return entry_ids
 
@@ -514,7 +628,7 @@ def _remove_playlist_entries(playlist_id, entry_ids):
         return
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     for i in range(0, len(entry_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
-        batch = entry_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
+        batch = entry_ids[i : i + JELLYFIN_PLAYLIST_BATCH_SIZE]
         params = {"entryIds": ",".join(batch)}
         r = requests.delete(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
@@ -525,7 +639,7 @@ def _add_items_to_playlist(playlist_id, item_ids):
         return True
     url = f"{config.JELLYFIN_URL}/Playlists/{playlist_id}/Items"
     for i in range(0, len(item_ids), JELLYFIN_PLAYLIST_BATCH_SIZE):
-        batch = item_ids[i:i + JELLYFIN_PLAYLIST_BATCH_SIZE]
+        batch = item_ids[i : i + JELLYFIN_PLAYLIST_BATCH_SIZE]
         params = {"ids": ",".join(batch), "userId": config.JELLYFIN_USER_ID}
         try:
             r = requests.post(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
@@ -549,18 +663,27 @@ def _create_fresh_playlist(playlist_name, item_ids):
         r.raise_for_status()
         created = r.json()
     except Exception as e:
-        logger.error(f"Jellyfin _create_fresh_playlist: create failed for '{playlist_name}': {e}", exc_info=True)
+        logger.error(
+            f"Jellyfin _create_fresh_playlist: create failed for '{playlist_name}': {e}",
+            exc_info=True,
+        )
         return None
 
     new_id = created.get("Id")
     if not new_id:
-        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but response had no Id")
+        logger.error(
+            f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but response had no Id"
+        )
         return None
 
     if rest and not _add_items_to_playlist(new_id, rest):
-        logger.error(f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks")
+        logger.error(
+            f"Jellyfin _create_fresh_playlist: created '{playlist_name}' but failed to add overflow tracks"
+        )
 
-    logger.info(f"Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks")
+    logger.info(
+        f"Jellyfin: created playlist '{playlist_name}' (Id={new_id}) with {len(item_ids)} tracks"
+    )
     return {**created, 'Id': new_id, 'Name': created.get('Name', playlist_name)}
 
 
@@ -574,7 +697,9 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
     playlist_id = existing.get("Id")
     if not playlist_id:
-        logger.error(f"Jellyfin create_or_replace_playlist: existing playlist '{playlist_name}' has no Id")
+        logger.error(
+            f"Jellyfin create_or_replace_playlist: existing playlist '{playlist_name}' has no Id"
+        )
         return None
 
     entry_ids = _get_playlist_entry_ids(playlist_id)
@@ -595,9 +720,12 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         return _create_fresh_playlist(playlist_name, item_ids)
 
     if not _add_items_to_playlist(playlist_id, item_ids):
-        logger.error(f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}")
+        logger.error(
+            f"Jellyfin create_or_replace_playlist: failed to add tracks to playlist {playlist_id}"
+        )
         return None
 
-    logger.info(f"Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})")
+    logger.info(
+        f"Jellyfin: replaced contents of playlist '{playlist_name}' (Id={playlist_id}, tracks={len(item_ids)})"
+    )
     return {**existing, 'Id': playlist_id, 'Name': existing.get('Name', playlist_name)}
-

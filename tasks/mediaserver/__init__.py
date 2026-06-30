@@ -1,4 +1,3 @@
-
 import logging
 import os
 from importlib import import_module
@@ -21,16 +20,18 @@ def _provider(provider_type=None):
             _warned_unsupported.add(name)
             logger.warning(
                 "Unsupported MEDIASERVER_TYPE %r (supported: %s); media-server operations are no-ops.",
-                name, ', '.join(_PROVIDER_NAMES))
+                name,
+                ', '.join(_PROVIDER_NAMES),
+            )
         return None
     return import_module('.' + name, __name__)
-
 
 
 def resolve_emby_jellyfin_user(identifier, token):
     if config.MEDIASERVER_TYPE in ('jellyfin', 'emby'):
         return _provider().resolve_user(identifier, token)
     return []
+
 
 def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
     deleted_count = 0
@@ -40,8 +41,11 @@ def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
             if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
                 deleted_count += 1
         except Exception:
-            logger.exception(f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists.")
+            logger.exception(
+                f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists."
+            )
     return deleted_count
+
 
 def delete_playlists_by_suffix(suffix):
     logger.info(f"Starting deletion of all '{suffix}' playlists.")
@@ -49,12 +53,16 @@ def delete_playlists_by_suffix(suffix):
 
     provider = _provider()
     if provider is not None:
-        deleted_count = _delete_matching_playlists(provider.get_all_playlists(), provider.delete_playlist, suffix)
+        deleted_count = _delete_matching_playlists(
+            provider.get_all_playlists(), provider.delete_playlist, suffix
+        )
 
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
 
+
 def delete_automatic_playlists():
     delete_playlists_by_suffix('_automatic')
+
 
 def get_recent_albums(limit):
     provider = _provider()
@@ -62,11 +70,13 @@ def get_recent_albums(limit):
         return []
     return provider.get_recent_albums(limit)
 
+
 def get_tracks_from_album(album_id, user_creds=None, provider_type=None):
     provider = _provider(provider_type)
     if provider is None:
         return []
     return provider.get_tracks_from_album(album_id, user_creds=user_creds)
+
 
 def download_track(temp_dir, item):
     provider = _provider()
@@ -83,15 +93,19 @@ def download_track(temp_dir, item):
 
             detected_ext = _detect_audio_format(downloaded_path)
             if detected_ext and detected_ext != '.tmp':
-                new_path = downloaded_path[:-len('.tmp')] + detected_ext
+                new_path = downloaded_path[: -len('.tmp')] + detected_ext
                 if os.path.exists(new_path):
                     logger.warning(f"Target file already exists, keeping .tmp: {new_path}")
                     return downloaded_path
                 os.rename(downloaded_path, new_path)
-                logger.info(f"Detected format and renamed: {os.path.basename(downloaded_path)} -> {os.path.basename(new_path)}")
+                logger.info(
+                    f"Detected format and renamed: {os.path.basename(downloaded_path)} -> {os.path.basename(new_path)}"
+                )
                 return new_path
         except Exception as e:
-            logger.debug(f"Format detection failed for {os.path.basename(downloaded_path)}, keeping .tmp: {e}")
+            logger.debug(
+                f"Format detection failed for {os.path.basename(downloaded_path)}, keeping .tmp: {e}"
+            )
 
     return downloaded_path
 
@@ -107,7 +121,9 @@ def _detect_audio_format(filepath):
             if header[:4] == b'fLaC':
                 return '.flac'
 
-            if header[:3] == b'ID3' or (len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+            if header[:3] == b'ID3' or (
+                len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+            ):
                 return '.mp3'
 
             if header[:4] == b'OggS':
@@ -129,6 +145,7 @@ def _detect_audio_format(filepath):
         logger.debug(f"Error detecting audio format: {e}")
         return '.tmp'
 
+
 def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
     provider_type = provider_type or config.MEDIASERVER_TYPE
     provider = _provider(provider_type)
@@ -138,11 +155,13 @@ def get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
         return provider.get_all_songs(user_creds=user_creds, apply_filter=apply_filter)
     return provider.get_all_songs(user_creds=user_creds)
 
+
 def list_libraries(user_creds=None, provider_type=None):
     provider = _provider(provider_type)
     if provider is None:
         return {'libraries': [], 'unsupported': True}
     return {'libraries': provider.list_libraries(user_creds=user_creds), 'unsupported': False}
+
 
 def search_albums(query, user_creds=None, provider_type=None):
     provider = _provider(provider_type)
@@ -150,25 +169,36 @@ def search_albums(query, user_creds=None, provider_type=None):
         return []
     return provider.search_albums(query, user_creds=user_creds)
 
+
 def test_connection(user_creds=None, provider_type=None):
     provider_type = provider_type or config.MEDIASERVER_TYPE
     provider = _provider(provider_type)
     if provider is None:
-        return {'ok': False, 'error': f"Provider '{provider_type}' not supported", 'sample_count': 0, 'path_format': 'none', 'warnings': []}
+        return {
+            'ok': False,
+            'error': f"Provider '{provider_type}' not supported",
+            'sample_count': 0,
+            'path_format': 'none',
+            'warnings': [],
+        }
     return provider.test_connection(user_creds=user_creds)
 
+
 def get_playlist_by_name(playlist_name):
-    if not playlist_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
+    if not playlist_name:
+        raise ValueError(_PLAYLIST_NAME_REQUIRED)
     provider = _provider()
     if provider is None:
         return None
     return provider.get_playlist_by_name(playlist_name)
+
 
 def get_all_playlists():
     provider = _provider()
     if provider is None:
         return []
     return provider.get_all_playlists()
+
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
     if not playlist_id:
@@ -180,16 +210,22 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
         return provider.get_playlist_track_ids(playlist_id)
     return provider.get_playlist_track_ids(playlist_id, user_creds=user_creds)
 
+
 def create_playlist(base_name, item_ids):
-    if not base_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
-    if not item_ids: raise ValueError(_TRACK_IDS_REQUIRED)
+    if not base_name:
+        raise ValueError(_PLAYLIST_NAME_REQUIRED)
+    if not item_ids:
+        raise ValueError(_TRACK_IDS_REQUIRED)
     provider = _provider()
     if provider is not None:
         provider.create_playlist(base_name, item_ids)
 
+
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
-    if not playlist_name: raise ValueError(_PLAYLIST_NAME_REQUIRED)
-    if not item_ids: raise ValueError(_TRACK_IDS_REQUIRED)
+    if not playlist_name:
+        raise ValueError(_PLAYLIST_NAME_REQUIRED)
+    if not item_ids:
+        raise ValueError(_TRACK_IDS_REQUIRED)
 
     provider = _provider()
     if provider is None:
@@ -212,6 +248,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         )
     return provider.create_or_replace_playlist(playlist_name, item_ids, user_creds)
 
+
 def get_top_played_songs(limit, user_creds=None):
     provider = _provider()
     if provider is None:
@@ -220,6 +257,7 @@ def get_top_played_songs(limit, user_creds=None):
         return provider.get_top_played_songs(limit)
     return provider.get_top_played_songs(limit, user_creds)
 
+
 def get_last_played_time(item_id, user_creds=None):
     provider = _provider()
     if provider is None:
@@ -227,6 +265,7 @@ def get_last_played_time(item_id, user_creds=None):
     if config.MEDIASERVER_TYPE == 'lyrion':
         return provider.get_last_played_time(item_id)
     return provider.get_last_played_time(item_id, user_creds)
+
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
     provider = _provider()

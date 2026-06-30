@@ -73,15 +73,11 @@ def test_importer_references_config_name(relative_path, names):
 def test_importer_has_no_local_default(relative_path, names):
     src = _read_source(relative_path)
     for name in names:
-        env_pat = re.compile(
-            r"os\.(?:environ\.get|getenv)\(\s*['\"]" + re.escape(name) + r"['\"]"
-        )
+        env_pat = re.compile(r"os\.(?:environ\.get|getenv)\(\s*['\"]" + re.escape(name) + r"['\"]")
         assert not env_pat.search(src), (
             f"{relative_path} re-reads env for {name}; must use config.{name}"
         )
-        getattr_pat = re.compile(
-            r"getattr\(\s*config\s*,\s*['\"]" + re.escape(name) + r"['\"]\s*,"
-        )
+        getattr_pat = re.compile(r"getattr\(\s*config\s*,\s*['\"]" + re.escape(name) + r"['\"]\s*,")
         assert not getattr_pat.search(src), (
             f"{relative_path} has a getattr fallback default for {name}; "
             f"must use config.{name} directly"

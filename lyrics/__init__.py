@@ -7,11 +7,13 @@ except Exception:
 
 _logger = _logging.getLogger(__name__)
 
+
 def _disabled(*_args, **_kwargs):
     raise RuntimeError(
         "Lyrics analysis is disabled (LYRICS_ENABLED=false) or its dependencies "
         "are not installed in this image."
     )
+
 
 if _LYRICS_ENABLED:
     try:
@@ -43,12 +45,14 @@ else:
     load_topic_embedding_model = _disabled
     load_asr_model = _disabled
 
+
 def _safe_call(label, fn):
     try:
         return fn()
     except Exception as exc:
         _logger.warning("Lyrics %s: %s", label, exc)
         return None
+
 
 def is_lyrics_loaded() -> bool:
     if not _LYRICS_ENABLED:
@@ -65,6 +69,7 @@ def is_lyrics_loaded() -> bool:
             return True
     return False
 
+
 def unload_lyrics_models() -> bool:
     if not _LYRICS_ENABLED:
         return False
@@ -72,6 +77,7 @@ def unload_lyrics_models() -> bool:
     try:
         try:
             from . import whisper_onnx
+
             if whisper_onnx.is_loaded():
                 released_any = bool(_safe_call('whisper_onnx.unload', whisper_onnx.unload))
         except Exception as exc:
@@ -79,6 +85,7 @@ def unload_lyrics_models() -> bool:
 
         try:
             from . import gte_onnx
+
             if gte_onnx.is_loaded():
                 _safe_call('gte_onnx.reset_session', gte_onnx.reset_session)
                 released_any = True
@@ -87,6 +94,7 @@ def unload_lyrics_models() -> bool:
 
         try:
             from . import silero_onnx
+
             if silero_onnx.is_loaded():
                 _safe_call('silero_onnx.reset_session', silero_onnx.reset_session)
                 released_any = True
@@ -95,17 +103,20 @@ def unload_lyrics_models() -> bool:
     finally:
         try:
             import gc
+
             gc.collect()
         except Exception:
             pass
         try:
             from tasks.memory_utils import comprehensive_memory_cleanup
+
             comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
         except Exception as exc:
             _logger.warning("Lyrics final memory cleanup failed: %s", exc)
     if released_any:
         _logger.info("Lyrics models unloaded (~2 GB freed)")
     return released_any
+
 
 __all__ = [
     'MUSIC_ANALYSIS_AXES',

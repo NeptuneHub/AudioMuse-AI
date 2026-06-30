@@ -1,9 +1,10 @@
 import os
 import traceback
+
 try:
-    import driver as D
+    import driver
 except ModuleNotFoundError:
-    from screenshot.example.tools import driver as D
+    from screenshot.example.tools import driver
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("AUDIOMUSE_BASE", "http://YOUR-SERVER:8000")
@@ -21,70 +22,158 @@ URLS = {
 }
 
 FLOWS = {
-  "similarity": [{"label":"result","results_wait_selector":"#results-table-wrapper .song-result-list .result-item","steps":[
-    {"action":"type","selector":"#search_query","value":"ar"},
-    {"action":"wait_selector","selector":"#autocomplete-results:not(.hidden) .autocomplete-item"},
-    {"action":"wait_ms","selector":"body","value":"400"},
-    {"action":"click_first","selector":"#autocomplete-results .autocomplete-item"},
-    {"action":"click","selector":"#similarity-form button[type=\"submit\"]"},
-    {"action":"wait_selector","selector":"#results-table-wrapper .song-result-list .result-item"}]}],
-  "artist_similarity": [{"label":"result","results_wait_selector":"#results-table-wrapper .results-table","steps":[
-    {"action":"type","selector":"#artist_search","value":"a"},
-    {"action":"type","selector":"#artist_search","value":"ar"},
-    {"action":"wait_selector","selector":"#autocomplete-results .autocomplete-item"},
-    {"action":"click_first","selector":"#autocomplete-results .autocomplete-item"},
-    {"action":"click","selector":"#find-artists-btn"},
-    {"action":"wait_selector","selector":"#results-table-wrapper .results-table"}]}],
-  "path": [{"label":"result","results_wait_selector":"#results-table-wrapper .result-item","steps":[
-    {"action":"type","selector":"#start_search","value":"ar"},
-    {"action":"wait_selector","selector":"#start-autocomplete-results .autocomplete-item"},
-    {"action":"click_first","selector":"#start-autocomplete-results .autocomplete-item"},
-    {"action":"type","selector":"#end_search","value":"a"},
-    {"action":"wait_selector","selector":"#end-autocomplete-results .autocomplete-item"},
-    {"action":"click_first","selector":"#end-autocomplete-results .autocomplete-item"},
-    {"action":"click","selector":"#path-form button[type=\"submit\"]"},
-    {"action":"wait_selector","selector":"#results-table-wrapper .result-item"}]}],
-  "waveform": [{"label":"result","results_wait_selector":"#waveform-container:not(.hidden)","steps":[
-    {"action":"fill","selector":"#search_query","value":"Endless Skyline"},
-    {"action":"wait_ms","selector":"body","value":"300"},
-    {"action":"eval","selector":"body","value":"(()=>{const ac=document.getElementById('autocomplete-results');if(ac)ac.classList.add('hidden');const i=document.getElementById('selected_item_id');i.value='id-1234';const t=document.getElementById('title_display');if(t)t.textContent='Title: Endless Skyline - The Ember Echo';const f=document.getElementById('waveform-form');if(f.requestSubmit)f.requestSubmit();else f.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));})()"},
-    {"action":"wait_selector","selector":"#waveform-container:not(.hidden)"},
-    {"action":"wait_ms","selector":"body","value":"1000"}]}],
-  "lyrics_search": [
-    {"label":"axis","results_wait_selector":"#results-list .result-item","steps":[
-      {"action":"click","selector":".tab-btn[data-tab=\"axes\"]"},
-      {"action":"wait_selector","selector":"#tab-axes.active"},
-      {"action":"eval","selector":"body","value":"(()=>{const ss=[...document.querySelectorAll('#axes-container select')];for(const s of ss){for(const o of s.options){if(o.value){s.value=o.value;s.dispatchEvent(new Event('change',{bubbles:true}));return;}}}})()"},
-      {"action":"wait_ms","selector":"body","value":"300"},
-      {"action":"click","selector":"#axis-form button[type=\"submit\"]"},
-      {"action":"wait_selector","selector":"#results-list .result-item"}]},
-    {"label":"text","results_wait_selector":"#results-list .result-item","steps":[
-      {"action":"click","selector":".tab-btn[data-tab=\"text\"]"},
-      {"action":"wait_selector","selector":"#tab-text.active"},
-      {"action":"fill","selector":"#search-query","value":"heartbreak in the city at night"},
-      {"action":"click","selector":"#search-form button[type=\"submit\"]"},
-      {"action":"wait_selector","selector":"#results-list .result-item"}]},
-    {"label":"song","results_wait_selector":"#results-list .result-item","steps":[
-      {"action":"click","selector":".tab-btn[data-tab=\"song\"]"},
-      {"action":"wait_selector","selector":"#tab-song.active"},
-      {"action":"type","selector":"#sg-search-query","value":"a"},
-      {"action":"wait_ms","selector":"body","value":"400"},
-      {"action":"type","selector":"#sg-search-query","value":"ar"},
-      {"action":"wait_selector","selector":"#sg-autocomplete-results:not(.hidden) .autocomplete-item"},
-      {"action":"click_first","selector":"#sg-autocomplete-results .autocomplete-item"},
-      {"action":"click","selector":"#song-form button[type=\"submit\"]"},
-      {"action":"wait_selector","selector":"#results-list .result-item"}]}],
-  "alchemy": [{"label":"result","results_wait_selector":"#results-table-wrapper .result-item","steps":[
-    {"action":"wait_selector","selector":".alchemy-card .song"},
-    {"action":"type","selector":".alchemy-card .song","value":"a"},
-    {"action":"type","selector":".alchemy-card .song","value":"ar"},
-    {"action":"wait_ms","selector":"body","value":"500"},
-    {"action":"wait_selector","selector":".autocomplete-results .autocomplete-item"},
-    {"action":"click_first","selector":".autocomplete-results .autocomplete-item"},
-    {"action":"wait_ms","selector":"body","value":"300"},
-    {"action":"click","selector":"#run-alchemy"},
-    {"action":"wait_selector","selector":"#results-table-wrapper .result-item"}]}],
+    "similarity": [
+        {
+            "label": "result",
+            "results_wait_selector": "#results-table-wrapper .song-result-list .result-item",
+            "steps": [
+                {"action": "type", "selector": "#search_query", "value": "ar"},
+                {
+                    "action": "wait_selector",
+                    "selector": "#autocomplete-results:not(.hidden) .autocomplete-item",
+                },
+                {"action": "wait_ms", "selector": "body", "value": "400"},
+                {"action": "click_first", "selector": "#autocomplete-results .autocomplete-item"},
+                {"action": "click", "selector": "#similarity-form button[type=\"submit\"]"},
+                {
+                    "action": "wait_selector",
+                    "selector": "#results-table-wrapper .song-result-list .result-item",
+                },
+            ],
+        }
+    ],
+    "artist_similarity": [
+        {
+            "label": "result",
+            "results_wait_selector": "#results-table-wrapper .results-table",
+            "steps": [
+                {"action": "type", "selector": "#artist_search", "value": "a"},
+                {"action": "type", "selector": "#artist_search", "value": "ar"},
+                {"action": "wait_selector", "selector": "#autocomplete-results .autocomplete-item"},
+                {"action": "click_first", "selector": "#autocomplete-results .autocomplete-item"},
+                {"action": "click", "selector": "#find-artists-btn"},
+                {"action": "wait_selector", "selector": "#results-table-wrapper .results-table"},
+            ],
+        }
+    ],
+    "path": [
+        {
+            "label": "result",
+            "results_wait_selector": "#results-table-wrapper .result-item",
+            "steps": [
+                {"action": "type", "selector": "#start_search", "value": "ar"},
+                {
+                    "action": "wait_selector",
+                    "selector": "#start-autocomplete-results .autocomplete-item",
+                },
+                {
+                    "action": "click_first",
+                    "selector": "#start-autocomplete-results .autocomplete-item",
+                },
+                {"action": "type", "selector": "#end_search", "value": "a"},
+                {
+                    "action": "wait_selector",
+                    "selector": "#end-autocomplete-results .autocomplete-item",
+                },
+                {
+                    "action": "click_first",
+                    "selector": "#end-autocomplete-results .autocomplete-item",
+                },
+                {"action": "click", "selector": "#path-form button[type=\"submit\"]"},
+                {"action": "wait_selector", "selector": "#results-table-wrapper .result-item"},
+            ],
+        }
+    ],
+    "waveform": [
+        {
+            "label": "result",
+            "results_wait_selector": "#waveform-container:not(.hidden)",
+            "steps": [
+                {"action": "fill", "selector": "#search_query", "value": "Endless Skyline"},
+                {"action": "wait_ms", "selector": "body", "value": "300"},
+                {
+                    "action": "eval",
+                    "selector": "body",
+                    "value": "(()=>{const ac=document.getElementById('autocomplete-results');if(ac)ac.classList.add('hidden');const i=document.getElementById('selected_item_id');i.value='id-1234';const t=document.getElementById('title_display');if(t)t.textContent='Title: Endless Skyline - The Ember Echo';const f=document.getElementById('waveform-form');if(f.requestSubmit)f.requestSubmit();else f.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}));})()",
+                },
+                {"action": "wait_selector", "selector": "#waveform-container:not(.hidden)"},
+                {"action": "wait_ms", "selector": "body", "value": "1000"},
+            ],
+        }
+    ],
+    "lyrics_search": [
+        {
+            "label": "axis",
+            "results_wait_selector": "#results-list .result-item",
+            "steps": [
+                {"action": "click", "selector": ".tab-btn[data-tab=\"axes\"]"},
+                {"action": "wait_selector", "selector": "#tab-axes.active"},
+                {
+                    "action": "eval",
+                    "selector": "body",
+                    "value": "(()=>{const ss=[...document.querySelectorAll('#axes-container select')];for(const s of ss){for(const o of s.options){if(o.value){s.value=o.value;s.dispatchEvent(new Event('change',{bubbles:true}));return;}}}})()",
+                },
+                {"action": "wait_ms", "selector": "body", "value": "300"},
+                {"action": "click", "selector": "#axis-form button[type=\"submit\"]"},
+                {"action": "wait_selector", "selector": "#results-list .result-item"},
+            ],
+        },
+        {
+            "label": "text",
+            "results_wait_selector": "#results-list .result-item",
+            "steps": [
+                {"action": "click", "selector": ".tab-btn[data-tab=\"text\"]"},
+                {"action": "wait_selector", "selector": "#tab-text.active"},
+                {
+                    "action": "fill",
+                    "selector": "#search-query",
+                    "value": "heartbreak in the city at night",
+                },
+                {"action": "click", "selector": "#search-form button[type=\"submit\"]"},
+                {"action": "wait_selector", "selector": "#results-list .result-item"},
+            ],
+        },
+        {
+            "label": "song",
+            "results_wait_selector": "#results-list .result-item",
+            "steps": [
+                {"action": "click", "selector": ".tab-btn[data-tab=\"song\"]"},
+                {"action": "wait_selector", "selector": "#tab-song.active"},
+                {"action": "type", "selector": "#sg-search-query", "value": "a"},
+                {"action": "wait_ms", "selector": "body", "value": "400"},
+                {"action": "type", "selector": "#sg-search-query", "value": "ar"},
+                {
+                    "action": "wait_selector",
+                    "selector": "#sg-autocomplete-results:not(.hidden) .autocomplete-item",
+                },
+                {
+                    "action": "click_first",
+                    "selector": "#sg-autocomplete-results .autocomplete-item",
+                },
+                {"action": "click", "selector": "#song-form button[type=\"submit\"]"},
+                {"action": "wait_selector", "selector": "#results-list .result-item"},
+            ],
+        },
+    ],
+    "alchemy": [
+        {
+            "label": "result",
+            "results_wait_selector": "#results-table-wrapper .result-item",
+            "steps": [
+                {"action": "wait_selector", "selector": ".alchemy-card .song"},
+                {"action": "type", "selector": ".alchemy-card .song", "value": "a"},
+                {"action": "type", "selector": ".alchemy-card .song", "value": "ar"},
+                {"action": "wait_ms", "selector": "body", "value": "500"},
+                {"action": "wait_selector", "selector": ".autocomplete-results .autocomplete-item"},
+                {"action": "click_first", "selector": ".autocomplete-results .autocomplete-item"},
+                {"action": "wait_ms", "selector": "body", "value": "300"},
+                {"action": "click", "selector": "#run-alchemy"},
+                {"action": "wait_selector", "selector": "#results-table-wrapper .result-item"},
+            ],
+        }
+    ],
 }
+
 
 def out_name(key, label, i):
     pref = {
@@ -101,13 +190,17 @@ def out_name(key, label, i):
 
 def run_steps(page, steps):
     for s in steps:
-        a = s.get('action'); sel = s.get('selector') or 'body'; val = s.get('value')
+        a = s.get('action')
+        sel = s.get('selector') or 'body'
+        val = s.get('value')
         try:
             if a == 'fill':
                 page.fill(sel, val or '', timeout=5000)
             elif a == 'type':
-                try: page.click(sel, timeout=3000)
-                except Exception: pass
+                try:
+                    page.click(sel, timeout=3000)
+                except Exception:
+                    pass
                 page.fill(sel, '', timeout=3000)
                 page.type(sel, val or 'a', delay=70)
             elif a == 'click':
@@ -143,15 +236,18 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
         ctx = browser.new_context(viewport={'width': 1440, 'height': 900}, ignore_https_errors=True)
-        ctx.add_init_script(D.INIT_JS)
-        ctx.route("**/api/**", D.handle_route)
+        ctx.add_init_script(driver.INIT_JS)
+        ctx.route("**/api/**", driver.handle_route)
         page = ctx.new_page()
 
         page.goto(BASE + "/login", wait_until='domcontentloaded', timeout=30000)
-        page.fill('#login-user', USER); page.fill('#login-password', PW)
+        page.fill('#login-user', USER)
+        page.fill('#login-password', PW)
         page.click('button[type="submit"]')
-        try: page.wait_for_url(lambda u: '/login' not in u, timeout=15000)
-        except Exception: pass
+        try:
+            page.wait_for_url(lambda u: '/login' not in u, timeout=15000)
+        except Exception:
+            pass
         page.wait_for_timeout(1200)
         print("LOGIN_OK", page.url, flush=True)
 
@@ -169,8 +265,10 @@ def main():
                     run_steps(page, flow.get('steps') or [])
                     rw = flow.get('results_wait_selector')
                     if rw:
-                        try: page.wait_for_selector(rw, timeout=8000)
-                        except Exception: pass
+                        try:
+                            page.wait_for_selector(rw, timeout=8000)
+                        except Exception:
+                            pass
                     page.wait_for_timeout(1500)
                     shot(page, out_name(key, label, i))
                 except Exception as e:

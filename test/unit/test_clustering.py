@@ -4,7 +4,6 @@ from collections import defaultdict
 
 
 class TestParameterMutation:
-
     def test_mutate_param_integer_within_bounds(self):
         from tasks.clustering_helper import _mutate_param
 
@@ -53,15 +52,10 @@ class TestParameterMutation:
 
 
 class TestDataPreparationAndScaling:
-
     def test_prepare_and_scale_data_with_features(self):
         from tasks.clustering_helper import _prepare_and_scale_data
 
-        X_feat = np.array([
-            [1.0, 2.0, 3.0],
-            [4.0, 5.0, 6.0],
-            [7.0, 8.0, 9.0]
-        ])
+        X_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
         X_embed = None
 
         scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=False)
@@ -77,11 +71,7 @@ class TestDataPreparationAndScaling:
         from tasks.clustering_helper import _prepare_and_scale_data
 
         X_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
-        X_embed = np.array([
-            [0.1, 0.2, 0.3, 0.4],
-            [0.5, 0.6, 0.7, 0.8],
-            [0.9, 1.0, 1.1, 1.2]
-        ])
+        X_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
 
         scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=True)
 
@@ -111,18 +101,13 @@ class TestDataPreparationAndScaling:
 
 
 class TestFeatureCentroidCalculation:
-
     def test_get_feature_centroid_for_embedding_cluster_basic(self):
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 0, 1, 1, 0])
-        X_feat = np.array([
-            [1.0, 2.0, 3.0],
-            [1.5, 2.5, 3.5],
-            [5.0, 6.0, 7.0],
-            [5.5, 6.5, 7.5],
-            [2.0, 3.0, 4.0]
-        ])
+        X_feat = np.array(
+            [[1.0, 2.0, 3.0], [1.5, 2.5, 3.5], [5.0, 6.0, 7.0], [5.5, 6.5, 7.5], [2.0, 3.0, 4.0]]
+        )
 
         centroid = _get_feature_centroid_for_embedding_cluster(0, labels, X_feat)
 
@@ -136,11 +121,7 @@ class TestFeatureCentroidCalculation:
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 1, 2])
-        X_feat = np.array([
-            [1.0, 2.0],
-            [3.0, 4.0],
-            [5.0, 6.0]
-        ])
+        X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
         centroid = _get_feature_centroid_for_embedding_cluster(1, labels, X_feat)
 
@@ -168,14 +149,11 @@ class TestFeatureCentroidCalculation:
 
 
 class TestTrackPrimaryGenre:
-
     @patch('tasks.clustering_helper.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_get_track_primary_genre_with_mood_vector(self):
         from tasks.clustering_helper import _get_track_primary_genre
 
-        track = {
-            'mood_vector': 'rock:0.8,pop:0.2,jazz:0.1'
-        }
+        track = {'mood_vector': 'rock:0.8,pop:0.2,jazz:0.1'}
 
         genre = _get_track_primary_genre(track)
 
@@ -184,9 +162,7 @@ class TestTrackPrimaryGenre:
     def test_get_track_primary_genre_with_no_mood_vector(self):
         from tasks.clustering_helper import _get_track_primary_genre
 
-        track = {
-            'title': 'Some Song'
-        }
+        track = {'title': 'Some Song'}
 
         genre = _get_track_primary_genre(track)
 
@@ -195,9 +171,7 @@ class TestTrackPrimaryGenre:
     def test_get_track_primary_genre_with_empty_mood_vector(self):
         from tasks.clustering_helper import _get_track_primary_genre
 
-        track = {
-            'mood_vector': ''
-        }
+        track = {'mood_vector': ''}
 
         genre = _get_track_primary_genre(track)
 
@@ -206,9 +180,7 @@ class TestTrackPrimaryGenre:
     def test_get_track_primary_genre_with_none_mood_vector(self):
         from tasks.clustering_helper import _get_track_primary_genre
 
-        track = {
-            'mood_vector': None
-        }
+        track = {'mood_vector': None}
 
         genre = _get_track_primary_genre(track)
 
@@ -216,7 +188,6 @@ class TestTrackPrimaryGenre:
 
 
 class TestGenreMapPreparation:
-
     @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_prepare_genre_map_basic(self):
         from tasks.clustering import _prepare_genre_map
@@ -225,7 +196,7 @@ class TestGenreMapPreparation:
             {'item_id': '1', 'mood_vector': 'rock:0.9,pop:0.1'},
             {'item_id': '2', 'mood_vector': 'rock:0.8,jazz:0.2'},
             {'item_id': '3', 'mood_vector': 'pop:0.9,rock:0.1'},
-            {'item_id': '4', 'mood_vector': 'jazz:0.7,rock:0.3'}
+            {'item_id': '4', 'mood_vector': 'jazz:0.7,rock:0.3'},
         ]
 
         genre_map = _prepare_genre_map(rows)
@@ -243,7 +214,7 @@ class TestGenreMapPreparation:
         rows = [
             {'item_id': '1', 'mood_vector': ''},
             {'item_id': '2', 'mood_vector': None},
-            {'item_id': '3', 'title': 'Song'}
+            {'item_id': '3', 'title': 'Song'},
         ]
 
         genre_map = _prepare_genre_map(rows)
@@ -260,7 +231,6 @@ class TestGenreMapPreparation:
 
 
 class TestTargetSongsCalculation:
-
     @patch('tasks.clustering.STRATIFIED_GENRES', ['rock', 'pop', 'jazz', 'metal'])
     def test_calculate_target_songs_per_genre_basic(self):
         from tasks.clustering import _calculate_target_songs_per_genre
@@ -269,7 +239,7 @@ class TestTargetSongsCalculation:
             'rock': [{'id': i} for i in range(100)],
             'pop': [{'id': i} for i in range(50)],
             'jazz': [{'id': i} for i in range(150)],
-            'metal': [{'id': i} for i in range(75)]
+            'metal': [{'id': i} for i in range(75)],
         }
 
         target = _calculate_target_songs_per_genre(genre_map, percentile=50, min_songs=10)
@@ -280,10 +250,7 @@ class TestTargetSongsCalculation:
     def test_calculate_target_songs_respects_minimum(self):
         from tasks.clustering import _calculate_target_songs_per_genre
 
-        genre_map = {
-            'rock': [{'id': 1}],
-            'pop': [{'id': 2}]
-        }
+        genre_map = {'rock': [{'id': 1}], 'pop': [{'id': 2}]}
 
         target = _calculate_target_songs_per_genre(genre_map, percentile=50, min_songs=100)
 
@@ -296,7 +263,7 @@ class TestTargetSongsCalculation:
         genre_map = {
             'rock': [{'id': i} for i in range(100)],
             'pop': [{'id': i} for i in range(200)],
-            'jazz': [{'id': i} for i in range(50)]
+            'jazz': [{'id': i} for i in range(50)],
         }
 
         target = _calculate_target_songs_per_genre(genre_map, percentile=90, min_songs=10)
@@ -314,7 +281,6 @@ class TestTargetSongsCalculation:
 
 
 class TestSanitizeForJson:
-
     def test_sanitize_numpy_array(self):
         from sanitization import sanitize_for_json as _sanitize_for_json
 
@@ -331,7 +297,7 @@ class TestSanitizeForJson:
             'int8': np.int8(42),
             'int16': np.int16(100),
             'int32': np.int32(1000),
-            'int64': np.int64(10000)
+            'int64': np.int64(10000),
         }
 
         result = _sanitize_for_json(obj)
@@ -343,10 +309,7 @@ class TestSanitizeForJson:
     def test_sanitize_numpy_floats(self):
         from sanitization import sanitize_for_json as _sanitize_for_json
 
-        obj = {
-            'float32': np.float32(3.14),
-            'float64': np.float64(2.718)
-        }
+        obj = {'float32': np.float32(3.14), 'float64': np.float64(2.718)}
 
         result = _sanitize_for_json(obj)
 
@@ -368,10 +331,7 @@ class TestSanitizeForJson:
 
         obj = {
             'array': np.array([1, 2, 3]),
-            'nested': {
-                'float': np.float64(1.5),
-                'list': [np.int32(5), np.int32(10)]
-            }
+            'nested': {'float': np.float64(1.5), 'list': [np.int32(5), np.int32(10)]},
         }
 
         result = _sanitize_for_json(obj)
@@ -389,7 +349,7 @@ class TestSanitizeForJson:
             'float': 3.14,
             'bool': True,
             'list': [1, 2, 3],
-            'none': None
+            'none': None,
         }
 
         result = _sanitize_for_json(obj)
@@ -398,7 +358,6 @@ class TestSanitizeForJson:
 
 
 class TestGetVectorsFromDatabase:
-
     def test_get_vectors_from_database_basic(self):
         from tasks.clustering_postprocessing import get_vectors_from_database
 
@@ -412,7 +371,7 @@ class TestGetVectorsFromDatabase:
 
         mock_cursor.fetchall.return_value = [
             {'item_id': 'song1', 'embedding': vector1.tobytes()},
-            {'item_id': 'song2', 'embedding': vector2.tobytes()}
+            {'item_id': 'song2', 'embedding': vector2.tobytes()},
         ]
 
         item_ids = ['song1', 'song2']
@@ -440,7 +399,6 @@ class TestGetVectorsFromDatabase:
 
 
 class TestTitleArtistDeduplication:
-
     def test_title_artist_deduplication_removes_exact_duplicates(self):
         from tasks.clustering_postprocessing import apply_title_artist_deduplication
 
@@ -452,7 +410,7 @@ class TestTitleArtistDeduplication:
         mock_cursor.fetchall.return_value = [
             {'item_id': 'song1', 'title': 'Song A', 'author': 'Artist X'},
             {'item_id': 'song2', 'title': 'Song A', 'author': 'Artist X'},
-            {'item_id': 'song3', 'title': 'Song B', 'author': 'Artist Y'}
+            {'item_id': 'song3', 'title': 'Song B', 'author': 'Artist Y'},
         ]
 
         songs = [{'item_id': 'song1'}, {'item_id': 'song2'}, {'item_id': 'song3'}]
@@ -529,7 +487,6 @@ class TestTitleArtistDeduplication:
 
 
 class TestMinimumSizeFilter:
-
     def test_minimum_size_filter_removes_small_playlists(self):
         from tasks.clustering_postprocessing import apply_minimum_size_filter_to_clustering_result
 
@@ -543,7 +500,7 @@ class TestMinimumSizeFilter:
                 'Large Playlist': [0.5, 0.5, 0.5],
                 'Medium Playlist': [0.3, 0.3, 0.3],
                 'Small Playlist': [0.1, 0.1, 0.1],
-            }
+            },
         }
 
         result = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
@@ -564,7 +521,7 @@ class TestMinimumSizeFilter:
             'playlist_centroids': {
                 'Playlist A': [0.5],
                 'Playlist B': [0.6],
-            }
+            },
         }
 
         result = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
@@ -584,7 +541,7 @@ class TestMinimumSizeFilter:
             'playlist_centroids': {
                 'Keep': [0.5, 0.5],
                 'Remove': [0.1, 0.1],
-            }
+            },
         }
 
         result = apply_minimum_size_filter_to_clustering_result(best_result, min_size=20)
@@ -611,7 +568,7 @@ class TestMinimumSizeFilter:
             'playlist_centroids': {
                 'Small 1': [0.1],
                 'Small 2': [0.2],
-            }
+            },
         }
 
         result = apply_minimum_size_filter_to_clustering_result(best_result, min_size=50)
@@ -620,23 +577,17 @@ class TestMinimumSizeFilter:
 
 
 class TestSelectTopNDiversePlaylists:
-
     def test_select_top_n_diverse_basic(self):
         from tasks.clustering_postprocessing import select_top_n_diverse_playlists
 
         best_result = {
             'named_playlists': {
-                f'Playlist {i}': [{'item_id': f'song{j}'} for j in range(20)]
-                for i in range(5)
+                f'Playlist {i}': [{'item_id': f'song{j}'} for j in range(20)] for i in range(5)
             },
-            'playlist_centroids': {
-                f'Playlist {i}': [float(i), float(i)]
-                for i in range(5)
-            },
+            'playlist_centroids': {f'Playlist {i}': [float(i), float(i)] for i in range(5)},
             'playlist_to_centroid_vector_map': {
-                f'Playlist {i}': np.array([float(i), float(i)])
-                for i in range(5)
-            }
+                f'Playlist {i}': np.array([float(i), float(i)]) for i in range(5)
+            },
         }
 
         result = select_top_n_diverse_playlists(best_result, n=3)
@@ -663,7 +614,7 @@ class TestSelectTopNDiversePlaylists:
                 'Small': np.array([1.0, 1.0]),
                 'Large': np.array([2.0, 2.0]),
                 'Medium': np.array([3.0, 3.0]),
-            }
+            },
         }
 
         result = select_top_n_diverse_playlists(best_result, n=2)
@@ -685,7 +636,7 @@ class TestSelectTopNDiversePlaylists:
             'playlist_to_centroid_vector_map': {
                 'P1': np.array([1.0]),
                 'P2': np.array([2.0]),
-            }
+            },
         }
 
         result = select_top_n_diverse_playlists(best_result, n=10)
@@ -720,7 +671,6 @@ class TestSelectTopNDiversePlaylists:
 
 
 class TestClusterNaming:
-
     def test_name_cluster_basic(self):
         from tasks.clustering_helper import _name_cluster
 
@@ -728,11 +678,7 @@ class TestClusterNaming:
         mood_labels = ['rock', 'pop', 'jazz']
 
         name, details = _name_cluster(
-            centroid,
-            pca_model=None,
-            pca_enabled=False,
-            mood_labels=mood_labels,
-            scaler=None
+            centroid, pca_model=None, pca_enabled=False, mood_labels=mood_labels, scaler=None
         )
 
         assert isinstance(name, str)

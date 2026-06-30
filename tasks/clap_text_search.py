@@ -1,4 +1,3 @@
-
 import logging
 import sys
 import threading
@@ -11,28 +10,17 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_CLAP_CACHE = {
-    'loaded': False
-}
+_CLAP_CACHE = {'loaded': False}
 
-_CLAP_INDEX_CACHE = {
-    'index': None,
-    'id_map': None,
-    'reverse_id_map': None,
-    'loaded': False
-}
+_CLAP_INDEX_CACHE = {'index': None, 'id_map': None, 'reverse_id_map': None, 'loaded': False}
 
-_TOP_QUERIES_CACHE = {
-    'queries': [],
-    'ready': False,
-    'computing': False
-}
+_TOP_QUERIES_CACHE = {'queries': [], 'ready': False, 'computing': False}
 
 _WARM_CACHE_TIMER = {
     'expiry_time': None,
     'timer_thread': None,
     'lock': threading.RLock(),
-    'duration_seconds': None
+    'duration_seconds': None,
 }
 
 
@@ -44,19 +32,22 @@ def get_clap_cache_size() -> int:
 
 def _fetch_clap_metadata(item_ids: list) -> Dict[str, Dict[str, str]]:
     from .commons import fetch_track_metadata_map
+
     return fetch_track_metadata_map(item_ids)
 
 
 def _load_clap_index_from_db() -> bool:
-
     from app_helper import get_db
     from config import CLAP_EMBEDDING_DIMENSION, IVF_METRIC
     from .paged_ivf import load_index_auto
 
     try:
         loaded = load_index_auto(
-            get_db(), 'clap_index',
-            CLAP_EMBEDDING_DIMENSION, IVF_METRIC, label='CLAP',
+            get_db(),
+            'clap_index',
+            CLAP_EMBEDDING_DIMENSION,
+            IVF_METRIC,
+            label='CLAP',
         )
         if loaded is None:
             return False
@@ -97,7 +88,6 @@ def build_and_store_clap_index(db_conn=None):
 
 
 def _unload_timer_worker():
-
     while True:
         with _WARM_CACHE_TIMER['lock']:
             expiry = _WARM_CACHE_TIMER['expiry_time']
@@ -105,6 +95,7 @@ def _unload_timer_worker():
                 break
             if expiry - time.time() <= 0:
                 from .clap_analyzer import unload_clap_model, is_clap_text_loaded
+
                 if is_clap_text_loaded():
                     logger.info("Warm cache timer expired - unloading CLAP text model")
                     unload_clap_model()
@@ -131,7 +122,10 @@ def warmup_text_search_model():
 
         _WARM_CACHE_TIMER['expiry_time'] = time.time() + _WARM_CACHE_TIMER['duration_seconds']
 
-        if _WARM_CACHE_TIMER['timer_thread'] is None or not _WARM_CACHE_TIMER['timer_thread'].is_alive():
+        if (
+            _WARM_CACHE_TIMER['timer_thread'] is None
+            or not _WARM_CACHE_TIMER['timer_thread'].is_alive()
+        ):
             thread = threading.Thread(target=_unload_timer_worker, daemon=True)
             thread.start()
             _WARM_CACHE_TIMER['timer_thread'] = thread
@@ -139,10 +133,7 @@ def warmup_text_search_model():
         else:
             logger.debug(f"Reset warm cache timer ({_WARM_CACHE_TIMER['duration_seconds']}s)")
 
-    return {
-        'loaded': True,
-        'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']
-    }
+    return {'loaded': True, 'expiry_seconds': _WARM_CACHE_TIMER['duration_seconds']}
 
 
 def get_warm_cache_status() -> Dict:
@@ -159,7 +150,6 @@ def get_warm_cache_status() -> Dict:
 
 
 def load_clap_cache_from_db():
-
     from config import CLAP_ENABLED
 
     if not CLAP_ENABLED:
@@ -185,7 +175,9 @@ def refresh_clap_cache():
     result = load_clap_cache_from_db()
     new_count = get_clap_cache_size()
     if result:
-        logger.info(f"OK CLAP cache refreshed: {old_count} -> {new_count} songs ({new_count - old_count:+d})")
+        logger.info(
+            f"OK CLAP cache refreshed: {old_count} -> {new_count} songs ({new_count - old_count:+d})"
+        )
     else:
         logger.error(f"X CLAP cache refresh failed! Still at {new_count} songs")
     return result
@@ -203,7 +195,9 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
         return []
 
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
-        logger.error("Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index.")
+        logger.error(
+            "Cannot search: persisted CLAP index not loaded. Ensure Flask startup loaded the CLAP index."
+        )
         return []
 
     try:
@@ -216,7 +210,10 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             return []
 
         from config import MAX_SONGS_PER_ARTIST
-        artist_cap = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+
+        artist_cap = (
+            MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
+        )
         if limit >= 1000:
             artist_cap = 0
         fetch_size = (limit + max(20, limit * 4) + 1) if artist_cap else limit
@@ -225,6 +222,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             ivf_index = _CLAP_INDEX_CACHE['index']
             id_map = _CLAP_INDEX_CACHE['id_map'] or {}
             from .paged_ivf import begin_query
+
             begin_query(ivf_index)
             num_to_query = min(fetch_size, len(ivf_index))
 
@@ -257,15 +255,19 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
                     artist_counts[author_norm] = artist_counts.get(author_norm, 0) + 1
 
                 similarity = ivf_index.distance_to_similarity(distance)
-                results.append({
-                    'item_id': item_id,
-                    'title': metadata.get('title', ''),
-                    'author': metadata.get('author', ''),
-                    'album': metadata.get('album', ''),
-                    'similarity': similarity
-                })
+                results.append(
+                    {
+                        'item_id': item_id,
+                        'title': metadata.get('title', ''),
+                        'author': metadata.get('author', ''),
+                        'album': metadata.get('album', ''),
+                        'similarity': similarity,
+                    }
+                )
 
-            logger.info(f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})")
+            logger.info(
+                f"Text search '{query_text}': found {len(results)} results via CLAP index (artist cap: {artist_cap or 'disabled'})"
+            )
             return results
 
     except Exception as e:
@@ -275,12 +277,7 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
 
 def get_cache_stats() -> Dict:
     if not _CLAP_INDEX_CACHE['loaded'] or _CLAP_INDEX_CACHE['index'] is None:
-        return {
-            'loaded': False,
-            'song_count': 0,
-            'embedding_dimension': 0,
-            'memory_mb': 0
-        }
+        return {'loaded': False, 'song_count': 0, 'embedding_dimension': 0, 'memory_mb': 0}
 
     index_obj = _CLAP_INDEX_CACHE['index']
     index_size = sys.getsizeof(index_obj)
@@ -289,8 +286,14 @@ def get_cache_stats() -> Dict:
     elif hasattr(index_obj, 'embeddings') and isinstance(index_obj.embeddings, np.ndarray):
         index_size = index_obj.embeddings.nbytes
 
-    id_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
-    reverse_map_size = sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map']) if _CLAP_INDEX_CACHE['reverse_id_map'] is not None else 0
+    id_map_size = (
+        sys.getsizeof(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
+    )
+    reverse_map_size = (
+        sys.getsizeof(_CLAP_INDEX_CACHE['reverse_id_map'])
+        if _CLAP_INDEX_CACHE['reverse_id_map'] is not None
+        else 0
+    )
     total_size_mb = (index_size + id_map_size + reverse_map_size) / (1024 * 1024)
     song_count = len(_CLAP_INDEX_CACHE['id_map']) if _CLAP_INDEX_CACHE['id_map'] is not None else 0
 
@@ -298,20 +301,23 @@ def get_cache_stats() -> Dict:
         'loaded': True,
         'song_count': song_count,
         'embedding_dimension': config.CLAP_EMBEDDING_DIMENSION,
-        'memory_mb': round(total_size_mb, 2)
+        'memory_mb': round(total_size_mb, 2),
     }
-
 
 
 def ensure_text_search_queries_table():
     from app_helper import get_db
+
     conn = None
     try:
         conn = get_db()
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_lock(726354821)")
             try:
-                cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)", ('text_search_queries',))
+                cur.execute(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+                    ('text_search_queries',),
+                )
                 if not cur.fetchone()[0]:
                     cur.execute("""
                         CREATE TABLE text_search_queries (
@@ -411,14 +417,17 @@ def load_top_queries_from_db():
                     "orchestra whispered romantic",
                     "belting mid-tempo progressive rock",
                     "autotuned pop mid-tempo",
-                    "pop energetic synthesizer"
+                    "pop energetic synthesizer",
                 ]
 
                 for rank, query in enumerate(default_queries, start=1):
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO text_search_queries (query_text, score, rank, created_at)
                         VALUES (%s, %s, %s, NOW())
-                    """, (query, 1.0, rank))
+                    """,
+                        (query, 1.0, rank),
+                    )
 
                 conn.commit()
 

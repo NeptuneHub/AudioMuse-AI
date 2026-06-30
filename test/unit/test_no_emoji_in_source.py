@@ -1,13 +1,19 @@
 import os
 import subprocess
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 CODE_EXTENSIONS = (
-    '.py', '.js', '.sh', '.bat', '.ps1',
-    '.yml', '.yaml', '.toml', '.cfg', '.ini',
+    '.py',
+    '.js',
+    '.sh',
+    '.bat',
+    '.ps1',
+    '.yml',
+    '.yaml',
+    '.toml',
+    '.cfg',
+    '.ini',
 )
 
 EXACT_EXCLUDES = {
@@ -27,9 +33,7 @@ def _is_pictographic_emoji(codepoint):
 
 
 def _git_ls_files():
-    out = subprocess.check_output(
-        ['git', 'ls-files'], cwd=REPO_ROOT
-    ).decode('utf-8')
+    out = subprocess.check_output(['git', 'ls-files'], cwd=REPO_ROOT).decode('utf-8')
     return [line for line in out.splitlines() if line]
 
 

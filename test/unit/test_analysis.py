@@ -1,12 +1,16 @@
-
 import numpy as np
 import pytest
 from unittest.mock import Mock, patch
-from tasks.analysis import run_inference, _find_onnx_name, sigmoid, robust_load_audio_with_fallback, analyze_track
+from tasks.analysis import (
+    run_inference,
+    _find_onnx_name,
+    sigmoid,
+    robust_load_audio_with_fallback,
+    analyze_track,
+)
 
 
 class TestFindOnnxName:
-
     def test_direct_match(self):
         names = ['model/Placeholder', 'model/dense/BiasAdd']
         result = _find_onnx_name('model/Placeholder', names)
@@ -49,7 +53,6 @@ class TestFindOnnxName:
 
 
 class TestRunInference:
-
     def test_successful_inference_direct_match(self):
         mock_session = Mock()
 
@@ -129,10 +132,7 @@ class TestRunInference:
         expected_result = np.array([[0.7]])
         mock_session.run.return_value = [expected_result]
 
-        feed_dict = {
-            'input1': np.random.rand(1, 5),
-            'input2': np.random.rand(1, 3)
-        }
+        feed_dict = {'input1': np.random.rand(1, 5), 'input2': np.random.rand(1, 3)}
         result = run_inference(mock_session, feed_dict)
 
         assert result is not None
@@ -248,7 +248,6 @@ class TestRunInference:
 
 
 class TestSigmoid:
-
     def test_sigmoid_basic(self):
         result = sigmoid(0)
         assert np.isclose(result, 0.5)
@@ -288,7 +287,6 @@ class TestSigmoid:
 
 
 class TestRobustLoadAudioWithFallback:
-
     @patch('tasks.analysis.librosa.load')
     def test_successful_direct_load(self, mock_librosa_load):
         expected_audio = np.random.rand(16000)
@@ -377,15 +375,15 @@ class TestRobustLoadAudioWithFallback:
 
 
 class TestAnalyzeTrack:
-
     @patch('tasks.analysis.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_successful_track_analysis(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
-                                       mock_chroma, mock_onnx_session):
+    def test_successful_track_analysis(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -413,7 +411,7 @@ class TestAnalyzeTrack:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
@@ -469,8 +467,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.feature.rms')
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_returns_none_on_short_audio(self, mock_audio_load, mock_beat, mock_rms,
-                                         mock_chroma, mock_mel):
+    def test_returns_none_on_short_audio(
+        self, mock_audio_load, mock_beat, mock_rms, mock_chroma, mock_mel
+    ):
         mock_audio = np.random.rand(100)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -493,8 +492,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_spectrogram_dtype_conversion(self, mock_audio_load, mock_mel, mock_beat,
-                                          mock_rms, mock_chroma, mock_onnx_session):
+    def test_spectrogram_dtype_conversion(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000).astype(np.float64)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -533,7 +533,7 @@ class TestAnalyzeTrack:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         analyze_track('test.mp3', mood_labels, model_paths)
@@ -547,8 +547,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_key_detection_logic(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
-                                  mock_chroma, mock_onnx_session):
+    def test_key_detection_logic(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -577,7 +578,7 @@ class TestAnalyzeTrack:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
@@ -594,8 +595,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_model_inference_failure_handling(self, mock_audio_load, mock_mel, mock_beat,
-                                               mock_rms, mock_chroma, mock_onnx_session):
+    def test_model_inference_failure_handling(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -620,8 +622,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_tempo_extraction(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
-                               mock_chroma, mock_onnx_session):
+    def test_tempo_extraction(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -650,7 +653,7 @@ class TestAnalyzeTrack:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
@@ -665,8 +668,9 @@ class TestAnalyzeTrack:
     @patch('tasks.analysis.librosa.beat.beat_track')
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
-    def test_energy_calculation(self, mock_audio_load, mock_mel, mock_beat, mock_rms,
-                                 mock_chroma, mock_onnx_session):
+    def test_energy_calculation(
+        self, mock_audio_load, mock_mel, mock_beat, mock_rms, mock_chroma, mock_onnx_session
+    ):
         mock_audio = np.random.rand(16000)
         mock_audio_load.return_value = (mock_audio, 16000)
 
@@ -697,7 +701,7 @@ class TestAnalyzeTrack:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, _ = analyze_track('test.mp3', mood_labels, model_paths)
@@ -708,7 +712,6 @@ class TestAnalyzeTrack:
 
 
 class TestOOMFallback:
-
     @patch('tasks.analysis.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
@@ -716,8 +719,16 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_embedding_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel,
-                                           mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+    def test_embedding_oom_fallback_to_cpu(
+        self,
+        mock_providers,
+        mock_audio_load,
+        mock_mel,
+        mock_beat,
+        mock_rms,
+        mock_chroma,
+        mock_onnx_session,
+    ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
         mock_audio = np.random.rand(16000)
@@ -735,6 +746,7 @@ class TestOOMFallback:
             gpu_session_call_count[0] += 1
             if gpu_session_call_count[0] == 1:
                 import onnxruntime as ort
+
                 raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
                     "Failed to allocate memory for requested buffer of size 765249024"
                 )
@@ -755,7 +767,11 @@ class TestOOMFallback:
             mock_session.get_inputs.return_value = [mock_input]
             mock_session.get_outputs.return_value = [mock_output]
 
-            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+            if (
+                isinstance(providers, list)
+                and 'CPUExecutionProvider' in providers
+                and len(providers) == 1
+            ):
                 mock_session.run.side_effect = cpu_run
                 sessions_created.append('CPU')
             else:
@@ -775,7 +791,7 @@ class TestOOMFallback:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
@@ -792,8 +808,16 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_prediction_oom_fallback_to_cpu(self, mock_providers, mock_audio_load, mock_mel,
-                                            mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+    def test_prediction_oom_fallback_to_cpu(
+        self,
+        mock_providers,
+        mock_audio_load,
+        mock_mel,
+        mock_beat,
+        mock_rms,
+        mock_chroma,
+        mock_onnx_session,
+    ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
         mock_audio = np.random.rand(16000)
@@ -811,6 +835,7 @@ class TestOOMFallback:
             gpu_session_call_count[0] += 1
             if gpu_session_call_count[0] == 2:
                 import onnxruntime as ort
+
                 raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
                     "Failed to allocate memory for requested buffer"
                 )
@@ -831,7 +856,11 @@ class TestOOMFallback:
             mock_session.get_inputs.return_value = [mock_input]
             mock_session.get_outputs.return_value = [mock_output]
 
-            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+            if (
+                isinstance(providers, list)
+                and 'CPUExecutionProvider' in providers
+                and len(providers) == 1
+            ):
                 mock_session.run.side_effect = cpu_run
                 sessions_created.append('CPU')
             else:
@@ -851,7 +880,7 @@ class TestOOMFallback:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
@@ -861,7 +890,6 @@ class TestOOMFallback:
         assert 'CPU' in sessions_created
         assert cpu_session_call_count[0] > 0
 
-
     @patch('tasks.analysis.ort.InferenceSession')
     @patch('tasks.analysis.librosa.feature.chroma_stft')
     @patch('tasks.analysis.librosa.feature.rms')
@@ -869,8 +897,16 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_non_oom_exception_is_reraised(self, mock_providers, mock_audio_load, mock_mel,
-                                           mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+    def test_non_oom_exception_is_reraised(
+        self,
+        mock_providers,
+        mock_audio_load,
+        mock_mel,
+        mock_beat,
+        mock_rms,
+        mock_chroma,
+        mock_onnx_session,
+    ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
         mock_audio = np.random.rand(16000)
@@ -883,6 +919,7 @@ class TestOOMFallback:
 
         def gpu_run(output_names, feed_dict):
             import onnxruntime as ort
+
             raise ort.capi.onnxruntime_pybind11_state.RuntimeException(
                 "Model execution error: Invalid input shape"
             )
@@ -906,7 +943,7 @@ class TestOOMFallback:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
@@ -921,8 +958,16 @@ class TestOOMFallback:
     @patch('tasks.analysis.librosa.feature.melspectrogram')
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.ort.get_available_providers')
-    def test_successful_gpu_inference_no_fallback(self, mock_providers, mock_audio_load, mock_mel,
-                                                  mock_beat, mock_rms, mock_chroma, mock_onnx_session):
+    def test_successful_gpu_inference_no_fallback(
+        self,
+        mock_providers,
+        mock_audio_load,
+        mock_mel,
+        mock_beat,
+        mock_rms,
+        mock_chroma,
+        mock_onnx_session,
+    ):
         mock_providers.return_value = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
         mock_audio = np.random.rand(16000)
@@ -936,7 +981,11 @@ class TestOOMFallback:
         cpu_fallback_used = [False]
 
         def create_session(model_path, providers=None, provider_options=None, **kwargs):
-            if isinstance(providers, list) and 'CPUExecutionProvider' in providers and len(providers) == 1:
+            if (
+                isinstance(providers, list)
+                and 'CPUExecutionProvider' in providers
+                and len(providers) == 1
+            ):
                 cpu_fallback_used[0] = True
 
             mock_session = Mock()
@@ -948,6 +997,7 @@ class TestOOMFallback:
             mock_session.get_outputs.return_value = [mock_output]
 
             call_count = [0]
+
             def successful_run(output_names, feed_dict):
                 call_count[0] += 1
                 if call_count[0] <= 2:
@@ -969,7 +1019,7 @@ class TestOOMFallback:
             'happy': '/path/to/happy.onnx',
             'party': '/path/to/party.onnx',
             'relaxed': '/path/to/relaxed.onnx',
-            'sad': '/path/to/sad.onnx'
+            'sad': '/path/to/sad.onnx',
         }
 
         result, embeddings = analyze_track('test.mp3', mood_labels, model_paths)
@@ -980,34 +1030,40 @@ class TestOOMFallback:
 
 
 class TestMediaServerProbe:
-
     def test_probe_detects_auth_failure_from_flag(self):
         from tasks.analysis import _probe_looks_like_auth_failure
+
         assert _probe_looks_like_auth_failure({'ok': False, 'auth_failed': True}) is True
 
     def test_probe_detects_auth_failure_from_message(self):
         from tasks.analysis import _probe_looks_like_auth_failure
-        assert _probe_looks_like_auth_failure(
-            {'ok': False, 'error': 'HTTP 401 Unauthorized'}) is True
+
+        assert (
+            _probe_looks_like_auth_failure({'ok': False, 'error': 'HTTP 401 Unauthorized'}) is True
+        )
 
     def test_probe_ignores_generic_failure(self):
         from tasks.analysis import _probe_looks_like_auth_failure
-        assert _probe_looks_like_auth_failure(
-            {'ok': False, 'error': 'connection timed out'}) is False
+
+        assert (
+            _probe_looks_like_auth_failure({'ok': False, 'error': 'connection timed out'}) is False
+        )
 
     def test_verify_returns_silently_when_reachable(self):
         from tasks.analysis import _verify_media_server_reachable
-        with patch('tasks.analysis.mediaserver_test_connection',
-                   return_value={'ok': True}):
+
+        with patch('tasks.analysis.mediaserver_test_connection', return_value={'ok': True}):
             _verify_media_server_reachable()
 
     def test_verify_raises_auth_error_on_bad_credentials(self):
         from tasks.analysis import _verify_media_server_reachable
         from error.error_manager import AudioMuseError
         from error.error_dictionary import ERR_MEDIASERVER_AUTH
-        with patch('tasks.analysis.mediaserver_test_connection',
-                   return_value={'ok': False, 'auth_failed': True,
-                                 'error': 'Wrong username or password'}):
+
+        with patch(
+            'tasks.analysis.mediaserver_test_connection',
+            return_value={'ok': False, 'auth_failed': True, 'error': 'Wrong username or password'},
+        ):
             with pytest.raises(AudioMuseError) as exc_info:
                 _verify_media_server_reachable()
         assert exc_info.value.code == ERR_MEDIASERVER_AUTH
@@ -1016,9 +1072,11 @@ class TestMediaServerProbe:
         from tasks.analysis import _verify_media_server_reachable
         from error.error_manager import AudioMuseError
         from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
-        with patch('tasks.analysis.mediaserver_test_connection',
-                   return_value={'ok': False, 'error': 'connection refused'}):
+
+        with patch(
+            'tasks.analysis.mediaserver_test_connection',
+            return_value={'ok': False, 'error': 'connection refused'},
+        ):
             with pytest.raises(AudioMuseError) as exc_info:
                 _verify_media_server_reachable()
         assert exc_info.value.code == ERR_MEDIASERVER_UNREACHABLE
-

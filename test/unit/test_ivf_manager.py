@@ -1,12 +1,9 @@
-
 import pytest
 import numpy as np
 from unittest.mock import Mock, patch
 
 
-
 class TestDirectEuclideanDistance:
-
     def test_identical_vectors_return_zero(self):
         from tasks.ivf_manager import _get_direct_euclidean_distance
 
@@ -48,7 +45,6 @@ class TestDirectEuclideanDistance:
 
 
 class TestDirectCosineDistance:
-
     def test_identical_vectors_return_zero(self):
         from tasks.ivf_manager import _get_direct_cosine_distance
 
@@ -109,7 +105,6 @@ class TestDirectCosineDistance:
 
 
 class TestGetDirectDistance:
-
     @patch('tasks.ivf_manager.IVF_METRIC', 'angular')
     def test_uses_cosine_for_angular_metric(self):
         from tasks.ivf_manager import get_direct_distance
@@ -133,9 +128,7 @@ class TestGetDirectDistance:
         assert abs(dist - 5.0) < 1e-5
 
 
-
 class TestNormalizeString:
-
     def test_lowercase_and_strip(self):
         from tasks.ivf_manager import _normalize_string
 
@@ -156,7 +149,6 @@ class TestNormalizeString:
 
 
 class TestIsSameSong:
-
     def test_exact_match(self):
         from tasks.ivf_manager import _is_same_song
 
@@ -191,9 +183,7 @@ class TestIsSameSong:
         assert _is_same_song("", "Artist", "", "Artist") is True
 
 
-
 class TestParseMoodFeatures:
-
     def test_parses_valid_format(self):
         from tasks.ivf_manager import _parse_mood_features
 
@@ -236,9 +226,7 @@ class TestParseMoodFeatures:
         assert result == {}
 
 
-
 class TestGetVectorById:
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_returns_none_when_index_not_loaded(self):
         from tasks.ivf_manager import get_vector_by_id
@@ -275,7 +263,10 @@ class TestGetVectorById:
         exact = np.array([0.1, 0.2, 0.3], dtype=np.float32)
         mock_index = Mock()
         mock_index.get_vector.return_value = np.array([9.0, 9.0, 9.0], dtype=np.float32)
-        with patch.object(im, 'ivf_index', mock_index), patch.object(im, 'reverse_id_map', {'item-123': 0}):
+        with (
+            patch.object(im, 'ivf_index', mock_index),
+            patch.object(im, 'reverse_id_map', {'item-123': 0}),
+        ):
             im._prime_request_f32({'item-123': exact})
             try:
                 np.testing.assert_array_equal(im._get_cached_vector('item-123'), exact)
@@ -287,9 +278,7 @@ class TestGetVectorById:
             )
 
 
-
 class TestLoadIVFIndex:
-
     @patch('tasks.ivf_manager.ivf_index', Mock())
     def test_skips_reload_if_already_loaded(self):
         from tasks.ivf_manager import load_ivf_index_for_querying
@@ -312,6 +301,7 @@ class TestLoadIVFIndex:
                 mock_load.return_value = (mock_index, {0: 'item-1'}, {'item-1': 0})
 
                 from tasks.ivf_manager import load_ivf_index_for_querying
+
                 load_ivf_index_for_querying(force_reload=True)
 
                 mock_load.assert_called_once()
@@ -332,9 +322,7 @@ class TestLoadIVFIndex:
             load_ivf_index_for_querying(force_reload=True)
 
 
-
 class TestFindNearestNeighborsById:
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_raises_when_index_not_loaded(self):
         from tasks.ivf_manager import find_nearest_neighbors_by_id
@@ -361,7 +349,6 @@ class TestFindNearestNeighborsById:
 
 
 class TestFindNearestNeighborsByVector:
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_raises_when_index_not_loaded(self):
         from tasks.ivf_manager import find_nearest_neighbors_by_vector
@@ -382,9 +369,7 @@ class TestFindNearestNeighborsByVector:
             find_nearest_neighbors_by_vector(query_vec, n=10)
 
 
-
 class TestCreatePlaylistFromIds:
-
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_calls_mediaserver_create_playlist(self, mock_create):
         from tasks.ivf_manager import create_playlist_from_ids
@@ -394,7 +379,9 @@ class TestCreatePlaylistFromIds:
         result = create_playlist_from_ids('Test Playlist', ['track-1', 'track-2'])
 
         assert result == 'playlist-123'
-        mock_create.assert_called_once_with('Test Playlist', ['track-1', 'track-2'], user_creds=None)
+        mock_create.assert_called_once_with(
+            'Test Playlist', ['track-1', 'track-2'], user_creds=None
+        )
 
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_raises_on_creation_failure(self, mock_create):
@@ -426,9 +413,7 @@ class TestCreatePlaylistFromIds:
         mock_create.assert_called_once_with('Test', ['track-1'], user_creds=user_creds)
 
 
-
 class TestSearchTracksByTitleAndArtist:
-
     def test_search_with_single_keyword(self):
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
@@ -499,7 +484,6 @@ class TestSearchTracksByTitleAndArtist:
 
 
 class TestGetItemIdByTitleAndArtist:
-
     def test_finds_exact_match(self):
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
@@ -529,9 +513,7 @@ class TestGetItemIdByTitleAndArtist:
             assert result is None
 
 
-
 class TestCleanupResources:
-
     @patch('tasks.ivf_manager._shutdown_thread_pool')
     def test_shuts_down_pool(self, mock_shutdown):
         from tasks.ivf_manager import cleanup_resources
@@ -541,12 +523,11 @@ class TestCleanupResources:
         mock_shutdown.assert_called_once()
 
 
-
 class TestGetMaxDistanceForId:
-
     @pytest.fixture(autouse=True)
     def _clear_max_distance_cache(self):
         from tasks.ivf_manager import _max_distance_cache
+
         _max_distance_cache.clear()
         yield
 
@@ -596,11 +577,10 @@ class TestGetMaxDistanceForId:
         assert result is None
 
 
-
 class TestResultCache:
-
     def test_lru_eviction_and_clear(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(100, 2)
         c.put("a", 1)
         c.put("b", 2)
@@ -614,6 +594,7 @@ class TestResultCache:
     def test_ttl_expiry(self):
         import time
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0.05, 10)
         c.put("k", 42)
         assert c.get("k") == 42
@@ -623,6 +604,7 @@ class TestResultCache:
     def test_sweep_expired_drops_only_expired_entries(self):
         import time
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0.05, 10)
         c.put("old", 1)
         time.sleep(0.1)
@@ -633,11 +615,13 @@ class TestResultCache:
 
     def test_sweep_expired_noop_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0, 10)
         c.sweep_expired()
 
     def test_disabled_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0, 10)
         c.put("k", 1)
         assert c.get("k") is None

@@ -69,7 +69,6 @@ def http_status_for_code(code):
 
 
 class AudioMuseError(Exception):
-
     def __init__(self, code, message=None, cause=None):
         self.code = code if code in ERROR_REGISTRY else UNKNOWN_ERROR_CODE
         self.error_class = get_error_class(self.code)
@@ -127,7 +126,6 @@ def from_exception(exc, code=None, message=None, logger=None, level=logging.ERRO
 
 
 class ErrorManager:
-
     AudioMuseError = AudioMuseError
     build = staticmethod(build)
     record = staticmethod(record)

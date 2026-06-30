@@ -214,7 +214,7 @@ The native Windows package is shipped as a release asset for x86_64 only: a port
   ```
 
 **Important:**
-* The app is unsigned, so Windows SmartScreen may warn on first run — choose "More info" then "Run anyway".
+* The app is unsigned, so Windows SmartScreen may warn on first run - choose "More info" then "Run anyway".
 * The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
 
 **Data and logs:**

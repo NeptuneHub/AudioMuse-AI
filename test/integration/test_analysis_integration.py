@@ -19,13 +19,13 @@ def _ensure_stubs():
 
         genai.Client = _Client
         genai.types = types.SimpleNamespace(
-            GenerateContentConfig=lambda *a, **k: None,
-            HttpOptions=lambda *a, **k: None
+            GenerateContentConfig=lambda *a, **k: None, HttpOptions=lambda *a, **k: None
         )
         sys.modules['google.genai'] = genai
 
     if 'mistralai' not in sys.modules:
         mistral_mod = types.ModuleType('mistralai')
+
         class Mistral:
             def __init__(self, api_key=None):
                 class Chat:
@@ -33,57 +33,74 @@ def _ensure_stubs():
                         message = types.SimpleNamespace(content='[stubbed mistral]')
                         choice = types.SimpleNamespace(message=message)
                         return types.SimpleNamespace(choices=[choice])
+
                 self.chat = Chat()
+
         mistral_mod.Mistral = Mistral
         sys.modules['mistralai'] = mistral_mod
 
     if 'ivf' not in sys.modules:
         ivf_mod = types.ModuleType('ivf')
         ivf_mod.Space = types.SimpleNamespace(Cosine=0, Euclidean=1, InnerProduct=2)
+
         class RecallError(Exception):
             pass
+
         ivf_mod.RecallError = RecallError
+
         class _Index:
             def __init__(self, *a, **k):
                 self.ef = 0
+
             @staticmethod
             def load(stream):
                 return _Index()
+
             def save(self, path):
                 with open(path, 'wb'):
                     pass
+
             def add_items(self, arr, ids=None):
                 return None
+
             def get_vector(self, idx):
                 import numpy as _np
+
                 return _np.zeros(128, dtype=_np.float32)
+
             def query(self, vec, k=10):
                 return ([], [])
+
             def __len__(self):
                 return 0
+
         ivf_mod.Index = _Index
         sys.modules['ivf'] = ivf_mod
 
 
 def _validate_analysis_result(result, expected, track_name, tol=1e-3):
-    assert abs(float(result.get('tempo', 0)) - expected['tempo']) <= tol, \
+    assert abs(float(result.get('tempo', 0)) - expected['tempo']) <= tol, (
         f"{track_name}: tempo mismatch: {result.get('tempo')} != {expected['tempo']}"
-    assert result.get('key') == expected['key'], \
+    )
+    assert result.get('key') == expected['key'], (
         f"{track_name}: key mismatch: {result.get('key')} != {expected['key']}"
-    assert result.get('scale') == expected['scale'], \
+    )
+    assert result.get('scale') == expected['scale'], (
         f"{track_name}: scale mismatch: {result.get('scale')} != {expected['scale']}"
+    )
 
     assert 'energy' in result, f"{track_name}: missing feature: energy"
-    assert abs(float(result['energy']) - expected['energy']) <= tol, \
+    assert abs(float(result['energy']) - expected['energy']) <= tol, (
         f"{track_name}: feature energy mismatch: {result['energy']} != {expected['energy']}"
-
+    )
 
     got_moods = result.get('moods', {})
     for mood, exp_val in expected['moods'].items():
         assert mood in got_moods, f"{track_name}: missing mood: {mood}"
         got_val = float(got_moods[mood])
-        assert abs(got_val - exp_val) <= tol, \
+        assert abs(got_val - exp_val) <= tol, (
             f"{track_name}: mood {mood} mismatch: {got_val} != {exp_val}"
+        )
 
 
 @pytest.mark.integration
@@ -91,7 +108,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
     project_root = Path(__file__).resolve().parents[2]
     models_dir = project_root / 'test' / 'models'
     required = [
-        'musicnn_embedding.onnx', 'musicnn_prediction.onnx',
+        'musicnn_embedding.onnx',
+        'musicnn_prediction.onnx',
     ]
     missing = [p for p in required if not (models_dir / p).exists()]
     if missing:
@@ -107,6 +125,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
     _ensure_stubs()
 
     import importlib
+
     analysis = importlib.import_module('tasks.analysis')
     importlib.reload(analysis)
 
@@ -121,7 +140,10 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
     test_tracks = [
         {
-            'path': project_root / 'test' / 'songs' / 'Art Flower - Art Flower - Creamy Snowflakes.mp3',
+            'path': project_root
+            / 'test'
+            / 'songs'
+            / 'Art Flower - Art Flower - Creamy Snowflakes.mp3',
             'name': 'Art Flower - Art Flower - Creamy Snowflakes.mp3',
             'expected': {
                 "tempo": 75.0,
@@ -177,7 +199,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "indie pop": 0.5025118589401245,
                     "sad": 0.5023919939994812,
                     "House": 0.5007247924804688,
-                    "happy": 0.5004531145095825
+                    "happy": 0.5004531145095825,
                 },
                 "energy": 0.11941074579954147,
                 "danceable": 0.09910931438207626,
@@ -186,10 +208,13 @@ def test_real_analysis_runs_and_returns_expected_shape():
                 "party": 0.045930881053209305,
                 "relaxed": 0.9612494111061096,
                 "sad": 0.8027413487434387,
-            }
+            },
         },
         {
-            'path': project_root / 'test' / 'songs' / "Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3",
+            'path': project_root
+            / 'test'
+            / 'songs'
+            / "Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3",
             'name': 'Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3',
             'expected': {
                 "tempo": 125.0,
@@ -245,7 +270,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "indie pop": 0.5026872158050537,
                     "sad": 0.5027293562889099,
                     "House": 0.5008860230445862,
-                    "happy": 0.5007311105728149
+                    "happy": 0.5007311105728149,
                 },
                 "energy": 0.006939841900020838,
                 "danceable": 0.017882201820611954,
@@ -253,11 +278,14 @@ def test_real_analysis_runs_and_returns_expected_shape():
                 "happy": 0.006147411186248064,
                 "party": 0.00013406496145762503,
                 "relaxed": 0.9952480792999268,
-                "sad": 0.980929970741272
-            }
+                "sad": 0.980929970741272,
+            },
         },
         {
-            'path': project_root / 'test' / 'songs' / "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
+            'path': project_root
+            / 'test'
+            / 'songs'
+            / "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
             'name': "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
             'expected': {
                 "tempo": 104.16666666666667,
@@ -313,7 +341,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "indie pop": 0.5033155679702759,
                     "sad": 0.5038461089134216,
                     "House": 0.5015008449554443,
-                    "happy": 0.5005825161933899
+                    "happy": 0.5005825161933899,
                 },
                 "energy": 0.01083404291421175,
                 "danceable": 0.07516419887542725,
@@ -321,9 +349,9 @@ def test_real_analysis_runs_and_returns_expected_shape():
                 "happy": 0.015692999586462975,
                 "party": 0.0005335173336789012,
                 "relaxed": 0.9905794858932495,
-                "sad": 0.9709755182266235
-            }
-        }
+                "sad": 0.9709755182266235,
+            },
+        },
     ]
 
     tol = 1e-3
@@ -339,7 +367,9 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
         print(f'\n=== Analyzing: {track_name} ===')
 
-        result, embedding = analysis.analyze_track(str(track_path), analysis.MOOD_LABELS, model_paths)
+        result, embedding = analysis.analyze_track(
+            str(track_path), analysis.MOOD_LABELS, model_paths
+        )
 
         try:
             print(f'\n{track_name} analysis result:')
@@ -350,11 +380,14 @@ def test_real_analysis_runs_and_returns_expected_shape():
 
         assert result is not None, f'{track_name}: analyze_track returned None for analysis_result'
         assert isinstance(result, dict), f'{track_name}: result is not a dict'
-        assert 'moods' in result and isinstance(result['moods'], dict), f'{track_name}: moods missing or invalid'
+        assert 'moods' in result and isinstance(result['moods'], dict), (
+            f'{track_name}: moods missing or invalid'
+        )
 
         assert embedding is not None, f'{track_name}: analyze_track returned None for embedding'
-        assert hasattr(embedding, 'shape') and embedding.ndim == 1, \
+        assert hasattr(embedding, 'shape') and embedding.ndim == 1, (
             f'{track_name}: expected 1-D embedding, got ndim={getattr(embedding, "ndim", None)}'
+        )
         emb_dim = int(embedding.shape[0])
         print(f'{track_name}: embedding dimension = {emb_dim}')
         assert emb_dim > 0, f'{track_name}: Unexpected embedding dimension: {emb_dim}'

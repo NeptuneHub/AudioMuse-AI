@@ -1,4 +1,3 @@
-
 import json
 import logging
 import os
@@ -75,6 +74,7 @@ class ProcessSupervisor:
                 return
             if on_ready is not None and self.is_running():
                 on_ready()
+
         self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
         self._boot_thread.start()
         return self._boot_thread
@@ -200,7 +200,9 @@ class ProcessSupervisor:
         )
         with self._lock:
             self._children[name] = proc
-        threading.Thread(target=self._pump, args=(name, proc), name=f"log-{name}", daemon=True).start()
+        threading.Thread(
+            target=self._pump, args=(name, proc), name=f"log-{name}", daemon=True
+        ).start()
         self._log.info("Started %s (pid %s)", name, proc.pid)
 
     def _pump(self, name, proc):
@@ -270,6 +272,7 @@ class ProcessSupervisor:
             return
         try:
             import psycopg2
+
             conn = psycopg2.connect(self._database_url, connect_timeout=3)
             try:
                 cur = conn.cursor()
@@ -369,16 +372,24 @@ class ProcessSupervisor:
                 if psutil is not None:
                     proc = psutil.Process(pid)
                     cmdline = " ".join(proc.cmdline())
-                    if (paths.APP_NAME in cmdline or "--role=" in cmdline
-                            or "redis-server" in cmdline or "postgres" in cmdline):
+                    if (
+                        paths.APP_NAME in cmdline
+                        or "--role=" in cmdline
+                        or "redis-server" in cmdline
+                        or "postgres" in cmdline
+                    ):
                         proc.terminate()
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:
                     comm = subprocess.check_output(
                         ["ps", "-p", str(pid), "-o", "command="], text=True
                     ).strip()
-                    if (paths.APP_NAME in comm or "--role=" in comm
-                            or "redis-server" in comm or "postgres" in comm):
+                    if (
+                        paths.APP_NAME in comm
+                        or "--role=" in comm
+                        or "redis-server" in comm
+                        or "postgres" in comm
+                    ):
                         os.kill(pid, signal.SIGTERM)
                         self._log.info("Reaped orphan %s (pid %s) via ps fallback", name, pid)
             except Exception:
@@ -408,7 +419,8 @@ class ProcessSupervisor:
                     terminated.append(proc)
                     self._log.info(
                         "Reaped stale %s (pid %s) referencing our data dir",
-                        proc.info.get("name"), proc.info["pid"],
+                        proc.info.get("name"),
+                        proc.info["pid"],
                     )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

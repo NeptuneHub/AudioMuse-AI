@@ -1,4 +1,3 @@
-
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -13,15 +12,18 @@ import numpy as np
 
 
 class TestAnalyzeTrackMemoryCleanup:
-
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis_helper.librosa')
     @patch('tasks.analysis.create_onnx_session')
     @patch('tasks.analysis.cleanup_onnx_session')
     @patch('tasks.analysis.cleanup_cuda_memory')
     def test_cleanup_on_inference_error(
-        self, mock_cuda_cleanup, mock_session_cleanup,
-        mock_create_sess, mock_librosa, mock_load_audio
+        self,
+        mock_cuda_cleanup,
+        mock_session_cleanup,
+        mock_create_sess,
+        mock_librosa,
+        mock_load_audio,
     ):
         from tasks.analysis import analyze_track
 
@@ -48,8 +50,8 @@ class TestAnalyzeTrackMemoryCleanup:
                 "happy": "/tmp/happy.onnx",
                 "party": "/tmp/party.onnx",
                 "relaxed": "/tmp/relaxed.onnx",
-                "sad": "/tmp/sad.onnx"
-            }
+                "sad": "/tmp/sad.onnx",
+            },
         )
 
         assert result == (None, None)
@@ -60,9 +62,7 @@ class TestAnalyzeTrackMemoryCleanup:
     @patch('tasks.analysis.robust_load_audio_with_fallback')
     @patch('tasks.analysis.librosa')
     @patch('tasks.analysis.ort')
-    def test_no_cleanup_with_album_sessions(
-        self, mock_ort, mock_librosa, mock_load_audio
-    ):
+    def test_no_cleanup_with_album_sessions(self, mock_ort, mock_librosa, mock_load_audio):
         from tasks.analysis import analyze_track
 
         mock_load_audio.return_value = (np.random.randn(16000), 16000)
@@ -84,7 +84,7 @@ class TestAnalyzeTrackMemoryCleanup:
             'happy': MagicMock(),
             'party': MagicMock(),
             'relaxed': MagicMock(),
-            'sad': MagicMock()
+            'sad': MagicMock(),
         }
 
         for key in ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']:
@@ -102,16 +102,15 @@ class TestAnalyzeTrackMemoryCleanup:
                     "happy": "/tmp/happy.onnx",
                     "party": "/tmp/party.onnx",
                     "relaxed": "/tmp/relaxed.onnx",
-                    "sad": "/tmp/sad.onnx"
+                    "sad": "/tmp/sad.onnx",
                 },
-                onnx_sessions=onnx_sessions
+                onnx_sessions=onnx_sessions,
             )
 
             assert mock_cleanup.call_count == 0
 
 
 class TestAnalyzeAlbumMemoryCleanup:
-
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.download_track')
     @patch('tasks.analysis.analyze_track')
@@ -124,9 +123,18 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('app_helper.redis_conn')
     @patch('tasks.analysis.get_current_job')
     def test_cleanup_on_database_error(
-        self, mock_get_job, mock_redis, mock_get_task_info, mock_save_task,
-        mock_cuda_cleanup, mock_session_cleanup, mock_ort, mock_get_db,
-        mock_analyze, mock_download, mock_get_tracks
+        self,
+        mock_get_job,
+        mock_redis,
+        mock_get_task_info,
+        mock_save_task,
+        mock_cuda_cleanup,
+        mock_session_cleanup,
+        mock_ort,
+        mock_get_db,
+        mock_analyze,
+        mock_download,
+        mock_get_tracks,
     ):
         from tasks.analysis import analyze_album_task
         from psycopg2 import OperationalError
@@ -146,7 +154,6 @@ class TestAnalyzeAlbumMemoryCleanup:
         with pytest.raises(OperationalError):
             analyze_album_task("album_123", "Test Album", 5, None)
 
-
     @patch('tasks.analysis.get_tracks_from_album')
     @patch('tasks.analysis.comprehensive_memory_cleanup')
     @patch('app_helper.save_task_status')
@@ -156,9 +163,15 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('tasks.clap_analyzer.unload_clap_model')
     @patch('tasks.clap_analyzer.is_clap_model_loaded')
     def test_cleanup_all_models_in_finally(
-        self, mock_clap_loaded, mock_clap_unload, mock_get_db,
-        mock_get_job, mock_get_task_info, mock_save_task,
-        mock_memory_cleanup, mock_get_tracks
+        self,
+        mock_clap_loaded,
+        mock_clap_unload,
+        mock_get_db,
+        mock_get_job,
+        mock_get_task_info,
+        mock_save_task,
+        mock_memory_cleanup,
+        mock_get_tracks,
     ):
         from tasks.analysis import analyze_album_task
 
@@ -186,9 +199,19 @@ class TestAnalyzeAlbumMemoryCleanup:
     @patch('app_helper.save_track_analysis_and_embedding')
     @patch('tasks.analysis.os.remove')
     def test_cleanup_onnx_sessions_on_success(
-        self, mock_remove, mock_save_track, mock_get_job, mock_get_task_info,
-        mock_save_task, mock_cuda_cleanup, mock_session_cleanup, mock_create_sess,
-        mock_get_db, mock_analyze, mock_download, mock_get_tracks
+        self,
+        mock_remove,
+        mock_save_track,
+        mock_get_job,
+        mock_get_task_info,
+        mock_save_task,
+        mock_cuda_cleanup,
+        mock_session_cleanup,
+        mock_create_sess,
+        mock_get_db,
+        mock_analyze,
+        mock_download,
+        mock_get_tracks,
     ):
         from tasks.analysis import analyze_album_task
 
@@ -219,11 +242,11 @@ class TestAnalyzeAlbumMemoryCleanup:
                 'happy': 0.8,
                 'party': 0.5,
                 'relaxed': 0.4,
-                'sad': 0.2
+                'sad': 0.2,
             },
             np.random.randn(200),
             np.random.randn(16000),
-            16000
+            16000,
         )
 
         with patch('tasks.clap_analyzer.is_clap_available', return_value=False):

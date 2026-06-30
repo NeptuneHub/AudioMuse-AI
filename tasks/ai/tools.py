@@ -103,8 +103,9 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
             "message": "seed_search(union) found no songs across seeds\n" + "\n".join(messages),
         }
     return {
-        "songs": all_songs[:get_songs * len(seeds)],
-        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n" + "\n".join(messages),
+        "songs": all_songs[: get_songs * len(seeds)],
+        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n"
+        + "\n".join(messages),
     }
 
 
@@ -155,14 +156,10 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             e_max = tool_args.get("energy_max")
             if e_min is not None:
                 e_min = float(e_min)
-                energy_min_raw = config.ENERGY_MIN + e_min * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
+                energy_min_raw = config.ENERGY_MIN + e_min * (config.ENERGY_MAX - config.ENERGY_MIN)
             if e_max is not None:
                 e_max = float(e_max)
-                energy_max_raw = config.ENERGY_MIN + e_max * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
+                energy_max_raw = config.ENERGY_MIN + e_max * (config.ENERGY_MAX - config.ENERGY_MIN)
 
             return _database_genre_query_sync(
                 tool_args.get("genres"),
@@ -222,9 +219,18 @@ def get_mcp_tools() -> List[Dict]:
                             "type": "object",
                             "properties": {
                                 "type": {"type": "string", "enum": ["song", "artist"]},
-                                "title": {"type": "string", "description": "Song title (when type='song')"},
-                                "artist": {"type": "string", "description": "Artist name (when type='song')"},
-                                "name": {"type": "string", "description": "Artist name (when type='artist')"},
+                                "title": {
+                                    "type": "string",
+                                    "description": "Song title (when type='song')",
+                                },
+                                "artist": {
+                                    "type": "string",
+                                    "description": "Artist name (when type='song')",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Artist name (when type='artist')",
+                                },
                             },
                             "required": ["type"],
                         },
@@ -259,9 +265,13 @@ def get_mcp_tools() -> List[Dict]:
     if text_match_modes:
         mode_desc_parts = []
         if "audio" in text_match_modes:
-            mode_desc_parts.append("'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental').")
+            mode_desc_parts.append(
+                "'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental')."
+            )
         if "lyrics" in text_match_modes:
-            mode_desc_parts.append("'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom').")
+            mode_desc_parts.append(
+                "'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom')."
+            )
         mode_desc = ". ".join(mode_desc_parts)
 
         tools.append(
@@ -368,15 +378,33 @@ def get_mcp_tools() -> List[Dict]:
                     },
                     "tempo_min": {"type": "number", "description": "Min BPM (40-200)"},
                     "tempo_max": {"type": "number", "description": "Max BPM (40-200)"},
-                    "energy_min": {"type": "number", "description": "Min energy 0.0 (calm) to 1.0 (intense)"},
-                    "energy_max": {"type": "number", "description": "Max energy 0.0 (calm) to 1.0 (intense)"},
-                    "key": {"type": "string", "description": "Musical key (C, D, E, F, G, A, B with # or b)"},
+                    "energy_min": {
+                        "type": "number",
+                        "description": "Min energy 0.0 (calm) to 1.0 (intense)",
+                    },
+                    "energy_max": {
+                        "type": "number",
+                        "description": "Max energy 0.0 (calm) to 1.0 (intense)",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Musical key (C, D, E, F, G, A, B with # or b)",
+                    },
                     "scale": {"type": "string", "enum": ["major", "minor"]},
-                    "year_min": {"type": "integer", "description": "Earliest release year (e.g. 1990)"},
-                    "year_max": {"type": "integer", "description": "Latest release year (e.g. 1999)"},
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Earliest release year (e.g. 1990)",
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Latest release year (e.g. 1999)",
+                    },
                     "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
                     "album": {"type": "string", "description": "Album name to filter by"},
-                    "artist": {"type": "string", "description": "Single artist name (use seed_search for multiple)"},
+                    "artist": {
+                        "type": "string",
+                        "description": "Single artist name (use seed_search for multiple)",
+                    },
                     "instrumental": {
                         "type": "boolean",
                         "description": "true = only instrumental tracks. false = only tracks with vocals.",

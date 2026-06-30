@@ -4,12 +4,11 @@ from tasks.path_manager import (
     get_angular_distance,
     get_distance,
     interpolate_centroids,
-    _normalize_signature
+    _normalize_signature,
 )
 
 
 class TestEuclideanDistance:
-
     def test_identical_vectors_return_zero(self):
         v1 = np.array([1.0, 2.0, 3.0])
         v2 = np.array([1.0, 2.0, 3.0])
@@ -43,7 +42,6 @@ class TestEuclideanDistance:
 
 
 class TestAngularDistance:
-
     def test_identical_vectors_return_zero(self):
         v1 = np.array([1.0, 2.0, 3.0])
         v2 = np.array([1.0, 2.0, 3.0])
@@ -91,9 +89,9 @@ class TestAngularDistance:
 
 
 class TestGetDistance:
-
     def test_uses_euclidean_by_default(self, monkeypatch):
         import tasks.path_manager
+
         monkeypatch.setattr(tasks.path_manager, 'PATH_DISTANCE_METRIC', 'euclidean')
 
         v1 = np.array([0.0, 0.0])
@@ -105,6 +103,7 @@ class TestGetDistance:
 
     def test_uses_angular_when_configured(self, monkeypatch):
         import tasks.path_manager
+
         monkeypatch.setattr(tasks.path_manager, 'PATH_DISTANCE_METRIC', 'angular')
 
         v1 = np.array([1.0, 0.0])
@@ -116,7 +115,6 @@ class TestGetDistance:
 
 
 class TestInterpolateCentroidsLinear:
-
     def test_linear_interpolation_endpoints(self):
         v1 = np.array([0.0, 0.0])
         v2 = np.array([10.0, 0.0])
@@ -157,7 +155,6 @@ class TestInterpolateCentroidsLinear:
 
 
 class TestInterpolateCentroidsSLERP:
-
     def test_slerp_endpoints(self):
         v1 = np.array([1.0, 0.0, 0.0])
         v2 = np.array([0.0, 1.0, 0.0])
@@ -193,7 +190,7 @@ class TestInterpolateCentroidsSLERP:
 
         centroids = interpolate_centroids(v1, v2, num=3, metric="angular")
 
-        expected_direction = np.array([np.sqrt(2)/2, np.sqrt(2)/2])
+        expected_direction = np.array([np.sqrt(2) / 2, np.sqrt(2) / 2])
         actual_direction = centroids[1] / np.linalg.norm(centroids[1])
         np.testing.assert_array_almost_equal(actual_direction, expected_direction)
 
@@ -238,7 +235,6 @@ class TestInterpolateCentroidsSLERP:
 
 
 class TestNormalizeSignature:
-
     def test_normalizes_case(self):
         sig = _normalize_signature("The Beatles", "Hey Jude")
 

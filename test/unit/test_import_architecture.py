@@ -1,4 +1,3 @@
-
 import ast
 import os
 from collections import defaultdict
@@ -8,8 +7,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 EXCLUDED_DIRS = {
-    ".git", ".venv", ".venv-windows", "node_modules", "__pycache__",
-    "build", "dist", "pginstall", "native-build", "test",
+    ".git",
+    ".venv",
+    ".venv-windows",
+    "node_modules",
+    "__pycache__",
+    "build",
+    "dist",
+    "pginstall",
+    "native-build",
+    "test",
 }
 
 LEAF_MODULES = {
@@ -29,9 +36,22 @@ ALLOWED_CYCLES = {
 MAX_CHAIN = 5
 
 LAYERS = [
-    {"config", "tz_helper", "error.error_dictionary", "ssrf_guard", "sanitization", "tasks.memory_utils"},
-    {"database", "taskqueue", "tasks.ai.prompts",
-     "tasks.ai.providers.openai", "tasks.ai.providers.gemini", "tasks.ai.providers.mistral"},
+    {
+        "config",
+        "tz_helper",
+        "error.error_dictionary",
+        "ssrf_guard",
+        "sanitization",
+        "tasks.memory_utils",
+    },
+    {
+        "database",
+        "taskqueue",
+        "tasks.ai.prompts",
+        "tasks.ai.providers.openai",
+        "tasks.ai.providers.gemini",
+        "tasks.ai.providers.mistral",
+    },
     {"app_helper", "app_helper_artist", "tasks.ai.api"},
     {"tasks.clustering_helper", "tasks.analysis_helper"},
     {"tasks.clustering", "tasks.analysis"},
@@ -52,11 +72,28 @@ FORBIDDEN_IMPORTS = [
 ]
 
 INDEPENDENT_GROUPS = [
-    {"app_chat", "app_clustering", "app_analysis", "app_cron", "app_ivf",
-     "app_sonic_fingerprint", "app_path", "app_external", "app_alchemy", "app_map",
-     "app_waveform", "app_artist_similarity", "app_clap_search", "app_lyrics",
-     "app_sem_grove", "app_backup", "app_provider_migration", "app_dashboard",
-     "app_users", "app_sync"},
+    {
+        "app_chat",
+        "app_clustering",
+        "app_analysis",
+        "app_cron",
+        "app_ivf",
+        "app_sonic_fingerprint",
+        "app_path",
+        "app_external",
+        "app_alchemy",
+        "app_map",
+        "app_waveform",
+        "app_artist_similarity",
+        "app_clap_search",
+        "app_lyrics",
+        "app_sem_grove",
+        "app_backup",
+        "app_provider_migration",
+        "app_dashboard",
+        "app_users",
+        "app_sync",
+    },
 ]
 
 
@@ -105,8 +142,16 @@ def _build_eager_graph(modules):
             if isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
-                base = _resolve_relative(node.module or "", node.level, name, is_package) if node.level else (node.module or "")
-                targets = [f"{base}.{alias.name}" for alias in node.names if base] if base else [alias.name for alias in node.names]
+                base = (
+                    _resolve_relative(node.module or "", node.level, name, is_package)
+                    if node.level
+                    else (node.module or "")
+                )
+                targets = (
+                    [f"{base}.{alias.name}" for alias in node.names if base]
+                    if base
+                    else [alias.name for alias in node.names]
+                )
             else:
                 continue
             for target in targets:
@@ -256,16 +301,21 @@ def architecture_report():
 
     max_len, chains = _max_chains(graph, modules)
 
-    lines = ["Layers (L0 = foundation, ascending to the app entrypoint); "
-             "every dependency must point DOWN to a lower or equal layer:"]
+    lines = [
+        "Layers (L0 = foundation, ascending to the app entrypoint); "
+        "every dependency must point DOWN to a lower or equal layer:"
+    ]
     for i, layer in enumerate(LAYERS):
         lines.append(f"  L{i}: " + ", ".join(sorted(layer)))
-    lines.append(f"  layered edges: {down} downward (ok), {horiz} horizontal/same-layer, "
-                 f"{up} upward (ILLEGAL)")
+    lines.append(
+        f"  layered edges: {down} downward (ok), {horiz} horizontal/same-layer, "
+        f"{up} upward (ILLEGAL)"
+    )
     lines.append("")
     status = "OK" if max_len <= MAX_CHAIN else "OVER CEILING"
-    lines.append(f"Max eager import chain: {max_len} modules "
-                 f"(ceiling MAX_CHAIN={MAX_CHAIN}) -> {status}")
+    lines.append(
+        f"Max eager import chain: {max_len} modules (ceiling MAX_CHAIN={MAX_CHAIN}) -> {status}"
+    )
     lines.append(f"Chains at depth {max_len} ({len(chains)}):")
     for chain in chains:
         lines.append("  " + " -> ".join(chain))

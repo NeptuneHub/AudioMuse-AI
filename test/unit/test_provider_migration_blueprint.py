@@ -28,6 +28,7 @@ def bp_mod():
 @pytest.fixture
 def app(bp_mod):
     from flask import Flask
+
     app = Flask(__name__)
     app.register_blueprint(bp_mod.migration_bp)
     app.config['TESTING'] = True
@@ -43,7 +44,7 @@ def client(app):
 def fake_db(bp_mod):
     cur = MagicMock()
     cur.__enter__ = lambda self: self
-    cur.__exit__  = lambda self, *a: None
+    cur.__exit__ = lambda self, *a: None
     cur._fetchone_queue = []
     cur.fetchone.side_effect = lambda: cur._fetchone_queue.pop(0) if cur._fetchone_queue else None
 
@@ -53,7 +54,6 @@ def fake_db(bp_mod):
 
     bp_mod.get_db = MagicMock(return_value=db)
     return db, cur
-
 
 
 class TestMigrationPageRoute:
@@ -71,12 +71,16 @@ class TestSessionStart:
         db, cur = fake_db
         cur._fetchone_queue.append((123,))
         import config
+
         config.MEDIASERVER_TYPE = 'jellyfin'
 
-        resp = client.post('/api/migration/session/start', json={
-            'target_type': 'navidrome',
-            'target_creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
-        })
+        resp = client.post(
+            '/api/migration/session/start',
+            json={
+                'target_type': 'navidrome',
+                'target_creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
+            },
+        )
 
         assert resp.status_code == 200
         data = resp.get_json()
@@ -85,23 +89,34 @@ class TestSessionStart:
         assert any('INSERT INTO migration_session' in s for s in sqls)
 
     def test_rejects_unknown_target_type(self, bp_mod, client, fake_db):
-        resp = client.post('/api/migration/session/start', json={
-            'target_type': 'bogus',
-            'target_creds': {},
-        })
+        resp = client.post(
+            '/api/migration/session/start',
+            json={
+                'target_type': 'bogus',
+                'target_creds': {},
+            },
+        )
         assert resp.status_code == 400
 
 
 class TestProbeTest:
     def test_calls_provider_probe_and_returns_shape(self, bp_mod, client):
-        fake = {'ok': True, 'error': None, 'sample_count': 5,
-                'path_format': 'absolute', 'warnings': []}
+        fake = {
+            'ok': True,
+            'error': None,
+            'sample_count': 5,
+            'path_format': 'absolute',
+            'warnings': [],
+        }
         with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
             p.test_connection.return_value = fake
-            resp = client.post('/api/migration/probe/test', json={
-                'type': 'navidrome',
-                'creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
-            })
+            resp = client.post(
+                '/api/migration/probe/test',
+                json={
+                    'type': 'navidrome',
+                    'creds': {'url': 'http://127.0.0.1', 'user': 'u', 'password': 'p'},
+                },
+            )
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['ok'] is True
@@ -109,7 +124,6 @@ class TestProbeTest:
 
 
 class TestApplySourcePathOverrides:
-
     def test_noop_when_overrides_empty(self, bp_mod):
         rows = [{'item_id': 'a', 'file_path': '/old/a.mp3'}]
         bp_mod._apply_source_path_overrides(rows, {})
@@ -121,10 +135,13 @@ class TestApplySourcePathOverrides:
             {'item_id': 'b', 'file_path': ''},
             {'item_id': 'c', 'file_path': '/unchanged/c.mp3'},
         ]
-        bp_mod._apply_source_path_overrides(rows, {
-            'a': '/music/a.mp3',
-            'b': '/music/b.mp3',
-        })
+        bp_mod._apply_source_path_overrides(
+            rows,
+            {
+                'a': '/music/a.mp3',
+                'b': '/music/b.mp3',
+            },
+        )
         assert rows[0]['file_path'] == '/music/a.mp3'
         assert rows[1]['file_path'] == '/music/b.mp3'
         assert rows[2]['file_path'] == '/unchanged/c.mp3'
@@ -138,6 +155,7 @@ class TestApplySourcePathOverrides:
 class TestSourcePathsRefreshRoute:
     def test_stores_overrides_in_session_state(self, bp_mod):
         import config
+
         config.MEDIASERVER_TYPE = 'navidrome'
         config.NAVIDROME_URL = 'http://nav'
         config.NAVIDROME_USER = 'u'
@@ -148,9 +166,11 @@ class TestSourcePathsRefreshRoute:
             {'id': 't2', 'path': '/music/rock/b.mp3'},
             {'id': 't3', 'path': None},
         ]
-        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
-             patch.object(bp_mod, '_detect_path_format') as mock_detect, \
-             patch.object(bp_mod, '_update_state') as mock_update:
+        with (
+            patch.object(bp_mod, 'provider_probe', MagicMock()) as p,
+            patch.object(bp_mod, '_detect_path_format') as mock_detect,
+            patch.object(bp_mod, '_update_state') as mock_update,
+        ):
             p.fetch_all_tracks.return_value = fake_tracks
             mock_detect.return_value = 'absolute'
             data = bp_mod.run_source_refresh_core(7)
@@ -169,14 +189,17 @@ class TestSourcePathsRefreshRoute:
 
     def test_returns_warning_when_still_not_absolute(self, bp_mod):
         import config
+
         config.MEDIASERVER_TYPE = 'navidrome'
         config.NAVIDROME_URL = 'http://nav'
         config.NAVIDROME_USER = 'u'
         config.NAVIDROME_PASSWORD = 'p'
 
-        with patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
-             patch.object(bp_mod, '_detect_path_format') as mock_detect, \
-             patch.object(bp_mod, '_update_state'):
+        with (
+            patch.object(bp_mod, 'provider_probe', MagicMock()) as p,
+            patch.object(bp_mod, '_detect_path_format') as mock_detect,
+            patch.object(bp_mod, '_update_state'),
+        ):
             p.fetch_all_tracks.return_value = [{'id': 't1', 'path': 'relative/path.mp3'}]
             mock_detect.return_value = 'relative'
             data = bp_mod.run_source_refresh_core(1)
@@ -187,6 +210,7 @@ class TestSourcePathsRefreshRoute:
 
     def test_enqueues_job_for_supported_provider(self, bp_mod, client):
         import config
+
         config.MEDIASERVER_TYPE = 'navidrome'
         config.NAVIDROME_URL = 'http://nav'
         config.NAVIDROME_USER = 'u'
@@ -195,19 +219,20 @@ class TestSourcePathsRefreshRoute:
         fake_job = MagicMock()
         fake_job.id = 'src-job-1'
         fake_queue.enqueue.return_value = fake_job
-        with patch.object(bp_mod, '_patch_state_keys'), \
-             patch.object(bp_mod, 'rq_queue_high', fake_queue):
-            resp = client.post('/api/migration/source-paths/refresh',
-                               json={'session_id': 5})
+        with (
+            patch.object(bp_mod, '_patch_state_keys'),
+            patch.object(bp_mod, 'rq_queue_high', fake_queue),
+        ):
+            resp = client.post('/api/migration/source-paths/refresh', json={'session_id': 5})
         assert resp.status_code == 200
         assert resp.get_json().get('task_id') == 'src-job-1'
         assert fake_queue.enqueue.called
 
     def test_rejects_unsupported_current_provider(self, bp_mod, client):
         import config
+
         config.MEDIASERVER_TYPE = 'plex'
-        resp = client.post('/api/migration/source-paths/refresh',
-                           json={'session_id': 1})
+        resp = client.post('/api/migration/source-paths/refresh', json={'session_id': 1})
         assert resp.status_code == 400
 
     def test_requires_session_id(self, bp_mod, client):
@@ -218,14 +243,19 @@ class TestSourcePathsRefreshRoute:
 class TestDryRunSourcePathGate:
     def test_returns_409_when_source_paths_bad_and_no_overrides(self, bp_mod, client):
         import config
+
         config.MEDIASERVER_TYPE = 'navidrome'
         config.NAVIDROME_URL = 'http://nav'
         config.NAVIDROME_USER = 'u'
         config.NAVIDROME_PASSWORD = 'p'
 
-        with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {'url': 'http://jf'})), \
-             patch.object(bp_mod, '_load_state', return_value={}), \
-             patch.object(bp_mod, '_detect_source_path_format', return_value='none'):
+        with (
+            patch.object(
+                bp_mod, '_fetch_session_creds', return_value=('jellyfin', {'url': 'http://jf'})
+            ),
+            patch.object(bp_mod, '_load_state', return_value={}),
+            patch.object(bp_mod, '_detect_source_path_format', return_value='none'),
+        ):
             resp = client.post('/api/migration/dry-run', json={'session_id': 1})
 
         assert resp.status_code == 409
@@ -239,13 +269,18 @@ class TestDryRunSourcePathGate:
         fake_job = MagicMock()
         fake_job.id = 'dry-job-1'
         fake_queue.enqueue.return_value = fake_job
-        with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {'url': 'http://jf'})), \
-             patch.object(bp_mod, '_load_state', return_value={}), \
-             patch.object(bp_mod, '_detect_source_path_format', return_value='none'), \
-             patch.object(bp_mod, '_patch_state_keys'), \
-             patch.object(bp_mod, 'rq_queue_high', fake_queue):
-            resp = client.post('/api/migration/dry-run',
-                               json={'session_id': 1, 'bypass_source_check': True})
+        with (
+            patch.object(
+                bp_mod, '_fetch_session_creds', return_value=('jellyfin', {'url': 'http://jf'})
+            ),
+            patch.object(bp_mod, '_load_state', return_value={}),
+            patch.object(bp_mod, '_detect_source_path_format', return_value='none'),
+            patch.object(bp_mod, '_patch_state_keys'),
+            patch.object(bp_mod, 'rq_queue_high', fake_queue),
+        ):
+            resp = client.post(
+                '/api/migration/dry-run', json={'session_id': 1, 'bypass_source_check': True}
+            )
 
         assert resp.status_code == 200
         assert resp.get_json().get('task_id') == 'dry-job-1'
@@ -253,22 +288,34 @@ class TestDryRunSourcePathGate:
 
     def test_overrides_present_skip_gate_and_apply_to_rows(self, bp_mod):
         old_rows = [
-            {'item_id': 'a', 'file_path': '', 'title': 't', 'author': 'x', 'album': 'y', 'album_artist': 'x'},
+            {
+                'item_id': 'a',
+                'file_path': '',
+                'title': 't',
+                'author': 'x',
+                'album': 'y',
+                'album_artist': 'x',
+            },
         ]
         overrides = {'a': '/music/real.mp3'}
         fake_matcher = MagicMock()
         fake_matcher.match_tracks.return_value = {
-            'matches': {}, 'match_tiers': {}, 'tier_counts': {},
-            'unmatched': [], 'unmatched_by_album': {},
+            'matches': {},
+            'match_tiers': {},
+            'tier_counts': {},
+            'unmatched': [],
+            'unmatched_by_album': {},
         }
-        with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {})), \
-             patch.object(bp_mod, '_load_state', return_value={'source_path_overrides': overrides}), \
-             patch.object(bp_mod, '_load_score_rows_as_dicts', return_value=old_rows), \
-             patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
-             patch.object(bp_mod, '_store_target_meta'), \
-             patch.object(bp_mod, '_albums_payload', return_value=[]), \
-             patch.object(bp_mod, '_update_state'), \
-             patch('importlib.import_module', return_value=fake_matcher):
+        with (
+            patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {})),
+            patch.object(bp_mod, '_load_state', return_value={'source_path_overrides': overrides}),
+            patch.object(bp_mod, '_load_score_rows_as_dicts', return_value=old_rows),
+            patch.object(bp_mod, 'provider_probe', MagicMock()) as p,
+            patch.object(bp_mod, '_store_target_meta'),
+            patch.object(bp_mod, '_albums_payload', return_value=[]),
+            patch.object(bp_mod, '_update_state'),
+            patch('importlib.import_module', return_value=fake_matcher),
+        ):
             p.fetch_all_tracks.return_value = [{'id': 'n1', 'path': '/x', 'title': 't'}]
             result = bp_mod.run_dry_run_core(1, allow_title_artist_only=False)
 
@@ -277,11 +324,13 @@ class TestDryRunSourcePathGate:
         assert called_old_rows[0]['file_path'] == '/music/real.mp3'
 
     def test_dry_run_zero_tracks_guard_aborts(self, bp_mod):
-        with patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {})), \
-             patch.object(bp_mod, 'provider_probe', MagicMock()) as p, \
-             patch.object(bp_mod, '_patch_state_keys'), \
-             patch.object(bp_mod, '_load_score_rows_as_dicts') as mock_load, \
-             patch.object(bp_mod, '_store_target_meta') as mock_store:
+        with (
+            patch.object(bp_mod, '_fetch_session_creds', return_value=('jellyfin', {})),
+            patch.object(bp_mod, 'provider_probe', MagicMock()) as p,
+            patch.object(bp_mod, '_patch_state_keys'),
+            patch.object(bp_mod, '_load_score_rows_as_dicts') as mock_load,
+            patch.object(bp_mod, '_store_target_meta') as mock_store,
+        ):
             p.fetch_all_tracks.return_value = []
             result = bp_mod.run_dry_run_core(1)
 
@@ -291,11 +340,10 @@ class TestDryRunSourcePathGate:
 
 
 class TestExecuteGate:
-
     def _base_payload(self, target='navidrome'):
         return {
-            'session_id':        1,
-            'backup_confirmed':  True,
+            'session_id': 1,
+            'backup_confirmed': True,
             'confirmation_text': f'I want to migrate to {target} and delete unmatched tracks',
         }
 
@@ -342,7 +390,6 @@ class TestExecuteGate:
         assert fake_queue.enqueue.called
 
 
-
 class TestProbeUrlValidation:
     ACCEPTED = [
         'http://127.0.0.1',
@@ -387,18 +434,24 @@ class TestProbeUrlValidation:
 
     def test_probe_endpoint_rejects_metadata_url(self, bp_mod, client):
         with patch.object(bp_mod, 'provider_probe', MagicMock()) as p:
-            resp = client.post('/api/migration/probe/test', json={
-                'type': 'navidrome',
-                'creds': {'url': 'http://169.254.169.254/'},
-            })
+            resp = client.post(
+                '/api/migration/probe/test',
+                json={
+                    'type': 'navidrome',
+                    'creds': {'url': 'http://169.254.169.254/'},
+                },
+            )
         assert resp.status_code == 200
         assert resp.get_json()['ok'] is False
         assert not p.test_connection.called
 
     def test_session_start_rejects_disallowed_scheme(self, client):
-        resp = client.post('/api/migration/session/start', json={
-            'target_type': 'navidrome',
-            'target_creds': {'url': 'file:///etc/passwd'},
-        })
+        resp = client.post(
+            '/api/migration/session/start',
+            json={
+                'target_type': 'navidrome',
+                'target_creds': {'url': 'file:///etc/passwd'},
+            },
+        )
         assert resp.status_code == 400
         assert 'not allowed' in resp.get_json().get('error', '').lower()

@@ -3,7 +3,9 @@ from unittest.mock import patch
 from app_helper import attach_song_features
 
 
-def make_score(item_id, album='Album', mood_vector='rock:0.9,happy:0.5', other_features='danceable:0.4'):
+def make_score(
+    item_id, album='Album', mood_vector='rock:0.9,happy:0.5', other_features='danceable:0.4'
+):
     return {
         'item_id': item_id,
         'album': album,
@@ -90,7 +92,9 @@ class TestAttachSongFeaturesEnrichment:
 
     def test_custom_id_key(self):
         rows = [{'id': 9}]
-        with patch('app_helper.get_score_data_by_ids', return_value=[make_score(9, album='C')]) as mock_lookup:
+        with patch(
+            'app_helper.get_score_data_by_ids', return_value=[make_score(9, album='C')]
+        ) as mock_lookup:
             result = attach_song_features(rows, id_key='id')
         mock_lookup.assert_called_once_with([9])
         assert result[0]['album'] == 'C'

@@ -20,14 +20,10 @@ BASIC_SERVER_FIELDS = {
     'LYRION_URL',
     'EMBY_URL',
     'EMBY_USER_ID',
-    'EMBY_TOKEN'
+    'EMBY_TOKEN',
 }
-AUTH_FIELDS = {
-    'AUTH_ENABLED',
-    'AUDIOMUSE_USER',
-    'AUDIOMUSE_PASSWORD',
-    'API_TOKEN'
-}
+AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
+
 
 class SetupManager:
     def __init__(self, database_url=None):
@@ -41,6 +37,7 @@ class SetupManager:
             return env_url
 
         import sys
+
         if getattr(sys, "frozen", False):
             return None
 
@@ -145,7 +142,7 @@ class SetupManager:
             'your_default_token',
             'http://your_jellyfin_server',
             'http://your-navidrome-server',
-            'http://your-lyrion-server'
+            'http://your-lyrion-server',
         ]
         for placeholder in placeholders:
             if placeholder in normalized:
@@ -195,9 +192,8 @@ class SetupManager:
         )
 
     def is_valid_env_config(self, config_module):
-        return (
-            self._is_valid_server_config(config_module)
-            and self._is_valid_auth_config(config_module)
+        return self._is_valid_server_config(config_module) and self._is_valid_auth_config(
+            config_module
         )
 
     def bootstrap_env_config_if_empty(self, config_module):
@@ -245,11 +241,19 @@ class SetupManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     for key, value in values.items():
-                        if key == 'AUDIOMUSE_PASSWORD' and isinstance(value, str) and value and value != '********' and not self._is_argon2_password_hash(value):
+                        if (
+                            key == 'AUDIOMUSE_PASSWORD'
+                            and isinstance(value, str)
+                            and value
+                            and value != '********'
+                            and not self._is_argon2_password_hash(value)
+                        ):
                             try:
                                 value = self._password_hasher.hash(value)
                             except argon2_exceptions.HashingError as exc:
-                                self.logger.error(f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True)
+                                self.logger.error(
+                                    f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True
+                                )
                                 raise
                         cur.execute(
                             f"INSERT INTO {DEFAULT_CONFIG_TABLE} (key, value) VALUES (%s, %s) "
@@ -273,8 +277,7 @@ class SetupManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)",
-                        (list(keys),)
+                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)", (list(keys),)
                     )
                 conn.commit()
         except Exception as exc:
@@ -297,13 +300,15 @@ class SetupManager:
             else:
                 value = default_value
                 overridden = False
-            fields.append({
-                "name": name,
-                "default": self.format_value(default_value),
-                "value": self.format_value(value),
-                "type": type(default_value).__name__,
-                "overridden": overridden,
-            })
+            fields.append(
+                {
+                    "name": name,
+                    "default": self.format_value(default_value),
+                    "value": self.format_value(value),
+                    "type": type(default_value).__name__,
+                    "overridden": overridden,
+                }
+            )
         return fields
 
 

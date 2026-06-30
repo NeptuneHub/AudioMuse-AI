@@ -1,5 +1,3 @@
-
-
 import argparse
 import os
 import shutil
@@ -65,7 +63,9 @@ def _trim_hf_cache():
 
 
 def _materialize_hf_symlinks():
-    print("==> Materialize HF-cache symlinks into real files (PyInstaller/zip drop symlinks on Windows)")
+    print(
+        "==> Materialize HF-cache symlinks into real files (PyInstaller/zip drop symlinks on Windows)"
+    )
     hf = MODEL / "huggingface"
     if not hf.is_dir():
         return
@@ -87,12 +87,17 @@ def assemble():
     MODEL.mkdir(parents=True, exist_ok=True)
 
     print(f"==> musicnn + CLAP text models (from {model_release})")
-    _gh_download(model_release, repo, MODEL,
-                 ["musicnn_embedding.onnx", "musicnn_prediction.onnx", "clap_text_model.onnx"])
+    _gh_download(
+        model_release,
+        repo,
+        MODEL,
+        ["musicnn_embedding.onnx", "musicnn_prediction.onnx", "clap_text_model.onnx"],
+    )
 
     print(f"==> DCLAP audio model (from {dclap_release} in the -DCLAP repo)")
-    _gh_download(dclap_release, DCLAP_REPO, MODEL,
-                 ["model_epoch_36.onnx", "model_epoch_36.onnx.data"])
+    _gh_download(
+        dclap_release, DCLAP_REPO, MODEL, ["model_epoch_36.onnx", "model_epoch_36.onnx.data"]
+    )
 
     print("==> HuggingFace cache (roberta/bert/bart) -- HF_HOME points at model/huggingface")
     tmp_hf = Path(tempfile.mkdtemp())
@@ -126,13 +131,20 @@ def verify():
     roberta = MODEL / "huggingface" / "hub" / "models--roberta-base"
     snapshots = roberta / "snapshots"
     if not snapshots.is_dir() or not any(snapshots.iterdir()):
-        missing.append("roberta-base snapshots/ empty — symlinks not extracted (use tar, not tarfile)")
+        missing.append(
+            "roberta-base snapshots/ empty - symlinks not extracted (use tar, not tarfile)"
+        )
     tokenizer_files = ("tokenizer.json", "vocab.json", "merges.txt", "config.json")
     for name in tokenizer_files:
-        real = [p for p in roberta.rglob(name)
-                if p.is_file() and not p.is_symlink() and p.stat().st_size > 0]
+        real = [
+            p
+            for p in roberta.rglob(name)
+            if p.is_file() and not p.is_symlink() and p.stat().st_size > 0
+        ]
         if not real:
-            missing.append(f"roberta-base {name} must be a real non-symlink file (run _materialize_hf_symlinks)")
+            missing.append(
+                f"roberta-base {name} must be a real non-symlink file (run _materialize_hf_symlinks)"
+            )
     if missing:
         for f in missing:
             print(f"::error::Missing or empty: {f}")
@@ -142,8 +154,12 @@ def verify():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Assemble or verify ./model for the standalone build.")
-    parser.add_argument("--verify", action="store_true", help="check the assembled model/ is complete")
+    parser = argparse.ArgumentParser(
+        description="Assemble or verify ./model for the standalone build."
+    )
+    parser.add_argument(
+        "--verify", action="store_true", help="check the assembled model/ is complete"
+    )
     args = parser.parse_args()
     if args.verify:
         verify()

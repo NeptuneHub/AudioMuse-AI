@@ -11,14 +11,17 @@ def _addrinfo(ip, port=80):
 
 
 class TestValidateOutboundUrlSchemes:
-    @pytest.mark.parametrize('url', [
-        'file:///etc/passwd',
-        'gopher://10.0.0.1:6379/',
-        'ftp://1.2.3.4/',
-        'redis://1.2.3.4:6379',
-        'ws://1.2.3.4/',
-        'not-a-url',
-    ])
+    @pytest.mark.parametrize(
+        'url',
+        [
+            'file:///etc/passwd',
+            'gopher://10.0.0.1:6379/',
+            'ftp://1.2.3.4/',
+            'redis://1.2.3.4:6379',
+            'ws://1.2.3.4/',
+            'not-a-url',
+        ],
+    )
     def test_rejects_non_http_schemes(self, url):
         ok, reason = validate_outbound_url(url)
         assert ok is False
@@ -45,38 +48,50 @@ class TestValidateOutboundUrlMissingParts:
 
 
 class TestValidateOutboundUrlIpClasses:
-    @pytest.mark.parametrize('url,ip', [
-        ('http://127.0.0.1', '127.0.0.1'),
-        ('http://127.0.0.1:8096', '127.0.0.1'),
-    ])
+    @pytest.mark.parametrize(
+        'url,ip',
+        [
+            ('http://127.0.0.1', '127.0.0.1'),
+            ('http://127.0.0.1:8096', '127.0.0.1'),
+        ],
+    )
     def test_loopback_allowed(self, url, ip):
         with patch('ssrf_guard.socket.getaddrinfo', return_value=_addrinfo(ip)):
             assert validate_outbound_url(url) == (True, None)
 
-    @pytest.mark.parametrize('url,ip', [
-        ('http://10.0.0.5/rest', '10.0.0.5'),
-        ('http://172.16.3.4', '172.16.3.4'),
-        ('http://192.168.1.50:8096', '192.168.1.50'),
-    ])
+    @pytest.mark.parametrize(
+        'url,ip',
+        [
+            ('http://10.0.0.5/rest', '10.0.0.5'),
+            ('http://172.16.3.4', '172.16.3.4'),
+            ('http://192.168.1.50:8096', '192.168.1.50'),
+        ],
+    )
     def test_rfc1918_allowed(self, url, ip):
         with patch('ssrf_guard.socket.getaddrinfo', return_value=_addrinfo(ip)):
             assert validate_outbound_url(url) == (True, None)
 
-    @pytest.mark.parametrize('url,ip', [
-        ('http://8.8.8.8', '8.8.8.8'),
-        ('http://1.2.3.4:8096', '1.2.3.4'),
-    ])
+    @pytest.mark.parametrize(
+        'url,ip',
+        [
+            ('http://8.8.8.8', '8.8.8.8'),
+            ('http://1.2.3.4:8096', '1.2.3.4'),
+        ],
+    )
     def test_public_ip_allowed(self, url, ip):
         with patch('ssrf_guard.socket.getaddrinfo', return_value=_addrinfo(ip)):
             assert validate_outbound_url(url) == (True, None)
 
-    @pytest.mark.parametrize('url,ip', [
-        ('http://169.254.169.254/latest/meta-data', '169.254.169.254'),
-        ('http://169.254.10.20', '169.254.10.20'),
-        ('http://224.0.0.1', '224.0.0.1'),
-        ('http://0.0.0.0', '0.0.0.0'),
-        ('http://240.0.0.1', '240.0.0.1'),
-    ])
+    @pytest.mark.parametrize(
+        'url,ip',
+        [
+            ('http://169.254.169.254/latest/meta-data', '169.254.169.254'),
+            ('http://169.254.10.20', '169.254.10.20'),
+            ('http://224.0.0.1', '224.0.0.1'),
+            ('http://0.0.0.0', '0.0.0.0'),
+            ('http://240.0.0.1', '240.0.0.1'),
+        ],
+    )
     def test_dangerous_ip_classes_rejected(self, url, ip):
         with patch('ssrf_guard.socket.getaddrinfo', return_value=_addrinfo(ip)):
             ok, reason = validate_outbound_url(url)

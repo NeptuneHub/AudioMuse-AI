@@ -30,6 +30,7 @@ def _fake_db(fetchone=None):
 class TestCheckAuthNeededJwt:
     def test_auth_disabled_passes_as_admin(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', False)
         with app.test_request_context('/api/foo'):
             result = app_auth.check_auth_needed('secret')
@@ -38,6 +39,7 @@ class TestCheckAuthNeededJwt:
 
     def test_valid_token_sets_role_and_user(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
         secret = 'unit-secret'
@@ -50,6 +52,7 @@ class TestCheckAuthNeededJwt:
 
     def test_empty_secret_rejects_present_cookie(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
         token = pyjwt.encode({'sub': 'x', 'role': 'admin'}, 'whatever', algorithm='HS256')
@@ -60,6 +63,7 @@ class TestCheckAuthNeededJwt:
 
     def test_tampered_token_is_unauthorized(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
         secret = 'unit-secret'
@@ -74,6 +78,7 @@ class TestCheckAuthNeededBearer:
     def test_bearer_uses_compare_digest(self, app, monkeypatch):
         import config
         import secrets as _secrets
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', 'tok-123')
         calls = []
@@ -92,6 +97,7 @@ class TestCheckAuthNeededBearer:
 
     def test_bearer_wrong_token_rejected(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', 'tok-123')
         with app.test_request_context('/api/foo', headers={'Authorization': 'Bearer nope'}):
@@ -101,6 +107,7 @@ class TestCheckAuthNeededBearer:
 
     def test_bearer_ignored_when_api_token_unset(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
         with app.test_request_context('/api/foo', headers={'Authorization': 'Bearer anything'}):
@@ -112,6 +119,7 @@ class TestCheckAuthNeededBearer:
 class TestAdminPathEnforcement:
     def test_non_admin_gets_403_on_admin_api(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         with app.test_request_context('/api/analysis/start'):
             g.auth_role = 'user'
@@ -121,6 +129,7 @@ class TestAdminPathEnforcement:
 
     def test_admin_passes_admin_api(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         with app.test_request_context('/api/analysis/start'):
             g.auth_role = 'admin'
@@ -129,6 +138,7 @@ class TestAdminPathEnforcement:
 
     def test_non_admin_page_redirects(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         with app.test_request_context('/analysis'):
             g.auth_role = 'user'
@@ -138,36 +148,40 @@ class TestAdminPathEnforcement:
 
     def test_users_path_not_admin_gated(self, app, monkeypatch):
         import config
+
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         with app.test_request_context('/api/users'):
             g.auth_role = 'user'
             result = app_auth.check_admin_needed()
         assert result is None
 
-    @pytest.mark.parametrize('path,expected', [
-        ('/setup', True),
-        ('/api/setup', True),
-        ('/api/migration/session/start', True),
-        ('/api/analysis', True),
-        ('/api/clustering', True),
-        ('/api/cron', True),
-        ('/api/backup', True),
-        ('/api/cancel/abc-123', True),
-        ('/api/cancel_all/main_analysis', True),
-        ('/api/rebuild_map_cache', True),
-        ('/api/clap/cache/refresh', True),
-        ('/api/lyrics/cache/refresh', True),
-        ('/api/sem_grove/cache/refresh', True),
-        ('/api/users', False),
-        ('/api/anchors', False),
-        ('/api/anchors/5', False),
-        ('/api/clap/search', False),
-        ('/api/clap/warmup', False),
-        ('/chat/api/create_playlist', False),
-        ('/dashboard', False),
-        ('/login', False),
-        ('/', False),
-    ])
+    @pytest.mark.parametrize(
+        'path,expected',
+        [
+            ('/setup', True),
+            ('/api/setup', True),
+            ('/api/migration/session/start', True),
+            ('/api/analysis', True),
+            ('/api/clustering', True),
+            ('/api/cron', True),
+            ('/api/backup', True),
+            ('/api/cancel/abc-123', True),
+            ('/api/cancel_all/main_analysis', True),
+            ('/api/rebuild_map_cache', True),
+            ('/api/clap/cache/refresh', True),
+            ('/api/lyrics/cache/refresh', True),
+            ('/api/sem_grove/cache/refresh', True),
+            ('/api/users', False),
+            ('/api/anchors', False),
+            ('/api/anchors/5', False),
+            ('/api/clap/search', False),
+            ('/api/clap/warmup', False),
+            ('/chat/api/create_playlist', False),
+            ('/dashboard', False),
+            ('/login', False),
+            ('/', False),
+        ],
+    )
     def test_is_admin_path_matrix(self, path, expected):
         assert app_auth.is_admin_path(path) is expected
 
@@ -209,6 +223,7 @@ class TestPasswordHashingUnit:
 
     def test_verify_accepts_correct_password(self, monkeypatch):
         from argon2 import PasswordHasher
+
         stored = PasswordHasher().hash('correct-horse')
         db, cur = _fake_db(fetchone=(stored, 'admin'))
         monkeypatch.setattr(app_auth, '_get_db', lambda: db)
@@ -216,6 +231,7 @@ class TestPasswordHashingUnit:
 
     def test_verify_rejects_wrong_password(self, monkeypatch):
         from argon2 import PasswordHasher
+
         stored = PasswordHasher().hash('correct-horse')
         db, cur = _fake_db(fetchone=(stored, 'admin'))
         monkeypatch.setattr(app_auth, '_get_db', lambda: db)

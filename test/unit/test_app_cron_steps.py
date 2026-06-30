@@ -24,7 +24,6 @@ def utc_tz():
     time.tzset()
 
 
-
 def test_step_month_anchored_at_one():
     matched = [m for m in range(1, 13) if _field_matches('*/3', m, field_min=1)]
     assert matched == [1, 4, 7, 10]
@@ -55,7 +54,6 @@ def test_step_hour_anchored_at_zero():
     assert _field_matches('*/6', 23, field_min=0) is False
 
 
-
 def test_range_with_step_only_matches_steps_within_range():
     matched = [v for v in range(0, 30) if _field_matches('10-20/5', v)]
     assert matched == [10, 15, 20]
@@ -73,11 +71,9 @@ def test_range_with_step_inclusive_upper_bound():
     assert _field_matches('1-10/3', 9) is False
 
 
-
 @requires_tzset
 def test_dow_seven_is_sunday(utc_tz):
-    sunday_ts = time.mktime(time.strptime(
-        '2021-08-15 12:00:00', '%Y-%m-%d %H:%M:%S'))
+    sunday_ts = time.mktime(time.strptime('2021-08-15 12:00:00', '%Y-%m-%d %H:%M:%S'))
     assert time.localtime(sunday_ts).tm_wday == 6
     assert cron_matches_now('0 12 * * 7', sunday_ts) is True
     assert cron_matches_now('0 12 * * 0', sunday_ts) is True
@@ -85,12 +81,10 @@ def test_dow_seven_is_sunday(utc_tz):
 
 @requires_tzset
 def test_dow_seven_does_not_match_non_sunday(utc_tz):
-    monday_ts = time.mktime(time.strptime(
-        '2021-08-16 12:00:00', '%Y-%m-%d %H:%M:%S'))
+    monday_ts = time.mktime(time.strptime('2021-08-16 12:00:00', '%Y-%m-%d %H:%M:%S'))
     assert time.localtime(monday_ts).tm_wday == 0
     assert cron_matches_now('0 12 * * 7', monday_ts) is False
     assert cron_matches_now('0 12 * * 0', monday_ts) is False
-
 
 
 @requires_tzset

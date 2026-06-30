@@ -1,4 +1,3 @@
-
 import os
 import sys
 import threading
@@ -9,18 +8,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conftest import make_dict_row, make_mock_connection
 
 
-
 class TestScoreDetailColumns:
-
     def test_constant_value(self):
         from tasks.ivf_manager import SCORE_DETAIL_COLUMNS
 
         assert SCORE_DETAIL_COLUMNS == 'title, author'
 
 
-
 class TestFetchInBatches:
-
     def test_empty_item_ids_returns_empty_dict_no_call(self):
         from tasks.ivf_manager import _fetch_in_batches
 
@@ -102,9 +97,7 @@ class TestFetchInBatches:
         assert result['shared'] == 'id-100'
 
 
-
 class TestFetchDetailsMap:
-
     def _make_conn(self, rows):
         cursor = MagicMock()
         cursor.fetchall.return_value = rows

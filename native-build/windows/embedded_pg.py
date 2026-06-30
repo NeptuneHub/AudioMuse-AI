@@ -1,4 +1,3 @@
-
 import logging
 import os
 import shutil
@@ -23,8 +22,13 @@ def _bin(name):
 
 
 def _conn(password):
-    return {"host": "127.0.0.1", "port": paths.pg_port(), "user": "postgres",
-            "password": password, "dbname": "postgres"}
+    return {
+        "host": "127.0.0.1",
+        "port": paths.pg_port(),
+        "user": "postgres",
+        "password": password,
+        "dbname": "postgres",
+    }
 
 
 def _initialized(data_dir):
@@ -79,9 +83,18 @@ def start(data_dir, password):
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(password)
                 subprocess.run(
-                    [_bin("initdb"), "-D", data_dir, "-U", "postgres",
-                     "--auth-host=scram-sha-256", "--auth-local=scram-sha-256",
-                     f"--pwfile={pwfile}", "--no-locale", "--encoding=UTF8"],
+                    [
+                        _bin("initdb"),
+                        "-D",
+                        data_dir,
+                        "-U",
+                        "postgres",
+                        "--auth-host=scram-sha-256",
+                        "--auth-local=scram-sha-256",
+                        f"--pwfile={pwfile}",
+                        "--no-locale",
+                        "--encoding=UTF8",
+                    ],
                     check=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -93,7 +106,9 @@ def start(data_dir, password):
                         os.unlink(pwfile)
                     except OSError:
                         pass
-            with open(os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n") as fh:
+            with open(
+                os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n"
+            ) as fh:
                 fh.write("\npassword_encryption = scram-sha-256\n")
             with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
                 fh.write("ok\n")
@@ -101,9 +116,16 @@ def start(data_dir, password):
         port = str(paths.pg_port())
         logger.info("Starting PostgreSQL on 127.0.0.1:%s", port)
         _running_proc = subprocess.Popen(
-            [_bin("pg_ctl"), "start", "-D", data_dir,
-             "-o", f"-p {port} -h 127.0.0.1",
-             "-l", os.path.join(data_dir, "pg.log")],
+            [
+                _bin("pg_ctl"),
+                "start",
+                "-D",
+                data_dir,
+                "-o",
+                f"-p {port} -h 127.0.0.1",
+                "-l",
+                os.path.join(data_dir, "pg.log"),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -117,6 +139,7 @@ def start(data_dir, password):
             if result.returncode == 0:
                 break
             import time
+
             time.sleep(0.5)
         else:
             raise RuntimeError("PostgreSQL did not start within 30 seconds")

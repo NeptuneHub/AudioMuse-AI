@@ -1,4 +1,3 @@
-
 import json
 import random
 import logging
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from .clustering_gpu import get_clustering_model, get_pca_model
+
     GPU_CLUSTERING_AVAILABLE = True
 except ImportError:
     GPU_CLUSTERING_AVAILABLE = False
@@ -24,14 +24,25 @@ except ImportError:
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
-from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
-                    MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
-                    TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
-                    LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
-                    LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
-                    LN_OTHER_FEATURES_PURITY_STATS,
-                    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS)
+from config import (
+    STRATIFIED_GENRES,
+    OTHER_FEATURE_LABELS,
+    MOOD_LABELS,
+    MAX_DISTANCE,
+    MAX_SONGS_PER_ARTIST,
+    GMM_COVARIANCE_TYPE,
+    SPECTRAL_N_NEIGHBORS,
+    TOP_K_MOODS_FOR_PURITY_CALCULATION,
+    LN_MOOD_DIVERSITY_STATS,
+    LN_MOOD_PURITY_STATS,
+    LN_MOOD_DIVERSITY_EMBEDING_STATS,
+    LN_MOOD_PURITY_EMBEDING_STATS,
+    LN_OTHER_FEATURES_DIVERSITY_STATS,
+    LN_OTHER_FEATURES_PURITY_STATS,
+    OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
+    USE_GPU_CLUSTERING,
+    TASK_STATUS_SUCCESS,
+)
 from .commons import score_vector
 
 from tasks.ai.api import get_ai_playlist_name
@@ -39,7 +50,6 @@ from tasks.ai.prompts import creative_prompt_template
 
 from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
 from taskqueue import redis_conn
-
 
 
 def _shuffle_playlist_songs(songs, playlist_name):
@@ -53,31 +63,52 @@ def _shuffle_playlist_songs(songs, playlist_name):
     for i in range(n - 1, 0, -1):
         j = (random.randint(0, i) + current_time_seed + i * 7) % (i + 1)
         final_songs[i], final_songs[j] = final_songs[j], final_songs[i]
-        current_time_seed = (current_time_seed * 1103515245 + 12345) % (2 ** 31)
+        current_time_seed = (current_time_seed * 1103515245 + 12345) % (2**31)
 
-    logger.info("FINAL FISHER-YATES SHUFFLE applied to '%s': %d songs", playlist_name, len(final_songs))
-    logger.info("FINAL ORDER: First song = '%s', Last song = '%s'", final_songs[0][1], final_songs[-1][1])
+    logger.info(
+        "FINAL FISHER-YATES SHUFFLE applied to '%s': %d songs", playlist_name, len(final_songs)
+    )
+    logger.info(
+        "FINAL ORDER: First song = '%s', Last song = '%s'", final_songs[0][1], final_songs[-1][1]
+    )
     return final_songs
 
 
 def _assign_playlist_chunks(final_songs, max_songs, base_name, final_playlists):
     if max_songs > 0 and len(final_songs) > max_songs:
-        chunks = [final_songs[i:i + max_songs] for i in range(0, len(final_songs), max_songs)]
+        chunks = [final_songs[i : i + max_songs] for i in range(0, len(final_songs), max_songs)]
         for idx, chunk in enumerate(chunks, 1):
             final_playlists[f"{base_name} ({idx})"] = chunk
     else:
         final_playlists[base_name] = final_songs
 
 
-def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
-                          ollama_url, ollama_model, openai_url, openai_model, openai_key,
-                          gemini_key, gemini_model, mistral_key, mistral_model):
+def _try_ai_name_playlist(
+    original_name,
+    songs,
+    centroids,
+    ai_provider,
+    ollama_url,
+    ollama_model,
+    openai_url,
+    openai_model,
+    openai_key,
+    gemini_key,
+    gemini_model,
+    mistral_key,
+    mistral_model,
+):
     ai_config = {
         'provider': ai_provider,
-        'ollama_url': ollama_url, 'ollama_model': ollama_model,
-        'openai_url': openai_url, 'openai_model': openai_model, 'openai_key': openai_key,
-        'gemini_key': gemini_key, 'gemini_model': gemini_model,
-        'mistral_key': mistral_key, 'mistral_model': mistral_model,
+        'ollama_url': ollama_url,
+        'ollama_model': ollama_model,
+        'openai_url': openai_url,
+        'openai_model': openai_model,
+        'openai_key': openai_key,
+        'gemini_key': gemini_key,
+        'gemini_model': gemini_model,
+        'mistral_key': mistral_key,
+        'mistral_model': mistral_model,
     }
     ai_name = get_ai_playlist_name(
         creative_prompt_template,
@@ -91,44 +122,74 @@ def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
     return original_name
 
 
-
 def _perform_single_clustering_iteration(
-    run_idx, item_ids_for_subset,
-    clustering_method, num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges,
-    spectral_params_ranges, pca_params_ranges, active_mood_labels,
-    max_songs_per_cluster, log_prefix,
-    elite_solutions_params_list, exploitation_probability, mutation_config,
-    score_weights, enable_clustering_embeddings):
+    run_idx,
+    item_ids_for_subset,
+    clustering_method,
+    num_clusters_min_max,
+    dbscan_params_ranges,
+    gmm_params_ranges,
+    spectral_params_ranges,
+    pca_params_ranges,
+    active_mood_labels,
+    max_songs_per_cluster,
+    log_prefix,
+    elite_solutions_params_list,
+    exploitation_probability,
+    mutation_config,
+    score_weights,
+    enable_clustering_embeddings,
+):
     try:
         from flask_app import app
 
         if not item_ids_for_subset:
-            logger.warning(f"{log_prefix} Iteration {run_idx}: Received empty item ID subset. Skipping.")
+            logger.warning(
+                f"{log_prefix} Iteration {run_idx}: Received empty item ID subset. Skipping."
+            )
             return {"fitness_score": -1.0}
 
         with app.app_context():
             valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
-                item_ids_for_subset, active_mood_labels, enable_clustering_embeddings, log_prefix, run_idx
+                item_ids_for_subset,
+                active_mood_labels,
+                enable_clustering_embeddings,
+                log_prefix,
+                run_idx,
             )
         if valid_tracks is None:
-             return {"fitness_score": -1.0}
+            return {"fitness_score": -1.0}
 
-        data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, enable_clustering_embeddings)
+        data_to_cluster, scaler = _prepare_and_scale_data(
+            X_feat_orig, X_embed_raw, enable_clustering_embeddings
+        )
         if data_to_cluster is None:
-            logger.error(f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed.")
+            logger.error(
+                f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed."
+            )
             return {"fitness_score": -1.0}
 
         params = _generate_evolutionary_parameters(
-            elite_solutions_params_list, exploitation_probability, mutation_config,
-            clustering_method, data_to_cluster, pca_params_ranges,
-            num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges, spectral_params_ranges,
-            log_prefix, run_idx
+            elite_solutions_params_list,
+            exploitation_probability,
+            mutation_config,
+            clustering_method,
+            data_to_cluster,
+            pca_params_ranges,
+            num_clusters_min_max,
+            dbscan_params_ranges,
+            gmm_params_ranges,
+            spectral_params_ranges,
+            log_prefix,
+            run_idx,
         )
 
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
             if USE_GPU_CLUSTERING and GPU_CLUSTERING_AVAILABLE:
-                pca_model = get_pca_model(n_components=params['pca_config']['components'], use_gpu=True)
+                pca_model = get_pca_model(
+                    n_components=params['pca_config']['components'], use_gpu=True
+                )
             else:
                 pca_model = PCA(n_components=params['pca_config']['components'])
 
@@ -142,9 +203,21 @@ def _perform_single_clustering_iteration(
             return {"fitness_score": -1.0}
 
         return _format_and_score_iteration_result(
-            labels, valid_tracks, X_feat_orig, data_after_pca,
-            cluster_centers_map, model, pca_model, scaler, active_mood_labels,
-            params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix
+            labels,
+            valid_tracks,
+            X_feat_orig,
+            data_after_pca,
+            cluster_centers_map,
+            model,
+            pca_model,
+            scaler,
+            active_mood_labels,
+            params,
+            max_songs_per_cluster,
+            run_idx,
+            enable_clustering_embeddings,
+            score_weights,
+            log_prefix,
         )
 
     except Exception:
@@ -153,8 +226,9 @@ def _perform_single_clustering_iteration(
 
 
 def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_prefix, run_idx):
-
-    logger.info(f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}")
+    logger.info(
+        f"{log_prefix} Iteration {run_idx}: Fetching data for {len(item_ids)} tracks. Use embeddings: {use_embeddings}"
+    )
     rows = get_tracks_by_ids(item_ids) if use_embeddings else get_score_data_by_ids(item_ids)
     valid_tracks, X_feat_orig_list, X_embed_raw_list = [], [], []
     for row_data in (dict(r) for r in rows if r):
@@ -163,7 +237,9 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
             if use_embeddings:
                 embedding_vec = row_data.get('embedding_vector')
                 if embedding_vec is None or embedding_vec.size == 0:
-                    logger.warning(f"Skipping track {row_data.get('item_id')} due to missing embedding.")
+                    logger.warning(
+                        f"Skipping track {row_data.get('item_id')} due to missing embedding."
+                    )
                     continue
                 X_embed_raw_list.append(embedding_vec)
             X_feat_orig_list.append(feature_vec)
@@ -173,7 +249,12 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
     if not valid_tracks:
         logger.error(f"{log_prefix} Iteration {run_idx}: No valid tracks could be processed.")
         return None, None, None
-    return valid_tracks, np.array(X_feat_orig_list), np.array(X_embed_raw_list) if use_embeddings else None
+    return (
+        valid_tracks,
+        np.array(X_feat_orig_list),
+        np.array(X_embed_raw_list) if use_embeddings else None,
+    )
+
 
 def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
     data_source = X_embed if use_embeddings else X_feat
@@ -195,13 +276,17 @@ def _mutate_param(value, min_val, max_val, delta, is_float=False):
     new_value = np.clip(new_value, min_val, max_val)
     return int(new_value) if not is_float else new_value
 
+
 def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, method, data, *args):
     if elites and random.random() < exploitation_prob:
         chosen_elite = random.choice(elites)
         return _mutate_parameters(chosen_elite, mutation_cfg, method, data, *args)
     return _generate_random_parameters(method, data, *args)
 
-def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
+
+def _generate_random_parameters(
+    method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args
+):
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
@@ -216,8 +301,10 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
     if method == 'kmeans':
         upper_k = min(num_clust_ranges[1], max_k)
         lower_k = min(num_clust_ranges[0], upper_k)
-        if lower_k < 2 and upper_k >= 2: lower_k = 2
-        if upper_k < lower_k: upper_k = lower_k
+        if lower_k < 2 and upper_k >= 2:
+            lower_k = 2
+        if upper_k < lower_k:
+            upper_k = lower_k
         k = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
         method_params = {"n_clusters": k}
 
@@ -229,22 +316,41 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
     elif method == 'gmm':
         upper_k = min(gmm_ranges['n_components_max'], max_k)
         lower_k = min(gmm_ranges['n_components_min'], upper_k)
-        if lower_k < 2 and upper_k >= 2: lower_k = 2
-        if upper_k < lower_k: upper_k = lower_k
+        if lower_k < 2 and upper_k >= 2:
+            lower_k = 2
+        if upper_k < lower_k:
+            upper_k = lower_k
         n_comp = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
         method_params = {"n_components": n_comp}
 
     elif method == 'spectral':
         upper_k = min(spec_ranges['n_clusters_max'], data.shape[0] - 1)
         lower_k = spec_ranges['n_clusters_min']
-        if lower_k < 2: lower_k = 2
-        if upper_k < lower_k: upper_k = lower_k
+        if lower_k < 2:
+            lower_k = 2
+        if upper_k < lower_k:
+            upper_k = lower_k
         n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
         method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
 
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
+    return {
+        "pca_config": pca_config,
+        "clustering_method_config": {"method": method, "params": method_params},
+    }
 
-def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
+
+def _mutate_parameters(
+    elite_params,
+    mutation_cfg,
+    method,
+    data,
+    pca_ranges,
+    num_clust_ranges,
+    db_ranges,
+    gmm_ranges,
+    spec_ranges,
+    *args,
+):
     elite_pca_cfg = elite_params['pca_config']
     elite_method_cfg = elite_params['clustering_method_config']
 
@@ -252,7 +358,9 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
         min_pca = max_pca
-    mutated_pca_comps = _mutate_param(elite_pca_cfg.get('components', 0), min_pca, max_pca, mutation_cfg.get('int_abs_delta', 2))
+    mutated_pca_comps = _mutate_param(
+        elite_pca_cfg.get('components', 0), min_pca, max_pca, mutation_cfg.get('int_abs_delta', 2)
+    )
     pca_config = {"enabled": mutated_pca_comps > 0, "components": mutated_pca_comps}
 
     max_k = data.shape[0]
@@ -261,28 +369,63 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
     if method == 'kmeans':
         upper_k = min(num_clust_ranges[1], max_k)
         lower_k = min(num_clust_ranges[0], upper_k)
-        k = _mutate_param(elite_method_cfg['params']['n_clusters'], lower_k, upper_k, mutation_cfg.get('int_abs_delta', 2))
+        k = _mutate_param(
+            elite_method_cfg['params']['n_clusters'],
+            lower_k,
+            upper_k,
+            mutation_cfg.get('int_abs_delta', 2),
+        )
         method_params = {"n_clusters": k}
     elif method == 'dbscan':
-        mutated_eps = _mutate_param(elite_method_cfg['params']['eps'], db_ranges['eps_min'], db_ranges['eps_max'], mutation_cfg.get('float_abs_delta', 0.1), is_float=True)
-        mutated_min_samples = _mutate_param(elite_method_cfg['params']['min_samples'], db_ranges['samples_min'], db_ranges['samples_max'], mutation_cfg.get('int_abs_delta', 2))
+        mutated_eps = _mutate_param(
+            elite_method_cfg['params']['eps'],
+            db_ranges['eps_min'],
+            db_ranges['eps_max'],
+            mutation_cfg.get('float_abs_delta', 0.1),
+            is_float=True,
+        )
+        mutated_min_samples = _mutate_param(
+            elite_method_cfg['params']['min_samples'],
+            db_ranges['samples_min'],
+            db_ranges['samples_max'],
+            mutation_cfg.get('int_abs_delta', 2),
+        )
         method_params = {"eps": mutated_eps, "min_samples": mutated_min_samples}
     elif method == 'gmm':
         upper_k = min(gmm_ranges['n_components_max'], max_k)
         lower_k = min(gmm_ranges['n_components_min'], upper_k)
-        n_comp = _mutate_param(elite_method_cfg['params']['n_components'], lower_k, upper_k, mutation_cfg.get('int_abs_delta', 2))
+        n_comp = _mutate_param(
+            elite_method_cfg['params']['n_components'],
+            lower_k,
+            upper_k,
+            mutation_cfg.get('int_abs_delta', 2),
+        )
         method_params = {"n_components": n_comp}
     elif method == 'spectral':
         upper_k = min(spec_ranges['n_clusters_max'], max_k - 1)
         lower_k = spec_ranges['n_clusters_min']
-        if lower_k < 2: lower_k = 2
-        if upper_k < lower_k: upper_k = lower_k
-        n_clust = _mutate_param(elite_method_cfg['params']['n_clusters'], lower_k, upper_k, mutation_cfg.get('int_abs_delta', 2))
-        elite_random_state = elite_method_cfg['params'].get("random_state", random.randint(0, 10000))
-        mutated_random_state = _mutate_param(elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100))
+        if lower_k < 2:
+            lower_k = 2
+        if upper_k < lower_k:
+            upper_k = lower_k
+        n_clust = _mutate_param(
+            elite_method_cfg['params']['n_clusters'],
+            lower_k,
+            upper_k,
+            mutation_cfg.get('int_abs_delta', 2),
+        )
+        elite_random_state = elite_method_cfg['params'].get(
+            "random_state", random.randint(0, 10000)
+        )
+        mutated_random_state = _mutate_param(
+            elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100)
+        )
         method_params = {"n_clusters": n_clust, "random_state": mutated_random_state}
 
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
+    return {
+        "pca_config": pca_config,
+        "clustering_method_config": {"method": method, "params": method_params},
+    }
 
 
 def _apply_clustering_model(data, method_config, log_prefix, run_idx):
@@ -323,7 +466,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                     init_params='k-means++',
                     n_init=10,
                     random_state=None,
-                    reg_covar=1e-4
+                    reg_covar=1e-4,
                 )
             elif method == 'spectral':
                 model = SpectralClustering(
@@ -333,7 +476,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
                     n_neighbors=SPECTRAL_N_NEIGHBORS,
                     random_state=params.get("random_state"),
                     n_init=10,
-                    verbose=False
+                    verbose=False,
                 )
             else:
                 raise ValueError(f"Unsupported clustering method: {method}")
@@ -357,8 +500,12 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
         return labels, centers, model
 
     except Exception:
-        logger.error(f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}", exc_info=True)
+        logger.error(
+            f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}",
+            exc_info=True,
+        )
         return None, None, None
+
 
 def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
     cluster_indices = np.where(labels == label_id)[0]
@@ -371,16 +518,30 @@ def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
 
 
 def _format_and_score_iteration_result(
-    labels, valid_tracks, X_feat_orig, data_for_metrics,
-    centers, model, pca, scaler, active_moods,
-    params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix):
+    labels,
+    valid_tracks,
+    X_feat_orig,
+    data_for_metrics,
+    centers,
+    model,
+    pca,
+    scaler,
+    active_moods,
+    params,
+    max_songs_per_cluster,
+    run_idx,
+    use_embeddings,
+    score_weights,
+    log_prefix,
+):
     if labels is None:
         return {"fitness_score": -1.0}
 
     raw_distances = np.full(len(valid_tracks), np.inf)
     if len(set(labels) - {-1}) > 0:
         for label_id in set(labels):
-            if label_id == -1: continue
+            if label_id == -1:
+                continue
             indices = np.where(labels == label_id)[0]
             if len(indices) > 0 and label_id in centers:
                 cluster_center = centers[label_id]
@@ -388,17 +549,29 @@ def _format_and_score_iteration_result(
                 distances = np.linalg.norm(points - cluster_center, axis=1)
                 raw_distances[indices] = distances
 
-    max_dist_val = raw_distances[raw_distances != np.inf].max() if np.any(raw_distances != np.inf) else 1.0
-    if max_dist_val == 0: max_dist_val = 1.0
+    max_dist_val = (
+        raw_distances[raw_distances != np.inf].max() if np.any(raw_distances != np.inf) else 1.0
+    )
+    if max_dist_val == 0:
+        max_dist_val = 1.0
     normalized_distances = raw_distances / max_dist_val
 
-    track_info_list = [{"row": valid_tracks[i], "label": labels[i], "distance": normalized_distances[i]} for i in range(len(valid_tracks))]
+    track_info_list = [
+        {"row": valid_tracks[i], "label": labels[i], "distance": normalized_distances[i]}
+        for i in range(len(valid_tracks))
+    ]
 
     filtered_clusters = defaultdict(list)
     for cid in set(labels):
-        if cid == -1: continue
-        cluster_tracks_info = [t_info for t_info in track_info_list if t_info["label"] == cid and t_info["distance"] <= MAX_DISTANCE]
-        if not cluster_tracks_info: continue
+        if cid == -1:
+            continue
+        cluster_tracks_info = [
+            t_info
+            for t_info in track_info_list
+            if t_info["label"] == cid and t_info["distance"] <= MAX_DISTANCE
+        ]
+        if not cluster_tracks_info:
+            continue
 
         cluster_tracks_info.sort(key=lambda x: x["distance"])
         count_per_artist = defaultdict(int)
@@ -416,28 +589,44 @@ def _format_and_score_iteration_result(
                 selected_tracks_for_playlist.append(t_item_info)
                 count_per_artist[author_norm] += 1
 
-            if max_songs_per_cluster > 0 and len(selected_tracks_for_playlist) >= max_songs_per_cluster:
+            if (
+                max_songs_per_cluster > 0
+                and len(selected_tracks_for_playlist) >= max_songs_per_cluster
+            ):
                 break
 
         for t_item_info_final in selected_tracks_for_playlist:
-            item_id_val, title_val, author_val = t_item_info_final["row"]["item_id"], t_item_info_final["row"]["title"], t_item_info_final["row"]["author"]
+            item_id_val, title_val, author_val = (
+                t_item_info_final["row"]["item_id"],
+                t_item_info_final["row"]["title"],
+                t_item_info_final["row"]["author"],
+            )
             filtered_clusters[cid].append((item_id_val, title_val, author_val))
 
     named_playlists, playlist_centroids = {}, {}
     playlist_to_centroid_vector_map = {}
     unique_predominant_mood_scores = {}
     unique_predominant_other_feature_scores = {}
-    item_id_to_song_index_map = {track_data['item_id']: i for i, track_data in enumerate(valid_tracks)}
+    item_id_to_song_index_map = {
+        track_data['item_id']: i for i, track_data in enumerate(valid_tracks)
+    }
 
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
             center_vec = centers[label_id]
             if use_embeddings:
-                feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig)
-                if feature_centroid_vec is None: continue
-                name, centroid_details = _name_cluster(feature_centroid_vec, None, False, active_moods, None)
+                feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(
+                    label_id, labels, X_feat_orig
+                )
+                if feature_centroid_vec is None:
+                    continue
+                name, centroid_details = _name_cluster(
+                    feature_centroid_vec, None, False, active_moods, None
+                )
             else:
-                name, centroid_details = _name_cluster(center_vec, pca, params['pca_config']['enabled'], active_moods, scaler)
+                name, centroid_details = _name_cluster(
+                    center_vec, pca, params['pca_config']['enabled'], active_moods, scaler
+                )
 
             temp_name, suffix = name, 1
             while temp_name in named_playlists:
@@ -449,34 +638,74 @@ def _format_and_score_iteration_result(
             playlist_to_centroid_vector_map[temp_name] = center_vec
 
             if centroid_details and any(mood in active_moods for mood in centroid_details.keys()):
-                predominant_mood_key = max((k for k in centroid_details if k in MOOD_LABELS), key=centroid_details.get, default=None)
+                predominant_mood_key = max(
+                    (k for k in centroid_details if k in MOOD_LABELS),
+                    key=centroid_details.get,
+                    default=None,
+                )
                 if predominant_mood_key:
                     current_mood_score = centroid_details.get(predominant_mood_key, 0.0)
-                    unique_predominant_mood_scores[predominant_mood_key] = max(unique_predominant_mood_scores.get(predominant_mood_key, 0.0), current_mood_score)
+                    unique_predominant_mood_scores[predominant_mood_key] = max(
+                        unique_predominant_mood_scores.get(predominant_mood_key, 0.0),
+                        current_mood_score,
+                    )
 
-            centroid_other_features = {lk: centroid_details.get(lk, 0.0) for lk in OTHER_FEATURE_LABELS if lk in centroid_details}
+            centroid_other_features = {
+                lk: centroid_details.get(lk, 0.0)
+                for lk in OTHER_FEATURE_LABELS
+                if lk in centroid_details
+            }
             if centroid_other_features:
-                predominant_other_key = max(centroid_other_features, key=centroid_other_features.get, default=None)
-                if predominant_other_key and centroid_other_features[predominant_other_key] > OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
-                     unique_predominant_other_feature_scores[predominant_other_key] = max(unique_predominant_other_feature_scores.get(predominant_other_key, 0.0), centroid_other_features[predominant_other_key])
+                predominant_other_key = max(
+                    centroid_other_features, key=centroid_other_features.get, default=None
+                )
+                if (
+                    predominant_other_key
+                    and centroid_other_features[predominant_other_key]
+                    > OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY
+                ):
+                    unique_predominant_other_feature_scores[predominant_other_key] = max(
+                        unique_predominant_other_feature_scores.get(predominant_other_key, 0.0),
+                        centroid_other_features[predominant_other_key],
+                    )
 
-    metrics = {"silhouette": 0.0, "davies_bouldin": 0.0, "calinski_harabasz": 0.0, "mood_diversity": 0.0, "mood_purity": 0.0, "other_feature_diversity": 0.0, "other_feature_purity": 0.0}
+    metrics = {
+        "silhouette": 0.0,
+        "davies_bouldin": 0.0,
+        "calinski_harabasz": 0.0,
+        "mood_diversity": 0.0,
+        "mood_purity": 0.0,
+        "other_feature_diversity": 0.0,
+        "other_feature_purity": 0.0,
+    }
     num_clusters = len(named_playlists)
 
     if num_clusters >= 2 and num_clusters < data_for_metrics.shape[0]:
         if score_weights.get('silhouette', 0) > 0:
-            try: metrics['silhouette'] = (silhouette_score(data_for_metrics, labels) + 1) / 2.0
-            except ValueError: pass
+            try:
+                metrics['silhouette'] = (silhouette_score(data_for_metrics, labels) + 1) / 2.0
+            except ValueError:
+                pass
         if score_weights.get('davies_bouldin', 0) > 0:
-            try: metrics['davies_bouldin'] = 1.0 / (1.0 + davies_bouldin_score(data_for_metrics, labels))
-            except ValueError: pass
+            try:
+                metrics['davies_bouldin'] = 1.0 / (
+                    1.0 + davies_bouldin_score(data_for_metrics, labels)
+                )
+            except ValueError:
+                pass
         if score_weights.get('calinski_harabasz', 0) > 0:
-            try: metrics['calinski_harabasz'] = 1.0 - np.exp(-calinski_harabasz_score(data_for_metrics, labels) / 500.0)
-            except ValueError: pass
+            try:
+                metrics['calinski_harabasz'] = 1.0 - np.exp(
+                    -calinski_harabasz_score(data_for_metrics, labels) / 500.0
+                )
+            except ValueError:
+                pass
 
     raw_mood_diversity_score = sum(unique_predominant_mood_scores.values())
     ln_mood_diversity = np.log1p(raw_mood_diversity_score)
-    diversity_stats = LN_MOOD_DIVERSITY_EMBEDING_STATS if use_embeddings else LN_MOOD_DIVERSITY_STATS
+    diversity_stats = (
+        LN_MOOD_DIVERSITY_EMBEDING_STATS if use_embeddings else LN_MOOD_DIVERSITY_STATS
+    )
     mean_div, sd_div = diversity_stats.get("mean"), diversity_stats.get("sd")
     if mean_div is not None and sd_div is not None and sd_div > 1e-9:
         metrics['mood_diversity'] = (ln_mood_diversity - mean_div) / sd_div
@@ -492,11 +721,19 @@ def _format_and_score_iteration_result(
     if named_playlists:
         for name, songs in named_playlists.items():
             centroid_data = playlist_centroids.get(name)
-            if not centroid_data or not songs: continue
+            if not centroid_data or not songs:
+                continue
 
-            sorted_moods = sorted([(m,s) for m,s in centroid_data.items() if m in MOOD_LABELS], key=lambda item: item[1], reverse=True)
-            top_moods = [m for m, s in sorted_moods[:TOP_K_MOODS_FOR_PURITY_CALCULATION] if s > 0.01]
-            if not top_moods: continue
+            sorted_moods = sorted(
+                [(m, s) for m, s in centroid_data.items() if m in MOOD_LABELS],
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            top_moods = [
+                m for m, s in sorted_moods[:TOP_K_MOODS_FOR_PURITY_CALCULATION] if s > 0.01
+            ]
+            if not top_moods:
+                continue
 
             song_purity_scores = []
             for item_id, _, _ in songs:
@@ -529,13 +766,19 @@ def _format_and_score_iteration_result(
     if named_playlists:
         for name, songs in named_playlists.items():
             centroid_data = playlist_centroids.get(name)
-            if not centroid_data or not songs: continue
+            if not centroid_data or not songs:
+                continue
 
             other_features = {k: v for k, v in centroid_data.items() if k in OTHER_FEATURE_LABELS}
-            if not other_features: continue
+            if not other_features:
+                continue
 
             predominant_other = max(other_features, key=other_features.get, default=None)
-            if not predominant_other or other_features[predominant_other] < OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
+            if (
+                not predominant_other
+                or other_features[predominant_other]
+                < OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY
+            ):
                 continue
 
             try:
@@ -588,9 +831,17 @@ def _format_and_score_iteration_result(
         "playlist_centroids": playlist_centroids,
         "playlist_to_centroid_vector_map": playlist_to_centroid_vector_map,
         "parameters": {**params, "max_songs_per_cluster": max_songs_per_cluster, "run_id": run_idx},
-        "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()} if scaler else None,
-        "pca_model_details": {"components": pca.components_.tolist(), "variance": pca.explained_variance_ratio_.tolist()} if pca else None
+        "scaler_details": {"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}
+        if scaler
+        else None,
+        "pca_model_details": {
+            "components": pca.components_.tolist(),
+            "variance": pca.explained_variance_ratio_.tolist(),
+        }
+        if pca
+        else None,
     }
+
 
 def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
     TOP_MOODS_IN_NAME = 3
@@ -612,7 +863,11 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 
     if len(mood_values) > 0 and np.sum(mood_values) > 0:
         top_mood_indices = np.argsort(mood_values)[::-1][:TOP_MOODS_IN_NAME]
-        mood_names = [mood_labels[i].title() for i in top_mood_indices if i < len(mood_labels) and mood_values[i] > 0.01]
+        mood_names = [
+            mood_labels[i].title()
+            for i in top_mood_indices
+            if i < len(mood_labels) and mood_values[i] > 0.01
+        ]
         mood_part = "_".join(mood_names) if mood_names else "Mixed"
     else:
         mood_part = "Mixed"
@@ -634,11 +889,18 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
 
         if other_feature_scores_dict:
             prominent_features = sorted(
-                [(feature, score) for feature, score in other_feature_scores_dict.items() if score >= OTHER_FEATURE_THRESHOLD_FOR_NAME],
+                [
+                    (feature, score)
+                    for feature, score in other_feature_scores_dict.items()
+                    if score >= OTHER_FEATURE_THRESHOLD_FOR_NAME
+                ],
                 key=lambda item: item[1],
-                reverse=True
+                reverse=True,
             )
-            features_to_add = [feature.title() for feature, score in prominent_features[:MAX_OTHER_FEATURES_IN_NAME]]
+            features_to_add = [
+                feature.title()
+                for feature, score in prominent_features[:MAX_OTHER_FEATURES_IN_NAME]
+            ]
             if features_to_add:
                 appended_other_features_str = "_" + "_".join(features_to_add)
 
@@ -661,17 +923,22 @@ def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
             if task_info and task_info.get('status') in [TASK_STATUS_SUCCESS, JobStatus.FINISHED]:
                 try:
                     details = json.loads(task_info.get('details'))
-                    batch_result = details.get('full_best_result_from_batch') or details.get('full_result')
+                    batch_result = details.get('full_best_result_from_batch') or details.get(
+                        'full_result'
+                    )
                     if batch_result:
                         return {
                             "status": "SUCCESS",
                             "best_result_from_batch": batch_result,
-                            "iterations_completed_in_batch": details.get("iterations_completed_in_batch", 0),
-                            "final_subset_track_ids": details.get("final_subset_track_ids", [])
+                            "iterations_completed_in_batch": details.get(
+                                "iterations_completed_in_batch", 0
+                            ),
+                            "final_subset_track_ids": details.get("final_subset_track_ids", []),
                         }
                 except (json.JSONDecodeError, TypeError):
                     logger.warning(f"Could not parse result from DB for job {job_id}")
     return None
+
 
 def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
     new_subset, new_ids = [], set()
@@ -698,13 +965,22 @@ def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, perc
             if candidates:
                 added_tracks = random.sample(candidates, min(needed, len(candidates)))
                 new_subset.extend(added_tracks)
-                for t in added_tracks: new_ids.add(t['item_id'])
+                for t in added_tracks:
+                    new_ids.add(t['item_id'])
     random.shuffle(new_subset)
     return new_subset
 
+
 def _get_track_primary_genre(track_data):
     if 'mood_vector' in track_data and track_data['mood_vector']:
-        mood_scores = {p.split(':')[0]: float(p.split(':')[1]) for p in track_data['mood_vector'].split(',') if ':' in p}
-        return max((g for g in STRATIFIED_GENRES if g in mood_scores), key=mood_scores.get, default='__other__')
+        mood_scores = {
+            p.split(':')[0]: float(p.split(':')[1])
+            for p in track_data['mood_vector'].split(',')
+            if ':' in p
+        }
+        return max(
+            (g for g in STRATIFIED_GENRES if g in mood_scores),
+            key=mood_scores.get,
+            default='__other__',
+        )
     return '__other__'
-

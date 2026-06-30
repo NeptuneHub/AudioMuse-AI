@@ -17,7 +17,8 @@ def validate_outbound_url(url):
         return False, 'URL host is required'
     try:
         addrinfo = socket.getaddrinfo(
-            host, parsed.port or (443 if parsed.scheme == 'https' else 80),
+            host,
+            parsed.port or (443 if parsed.scheme == 'https' else 80),
             type=socket.SOCK_STREAM,
         )
     except Exception:

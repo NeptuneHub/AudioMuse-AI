@@ -10,6 +10,7 @@ from flask import Flask
 def _ensure_flasgger():
     try:
         import flasgger  # noqa: F401
+
         return
     except ImportError:
         pass
@@ -18,6 +19,7 @@ def _ensure_flasgger():
     def swag_from(*a, **k):
         def deco(f):
             return f
+
         return deco
 
     fake.swag_from = swag_from
@@ -29,6 +31,7 @@ def _ensure_flasgger():
 def app_chat_mod():
     _ensure_flasgger()
     import app_chat
+
     return app_chat
 
 
@@ -72,9 +75,14 @@ class TestChatEndpointUrlAcceptance:
         planner_calls = []
         stubs = _install_fakes(planner_calls)
         with patch.dict(sys.modules, stubs):
-            resp = client.post('/api/chatPlaylist', json={
-                'userInput': 'songs', 'ai_provider': 'OLLAMA',
-                'ollama_server_url': 'http://192.168.1.10:11434'})
+            resp = client.post(
+                '/api/chatPlaylist',
+                json={
+                    'userInput': 'songs',
+                    'ai_provider': 'OLLAMA',
+                    'ollama_server_url': 'http://192.168.1.10:11434',
+                },
+            )
         assert resp.status_code != 400
         assert planner_calls
 
@@ -82,8 +90,9 @@ class TestChatEndpointUrlAcceptance:
         planner_calls = []
         stubs = _install_fakes(planner_calls)
         with patch.dict(sys.modules, stubs):
-            resp = client.post('/api/chatPlaylist', json={
-                'userInput': 'songs', 'ai_provider': 'OLLAMA'})
+            resp = client.post(
+                '/api/chatPlaylist', json={'userInput': 'songs', 'ai_provider': 'OLLAMA'}
+            )
         assert resp.status_code != 400
         assert planner_calls
 
@@ -93,13 +102,16 @@ class TestChatLogMasking:
         planner_calls = []
         stubs = _install_fakes(planner_calls)
         with patch.dict(sys.modules, stubs), caplog.at_level(logging.DEBUG, logger='app_chat'):
-            client.post('/api/chatPlaylist', json={
-                'userInput': 'songs',
-                'ai_provider': 'NONE',
-                'gemini_api_key': 'gm-SECRET-123',
-                'openai_api_key': 'oa-SECRET-456',
-                'mistral_api_key': 'ms-SECRET-789',
-            })
+            client.post(
+                '/api/chatPlaylist',
+                json={
+                    'userInput': 'songs',
+                    'ai_provider': 'NONE',
+                    'gemini_api_key': 'gm-SECRET-123',
+                    'openai_api_key': 'oa-SECRET-456',
+                    'mistral_api_key': 'ms-SECRET-789',
+                },
+            )
         debug_text = "\n".join(r.getMessage() for r in caplog.records)
         assert 'API-KEY' in debug_text
         assert 'gm-SECRET-123' not in debug_text

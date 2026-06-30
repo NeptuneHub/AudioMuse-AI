@@ -117,6 +117,7 @@ def _score_count(conn):
 class TestScoreEndpointRealDb:
     def test_seeded_id_returns_row(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'track-1'})
@@ -128,6 +129,7 @@ class TestScoreEndpointRealDb:
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'does-not-exist'})
@@ -135,6 +137,7 @@ class TestScoreEndpointRealDb:
 
     def test_injection_id_is_safe(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': _INJECTION_ID})
@@ -147,6 +150,7 @@ class TestScoreEndpointRealDb:
 class TestEmbeddingEndpointRealDb:
     def test_seeded_id_returns_embedding(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'track-1'})
@@ -158,6 +162,7 @@ class TestEmbeddingEndpointRealDb:
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'does-not-exist'})
@@ -168,6 +173,7 @@ class TestEmbeddingEndpointRealDb:
 class TestWaveformLookupRealDb:
     def _client(self):
         import app_waveform
+
         app = Flask(__name__)
         app.register_blueprint(app_waveform.waveform_bp)
         app.config['TESTING'] = True

@@ -49,34 +49,40 @@ class TestAvoidTripleAdjacent:
 def _make_candidates():
     candidates = []
     for i in range(12):
-        candidates.append({
-            'item_id': f's{i:02d}',
-            'vector': np.array([float(i), 0.0, 0.0, 0.0], dtype=np.float32),
-            'dist_anchor': round(i * 0.1, 1),
-            'title': f'Title {i}',
-            'author': f'art{i % 6}',
-        })
+        candidates.append(
+            {
+                'item_id': f's{i:02d}',
+                'vector': np.array([float(i), 0.0, 0.0, 0.0], dtype=np.float32),
+                'dist_anchor': round(i * 0.1, 1),
+                'title': f'Title {i}',
+                'author': f'art{i % 6}',
+            }
+        )
     return candidates
 
 
 def _make_candidates_with_duplicate_pair():
     candidates = []
     for i in range(10):
-        candidates.append({
-            'item_id': f's{i:02d}',
-            'vector': np.array([float(i), 0.0, 0.0, 0.0], dtype=np.float32),
-            'dist_anchor': round(i * 0.1, 1),
-            'title': f'Track {i}',
-            'author': f'solo{i}',
-        })
+        candidates.append(
+            {
+                'item_id': f's{i:02d}',
+                'vector': np.array([float(i), 0.0, 0.0, 0.0], dtype=np.float32),
+                'dist_anchor': round(i * 0.1, 1),
+                'title': f'Track {i}',
+                'author': f'solo{i}',
+            }
+        )
     for j, item_id in enumerate(['dup1', 'dup2']):
-        candidates.append({
-            'item_id': item_id,
-            'vector': np.array([float(10 + j), 0.0, 0.0, 0.0], dtype=np.float32),
-            'dist_anchor': round((10 + j) * 0.1, 1),
-            'title': 'Same Song',
-            'author': 'dupart',
-        })
+        candidates.append(
+            {
+                'item_id': item_id,
+                'vector': np.array([float(10 + j), 0.0, 0.0, 0.0], dtype=np.float32),
+                'dist_anchor': round((10 + j) * 0.1, 1),
+                'title': 'Same Song',
+                'author': 'dupart',
+            }
+        )
     return candidates
 
 

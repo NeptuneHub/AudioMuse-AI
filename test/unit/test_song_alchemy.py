@@ -12,23 +12,24 @@ from tasks import song_alchemy
 def _score_side_effect(details_by_id):
     def _fn(ids):
         return [details_by_id[i] for i in ids if i in details_by_id]
+
     return _fn
 
 
 class TestSongAlchemy:
-
     @pytest.fixture
     def mock_dependencies(self):
-        with patch('tasks.song_alchemy.get_vector_by_id') as mock_get_vec, \
-             patch('tasks.song_alchemy.multi_query_ids') as mock_multi_query, \
-             patch('tasks.song_alchemy.find_nearest_neighbors_by_id') as mock_find_nn_id, \
-             patch('tasks.song_alchemy.get_score_data_by_ids') as mock_get_score, \
-             patch('tasks.song_alchemy._filter_by_distance') as mock_filter_dist, \
-             patch('app_helper.get_db') as mock_get_db, \
-             patch('tasks.song_alchemy.load_map_projection') as mock_load_proj, \
-             patch('tasks.song_alchemy._get_artist_gmm_vectors_and_weights') as mock_get_gmm, \
-             patch('tasks.song_alchemy.config') as mock_config:
-
+        with (
+            patch('tasks.song_alchemy.get_vector_by_id') as mock_get_vec,
+            patch('tasks.song_alchemy.multi_query_ids') as mock_multi_query,
+            patch('tasks.song_alchemy.find_nearest_neighbors_by_id') as mock_find_nn_id,
+            patch('tasks.song_alchemy.get_score_data_by_ids') as mock_get_score,
+            patch('tasks.song_alchemy._filter_by_distance') as mock_filter_dist,
+            patch('app_helper.get_db') as mock_get_db,
+            patch('tasks.song_alchemy.load_map_projection') as mock_load_proj,
+            patch('tasks.song_alchemy._get_artist_gmm_vectors_and_weights') as mock_get_gmm,
+            patch('tasks.song_alchemy.config') as mock_config,
+        ):
             mock_filter_dist.side_effect = lambda song_results, db_conn: song_results
 
             mock_config.ALCHEMY_DEFAULT_N_RESULTS = 10
@@ -50,11 +51,13 @@ class TestSongAlchemy:
                 'get_db': mock_get_db,
                 'load_map_projection': mock_load_proj,
                 'get_artist_gmm': mock_get_gmm,
-                'config': mock_config
+                'config': mock_config,
             }
 
     def test_compute_centroid_from_items_songs(self, mock_dependencies):
-        mock_dependencies['get_vector_by_id'].side_effect = lambda x: [1.0, 0.0] if x == 's1' else [0.0, 1.0]
+        mock_dependencies['get_vector_by_id'].side_effect = (
+            lambda x: [1.0, 0.0] if x == 's1' else [0.0, 1.0]
+        )
 
         items = [{'type': 'song', 'id': 's1'}, {'type': 'song', 'id': 's2'}]
         centroid = song_alchemy._compute_centroid_from_items(items)
@@ -64,7 +67,7 @@ class TestSongAlchemy:
     def test_compute_centroid_from_items_artist(self, mock_dependencies):
         mock_dependencies['get_artist_gmm'].return_value = (
             [np.array([1.0, 0.0]), np.array([3.0, 0.0])],
-            [0.5, 0.5]
+            [0.5, 0.5],
         )
 
         items = [{'type': 'artist', 'id': 'a1'}]
@@ -75,50 +78,44 @@ class TestSongAlchemy:
     def test_song_alchemy_basic_flow(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            's1': {'item_id': 's1', 'title': 'Seed', 'author': 'Seed Author'},
-            'r1': {'item_id': 'r1', 'title': 'Result 1', 'author': 'Author 1'},
-            'r2': {'item_id': 'r2', 'title': 'Result 2', 'author': 'Author 2'},
-        })
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'Seed Author'},
+                'r1': {'item_id': 'r1', 'title': 'Result 1', 'author': 'Author 1'},
+                'r2': {'item_id': 'r2', 'title': 'Result 2', 'author': 'Author 2'},
+            }
+        )
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
-        result = song_alchemy.song_alchemy(
-            add_items=[{'type': 'song', 'id': 's1'}],
-            n_results=5
-        )
+        result = song_alchemy.song_alchemy(add_items=[{'type': 'song', 'id': 's1'}], n_results=5)
 
         assert len(result['results']) == 2
         assert result['results'][0]['item_id'] in ['r1', 'r2']
         assert 'projection' in result
 
     def test_song_alchemy_subtraction(self, mock_dependencies):
-
         def get_vec(id):
-            vectors = {
-                's1': [1.0, 0.0],
-                'sub1': [0.0, 1.0],
-                'r1': [0.9, 0.1],
-                'r2': [0.1, 0.9]
-            }
+            vectors = {'s1': [1.0, 0.0], 'sub1': [0.0, 1.0], 'r1': [0.9, 0.1], 'r2': [0.1, 0.9]}
             return vectors.get(id)
 
         mock_dependencies['get_vector_by_id'].side_effect = get_vec
 
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
 
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
-            'sub1': {'item_id': 'sub1', 'title': 'Sub', 'author': 'A0'},
-            'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
-            'r2': {'item_id': 'r2', 'title': 'R2', 'author': 'A2'},
-        })
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
+                'sub1': {'item_id': 'sub1', 'title': 'Sub', 'author': 'A0'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+                'r2': {'item_id': 'r2', 'title': 'R2', 'author': 'A2'},
+            }
+        )
         mock_dependencies['load_map_projection'].return_value = (None, None)
-
 
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
             subtract_items=[{'type': 'song', 'id': 'sub1'}],
-            subtract_distance=0.5
+            subtract_distance=0.5,
         )
 
         result_ids = [r['item_id'] for r in result['results']]
@@ -142,24 +139,24 @@ class TestSongAlchemy:
         mock_dependencies['multi_query_ids'].return_value = ['r1', 'r2']
         mock_dependencies['find_nearest_neighbors_by_id'].return_value = [
             {'item_id': 'r1', 'score': 0.1},
-            {'item_id': 'r2', 'score': 0.2}
+            {'item_id': 'r2', 'score': 0.2},
         ]
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
-            'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
-            'r2': {'item_id': 'r2', 'title': 'R2', 'author': 'A2'},
-        })
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+                'r2': {'item_id': 'r2', 'title': 'R2', 'author': 'A2'},
+            }
+        )
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
         result_zero = song_alchemy.song_alchemy(
-            add_items=[{'type': 'song', 'id': 's1'}],
-            temperature=0.0
+            add_items=[{'type': 'song', 'id': 's1'}], temperature=0.0
         )
         assert len(result_zero['results']) > 0
 
         result_high = song_alchemy.song_alchemy(
-            add_items=[{'type': 'song', 'id': 's1'}],
-            temperature=10.0
+            add_items=[{'type': 'song', 'id': 's1'}], temperature=10.0
         )
         assert len(result_high['results']) > 0
 
@@ -173,8 +170,10 @@ class TestSongAlchemy:
 
     def test_get_playlist_components_uses_cell_groups(self, mock_dependencies):
         groups = [(np.array([10.0, 0.0]), 60), (np.array([0.0, 10.0]), 40)]
-        with patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0', 't1']), \
-             patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups):
+        with (
+            patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0', 't1']),
+            patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups),
+        ):
             vecs, weights = song_alchemy._get_playlist_components('pl1')
 
         assert len(vecs) == 2
@@ -182,8 +181,13 @@ class TestSongAlchemy:
 
     def test_get_playlist_components_caps_clusters_at_max(self, mock_dependencies):
         groups = [(np.array([float(i), 0.0]), 1) for i in range(40)]
-        with patch('tasks.mediaserver.get_playlist_track_ids', return_value=[f't{i}' for i in range(40)]), \
-             patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups):
+        with (
+            patch(
+                'tasks.mediaserver.get_playlist_track_ids',
+                return_value=[f't{i}' for i in range(40)],
+            ),
+            patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups),
+        ):
             vecs, weights = song_alchemy._get_playlist_components('pl1')
 
         assert len(vecs) == 10
@@ -191,8 +195,10 @@ class TestSongAlchemy:
 
     def test_get_playlist_components_coherent_returns_single(self, mock_dependencies):
         groups = [(np.array([1.0, 0.0]), 50)]
-        with patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0']), \
-             patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups):
+        with (
+            patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0']),
+            patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=groups),
+        ):
             vecs, weights = song_alchemy._get_playlist_components('pl1')
 
         assert len(vecs) == 1
@@ -207,16 +213,20 @@ class TestSongAlchemy:
             captured['n'] = len(list(ids))
             return [(np.array([1.0, 0.0]), captured['n'])]
 
-        with patch('tasks.mediaserver.get_playlist_track_ids', return_value=track_ids), \
-             patch('tasks.ivf_manager.get_cell_groups_for_items', side_effect=fake_groups):
+        with (
+            patch('tasks.mediaserver.get_playlist_track_ids', return_value=track_ids),
+            patch('tasks.ivf_manager.get_cell_groups_for_items', side_effect=fake_groups),
+        ):
             _, weights = song_alchemy._get_playlist_components('pl1')
 
         assert captured['n'] == 50
         assert np.isclose(sum(weights), 1.0)
 
     def test_get_playlist_components_no_index_match(self, mock_dependencies):
-        with patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0', 't1']), \
-             patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=[]):
+        with (
+            patch('tasks.mediaserver.get_playlist_track_ids', return_value=['t0', 't1']),
+            patch('tasks.ivf_manager.get_cell_groups_for_items', return_value=[]),
+        ):
             vecs, weights = song_alchemy._get_playlist_components('pl1')
 
         assert vecs == []
@@ -233,8 +243,10 @@ class TestSongAlchemy:
         assert kept_x == [0.0, 10.0]
 
     def test_gather_anchor_points_playlist_expands(self, mock_dependencies):
-        with patch('tasks.song_alchemy._get_playlist_components',
-                   return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.6, 0.4])):
+        with patch(
+            'tasks.song_alchemy._get_playlist_components',
+            return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.6, 0.4]),
+        ):
             points = song_alchemy._gather_anchor_points([{'type': 'playlist', 'id': 'pl1'}])
 
         assert len(points) == 2
@@ -251,18 +263,21 @@ class TestSongAlchemy:
 
         mock_dependencies['get_vector_by_id'].side_effect = get_vec
         mock_dependencies['multi_query_ids'].return_value = ['cand_a', 'cand_b', 'mid']
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            'cand_a': {'item_id': 'cand_a', 'title': 'A', 'author': 'AA'},
-            'cand_b': {'item_id': 'cand_b', 'title': 'B', 'author': 'BB'},
-            'mid': {'item_id': 'mid', 'title': 'M', 'author': 'MM'},
-        })
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'cand_a': {'item_id': 'cand_a', 'title': 'A', 'author': 'AA'},
+                'cand_b': {'item_id': 'cand_b', 'title': 'B', 'author': 'BB'},
+                'mid': {'item_id': 'mid', 'title': 'M', 'author': 'MM'},
+            }
+        )
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
-        with patch('tasks.song_alchemy._get_playlist_components',
-                   return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.5, 0.5])):
+        with patch(
+            'tasks.song_alchemy._get_playlist_components',
+            return_value=([np.array([1.0, 0.0]), np.array([0.0, 1.0])], [0.5, 0.5]),
+        ):
             result = song_alchemy.song_alchemy(
-                add_items=[{'type': 'playlist', 'id': 'pl1'}],
-                temperature=0.0
+                add_items=[{'type': 'playlist', 'id': 'pl1'}], temperature=0.0
             )
 
         ids = [r['item_id'] for r in result['results']]
@@ -272,14 +287,25 @@ class TestSongAlchemy:
 
     def test_song_alchemy_dedups_duplicate_songs(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
-        mock_dependencies['multi_query_ids'].return_value = ['dupe_a', 'dupe_b', 'unique', 'seed_clone']
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            's1': {'item_id': 's1', 'title': 'Seed Song', 'author': 'Seed Artist'},
-            'dupe_a': {'item_id': 'dupe_a', 'title': 'Same Song', 'author': 'Same Artist'},
-            'dupe_b': {'item_id': 'dupe_b', 'title': 'same song', 'author': 'SAME ARTIST'},
-            'unique': {'item_id': 'unique', 'title': 'Other', 'author': 'Other Artist'},
-            'seed_clone': {'item_id': 'seed_clone', 'title': 'Seed Song', 'author': 'Seed Artist'},
-        })
+        mock_dependencies['multi_query_ids'].return_value = [
+            'dupe_a',
+            'dupe_b',
+            'unique',
+            'seed_clone',
+        ]
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed Song', 'author': 'Seed Artist'},
+                'dupe_a': {'item_id': 'dupe_a', 'title': 'Same Song', 'author': 'Same Artist'},
+                'dupe_b': {'item_id': 'dupe_b', 'title': 'same song', 'author': 'SAME ARTIST'},
+                'unique': {'item_id': 'unique', 'title': 'Other', 'author': 'Other Artist'},
+                'seed_clone': {
+                    'item_id': 'seed_clone',
+                    'title': 'Seed Song',
+                    'author': 'Seed Artist',
+                },
+            }
+        )
         mock_dependencies['load_map_projection'].return_value = (None, None)
 
         result = song_alchemy.song_alchemy(
@@ -295,15 +321,17 @@ class TestSongAlchemy:
     def test_song_alchemy_applies_distance_filter(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]
         mock_dependencies['multi_query_ids'].return_value = ['near_dup', 'keep']
-        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect({
-            's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
-            'near_dup': {'item_id': 'near_dup', 'title': 'Near Dup', 'author': 'A1'},
-            'keep': {'item_id': 'keep', 'title': 'Keep', 'author': 'A2'},
-        })
-        mock_dependencies['load_map_projection'].return_value = (None, None)
-        mock_dependencies['filter_by_distance'].side_effect = (
-            lambda song_results, db_conn: [s for s in song_results if s['item_id'] != 'near_dup']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'Seed', 'author': 'A0'},
+                'near_dup': {'item_id': 'near_dup', 'title': 'Near Dup', 'author': 'A1'},
+                'keep': {'item_id': 'keep', 'title': 'Keep', 'author': 'A2'},
+            }
         )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+        mock_dependencies['filter_by_distance'].side_effect = lambda song_results, db_conn: [
+            s for s in song_results if s['item_id'] != 'near_dup'
+        ]
 
         result = song_alchemy.song_alchemy(
             add_items=[{'type': 'song', 'id': 's1'}],
