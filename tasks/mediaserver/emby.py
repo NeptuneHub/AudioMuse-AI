@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 EMBY_PLAYLIST_BATCH_SIZE = 100
+_TRACK_FIELDS = "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists"
 
 
 def _get_target_library_ids():
@@ -445,7 +446,7 @@ def get_tracks_from_album(album_id, user_creds=None):
 
         url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{real_track_id}"
         params = {
-            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists"
+            "Fields": _TRACK_FIELDS
         }
         try:
             r = requests.get(
@@ -477,7 +478,7 @@ def get_tracks_from_album(album_id, user_creds=None):
     params = {
         "ParentId": album_id,
         "IncludeItemTypes": "Audio",
-        "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+        "Fields": _TRACK_FIELDS,
     }
     try:
         r = requests.get(
@@ -612,7 +613,7 @@ def test_connection(user_creds=None):
         params = {
             "IncludeItemTypes": "Audio",
             "Recursive": True,
-            "Fields": "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,Album,ArtistItems,Artists",
+            "Fields": _TRACK_FIELDS,
             "StartIndex": 0,
             "Limit": 100,
         }

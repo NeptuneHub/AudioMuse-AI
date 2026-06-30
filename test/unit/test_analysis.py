@@ -132,7 +132,8 @@ class TestRunInference:
         expected_result = np.array([[0.7]])
         mock_session.run.return_value = [expected_result]
 
-        feed_dict = {'input1': np.random.rand(1, 5), 'input2': np.random.rand(1, 3)}
+        rng = np.random.default_rng(0)
+        feed_dict = {'input1': rng.random((1, 5)), 'input2': rng.random((1, 3))}
         result = run_inference(mock_session, feed_dict)
 
         assert result is not None

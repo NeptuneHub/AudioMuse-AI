@@ -266,21 +266,7 @@ def _load_new_meta_from_table(cur, session_id):
     return out
 
 
-def _run_migration_transaction(
-    cur,
-    mapping,
-    new_meta,
-    fk_embedding,
-    fk_clap_embedding,
-    fk_lyrics_embedding,
-    lyrics_exists,
-    target_type,
-    target_creds,
-    session_id,
-    selected_libraries=None,
-):
-    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
-
+def _populate_migration_map_table(cur, mapping):
     cur.execute(
         "CREATE TEMP TABLE item_id_migration_map ("
         " old_id TEXT PRIMARY KEY, "
@@ -298,11 +284,8 @@ def _run_migration_transaction(
         )
     cur.execute("ANALYZE item_id_migration_map")
 
-    cur.execute(
-        "DELETE FROM score s WHERE NOT EXISTS "
-        "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = s.item_id)"
-    )
 
+def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
     if fk_embedding:
         cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT {fk_embedding}")
     if fk_clap_embedding:
@@ -310,6 +293,26 @@ def _run_migration_transaction(
     if lyrics_exists and fk_lyrics_embedding:
         cur.execute(f"ALTER TABLE lyrics_embedding DROP CONSTRAINT {fk_lyrics_embedding}")
 
+
+def _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
+    if fk_embedding:
+        cur.execute(
+            f"ALTER TABLE embedding ADD CONSTRAINT {fk_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+    if fk_clap_embedding:
+        cur.execute(
+            f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+    if lyrics_exists and fk_lyrics_embedding:
+        cur.execute(
+            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
+            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
+        )
+
+
+def _rewrite_item_ids(cur, lyrics_exists):
     prefix = _MIG_TMP_PREFIX
     for table, alias in (
         ("score", "s"),
@@ -341,64 +344,53 @@ def _run_migration_transaction(
             (prefix,),
         )
 
-    if fk_embedding:
-        cur.execute(
-            f"ALTER TABLE embedding ADD CONSTRAINT {fk_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if fk_clap_embedding:
-        cur.execute(
-            f"ALTER TABLE clap_embedding ADD CONSTRAINT {fk_clap_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
-    if lyrics_exists and fk_lyrics_embedding:
-        cur.execute(
-            f"ALTER TABLE lyrics_embedding ADD CONSTRAINT {fk_lyrics_embedding} "
-            f"FOREIGN KEY (item_id) REFERENCES score(item_id) ON DELETE CASCADE"
-        )
 
-    if new_meta:
-        cur.execute(
-            "CREATE TEMP TABLE migration_new_meta ("
-            " new_id TEXT PRIMARY KEY, "
-            " new_path TEXT, new_title TEXT, new_artist TEXT, "
-            " new_album TEXT, new_album_artist TEXT, new_year INTEGER"
-            ") ON COMMIT DROP"
-        )
-        _metas = list(new_meta.items())
-        for i in range(0, len(_metas), 500):
-            chunk = _metas[i : i + 500]
-            placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
-            flat = []
-            for new_id, meta in chunk:
-                flat.extend(
-                    (
-                        _sanitize_text(new_id),
-                        _sanitize_text(meta.get('path')),
-                        _sanitize_text(meta.get('title')),
-                        _sanitize_text(meta.get('artist')),
-                        _sanitize_text(meta.get('album')),
-                        _sanitize_text(meta.get('album_artist')),
-                        meta.get('year'),
-                    )
+def _apply_new_meta(cur, new_meta):
+    if not new_meta:
+        return
+    cur.execute(
+        "CREATE TEMP TABLE migration_new_meta ("
+        " new_id TEXT PRIMARY KEY, "
+        " new_path TEXT, new_title TEXT, new_artist TEXT, "
+        " new_album TEXT, new_album_artist TEXT, new_year INTEGER"
+        ") ON COMMIT DROP"
+    )
+    _metas = list(new_meta.items())
+    for i in range(0, len(_metas), 500):
+        chunk = _metas[i : i + 500]
+        placeholders = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+        flat = []
+        for new_id, meta in chunk:
+            flat.extend(
+                (
+                    _sanitize_text(new_id),
+                    _sanitize_text(meta.get('path')),
+                    _sanitize_text(meta.get('title')),
+                    _sanitize_text(meta.get('artist')),
+                    _sanitize_text(meta.get('album')),
+                    _sanitize_text(meta.get('album_artist')),
+                    meta.get('year'),
                 )
-            cur.execute(
-                "INSERT INTO migration_new_meta "
-                "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
-                "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
-                flat,
             )
         cur.execute(
-            "UPDATE score s SET "
-            "  file_path    = COALESCE(n.new_path,         s.file_path), "
-            "  title        = COALESCE(n.new_title,        s.title), "
-            "  author       = COALESCE(n.new_artist,       s.author), "
-            "  album        = COALESCE(n.new_album,        s.album), "
-            "  album_artist = COALESCE(n.new_album_artist, s.album_artist), "
-            "  year         = COALESCE(n.new_year,         s.year) "
-            "FROM migration_new_meta n WHERE s.item_id = n.new_id"
+            "INSERT INTO migration_new_meta "
+            "(new_id, new_path, new_title, new_artist, new_album, new_album_artist, new_year) "
+            "VALUES " + placeholders,  # nosec B608 - %s-placeholder string only; values are bound params
+            flat,
         )
+    cur.execute(
+        "UPDATE score s SET "
+        "  file_path    = COALESCE(n.new_path,         s.file_path), "
+        "  title        = COALESCE(n.new_title,        s.title), "
+        "  author       = COALESCE(n.new_artist,       s.author), "
+        "  album        = COALESCE(n.new_album,        s.album), "
+        "  album_artist = COALESCE(n.new_album_artist, s.album_artist), "
+        "  year         = COALESCE(n.new_year,         s.year) "
+        "FROM migration_new_meta n WHERE s.item_id = n.new_id"
+    )
 
+
+def _rewrite_index_id_maps(cur, mapping):
     from tasks.index_build_helpers import rewrite_segmented_id_map
 
     _seg_base = re.compile(r"^(.*)_\d+_\d+$")
@@ -432,21 +424,54 @@ def _run_migration_transaction(
                     (base, like_pattern),
                 )
                 index_rebuild_needed.append(f"{table}:{base}")
+    return index_rebuild_needed
 
-    for ivf_table in ('ivf_cell', 'ivf_dir'):
-        cur.execute("SELECT to_regclass(%s)", (ivf_table,))
-        if cur.fetchone()[0] is not None:
-            cur.execute(f"DELETE FROM {ivf_table}")
 
-    for artist_table in (
+def _clear_index_tables(cur):
+    for table in (
+        'ivf_cell',
+        'ivf_dir',
         'artist_index_data',
         'artist_metadata_data',
         'artist_component_projection',
         'artist_mapping',
     ):
-        cur.execute("SELECT to_regclass(%s)", (artist_table,))
+        cur.execute("SELECT to_regclass(%s)", (table,))
         if cur.fetchone()[0] is not None:
-            cur.execute(f"DELETE FROM {artist_table}")
+            cur.execute(f"DELETE FROM {table}")
+
+
+def _run_migration_transaction(
+    cur,
+    mapping,
+    new_meta,
+    fk_embedding,
+    fk_clap_embedding,
+    fk_lyrics_embedding,
+    lyrics_exists,
+    target_type,
+    target_creds,
+    session_id,
+    selected_libraries=None,
+):
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADVISORY_LOCK_KEY,))
+
+    _populate_migration_map_table(cur, mapping)
+
+    cur.execute(
+        "DELETE FROM score s WHERE NOT EXISTS "
+        "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = s.item_id)"
+    )
+
+    _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
+    _rewrite_item_ids(cur, lyrics_exists)
+    _readd_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding)
+
+    _apply_new_meta(cur, new_meta)
+
+    index_rebuild_needed = _rewrite_index_id_maps(cur, mapping)
+
+    _clear_index_tables(cur)
 
     _write_provider_to_app_config(
         cur, target_type, target_creds, selected_libraries=selected_libraries

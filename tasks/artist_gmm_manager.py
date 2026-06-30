@@ -502,6 +502,56 @@ def compute_component_matches(
     return matches
 
 
+def _resolve_indexed_artist_name(query_artist):
+    if query_artist in reverse_artist_map:
+        return query_artist
+
+    from app_helper_artist import get_artist_name_by_id
+
+    resolved_name = get_artist_name_by_id(query_artist)
+    if resolved_name:
+        logger.info(f"Resolved artist ID '{query_artist}' to name '{resolved_name}'")
+        return resolved_name
+    return query_artist
+
+
+def _score_candidate_artists(labels, query_id, query_gmm):
+    scored = []
+    for idx in labels:
+        if idx == query_id:
+            continue
+        candidate_artist = artist_map.get(idx)
+        if candidate_artist is None:
+            continue
+        candidate_gmm = artist_gmm_params.get(candidate_artist)
+        if candidate_gmm is None:
+            continue
+        scored.append(
+            (gmm_soft_chamfer_distance(query_gmm, candidate_gmm), candidate_artist, candidate_gmm)
+        )
+    scored.sort(key=lambda t: t[0])
+    return scored
+
+
+def _build_similar_artist_result(
+    score, candidate_artist, candidate_gmm, query_gmm, artist_name, include_component_matches
+):
+    from app_helper_artist import get_artist_id_by_name
+
+    result = {
+        'artist': candidate_artist,
+        'artist_id': get_artist_id_by_name(candidate_artist),
+        'divergence': float(score),
+    }
+    if include_component_matches:
+        result['component_matches'] = compute_component_matches(
+            query_gmm, candidate_gmm, artist_name, candidate_artist, top_k=3
+        )
+        result['query_artist_components'] = query_gmm['n_components']
+        result['candidate_artist_components'] = candidate_gmm['n_components']
+    return result
+
+
 def find_similar_artists(
     query_artist,
     n: int = 10,
@@ -512,14 +562,7 @@ def find_similar_artists(
         logger.error("Artist index not loaded")
         raise RuntimeError("Artist similarity index not available")
 
-    artist_name = query_artist
-    if query_artist not in reverse_artist_map:
-        from app_helper_artist import get_artist_name_by_id
-
-        resolved_name = get_artist_name_by_id(query_artist)
-        if resolved_name:
-            artist_name = resolved_name
-            logger.info(f"Resolved artist ID '{query_artist}' to name '{artist_name}'")
+    artist_name = _resolve_indexed_artist_name(query_artist)
 
     if artist_name not in reverse_artist_map:
         logger.warning(f"Artist '{artist_name}' not found in index")
@@ -541,40 +584,19 @@ def find_similar_artists(
         logger.error(f"IVF query failed for artist '{artist_name}': {e}", exc_info=True)
         return []
 
-    scored = []
-    for idx in labels:
-        if idx == query_id:
-            continue
-        candidate_artist = artist_map.get(idx)
-        if candidate_artist is None:
-            continue
-        candidate_gmm = artist_gmm_params.get(candidate_artist)
-        if candidate_gmm is None:
-            continue
-        scored.append(
-            (gmm_soft_chamfer_distance(query_gmm, candidate_gmm), candidate_artist, candidate_gmm)
+    scored = _score_candidate_artists(labels, query_id, query_gmm)
+
+    return [
+        _build_similar_artist_result(
+            score,
+            candidate_artist,
+            candidate_gmm,
+            query_gmm,
+            artist_name,
+            include_component_matches,
         )
-
-    scored.sort(key=lambda t: t[0])
-
-    from app_helper_artist import get_artist_id_by_name
-
-    results = []
-    for score, candidate_artist, candidate_gmm in scored[:n]:
-        result = {
-            'artist': candidate_artist,
-            'artist_id': get_artist_id_by_name(candidate_artist),
-            'divergence': float(score),
-        }
-        if include_component_matches:
-            result['component_matches'] = compute_component_matches(
-                query_gmm, candidate_gmm, artist_name, candidate_artist, top_k=3
-            )
-            result['query_artist_components'] = query_gmm['n_components']
-            result['candidate_artist_components'] = candidate_gmm['n_components']
-        results.append(result)
-
-    return results
+        for score, candidate_artist, candidate_gmm in scored[:n]
+    ]
 
 
 def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List[Dict]:

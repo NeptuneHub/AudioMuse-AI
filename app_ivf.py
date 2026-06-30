@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 # reused by every similarity mode).
 def _neighbor_search_error_response(ctx, exc, is_runtime):
     if is_runtime:
-        logger.error(f"Runtime error finding neighbors for {ctx}: {exc}", exc_info=True)
+        logger.exception(f"Runtime error finding neighbors for {ctx}: {exc}")
         return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-    logger.error(f"Unexpected error finding neighbors for {ctx}: {exc}", exc_info=True)
+    logger.exception(f"Unexpected error finding neighbors for {ctx}: {exc}")
     return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -236,7 +236,7 @@ def search_tracks_endpoint():
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         return jsonify(results)
     except Exception as e:
-        logger.error(f"Error during track search: {e}", exc_info=True)
+        logger.exception(f"Error during track search: {e}")
         return jsonify({"error": "An error occurred during search."}), 500
 
 
@@ -508,10 +508,10 @@ def get_max_distance_endpoint():
             ), 404
         return jsonify(result)
     except RuntimeError as e:
-        logger.error(f"Runtime error computing max distance for {item_id}: {e}", exc_info=True)
+        logger.exception(f"Runtime error computing max distance for {item_id}: {e}")
         return jsonify({"error": "The similarity search service is currently unavailable."}), 503
     except Exception as e:
-        logger.error(f"Unexpected error computing max distance for {item_id}: {e}", exc_info=True)
+        logger.exception(f"Unexpected error computing max distance for {item_id}: {e}")
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -573,7 +573,7 @@ def get_track_endpoint():
             }
         ), 200
     except Exception as e:
-        logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
+        logger.exception(f"Unexpected error fetching track {item_id}: {e}")
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -656,8 +656,8 @@ def create_media_server_playlist():
         ), 201
 
     except Exception as e:
-        logger.error(
-            f"Failed to create media server playlist '{playlist_name}': {e}", exc_info=True
+        logger.exception(
+            f"Failed to create media server playlist '{playlist_name}': {e}"
         )
         return jsonify(
             {"error": "An error occurred while creating the playlist on the media server."}

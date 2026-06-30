@@ -853,9 +853,8 @@ def listen_for_index_reloads():
                             f"In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP {'OK' if clap_success else 'X'}, Lyrics {'OK' if lyrics_success else 'X'}, SemGrove {'OK' if sg_success else 'X'}"
                         )
                     except Exception as e:
-                        logger.error(
-                            f"Error reloading indexes/maps from background listener: {e}",
-                            exc_info=True,
+                        logger.exception(
+                            f"Error reloading indexes/maps from background listener: {e}"
                         )
             elif message_data == 'reload-artist':
                 # Reload artist similarity index only (legacy support)
@@ -871,9 +870,8 @@ def listen_for_index_reloads():
                             "In-memory artist similarity index reloaded successfully by background listener."
                         )
                     except Exception as e:
-                        logger.error(
-                            f"Error reloading artist similarity index from background listener: {e}",
-                            exc_info=True,
+                        logger.exception(
+                            f"Error reloading artist similarity index from background listener: {e}"
                         )
 
 

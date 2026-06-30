@@ -314,9 +314,7 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None
         except LyrionAPIError:
             raise
         except Exception as e:
-            logger.error(
-                f"Failed to call Lyrion JSON-RPC API with method '{method}': {e}", exc_info=True
-            )
+            logger.exception(f"Failed to call Lyrion JSON-RPC API with method '{method}'")
             raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}")
 
     raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
@@ -377,10 +375,8 @@ def download_track(temp_dir, item):
                         f.write(chunk)
         logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
         return local_filename
-    except Exception as e:
-        logger.error(
-            f"Failed to download Lyrion track {item.get('title', 'Unknown')}: {e}", exc_info=True
-        )
+    except Exception:
+        logger.exception(f"Failed to download Lyrion track {item.get('title', 'Unknown')}")
     return None
 
 
@@ -909,7 +905,7 @@ def _create_playlist_batched(playlist_name, item_ids):
         return None
 
     except Exception as e:
-        logger.error(f"Exception creating Lyrion playlist '{playlist_name}': {e}", exc_info=True)
+        logger.exception(f"Exception creating Lyrion playlist '{playlist_name}': {e}")
         return None
 
 
@@ -943,7 +939,7 @@ def get_tracks_from_album(album_id, user_creds=None):
         )
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
     except Exception as e:
-        logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
+        logger.exception(f"Lyrion API call for album {album_id} failed: {e}")
         return []
 
     songs = []

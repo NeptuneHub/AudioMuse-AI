@@ -299,7 +299,8 @@ class TestEdgeCases:
             pass
 
     def test_mismatched_embedding_dimensions(self):
-        embeddings = [np.random.rand(128), np.random.rand(64), np.random.rand(128)]
+        rng = np.random.default_rng(0)
+        embeddings = [rng.random(128), rng.random(64), rng.random(128)]
 
         try:
             gmm_params = fit_artist_gmm("Mismatched Artist", embeddings)

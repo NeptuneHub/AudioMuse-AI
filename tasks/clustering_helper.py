@@ -221,7 +221,7 @@ def _perform_single_clustering_iteration(
         )
 
     except Exception:
-        logger.error(f"{log_prefix} Iteration {run_idx} failed critically", exc_info=True)
+        logger.exception(f"{log_prefix} Iteration {run_idx} failed critically")
         raise
 
 
@@ -284,54 +284,74 @@ def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, m
     return _generate_random_parameters(method, data, *args)
 
 
-def _generate_random_parameters(
-    method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args
-):
+def _random_pca_config(pca_ranges, data):
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
         min_pca = max_pca
-
     pca_comps = random.randint(min_pca, max_pca) if max_pca >= min_pca and max_pca > 0 else min_pca
-    pca_config = {"enabled": pca_comps > 0, "components": pca_comps}
+    return {"enabled": pca_comps > 0, "components": pca_comps}
 
+
+def _clamp_k_bounds(lower_k, upper_k, enforce_min_two=True):
+    if enforce_min_two and lower_k < 2 and upper_k >= 2:
+        lower_k = 2
+    if upper_k < lower_k:
+        upper_k = lower_k
+    return lower_k, upper_k
+
+
+def _random_k_in_bounds(lower_k, upper_k):
+    return random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
+
+
+def _random_kmeans_params(num_clust_ranges, max_k):
+    upper_k = min(num_clust_ranges[1], max_k)
+    lower_k = min(num_clust_ranges[0], upper_k)
+    lower_k, upper_k = _clamp_k_bounds(lower_k, upper_k)
+    return {"n_clusters": _random_k_in_bounds(lower_k, upper_k)}
+
+
+def _random_dbscan_params(db_ranges):
+    eps = round(random.uniform(db_ranges['eps_min'], db_ranges['eps_max']), 2)
+    min_samples = random.randint(db_ranges['samples_min'], db_ranges['samples_max'])
+    return {"eps": eps, "min_samples": min_samples}
+
+
+def _random_gmm_params(gmm_ranges, max_k):
+    upper_k = min(gmm_ranges['n_components_max'], max_k)
+    lower_k = min(gmm_ranges['n_components_min'], upper_k)
+    lower_k, upper_k = _clamp_k_bounds(lower_k, upper_k)
+    return {"n_components": _random_k_in_bounds(lower_k, upper_k)}
+
+
+def _random_spectral_params(spec_ranges, data):
+    upper_k = min(spec_ranges['n_clusters_max'], data.shape[0] - 1)
+    lower_k = spec_ranges['n_clusters_min']
+    if lower_k < 2:
+        lower_k = 2
+    if upper_k < lower_k:
+        upper_k = lower_k
+    n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
+    return {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
+
+
+def _generate_random_parameters(
+    method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args
+):
+    pca_config = _random_pca_config(pca_ranges, data)
     max_k = data.shape[0]
-    method_params = {}
 
     if method == 'kmeans':
-        upper_k = min(num_clust_ranges[1], max_k)
-        lower_k = min(num_clust_ranges[0], upper_k)
-        if lower_k < 2 and upper_k >= 2:
-            lower_k = 2
-        if upper_k < lower_k:
-            upper_k = lower_k
-        k = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
-        method_params = {"n_clusters": k}
-
+        method_params = _random_kmeans_params(num_clust_ranges, max_k)
     elif method == 'dbscan':
-        eps = round(random.uniform(db_ranges['eps_min'], db_ranges['eps_max']), 2)
-        min_samples = random.randint(db_ranges['samples_min'], db_ranges['samples_max'])
-        method_params = {"eps": eps, "min_samples": min_samples}
-
+        method_params = _random_dbscan_params(db_ranges)
     elif method == 'gmm':
-        upper_k = min(gmm_ranges['n_components_max'], max_k)
-        lower_k = min(gmm_ranges['n_components_min'], upper_k)
-        if lower_k < 2 and upper_k >= 2:
-            lower_k = 2
-        if upper_k < lower_k:
-            upper_k = lower_k
-        n_comp = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
-        method_params = {"n_components": n_comp}
-
+        method_params = _random_gmm_params(gmm_ranges, max_k)
     elif method == 'spectral':
-        upper_k = min(spec_ranges['n_clusters_max'], data.shape[0] - 1)
-        lower_k = spec_ranges['n_clusters_min']
-        if lower_k < 2:
-            lower_k = 2
-        if upper_k < lower_k:
-            upper_k = lower_k
-        n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
-        method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
+        method_params = _random_spectral_params(spec_ranges, data)
+    else:
+        method_params = {}
 
     return {
         "pca_config": pca_config,
@@ -500,9 +520,8 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
         return labels, centers, model
 
     except Exception:
-        logger.error(
-            f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}",
-            exc_info=True,
+        logger.exception(
+            f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}"
         )
         return None, None, None
 
@@ -520,7 +539,7 @@ def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
 def _format_and_score_iteration_result(
     labels,
     valid_tracks,
-    X_feat_orig,
+    x_feat_orig,
     data_for_metrics,
     centers,
     model,
@@ -616,7 +635,7 @@ def _format_and_score_iteration_result(
             center_vec = centers[label_id]
             if use_embeddings:
                 feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(
-                    label_id, labels, X_feat_orig
+                    label_id, labels, x_feat_orig
                 )
                 if feature_centroid_vec is None:
                     continue
@@ -683,7 +702,9 @@ def _format_and_score_iteration_result(
     if num_clusters >= 2 and num_clusters < data_for_metrics.shape[0]:
         if score_weights.get('silhouette', 0) > 0:
             try:
-                metrics['silhouette'] = (silhouette_score(data_for_metrics, labels) + 1) / 2.0
+                metrics['silhouette'] = (
+                    silhouette_score(data_for_metrics, labels, random_state=42) + 1
+                ) / 2.0
             except ValueError:
                 pass
         if score_weights.get('davies_bouldin', 0) > 0:
@@ -738,8 +759,8 @@ def _format_and_score_iteration_result(
             song_purity_scores = []
             for item_id, _, _ in songs:
                 song_idx = item_id_to_song_index_map.get(item_id)
-                if song_idx is not None and song_idx < X_feat_orig.shape[0]:
-                    song_feat_vec = X_feat_orig[song_idx]
+                if song_idx is not None and song_idx < x_feat_orig.shape[0]:
+                    song_feat_vec = x_feat_orig[song_idx]
                     max_score_for_song = 0.0
                     for mood in top_moods:
                         try:
@@ -786,8 +807,8 @@ def _format_and_score_iteration_result(
                 song_purity_scores = []
                 for item_id, _, _ in songs:
                     song_idx = item_id_to_song_index_map.get(item_id)
-                    if song_idx is not None and song_idx < X_feat_orig.shape[0]:
-                        song_feat_vec = X_feat_orig[song_idx]
+                    if song_idx is not None and song_idx < x_feat_orig.shape[0]:
+                        song_feat_vec = x_feat_orig[song_idx]
                         other_features_start_idx = 2 + len(active_moods)
                         if other_features_start_idx + feature_idx < song_feat_vec.shape[0]:
                             song_score = song_feat_vec[other_features_start_idx + feature_idx]

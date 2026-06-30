@@ -220,7 +220,7 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
             flags=re.IGNORECASE,
         )
         title_clean = re.sub(
-            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*?$',
+            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*$',
             '',
             title_clean,
             flags=re.IGNORECASE,
@@ -371,9 +371,8 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
         return new_result
 
     except Exception as e:
-        logger.error(
-            f"{log_prefix}Critical error in duplicate filtering: {e}. Returning original result.",
-            exc_info=True,
+        logger.exception(
+            f"{log_prefix}Critical error in duplicate filtering: {e}. Returning original result."
         )
         return best_result
 
@@ -439,9 +438,8 @@ def apply_minimum_size_filter_to_clustering_result(best_result, min_size=20, log
         return new_result
 
     except Exception as e:
-        logger.error(
-            f"{log_prefix}Critical error in minimum size filtering: {e}. Returning original result.",
-            exc_info=True,
+        logger.exception(
+            f"{log_prefix}Critical error in minimum size filtering: {e}. Returning original result."
         )
         return best_result
 

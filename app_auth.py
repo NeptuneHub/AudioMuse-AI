@@ -37,6 +37,8 @@ from tz_helper import UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
 
+_API_SETUP_PATH = '/api/setup'
+
 
 def _original_request_is_https():
     """True when the original request was HTTPS, honoring X-Forwarded-Proto from a
@@ -178,7 +180,7 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     try:
         password_hash = hasher.hash(password)
     except Exception as exc:
-        logger.error(f"Failed to hash password for new user {username!r}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash password for new user {username!r}: {exc}")
         return False, "Failed to hash password."
 
     db = _get_db()
@@ -249,7 +251,7 @@ def delete_additional_user_safe(user_id):
             db.rollback()
         except Exception:
             pass
-        logger.error(f"Failed to atomically delete user {user_id}: {exc}", exc_info=True)
+        logger.exception(f"Failed to atomically delete user {user_id}: {exc}")
         return "error", "Database error while deleting user."
 
 
@@ -264,7 +266,7 @@ def update_additional_user_password(user_id, new_password):
     try:
         password_hash = _get_password_hasher().hash(new_password)
     except Exception as exc:
-        logger.error(f"Failed to hash new password for user {user_id}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash new password for user {user_id}: {exc}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -298,7 +300,7 @@ def verify_additional_user(username, password):
     try:
         import argon2
     except ImportError as exc:
-        logger.error(f"argon2 is not installed: {exc}", exc_info=True)
+        logger.exception(f"argon2 is not installed: {exc}")
         return None
 
     try:
@@ -306,7 +308,7 @@ def verify_additional_user(username, password):
     except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.VerificationError):
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error during password verification: {exc}", exc_info=True)
+        logger.exception(f"Unexpected error during password verification: {exc}")
         return None
     return _normalize_role(role) or USER_ROLE_USER
 
@@ -326,7 +328,7 @@ def upsert_admin_user(username, password):
     try:
         password_hash = _get_password_hasher().hash(password)
     except Exception as exc:
-        logger.error(f"Failed to hash password for admin {username!r}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash password for admin {username!r}: {exc}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -361,7 +363,7 @@ def seed_admin_from_env():
             purge_legacy_admin_config()
             return False
     except Exception as exc:
-        logger.error(f"seed_admin_from_env: failed to count admins: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: failed to count admins: {exc}")
         return False
 
     # 2. Fall back to legacy rows persisted in app_config.
@@ -384,7 +386,7 @@ def seed_admin_from_env():
         else:
             password_hash = _get_password_hasher().hash(password)
     except Exception as exc:
-        logger.error(f"seed_admin_from_env: failed to prepare password: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: failed to prepare password: {exc}")
         return False
     db = _get_db()
     try:
@@ -396,9 +398,12 @@ def seed_admin_from_env():
                 (user.strip(), password_hash, USER_ROLE_ADMIN),
             )
         db.commit()
-        safe_source = (
-            'app_config' if source == 'app_config' else ('env' if source == 'env' else 'unknown')
-        )
+        if source == 'app_config':
+            safe_source = 'app_config'
+        elif source == 'env':
+            safe_source = 'env'
+        else:
+            safe_source = 'unknown'
         logger.info(
             "Seeded admin into audiomuse_users from %s.",
             safe_source,
@@ -410,7 +415,7 @@ def seed_admin_from_env():
         return True
     except Exception as exc:
         db.rollback()
-        logger.error(f"seed_admin_from_env: insert failed: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: insert failed: {exc}")
         return False
 
 
@@ -427,9 +432,8 @@ def _read_legacy_admin_from_app_config():
             )
             rows = cur.fetchall() or []
     except Exception as exc:
-        logger.error(
+        logger.exception(
             f"_read_legacy_admin_from_app_config: lookup failed: {exc}",
-            exc_info=True,
         )
         return '', '', 'app_config'
     values = {row[0]: row[1] for row in rows}
@@ -461,7 +465,7 @@ def purge_legacy_admin_config():
         return removed
     except Exception as exc:
         db.rollback()
-        logger.error(f"purge_legacy_admin_config failed: {exc}", exc_info=True)
+        logger.exception(f"purge_legacy_admin_config failed: {exc}")
         return 0
 
 
@@ -487,8 +491,8 @@ def check_setup_needed():
     try:
         return count_admin_users() <= 0
     except Exception as exc:
-        logger.error(
-            f"Failed to count admin users while checking setup status: {exc}", exc_info=True
+        logger.exception(
+            f"Failed to count admin users while checking setup status: {exc}"
         )
         return True
 
@@ -550,7 +554,7 @@ def check_auth_needed(jwt_secret):
 # only see and modify their own account.
 _ADMIN_PATH_PREFIXES = (
     '/setup',
-    '/api/setup',
+    _API_SETUP_PATH,
     '/cleaning',
     '/api/cleaning',
     '/cron',
@@ -600,7 +604,7 @@ def check_admin_needed():
         request.path,
     )
     if request.path.startswith('/api/'):
-        if request.path == '/api/setup':
+        if request.path == _API_SETUP_PATH:
             return jsonify(
                 {
                     "error": "Error saving configuration: Non-admin user denied access to admin path. Please refresh the page and try again."
@@ -616,7 +620,7 @@ def auth_setup_barrier():
         return
 
     if check_setup_needed():
-        if request.path in ('/setup', '/api/setup'):
+        if request.path in ('/setup', _API_SETUP_PATH):
             return
         if request.path.startswith('/api/'):
             current_app.logger.warning(
@@ -753,10 +757,9 @@ def auth_endpoint():
     try:
         admin_count = count_admin_users()
     except Exception as exc:
-        current_app.logger.error(
+        current_app.logger.exception(
             'Failed to count admin users during authentication: %s',
             exc,
-            exc_info=True,
         )
         return jsonify({"error": "Database error while checking admin accounts."}), 500
     if admin_count <= 0:
@@ -891,7 +894,7 @@ def list_users_endpoint():
             # other users' rows from the database at all.
             users = list_additional_users(username=current_username) if current_username else []
     except Exception as exc:
-        current_app.logger.error(f"Failed to list users: {exc}", exc_info=True)
+        current_app.logger.exception(f"Failed to list users: {exc}")
         return jsonify({"error": "Failed to list users"}), 500
     return jsonify(
         {

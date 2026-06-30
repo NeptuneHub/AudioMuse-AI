@@ -548,6 +548,138 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         db_conn.close()
 
 
+def _alchemy_parse_tag_scores(text):
+    scores = {}
+    for tag in (text or '').split(','):
+        tag = tag.strip()
+        if ':' not in tag:
+            continue
+        name, score_str = tag.split(':', 1)
+        try:
+            scores[name.strip()] = float(score_str)
+        except ValueError:
+            pass
+    return scores
+
+
+def _alchemy_collect_seed_ids(cur, add_items):
+    seed_ids = []
+    for item in add_items:
+        item_type = item.get('type', 'artist')
+        item_id_val = item.get('id', '')
+        if item_type == 'artist':
+            cur.execute(
+                "SELECT item_id FROM public.score WHERE LOWER(author) = LOWER(%s) LIMIT 10",
+                (item_id_val,),
+            )
+            seed_ids.extend([r['item_id'] for r in cur.fetchall()])
+        elif item_type == 'song' and ' by ' in item_id_val:
+            parts = item_id_val.rsplit(' by ', 1)
+            cur.execute(
+                "SELECT item_id FROM public.score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1",
+                (parts[0].strip(), parts[1].strip()),
+            )
+            row = cur.fetchone()
+            if row:
+                seed_ids.append(row['item_id'])
+    return seed_ids
+
+
+def _alchemy_top_seed_genres(cur, seed_ids):
+    if not seed_ids:
+        return []
+    ph = ','.join(['%s'] * len(seed_ids))
+    cur.execute(
+        f"""
+        SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+        FROM public.score
+        WHERE item_id IN ({ph})
+        AND mood_vector IS NOT NULL AND mood_vector != ''
+    """,
+        seed_ids,
+    )
+    seed_genre_scores = {}
+    for r in cur:
+        tag = r['tag'].strip()
+        if ':' not in tag:
+            continue
+        name, score_str = tag.split(':', 1)
+        name = name.strip()
+        try:
+            seed_genre_scores[name] = seed_genre_scores.get(name, 0) + float(score_str)
+        except ValueError:
+            pass
+    return sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:3]
+
+
+def _alchemy_result_genres(cur, result_ids):
+    if not result_ids:
+        return {}
+    ph2 = ','.join(['%s'] * len(result_ids))
+    cur.execute(
+        f"""
+        SELECT item_id, mood_vector
+        FROM public.score
+        WHERE item_id IN ({ph2})
+    """,
+        result_ids,
+    )
+    return {r['item_id']: _alchemy_parse_tag_scores(r['mood_vector'] or '') for r in cur}
+
+
+def _alchemy_apply_genre_filter(cur, songs, add_items, log_messages):
+    seed_ids = _alchemy_collect_seed_ids(cur, add_items)
+    top_seed_genres = _alchemy_top_seed_genres(cur, seed_ids)
+    if not top_seed_genres:
+        return songs
+
+    result_genres = _alchemy_result_genres(cur, [s['item_id'] for s in songs])
+
+    filtered = []
+    for s in songs:
+        g = result_genres.get(s['item_id'], {})
+        if not g or any(g.get(tg, 0) >= 0.2 for tg in top_seed_genres):
+            filtered.append(s)
+
+    if len(filtered) < len(songs) * 0.4:
+        return songs
+
+    removed = len(songs) - len(filtered)
+    if removed > 0:
+        log_messages.append(
+            f"Genre filter: removed {removed} off-genre songs (seed genres: {', '.join(top_seed_genres[:3])})"
+        )
+    return filtered
+
+
+def _alchemy_genre_filter(songs, add_items, log_messages):
+    if not songs or not add_items:
+        return songs
+    try:
+        db_conn_gc = get_db_connection()
+        try:
+            with db_conn_gc.cursor(cursor_factory=DictCursor) as cur:
+                return _alchemy_apply_genre_filter(cur, songs, add_items, log_messages)
+        finally:
+            db_conn_gc.close()
+    except Exception as e:
+        logger.warning(f"Alchemy genre filter failed (non-fatal): {e}")
+        return songs
+
+
+def _alchemy_log_items(log_messages, add_items, subtract_items):
+    log_messages.append(
+        f"Song Alchemy: ADD {len(add_items)} items"
+        + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else "")
+    )
+    for item in add_items:
+        log_messages.append(f"  + ADD {item.get('type', 'unknown')}: {item.get('id', 'unknown')}")
+    for item in subtract_items or []:
+        log_messages.append(
+            f"  - SUBTRACT {item.get('type', 'unknown')}: {item.get('id', 'unknown')}"
+        )
+
+
 def _song_alchemy_sync(
     add_items: List[Dict], subtract_items: Optional[List[Dict]] = None, get_songs: int = 100
 ) -> Dict:
@@ -556,21 +688,7 @@ def _song_alchemy_sync(
     log_messages = []
 
     try:
-        log_messages.append(
-            f"Song Alchemy: ADD {len(add_items)} items"
-            + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else "")
-        )
-
-        for item in add_items:
-            item_type = item.get('type', 'unknown')
-            item_id = item.get('id', 'unknown')
-            log_messages.append(f"  + ADD {item_type}: {item_id}")
-
-        if subtract_items:
-            for item in subtract_items:
-                item_type = item.get('type', 'unknown')
-                item_id = item.get('id', 'unknown')
-                log_messages.append(f"  - SUBTRACT {item_type}: {item_id}")
+        _alchemy_log_items(log_messages, add_items, subtract_items)
 
         result = song_alchemy(
             add_items=add_items, subtract_items=subtract_items, n_results=get_songs
@@ -588,103 +706,7 @@ def _song_alchemy_sync(
         ]
         log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
 
-        try:
-            if songs and add_items:
-                db_conn_gc = get_db_connection()
-                try:
-                    with db_conn_gc.cursor(cursor_factory=DictCursor) as cur:
-                        seed_ids = []
-                        for item in add_items:
-                            item_type = item.get('type', 'artist')
-                            item_id_val = item.get('id', '')
-                            if item_type == 'artist':
-                                cur.execute(
-                                    "SELECT item_id FROM public.score WHERE LOWER(author) = LOWER(%s) LIMIT 10",
-                                    (item_id_val,),
-                                )
-                                seed_ids.extend([r['item_id'] for r in cur.fetchall()])
-                            elif item_type == 'song' and ' by ' in item_id_val:
-                                parts = item_id_val.rsplit(' by ', 1)
-                                cur.execute(
-                                    "SELECT item_id FROM public.score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1",
-                                    (parts[0].strip(), parts[1].strip()),
-                                )
-                                row = cur.fetchone()
-                                if row:
-                                    seed_ids.append(row['item_id'])
-
-                        if seed_ids:
-                            ph = ','.join(['%s'] * len(seed_ids))
-                            cur.execute(
-                                f"""
-                                SELECT unnest(string_to_array(mood_vector, ',')) AS tag
-                                FROM public.score
-                                WHERE item_id IN ({ph})
-                                AND mood_vector IS NOT NULL AND mood_vector != ''
-                            """,
-                                seed_ids,
-                            )
-                            seed_genre_scores = {}
-                            for r in cur:
-                                tag = r['tag'].strip()
-                                if ':' in tag:
-                                    name, score_str = tag.split(':', 1)
-                                    name = name.strip()
-                                    try:
-                                        seed_genre_scores[name] = seed_genre_scores.get(
-                                            name, 0
-                                        ) + float(score_str)
-                                    except ValueError:
-                                        pass
-                            top_seed_genres = sorted(
-                                seed_genre_scores, key=seed_genre_scores.get, reverse=True
-                            )[:3]
-
-                            if top_seed_genres:
-                                result_ids = [s['item_id'] for s in songs]
-                                ph2 = ','.join(['%s'] * len(result_ids))
-                                cur.execute(
-                                    f"""
-                                    SELECT item_id, mood_vector
-                                    FROM public.score
-                                    WHERE item_id IN ({ph2})
-                                """,
-                                    result_ids,
-                                )
-                                result_genres = {}
-                                for r in cur:
-                                    mv = r['mood_vector'] or ''
-                                    genres_found = {}
-                                    for tag in mv.split(','):
-                                        tag = tag.strip()
-                                        if ':' in tag:
-                                            gname, gscore = tag.split(':', 1)
-                                            try:
-                                                genres_found[gname.strip()] = float(gscore)
-                                            except ValueError:
-                                                pass
-                                    result_genres[r['item_id']] = genres_found
-
-                                filtered = []
-                                for s in songs:
-                                    sid = s['item_id']
-                                    g = result_genres.get(sid, {})
-                                    if not g:
-                                        filtered.append(s)
-                                    elif any(g.get(tg, 0) >= 0.2 for tg in top_seed_genres):
-                                        filtered.append(s)
-
-                                if len(filtered) >= len(songs) * 0.4:
-                                    removed = len(songs) - len(filtered)
-                                    if removed > 0:
-                                        log_messages.append(
-                                            f"Genre filter: removed {removed} off-genre songs (seed genres: {', '.join(top_seed_genres[:3])})"
-                                        )
-                                    songs = filtered
-                finally:
-                    db_conn_gc.close()
-        except Exception as e:
-            logger.warning(f"Alchemy genre filter failed (non-fatal): {e}")
+        songs = _alchemy_genre_filter(songs, add_items, log_messages)
 
         return {"songs": songs, "message": "\n".join(log_messages)}
 

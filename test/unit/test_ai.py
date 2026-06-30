@@ -45,13 +45,13 @@ def _ensure_httpx_stub():
 
     class _Client:
         def __init__(self, **kw):
-            pass
+            self.kwargs = kw
 
         def __enter__(self):
             return self
 
         def __exit__(self, *a):
-            pass
+            return False
 
         def post(self, *a, **kw):
             raise NotImplementedError("stub")

@@ -369,7 +369,7 @@ def find_path_endpoint():
         return jsonify({"path": path, "total_distance": final_distance})
 
     except Exception as e:
-        logger.error(
-            f"Error finding path between {start_song_id} and {end_song_id}: {e}", exc_info=True
+        logger.exception(
+            f"Error finding path between {start_song_id} and {end_song_id}: {e}"
         )
         return jsonify({"error": "An unexpected error occurred while finding the path."}), 500

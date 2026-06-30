@@ -353,39 +353,13 @@ def find_sem_grove_neighbors_by_id(item_id: str, n: int = 100) -> List[Dict]:
     return find_sem_grove_neighbors_by_vector(vec, n=n)
 
 
-def search_by_song(
-    seed_item_id: str, limit: int = 50, radius_similarity: bool | None = None
-) -> List[Dict]:
-    if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
-        logger.error("SemGrove index not loaded.")
-        return []
-
-    index = _SEM_GROVE_CACHE["index"]
-    id_map = _SEM_GROVE_CACHE["id_map"]
-    reverse_id_map = _SEM_GROVE_CACHE["reverse_id_map"]
-
-    from .paged_ivf import begin_query
-
-    begin_query(index)
-
-    seed_vid = reverse_id_map.get(seed_item_id)
-    if seed_vid is None:
-        logger.warning("SemGrove: seed '%s' not in index.", seed_item_id)
-        return []
-
-    try:
-        query_vector = index.get_vector(seed_vid)
-    except Exception as exc:
-        logger.exception("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
-        return []
-
+def _resolve_search_params(limit, radius_similarity):
     from config import (
         MAX_SONGS_PER_ARTIST,
         DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
         DUPLICATE_DISTANCE_CHECK_LOOKBACK,
         SIMILARITY_RADIUS_DEFAULT,
     )
-    import numpy as np
 
     if radius_similarity is None:
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
@@ -397,23 +371,54 @@ def search_by_song(
         fetch_size = limit + max(limit * 5, limit * 15) + 1
     else:
         fetch_size = (limit + max(20, limit * 4) + 1) if (artist_cap or lookback_n) else (limit + 1)
-    num_to_query = min(fetch_size, len(index))
-    if num_to_query <= 0:
-        return []
+    return {
+        "radius_similarity": radius_similarity,
+        "max_songs_per_artist": MAX_SONGS_PER_ARTIST,
+        "artist_cap": artist_cap,
+        "dist_threshold": dist_threshold,
+        "lookback_n": lookback_n,
+        "fetch_size": fetch_size,
+    }
+
+
+def _is_near_duplicate(index, vid, lookback_vecs, lookback_n, dist_threshold, title, author):
+    import numpy as np
 
     try:
-        neighbor_ids, distances = index.query(query_vector, k=num_to_query)
-    except Exception as exc:
-        logger.error("SemGrove: IVF query failed: %s", exc, exc_info=True)
-        return []
+        candidate_vec = np.array(index.get_vector(int(vid)), dtype=np.float32)
+        norm = np.linalg.norm(candidate_vec)
+        if norm > 0:
+            candidate_vec = candidate_vec / norm
+        for lv in lookback_vecs[-lookback_n:]:
+            cosine_dist = float(np.clip(1.0 - np.dot(candidate_vec, lv), 0.0, 2.0))
+            if cosine_dist < dist_threshold:
+                logger.debug(
+                    "SemGrove: dropping near-duplicate '%s' by '%s' "
+                    "(cosine dist %.4f < threshold %.4f).",
+                    title,
+                    author,
+                    cosine_dist,
+                    dist_threshold,
+                )
+                return True
+        lookback_vecs.append(candidate_vec)
+    except Exception as _vec_exc:
+        logger.debug("SemGrove: could not fetch vector for distance check: %s", _vec_exc)
+    return False
 
-    candidate_ids = [
-        id_map.get(int(v))
-        for v in neighbor_ids
-        if id_map.get(int(v)) and id_map.get(int(v)) != seed_item_id
-    ]
-    metadata_map = _fetch_metadata([seed_item_id] + candidate_ids)
 
+def _collect_search_results(
+    index,
+    id_map,
+    seed_item_id,
+    neighbor_ids,
+    distances,
+    metadata_map,
+    limit,
+    artist_cap,
+    dist_threshold,
+    lookback_n,
+):
     seed_meta = metadata_map.get(seed_item_id, {"title": "", "author": "", "album": ""})
     results: List[Dict] = [
         {
@@ -450,31 +455,14 @@ def search_by_song(
                 continue
             artist_counts[an] = artist_counts.get(an, 0) + 1
 
-        if lookback_n and dist_threshold > 0:
-            try:
-                candidate_vec = np.array(index.get_vector(int(vid)), dtype=np.float32)
-                norm = np.linalg.norm(candidate_vec)
-                if norm > 0:
-                    candidate_vec = candidate_vec / norm
-                too_close = False
-                for lv in lookback_vecs[-lookback_n:]:
-                    cosine_dist = float(np.clip(1.0 - np.dot(candidate_vec, lv), 0.0, 2.0))
-                    if cosine_dist < dist_threshold:
-                        logger.debug(
-                            "SemGrove: dropping near-duplicate '%s' by '%s' "
-                            "(cosine dist %.4f < threshold %.4f).",
-                            title,
-                            author,
-                            cosine_dist,
-                            dist_threshold,
-                        )
-                        too_close = True
-                        break
-                if too_close:
-                    continue
-                lookback_vecs.append(candidate_vec)
-            except Exception as _vec_exc:
-                logger.debug("SemGrove: could not fetch vector for distance check: %s", _vec_exc)
+        if (
+            lookback_n
+            and dist_threshold > 0
+            and _is_near_duplicate(
+                index, vid, lookback_vecs, lookback_n, dist_threshold, title, author
+            )
+        ):
+            continue
 
         results.append(
             {
@@ -486,73 +474,159 @@ def search_by_song(
             }
         )
 
+    return results
+
+
+def _build_radius_candidates(non_seed, index, reverse_id_map):
+    import numpy as np
+
+    candidate_data: List[Dict] = []
+    for r in non_seed:
+        vid = reverse_id_map.get(r["item_id"])
+        if vid is None:
+            continue
+        try:
+            vec = np.array(index.get_vector(vid), dtype=np.float32)
+            norm_val = np.linalg.norm(vec)
+            if norm_val > 0:
+                vec = vec / norm_val
+            dist_anchor = max(0.0, 1.0 - r.get("similarity", 0.0))
+            candidate_data.append(
+                {
+                    "item_id": r["item_id"],
+                    "vector": vec,
+                    "dist_anchor": dist_anchor,
+                    "title": r.get("title"),
+                    "author": r.get("author"),
+                }
+            )
+        except Exception:
+            continue
+    return candidate_data
+
+
+def _apply_radius_walk(results, index, reverse_id_map, limit, max_songs_per_artist, seed_item_id):
+    import numpy as np
+
+    if len(results) <= 1:
+        return results
+    try:
+        non_seed = [r for r in results if not r.get("is_seed")]
+        if not non_seed:
+            return results
+
+        candidate_data = _build_radius_candidates(non_seed, index, reverse_id_map)
+        if not candidate_data:
+            return results
+
+        from .radius_walk_helper import execute_radius_walk
+
+        def _cosine_dist(v1, v2):
+            try:
+                dot = np.dot(v1, v2)
+                return float(np.clip(1.0 - dot, 0.0, 2.0))
+            except Exception:
+                return float("inf")
+
+        reordered = execute_radius_walk(
+            candidate_data=candidate_data,
+            n=limit,
+            eliminate_duplicates=True,
+            max_songs_per_artist=max_songs_per_artist,
+            get_distance_fn=_cosine_dist,
+        )
+
+        reordered_ids = [rd["item_id"] for rd in reordered]
+        non_seed_map = {r["item_id"]: r for r in non_seed}
+
+        new_results = [results[0]]
+        seen_ids = {results[0]["item_id"]}
+        for rid in reordered_ids:
+            if rid in non_seed_map and rid not in seen_ids:
+                new_results.append(non_seed_map[rid])
+                seen_ids.add(rid)
+        for r in non_seed:
+            if r["item_id"] not in seen_ids:
+                new_results.append(r)
+
+        logger.info(
+            "SemGrove radius walk: reordered %d results for seed '%s'.",
+            len(new_results) - 1,
+            seed_item_id,
+        )
+        return new_results
+    except Exception:
+        logger.exception("SemGrove radius walk failed; returning standard order.")
+        return results
+
+
+def search_by_song(
+    seed_item_id: str, limit: int = 50, radius_similarity: bool | None = None
+) -> List[Dict]:
+    if not _SEM_GROVE_CACHE["loaded"] or _SEM_GROVE_CACHE["index"] is None:
+        logger.error("SemGrove index not loaded.")
+        return []
+
+    index = _SEM_GROVE_CACHE["index"]
+    id_map = _SEM_GROVE_CACHE["id_map"]
+    reverse_id_map = _SEM_GROVE_CACHE["reverse_id_map"]
+
+    from .paged_ivf import begin_query
+
+    begin_query(index)
+
+    seed_vid = reverse_id_map.get(seed_item_id)
+    if seed_vid is None:
+        logger.warning("SemGrove: seed '%s' not in index.", seed_item_id)
+        return []
+
+    try:
+        query_vector = index.get_vector(seed_vid)
+    except Exception as exc:
+        logger.exception("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
+        return []
+
+    params = _resolve_search_params(limit, radius_similarity)
+    num_to_query = min(params["fetch_size"], len(index))
+    if num_to_query <= 0:
+        return []
+
+    try:
+        neighbor_ids, distances = index.query(query_vector, k=num_to_query)
+    except Exception as exc:
+        logger.error("SemGrove: IVF query failed: %s", exc, exc_info=True)
+        return []
+
+    candidate_ids = [
+        id_map.get(int(v))
+        for v in neighbor_ids
+        if id_map.get(int(v)) and id_map.get(int(v)) != seed_item_id
+    ]
+    metadata_map = _fetch_metadata([seed_item_id] + candidate_ids)
+
+    results = _collect_search_results(
+        index,
+        id_map,
+        seed_item_id,
+        neighbor_ids,
+        distances,
+        metadata_map,
+        limit,
+        params["artist_cap"],
+        params["dist_threshold"],
+        params["lookback_n"],
+    )
+
     logger.info("SemGrove search for '%s': %d results.", seed_item_id, len(results))
 
-    if radius_similarity and len(results) > 1:
-        try:
-            non_seed = [r for r in results if not r.get("is_seed")]
-            if non_seed:
-                candidate_data: List[Dict] = []
-                for r in non_seed:
-                    vid = reverse_id_map.get(r["item_id"])
-                    if vid is None:
-                        continue
-                    try:
-                        vec = np.array(index.get_vector(vid), dtype=np.float32)
-                        norm_val = np.linalg.norm(vec)
-                        if norm_val > 0:
-                            vec = vec / norm_val
-                        dist_anchor = max(0.0, 1.0 - r.get("similarity", 0.0))
-                        candidate_data.append(
-                            {
-                                "item_id": r["item_id"],
-                                "vector": vec,
-                                "dist_anchor": dist_anchor,
-                                "title": r.get("title"),
-                                "author": r.get("author"),
-                            }
-                        )
-                    except Exception:
-                        continue
-
-                if candidate_data:
-                    from .radius_walk_helper import execute_radius_walk
-
-                    def _cosine_dist(v1, v2):
-                        try:
-                            dot = np.dot(v1, v2)
-                            return float(np.clip(1.0 - dot, 0.0, 2.0))
-                        except Exception:
-                            return float("inf")
-
-                    reordered = execute_radius_walk(
-                        candidate_data=candidate_data,
-                        n=limit,
-                        eliminate_duplicates=True,
-                        max_songs_per_artist=MAX_SONGS_PER_ARTIST,
-                        get_distance_fn=_cosine_dist,
-                    )
-
-                    reordered_ids = [rd["item_id"] for rd in reordered]
-                    non_seed_map = {r["item_id"]: r for r in non_seed}
-
-                    new_results = [results[0]]
-                    seen_ids = {results[0]["item_id"]}
-                    for rid in reordered_ids:
-                        if rid in non_seed_map and rid not in seen_ids:
-                            new_results.append(non_seed_map[rid])
-                            seen_ids.add(rid)
-                    for r in non_seed:
-                        if r["item_id"] not in seen_ids:
-                            new_results.append(r)
-
-                    results = new_results
-                    logger.info(
-                        "SemGrove radius walk: reordered %d results for seed '%s'.",
-                        len(results) - 1,
-                        seed_item_id,
-                    )
-        except Exception:
-            logger.exception("SemGrove radius walk failed; returning standard order.")
+    if params["radius_similarity"]:
+        results = _apply_radius_walk(
+            results,
+            index,
+            reverse_id_map,
+            limit,
+            params["max_songs_per_artist"],
+            seed_item_id,
+        )
 
     return results

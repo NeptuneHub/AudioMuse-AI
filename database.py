@@ -199,6 +199,55 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             pass
 
 
+def _normalize_task_details(details, status):
+    if not isinstance(details, dict):
+        return
+
+    if status == TASK_STATUS_SUCCESS:
+        details.pop('log_storage_info', None)
+        if not isinstance(details.get('log'), list) or not details.get('log'):
+            details['log'] = ["Task completed successfully."]
+        return
+
+    if not isinstance(details.get('log'), list):
+        return
+
+    log_list = details['log']
+    if len(log_list) <= MAX_LOG_ENTRIES_STORED:
+        details.pop('log_storage_info', None)
+        return
+
+    original_log_length = len(log_list)
+    details['log'] = log_list[-MAX_LOG_ENTRIES_STORED:]
+    details['log_storage_info'] = (
+        f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
+    )
+
+
+def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, details, current_unix_time):
+    if parent_task_id is not None:
+        return
+    if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        return
+    if not task_type or task_type == 'unknown':
+        return
+
+    duration_s = None
+    try:
+        with db.cursor() as hist_cur:
+            hist_cur.execute(
+                "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
+                (task_id,),
+            )
+            row = hist_cur.fetchone()
+        if row and row[0] is not None:
+            end = row[1] if row[1] is not None else current_unix_time
+            duration_s = max(0.0, float(end) - float(row[0]))
+    except Exception:
+        pass
+    record_task_history(task_id, task_type, status, duration_s, details=details)
+
+
 def save_task_status(
     task_id,
     task_type,
@@ -211,25 +260,8 @@ def save_task_status(
     db = get_db()
     current_unix_time = time.time()
 
-    if details is not None and isinstance(details, dict):
-        if status != TASK_STATUS_SUCCESS and 'log' in details and isinstance(details['log'], list):
-            log_list = details['log']
-            if len(log_list) > MAX_LOG_ENTRIES_STORED:
-                original_log_length = len(log_list)
-                details['log'] = log_list[-MAX_LOG_ENTRIES_STORED:]
-                details['log_storage_info'] = (
-                    f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
-                )
-            else:
-                details.pop('log_storage_info', None)
-        elif status == TASK_STATUS_SUCCESS:
-            details.pop('log_storage_info', None)
-            if (
-                'log' not in details
-                or not isinstance(details.get('log'), list)
-                or not details.get('log')
-            ):
-                details['log'] = ["Task completed successfully."]
+    if details is not None:
+        _normalize_task_details(details, status)
 
     details_json = json.dumps(details) if details is not None else None
 
@@ -280,26 +312,9 @@ def save_task_status(
         cur.close()
 
     try:
-        if (
-            parent_task_id is None
-            and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            and task_type
-            and task_type != 'unknown'
-        ):
-            duration_s = None
-            try:
-                with db.cursor() as hist_cur:
-                    hist_cur.execute(
-                        "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
-                        (task_id,),
-                    )
-                    row = hist_cur.fetchone()
-                if row and row[0] is not None:
-                    end = row[1] if row[1] is not None else current_unix_time
-                    duration_s = max(0.0, float(end) - float(row[0]))
-            except Exception:
-                pass
-            record_task_history(task_id, task_type, status, duration_s, details=details)
+        _maybe_record_task_history(
+            db, task_id, task_type, status, parent_task_id, details, current_unix_time
+        )
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
 
@@ -463,6 +478,66 @@ def load_map_projection(index_name, force_reload=False):
         cur.close()
 
 
+def _valid_year(year_value):
+    if 1000 <= year_value <= 2100:
+        return year_value
+    return None
+
+
+def _parse_year_parts(parts):
+    try:
+        if len(parts[0]) == 4:
+            result = _valid_year(int(parts[0]))
+            if result is not None:
+                return result
+
+        if len(parts[2]) == 4:
+            result = _valid_year(int(parts[2]))
+            if result is not None:
+                return result
+
+        if len(parts[2]) == 2:
+            year = int(parts[2])
+            year += 2000 if year < 30 else 1900
+            return _valid_year(year)
+    except (ValueError, TypeError, IndexError):
+        pass
+    return None
+
+
+def _parse_year_from_date(year_value):
+    if year_value is None:
+        return None
+
+    year_str = str(year_value).strip()
+    if not year_str:
+        return None
+
+    try:
+        result = _valid_year(int(year_str))
+        if result is not None:
+            return result
+    except (ValueError, TypeError):
+        pass
+
+    parts = year_str.replace('/', '-').split('-')
+    if len(parts) == 3:
+        return _parse_year_parts(parts)
+    return None
+
+
+def _clamp_rating(rating):
+    if rating is None:
+        return None
+    try:
+        rating = int(rating)
+        if rating < 0 or rating > 5:
+            return None
+        return rating
+    except (ValueError, TypeError):
+        return None
+
+
 def save_track_analysis_and_embedding(
     item_id,
     title,
@@ -488,56 +563,8 @@ def save_track_analysis_and_embedding(
     scale = sanitize_db_field(scale, max_length=10, field_name="scale")
     other_features = sanitize_db_field(other_features, max_length=2000, field_name="other_features")
 
-    def _parse_year_from_date(year_value):
-        if year_value is None:
-            return None
-
-        year_str = str(year_value).strip()
-        if not year_str:
-            return None
-
-        try:
-            year = int(year_str)
-            if 1000 <= year <= 2100:
-                return year
-        except (ValueError, TypeError):
-            pass
-
-        normalized = year_str.replace('/', '-')
-        parts = normalized.split('-')
-
-        if len(parts) == 3:
-            try:
-                if len(parts[0]) == 4:
-                    year = int(parts[0])
-                    if 1000 <= year <= 2100:
-                        return year
-
-                if len(parts[2]) == 4:
-                    year = int(parts[2])
-                    if 1000 <= year <= 2100:
-                        return year
-
-                if len(parts[2]) == 2:
-                    year = int(parts[2])
-                    year += 2000 if year < 30 else 1900
-                    if 1000 <= year <= 2100:
-                        return year
-            except (ValueError, TypeError, IndexError):
-                pass
-
-        return None
-
     year = _parse_year_from_date(year)
-
-    if rating is not None:
-        try:
-            rating = int(rating)
-            if rating < 0 or rating > 5:
-                rating = None
-        except (ValueError, TypeError):
-            rating = None
-
+    rating = _clamp_rating(rating)
     file_path = sanitize_db_field(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())

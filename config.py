@@ -218,14 +218,14 @@ OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(
     os.environ.get("OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY", "0.3")
 )
 
-OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate")
+OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "qwen3.5:9b")
 
 MAX_SONGS_IN_AI_PROMPT = int(os.environ.get("MAX_SONGS_IN_AI_PROMPT", "25"))
 
 OPENAI_SERVER_URL = os.environ.get(
     "OPENAI_SERVER_URL",
-    os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate"),
+    os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate"),
 )
 OPENAI_MODEL_NAME = os.environ.get(
     "OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b")
@@ -470,15 +470,13 @@ IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))
 IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))
 IVF_DISK_CACHE_ENABLED = os.environ.get("IVF_DISK_CACHE_ENABLED", "true").lower() == "true"
 IVF_DISK_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_DISK_CACHE_IDLE_SECONDS", "300"))
-IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or (
-    os.path.join(APP_DATA_DIR, "ivf_cache")
-    if APP_DATA_DIR
-    else (
-        "/app/ivf_cache"
-        if os.path.isdir("/app")
-        else os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
-    )
-)
+if APP_DATA_DIR:
+    _ivf_disk_cache_default = os.path.join(APP_DATA_DIR, "ivf_cache")
+elif os.path.isdir("/app"):
+    _ivf_disk_cache_default = "/app/ivf_cache"
+else:
+    _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
+IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
 
 PATH_DISTANCE_METRIC = os.environ.get("PATH_DISTANCE_METRIC", "angular").lower()
 PATH_DEFAULT_LENGTH = int(os.environ.get("PATH_DEFAULT_LENGTH", "25"))

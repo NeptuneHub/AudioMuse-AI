@@ -508,6 +508,89 @@ def fetch_remote_lyrics(
     return None
 
 
+def _vad_retry_segments(
+    audio: np.ndarray,
+    sr: int,
+    result: dict,
+    threshold_segments,
+    primary_threshold: float,
+    retry_floor: float,
+    min_silence_ms,
+    min_speech_ms,
+    speech_pad_ms,
+    max_prob: float,
+    mean_prob: float,
+    n_windows: int,
+) -> list:
+    probs = result.get('probs')
+    if probs is None:
+        return []
+    try:
+        ts = threshold_segments(
+            probs,
+            audio_len=len(audio),
+            sample_rate=sr,
+            threshold=retry_floor,
+            neg_threshold=max(0.01, retry_floor - 0.15),
+            min_speech_duration_ms=min_speech_ms,
+            min_silence_duration_ms=min_silence_ms,
+            speech_pad_ms=speech_pad_ms,
+        )
+    except Exception as exc:
+        logger.warning('VAD retry-threshold pass failed: %s', exc)
+        return []
+    if ts:
+        logger.info(
+            'VAD: retry at threshold %.2f succeeded '
+            '(primary %.2f whiffed; max_prob=%.3f mean_prob=%.3f over %d windows)',
+            retry_floor,
+            primary_threshold,
+            max_prob,
+            mean_prob,
+            n_windows,
+        )
+    return ts
+
+
+def _vad_apply_voice_gate(
+    audio: np.ndarray,
+    voiced: np.ndarray,
+    sr: int,
+    vocal_prior: bool,
+    max_prob: float,
+    n_windows: int,
+) -> np.ndarray:
+    from config import VAD_VOICE_RECOGNITION
+
+    voiced_seconds = len(voiced) / sr
+    if len(voiced) >= sr * VAD_VOICE_RECOGNITION:
+        logger.info(
+            'VAD: %.2fs voiced - keeping voiced segments (max_prob=%.3f over %d windows)',
+            voiced_seconds,
+            max_prob,
+            n_windows,
+        )
+        return voiced
+    if vocal_prior:
+        logger.info(
+            'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) but '
+            'musicnn flagged vocalist mood - bypassing gate, sending full '
+            '%.2fs clip to Whisper',
+            voiced_seconds,
+            VAD_VOICE_RECOGNITION,
+            max_prob,
+            len(audio) / sr,
+        )
+        return audio
+    logger.info(
+        'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) - treating as instrumental',
+        voiced_seconds,
+        VAD_VOICE_RECOGNITION,
+        max_prob,
+    )
+    return np.zeros(0, dtype=audio.dtype)
+
+
 def _apply_vad(audio: np.ndarray, sr: int, vocal_prior: bool = False) -> np.ndarray:
     if sr != 16000 or get_speech_timestamps is None:
         return audio
@@ -541,32 +624,20 @@ def _apply_vad(audio: np.ndarray, sr: int, vocal_prior: bool = False) -> np.ndar
     n_windows = int(result.get('n_windows', 0))
 
     if not ts and max_prob >= retry_floor and primary_threshold > retry_floor:
-        probs = result.get('probs')
-        if probs is not None:
-            try:
-                ts = threshold_segments(
-                    probs,
-                    audio_len=len(audio),
-                    sample_rate=sr,
-                    threshold=retry_floor,
-                    neg_threshold=max(0.01, retry_floor - 0.15),
-                    min_speech_duration_ms=min_speech_ms,
-                    min_silence_duration_ms=min_silence_ms,
-                    speech_pad_ms=speech_pad_ms,
-                )
-            except Exception as exc:
-                logger.warning('VAD retry-threshold pass failed: %s', exc)
-                ts = []
-            if ts:
-                logger.info(
-                    'VAD: retry at threshold %.2f succeeded '
-                    '(primary %.2f whiffed; max_prob=%.3f mean_prob=%.3f over %d windows)',
-                    retry_floor,
-                    primary_threshold,
-                    max_prob,
-                    mean_prob,
-                    n_windows,
-                )
+        ts = _vad_retry_segments(
+            audio,
+            sr,
+            result,
+            threshold_segments,
+            primary_threshold,
+            retry_floor,
+            min_silence_ms,
+            min_speech_ms,
+            speech_pad_ms,
+            max_prob,
+            mean_prob,
+            n_windows,
+        )
 
     if not ts:
         logger.info(
@@ -581,36 +652,8 @@ def _apply_vad(audio: np.ndarray, sr: int, vocal_prior: bool = False) -> np.ndar
         )
         return audio
 
-    from config import VAD_VOICE_RECOGNITION
-
     voiced = np.concatenate([audio[t['start'] : t['end']] for t in ts])
-    voiced_seconds = len(voiced) / sr
-    if len(voiced) < sr * VAD_VOICE_RECOGNITION:
-        if vocal_prior:
-            logger.info(
-                'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) but '
-                'musicnn flagged vocalist mood - bypassing gate, sending full '
-                '%.2fs clip to Whisper',
-                voiced_seconds,
-                VAD_VOICE_RECOGNITION,
-                max_prob,
-                len(audio) / sr,
-            )
-            return audio
-        logger.info(
-            'VAD: only %.2fs voiced (<%ss threshold, max_prob=%.3f) - treating as instrumental',
-            voiced_seconds,
-            VAD_VOICE_RECOGNITION,
-            max_prob,
-        )
-        return np.zeros(0, dtype=audio.dtype)
-    logger.info(
-        'VAD: %.2fs voiced - keeping voiced segments (max_prob=%.3f over %d windows)',
-        voiced_seconds,
-        max_prob,
-        n_windows,
-    )
-    return voiced
+    return _vad_apply_voice_gate(audio, voiced, sr, vocal_prior, max_prob, n_windows)
 
 
 def _transcribe(
@@ -761,243 +804,203 @@ def _asr_should_drop(
     return False
 
 
-def analyze_lyrics(
-    audio: Optional[np.ndarray] = None,
-    sr: Optional[int] = None,
-    source_path: Optional[Union[str, Path]] = None,
-    artist: Optional[str] = None,
-    track: Optional[str] = None,
-    track_id: Optional[str] = None,
-    top_moods: Optional[Dict[str, float]] = None,
-    audio_loader=None,
-) -> Dict[str, object]:
-    threads = get_lyrics_threads()
-    _apply_thread_env(threads)
-
-    used_seconds = 0.0
-    raw_text = ''
-    detected_lang = 'en'
-    asr_lang = 'en'
-    asr_avg_logprob = 0.0
-    whisper_raw_len = 0
-
+def _compute_vocal_prior(top_moods: Optional[Dict[str, float]]) -> Tuple[set, bool]:
     normalized_moods: set = set()
     if top_moods:
         top5 = sorted(top_moods.items(), key=lambda kv: kv[1], reverse=True)[:5]
         normalized_moods = {str(k).strip().lower() for k, _ in top5 if k}
     vocal_prior = bool(normalized_moods & {'female vocalists', 'male vocalists', 'female vocalist'})
+    return normalized_moods, vocal_prior
 
-    try:
-        from config import LYRICS_MUSICNN_SKIP
-    except Exception:
-        LYRICS_MUSICNN_SKIP = True
 
-    if LYRICS_MUSICNN_SKIP and 'instrumental' in normalized_moods:
-        embedding, axis_vector = _make_instrumental_sentinel()
-        logger.info(
-            "STEP 1: musicnn flagged track as instrumental "
-            "(top_moods=%r) - skipping STEPS 2 through 9, applying sentinel "
-            "directly (embedding_dim=%s, axis_dim=%s)",
-            list(top_moods.keys()),
-            embedding.shape[0],
-            axis_vector.shape[0],
-        )
-        return _lyrics_result('', '', '', 0.0, embedding, axis_vector)
-
+def _fetch_mediaserver_lyrics(track_id: Optional[str]) -> str:
     logger.info('STEP 2 start: media server lyrics (track_id=%r)', track_id)
-    if track_id:
-        try:
-            import config as _cfg
-            from tasks.mediaserver import get_lyrics as _ms_get_lyrics
-
-            _ms_timeout = float(getattr(_cfg, 'MUSICSERVER_LYRICS_TIMEOUT', 2.5))
-            ms_text = _ms_get_lyrics(track_id, timeout=_ms_timeout) if _ms_timeout > 0 else None
-            if ms_text:
-                sanitized = _sanitize_api_lyrics(ms_text)
-                if sanitized:
-                    raw_text = sanitized
-                    logger.info(
-                        'STEP 2 end: media server HIT (%s chars) - skipping STEPS 3, 4, 5',
-                        len(raw_text),
-                    )
-                else:
-                    logger.info(
-                        'STEP 2 end: media server returned content but sanitizer dropped it'
-                    )
-            else:
-                logger.info('STEP 2 end: media server MISS')
-        except Exception as exc:
-            logger.warning('STEP 2 failed: %s', exc)
-    else:
+    if not track_id:
         logger.info('STEP 2 end: skipped (no track_id)')
-
+        return ''
     try:
-        from config import LYRICS_API_ENABLE, LYRICS_ASR_ENABLE
-    except Exception:
-        LYRICS_API_ENABLE = True
-        LYRICS_ASR_ENABLE = True
-    if not raw_text:
-        logger.info(
-            'STEP 3 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
-            LYRICS_API_ENABLE,
-            artist,
-            track,
-        )
-        if LYRICS_API_ENABLE and artist and track:
-            api_text = fetch_remote_lyrics(artist, track)
-            if api_text:
-                raw_text = api_text
-                logger.info('STEP 3 end: API HIT (%s chars) - skipping STEPS 4, 5', len(raw_text))
-                logger.info('STEP 3 raw API output: %s', raw_text)
-            else:
-                logger.info('STEP 3 end: API MISS - falling back to Whisper-small ASR')
-        else:
-            logger.info('STEP 3 end: API skipped (disabled or missing artist/track)')
-    else:
+        import config as _cfg
+        from tasks.mediaserver import get_lyrics as _ms_get_lyrics
+
+        _ms_timeout = float(getattr(_cfg, 'MUSICSERVER_LYRICS_TIMEOUT', 2.5))
+        ms_text = _ms_get_lyrics(track_id, timeout=_ms_timeout) if _ms_timeout > 0 else None
+        if not ms_text:
+            logger.info('STEP 2 end: media server MISS')
+            return ''
+        sanitized = _sanitize_api_lyrics(ms_text)
+        if sanitized:
+            logger.info(
+                'STEP 2 end: media server HIT (%s chars) - skipping STEPS 3, 4, 5',
+                len(sanitized),
+            )
+            return sanitized
+        logger.info('STEP 2 end: media server returned content but sanitizer dropped it')
+        return ''
+    except Exception as exc:
+        logger.warning('STEP 2 failed: %s', exc)
+        return ''
+
+
+def _fetch_api_lyrics(
+    raw_text: str, api_enable: bool, artist: Optional[str], track: Optional[str]
+) -> str:
+    if raw_text:
         logger.info('STEP 3 skipped: already have lyrics from media server')
+        return raw_text
+    logger.info(
+        'STEP 3 start: external lyrics API (enabled=%s, artist=%r, track=%r)',
+        api_enable,
+        artist,
+        track,
+    )
+    if not (api_enable and artist and track):
+        logger.info('STEP 3 end: API skipped (disabled or missing artist/track)')
+        return raw_text
+    api_text = fetch_remote_lyrics(artist, track)
+    if api_text:
+        logger.info('STEP 3 end: API HIT (%s chars) - skipping STEPS 4, 5', len(api_text))
+        logger.info('STEP 3 raw API output: %s', api_text)
+        return api_text
+    logger.info('STEP 3 end: API MISS - falling back to Whisper-small ASR')
+    return raw_text
 
-    if not raw_text and not LYRICS_ASR_ENABLE:
-        logger.info(
-            'STEPS 4-5 skipped: LYRICS_ASR_ENABLE=false - no upstream '
-            'lyrics found, deferring to instrumental sentinel (STEP 9)'
-        )
 
-    if not raw_text and LYRICS_ASR_ENABLE:
-        logger.info('STEP 4 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
-        if audio is None or sr is None:
-            if source_path:
-                if not os.path.exists(str(source_path)):
-                    raise FileNotFoundError(f'Audio source not found: {source_path}')
-                audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
-            elif audio_loader is not None:
-                logger.info('STEP 4: ASR needed - downloading audio now')
-                audio, sr, loaded_path = audio_loader()
-                if not source_path and loaded_path:
-                    source_path = loaded_path
-            else:
-                raise ValueError(
-                    'analyze_lyrics requires audio+sr, source_path, or audio_loader for ASR when lyrics are not found upstream'
-                )
-        audio_clip, used_seconds = _clip_audio(audio, sr)
-        logger.info(
-            'STEP 4 end: audio ready, used=%.2fs samples=%s sr=%s',
-            used_seconds,
-            len(audio_clip),
-            sr,
-        )
+def _prepare_audio_clip(
+    audio: Optional[np.ndarray],
+    sr: Optional[int],
+    source_path: Optional[Union[str, Path]],
+    audio_loader,
+    vocal_prior: bool,
+) -> Tuple[np.ndarray, int, float]:
+    logger.info('STEP 4 start: prepare audio (max %.1fs)', MAX_AUDIO_SECONDS)
+    if audio is None or sr is None:
+        if source_path:
+            if not os.path.exists(str(source_path)):
+                raise FileNotFoundError(f'Audio source not found: {source_path}')
+            audio, sr = _load_audio_from_path(str(source_path), sr=DEFAULT_SAMPLE_RATE)
+        elif audio_loader is not None:
+            logger.info('STEP 4: ASR needed - downloading audio now')
+            audio, sr, _loaded_path = audio_loader()
+        else:
+            raise ValueError(
+                'analyze_lyrics requires audio+sr, source_path, or audio_loader for ASR when lyrics are not found upstream'
+            )
+    audio_clip, used_seconds = _clip_audio(audio, sr)
+    logger.info(
+        'STEP 4 end: audio ready, used=%.2fs samples=%s sr=%s',
+        used_seconds,
+        len(audio_clip),
+        sr,
+    )
 
-        pre_vad_samples = len(audio_clip)
-        audio_clip = _apply_vad(audio_clip, sr, vocal_prior=vocal_prior)
-        if len(audio_clip) != pre_vad_samples:
-            logger.info('VAD: %.2fs -> %.2fs voiced', pre_vad_samples / sr, len(audio_clip) / sr)
+    pre_vad_samples = len(audio_clip)
+    audio_clip = _apply_vad(audio_clip, sr, vocal_prior=vocal_prior)
+    if len(audio_clip) != pre_vad_samples:
+        logger.info('VAD: %.2fs -> %.2fs voiced', pre_vad_samples / sr, len(audio_clip) / sr)
+    return audio_clip, sr, used_seconds
 
-        _ASR_TIMEOUT_S = 300
-        logger.info(
-            'STEP 5 start: whisper_small transcription (threads=%s, timeout=%ss)',
-            threads,
+
+def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dict[str, object]:
+    _ASR_TIMEOUT_S = 300
+    logger.info(
+        'STEP 5 start: whisper_small transcription (threads=%s, timeout=%ss)',
+        threads,
+        _ASR_TIMEOUT_S,
+    )
+
+    class _AsrTimeout(Exception):
+        pass
+
+    def _alarm_handler(signum, frame):
+        raise _AsrTimeout()
+
+    _has_alarm = hasattr(signal, 'SIGALRM')
+    if _has_alarm:
+        _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(_ASR_TIMEOUT_S)
+    try:
+        return _transcribe(audio_clip, sr, num_threads=threads)
+    except _AsrTimeout:
+        logger.warning(
+            'STEP 5 timeout: Whisper-small ASR exceeded %ss - returning empty transcript',
             _ASR_TIMEOUT_S,
         )
-
-        class _AsrTimeout(Exception):
-            pass
-
-        def _alarm_handler(signum, frame):
-            raise _AsrTimeout()
-
-        _has_alarm = hasattr(signal, 'SIGALRM')
+        return {'text': '', 'language': '', 'duration': len(audio_clip) / sr}
+    finally:
         if _has_alarm:
-            _old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-            signal.alarm(_ASR_TIMEOUT_S)
-        try:
-            transcription = _transcribe(audio_clip, sr, num_threads=threads)
-        except _AsrTimeout:
-            logger.warning(
-                'STEP 5 timeout: Whisper-small ASR exceeded %ss - returning empty transcript',
-                _ASR_TIMEOUT_S,
-            )
-            transcription = {'text': '', 'language': '', 'duration': len(audio_clip) / sr}
-        finally:
-            if _has_alarm:
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, _old_handler)
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, _old_handler)
 
-        raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
-        whisper_raw_len = len(raw_text)
-        asr_lang = (transcription.get('language') or '').strip().lower()
-        asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
-        detected_lang = asr_lang or 'en'
+
+def _postprocess_asr(transcription: Dict[str, object]) -> Tuple[str, int, str, float, str]:
+    raw_text = _sanitize_lyrics_text((transcription.get('text') or '').strip())
+    whisper_raw_len = len(raw_text)
+    asr_lang = (transcription.get('language') or '').strip().lower()
+    asr_avg_logprob = float(transcription.get('avg_logprob', float('-inf')))
+    detected_lang = asr_lang or 'en'
+    logger.info(
+        'STEP 5 end: transcript length=%s chars / asr_lang=%r / avg_logprob=%.2f',
+        len(raw_text),
+        asr_lang,
+        asr_avg_logprob,
+    )
+    logger.info('STEP 5 raw ASR output: %s', raw_text or '<empty>')
+    _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, asr_lang)
+    if _script and _script != asr_lang:
+        logger.info('STEP 5: CJK script override %r -> %r', asr_lang, _script)
+    if _resolved:
+        detected_lang = _resolved
+    if _reject:
         logger.info(
-            'STEP 5 end: transcript length=%s chars / asr_lang=%r / avg_logprob=%.2f',
-            len(raw_text),
-            asr_lang,
-            asr_avg_logprob,
-        )
-        logger.info('STEP 5 raw ASR output: %s', raw_text or '<empty>')
-        _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, asr_lang)
-        if _script and _script != asr_lang:
-            logger.info('STEP 5: CJK script override %r -> %r', asr_lang, _script)
-        if _resolved:
-            detected_lang = _resolved
-        if _reject:
-            logger.info(
-                'STEP 5: ASR transcript rejected (%s) - dropping to instrumental sentinel', _reject
-            )
-            raw_text = ''
-
-    if raw_text and whisper_raw_len == 0:
-        try:
-            from langdetect import detect_langs, DetectorFactory
-
-            DetectorFactory.seed = 0
-            _langs = detect_langs(raw_text)
-            text_lang = (_langs[0].lang or '').strip().lower() if _langs else ''
-            text_conf = float(_langs[0].prob) if _langs else 0.0
-        except Exception as exc:
-            logger.warning('STEP 6: langdetect failed (%s)', exc)
-            text_lang, text_conf = '', 0.0
-        logger.info(
-            'STEP 6: langdetect (%s chars) -> %r (conf=%.2f)', len(raw_text), text_lang, text_conf
-        )
-        _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, text_lang)
-        if _script:
-            if _script != text_lang:
-                logger.info(
-                    'STEP 6: CJK script override %r -> %r (langdetect conf=%.2f)',
-                    text_lang,
-                    _script,
-                    text_conf,
-                )
-            text_lang = _resolved
-            if _reject:
-                logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
-                raw_text = ''
-        elif text_conf < LANG_CONFIDENCE_MIN:
-            logger.info(
-                'STEP 6: confidence %.2f < %.2f - dropping to instrumental',
-                text_conf,
-                LANG_CONFIDENCE_MIN,
-            )
-            raw_text = ''
-        elif _reject:
-            logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
-            raw_text = ''
-        if raw_text:
-            detected_lang = text_lang or detected_lang
-
-    if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
-        logger.info(
-            'STEP 7: dropping ASR transcript (lang=%r, logprob=%.2f)', asr_lang, asr_avg_logprob
+            'STEP 5: ASR transcript rejected (%s) - dropping to instrumental sentinel', _reject
         )
         raw_text = ''
-    logger.info('STEP 7 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
+    return raw_text, whisper_raw_len, asr_lang, asr_avg_logprob, detected_lang
 
-    final_text = raw_text
-    if final_text:
-        _reject = _text_quality_reject(final_text, detected_lang)
+
+def _langdetect_text_lyrics(raw_text: str, detected_lang: str) -> Tuple[str, str]:
+    try:
+        from langdetect import detect_langs, DetectorFactory
+
+        DetectorFactory.seed = 0
+        _langs = detect_langs(raw_text)
+        text_lang = (_langs[0].lang or '').strip().lower() if _langs else ''
+        text_conf = float(_langs[0].prob) if _langs else 0.0
+    except Exception as exc:
+        logger.warning('STEP 6: langdetect failed (%s)', exc)
+        text_lang, text_conf = '', 0.0
+    logger.info(
+        'STEP 6: langdetect (%s chars) -> %r (conf=%.2f)', len(raw_text), text_lang, text_conf
+    )
+    _resolved, _script, _reject = _resolve_lang_and_quality(raw_text, text_lang)
+    if _script:
+        if _script != text_lang:
+            logger.info(
+                'STEP 6: CJK script override %r -> %r (langdetect conf=%.2f)',
+                text_lang,
+                _script,
+                text_conf,
+            )
+        text_lang = _resolved
         if _reject:
-            logger.info('STEP 8: final text rejected (%s) - dropping to instrumental', _reject)
-            raw_text = final_text = ''
-    logger.info('STEP 9 start: embedding + axis scoring (chars=%s)', len(final_text))
+            logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
+            raw_text = ''
+    elif text_conf < LANG_CONFIDENCE_MIN:
+        logger.info(
+            'STEP 6: confidence %.2f < %.2f - dropping to instrumental',
+            text_conf,
+            LANG_CONFIDENCE_MIN,
+        )
+        raw_text = ''
+    elif _reject:
+        logger.info('STEP 6: text lyrics rejected (%s) - dropping to instrumental', _reject)
+        raw_text = ''
+    if raw_text:
+        detected_lang = text_lang or detected_lang
+    return raw_text, detected_lang
+
+
+def _finalize_embedding(final_text: str) -> Tuple[Optional[np.ndarray], np.ndarray]:
     embedding = None
     axis_vector: np.ndarray = np.zeros(0, dtype=np.float32)
     if len(final_text) >= MIN_CHARS_FOR_EMBEDDING:
@@ -1005,8 +1008,6 @@ def analyze_lyrics(
         embedding = _embed_text(final_text, tokenizer, model)
         if embedding is not None:
             axis_vector = _score_axes(embedding)
-    else:
-        raw_text = final_text = ''
 
     if embedding is None or getattr(embedding, 'size', 0) == 0:
         try:
@@ -1024,5 +1025,104 @@ def analyze_lyrics(
         None if embedding is None else embedding.shape,
         int(axis_vector.shape[0]) if axis_vector is not None else 0,
     )
+    return embedding, axis_vector
+
+
+def _instrumental_short_circuit(
+    normalized_moods: set, top_moods: Optional[Dict[str, float]]
+) -> Optional[Dict[str, object]]:
+    try:
+        from config import LYRICS_MUSICNN_SKIP
+    except Exception:
+        LYRICS_MUSICNN_SKIP = True
+
+    if not (LYRICS_MUSICNN_SKIP and 'instrumental' in normalized_moods):
+        return None
+    embedding, axis_vector = _make_instrumental_sentinel()
+    logger.info(
+        "STEP 1: musicnn flagged track as instrumental "
+        "(top_moods=%r) - skipping STEPS 2 through 9, applying sentinel "
+        "directly (embedding_dim=%s, axis_dim=%s)",
+        list(top_moods.keys()),
+        embedding.shape[0],
+        axis_vector.shape[0],
+    )
+    return _lyrics_result('', '', '', 0.0, embedding, axis_vector)
+
+
+def _load_lyrics_source_flags() -> Tuple[bool, bool]:
+    try:
+        from config import LYRICS_API_ENABLE, LYRICS_ASR_ENABLE
+
+        return LYRICS_API_ENABLE, LYRICS_ASR_ENABLE
+    except Exception:
+        return True, True
+
+
+def analyze_lyrics(
+    audio: Optional[np.ndarray] = None,
+    sr: Optional[int] = None,
+    source_path: Optional[Union[str, Path]] = None,
+    artist: Optional[str] = None,
+    track: Optional[str] = None,
+    track_id: Optional[str] = None,
+    top_moods: Optional[Dict[str, float]] = None,
+    audio_loader=None,
+) -> Dict[str, object]:
+    threads = get_lyrics_threads()
+    _apply_thread_env(threads)
+
+    used_seconds = 0.0
+    detected_lang = 'en'
+    asr_lang = 'en'
+    asr_avg_logprob = 0.0
+    whisper_raw_len = 0
+
+    normalized_moods, vocal_prior = _compute_vocal_prior(top_moods)
+
+    short_circuit = _instrumental_short_circuit(normalized_moods, top_moods)
+    if short_circuit is not None:
+        return short_circuit
+
+    raw_text = _fetch_mediaserver_lyrics(track_id)
+
+    api_enable, asr_enable = _load_lyrics_source_flags()
+    raw_text = _fetch_api_lyrics(raw_text, api_enable, artist, track)
+
+    if not raw_text and not asr_enable:
+        logger.info(
+            'STEPS 4-5 skipped: LYRICS_ASR_ENABLE=false - no upstream '
+            'lyrics found, deferring to instrumental sentinel (STEP 9)'
+        )
+
+    if not raw_text and asr_enable:
+        audio_clip, sr, used_seconds = _prepare_audio_clip(
+            audio, sr, source_path, audio_loader, vocal_prior
+        )
+        transcription = _run_asr_transcription(audio_clip, sr, threads)
+        raw_text, whisper_raw_len, asr_lang, asr_avg_logprob, detected_lang = _postprocess_asr(
+            transcription
+        )
+
+    if raw_text and whisper_raw_len == 0:
+        raw_text, detected_lang = _langdetect_text_lyrics(raw_text, detected_lang)
+
+    if _asr_should_drop(raw_text, whisper_raw_len, asr_lang, asr_avg_logprob):
+        logger.info(
+            'STEP 7: dropping ASR transcript (lang=%r, logprob=%.2f)', asr_lang, asr_avg_logprob
+        )
+        raw_text = ''
+    logger.info('STEP 7 end: language=%s, kept_text=%s', detected_lang, bool(raw_text))
+
+    final_text = raw_text
+    if final_text:
+        _reject = _text_quality_reject(final_text, detected_lang)
+        if _reject:
+            logger.info('STEP 8: final text rejected (%s) - dropping to instrumental', _reject)
+            raw_text = final_text = ''
+    logger.info('STEP 9 start: embedding + axis scoring (chars=%s)', len(final_text))
+    if len(final_text) < MIN_CHARS_FOR_EMBEDDING:
+        raw_text = final_text = ''
+    embedding, axis_vector = _finalize_embedding(final_text)
 
     return _lyrics_result(raw_text, final_text, detected_lang, used_seconds, embedding, axis_vector)

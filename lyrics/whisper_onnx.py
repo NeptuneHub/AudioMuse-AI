@@ -61,6 +61,8 @@ LANGUAGE_TOKEN_END = 50358
 
 _SUPPRESS_TOKEN_IDS: Tuple[int, ...] = tuple(range(LANGUAGE_TOKEN_START, LANGUAGE_TOKEN_END + 1))
 
+_PAST_KEY_VALUES_PREFIX = 'past_key_values.'
+
 
 def _log_softmax_row(logits_row: np.ndarray) -> np.ndarray:
     x = logits_row.astype(np.float64, copy=False)
@@ -265,7 +267,7 @@ class _OnnxWhisperPipeline:
         sample_pkv = next(
             inp
             for inp in self.decoder_session.get_inputs()
-            if inp.name.startswith('past_key_values.')
+            if inp.name.startswith(_PAST_KEY_VALUES_PREFIX)
             and '.decoder.' in inp.name
             and inp.name.endswith('.key')
         )
@@ -276,7 +278,7 @@ class _OnnxWhisperPipeline:
         self.present_to_past: Dict[str, str] = {}
         for name in self.decoder_output_names:
             if name.startswith('present.'):
-                past_name = 'past_key_values.' + name[len('present.') :]
+                past_name = _PAST_KEY_VALUES_PREFIX + name[len('present.') :]
                 if past_name in self.decoder_input_names:
                     self.present_to_past[name] = past_name
 
@@ -310,7 +312,7 @@ class _OnnxWhisperPipeline:
     def _empty_past_kv(self) -> Dict[str, np.ndarray]:
         past_kv: Dict[str, np.ndarray] = {}
         for name in self.decoder_input_names:
-            if not name.startswith('past_key_values.'):
+            if not name.startswith(_PAST_KEY_VALUES_PREFIX):
                 continue
             past_kv[name] = np.zeros((1, self.num_heads, 1, self.head_dim), dtype=np.float32)
         return past_kv
@@ -349,6 +351,132 @@ class _OnnxWhisperPipeline:
         code = self.lang_token_to_code.get(top_id, 'en')
         return code, top_prob
 
+    def _greedy_decode(
+        self,
+        logits: np.ndarray,
+        past_kv: Dict[str, np.ndarray],
+        encoder_hidden_states: np.ndarray,
+        max_new_tokens: int,
+    ) -> Tuple[str, float]:
+        generated: List[int] = []
+        token_logprobs: List[float] = []
+        next_token, lp = self._sample_next(logits, generated)
+        if next_token == EOT_TOKEN_ID:
+            return '', float('-inf')
+        for _ in range(max_new_tokens - 1):
+            generated.append(next_token)
+            token_logprobs.append(lp)
+            input_ids = np.array([[next_token]], dtype=np.int64)
+            logits, named = self._decode_step(
+                input_ids, encoder_hidden_states, past_kv, use_cache=True
+            )
+            past_kv = self._absorb_present(past_kv, named, on_first_step=False)
+            next_token, lp = self._sample_next(logits, generated)
+            if next_token == EOT_TOKEN_ID:
+                break
+        avg_logprob = float(np.mean(token_logprobs)) if token_logprobs else float('-inf')
+        text = self.tokenizer.decode(generated, skip_special_tokens=True)
+        return text.strip(), avg_logprob
+
+    def _init_beams(
+        self, logits: np.ndarray, past_kv: Dict[str, np.ndarray], k: int
+    ) -> List[Dict[str, Any]]:
+        first_log_probs = self._compute_log_probs(logits, [])
+        top_init = np.argpartition(first_log_probs, -k)[-k:]
+        top_init = top_init[np.argsort(-first_log_probs[top_init])]
+        beams: List[Dict[str, Any]] = []
+        for tok_id in top_init:
+            tok_id = int(tok_id)
+            beams.append(
+                {
+                    'tokens': [tok_id],
+                    'log_prob_sum': float(first_log_probs[tok_id]),
+                    'past_kv': dict(past_kv),
+                    'finished': tok_id == EOT_TOKEN_ID,
+                }
+            )
+        return beams
+
+    def _expand_beam(
+        self,
+        beam: Dict[str, Any],
+        parent_idx: int,
+        encoder_hidden_states: np.ndarray,
+        k: int,
+    ) -> List[Tuple[float, int, Optional[int], Optional[Dict[str, np.ndarray]]]]:
+        if beam['finished']:
+            return [(beam['log_prob_sum'], parent_idx, None, None)]
+        last_tok = beam['tokens'][-1]
+        input_ids = np.array([[last_tok]], dtype=np.int64)
+        logits, named = self._decode_step(
+            input_ids, encoder_hidden_states, beam['past_kv'], use_cache=True
+        )
+        new_past_kv = self._absorb_present(dict(beam['past_kv']), named, on_first_step=False)
+        log_probs = self._compute_log_probs(logits, beam['tokens'])
+        top_idx = np.argpartition(log_probs, -k)[-k:]
+        out: List[Tuple[float, int, Optional[int], Optional[Dict[str, np.ndarray]]]] = []
+        for tok_id in top_idx:
+            tok_id = int(tok_id)
+            new_log_prob = beam['log_prob_sum'] + float(log_probs[tok_id])
+            out.append((new_log_prob, parent_idx, tok_id, new_past_kv))
+        return out
+
+    def _select_beams(
+        self,
+        beams: List[Dict[str, Any]],
+        candidates: List[Tuple[float, int, Optional[int], Optional[Dict[str, np.ndarray]]]],
+        k: int,
+    ) -> List[Dict[str, Any]]:
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        new_beams: List[Dict[str, Any]] = []
+        for log_prob_sum, parent_idx, tok_id, new_past_kv in candidates[:k]:
+            parent = beams[parent_idx]
+            if tok_id is None:
+                new_beams.append(parent)
+                continue
+            new_beams.append(
+                {
+                    'tokens': parent['tokens'] + [tok_id],
+                    'log_prob_sum': log_prob_sum,
+                    'past_kv': new_past_kv,
+                    'finished': tok_id == EOT_TOKEN_ID,
+                }
+            )
+        return new_beams
+
+    def _finalize_beams(self, beams: List[Dict[str, Any]]) -> Tuple[str, float]:
+        def _score(b: Dict[str, Any]) -> float:
+            n = max(1, len(b['tokens']))
+            return float(b['log_prob_sum']) / n
+
+        best = max(beams, key=_score)
+        tokens: List[int] = list(best['tokens'])
+        if tokens and tokens[-1] == EOT_TOKEN_ID:
+            tokens = tokens[:-1]
+        avg_logprob = float(best['log_prob_sum']) / max(1, len(tokens) or 1)
+        text = self.tokenizer.decode(tokens, skip_special_tokens=True)
+        return text.strip(), avg_logprob
+
+    def _beam_decode(
+        self,
+        logits: np.ndarray,
+        past_kv: Dict[str, np.ndarray],
+        encoder_hidden_states: np.ndarray,
+        max_new_tokens: int,
+        k: int,
+    ) -> Tuple[str, float]:
+        beams = self._init_beams(logits, past_kv, k)
+        for _ in range(max_new_tokens - 1):
+            if all(b['finished'] for b in beams):
+                break
+            candidates: List[Tuple[float, int, Optional[int], Optional[Dict[str, np.ndarray]]]] = []
+            for parent_idx, beam in enumerate(beams):
+                candidates.extend(
+                    self._expand_beam(beam, parent_idx, encoder_hidden_states, k)
+                )
+            beams = self._select_beams(beams, candidates, k)
+        return self._finalize_beams(beams)
+
     def _decode_chunk(
         self,
         encoder_hidden_states: np.ndarray,
@@ -368,93 +496,9 @@ class _OnnxWhisperPipeline:
         k = max(1, int(beam_size))
 
         if k == 1:
-            generated: List[int] = []
-            token_logprobs: List[float] = []
-            next_token, lp = self._sample_next(logits, generated)
-            if next_token == EOT_TOKEN_ID:
-                return '', float('-inf')
-            for _ in range(max_new_tokens - 1):
-                generated.append(next_token)
-                token_logprobs.append(lp)
-                input_ids = np.array([[next_token]], dtype=np.int64)
-                logits, named = self._decode_step(
-                    input_ids, encoder_hidden_states, past_kv, use_cache=True
-                )
-                past_kv = self._absorb_present(past_kv, named, on_first_step=False)
-                next_token, lp = self._sample_next(logits, generated)
-                if next_token == EOT_TOKEN_ID:
-                    break
-            avg_logprob = float(np.mean(token_logprobs)) if token_logprobs else float('-inf')
-            text = self.tokenizer.decode(generated, skip_special_tokens=True)
-            return text.strip(), avg_logprob
+            return self._greedy_decode(logits, past_kv, encoder_hidden_states, max_new_tokens)
 
-        first_log_probs = self._compute_log_probs(logits, [])
-        top_init = np.argpartition(first_log_probs, -k)[-k:]
-        top_init = top_init[np.argsort(-first_log_probs[top_init])]
-        beams: List[Dict[str, Any]] = []
-        for tok_id in top_init:
-            tok_id = int(tok_id)
-            beams.append(
-                {
-                    'tokens': [tok_id],
-                    'log_prob_sum': float(first_log_probs[tok_id]),
-                    'past_kv': dict(past_kv),
-                    'finished': tok_id == EOT_TOKEN_ID,
-                }
-            )
-
-        for _ in range(max_new_tokens - 1):
-            if all(b['finished'] for b in beams):
-                break
-
-            candidates: List[Tuple[float, int, Optional[int], Optional[Dict[str, np.ndarray]]]] = []
-            for parent_idx, beam in enumerate(beams):
-                if beam['finished']:
-                    candidates.append((beam['log_prob_sum'], parent_idx, None, None))
-                    continue
-                last_tok = beam['tokens'][-1]
-                input_ids = np.array([[last_tok]], dtype=np.int64)
-                logits, named = self._decode_step(
-                    input_ids, encoder_hidden_states, beam['past_kv'], use_cache=True
-                )
-                new_past_kv = self._absorb_present(
-                    dict(beam['past_kv']), named, on_first_step=False
-                )
-                log_probs = self._compute_log_probs(logits, beam['tokens'])
-                top_idx = np.argpartition(log_probs, -k)[-k:]
-                for tok_id in top_idx:
-                    tok_id = int(tok_id)
-                    new_log_prob = beam['log_prob_sum'] + float(log_probs[tok_id])
-                    candidates.append((new_log_prob, parent_idx, tok_id, new_past_kv))
-
-            candidates.sort(key=lambda c: c[0], reverse=True)
-            new_beams: List[Dict[str, Any]] = []
-            for log_prob_sum, parent_idx, tok_id, new_past_kv in candidates[:k]:
-                parent = beams[parent_idx]
-                if tok_id is None:
-                    new_beams.append(parent)
-                    continue
-                new_beams.append(
-                    {
-                        'tokens': parent['tokens'] + [tok_id],
-                        'log_prob_sum': log_prob_sum,
-                        'past_kv': new_past_kv,
-                        'finished': tok_id == EOT_TOKEN_ID,
-                    }
-                )
-            beams = new_beams
-
-        def _score(b: Dict[str, Any]) -> float:
-            n = max(1, len(b['tokens']))
-            return float(b['log_prob_sum']) / n
-
-        best = max(beams, key=_score)
-        tokens: List[int] = list(best['tokens'])
-        if tokens and tokens[-1] == EOT_TOKEN_ID:
-            tokens = tokens[:-1]
-        avg_logprob = float(best['log_prob_sum']) / max(1, len(tokens) or 1)
-        text = self.tokenizer.decode(tokens, skip_special_tokens=True)
-        return text.strip(), avg_logprob
+        return self._beam_decode(logits, past_kv, encoder_hidden_states, max_new_tokens, k)
 
     def _absorb_present(
         self,
@@ -486,6 +530,79 @@ class _OnnxWhisperPipeline:
         log_probs = self._compute_log_probs(logits, generated)
         next_token = int(np.argmax(log_probs))
         return next_token, float(log_probs[next_token])
+
+    def _resolve_language(
+        self, first_enc: np.ndarray, language: Optional[str]
+    ) -> Tuple[str, float]:
+        if language:
+            return language.strip().lower(), 1.0
+        detected_code, detected_prob = self._detect_language(first_enc)
+        logger.info(
+            "Whisper-small: detected language=%r confidence=%.3f (threshold=%.2f)",
+            detected_code,
+            detected_prob,
+            LYRICS_WHISPER_LANG_CONFIDENCE,
+        )
+        return detected_code, detected_prob
+
+    def _resolve_lang_token_id(self, detected_code: str) -> int:
+        code_to_token = {v: k for k, v in self.lang_token_to_code.items()}
+        lang_token_id = code_to_token.get(detected_code)
+        if lang_token_id is None:
+            logger.warning(
+                "Whisper-small: language code %r has no matching <|xx|> "
+                "token; falling back to 'en' for decoding.",
+                detected_code,
+            )
+            lang_token_id = code_to_token.get('en', LANGUAGE_TOKEN_START)
+        return lang_token_id
+
+    def _process_chunk(
+        self,
+        enc: np.ndarray,
+        chunk_idx: int,
+        n_chunks: int,
+        chunk_samples: int,
+        lang_token_id: int,
+        max_new_tokens: int,
+    ) -> Tuple[str, float]:
+        chunk_seconds = chunk_samples / SAMPLE_RATE
+        text, avg_lp = self._decode_chunk(
+            enc,
+            lang_token_id,
+            max_new_tokens,
+            beam_size=WHISPER_BEAM_SIZE,
+        )
+        cleaned = text.strip()
+        dropped_by_compression = False
+        if (
+            cleaned
+            and WHISPER_COMPRESSION_RATIO_THRESHOLD > 0
+            and _compression_ratio(cleaned) > WHISPER_COMPRESSION_RATIO_THRESHOLD
+        ):
+            logger.warning(
+                "Whisper-small: compression ratio %.2f > %.2f - "
+                "dropping repetition-collapsed chunk (%d chars)",
+                _compression_ratio(cleaned),
+                WHISPER_COMPRESSION_RATIO_THRESHOLD,
+                len(cleaned),
+            )
+            cleaned = ''
+            avg_lp = float('-inf')
+            dropped_by_compression = True
+        preview = (cleaned[:80] + '…') if len(cleaned) > 80 else cleaned
+        logger.info(
+            "Whisper-small: chunk %d/%d (%.2fs, %d samples) -> %d chars, avg_logprob=%s%s | %r",
+            chunk_idx + 1,
+            n_chunks,
+            chunk_seconds,
+            chunk_samples,
+            len(cleaned),
+            f"{avg_lp:.3f}" if avg_lp != float('-inf') else '-inf',
+            ' (DROPPED by compression)' if dropped_by_compression else '',
+            preview,
+        )
+        return cleaned, avg_lp
 
     def transcribe(
         self, wav: np.ndarray, language: Optional[str] = None, max_new_tokens: Optional[int] = None
@@ -530,39 +647,22 @@ class _OnnxWhisperPipeline:
 
         first_mel = _log_mel_spectrogram(windows[0], self.mel_filters)
         first_enc = self._encode(first_mel)
-        if language:
-            detected_code, detected_prob = language.strip().lower(), 1.0
-        else:
-            detected_code, detected_prob = self._detect_language(first_enc)
+        detected_code, detected_prob = self._resolve_language(first_enc, language)
+        if not language and detected_prob < LYRICS_WHISPER_LANG_CONFIDENCE:
             logger.info(
-                "Whisper-small: detected language=%r confidence=%.3f (threshold=%.2f)",
-                detected_code,
+                "Whisper-small: language confidence %.3f < %.2f - "
+                "dropping transcript, treating as instrumental",
                 detected_prob,
                 LYRICS_WHISPER_LANG_CONFIDENCE,
             )
-            if detected_prob < LYRICS_WHISPER_LANG_CONFIDENCE:
-                logger.info(
-                    "Whisper-small: language confidence %.3f < %.2f - "
-                    "dropping transcript, treating as instrumental",
-                    detected_prob,
-                    LYRICS_WHISPER_LANG_CONFIDENCE,
-                )
-                return {
-                    "text": "",
-                    "language": "",
-                    "duration": audio_duration,
-                    "avg_logprob": float('-inf'),
-                }
+            return {
+                "text": "",
+                "language": "",
+                "duration": audio_duration,
+                "avg_logprob": float('-inf'),
+            }
 
-        code_to_token = {v: k for k, v in self.lang_token_to_code.items()}
-        lang_token_id = code_to_token.get(detected_code)
-        if lang_token_id is None:
-            logger.warning(
-                "Whisper-small: language code %r has no matching <|xx|> "
-                "token; falling back to 'en' for decoding.",
-                detected_code,
-            )
-            lang_token_id = code_to_token.get('en', LANGUAGE_TOKEN_START)
+        lang_token_id = self._resolve_lang_token_id(detected_code)
 
         texts: List[str] = []
         chunk_logprobs: List[float] = []
@@ -572,42 +672,13 @@ class _OnnxWhisperPipeline:
             encoder_outputs.append(self._encode(mel))
 
         for chunk_idx, enc in enumerate(encoder_outputs):
-            chunk_samples = len(windows[chunk_idx])
-            chunk_seconds = chunk_samples / SAMPLE_RATE
-            text, avg_lp = self._decode_chunk(
+            cleaned, avg_lp = self._process_chunk(
                 enc,
+                chunk_idx,
+                len(encoder_outputs),
+                len(windows[chunk_idx]),
                 lang_token_id,
                 max_new_tokens,
-                beam_size=WHISPER_BEAM_SIZE,
-            )
-            cleaned = text.strip()
-            dropped_by_compression = False
-            if (
-                cleaned
-                and WHISPER_COMPRESSION_RATIO_THRESHOLD > 0
-                and _compression_ratio(cleaned) > WHISPER_COMPRESSION_RATIO_THRESHOLD
-            ):
-                logger.warning(
-                    "Whisper-small: compression ratio %.2f > %.2f - "
-                    "dropping repetition-collapsed chunk (%d chars)",
-                    _compression_ratio(cleaned),
-                    WHISPER_COMPRESSION_RATIO_THRESHOLD,
-                    len(cleaned),
-                )
-                cleaned = ''
-                avg_lp = float('-inf')
-                dropped_by_compression = True
-            preview = (cleaned[:80] + '…') if len(cleaned) > 80 else cleaned
-            logger.info(
-                "Whisper-small: chunk %d/%d (%.2fs, %d samples) -> %d chars, avg_logprob=%s%s | %r",
-                chunk_idx + 1,
-                len(encoder_outputs),
-                chunk_seconds,
-                chunk_samples,
-                len(cleaned),
-                f"{avg_lp:.3f}" if avg_lp != float('-inf') else '-inf',
-                ' (DROPPED by compression)' if dropped_by_compression else '',
-                preview,
             )
             if cleaned:
                 texts.append(cleaned)

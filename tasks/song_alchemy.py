@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import threading
 from typing import List, Tuple
 import numpy as np
@@ -18,6 +19,29 @@ from database import get_score_data_by_ids, load_map_projection
 import config
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_artist_name(s: str) -> str:
+    return (
+        s.lower()
+        .replace(' ', '')
+        .replace('-', '')
+        .replace('\u2010', '')
+        .replace('/', '')
+        .replace("'", '')
+    )
+
+
+def _fuzzy_match_gmm(artist_name, artist_gmm_params, reverse_artist_map):
+    query_norm = _normalize_artist_name(artist_name)
+    for gmm_artist in reverse_artist_map:
+        if _normalize_artist_name(gmm_artist) != query_norm:
+            continue
+        gmm = artist_gmm_params.get(gmm_artist)
+        if gmm:
+            logger.info(f"Fuzzy GMM match: '{artist_name}' -> '{gmm_artist}'")
+            return gmm, gmm_artist
+    return None, artist_name
 
 
 def _get_artist_gmm_vectors_and_weights(
@@ -45,25 +69,9 @@ def _get_artist_gmm_vectors_and_weights(
     gmm = artist_gmm_params.get(artist_name)
 
     if not gmm and reverse_artist_map:
-
-        def _normalize(s: str) -> str:
-            return (
-                s.lower()
-                .replace(' ', '')
-                .replace('-', '')
-                .replace('\u2010', '')
-                .replace('/', '')
-                .replace("'", '')
-            )
-
-        query_norm = _normalize(artist_name)
-        for gmm_artist in reverse_artist_map:
-            if _normalize(gmm_artist) == query_norm:
-                gmm = artist_gmm_params.get(gmm_artist)
-                if gmm:
-                    logger.info(f"Fuzzy GMM match: '{artist_name}' -> '{gmm_artist}'")
-                    artist_name = gmm_artist
-                    break
+        gmm, artist_name = _fuzzy_match_gmm(
+            artist_name, artist_gmm_params, reverse_artist_map
+        )
 
     if not gmm:
         logger.warning(f"No GMM found for artist '{artist_name}'")
@@ -361,7 +369,7 @@ def song_alchemy(
 
     if (
         temperature is not None
-        and float(temperature) == 0.0
+        and math.isclose(float(temperature), 0.0)
         and add_items
         and len(add_items) == 1
         and add_items[0].get('type') == 'song'
@@ -974,7 +982,6 @@ def song_alchemy(
         f"Song Alchemy: Using temperature={temperature} for probabilistic sampling of {len(scored_candidates)} candidates"
     )
 
-    import math
     import random
 
     ids = [c[0] for c in scored_candidates]

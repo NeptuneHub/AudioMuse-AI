@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 # Import config module - read attributes at call time so runtime updates take effect
 import config
 
+_SSE_DATA_PREFIX = "data: "
+
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint(
     'chat_bp',
@@ -287,7 +289,7 @@ def chat_playlist_stream_api():
             out = ""
             while sent < len(log_messages):
                 out += (
-                    "data: "
+                    _SSE_DATA_PREFIX
                     + json.dumps({"type": "log", "line": log_messages[sent], "t": time.time()})
                     + "\n\n"
                 )
@@ -313,7 +315,7 @@ def chat_playlist_stream_api():
         except Exception:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
             logger.exception("Streaming chat pipeline failed")
             yield (
-                "data: "
+                _SSE_DATA_PREFIX
                 + json.dumps(
                     {"type": "error", "error": "An internal error has occurred.", "t": time.time()}
                 )
@@ -325,7 +327,9 @@ def chat_playlist_stream_api():
         if trailing:
             yield trailing
         yield (
-            "data: " + json.dumps({"type": "done", "response": resp_obj, "t": time.time()}) + "\n\n"
+            _SSE_DATA_PREFIX
+            + json.dumps({"type": "done", "response": resp_obj, "t": time.time()})
+            + "\n\n"
         )
 
     return Response(
@@ -847,8 +851,8 @@ def create_media_server_playlist_api():
                 error_details_for_server += f" - Media Server Response: {e.response.text}\n"
             except Exception:
                 pass  # nosec
-        logger.error(
-            "Error in create_media_server_playlist_api: %s", error_details_for_server, exc_info=True
+        logger.exception(
+            "Error in create_media_server_playlist_api: %s", error_details_for_server
         )
         # Return generic error to client
         return jsonify({"message": "An internal error occurred while creating the playlist."}), 500

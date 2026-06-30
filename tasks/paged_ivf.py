@@ -832,32 +832,43 @@ class PagedIvfIndex:
             ids, vecs = unpack_cell(blob, self._dim, self._storage_dtype)
             yield int(cell_id), ids, vecs
 
+    def _read_cells_mmap(
+        self, mm, offsets, cell_ids: List[int]
+    ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+        _note_mmap_activity(self)
+        out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        ordered = sorted(cell_ids, key=lambda c: offsets.get(int(c), (1 << 62, 0))[0])
+        for c in ordered:
+            cid = int(c)
+            cell = self._cell_from_mmap(mm, offsets, cid)
+            if cell is not None:
+                out[cid] = cell
+        return out
+
+    def _lookup_cached_cell(self, cid: int, cache: _CellLruCache, gcache):
+        entry = cache.get_cell(cid)
+        if entry is None:
+            entry = gcache.get_cell(self._index_name, cid)
+            if entry is not None:
+                cache.add_cell(cid, entry[0], entry[1])
+        return entry
+
     def _read_cells(
         self, cell_ids: List[int], cache: _CellLruCache
     ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
-        out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         mm = self._mmap
         offsets = self._cell_offsets
         if mm is not None:
-            _note_mmap_activity(self)
-            ordered = sorted(cell_ids, key=lambda c: offsets.get(int(c), (1 << 62, 0))[0])
-            for c in ordered:
-                cid = int(c)
-                cell = self._cell_from_mmap(mm, offsets, cid)
-                if cell is not None:
-                    out[cid] = cell
-            return out
+            return self._read_cells_mmap(mm, offsets, cell_ids)
+
+        out: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         gcache = get_global_cell_cache()
         db_needed: List[int] = []
         for raw in cell_ids:
             cid = int(raw)
             if cid in out:
                 continue
-            entry = cache.get_cell(cid)
-            if entry is None:
-                entry = gcache.get_cell(self._index_name, cid)
-                if entry is not None:
-                    cache.add_cell(cid, entry[0], entry[1])
+            entry = self._lookup_cached_cell(cid, cache, gcache)
             if entry is not None:
                 out[cid] = entry
             else:
@@ -994,6 +1005,37 @@ class PagedIvfIndex:
             if 0 <= cell_id < self._num_cells
         ]
 
+    def _max_distance_cell_ids(self, q: np.ndarray, k: int) -> List[int]:
+        if k <= 0 or k >= self._num_cells:
+            return [int(c) for c in np.unique(self._id2cell)]
+        return [int(c) for c in self._farthest_cells(q, k)]
+
+    def _scan_cells_mmap(self, mm, cell_ids: List[int], consume) -> None:
+        _note_mmap_activity(self)
+        offsets = self._cell_offsets
+        for cid in cell_ids:
+            cell = self._cell_from_mmap(mm, offsets, cid)
+            if cell is not None:
+                consume(cell[0], cell[1])
+
+    def _scan_cells_db(self, cell_ids: List[int], consume) -> None:
+        gcache = get_global_cell_cache()
+        db_needed: List[int] = []
+        for cid in cell_ids:
+            entry = gcache.get_cell(self._index_name, cid)
+            if entry is not None:
+                consume(entry[0], entry[1])
+            else:
+                db_needed.append(cid)
+        if not db_needed:
+            return
+        conn = self._conn_factory()
+        with conn.cursor() as cur:
+            for start in range(0, len(db_needed), self._read_batch):
+                chunk = db_needed[start : start + self._read_batch]
+                for _cid, ids, vecs in self._iter_db_cells(cur, chunk):
+                    consume(ids, vecs)
+
     def get_max_distance(
         self, int_id, nprobe: Optional[int] = None
     ) -> Tuple[Optional[float], Optional[int]]:
@@ -1002,10 +1044,7 @@ class PagedIvfIndex:
             return None, None
         q = np.asarray(anchor, dtype=np.float32).reshape(-1)
         k = config.IVF_MAX_DISTANCE_NPROBE if nprobe is None else int(nprobe)
-        if k <= 0 or k >= self._num_cells:
-            cell_ids = [int(c) for c in np.unique(self._id2cell)]
-        else:
-            cell_ids = [int(c) for c in self._farthest_cells(q, k)]
+        cell_ids = self._max_distance_cell_ids(q, k)
         state = {"max_d": float("-inf"), "far_id": None}
         qp = self._prep_query(q)
 
@@ -1025,28 +1064,9 @@ class PagedIvfIndex:
 
         mm = self._mmap
         if mm is not None:
-            _note_mmap_activity(self)
-            offsets = self._cell_offsets
-            for cid in cell_ids:
-                cell = self._cell_from_mmap(mm, offsets, cid)
-                if cell is not None:
-                    _consume(cell[0], cell[1])
+            self._scan_cells_mmap(mm, cell_ids, _consume)
         else:
-            gcache = get_global_cell_cache()
-            db_needed: List[int] = []
-            for cid in cell_ids:
-                entry = gcache.get_cell(self._index_name, cid)
-                if entry is not None:
-                    _consume(entry[0], entry[1])
-                else:
-                    db_needed.append(cid)
-            if db_needed:
-                conn = self._conn_factory()
-                with conn.cursor() as cur:
-                    for start in range(0, len(db_needed), self._read_batch):
-                        chunk = db_needed[start : start + self._read_batch]
-                        for _cid, ids, vecs in self._iter_db_cells(cur, chunk):
-                            _consume(ids, vecs)
+            self._scan_cells_db(cell_ids, _consume)
         if state["max_d"] == float("-inf"):
             return 0.0, None
         return state["max_d"], state["far_id"]

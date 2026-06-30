@@ -55,14 +55,14 @@ class TestDataPreparationAndScaling:
     def test_prepare_and_scale_data_with_features(self):
         from tasks.clustering_helper import _prepare_and_scale_data
 
-        X_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
-        X_embed = None
+        x_feat = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+        x_embed = None
 
-        scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=False)
+        scaled_data, scaler = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
 
         assert scaled_data is not None
         assert scaler is not None
-        assert scaled_data.shape == X_feat.shape
+        assert scaled_data.shape == x_feat.shape
 
         assert np.abs(scaled_data.mean(axis=0)).max() < 0.1
         assert np.abs(scaled_data.std(axis=0) - 1.0).max() < 0.1
@@ -70,32 +70,32 @@ class TestDataPreparationAndScaling:
     def test_prepare_and_scale_data_with_embeddings(self):
         from tasks.clustering_helper import _prepare_and_scale_data
 
-        X_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
-        X_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
+        x_feat = np.array([[1.0, 2.0], [3.0, 4.0]])
+        x_embed = np.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]])
 
-        scaled_data, scaler = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=True)
+        scaled_data, scaler = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=True)
 
         assert scaled_data is not None
-        assert scaled_data.shape == X_embed.shape
+        assert scaled_data.shape == x_embed.shape
         assert scaled_data.shape[1] == 4
 
     def test_prepare_and_scale_data_returns_none_for_empty(self):
         from tasks.clustering_helper import _prepare_and_scale_data
 
-        X_feat = np.array([])
-        X_embed = None
+        x_feat = np.array([])
+        x_embed = None
 
-        result = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=False)
+        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
 
         assert result == (None, None)
 
     def test_prepare_and_scale_data_returns_none_for_zero_rows(self):
         from tasks.clustering_helper import _prepare_and_scale_data
 
-        X_feat = np.empty((0, 5))
-        X_embed = None
+        x_feat = np.empty((0, 5))
+        x_embed = None
 
-        result = _prepare_and_scale_data(X_feat, X_embed, use_embeddings=False)
+        result = _prepare_and_scale_data(x_feat, x_embed, use_embeddings=False)
 
         assert result == (None, None)
 
@@ -105,35 +105,35 @@ class TestFeatureCentroidCalculation:
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 0, 1, 1, 0])
-        X_feat = np.array(
+        x_feat = np.array(
             [[1.0, 2.0, 3.0], [1.5, 2.5, 3.5], [5.0, 6.0, 7.0], [5.5, 6.5, 7.5], [2.0, 3.0, 4.0]]
         )
 
-        centroid = _get_feature_centroid_for_embedding_cluster(0, labels, X_feat)
+        centroid = _get_feature_centroid_for_embedding_cluster(0, labels, x_feat)
 
         assert centroid is not None
         assert centroid.shape == (3,)
 
-        expected_centroid = np.mean(X_feat[[0, 1, 4]], axis=0)
+        expected_centroid = np.mean(x_feat[[0, 1, 4]], axis=0)
         np.testing.assert_array_almost_equal(centroid, expected_centroid)
 
     def test_get_feature_centroid_for_single_member_cluster(self):
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 1, 2])
-        X_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        x_feat = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-        centroid = _get_feature_centroid_for_embedding_cluster(1, labels, X_feat)
+        centroid = _get_feature_centroid_for_embedding_cluster(1, labels, x_feat)
 
-        np.testing.assert_array_almost_equal(centroid, X_feat[1])
+        np.testing.assert_array_almost_equal(centroid, x_feat[1])
 
     def test_get_feature_centroid_for_empty_cluster(self):
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 0, 1, 1])
-        X_feat = np.array([[1.0], [2.0], [3.0], [4.0]])
+        x_feat = np.array([[1.0], [2.0], [3.0], [4.0]])
 
-        result = _get_feature_centroid_for_embedding_cluster(5, labels, X_feat)
+        result = _get_feature_centroid_for_embedding_cluster(5, labels, x_feat)
 
         assert result is None
 
@@ -141,9 +141,9 @@ class TestFeatureCentroidCalculation:
         from tasks.clustering_helper import _get_feature_centroid_for_embedding_cluster
 
         labels = np.array([0, 0, 0, 1, 1])
-        X_feat = np.random.rand(5, 50)
+        x_feat = np.random.rand(5, 50)
 
-        centroid = _get_feature_centroid_for_embedding_cluster(0, labels, X_feat)
+        centroid = _get_feature_centroid_for_embedding_cluster(0, labels, x_feat)
 
         assert centroid.shape == (50,)
 

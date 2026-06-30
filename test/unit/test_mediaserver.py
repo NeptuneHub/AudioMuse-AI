@@ -1037,7 +1037,7 @@ class TestNavidromeGetTopPlayedSongsAlbumCap:
     @patch('tasks.mediaserver.navidrome.get_tracks_from_album')
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     @patch('tasks.mediaserver.navidrome.config')
-    def test_final_selection_falls_back_to_lastPlayed_field(
+    def test_final_selection_falls_back_to_last_played_field(
         self, mock_config, mock_request, mock_get_tracks
     ):
         from tasks.mediaserver.navidrome import get_top_played_songs

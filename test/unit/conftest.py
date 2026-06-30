@@ -83,7 +83,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     mod = next(
         (
             m
-            for name, m in list(sys.modules.items())
+            for name, m in sys.modules.items()
             if name == "test_import_architecture" or name.endswith(".test_import_architecture")
         ),
         None,

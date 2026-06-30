@@ -21,6 +21,9 @@ URLS = {
     'alchemy': '/alchemy',
 }
 
+TABLE_WRAPPER_RESULT_ITEM = "#results-table-wrapper .result-item"
+RESULTS_LIST_RESULT_ITEM = "#results-list .result-item"
+
 FLOWS = {
     "similarity": [
         {
@@ -59,7 +62,7 @@ FLOWS = {
     "path": [
         {
             "label": "result",
-            "results_wait_selector": "#results-table-wrapper .result-item",
+            "results_wait_selector": TABLE_WRAPPER_RESULT_ITEM,
             "steps": [
                 {"action": "type", "selector": "#start_search", "value": "ar"},
                 {
@@ -80,7 +83,7 @@ FLOWS = {
                     "selector": "#end-autocomplete-results .autocomplete-item",
                 },
                 {"action": "click", "selector": "#path-form button[type=\"submit\"]"},
-                {"action": "wait_selector", "selector": "#results-table-wrapper .result-item"},
+                {"action": "wait_selector", "selector": TABLE_WRAPPER_RESULT_ITEM},
             ],
         }
     ],
@@ -104,7 +107,7 @@ FLOWS = {
     "lyrics_search": [
         {
             "label": "axis",
-            "results_wait_selector": "#results-list .result-item",
+            "results_wait_selector": RESULTS_LIST_RESULT_ITEM,
             "steps": [
                 {"action": "click", "selector": ".tab-btn[data-tab=\"axes\"]"},
                 {"action": "wait_selector", "selector": "#tab-axes.active"},
@@ -115,12 +118,12 @@ FLOWS = {
                 },
                 {"action": "wait_ms", "selector": "body", "value": "300"},
                 {"action": "click", "selector": "#axis-form button[type=\"submit\"]"},
-                {"action": "wait_selector", "selector": "#results-list .result-item"},
+                {"action": "wait_selector", "selector": RESULTS_LIST_RESULT_ITEM},
             ],
         },
         {
             "label": "text",
-            "results_wait_selector": "#results-list .result-item",
+            "results_wait_selector": RESULTS_LIST_RESULT_ITEM,
             "steps": [
                 {"action": "click", "selector": ".tab-btn[data-tab=\"text\"]"},
                 {"action": "wait_selector", "selector": "#tab-text.active"},
@@ -130,12 +133,12 @@ FLOWS = {
                     "value": "heartbreak in the city at night",
                 },
                 {"action": "click", "selector": "#search-form button[type=\"submit\"]"},
-                {"action": "wait_selector", "selector": "#results-list .result-item"},
+                {"action": "wait_selector", "selector": RESULTS_LIST_RESULT_ITEM},
             ],
         },
         {
             "label": "song",
-            "results_wait_selector": "#results-list .result-item",
+            "results_wait_selector": RESULTS_LIST_RESULT_ITEM,
             "steps": [
                 {"action": "click", "selector": ".tab-btn[data-tab=\"song\"]"},
                 {"action": "wait_selector", "selector": "#tab-song.active"},
@@ -151,14 +154,14 @@ FLOWS = {
                     "selector": "#sg-autocomplete-results .autocomplete-item",
                 },
                 {"action": "click", "selector": "#song-form button[type=\"submit\"]"},
-                {"action": "wait_selector", "selector": "#results-list .result-item"},
+                {"action": "wait_selector", "selector": RESULTS_LIST_RESULT_ITEM},
             ],
         },
     ],
     "alchemy": [
         {
             "label": "result",
-            "results_wait_selector": "#results-table-wrapper .result-item",
+            "results_wait_selector": TABLE_WRAPPER_RESULT_ITEM,
             "steps": [
                 {"action": "wait_selector", "selector": ".alchemy-card .song"},
                 {"action": "type", "selector": ".alchemy-card .song", "value": "a"},
@@ -168,7 +171,7 @@ FLOWS = {
                 {"action": "click_first", "selector": ".autocomplete-results .autocomplete-item"},
                 {"action": "wait_ms", "selector": "body", "value": "300"},
                 {"action": "click", "selector": "#run-alchemy"},
-                {"action": "wait_selector", "selector": "#results-table-wrapper .result-item"},
+                {"action": "wait_selector", "selector": TABLE_WRAPPER_RESULT_ITEM},
             ],
         }
     ],

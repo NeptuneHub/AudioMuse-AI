@@ -292,8 +292,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             )
             return (None, None, None, None) if return_audio else (None, None)
     except Exception as e:
-        logger.error(
-            f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}", exc_info=True
+        logger.exception(
+            f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}"
         )
         return (None, None, None, None) if return_audio else (None, None)
 
@@ -361,8 +361,8 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         }
 
     except Exception as e:
-        logger.error(
-            f"Main model inference failed for {os.path.basename(file_path)}: {e}", exc_info=True
+        logger.exception(
+            f"Main model inference failed for {os.path.basename(file_path)}: {e}"
         )
         return (None, None, None, None) if return_audio else (None, None)
     finally:
@@ -730,9 +730,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             return {"status": "SUCCESS", **summary}
 
         except OperationalError as e:
-            logger.error(
-                f"Database connection error during album analysis {album_id}: {e}. This job will be retried.",
-                exc_info=True,
+            logger.exception(
+                f"Database connection error during album analysis {album_id}: {e}. This job will be retried."
             )
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
             log_and_update_album_task(
@@ -935,7 +934,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                                 if j in terminal_ids:
                                     active_jobs.pop(j, None)
                     except Exception as e:
-                        logger.error(f"Failed to reconcile child tasks from DB: {e}", exc_info=True)
+                        logger.exception(f"Failed to reconcile child tasks from DB: {e}")
 
                 if albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(

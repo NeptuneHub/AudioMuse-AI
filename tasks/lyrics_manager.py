@@ -342,12 +342,50 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
     return results
 
 
+def _build_capped_results(
+    ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+) -> List[Dict]:
+    results: List[Dict] = []
+    artist_counts: Dict[str, int] = {}
+    for vid, dist in zip(neighbor_ids, distances):
+        if len(results) >= limit:
+            break
+        item_id = id_map.get(int(vid))
+        if not item_id:
+            continue
+        meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
+        author = meta.get('author', '') or ''
+        if artist_cap and author:
+            an = author.strip().lower()
+            if artist_counts.get(an, 0) >= artist_cap:
+                continue
+            artist_counts[an] = artist_counts.get(an, 0) + 1
+        similarity = ivf_index.distance_to_similarity(dist)
+        results.append(
+            {
+                'item_id': item_id,
+                'title': meta.get('title', ''),
+                'author': author,
+                'album': meta.get('album', ''),
+                'similarity': similarity,
+            }
+        )
+    return results
+
+
+def _embed_text_query(query_text: str):
+    from lyrics.lyrics_transcriber import embed_query_text
+    from tasks.gte_warm_cache import warm_lock, warmup_gte_model
+
+    with warm_lock():
+        warmup_gte_model()
+        return embed_query_text(query_text)
+
+
 def search_by_text(
     query_text: str, limit: int = 50, artist_cap: Optional[int] = None
 ) -> List[Dict]:
     from config import LYRICS_ENABLED, MAX_SONGS_PER_ARTIST
-    from lyrics.lyrics_transcriber import embed_query_text
-    from tasks.gte_warm_cache import warm_lock, warmup_gte_model
 
     if not LYRICS_ENABLED:
         return []
@@ -360,9 +398,7 @@ def search_by_text(
         return []
 
     try:
-        with warm_lock():
-            warmup_gte_model()
-            query_vec = embed_query_text(text)
+        query_vec = _embed_text_query(text)
         if query_vec is None or query_vec.size == 0:
             logger.error(f"Failed to embed lyrics query: {query_text!r}")
             return []
@@ -386,31 +422,9 @@ def search_by_text(
         candidate_item_ids = [iid for iid in candidate_item_ids if iid]
         metadata_map = _fetch_lyrics_metadata(candidate_item_ids)
 
-        results: List[Dict] = []
-        artist_counts: Dict[str, int] = {}
-        for vid, dist in zip(neighbor_ids, distances):
-            if len(results) >= limit:
-                break
-            item_id = id_map.get(int(vid))
-            if not item_id:
-                continue
-            meta = metadata_map.get(item_id, {'title': '', 'author': '', 'album': ''})
-            author = meta.get('author', '') or ''
-            if artist_cap and author:
-                an = author.strip().lower()
-                if artist_counts.get(an, 0) >= artist_cap:
-                    continue
-                artist_counts[an] = artist_counts.get(an, 0) + 1
-            similarity = ivf_index.distance_to_similarity(dist)
-            results.append(
-                {
-                    'item_id': item_id,
-                    'title': meta.get('title', ''),
-                    'author': author,
-                    'album': meta.get('album', ''),
-                    'similarity': similarity,
-                }
-            )
+        results = _build_capped_results(
+            ivf_index, id_map, metadata_map, neighbor_ids, distances, limit, artist_cap
+        )
 
         logger.info(
             f"Lyrics text search '{query_text}': {len(results)} results "

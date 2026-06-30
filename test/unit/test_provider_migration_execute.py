@@ -116,44 +116,89 @@ def _make_session_row(
     )
 
 
+def _id_map_lookup(rows, params):
+    name = params[0] if params else None
+    match = next((r for r in (rows or []) if r[0] == name), None)
+    return (match[1],) if match else None
+
+
+def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, lyrics_exists):
+    def _matches(up, *needles):
+        return all(n in up for n in needles)
+
+    def _set_one(value):
+        mock_cur.fetchone.return_value = value
+
+    def _set_all(value):
+        mock_cur.fetchall.return_value = value
+
+    return [
+        (
+            lambda up: _matches(up, 'INFORMATION_SCHEMA', 'FOREIGN KEY'),
+            lambda up, params: _set_one(
+                ('{}_item_id_fkey'.format(params[0] if params else 'embedding'),)
+            ),
+        ),
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'LYRICS_EMBEDDING'),
+            lambda up, params: _set_one((lyrics_exists,)),
+        ),
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'MIGRATION_TARGET_META'),
+            lambda up, params: _set_one((None,)),
+        ),
+        (
+            lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
+            lambda up, params: _set_one(session_row),
+        ),
+        (
+            lambda up: up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'),
+            lambda up, params: _set_all([(r[0],) for r in (ivf_rows or [])]),
+        ),
+        (
+            lambda up: up.startswith('SELECT ID_MAP_JSON FROM VOYAGER_INDEX_DATA'),
+            lambda up, params: _set_one(_id_map_lookup(ivf_rows, params)),
+        ),
+        (
+            lambda up: up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM VOYAGER_INDEX_DATA'),
+            lambda up, params: _set_all([]),
+        ),
+        (
+            lambda up: up.startswith('SELECT DISTINCT INDEX_NAME FROM MAP_PROJECTION_DATA'),
+            lambda up, params: _set_all([(r[0],) for r in (mproj_rows or [])]),
+        ),
+        (
+            lambda up: up.startswith('SELECT ID_MAP_JSON FROM MAP_PROJECTION_DATA'),
+            lambda up, params: _set_one(_id_map_lookup(mproj_rows, params)),
+        ),
+        (
+            lambda up: up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM MAP_PROJECTION_DATA'),
+            lambda up, params: _set_all([]),
+        ),
+        (
+            lambda up: _matches(up, 'SELECT DISTINCT', 'SCORE'),
+            lambda up, params: _set_all([(a,) for a in (authors or [])]),
+        ),
+    ]
+
+
 def _install_fake_psycopg2(
     mig, session_row, ivf_rows=None, mproj_rows=None, authors=None, lyrics_exists=False
 ):
     mock_cur = MagicMock()
     executed = []
+    handlers = _build_sql_handlers(
+        mock_cur, session_row, ivf_rows, mproj_rows, authors, lyrics_exists
+    )
 
     def _execute(sql, params=None):
         sql_str = sql.strip() if isinstance(sql, str) else str(sql).strip()
         executed.append(sql_str)
         up = sql_str.upper()
-        if 'INFORMATION_SCHEMA' in up and 'FOREIGN KEY' in up:
-            mock_cur.fetchone.return_value = (
-                '{}_item_id_fkey'.format(params[0] if params else 'embedding'),
-            )
-        elif 'TO_REGCLASS' in up and 'LYRICS_EMBEDDING' in up:
-            mock_cur.fetchone.return_value = (lyrics_exists,)
-        elif 'TO_REGCLASS' in up and 'MIGRATION_TARGET_META' in up:
-            mock_cur.fetchone.return_value = (None,)
-        elif 'FROM MIGRATION_SESSION' in up and 'SELECT' in up:
-            mock_cur.fetchone.return_value = session_row
-        elif up.startswith('SELECT DISTINCT INDEX_NAME FROM VOYAGER_INDEX_DATA'):
-            mock_cur.fetchall.return_value = [(r[0],) for r in (ivf_rows or [])]
-        elif up.startswith('SELECT ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
-            name = params[0] if params else None
-            match = next((r for r in (ivf_rows or []) if r[0] == name), None)
-            mock_cur.fetchone.return_value = (match[1],) if match else None
-        elif up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM VOYAGER_INDEX_DATA'):
-            mock_cur.fetchall.return_value = []
-        elif up.startswith('SELECT DISTINCT INDEX_NAME FROM MAP_PROJECTION_DATA'):
-            mock_cur.fetchall.return_value = [(r[0],) for r in (mproj_rows or [])]
-        elif up.startswith('SELECT ID_MAP_JSON FROM MAP_PROJECTION_DATA'):
-            name = params[0] if params else None
-            match = next((r for r in (mproj_rows or []) if r[0] == name), None)
-            mock_cur.fetchone.return_value = (match[1],) if match else None
-        elif up.startswith('SELECT INDEX_NAME, ID_MAP_JSON FROM MAP_PROJECTION_DATA'):
-            mock_cur.fetchall.return_value = []
-        elif 'SELECT DISTINCT' in up and 'SCORE' in up:
-            mock_cur.fetchall.return_value = [(a,) for a in (authors or [])]
+        for predicate, apply_result in handlers:
+            if predicate(up):
+                apply_result(up, params)
+                return
 
     mock_cur.execute.side_effect = _execute
     mock_cur.__enter__ = lambda self: self

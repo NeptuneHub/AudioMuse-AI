@@ -47,10 +47,11 @@ def run_inference(session, feed_dict, output_tensor_name=None):
             return None
         mapped[name] = v
     output_names = [o.name for o in session.get_outputs()]
+    default_output = output_names[0] if output_names else None
     out = (
         _find_onnx_name(output_tensor_name, output_names)
         if output_tensor_name
-        else (output_names[0] if output_names else None)
+        else default_output
     )
     if out is None:
         logger.error("No ONNX output name available to run inference.")
@@ -471,6 +472,31 @@ def persist_clap_embedding(item_id, embedding, needs_clap):
         return False
 
 
+def _make_lyrics_audio_loader(robust_load_fn, download_fn):
+    def audio_loader():
+        p = download_fn() if download_fn is not None else None
+        if not p:
+            raise RuntimeError("Failed to download audio for lyrics ASR")
+        a, s = robust_load_fn(str(p), target_sr=16000)
+        if a is None or a.size == 0 or s is None:
+            raise RuntimeError("Failed to load audio for lyrics ASR")
+        return a, s, str(p)
+
+    return audio_loader
+
+
+def _prepare_lyrics_audio(path, track_audio, track_sr, robust_load_fn, download_fn):
+    if track_audio is not None and track_sr is not None:
+        return track_audio, track_sr, None
+    if path is not None:
+        logger.info("  - Loading audio from file for lyrics analysis")
+        track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
+        if track_audio is None or track_audio.size == 0 or track_sr is None:
+            raise RuntimeError("Failed to load audio for lyrics analysis")
+        return track_audio, track_sr, None
+    return track_audio, track_sr, _make_lyrics_audio_loader(robust_load_fn, download_fn)
+
+
 def run_lyrics_for_track(
     item,
     path,
@@ -491,23 +517,9 @@ def run_lyrics_for_track(
     try:
         from lyrics.lyrics_transcriber import analyze_lyrics
 
-        audio_loader = None
-        if track_audio is None or track_sr is None:
-            if path is not None:
-                logger.info("  - Loading audio from file for lyrics analysis")
-                track_audio, track_sr = robust_load_fn(str(path), target_sr=16000)
-                if track_audio is None or track_audio.size == 0 or track_sr is None:
-                    raise RuntimeError("Failed to load audio for lyrics analysis")
-            else:
-
-                def audio_loader():  # noqa: F811
-                    p = download_fn() if download_fn is not None else None
-                    if not p:
-                        raise RuntimeError("Failed to download audio for lyrics ASR")
-                    a, s = robust_load_fn(str(p), target_sr=16000)
-                    if a is None or a.size == 0 or s is None:
-                        raise RuntimeError("Failed to load audio for lyrics ASR")
-                    return a, s, str(p)
+        track_audio, track_sr, audio_loader = _prepare_lyrics_audio(
+            path, track_audio, track_sr, robust_load_fn, download_fn
+        )
 
         result = analyze_lyrics(
             audio=track_audio,
