@@ -123,8 +123,8 @@ def _emby_get_users(token):
     # https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     """Fetches a list of all users from Emby using a provided token."""
     url = f"{config.EMBY_URL}/emby/Users"
-    #this endpoint is fully compatible with Emby. no need to change
-    #https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
+    # this endpoint is fully compatible with Emby. no need to change
+    # https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     headers = {"X-Emby-Token": token}
     try:
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
@@ -166,7 +166,7 @@ def get_recent_albums(limit):
         return _get_recent_albums_only(limit)
 
 def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
-    # this is is compatible with Emby
+    # this is compatible with Emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     """
@@ -304,7 +304,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
     return all_tracks
 
 def _get_recent_albums_only(limit, user_creds=None):
-    # this is is compatible with Emby
+    # this is compatible with Emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """
     Original implementation: Fetches ONLY albums from Emby (no standalone tracks).

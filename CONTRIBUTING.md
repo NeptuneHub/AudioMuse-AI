@@ -12,8 +12,8 @@ Multiple information can be found in the [docs](docs/) folder.
 
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
-* **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are synchronous like get the similar song.
-* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for what need to be executed in async, like analyze the song, do clustering or reconstruct the index for similar song search. With the redis queue and a kubernetes architecture is possible to spawn more worker for increase scalability and availability.
+* **Flask Web Application (audiomuse-ai-flask):** Here is the front-end of the application, intended as both an HTML page and an API. Here also lives the logic of the services that are synchronous, such as getting similar songs.
+* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for tasks that need to be executed asynchronously, such as analyzing songs, performing clustering, or reconstructing the index for similar song searches. With the Redis queue and a Kubernetes architecture, it is possible to spawn more workers to increase scalability and availability.
 * **Redis Queue:** where Flask write the job, and Workers check the job to do.
 * **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
 
@@ -87,7 +87,7 @@ docker-compose up --build -d
 ### PR Requirements
 When submitting a pull request, ensure:
 
-* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also clearly explain how you tested it and how to replicate those test
+* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also clearly explain how you tested it and how to replicate those tests
 * **Link the PR to an existing issue:** in this way you work on something already agreed on and you avoid many rework.
 * **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
   * Analysis and Clustering
