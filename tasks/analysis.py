@@ -152,7 +152,7 @@ def _run_all_index_builds(log_fn=None):
                 pass
         try:
             fn()
-            logger.info(f"✓ {label}")
+            logger.info(f"OK {label}")
         except Exception as e:
             logger.warning(f"Failed to build/store {label}: {e}")
             if fatal:
@@ -189,12 +189,12 @@ def _run_all_index_builds(log_fn=None):
           progress=97, banner="Building artist component projection...")
     try:
         redis_conn.publish('index-updates', 'reload')
-        logger.info('✓ Published reload message to Flask container')
+        logger.info('OK Published reload message to Flask container')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
 
     _release_freed_ram_to_os()
-    logger.info('✓ Released freed RAM back to OS after index rebuild')
+    logger.info('OK Released freed RAM back to OS after index rebuild')
 
 
 # --- Core Analysis Functions ---
@@ -260,10 +260,10 @@ def rebuild_all_indexes_task():
     with app.app_context():
         try:
             _run_all_index_builds()
-            logger.info("✅ Index rebuild task completed successfully")
+            logger.info("OK Index rebuild task completed successfully")
             return {"status": "SUCCESS", "message": "All indexes rebuilt"}
         except Exception as e:
-            logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
+            logger.error(f"X Index rebuild task failed: {e}", exc_info=True)
             return {"status": "FAILURE", "message": str(e)}
 
 def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
@@ -362,7 +362,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
         # The old code then applied sigmoid(mean(those probs)) on top — a
         # "double sigmoid" that pushed values into the ~0.50-0.56 range.
         # The new musicnn_prediction.onnx outputs raw logits, so we replicate
-        # the full old pipeline: sigmoid(logits) → mean → sigmoid.
+        # the full old pipeline: sigmoid(logits) -> mean -> sigmoid.
         mood_probs_per_patch = sigmoid(mood_logits)
         final_mood_predictions = sigmoid(np.mean(mood_probs_per_patch, axis=0))
 
@@ -473,7 +473,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 try:
                     clap_label_embeddings = get_or_cache_other_feature_text_embeddings(redis_conn)
                     if clap_label_embeddings:
-                        logger.info(f"✓ CLAP other feature text embeddings ready ({len(clap_label_embeddings)} labels)")
+                        logger.info(f"OK CLAP other feature text embeddings ready ({len(clap_label_embeddings)} labels)")
                     else:
                         logger.warning("Could not load CLAP text embeddings - other_features will be zeros")
                 except Exception as e:
@@ -556,7 +556,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
                             onnx_sessions = load_musicnn_sessions(model_paths)
                             if onnx_sessions:
-                                logger.info(f"✓ Recycled {len(onnx_sessions)} MusiCNN model sessions")
+                                logger.info(f"OK Recycled {len(onnx_sessions)} MusiCNN model sessions")
                             session_recycler.mark_recycled()
 
                         if needs_lyrics and LYRICS_ENABLED:
@@ -603,7 +603,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         logger.info(f"  - Other Features: {other_features}")
                         _ah.persist_musicnn_results(item, musicnn_analysis, top_moods, musicnn_embedding, other_features)
 
-                    # CLAP must be saved AFTER score (FK: clap_embedding.item_id → score.item_id).
+                    # CLAP must be saved AFTER score (FK: clap_embedding.item_id -> score.item_id).
                     _ah.persist_clap_embedding(item['Id'], clap_embedding_for_track, needs_clap)
 
                     if _ah.run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
@@ -813,7 +813,7 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                         'tasks.analysis.rebuild_all_indexes_task',
                         job_id=str(uuid.uuid4()), job_timeout=-1, retry=Retry(max=3),
                     )
-                    logger.info(f"⏰ Enqueued index rebuild job {rebuild_job.id} on default queue")
+                    logger.info(f"Enqueued index rebuild job {rebuild_job.id} on default queue")
                     last_rebuild_count = albums_completed
 
             for idx, album in enumerate(all_albums):
@@ -904,11 +904,11 @@ def run_analysis_task(num_recent_albums, top_n_moods):
         except OperationalError as e:
             logger.critical(f"FATAL ERROR: Main analysis task failed due to DB connection issue: {e}", exc_info=True)
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
-            log_and_update_main(f"❌ Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
+            log_and_update_main("X Main analysis failed due to a database connection error. The task may be retried.", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
             # Re-raise to allow RQ to handle retries if configured on the task itself
             raise
         except Exception as e:
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)
             err = error_manager.record(error_manager.classify(e, ERR_ANALYSIS_FAILED), str(e), exc=e)
-            log_and_update_main(f"❌ Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
+            log_and_update_main(f"X Main analysis failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error_message=str(e), error=err)
             raise

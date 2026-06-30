@@ -18,7 +18,7 @@ def clap_search_page():
     ---
     tags:
       - CLAP Search
-    summary: HTML page for natural-language music search powered by CLAP audio↔text embeddings.
+    summary: HTML page for natural-language music search powered by CLAP audio<->text embeddings.
     responses:
       200:
         description: HTML page rendered.
@@ -359,7 +359,7 @@ def top_queries_api():
             'queries': queries,
             'ready': len(queries) > 0
         }), 200
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get top queries")
         return jsonify({'error': 'An internal error occurred. Please try again later.', 'queries': [], 'ready': False}), 500
 

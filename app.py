@@ -642,7 +642,7 @@ def get_playlists_endpoint():
     summary: Return every saved playlist with its tracks, grouped by playlist name.
     responses:
       200:
-        description: Playlist map (playlist_name → list of tracks).
+        description: Playlist map (playlist_name -> list of tracks).
         content:
           application/json:
             schema:

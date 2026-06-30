@@ -538,7 +538,7 @@ def restore_backup():
                     if tmp:
                         try:
                             tmp.close()
-                        except:
+                        except Exception:
                             pass
                     if restore_file and os.path.exists(restore_file):
                         os.unlink(restore_file)

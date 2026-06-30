@@ -7,7 +7,7 @@ Tests cover:
 - get_sem_grove_item_ids: cache-miss and cache-hit paths
 - is_sem_grove_cache_loaded: reflects cache state
 - search_by_song: returns seed-first, applies limit, returns empty when index unloaded
-- Full round-trip: build → load → search using an in-memory IVF index
+- Full round-trip: build -> load -> search using an in-memory IVF index
 """
 
 import sys
@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Import sem_grove_manager directly, bypassing tasks/__init__.py
-# (tasks/__init__.py pulls in analysis.py → librosa which is not installed
+# (tasks/__init__.py pulls in analysis.py -> librosa which is not installed
 # in the unit-test environment)
 # ---------------------------------------------------------------------------
 
@@ -82,7 +82,7 @@ class TestMakeMergedVector:
     """Tests for the internal whitening / weighting helper."""
 
     def _std(self, dim):
-        """Return a realistic std vector (all ones → identity whitening)."""
+        """Return a realistic std vector (all ones -> identity whitening)."""
         return np.ones(dim, dtype=np.float32)
 
     def test_returns_float32_array_of_correct_shape(self):
@@ -135,8 +135,8 @@ class TestMakeMergedVector:
         l = np.ones(4, dtype=np.float32)
         a = np.ones(4, dtype=np.float32)
         std_zero = np.zeros(4, dtype=np.float32)
-        # std_zero + 1e-8 ≈ 1e-8 → after whitening l becomes very large,
-        # but then re-normalised → should produce a finite unit vector
+        # std_zero + 1e-8 ≈ 1e-8 -> after whitening l becomes very large,
+        # but then re-normalised -> should produce a finite unit vector
         mv = _make_merged_vector(l, a, std_zero, std_zero, 1.0, 1.0)
         assert mv is not None
         assert np.all(np.isfinite(mv))
@@ -384,7 +384,7 @@ class TestSearchBySong:
 
 
 # =============================================================================
-# Round-trip: build → load → search (in-process, no real DB)
+# Round-trip: build -> load -> search (in-process, no real DB)
 # =============================================================================
 
 class TestSemGroveRoundTrip:

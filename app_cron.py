@@ -3,7 +3,9 @@ from psycopg2.extras import DictCursor
 from database import get_db, save_task_status
 from taskqueue import rq_queue_high
 from config import TASK_STATUS_PENDING
-import uuid, time, logging
+import uuid
+import time
+import logging
 from config import (
     TOP_N_MOODS,
     CLUSTER_ALGORITHM, NUM_CLUSTERS_MIN, NUM_CLUSTERS_MAX,

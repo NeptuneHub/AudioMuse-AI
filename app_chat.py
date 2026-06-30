@@ -236,7 +236,7 @@ def chat_playlist_api():
     3. search_database - Search by genre, mood, tempo, energy, key (ALL filters in ONE call)
     4. ai_brainstorm - AI suggests famous songs (trending, top hits, radio classics, etc.)
 
-    AI analyzes request → calls tools → combines results → returns 100 songs
+    AI analyzes request -> calls tools -> combines results -> returns 100 songs
 
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
@@ -355,7 +355,7 @@ def _run_chat_pipeline(data, log_messages):
     ai_provider = data.get('ai_provider', config.AI_MODEL_PROVIDER).upper()
     ai_model_from_request = data.get('ai_model')
 
-    log_messages.append(f"NEW MCP-BASED PLAYLIST GENERATION")
+    log_messages.append("NEW MCP-BASED PLAYLIST GENERATION")
     log_messages.append(f"Request: '{original_user_input}'")
     log_messages.append(f"AI Provider: {ai_provider}")
 
@@ -572,7 +572,7 @@ def _run_chat_pipeline(data, log_messages):
                     if backfill_added == 0:
                         break  # No progress at this cap level, stop
                 if current_cap > max_per_artist:
-                    log_messages.append(f"   Progressive cap relaxation: {max_per_artist} → {current_cap}/artist to reach {len(final_query_results_list)} songs")
+                    log_messages.append(f"   Progressive cap relaxation: {max_per_artist} -> {current_cap}/artist to reach {len(final_query_results_list)} songs")
         else:
             # More diversified songs than target — sample proportionally by tool call
             songs_by_call = {}
@@ -600,7 +600,7 @@ def _run_chat_pipeline(data, log_messages):
 
             final_query_results_list = final_query_results_list[:target_song_count]
 
-        log_messages.append(f"\nPool: {len(all_songs)} collected → {len(diversified_pool)} after diversity cap → {len(final_query_results_list)} in final playlist")
+        log_messages.append(f"\nPool: {len(all_songs)} collected -> {len(diversified_pool)} after diversity cap -> {len(final_query_results_list)} in final playlist")
 
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
         # Only when NO filter drove the result. When a filter/score was applied
@@ -609,7 +609,7 @@ def _run_chat_pipeline(data, log_messages):
         # similarity. Re-sorting by tempo/energy/key here would scramble that and
         # bury the matched songs, so the scored order is preserved instead.
         if filter_applied:
-            log_messages.append(f"\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
+            log_messages.append("\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped")
         else:
             try:
                 from tasks.playlist_ordering import order_playlist
@@ -621,7 +621,7 @@ def _run_chat_pipeline(data, log_messages):
                 # Rebuild list in new order
                 id_to_song = {s['item_id']: s for s in final_query_results_list}
                 final_query_results_list = [id_to_song[sid] for sid in ordered_ids if sid in id_to_song]
-                log_messages.append(f"\nPlaylist ordered for smooth transitions (tempo/energy/key)")
+                log_messages.append("\nPlaylist ordered for smooth transitions (tempo/energy/key)")
             except Exception:
                 logger.warning("Playlist ordering failed (non-fatal)", exc_info=True)
                 log_messages.append("\nPlaylist ordering skipped due to an internal processing issue")
@@ -633,12 +633,12 @@ def _run_chat_pipeline(data, log_messages):
             for n in plan_notes:
                 log_messages.append(f"   {n}")
 
-        log_messages.append(f"\n✅ SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
+        log_messages.append(f"\nOK SUCCESS! Generated playlist with {len(final_query_results_list)} songs")
         log_messages.append(f"   Total songs collected: {len(all_songs)}")
         log_messages.append(f"   Tools called: {len(tools_used_history)}")
         
         # Show tool contribution breakdown (collected vs final)
-        log_messages.append(f"\nTool Contribution (Collected → Final Playlist):")
+        log_messages.append("\nTool Contribution (Collected -> Final Playlist):")
         
         # Count songs in final playlist by tool call
         final_by_call = {}
@@ -668,9 +668,9 @@ def _run_chat_pipeline(data, log_messages):
             call_index = tool_info.get('call_index', -1)
             final_count = final_by_call.get(call_index, 0)
             if song_count != final_count:
-                log_messages.append(f"   • {tool_name}({args_str}): {song_count} collected → {final_count} in final playlist")
+                log_messages.append(f"   - {tool_name}({args_str}): {song_count} collected -> {final_count} in final playlist")
             else:
-                log_messages.append(f"   • {tool_name}({args_str}): {song_count} songs")
+                log_messages.append(f"   - {tool_name}({args_str}): {song_count} songs")
     else:
         log_messages.append("\nNo songs collected")
         final_query_results_list = None
@@ -777,7 +777,7 @@ def create_media_server_playlist_api():
         error_details_for_server = f"Media Server API Request Exception: {str(e)}\n"
         if hasattr(e, 'response') and e.response is not None: # type: ignore
             try: error_details_for_server += f" - Media Server Response: {e.response.text}\n"
-            except: pass # nosec
+            except Exception: pass # nosec
         logger.error("Error in create_media_server_playlist_api: %s", error_details_for_server, exc_info=True)
         # Return generic error to client
         return jsonify({"message": "An internal error occurred while creating the playlist."}), 500

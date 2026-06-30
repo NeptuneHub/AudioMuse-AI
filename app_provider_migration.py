@@ -653,7 +653,7 @@ def source_paths_refresh():
     ---
     tags:
       - Provider Migration
-    summary: Re-probe the currently active provider to build a {item_id → real_path} override map.
+    summary: Re-probe the currently active provider to build a {item_id -> real_path} override map.
     description: |
       Called when `score.file_path` is unusable (e.g. Navidrome analyzed
       without "Report Real Path"). After refresh, the dry-run can use the
@@ -1423,7 +1423,7 @@ def dry_run_report(session_id):
     ---
     tags:
       - Provider Migration
-    summary: CSV showing the planned old→new mapping for every score row (orphans have blank new-side cells).
+    summary: CSV showing the planned old->new mapping for every score row (orphans have blank new-side cells).
     description: |
       Columns: old_id, old_artist, old_album, old_album_artist, old_track, old_path, new_id,
       new_artist, new_album, new_album_artist, new_track, new_path, match_source

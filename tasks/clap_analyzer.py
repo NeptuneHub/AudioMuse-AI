@@ -122,7 +122,7 @@ def _load_audio_model():
     # GPU support: ONNX Runtime handles CUDA availability internally
     session = None
     
-    # Centralized provider selection: CUDA → CoreML (Apple Silicon) → CPU.
+    # Centralized provider selection: CUDA -> CoreML (Apple Silicon) -> CPU.
     # Keep CLAP audio's original CUDA tuning (cudnn DEFAULT, no copy-in-default-
     # stream) so the containerized GPU path stays byte-identical to before; this
     # cuda_options override is CUDA-only and has no effect on the macOS CoreML
@@ -167,7 +167,7 @@ def _load_audio_model():
         # 1) Preferred providers. For CoreML this is the static-shape model bytes;
         #    otherwise the direct path so ORT resolves external data natively.
         session = _create_session(preferred_model_input, preferred_providers, preferred_opts)
-        logger.info("✓ CLAP audio model loaded successfully (direct path)")
+        logger.info("OK CLAP audio model loaded successfully (direct path)")
 
     except Exception as direct_err:
         logger.warning(f"Direct path load failed: {direct_err}")
@@ -184,7 +184,7 @@ def _load_audio_model():
                 del _model_proto
                 gc.collect()
                 session = _create_session(_model_bytes, preferred_providers, preferred_opts)
-                logger.info("✓ CLAP audio model loaded (in-memory external data)")
+                logger.info("OK CLAP audio model loaded (in-memory external data)")
             except Exception as mem_err:
                 logger.warning(f"In-memory fallback failed: {mem_err}")
                 session = None
@@ -196,7 +196,7 @@ def _load_audio_model():
             logger.info("Attempting final CPU-only fallback…")
             try:
                 session = _create_session(model_path, cpu_providers, cpu_opts)
-                logger.info("✓ CLAP audio model loaded (CPU fallback, direct path)")
+                logger.info("OK CLAP audio model loaded (CPU fallback, direct path)")
             except Exception as cpu_err:
                 logger.error(f"Failed to load ONNX audio model even with CPU: {cpu_err}")
                 raise
@@ -258,7 +258,7 @@ def _load_text_model():
             provider_options=[p[1] for p in provider_options]
         )
         
-        logger.info(f"✓ CLAP text model loaded successfully (~478MB)")
+        logger.info("OK CLAP text model loaded successfully (~478MB)")
             
     except Exception as e:
         logger.warning(f"Failed to load with preferred providers: {e}")
@@ -269,7 +269,7 @@ def _load_text_model():
                 sess_options=sess_options,
                 providers=['CPUExecutionProvider']
             )
-            logger.info(f"✓ CLAP text model loaded successfully (CPU fallback)")
+            logger.info("OK CLAP text model loaded successfully (CPU fallback)")
         except Exception as cpu_error:
             logger.error(f"Failed to load ONNX text model even with CPU: {cpu_error}")
             raise
@@ -291,7 +291,7 @@ def _load_tokenizer():
     # a misconfigured network can never trigger a download.
     tokenizer = AutoTokenizer.from_pretrained("roberta-base", local_files_only=True)
     
-    logger.info("✓ Tokenizer loaded successfully")
+    logger.info("OK Tokenizer loaded successfully")
     return tokenizer
 
 
@@ -313,7 +313,7 @@ def initialize_clap_audio_model():
     
     try:
         _audio_session = _load_audio_model()
-        logger.info("✓ CLAP audio model initialized successfully (for music analysis)")
+        logger.info("OK CLAP audio model initialized successfully (for music analysis)")
         return True
     except Exception as e:
         logger.exception(f"Failed to initialize CLAP audio model: {e}")
@@ -339,7 +339,7 @@ def initialize_clap_text_model():
     try:
         _tokenizer = _load_tokenizer()
         _text_session = _load_text_model()
-        logger.info("✓ CLAP text model initialized successfully (for text search)")
+        logger.info("OK CLAP text model initialized successfully (for text search)")
         return True
     except Exception as e:
         logger.exception(f"Failed to initialize CLAP text model: {e}")
@@ -364,7 +364,7 @@ def unload_clap_audio_only():
         gc.collect()
         from .memory_utils import cleanup_cuda_memory
         cleanup_cuda_memory(force=True)
-        logger.info("✓ CLAP audio model unloaded (~268MB freed), text cache preserved")
+        logger.info("OK CLAP audio model unloaded (~268MB freed), text cache preserved")
         return True
     except Exception as e:
         logger.error(f"Error unloading CLAP audio model: {e}")
@@ -399,7 +399,7 @@ def unload_clap_model():
         from .memory_utils import comprehensive_memory_cleanup
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         
-        logger.info(f"✓ CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)")
+        logger.info(f"OK CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)")
         return True
     except Exception as e:
         logger.error(f"Error unloading CLAP model: {e}")
@@ -738,7 +738,7 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
        ``get_text_embeddings_batch`` and immediately cache it.
 
     The external API remains unchanged (takes a redis connection, returns a
-    dict label→embedding) so callers in ``tasks/analysis.py`` continue to work
+    dict label->embedding) so callers in ``tasks/analysis.py`` continue to work
     without modification.
     """
     if not config.CLAP_ENABLED:
@@ -826,6 +826,6 @@ def compute_other_features_from_clap(audio_embedding: np.ndarray, label_embeddin
     for label, text_emb in label_embeddings.items():
         # Cosine similarity = dot product for L2-normalized vectors (range [-1, 1])
         similarity = float(np.dot(audio_embedding, text_emb))
-        # Map cosine similarity [-1, 1] → probability-like [0, 1]
+        # Map cosine similarity [-1, 1] -> probability-like [0, 1]
         result[label] = (similarity + 1.0) / 2.0
     return result

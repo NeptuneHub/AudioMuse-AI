@@ -13,7 +13,7 @@ Architecture
     2. Whiten per-dimension (divide by empirical std across the library)
     3. Re-normalise to unit length after whitening
     4. Scale by w_L = sqrt(WEIGHT_LYRICS) and w_A = sqrt(WEIGHT_AUDIO)
-    5. Concatenate → merged vector of dimension (lyrics_dim + audio_dim)
+    5. Concatenate -> merged vector of dimension (lyrics_dim + audio_dim)
 * Builds a IVF Cosine index over the merged vectors
 * Persists:
     - The index binary in ``lyrics_index_data`` (index_name='sem_grove_index')
@@ -327,7 +327,7 @@ def refresh_sem_grove_cache() -> bool:
     logger.info("SemGrove: refreshing cache (current=%d songs)…", old)
     result = load_sem_grove_cache_from_db()
     logger.info(
-        "SemGrove: cache refreshed (%d → %d songs).",
+        "SemGrove: cache refreshed (%d -> %d songs).",
         old, _SEM_GROVE_CACHE["song_count"],
     )
     return result
@@ -472,7 +472,7 @@ def search_by_song(seed_item_id: str, limit: int = 50, radius_similarity: bool |
         radius_similarity = SIMILARITY_RADIUS_DEFAULT
 
     artist_cap    = MAX_SONGS_PER_ARTIST if MAX_SONGS_PER_ARTIST and MAX_SONGS_PER_ARTIST > 0 else 0
-    dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS  # cosine dist < this → near-duplicate
+    dist_threshold = DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS  # cosine dist < this -> near-duplicate
     lookback_n     = DUPLICATE_DISTANCE_CHECK_LOOKBACK if DUPLICATE_DISTANCE_CHECK_LOOKBACK > 0 else 0
     # +1 because the seed itself may appear and will be skipped
     if radius_similarity:

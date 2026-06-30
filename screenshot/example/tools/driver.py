@@ -1,4 +1,6 @@
-import os, json, traceback
+import os
+import json
+import traceback
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("AUDIOMUSE_BASE", "http://YOUR-SERVER:8000")

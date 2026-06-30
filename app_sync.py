@@ -4,10 +4,10 @@ Exposes ``GET /api/sync`` — a read-only export of the analysis library
 (metadata, mood/energy, MusiCNN + CLAP embeddings, UMAP 2D coordinates).
 
 Three modes, all read-only (no schema, no triggers, no write path):
-  * ``?fields=index`` → lightweight ``{id, fp}`` manifest (<=1000/page) for
+  * ``?fields=index`` -> lightweight ``{id, fp}`` manifest (<=1000/page) for
     client-side change detection.
-  * ``?ids=a,b,c``    → full payloads for a specific id set (<=500).
-  * (default)         → full paginated export (<=500/page).
+  * ``?ids=a,b,c``    -> full payloads for a specific id set (<=500).
+  * (default)         -> full paginated export (<=500/page).
 
 ``fp`` is a read-time fingerprint over the analysis columns; a client diffs
 the manifest against its local fingerprints to derive adds/updates/deletes.

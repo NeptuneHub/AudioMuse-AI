@@ -1,9 +1,9 @@
 """Tests for app_cron.py — sonic_fingerprint cron branch (issue #336).
 
 Verifies:
-- Empty fingerprint results → previous playlist is preserved (no upsert call)
-- Non-empty results → create_or_replace_playlist called with the constant name
-- Backend that raises NotImplementedError → falls back to legacy
+- Empty fingerprint results -> previous playlist is preserved (no upsert call)
+- Non-empty results -> create_or_replace_playlist called with the constant name
+- Backend that raises NotImplementedError -> falls back to legacy
   date-suffixed create_playlist_from_ids path
 """
 from unittest.mock import MagicMock, patch
@@ -52,7 +52,7 @@ def test_sonic_fingerprint_branch_skips_on_empty_results(mock_get_db, _matches):
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _matches):
-    """Non-empty results → upsert called once with SONIC_FINGERPRINT_CRON_PLAYLIST_NAME."""
+    """Non-empty results -> upsert called once with SONIC_FINGERPRINT_CRON_PLAYLIST_NAME."""
     from app_cron import run_due_cron_jobs
     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
 
@@ -73,7 +73,7 @@ def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_sonic_fingerprint_branch_falls_back_for_unsupported_backend(mock_get_db, _matches):
-    """Backend raising NotImplementedError → legacy create_playlist_from_ids called."""
+    """Backend raising NotImplementedError -> legacy create_playlist_from_ids called."""
     from app_cron import run_due_cron_jobs
 
     db, _cur = _setup_db_mock()

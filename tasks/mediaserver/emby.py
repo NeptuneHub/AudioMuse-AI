@@ -119,11 +119,11 @@ def _emby_headers_from_creds(user_creds=None):
 
 
 def _emby_get_users(token):
-    # this is fully compatble with Emby. no need to change
+    # this is fully compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     """Fetches a list of all users from Emby using a provided token."""
     url = f"{config.EMBY_URL}/emby/Users"
-    #this endpoint is fully compatble with Emby. no need to change
+    #this endpoint is fully compatible with Emby. no need to change
     #https://dev.emby.media/reference/RestAPI/UserService/getUsersQuery.html
     headers = {"X-Emby-Token": token}
     try:
@@ -166,7 +166,7 @@ def get_recent_albums(limit):
         return _get_recent_albums_only(limit)
 
 def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
-    # this is is compatble with Emby
+    # this is is compatible with Emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     """
@@ -304,7 +304,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
     return all_tracks
 
 def _get_recent_albums_only(limit, user_creds=None):
-    # this is is compatble with Emby
+    # this is is compatible with Emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """
     Original implementation: Fetches ONLY albums from Emby (no standalone tracks).
@@ -439,7 +439,7 @@ def get_recent_music_items(limit):
     return all_items
 
 def get_tracks_from_album(album_id, user_creds=None):
-    # this is fully compatble with Emby. no need to change
+    # this is fully compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     """Fetches all audio tracks for a given album ID from Emby using admin or override credentials."""
     # Check if this is a pseudo-album for a standalone track
@@ -499,7 +499,7 @@ def get_tracks_from_album(album_id, user_creds=None):
 
 def download_track(temp_dir, item):
     """Downloads a single track from Emby using admin credentials."""
-    # this is fully compatble with Emby. no need to change
+    # this is fully compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/LibraryService/getItemsByIdDownload.html
     try:
         track_id = item['Id']
@@ -637,7 +637,7 @@ def test_connection(user_creds=None):
 
 def get_playlist_by_name(playlist_name, user_creds=None):
     """Finds a Emby playlist by its exact name using admin credentials."""
-    # this is mostly compatble with emby
+    # this is mostly compatible with emby
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     # The Name parameter will be ignored by Emby, so your function may return all playlists instead of filtering by name.
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
@@ -720,7 +720,7 @@ def get_all_playlists(user_creds=None):
     """Fetches all playlists from Emby using admin credentials."""
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
-    # this is still compatble with Emby. no need to change
+    # this is still compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
@@ -758,7 +758,7 @@ def get_top_played_songs(limit, user_creds=None):
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
     url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
-    # this Endpoint is compatble with Emby. no need to change
+    # this Endpoint is compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
     params = {"IncludeItemTypes": "Audio", "SortBy": "PlayCount", "SortOrder": "Descending", "Recursive": True, "Limit": limit, "Fields": "UserData,Path,ProductionYear"}
@@ -789,7 +789,7 @@ def get_last_played_time(item_id, user_creds=None):
     if not user_id or not token: raise ValueError("Emby User ID and Token are required.")
 
     url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{item_id}"
-    # this Endpoint is compatble with Emby. no need to change
+    # this Endpoint is compatible with Emby. no need to change
     # https://dev.emby.media/reference/RestAPI/ItemsService/getUsersByUseridItems.html
     headers = {"X-Emby-Token": token}
     params = {"Fields": "UserData"}

@@ -172,7 +172,7 @@ def _perform_single_clustering_iteration(
             params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix
         )
 
-    except Exception as e:
+    except Exception:
         logger.error(f"{log_prefix} Iteration {run_idx} failed critically", exc_info=True)
         raise
 
@@ -395,7 +395,7 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
 
         return labels, centers, model
 
-    except Exception as e:
+    except Exception:
         logger.error(f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}", exc_info=True)
         return None, None, None
 

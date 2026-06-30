@@ -307,7 +307,7 @@ class TestJellyfinGetAllPlaylists:
         assert call_params.get('userId') == 'user123', "userId param missing or wrong"
         assert call_params.get('IncludeItemTypes') == 'Playlist', \
             "IncludeItemTypes must be 'Playlist'"
-        assert call_params.get('Recursive') == True, \
+        assert call_params.get('Recursive') is True, \
             "Recursive must be True"
 
     @patch('tasks.mediaserver.jellyfin.requests.get')
@@ -918,7 +918,7 @@ class TestNavidromeGetTracksFromAlbum:
         assert call_args[0][0] == 'getAlbum', \
             f"Endpoint changed! Expected 'getAlbum', got '{call_args[0][0]}'"
         assert call_args[0][1] == {'id': 'album123'}, \
-            f"Params changed! Expected {{'id': 'album123'}}"
+            "Params changed! Expected {'id': 'album123'}"
 
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_normalizes_field_names_to_capitalized(self, mock_request):

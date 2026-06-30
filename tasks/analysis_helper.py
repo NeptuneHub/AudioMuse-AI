@@ -76,7 +76,7 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
     """Centralized ONNX provider selection.
 
     Returns an ordered ``[(provider_name, options), ...]`` chain following the
-    priority NVIDIA CUDA → Apple CoreML (M1-M4) → CPU. Providers that are not
+    priority NVIDIA CUDA -> Apple CoreML (M1-M4) -> CPU. Providers that are not
     available on the current machine are skipped, and CPU is always appended
     last as the universal fallback.
 
@@ -161,7 +161,7 @@ def load_musicnn_sessions(model_paths):
     opts = resolve_providers(allow_coreml=False)
     try:
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
-        logger.info(f"✓ Loaded {len(sessions)} MusiCNN models for album reuse")
+        logger.info(f"OK Loaded {len(sessions)} MusiCNN models for album reuse")
         return sessions
     except Exception as e:
         logger.error(f"Failed to load MusiCNN models: {e}")
@@ -466,7 +466,7 @@ def build_feature_status_parts(clap_available, lyrics_enabled, include_check_mar
     if lyrics_enabled:
         parts.append("Lyrics")
     if include_check_marks:
-        return [f"{p}: ✓" for p in parts]
+        return [f"{p}: OK" for p in parts]
     return parts
 
 
@@ -544,7 +544,7 @@ def run_lyrics_for_track(item, path, track_audio, track_sr, track_name_full,
                          top_moods=None, download_fn=None):
     """Run lyrics analysis and persist embeddings. Returns True on save.
 
-    ``top_moods`` is the MusicNN top-N moods dict (label → score). When it
+    ``top_moods`` is the MusicNN top-N moods dict (label -> score). When it
     includes 'instrumental', analyze_lyrics short-circuits the entire pipeline
     (skips Whisper-small ASR + gte embedding) and writes the instrumental
     sentinel directly. When it includes 'female vocalists' / 'male vocalists'

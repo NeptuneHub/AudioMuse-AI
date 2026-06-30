@@ -12,8 +12,8 @@ Multiple information can be found in the [docs](docs/) folder.
 
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
-* **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are syncronous like get the similar song.
-* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for what need to be executed in async, like analyze the song, do clustering or reconstruct the index for similar song search. With the redis queue and a kubernetes architecture is possible to spawn more woker for increase scalability and avaiability.
+* **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are synchronous like get the similar song.
+* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for what need to be executed in async, like analyze the song, do clustering or reconstruct the index for similar song search. With the redis queue and a kubernetes architecture is possible to spawn more worker for increase scalability and availability.
 * **Redis Queue:** where Flask write the job, and Workers check the job to do.
 * **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
 
@@ -22,7 +22,7 @@ Remember that this software support both Intel and Arm architecture. So avoid co
 
 Remember that AudioMuse-AI is also shipped as native app for MacOS, Linux and Windows and your change must avoid to brake them-
 
-Rememeber also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
+Remember also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
 
 
 ## **The Codebase Map**
@@ -87,7 +87,7 @@ docker-compose up --build -d
 ### PR Requirements
 When submitting a pull request, ensure:
 
-* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also cleary explain how you tested it and how to replicate those test
+* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also clearly explain how you tested it and how to replicate those test
 * **Link the PR to an existing issue:** in this way you work on something already agreed on and you avoid many rework.
 * **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
   * Analysis and Clustering

@@ -1,0 +1,17 @@
+# codespell configuration. Run from the repo root: codespell
+# The CI workflow (.github/workflows/lint-codespell.yml) scans the whole tree;
+# binary/vendored/generated paths are excluded via skip below, and genuine
+# false positives via ignore-words-list.
+[codespell]
+# Tuned false positives (all verified, not real typos):
+#   idel        -> "idEl", a JS element-id variable in templates (not "idle")
+#   re-uses     -> valid English hyphenation flagged as "reuses"
+#   nd          -> str.format placeholder/kwarg name in tasks/ai (n-descriptions)
+#   datas       -> PyInstaller Analysis() keyword in AudioMuse-AI.spec (load-bearing)
+#   embeding    -> deliberate spelling in the LN_MOOD_*_EMBEDING_STATS identifiers
+#   unparseable -> accepted English variant of "unparsable" (in a docstring)
+#   caf         -> test-fixture strings in test/unit (not "calf")
+#   embbeding   -> part of the real filename query/read_bytea_embbeding.sql referenced in a comment
+ignore-words-list = idel,re-uses,nd,datas,embeding,unparseable,caf,embbeding
+# Binary/vendored/generated trees and local caches kept out of the scan.
+skip = .git,*.lock,*.min.js,*.map,*.svg,*.egg-info,.mypy_cache,.pytest_cache,.ruff_cache,model,dist,native-build,.venv,.venv-windows,screenshot,test/songs,static,mood_centroids_real_080_clap.json

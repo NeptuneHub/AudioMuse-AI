@@ -70,7 +70,7 @@ To run all tests, execute the following command from your terminal (while in the
 python integration/test.py
 ```
 
-## Succesfull result example
+## Successful result example
 If everything go well, you should have  result output similar to this:
 
 ```
@@ -110,7 +110,7 @@ PASSED
 
 The current docker-compose.yaml starts audiomuse-ai with all dependencies, jellyfin and nginx.
 It is setup to run behind a reverse proxy. The started audiomuse-ai can be accessed via the proxy `http://localhost:7777/am` or directly with `http://localhost:8000`.
-The started jellyfin is not configured to allow to run the test successfull.
+The started jellyfin is not configured to allow to run the test successful.
 If you want to run the tests against an existing audiomse-ai instance you have to change the nginx configuration to point to it.
 See `./nginx-confd/reverse-proxy.conf` and the line with `proxy_pass http://audiomuse-ai-flask:8000/;`.
 

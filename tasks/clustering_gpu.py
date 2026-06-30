@@ -278,7 +278,7 @@ class GPUGaussianMixture:
         self.n_components = n_components
         self.means_ = None
         self.using_gpu = False
-        logger.debug(f"GaussianMixture using CPU (no GPU implementation available)")
+        logger.debug("GaussianMixture using CPU (no GPU implementation available)")
 
     def fit_predict(self, X):
         """Fit the model and return cluster labels."""
@@ -306,7 +306,7 @@ class GPUSpectralClustering:
         )
         self.n_clusters = n_clusters
         self.using_gpu = False
-        logger.debug(f"SpectralClustering using CPU (no GPU implementation available)")
+        logger.debug("SpectralClustering using CPU (no GPU implementation available)")
 
     def fit_predict(self, X):
         """Fit the model and return cluster labels."""

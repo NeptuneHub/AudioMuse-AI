@@ -71,17 +71,17 @@ def identify_and_clean_orphaned_albums_task():
             
             if not all_media_server_albums:
                 log_and_update_main("No albums found on media server.", 95, task_state=TASK_STATUS_PROGRESS)
-                log_and_update_main(f"Rebuilding all indexes and maps...", 96)
+                log_and_update_main("Rebuilding all indexes and maps...", 96)
                 try:
                     from .analysis import _run_all_index_builds
                     _run_all_index_builds(log_fn=None)
-                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully.", 99)
+                    log_and_update_main("OK All indexes and maps rebuilt successfully.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps: {e}")
                     log_and_update_main(f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99)
 
                 summary = {"status": "SUCCESS", "message": "No albums found on media server.", "orphaned_albums": [], "deleted_count": 0}
-                log_and_update_main("✅ Database cleaning completed - no albums on media server!", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
+                log_and_update_main("OK Database cleaning completed - no albums on media server!", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
                 return summary
             
             log_and_update_main(f"Found {len(all_media_server_albums)} albums on media server", 20)
@@ -169,12 +169,12 @@ def identify_and_clean_orphaned_albums_task():
                 orphaned_track_ids = limited_track_ids
             
             if len(orphaned_track_ids) == 0:
-                log_and_update_main("✅ No orphaned tracks found. Database is clean!", 95, task_state=TASK_STATUS_PROGRESS)
-                log_and_update_main(f"Rebuilding all indexes and maps...", 96)
+                log_and_update_main("OK No orphaned tracks found. Database is clean!", 95, task_state=TASK_STATUS_PROGRESS)
+                log_and_update_main("Rebuilding all indexes and maps...", 96)
                 try:
                     from .analysis import _run_all_index_builds
                     _run_all_index_builds(log_fn=None)
-                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully.", 99)
+                    log_and_update_main("OK All indexes and maps rebuilt successfully.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps: {e}")
                     log_and_update_main(f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99)
@@ -188,7 +188,7 @@ def identify_and_clean_orphaned_albums_task():
                     "deleted_count": 0
                 }
                 
-                log_and_update_main("✅ Database cleaning completed - no orphaned tracks found!", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
+                log_and_update_main("OK Database cleaning completed - no orphaned tracks found!", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
                 return {
                     "status": "SUCCESS", 
                     "message": "No orphaned tracks found. Database is clean!",
@@ -213,13 +213,13 @@ def identify_and_clean_orphaned_albums_task():
             }
             
             if deletion_result["status"] == "SUCCESS":
-                log_and_update_main(f"✅ Successfully deleted {deletion_result['deleted_count']} orphaned tracks.", 96)
+                log_and_update_main(f"OK Successfully deleted {deletion_result['deleted_count']} orphaned tracks.", 96)
 
-                log_and_update_main(f"Rebuilding all indexes and maps after cleaning...", 97)
+                log_and_update_main("Rebuilding all indexes and maps after cleaning...", 97)
                 try:
                     from .analysis import _run_all_index_builds
                     _run_all_index_builds(log_fn=None)
-                    log_and_update_main(f"✅ All indexes and maps rebuilt successfully after cleaning.", 99)
+                    log_and_update_main("OK All indexes and maps rebuilt successfully after cleaning.", 99)
                 except Exception as e:
                     logger.warning(f"Failed to rebuild indexes and maps after cleaning: {e}")
                     log_and_update_main(f"Warning: Failed to rebuild indexes and maps: {str(e)}", 99)
@@ -227,7 +227,7 @@ def identify_and_clean_orphaned_albums_task():
                 safety_message = f" (Safety limit: deleted {len(orphaned_albums_list)} out of {total_orphaned_albums} albums)" if safety_limit_applied else ""
                 
                 log_and_update_main(
-                    f"✅ Cleaning complete! Identified and deleted {len(orphaned_albums_list)} orphaned albums ({deletion_result['deleted_count']} tracks).{safety_message}", 
+                    f"OK Cleaning complete! Identified and deleted {len(orphaned_albums_list)} orphaned albums ({deletion_result['deleted_count']} tracks).{safety_message}", 
                     100, 
                     task_state=TASK_STATUS_SUCCESS,
                     final_summary_details=summary
@@ -256,12 +256,12 @@ def identify_and_clean_orphaned_albums_task():
         except OperationalError as e:
             logger.error(f"Database connection error during cleaning identification: {e}. This job will be retried.", exc_info=True)
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
-            log_and_update_main(f"Database connection failed. Retrying...", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
+            log_and_update_main("Database connection failed. Retrying...", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         except Exception as e:
             logger.critical(f"Orphaned album identification failed: {e}", exc_info=True)
             err = error_manager.record(error_manager.classify(e, ERR_CLEANING_FAILED), str(e), exc=e)
-            log_and_update_main(f"❌ Orphaned album identification failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
+            log_and_update_main(f"X Orphaned album identification failed: {e}", current_progress, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
 
 

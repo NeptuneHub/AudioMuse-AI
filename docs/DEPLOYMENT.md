@@ -54,7 +54,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
   * Web UI: `http://<EXTERNAL-IP>:8000`
 
 **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI authentication and other optional parameter. They will be saved directly in the database.
 
 ## Local Deployment with Docker Compose
 
@@ -103,7 +103,7 @@ AudioMuse-AI provides Docker Compose files example:
    Open `http://localhost:8000` in your browser.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI authentication and other optional parameter. They will be saved directly in the database.
 
 6. **Stop the services:**
    ```bash
@@ -255,7 +255,7 @@ These files are configured to automatically update AudioMuse-AI using the [lates
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI authentication and other optional parameter. They will be saved directly in the database.
    
 6.  **Stopping the Services:**
     ```bash

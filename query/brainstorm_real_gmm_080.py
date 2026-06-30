@@ -243,14 +243,14 @@ def main():
         print(f"  Best K by BIC: {best_k}")
 
         sorted_bic = sorted(bic_values.items(), key=lambda x: x[1])
-        print(f"  Top-5 K by BIC:")
+        print("  Top-5 K by BIC:")
         for k, bic in sorted_bic[:5]:
             print(f"    K={k:2d}  BIC={bic:,.0f}")
 
         labels = best_gmm.predict(sel_X.astype(np.float64))
         centroids = best_gmm.means_
 
-        print(f"\n  Cluster sizes:")
+        print("\n  Cluster sizes:")
         for c in range(best_k):
             cmask = labels == c
             count = cmask.sum()
@@ -258,7 +258,7 @@ def main():
             print(f"    Cluster {c:2d}: {count:5d} songs, "
                   f"mean {mood} score: {mean_score:.4f}")
 
-        print(f"\n  Centroid MSD tag profiles (top-8 tags):")
+        print("\n  Centroid MSD tag profiles (top-8 tags):")
         print(f"  {'#':>3}  {'songs':>5}  {'mood_score':>10}  top MSD tags")
         print(f"  {'─'*75}")
 

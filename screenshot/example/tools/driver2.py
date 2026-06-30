@@ -1,4 +1,5 @@
-import os, traceback
+import os
+import traceback
 try:
     import driver as D
 except ModuleNotFoundError:

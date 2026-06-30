@@ -80,7 +80,7 @@ def search_artists():
     try:
         results = search_artists_by_name(query, limit=limit, offset=offset)
         return jsonify(results)
-    except Exception as e:
+    except Exception:
         logger.exception("Artist search failed")
         return jsonify([]), 200  # Return empty list on error
 
@@ -210,11 +210,11 @@ def alchemy_api():
         attach_song_features(results.get('results'))
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
-    except ValueError as e:
+    except ValueError:
         # Log the validation error server-side but do not expose internal error text to clients
         logger.exception("Alchemy validation failure")
         return jsonify({"error": "Invalid request"}), 400
-    except Exception as e:
+    except Exception:
         logger.exception("Alchemy failure")
         return jsonify({"error": "Internal error"}), 500
 

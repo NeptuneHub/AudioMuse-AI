@@ -388,7 +388,7 @@ def map_cache_status():
             payload = v.get('json_gzip_bytes') or v.get('json_bytes') or b''
             info[k] = {'count': v.get('count', 0), 'json_bytes': len(payload), 'projection': v.get('projection')}
         return jsonify({'ok': True, 'buckets': info}), 200
-    except Exception as e:
+    except Exception:
         # Log the full exception (including stack) for diagnostics, but do not expose
         # internal exception details to API clients.
         logger.exception('map_cache_status failed')
@@ -422,7 +422,7 @@ def rebuild_map_cache():
     try:
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200
-    except Exception as e:
+    except Exception:
         # Log the full exception for debugging, but return a generic error to the caller.
         logger.exception('rebuild_map_cache failed')
         return jsonify({'ok': False, 'error': 'Internal server error'}), 500

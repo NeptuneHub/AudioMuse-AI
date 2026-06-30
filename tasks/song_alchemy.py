@@ -50,7 +50,7 @@ def _get_artist_gmm_vectors_and_weights(artist_identifier: str) -> Tuple[List[np
             if _normalize(gmm_artist) == query_norm:
                 gmm = artist_gmm_params.get(gmm_artist)
                 if gmm:
-                    logger.info(f"Fuzzy GMM match: '{artist_name}' → '{gmm_artist}'")
+                    logger.info(f"Fuzzy GMM match: '{artist_name}' -> '{gmm_artist}'")
                     artist_name = gmm_artist
                     break
 
@@ -933,7 +933,8 @@ def song_alchemy(add_items=None, subtract_items=None, add_ids=None, subtract_ids
 
     # Convert distances into similarity-like scores (smaller distance => higher similarity)
     # We'll negate distances so higher is better
-    import math, random
+    import math
+    import random
 
     ids = [c[0] for c in scored_candidates]
     raw_scores = [ -float(c[1]) for c in scored_candidates ]
