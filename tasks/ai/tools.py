@@ -416,6 +416,8 @@ def get_mcp_tools() -> List[Dict]:
                 "description": (
                     f"Find songs from a free-text description. {mode_desc}. "
                     "Use for sound or topic descriptions that plain metadata cannot express. "
+                    "Write the query in English; when the request is in another language, "
+                    "translate it (the match only understands English). "
                     "For genre, era, tempo, energy, vocals, artist or album use search_database; "
                     "for 'similar to <name>' use seed_search."
                 ),

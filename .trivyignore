@@ -15,6 +15,14 @@ GHSA-8jfx-5878-hv4v
 # fixed only in 5.0.0rc3 (a pre-release we do not pin to).
 CVE-2026-1839
 GHSA-69w3-r845-3855
+# transformers config-injection RCE via the _attn_implementation_internal field
+# -- unreachable: AudioMuse never calls AutoModelForCausalLM.from_pretrained, loads
+# only its own pinned/bundled models (gte encoder, roberta tokenizer with
+# local_files_only=True), and does not install the optional 'kernels' package the
+# exploit downloads and executes. Mirrors CVE-2026-4372 in the pip-audit allowlist;
+# fixed only in the 5.x major line (breaking bump from the pinned 4.57.6).
+CVE-2026-4372
+GHSA-29pf-2h5f-8g72
 
 # The onnx model-loading CVEs are intentionally NOT excluded here because they
 # are already fixed by onnx==1.21.0 in requirements/common.txt (the version Trivy

@@ -17,7 +17,7 @@ Main Features:
 * Mood lists split out voices and energy phrases; non-canonical genres dropped with a note
 * Plan args drop seedless searches, hallucinated min_rating and sub-1900 years; duplicate calls dropped and plans capped
 * build_tool_calls_schema emits typed per-tool branches (reasoning first, name enum locked); prompts derive tool prose from the schemas
-* Genre/negation hint extraction, hint backstop, hallucinated year/instrumental stripping, similarity-blended re-rank with skit demotion, exclusion hard cuts, and the zero-result replan
+* Genre/negation hint extraction (incl. 4-digit decades), hint backstop, hallucinated year/instrumental stripping, similarity-blended re-rank with skit demotion and the instrumental dimension, exclusion hard cuts, empty-subtract coercion to union, underfilled-hard-filter broadening, and the zero-result replan
 """
 
 import importlib
@@ -280,6 +280,30 @@ class TestValidatePlanArgs:
         assert out[0]['arguments']['blend_mode'] == 'union'
         assert out[0]['arguments']['seeds'][0]['name'] == 'Madonna'
 
+    def test_coerces_empty_subtract_to_union(self):
+        p = _plan()
+        log = []
+        out = p.validate_plan_args(
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {
+                        'seeds': [
+                            {'type': 'artist', 'name': 'Wu-Tang Clan'},
+                            {'type': 'artist', 'name': 'Nujabes'},
+                        ],
+                        'blend_mode': 'subtract',
+                        'subtract': [],
+                    },
+                }
+            ],
+            user_wants_rating=False,
+            log_messages=log,
+        )
+        assert len(out) == 1
+        assert out[0]['arguments']['blend_mode'] == 'union'
+        assert 'subtract' not in out[0]['arguments']
+
     def test_strips_hallucinated_min_rating(self):
         p = _plan()
         out = p.validate_plan_args(
@@ -371,6 +395,17 @@ class TestIntentPreextract:
         h = extract_hints("90s pop")
         assert h['year_min'] == 1990
         assert h['year_max'] == 1999
+
+    def test_four_digit_decade_detected(self):
+        _ensure_config_stub()
+        from tasks.ai.planner import extract_hints
+
+        h = extract_hints("chill jazzy hip hop from the 2000s")
+        assert h['year_min'] == 2000
+        assert h['year_max'] == 2009
+        h = extract_hints("best of the 1970s")
+        assert h['year_min'] == 1970
+        assert h['year_max'] == 1979
 
     def test_energy_phrase_detected(self):
         _ensure_config_stub()
@@ -678,6 +713,97 @@ class TestRerankSimilarityBlend:
         }
         final, _matched, _moved = p._rerank_pool(songs, {'moods': ['party']}, feats, [])
         assert [s['item_id'] for s in final] == ['c', 'a', 'b']
+
+
+class TestInstrumentalRerank:
+    def test_dim_scores_instrumental_true(self):
+        p = _plan()
+        s = p._filter_dim_scores(
+            {'instrumental': True}, {'mood_vector': 'instrumental:0.62,jazz:0.30'}
+        )
+        assert s['instrumental'] == 0.62
+        s = p._filter_dim_scores({'instrumental': True}, {'mood_vector': 'pop:0.50'})
+        assert s['instrumental'] == 0.0
+
+    def test_dim_scores_instrumental_false(self):
+        p = _plan()
+        s = p._filter_dim_scores(
+            {'instrumental': False}, {'mood_vector': 'instrumental:0.80'}
+        )
+        assert abs(s['instrumental'] - 0.2) < 1e-9
+
+    def test_instrumental_tracks_rank_first(self):
+        p = _plan()
+        songs = [
+            {'item_id': 'v', 'title': 'Vocal Hit'},
+            {'item_id': 'i', 'title': 'Guitar Study'},
+        ]
+        feats = {
+            'v': {'mood_vector': 'pop:0.90'},
+            'i': {'mood_vector': 'instrumental:0.60'},
+        }
+        final, matched, _moved = p._rerank_pool(
+            songs, {'instrumental': True}, feats, [], sim_by_id={'v': 1.0, 'i': 0.5}
+        )
+        assert [s['item_id'] for s in final] == ['i', 'v']
+        assert matched == 1
+
+
+class TestUnderfilledBroadening:
+    def _run(self, monkeypatch, strict_songs, broad_songs, feats, target=3):
+        p = _plan()
+        import tasks.ai.tools as tools_mod
+        import tasks.ai.tool_impl as impl_mod
+
+        seen_args = []
+
+        def fake_exec(name, args, cfg):
+            seen_args.append(args)
+            if args.get('moods'):
+                return {'songs': list(strict_songs), 'message': 'strict'}
+            return {'songs': list(broad_songs), 'message': 'broad'}
+
+        monkeypatch.setattr(tools_mod, 'execute_mcp_tool', fake_exec)
+        monkeypatch.setattr(impl_mod, '_fetch_pool_features', lambda ids: feats)
+
+        logs = []
+        result = p._run_search_database_with_relax(
+            {'moods': ['relaxed'], 'get_songs': 200},
+            {'provider': 'NONE'},
+            target,
+            logs,
+            pool_target=1000,
+        )
+        return result, logs, seen_args
+
+    def test_underfilled_hard_cut_broadens_and_soft_reranks(self, monkeypatch):
+        strict = [{'item_id': 'r2', 'title': 'R2', 'artist': 'B'}]
+        broad = [
+            {'item_id': 'r1', 'title': 'R1', 'artist': 'A'},
+            {'item_id': 'r2', 'title': 'R2', 'artist': 'B'},
+            {'item_id': 'r3', 'title': 'R3', 'artist': 'C'},
+        ]
+        feats = {
+            'r1': {'other_features': 'relaxed:0.20'},
+            'r2': {'other_features': 'relaxed:0.90'},
+            'r3': {'other_features': 'relaxed:0.50'},
+        }
+        result, logs, seen_args = self._run(monkeypatch, strict, broad, feats)
+        assert [s['item_id'] for s in result['songs']] == ['r2', 'r3', 'r1']
+        assert seen_args[-1].get('get_songs') == 1000
+        assert 'moods' not in seen_args[-1]
+        assert any('underfilled' in ln for ln in logs)
+
+    def test_filled_hard_cut_not_broadened(self, monkeypatch):
+        strict = [
+            {'item_id': 's1', 'title': 'S1', 'artist': 'A'},
+            {'item_id': 's2', 'title': 'S2', 'artist': 'B'},
+            {'item_id': 's3', 'title': 'S3', 'artist': 'C'},
+        ]
+        result, logs, seen_args = self._run(monkeypatch, strict, [], {}, target=3)
+        assert [s['item_id'] for s in result['songs']] == ['s1', 's2', 's3']
+        assert all(a.get('moods') for a in seen_args)
+        assert not any('underfilled' in ln for ln in logs)
 
 
 class TestExclusionsHardCut:
