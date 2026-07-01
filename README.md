@@ -158,7 +158,19 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 
 <details>
 <summary><b>Linux</b> — x86_64 / arm64, <code>.deb</code> or <code>.rpm</code> (from <code>v2.1.3</code>)</summary>
-
+  
+- **Required** prerequisite steps necessary on **Debian 13 (Trixie)** headless/minimal installs:
+  - Tested on Proxmox LXC with standard Trixie template. Feedback on other Trixie deployments is welcome.
+  - **Do not run these commands as root!**
+  - Setup a user and run all commands as this user.
+    - `echo 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"' >> ~/.bashrc`
+    - `sudo apt update`
+    - `sudo apt install xdg-utils libgomp1 libpam-systemd -y`
+    - `sudo loginctl enable-linger $USER`
+  - Restart, log back in as the same user, and follow the remaining instructions.
+- Suggested prerequisite steps for **Debian 12 (Bookworm)** headless/minimal installs:
+  - Tested on Proxmox LXC with standard Bookworm template.
+  - `sudo apt install xdg-utils libgomp1` (prevents dpkg failing on dependency checks which requires `sudo apt --fix-broken install` to fix.)
 - **Install as root** (writes to `/opt` and the system app/service dirs):
   - Debian/Ubuntu: `sudo dpkg -i AudioMuse-AI-<arch>-linux.deb` (where `<arch>` is `x86_64` or `aarch64`)
   - Fedora/RHEL: `sudo rpm -i AudioMuse-AI-<arch>-linux.rpm` (where `<arch>` is `x86_64` or `aarch64`)
