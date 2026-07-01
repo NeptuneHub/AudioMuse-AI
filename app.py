@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Main Flask application: root routes, task control, and blueprint wiring.
+
+Owns the shared Flask instance (imported from `flask_app`), installs the
+`before_request` auth barrier from `app_auth`, mounts Swagger, and registers
+every feature blueprint (`app_*`). Sibling `app_*` modules provide the feature
+routes; this module provides the app-wide plumbing they all hang off.
+
+Main Features:
+* Core routes: health, `/analysis` landing page, generic task status/cancel/
+  cancel-all, last-task and active-tasks polling, `/api/config`, `/api/playlists`.
+* Registers all feature blueprints and, on the Flask server only (never RQ
+  workers), loads similarity indexes/caches and starts the background listener.
+"""
+
 import os
 from psycopg2.extras import DictCursor
 from flask import jsonify, request, render_template, g
@@ -21,9 +43,9 @@ from flasgger import Swagger
 from config import TEMP_DIR, REDIS_URL, APP_VERSION, ENABLE_PROXY_FIX, JWT_SECRET
 
 if ENABLE_PROXY_FIX:
-  # Werkzeug import for reverse proxy support
-  from werkzeug.middleware.proxy_fix import ProxyFix
-  from proxy_prefix import StripDuplicatedScriptName
+    # Werkzeug import for reverse proxy support
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    from proxy_prefix import StripDuplicatedScriptName
 
 # --- Flask App Setup ---
 # The Flask instance lives in `flask_app` so RQ task modules can import it
@@ -32,7 +54,8 @@ from flask_app import app
 
 # Import helper functions
 from app_helper import (
-    get_db, close_db,
+    get_db,
+    close_db,
     redis_conn,
     get_task_info_from_db,
     cancel_job_and_children_recursive,
@@ -40,8 +63,12 @@ from app_helper import (
 )
 from database import init_db
 from config import (
-    TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
-    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
+    TASK_STATUS_PENDING,
+    TASK_STATUS_STARTED,
+    TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_REVOKED,
 )
 from app_auth import (
     init_app as init_auth,
@@ -62,17 +89,23 @@ logger = logging.getLogger(__name__)
 @app.errorhandler(AudioMuseError)
 def handle_audiomuse_error(err):
     """Render any AudioMuseError raised by a synchronous route as a structured JSON body."""
-    app.logger.error("[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err)
+    app.logger.error(
+        "[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err
+    )
     return jsonify(err.to_dict()), error_manager.http_status_for_code(err.code)
 
+
 from app_logging import configure_logging
+
 configure_logging()
 
 if ENABLE_PROXY_FIX:
-  # StripDuplicatedScriptName runs after ProxyFix (inner app) to undo a doubled
-  # subpath prefix from a proxy that forwards the full path while also sending
-  # X-Forwarded-Prefix, which otherwise loops redirects to /<prefix>/setup (#668).
-  app.wsgi_app = ProxyFix(StripDuplicatedScriptName(app.wsgi_app), x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    # StripDuplicatedScriptName runs after ProxyFix (inner app) to undo a doubled
+    # subpath prefix from a proxy that forwards the full path while also sending
+    # X-Forwarded-Prefix, which otherwise loops redirects to /<prefix>/setup (#668).
+    app.wsgi_app = ProxyFix(
+        StripDuplicatedScriptName(app.wsgi_app), x_for=1, x_proto=1, x_host=1, x_prefix=1
+    )
 
 # Log the application version on startup
 app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
@@ -84,13 +117,16 @@ app.logger.info(f"Starting AudioMuse-AI Backend version {APP_VERSION}")
 # worker ends up sharing the same value.
 _jwt_secret = JWT_SECRET
 
+
 def _get_jwt_secret():
     return _jwt_secret
+
 
 @app.context_processor
 def inject_globals():
     """Injects global variables into all templates."""
     from config import CLAP_ENABLED, LYRICS_ENABLED
+
     # auth_role defaults to 'admin' (set by check_auth_needed), so when
     # AUTH_ENABLED is false or the barrier has not run yet (e.g. error
     # pages), is_admin will be True and the full UI is shown.
@@ -106,13 +142,16 @@ def inject_globals():
         current_user=current_user,
     )
 
+
 # Register the auth barrier + auth routes (/login, /auth, /logout, /api/users).
 init_auth(app, setup_manager, _get_jwt_secret)
+
 
 @app.before_request
 def log_api_request():
     if request.path.startswith('/api/') and not request.path.startswith('/static/'):
         app.logger.info('API request: %s %s', request.method, request.path)
+
 
 @app.route('/api/health')
 def health_check():
@@ -134,26 +173,28 @@ def health_check():
                   type: string
                   example: ok
     """
-    return jsonify({
-        'status': 'ok',
-    })
+    return jsonify(
+        {
+            'status': 'ok',
+        }
+    )
+
 
 # --- Swagger Setup ---
-app.config['SWAGGER'] = {
-    'title': 'AudioMuse-AI API',
-    'uiversion': 3,
-    'openapi': '3.0.0'
-}
+app.config['SWAGGER'] = {'title': 'AudioMuse-AI API', 'uiversion': 3, 'openapi': '3.0.0'}
 swagger = Swagger(app)
+
 
 @app.teardown_appcontext
 def teardown_db(e=None):
     close_db(e)
     try:
         from tasks.paged_ivf import end_all_requests
+
         end_all_requests()
     except Exception:
         pass
+
 
 # Initialize the database schema when the application module is loaded.
 # This is safe because it doesn't import other application modules.
@@ -186,6 +227,7 @@ import app_setup  # noqa: F401
 
 # --- API Endpoints ---
 
+
 @app.route('/analysis')
 def index():
     """
@@ -202,7 +244,7 @@ def index():
             schema:
               type: string
     """
-    return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
+    return render_template('index.html', title='AudioMuse-AI - Home Page', active='index')
 
 
 @app.route('/api/status/<task_id>', methods=['GET'])
@@ -267,25 +309,33 @@ def get_task_status_endpoint(task_id):
                   type: string
                   example: Task ID not found in RQ or DB.
     """
-    response = {'task_id': task_id, 'state': 'UNKNOWN', 'status_message': 'Task ID not found in RQ or DB.', 'progress': 0, 'details': {}, 'task_type_from_db': None, 'running_time_seconds': 0}
+    response = {
+        'task_id': task_id,
+        'state': 'UNKNOWN',
+        'status_message': 'Task ID not found in RQ or DB.',
+        'progress': 0,
+        'details': {},
+        'task_type_from_db': None,
+        'running_time_seconds': 0,
+    }
     try:
         job = Job.fetch(task_id, connection=redis_conn)
-        response['state'] = job.get_status() # e.g., queued, started, finished, failed
+        response['state'] = job.get_status()  # e.g., queued, started, finished, failed
         response['status_message'] = job.meta.get('status_message', response['state'])
         response['progress'] = job.meta.get('progress', 0)
         response['details'] = job.meta.get('details', {})
         if job.is_failed:
             response['status_message'] = "FAILED"
         elif job.is_finished:
-             response['status_message'] = "SUCCESS" # RQ uses 'finished' for success
-             response['progress'] = 100
+            response['status_message'] = "SUCCESS"  # RQ uses 'finished' for success
+            response['progress'] = 100
         elif job.is_canceled:
             response['status_message'] = "CANCELED"
             response['progress'] = 100
 
     except NoSuchJobError:
         # If not in RQ, it might have been cleared or never existed. Check DB.
-        pass # Will fall through to DB check
+        pass  # Will fall through to DB check
 
     # Augment with DB data, DB is source of truth for persisted details
     db_task_info = get_task_info_from_db(task_id)
@@ -294,7 +344,9 @@ def get_task_status_endpoint(task_id):
         response['running_time_seconds'] = db_task_info.get('running_time_seconds', 0)
         # If RQ state is more final (e.g. failed/finished), prefer that, else use DB
         if response['state'] not in [JobStatus.FINISHED, JobStatus.FAILED, JobStatus.CANCELED]:
-            response['state'] = db_task_info.get('status', response['state']) # Use DB status if RQ is still active
+            response['state'] = db_task_info.get(
+                'status', response['state']
+            )  # Use DB status if RQ is still active
 
         response['progress'] = db_task_info.get('progress', response['progress'])
         db_details = coerce_db_details(db_task_info.get('details'))
@@ -306,7 +358,7 @@ def get_task_status_endpoint(task_id):
             response['state'] = 'REVOKED'
             response['status_message'] = 'Task revoked.'
             response['progress'] = 100
-    elif response['state'] == 'UNKNOWN': # Not in RQ and not in DB
+    elif response['state'] == 'UNKNOWN':  # Not in RQ and not in DB
         return jsonify(response), 404
 
     # Prune 'checked_album_ids' from details if the task is analysis-related
@@ -323,19 +375,25 @@ def get_task_status_endpoint(task_id):
         if isinstance(log_entries, list) and len(log_entries) > 10:
             response['details']['log'] = [
                 f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                *log_entries[-10:]
+                *log_entries[-10:],
             ]
-    
+
     state_upper = str(response.get('state') or '').upper()
     if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
         existing_error = response['details'].get('error')
-        if isinstance(existing_error, dict) and 'error_code' in existing_error and 'error_message' in existing_error:
+        if (
+            isinstance(existing_error, dict)
+            and 'error_code' in existing_error
+            and 'error_message' in existing_error
+        ):
             pass
         elif isinstance(existing_error, dict) and 'error_code' in existing_error:
             response['details']['error'] = error_manager.build(existing_error['error_code'])
         else:
             response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
-        response['details'].setdefault('error_message', response['details']['error']['error_message'])
+        response['details'].setdefault(
+            'error_message', response['details']['error']['error_message']
+        )
 
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
@@ -343,6 +401,7 @@ def get_task_status_endpoint(task_id):
     response.pop('end_time', None)
 
     return jsonify(response)
+
 
 @app.route('/api/cancel/<task_id>', methods=['POST'])
 def cancel_task_endpoint(task_id):
@@ -379,8 +438,16 @@ def cancel_task_endpoint(task_id):
         description: Task ID not found in the database.
     """
     # Always perform cancel when the endpoint is invoked. No early returns.
-    cancelled_count = cancel_job_and_children_recursive(task_id, reason=f"Cancellation requested for task {task_id} via API.")
-    return jsonify({"message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.", "task_id": task_id, "cancelled_jobs_count": cancelled_count}), 200
+    cancelled_count = cancel_job_and_children_recursive(
+        task_id, reason=f"Cancellation requested for task {task_id} via API."
+    )
+    return jsonify(
+        {
+            "message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.",
+            "task_id": task_id,
+            "cancelled_jobs_count": cancelled_count,
+        }
+    ), 200
 
 
 @app.route('/api/cancel_all/<task_type_prefix>', methods=['POST'])
@@ -418,21 +485,35 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
     cur = db.cursor(cursor_factory=DictCursor)
     # Exclude terminal statuses
     terminal_statuses = (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-    cur.execute("SELECT task_id, task_type FROM task_status WHERE task_type = %s AND status NOT IN %s", (task_type_prefix, terminal_statuses))
+    cur.execute(
+        "SELECT task_id, task_type FROM task_status WHERE task_type = %s AND status NOT IN %s",
+        (task_type_prefix, terminal_statuses),
+    )
     tasks_to_cancel = cur.fetchall()
     cur.close()
 
     total_cancelled_jobs = 0
     cancelled_main_task_ids = []
     for task_row in tasks_to_cancel:
-        cancelled_jobs_for_this_main_task = cancel_job_and_children_recursive(task_row['task_id'], reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.")
+        cancelled_jobs_for_this_main_task = cancel_job_and_children_recursive(
+            task_row['task_id'],
+            reason=f"Bulk cancellation for task type '{task_type_prefix}' via API.",
+        )
         if cancelled_jobs_for_this_main_task > 0:
-           total_cancelled_jobs += cancelled_jobs_for_this_main_task
-           cancelled_main_task_ids.append(task_row['task_id'])
+            total_cancelled_jobs += cancelled_jobs_for_this_main_task
+            cancelled_main_task_ids.append(task_row['task_id'])
 
     if total_cancelled_jobs > 0:
-        return jsonify({"message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.", "cancelled_main_tasks": cancelled_main_task_ids}), 200
-    return jsonify({"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}), 404
+        return jsonify(
+            {
+                "message": f"Cancellation initiated for {len(cancelled_main_task_ids)} main tasks of type '{task_type_prefix}' and their children. Total jobs affected: {total_cancelled_jobs}.",
+                "cancelled_main_tasks": cancelled_main_task_ids,
+            }
+        ), 200
+    return jsonify(
+        {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
+    ), 404
+
 
 @app.route('/api/last_task', methods=['GET'])
 def get_last_overall_task_status_endpoint():
@@ -474,9 +555,9 @@ def get_last_overall_task_status_endpoint():
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute("""
         SELECT task_id, task_type, status, progress, details, start_time, end_time
-        FROM task_status 
-        WHERE parent_task_id IS NULL 
-        ORDER BY timestamp DESC 
+        FROM task_status
+        WHERE parent_task_id IS NULL
+        ORDER BY timestamp DESC
         LIMIT 1
     """)
     last_task_row = cur.fetchone()
@@ -495,24 +576,32 @@ def get_last_overall_task_status_endpoint():
             last_task_data['running_time_seconds'] = max(0, effective_end_time - start_time)
         else:
             last_task_data['running_time_seconds'] = 0.0
-        
+
         # Truncate log entries to last 10 entries
         if isinstance(last_task_data.get('details'), dict) and 'log' in last_task_data['details']:
             log_entries = last_task_data['details']['log']
             if isinstance(log_entries, list) and len(log_entries) > 10:
                 last_task_data['details']['log'] = [
                     f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                    *log_entries[-10:]
+                    *log_entries[-10:],
                 ]
-        
+
         # Clean up raw time columns before sending response
         last_task_data.pop('start_time', None)
         last_task_data.pop('end_time', None)
         last_task_data.pop('timestamp', None)
 
         return jsonify(last_task_data), 200
-        
-    return jsonify({"task_id": None, "task_type": None, "status": "NO_PREVIOUS_MAIN_TASK", "details": {"log": ["No previous main task found."] }}), 200
+
+    return jsonify(
+        {
+            "task_id": None,
+            "task_type": None,
+            "status": "NO_PREVIOUS_MAIN_TASK",
+            "details": {"log": ["No previous main task found."]},
+        }
+    ), 200
+
 
 @app.route('/api/active_tasks', methods=['GET'])
 def get_active_tasks_endpoint():
@@ -537,19 +626,22 @@ def get_active_tasks_endpoint():
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
-    cur.execute("""
+    cur.execute(
+        """
         SELECT task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, start_time, end_time
         FROM task_status
         WHERE parent_task_id IS NULL AND status IN %s
         ORDER BY timestamp DESC
         LIMIT 1
-    """, (non_terminal_statuses,))
+    """,
+        (non_terminal_statuses,),
+    )
     active_main_task_row = cur.fetchone()
     cur.close()
 
     if active_main_task_row:
         task_item = dict(active_main_task_row)
-        
+
         # Calculate running time in Python
         start_time = task_item.get('start_time')
         if start_time:
@@ -564,8 +656,11 @@ def get_active_tasks_endpoint():
             if isinstance(details, dict):
                 details.pop('clustering_run_job_ids', None)
                 details.pop('checked_album_ids', None)
-                cmc = details.get('best_params', {}).get('clustering_method_config', {}) \
-                    if isinstance(details.get('best_params'), dict) else {}
+                cmc = (
+                    details.get('best_params', {}).get('clustering_method_config', {})
+                    if isinstance(details.get('best_params'), dict)
+                    else {}
+                )
                 if isinstance(cmc, dict) and isinstance(cmc.get('params'), dict):
                     cmc['params'].pop('initial_centroids', None)
 
@@ -575,7 +670,8 @@ def get_active_tasks_endpoint():
         task_item.pop('timestamp', None)
 
         return jsonify(task_item), 200
-    return jsonify({}), 200 # Return empty object if no active main task
+    return jsonify({}), 200  # Return empty object if no active main task
+
 
 @app.route('/api/config', methods=['GET'])
 def get_config_endpoint():
@@ -598,39 +694,56 @@ def get_config_endpoint():
               type: object
               additionalProperties: true
     """
-    return jsonify({
-        "num_recent_albums": config.NUM_RECENT_ALBUMS, "max_distance": config.MAX_DISTANCE,
-        "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER, "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
-        "cluster_algorithm": config.CLUSTER_ALGORITHM, "num_clusters_min": config.NUM_CLUSTERS_MIN, "num_clusters_max": config.NUM_CLUSTERS_MAX,
-        "dbscan_eps_min": config.DBSCAN_EPS_MIN, "dbscan_eps_max": config.DBSCAN_EPS_MAX, "gmm_covariance_type": config.GMM_COVARIANCE_TYPE,
-        "dbscan_min_samples_min": config.DBSCAN_MIN_SAMPLES_MIN, "dbscan_min_samples_max": config.DBSCAN_MIN_SAMPLES_MAX,
-        "gmm_n_components_min": config.GMM_N_COMPONENTS_MIN, "gmm_n_components_max": config.GMM_N_COMPONENTS_MAX,
-        "spectral_n_clusters_min": config.SPECTRAL_N_CLUSTERS_MIN, "spectral_n_clusters_max": config.SPECTRAL_N_CLUSTERS_MAX,
-        "pca_components_min": config.PCA_COMPONENTS_MIN, "pca_components_max": config.PCA_COMPONENTS_MAX,
-        "min_songs_per_genre_for_stratification": config.MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
-        "stratified_sampling_target_percentile": config.STRATIFIED_SAMPLING_TARGET_PERCENTILE,
-        "ai_model_provider": config.AI_MODEL_PROVIDER,
-        "ollama_server_url": config.OLLAMA_SERVER_URL, "ollama_model_name": config.OLLAMA_MODEL_NAME,
-        "openai_server_url": config.OPENAI_SERVER_URL, "openai_model_name": config.OPENAI_MODEL_NAME,
-        "gemini_model_name": config.GEMINI_MODEL_NAME,
-        "mistral_model_name": config.MISTRAL_MODEL_NAME,
-        "top_n_moods": config.TOP_N_MOODS, "mood_labels": config.MOOD_LABELS, "clustering_runs": config.CLUSTERING_RUNS,
-        "top_n_playlists": config.TOP_N_PLAYLISTS,
-        "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
-        "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
-        "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,
-        "score_weight_davies_bouldin": config.SCORE_WEIGHT_DAVIES_BOULDIN,
-        "score_weight_calinski_harabasz": config.SCORE_WEIGHT_CALINSKI_HARABASZ,
-        "score_weight_purity": config.SCORE_WEIGHT_PURITY,
-        "score_weight_other_feature_diversity": config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
-        "score_weight_other_feature_purity": config.SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-        "path_distance_metric": config.PATH_DISTANCE_METRIC
-      ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
-      ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
-      ,"alchemy_temperature": config.ALCHEMY_TEMPERATURE
-      ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-      ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
-    })
+    return jsonify(
+        {
+            "num_recent_albums": config.NUM_RECENT_ALBUMS,
+            "max_distance": config.MAX_DISTANCE,
+            "max_songs_per_cluster": config.MAX_SONGS_PER_CLUSTER,
+            "max_songs_per_artist": config.MAX_SONGS_PER_ARTIST,
+            "cluster_algorithm": config.CLUSTER_ALGORITHM,
+            "num_clusters_min": config.NUM_CLUSTERS_MIN,
+            "num_clusters_max": config.NUM_CLUSTERS_MAX,
+            "dbscan_eps_min": config.DBSCAN_EPS_MIN,
+            "dbscan_eps_max": config.DBSCAN_EPS_MAX,
+            "gmm_covariance_type": config.GMM_COVARIANCE_TYPE,
+            "dbscan_min_samples_min": config.DBSCAN_MIN_SAMPLES_MIN,
+            "dbscan_min_samples_max": config.DBSCAN_MIN_SAMPLES_MAX,
+            "gmm_n_components_min": config.GMM_N_COMPONENTS_MIN,
+            "gmm_n_components_max": config.GMM_N_COMPONENTS_MAX,
+            "spectral_n_clusters_min": config.SPECTRAL_N_CLUSTERS_MIN,
+            "spectral_n_clusters_max": config.SPECTRAL_N_CLUSTERS_MAX,
+            "pca_components_min": config.PCA_COMPONENTS_MIN,
+            "pca_components_max": config.PCA_COMPONENTS_MAX,
+            "min_songs_per_genre_for_stratification": config.MIN_SONGS_PER_GENRE_FOR_STRATIFICATION,
+            "stratified_sampling_target_percentile": config.STRATIFIED_SAMPLING_TARGET_PERCENTILE,
+            "ai_model_provider": config.AI_MODEL_PROVIDER,
+            "ollama_server_url": config.OLLAMA_SERVER_URL,
+            "ollama_model_name": config.OLLAMA_MODEL_NAME,
+            "openai_server_url": config.OPENAI_SERVER_URL,
+            "openai_model_name": config.OPENAI_MODEL_NAME,
+            "gemini_model_name": config.GEMINI_MODEL_NAME,
+            "mistral_model_name": config.MISTRAL_MODEL_NAME,
+            "top_n_moods": config.TOP_N_MOODS,
+            "mood_labels": config.MOOD_LABELS,
+            "clustering_runs": config.CLUSTERING_RUNS,
+            "top_n_playlists": config.TOP_N_PLAYLISTS,
+            "enable_clustering_embeddings": config.ENABLE_CLUSTERING_EMBEDDINGS,
+            "score_weight_diversity": config.SCORE_WEIGHT_DIVERSITY,
+            "score_weight_silhouette": config.SCORE_WEIGHT_SILHOUETTE,
+            "score_weight_davies_bouldin": config.SCORE_WEIGHT_DAVIES_BOULDIN,
+            "score_weight_calinski_harabasz": config.SCORE_WEIGHT_CALINSKI_HARABASZ,
+            "score_weight_purity": config.SCORE_WEIGHT_PURITY,
+            "score_weight_other_feature_diversity": config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
+            "score_weight_other_feature_purity": config.SCORE_WEIGHT_OTHER_FEATURE_PURITY,
+            "path_distance_metric": config.PATH_DISTANCE_METRIC,
+            "alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS,
+            "alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS,
+            "alchemy_temperature": config.ALCHEMY_TEMPERATURE,
+            "alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR,
+            "alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN,
+        }
+    )
+
 
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists_endpoint():
@@ -642,7 +755,7 @@ def get_playlists_endpoint():
     summary: Return every saved playlist with its tracks, grouped by playlist name.
     responses:
       200:
-        description: Playlist map (playlist_name → list of tracks).
+        description: Playlist map (playlist_name -> list of tracks).
         content:
           application/json:
             schema:
@@ -659,7 +772,8 @@ def get_playlists_endpoint():
                     author:
                       type: string
     """
-    from collections import defaultdict # Local import if not used elsewhere globally
+    from collections import defaultdict  # Local import if not used elsewhere globally
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
@@ -667,97 +781,120 @@ def get_playlists_endpoint():
     cur.close()
     playlists_data = defaultdict(list)
     for row in rows:
-        playlists_data[row['playlist_name']].append({"item_id": row['item_id'], "title": row['title'], "author": row['author']})
+        playlists_data[row['playlist_name']].append(
+            {"item_id": row['item_id'], "title": row['title'], "author": row['author']}
+        )
     return jsonify(dict(playlists_data)), 200
 
 
 # --- Redis index reload listener (restored pre-e308673 logic, with map reload added) ---
 def listen_for_index_reloads():
-  """
-  Runs in a background thread to listen for messages on a Redis Pub/Sub channel.
-  When a 'reload' message is received, it triggers the in-memory IVF index and map to be reloaded.
-  This is the recommended pattern for inter-process communication in this architecture,
-  avoiding direct HTTP calls from workers to the web server.
-  """
-  # Create a new Redis connection for this thread.
-  # Sharing the main redis_conn object across threads is not recommended.
-  from taskqueue import redis_socket_options
-  thread_redis_conn = Redis.from_url(
-    REDIS_URL,
-    socket_connect_timeout=30,
-    socket_timeout=60,
-    health_check_interval=30,
-    retry_on_timeout=True,
-    **redis_socket_options(REDIS_URL),
-  )
-  pubsub = thread_redis_conn.pubsub()
-  pubsub.subscribe('index-updates')
-  logger.info("Background thread started. Listening for IVF index reloads on Redis channel 'index-updates'.")
+    """
+    Runs in a background thread to listen for messages on a Redis Pub/Sub channel.
+    When a 'reload' message is received, it triggers the in-memory IVF index and map to be reloaded.
+    This is the recommended pattern for inter-process communication in this architecture,
+    avoiding direct HTTP calls from workers to the web server.
+    """
+    # Create a new Redis connection for this thread.
+    # Sharing the main redis_conn object across threads is not recommended.
+    from taskqueue import redis_socket_options
 
-  for message in pubsub.listen():
-    # The first message is a confirmation of subscription, so we skip it.
-    if message['type'] == 'message':
-      message_data = message['data'].decode('utf-8')
-      logger.info(f"Received '{message_data}' message on 'index-updates' channel.")
-      if message_data == 'reload':
-        # We need the application context to access 'g' and the database connection.
-        with app.app_context():
-          logger.info("Triggering in-memory IVF index and map reload from background listener.")
-          try:
-            from tasks.ivf_manager import load_ivf_index_for_querying
-            load_ivf_index_for_querying(force_reload=True)
-            from tasks.artist_gmm_manager import load_artist_index_for_querying
-            load_artist_index_for_querying(force_reload=True)
-            from database import load_map_projection, load_artist_projection
-            load_map_projection('main_map', force_reload=True)
-            load_artist_projection('artist_map', force_reload=True)
-            # Rebuild the map JSON cache used by the /api/map endpoint
-            from app_map import build_map_cache
-            build_map_cache()
-            
-            # Reload CLAP cache (with logging)
-            logger.info("Reloading CLAP embedding cache...")
-            from tasks.clap_text_search import refresh_clap_cache
-            clap_success = refresh_clap_cache()
+    thread_redis_conn = Redis.from_url(
+        REDIS_URL,
+        socket_connect_timeout=30,
+        socket_timeout=60,
+        health_check_interval=30,
+        retry_on_timeout=True,
+        **redis_socket_options(REDIS_URL),
+    )
+    pubsub = thread_redis_conn.pubsub()
+    pubsub.subscribe('index-updates')
+    logger.info(
+        "Background thread started. Listening for IVF index reloads on Redis channel 'index-updates'."
+    )
 
-            # Reload Lyrics cache (ivf index + axis matrix)
-            try:
-              from config import LYRICS_ENABLED
-              if LYRICS_ENABLED:
-                logger.info("Reloading Lyrics search cache...")
-                from tasks.lyrics_manager import refresh_lyrics_cache
-                lyrics_success = refresh_lyrics_cache()
-              else:
-                lyrics_success = False
-            except Exception as e:
-              logger.warning(f"Lyrics cache reload failed: {e}")
-              lyrics_success = False
+    for message in pubsub.listen():
+        # The first message is a confirmation of subscription, so we skip it.
+        if message['type'] == 'message':
+            message_data = message['data'].decode('utf-8')
+            logger.info(f"Received '{message_data}' message on 'index-updates' channel.")
+            if message_data == 'reload':
+                # We need the application context to access 'g' and the database connection.
+                with app.app_context():
+                    logger.info(
+                        "Triggering in-memory IVF index and map reload from background listener."
+                    )
+                    try:
+                        from tasks.ivf_manager import load_ivf_index_for_querying
 
-            # Reload SemGrove merged lyrics+audio index
-            try:
-              logger.info("Reloading SemGrove merged index...")
-              from tasks.sem_grove_manager import refresh_sem_grove_cache
-              sg_success = refresh_sem_grove_cache()
-            except Exception as e:
-              logger.warning(f"SemGrove cache reload failed: {e}")
-              sg_success = False
+                        load_ivf_index_for_querying(force_reload=True)
+                        from tasks.artist_gmm_manager import load_artist_index_for_querying
 
-            logger.info(f"In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP {'OK' if clap_success else 'X'}, Lyrics {'OK' if lyrics_success else 'X'}, SemGrove {'OK' if sg_success else 'X'}")
-          except Exception as e:
-            logger.error(f"Error reloading indexes/maps from background listener: {e}", exc_info=True)
-      elif message_data == 'reload-artist':
-        # Reload artist similarity index only (legacy support)
-        with app.app_context():
-          logger.info("Triggering in-memory artist similarity index reload from background listener.")
-          try:
-            from tasks.artist_gmm_manager import load_artist_index_for_querying
-            load_artist_index_for_querying(force_reload=True)
-            logger.info("In-memory artist similarity index reloaded successfully by background listener.")
-          except Exception as e:
-            logger.error(f"Error reloading artist similarity index from background listener: {e}", exc_info=True)
+                        load_artist_index_for_querying(force_reload=True)
+                        from database import load_map_projection, load_artist_projection
 
+                        load_map_projection('main_map', force_reload=True)
+                        load_artist_projection('artist_map', force_reload=True)
+                        # Rebuild the map JSON cache used by the /api/map endpoint
+                        from app_map import build_map_cache
 
+                        build_map_cache()
 
+                        # Reload CLAP cache (with logging)
+                        logger.info("Reloading CLAP embedding cache...")
+                        from tasks.clap_text_search import refresh_clap_cache
+
+                        clap_success = refresh_clap_cache()
+
+                        # Reload Lyrics cache (ivf index + axis matrix)
+                        try:
+                            from config import LYRICS_ENABLED
+
+                            if LYRICS_ENABLED:
+                                logger.info("Reloading Lyrics search cache...")
+                                from tasks.lyrics_manager import refresh_lyrics_cache
+
+                                lyrics_success = refresh_lyrics_cache()
+                            else:
+                                lyrics_success = False
+                        except Exception as e:
+                            logger.warning(f"Lyrics cache reload failed: {e}")
+                            lyrics_success = False
+
+                        # Reload SemGrove merged lyrics+audio index
+                        try:
+                            logger.info("Reloading SemGrove merged index...")
+                            from tasks.sem_grove_manager import refresh_sem_grove_cache
+
+                            sg_success = refresh_sem_grove_cache()
+                        except Exception as e:
+                            logger.warning(f"SemGrove cache reload failed: {e}")
+                            sg_success = False
+
+                        logger.info(
+                            f"In-memory reload complete: IVF OK, Artist OK, Maps OK, CLAP {'OK' if clap_success else 'X'}, Lyrics {'OK' if lyrics_success else 'X'}, SemGrove {'OK' if sg_success else 'X'}"
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            f"Error reloading indexes/maps from background listener: {e}"
+                        )
+            elif message_data == 'reload-artist':
+                # Reload artist similarity index only (legacy support)
+                with app.app_context():
+                    logger.info(
+                        "Triggering in-memory artist similarity index reload from background listener."
+                    )
+                    try:
+                        from tasks.artist_gmm_manager import load_artist_index_for_querying
+
+                        load_artist_index_for_querying(force_reload=True)
+                        logger.info(
+                            "In-memory artist similarity index reloaded successfully by background listener."
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            f"Error reloading artist similarity index from background listener: {e}"
+                        )
 
 
 # --- Blueprint Registration ---
@@ -814,136 +951,151 @@ _register_blueprints(app)
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
 try:
-  os.makedirs(TEMP_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
 except OSError:
-  logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
+    logger.debug(f"Could not create TEMP_DIR '{TEMP_DIR}' (may be running in test/CI environment)")
 
 if not _is_worker:
-  with app.app_context():
-    # --- Initial IVF Index Load ---
-    from tasks.ivf_manager import load_ivf_index_for_querying
-    load_ivf_index_for_querying()
-    # --- Load Artist Similarity Index ---
-    from tasks.artist_gmm_manager import load_artist_index_for_querying
-    try:
-      load_artist_index_for_querying()
-      logger.info("Artist similarity index loaded at startup.")
-    except Exception as e:
-      logger.warning(f"Failed to load artist similarity index at startup: {e}")
-    # Also try to load precomputed map projection into memory if available
-    try:
-      from app_helper import load_map_projection
-      load_map_projection('main_map')
-      logger.info("In-memory map projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
-    # Also try to load artist component projection into memory
-    try:
-      from database import load_artist_projection
-      load_artist_projection('artist_map')
-      logger.info("In-memory artist component projection loaded at startup.")
-    except Exception as e:
-      logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
-    # Load CLAP embeddings cache (model will lazy-load on first use)
-    try:
-      from config import CLAP_ENABLED
-      if CLAP_ENABLED:
-        # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
-        from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
-        if load_clap_cache_from_db():
-          logger.info("CLAP text search cache loaded at startup (embeddings only).")
-          logger.info("CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM).")
-        
-        # Load top queries from database (default queries only, no computation)
-        # This must run even if no CLAP embeddings exist yet (first startup)
-        has_existing = load_top_queries_from_db()
-        if has_existing:
-          logger.info("Loaded top queries from database (defaults).")
-        else:
-          logger.info("No queries found in database (should not happen - check DB)")
-    except Exception as e:
-      logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
-    # Load Lyrics search cache (ivf index over per-song gte embeddings + axis-score matrix)
-    try:
-      from config import LYRICS_ENABLED
-      if LYRICS_ENABLED:
-        from tasks.lyrics_manager import load_lyrics_cache_from_db
-        if load_lyrics_cache_from_db():
-          logger.info("Lyrics search cache loaded at startup (ivf index + axis matrix).")
-        else:
-          logger.info("Lyrics search cache empty at startup (run analysis to populate).")
-    except Exception as e:
-      logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
-    # Load SemGrove merged lyrics+audio index
-    try:
-      from tasks.sem_grove_manager import load_sem_grove_cache_from_db
-      if load_sem_grove_cache_from_db():
-        logger.info("SemGrove merged index loaded at startup.")
-      else:
-        logger.info("SemGrove index not found at startup (build it after analysis completes).")
-    except Exception as e:
-      logger.debug(f"SemGrove cache not loaded at startup: {e}")
+    with app.app_context():
+        # --- Initial IVF Index Load ---
+        from tasks.ivf_manager import load_ivf_index_for_querying
 
-    def _start_map_init_background():
-      try:
-        from app_map import init_map_cache
-        logger.info('Starting background map JSON cache build.')
-        with app.app_context():
-          init_map_cache()
-        logger.info('Background map JSON cache build finished.')
-      except Exception:
-        logger.exception('Background init_map_cache failed')
+        load_ivf_index_for_querying()
+        # --- Load Artist Similarity Index ---
+        from tasks.artist_gmm_manager import load_artist_index_for_querying
 
-    t = threading.Thread(target=_start_map_init_background, daemon=True)
-    t.start()
+        try:
+            load_artist_index_for_querying()
+            logger.info("Artist similarity index loaded at startup.")
+        except Exception as e:
+            logger.warning(f"Failed to load artist similarity index at startup: {e}")
+        # Also try to load precomputed map projection into memory if available
+        try:
+            from app_helper import load_map_projection
+
+            load_map_projection('main_map')
+            logger.info("In-memory map projection loaded at startup.")
+        except Exception as e:
+            logger.debug(f"No precomputed map projection to load at startup or load failed: {e}")
+        # Also try to load artist component projection into memory
+        try:
+            from database import load_artist_projection
+
+            load_artist_projection('artist_map')
+            logger.info("In-memory artist component projection loaded at startup.")
+        except Exception as e:
+            logger.debug(f"No precomputed artist projection to load at startup or load failed: {e}")
+        # Load CLAP embeddings cache (model will lazy-load on first use)
+        try:
+            from config import CLAP_ENABLED
+
+            if CLAP_ENABLED:
+                # Load CLAP embeddings cache (15MB) - model lazy-loads on first search to save 3GB RAM
+                from tasks.clap_text_search import load_clap_cache_from_db, load_top_queries_from_db
+
+                if load_clap_cache_from_db():
+                    logger.info("CLAP text search cache loaded at startup (embeddings only).")
+                    logger.info(
+                        "CLAP model will lazy-load on first text search (~1-2s delay, saves 3GB RAM)."
+                    )
+
+                # Load top queries from database (default queries only, no computation)
+                # This must run even if no CLAP embeddings exist yet (first startup)
+                has_existing = load_top_queries_from_db()
+                if has_existing:
+                    logger.info("Loaded top queries from database (defaults).")
+                else:
+                    logger.info("No queries found in database (should not happen - check DB)")
+        except Exception as e:
+            logger.debug(f"CLAP cache not loaded at startup (may be disabled or failed): {e}")
+        # Load Lyrics search cache (ivf index over per-song gte embeddings + axis-score matrix)
+        try:
+            from config import LYRICS_ENABLED
+
+            if LYRICS_ENABLED:
+                from tasks.lyrics_manager import load_lyrics_cache_from_db
+
+                if load_lyrics_cache_from_db():
+                    logger.info("Lyrics search cache loaded at startup (ivf index + axis matrix).")
+                else:
+                    logger.info("Lyrics search cache empty at startup (run analysis to populate).")
+        except Exception as e:
+            logger.debug(f"Lyrics cache not loaded at startup (may be disabled or failed): {e}")
+        # Load SemGrove merged lyrics+audio index
+        try:
+            from tasks.sem_grove_manager import load_sem_grove_cache_from_db
+
+            if load_sem_grove_cache_from_db():
+                logger.info("SemGrove merged index loaded at startup.")
+            else:
+                logger.info(
+                    "SemGrove index not found at startup (build it after analysis completes)."
+                )
+        except Exception as e:
+            logger.debug(f"SemGrove cache not loaded at startup: {e}")
+
+        def _start_map_init_background():
+            try:
+                from app_map import init_map_cache
+
+                logger.info('Starting background map JSON cache build.')
+                with app.app_context():
+                    init_map_cache()
+                logger.info('Background map JSON cache build finished.')
+            except Exception:
+                logger.exception('Background init_map_cache failed')
+
+        t = threading.Thread(target=_start_map_init_background, daemon=True)
+        t.start()
 
 # --- Start Background Listener Thread (Flask server only) ---
 if not _is_worker:
-  listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
-  listener_thread.start()
+    listener_thread = threading.Thread(target=listen_for_index_reloads, daemon=True)
+    listener_thread.start()
 
-  # Start a cron manager thread that checks enabled cron entries every 60 seconds
-  def _cron_manager_loop():
-    try:
-      from time import sleep
-      from app_cron import run_due_cron_jobs
-      while True:
+    # Start a cron manager thread that checks enabled cron entries every 60 seconds
+    def _cron_manager_loop():
         try:
-          with app.app_context():
-            run_due_cron_jobs()
+            from time import sleep
+            from app_cron import run_due_cron_jobs
+
+            while True:
+                try:
+                    with app.app_context():
+                        run_due_cron_jobs()
+                except Exception:
+                    app.logger.exception('cron manager failed')
+                sleep(60)
         except Exception:
-          app.logger.exception('cron manager failed')
-        sleep(60)
-    except Exception:
-      app.logger.exception('cron manager main loop error')
+            app.logger.exception('cron manager main loop error')
 
-  cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
-  cron_thread.start()
+    cron_thread = threading.Thread(target=_cron_manager_loop, daemon=True)
+    cron_thread.start()
 
-  # Dashboard stats refresher: runs once at startup, then hourly.
-  # Keeps heavy content/index aggregates off the request path.
-  def _dashboard_stats_refresher_loop():
-    try:
-      from time import sleep
-      from app_dashboard import refresh_dashboard_stats
-      # Wait a minute after startup so the initial DB/index warm-up and
-      # first incoming requests have time to settle before we kick off
-      # the heavy content/indexes scan.
-      sleep(60)
-      while True:
+    # Dashboard stats refresher: runs once at startup, then hourly.
+    # Keeps heavy content/index aggregates off the request path.
+    def _dashboard_stats_refresher_loop():
         try:
-          refresh_dashboard_stats(app)
-        except Exception:
-          app.logger.exception('dashboard stats refresh failed')
-        sleep(3600)
-    except Exception:
-      app.logger.exception('dashboard stats refresher main loop error')
+            from time import sleep
+            from app_dashboard import refresh_dashboard_stats
 
-  dashboard_stats_thread = threading.Thread(
-      target=_dashboard_stats_refresher_loop, daemon=True)
-  dashboard_stats_thread.start()
+            # Wait a minute after startup so the initial DB/index warm-up and
+            # first incoming requests have time to settle before we kick off
+            # the heavy content/indexes scan.
+            sleep(60)
+            while True:
+                try:
+                    refresh_dashboard_stats(app)
+                except Exception:
+                    app.logger.exception('dashboard stats refresh failed')
+                sleep(3600)
+        except Exception:
+            app.logger.exception('dashboard stats refresher main loop error')
+
+    dashboard_stats_thread = threading.Thread(target=_dashboard_stats_refresher_loop, daemon=True)
+    dashboard_stats_thread.start()
 else:
-  logger.info('Running as RQ worker: skipping index loading, Redis listener, and cron thread.')
+    logger.info('Running as RQ worker: skipping index loading, Redis listener, and cron thread.')
 
 if __name__ == '__main__':
-  app.run(debug=False, host='0.0.0.0', port=8000)
+    app.run(debug=False, host='0.0.0.0', port=8000)

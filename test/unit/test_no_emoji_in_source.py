@@ -1,38 +1,44 @@
-"""Guard test: no emoji / pictographic icon codepoints in CODE files.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Emoji embedded in source (especially in log strings) crash the Windows
-standalone build when written to the Windows console (cp1252). They are only
-allowed in rendered HTML pages, never in Python/shell/CI/config code.
+"""Repo-wide guard that no tracked code file contains emoji or icons.
 
-The candidate file list is built from ``git ls-files`` so it matches CI exactly.
-We flag only the unambiguous pictographic emoji codepoints to avoid false
-positives on legitimate accented Latin, CJK lyrics fixtures, typographic
-quotes/dashes, or mathematical symbols.
+Scans tracked files with code extensions for emoji code points and fails with
+the offending paths, since emoji break the Windows build.
+
+Main Features:
+* The candidate file list is non-empty so the scan cannot silently pass
+* No emoji appears in any tracked code file
 """
+
 import os
 import subprocess
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-# Code file extensions to scan. HTML is intentionally absent (emoji allowed
-# in rendered pages). JSON is absent (test fixtures carry intentional unicode).
 CODE_EXTENSIONS = (
-    '.py', '.js', '.sh', '.bat', '.ps1',
-    '.yml', '.yaml', '.toml', '.cfg', '.ini',
+    '.py',
+    '.js',
+    '.sh',
+    '.bat',
+    '.ps1',
+    '.yml',
+    '.yaml',
+    '.toml',
+    '.cfg',
+    '.ini',
 )
 
-# Files / trees excluded from the guard, with the reason:
-#   - plotly-2.29.1.min.js: vendored minified library (treat as binary blob).
-#   - lyrics_transcriber.py: contains a deliberate emoji-STRIPPING regex whose
-#     character class is literally built from emoji range boundaries.
 EXACT_EXCLUDES = {
     'static/plotly-2.29.1.min.js',
     'lyrics/lyrics_transcriber.py',
 }
 
-# Path fragments excluded outright (vendored / generated / non-console UI).
 PATH_FRAGMENT_EXCLUDES = (
     '.venv',
     'node_modules',
@@ -41,20 +47,11 @@ PATH_FRAGMENT_EXCLUDES = (
 
 
 def _is_pictographic_emoji(codepoint):
-    """True for unambiguous pictographic emoji / icon codepoints.
-
-    Deliberately narrow: the astral Supplemental-Symbols/Emoji plane plus the
-    emoji presentation selector. This is the surface that crashes the Windows
-    console build and has no legitimate use in code. Accented Latin, CJK,
-    typographic punctuation and math symbols are all left untouched.
-    """
     return (0x1F000 <= codepoint <= 0x1FAFF) or codepoint == 0xFE0F
 
 
 def _git_ls_files():
-    out = subprocess.check_output(
-        ['git', 'ls-files'], cwd=REPO_ROOT
-    ).decode('utf-8')
+    out = subprocess.check_output(['git', 'ls-files'], cwd=REPO_ROOT).decode('utf-8')
     return [line for line in out.splitlines() if line]
 
 
@@ -68,8 +65,6 @@ def _is_candidate(rel_path):
         return False
     if posix in EXACT_EXCLUDES:
         return False
-    # Browser-delivered UI scripts render to the DOM, not the Windows console,
-    # so emoji button labels there do not crash the build.
     if posix.startswith('static/') and posix.endswith('.js'):
         return False
     for frag in PATH_FRAGMENT_EXCLUDES:
@@ -99,7 +94,6 @@ def _scan_for_emoji(rel_path):
 
 
 def test_candidate_file_list_is_non_empty():
-    # Sanity check: git ls-files resolved and produced code files to scan.
     assert _candidate_files(), 'no candidate code files found via git ls-files'
 
 

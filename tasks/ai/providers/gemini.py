@@ -1,4 +1,23 @@
-"""Google Gemini transport (uses google-genai Client API)."""
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Google Gemini client for the playlist AI.
+
+One of the per-provider backends dispatched from ``tasks.ai.api``, using the
+google-genai SDK. Exposes generate_text for plain naming/brainstorm calls and
+call_with_tools for single-turn function-calling that returns a normalized
+list of tool calls.
+
+Main Features:
+* call_with_tools forces function_calling_config mode ANY and flattens the SDK function_call parts into the shared {"name","arguments"} shape.
+* Applies an optional pre-call delay (env GEMINI_API_CALL_DELAY_SECONDS, default 7s) for rate limits; on any SDK error returns a generic "AI service unavailable" string, never a traceback.
+"""
+
 import logging
 import os
 import time
@@ -16,7 +35,6 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Single-prompt completion via Gemini's generate_content."""
     if not api_key or api_key == "YOUR-GEMINI-API-KEY-HERE":
         return "Error: Gemini API key is missing or empty. Please provide a valid API key."
 
@@ -65,7 +83,6 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call Gemini with native function calling. Returns ``{"tool_calls": [...]}`` or ``{"error": ...}``."""
     try:
         import google.genai as genai
 
@@ -101,7 +118,6 @@ def call_with_tools(
         log_messages.append(f"Gemini response type: {type(response)}")
 
         def convert_to_dict(obj):
-            """Recursively convert protobuf objects to native Python types."""
             if hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes, dict)):
                 if hasattr(obj, "items"):
                     return {k: convert_to_dict(v) for k, v in obj.items()}
@@ -121,9 +137,7 @@ def call_with_tools(
                         if hasattr(fc, "args"):
                             args_dict = dict(fc.args) if fc.args else {}
                         elif hasattr(fc, "arguments"):
-                            args_dict = (
-                                fc.arguments if isinstance(fc.arguments, dict) else {}
-                            )
+                            args_dict = fc.arguments if isinstance(fc.arguments, dict) else {}
                         tool_calls.append(
                             {"name": fc.name, "arguments": convert_to_dict(args_dict)}
                         )

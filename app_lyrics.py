@@ -1,11 +1,23 @@
-"""
-Lyrics Search Blueprint
-Provides web interface and API for lyrics-based song search.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Two modes:
-  * Axis search: target sliders over MUSIC_ANALYSIS_AXES labels (0..1).
-  * Free-text search: gte-multilingual-base embedding nearest-neighbor on the
-    lyrics ivf index built from per-song lyrics embeddings.
+"""Lyrics-search Flask blueprint (lyrics_search_bp).
+
+Serves the ``/lyrics_search`` UI and the lyrics REST API, backed by the
+per-song lyrics embeddings and the lyrics IVF index built by
+``tasks.lyrics_manager``.
+
+Main Features:
+* Two search modes: axis search (target sliders over MUSIC_ANALYSIS_AXES
+  labels) and free-text search (gte-multilingual-base embedding nearest
+  neighbor on the lyrics IVF index).
+* Cache warmup / status / refresh, index stats, and axis-definition endpoints
+  for the search page.
 """
 
 import logging
@@ -35,9 +47,9 @@ def lyrics_search_page():
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
     from tasks.sem_grove_manager import get_sem_grove_stats
 
-    cache_stats      = get_cache_stats()
-    axes             = get_axes_definition() if LYRICS_ENABLED else {}
-    sem_grove_stats  = get_sem_grove_stats()
+    cache_stats = get_cache_stats()
+    axes = get_axes_definition() if LYRICS_ENABLED else {}
+    sem_grove_stats = get_sem_grove_stats()
 
     return render_template(
         'lyrics_search.html',
@@ -241,6 +253,7 @@ def lyrics_warmup_api():
 
     try:
         from tasks.gte_warm_cache import warmup_gte_model
+
         return jsonify(warmup_gte_model())
     except Exception:
         logger.exception("Lyrics model warmup failed")
@@ -266,6 +279,7 @@ def lyrics_warmup_status_api():
 
     try:
         from tasks.gte_warm_cache import get_gte_warm_status
+
         return jsonify(get_gte_warm_status())
     except Exception:
         logger.exception("Failed to get lyrics warmup status")

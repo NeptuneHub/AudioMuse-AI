@@ -1,13 +1,22 @@
-"""Filesystem locations for the standalone macOS build.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Read-only resources (ONNX models, Flask templates/static, the bundled
-``redis-server``, icons) live inside the app bundle -- ``sys._MEIPASS`` when
-frozen, the repo root in dev. Every *writable* path (the Postgres data dir, the
-Redis socket, transcode scratch, the numba cache, logs, the control socket and
-the supervisor pid file) lives under the user's ``~/Library``; nothing writable
-ever lands inside the read-only, signed bundle. The writable root is
-``~/Library/AudioMuse-AI`` (deliberately *not* ``Application Support`` -- see
-``app_support_dir`` for why the path must be space-free).
+"""Filesystem path resolution for the macOS standalone build.
+
+Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
+repo) and the per-user data locations under ``~/Library``, so the macOS
+launcher, supervisor and control-socket modules agree on where pgdata, redis,
+logs, models and the control socket live. The Linux/Windows ``paths`` modules
+are the platform-specific siblings.
+
+Main Features:
+* ``resource_root`` plus ``~/Library`` data and ``~/Library/Logs`` directories.
+* Control-socket and model paths shared across the macOS supervisor children.
 """
 
 import os
@@ -18,7 +27,6 @@ APP_NAME = "AudioMuse-AI"
 
 
 def resource_root():
-    """Directory that holds the bundled read-only resources."""
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", _repo_root())
     return _repo_root()
@@ -34,13 +42,6 @@ def _ensure(path):
 
 
 def app_support_dir():
-    # NB: ``~/Library/AudioMuse-AI`` rather than the conventional
-    # ``~/Library/Application Support/AudioMuse-AI``. The path must not contain a
-    # space: pgserver hands the embedded Postgres its unix-socket directory via
-    # ``pg_ctl -o '-k <dir>'``, a single string that ``postgres`` re-splits on
-    # whitespace -- a space in the path makes startup fail with
-    # ``invalid argument``. The cluster's data dir doubles as its socket dir, so
-    # the whole writable root stays space-free.
     return _ensure(os.path.join(os.path.expanduser("~"), "Library", APP_NAME))
 
 
@@ -65,7 +66,6 @@ def numba_cache_dir():
 
 
 def backup_dir():
-    """Writable dir for pg_dump backups / restore logs (``app_backup.py``)."""
     return _ensure(os.path.join(app_support_dir(), "backup"))
 
 
@@ -94,19 +94,20 @@ def menubar_icon():
 
 
 def redis_binary():
-    """Path to the embedded ``redis-server`` executable."""
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "redis-server")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "redis", platform.machine(), "redis-server")
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "vendor",
+        "redis",
+        platform.machine(),
+        "redis-server",
+    )
 
 
 def pg_bin_dir():
-    """Directory holding the bundled Postgres client tools (pg_dump, psql, pg_restore).
-
-    Lives next to the pgserver server binaries inside the frozen bundle; in dev it
-    resolves from the installed pgserver package.
-    """
     if getattr(sys, "frozen", False):
         return os.path.join(resource_root(), "pgserver", "pginstall", "bin")
     import pgserver
+
     return os.path.join(os.path.dirname(os.path.abspath(pgserver.__file__)), "pginstall", "bin")

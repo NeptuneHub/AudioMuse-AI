@@ -1,25 +1,21 @@
-# test/unit/test_index_rebuild_integration.py
-"""
-Integration-level tests for the index rebuild/load glue that the helper-level
-unit tests don't reach:
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-1. ``tasks.artist_gmm_manager.load_artist_index_for_querying`` — the loader where
-   the ``db_conn`` NameError lived. Covers the new-BYTEA path, the legacy-JSON
-   fallback, and the both-empty reset. A test that calls the loader with a mocked
-   DB would have caught that NameError instantly (the bug only manifested when the
-   code reached Step B and tried to use an undefined name).
+"""Artist-index loading and the _run_all_index_builds orchestrator.
 
-2. ``tasks.analysis._run_all_index_builds`` — the single rebuild orchestrator now
-   shared by analysis, cleaning, and collection_manager. Covers: every step runs,
-   ``log_fn=None`` is safe, a non-fatal builder failure doesn't abort the rest, and
-   a fatal failure (the IVF audio step) propagates.
+Covers load_artist_index_for_querying wiring the artist globals from the paged
+IVF index and metadata, and the orchestrator that runs all index builders.
 
-These are mock-based — no real Postgres or ivf graph needed. The actual
-end-to-end build (``build_and_store_artist_index`` fitting GMMs from DB embeddings
-and serializing a real ivf file) is deliberately left to a real-DB integration
-test in the docker test stack: driving it through unit mocks would be a brittle
-maze (faking ivf.save + open() + three separate SELECTs) with low marginal
-value over the codec/storage tests in test_artist_metadata_codec.py.
+Main Features:
+* Artist index load sets or resets the module globals depending on IVF presence
+  and metadata availability
+* The orchestrator invokes all eight builders and publishes progress
+* A non-fatal builder failure continues; a fatal IVF failure propagates and aborts
 """
 
 import sys
@@ -30,39 +26,30 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
-# artist_gmm_manager imports ivf + sklearn at module load; skip cleanly if absent.
 agm = pytest.importorskip("tasks.artist_gmm_manager")
 ibh = pytest.importorskip("tasks.index_build_helpers")
 
 
 @pytest.fixture(autouse=True)
 def _reset_artist_globals():
-    """Reset the module-level cache before and after each test so state never
-    leaks between tests (or from other test files that loaded an index)."""
     def _clear():
         agm.artist_index = None
         agm.artist_map = None
         agm.reverse_artist_map = None
         agm.artist_gmm_params = None
+
     _clear()
     yield
     _clear()
 
 
 def _fake_app_helper(conn):
-    """A stand-in ``app_helper`` module whose get_db returns our mock connection.
-
-    The loader does ``from app_helper import get_db`` at call time, so injecting
-    this into sys.modules intercepts the connection without importing the real
-    (heavy) app_helper.
-    """
     mod = types.ModuleType("app_helper")
     mod.get_db = MagicMock(return_value=conn)
     return mod
 
 
 def _conn_returning(row):
-    """Mock connection whose single-row SELECT returns ``row`` from fetchone."""
     cur = MagicMock()
     cur.fetchone.return_value = row
     cur.fetchall.return_value = []
@@ -73,25 +60,38 @@ def _conn_returning(row):
 
 
 class TestLoadArtistIndexForQuerying:
-    """Artist IVF index loader (IVF removed; IVF-only)."""
-
     def test_ivf_path_sets_globals(self):
-        """IVF index present: globals populated from the index + metadata blob."""
         conn, cur = _conn_returning(None)
         fake_map = {0: "Artist A", 1: "Artist B"}
         fake_gmm = {
-            "Artist A": {"means": [[0.1, 0.2]], "weights": [1.0], "n_components": 1,
-                          "n_features": 2, "n_tracks": 3, "is_few_songs": True, "tracks_hash": "h1"},
-            "Artist B": {"means": [[0.3, 0.4]], "weights": [1.0], "n_components": 1,
-                          "n_features": 2, "n_tracks": 7, "is_few_songs": False, "tracks_hash": "h2"},
+            "Artist A": {
+                "means": [[0.1, 0.2]],
+                "weights": [1.0],
+                "n_components": 1,
+                "n_features": 2,
+                "n_tracks": 3,
+                "is_few_songs": True,
+                "tracks_hash": "h1",
+            },
+            "Artist B": {
+                "means": [[0.3, 0.4]],
+                "weights": [1.0],
+                "n_components": 1,
+                "n_features": 2,
+                "n_tracks": 7,
+                "is_few_songs": False,
+                "tracks_hash": "h2",
+            },
         }
         fake_index = MagicMock()
         fake_index.__len__.return_value = len(fake_map)
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
-             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})), \
-             patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"), \
-             patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
+            patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, fake_map, {})),
+            patch.object(ibh, "load_segmented_blob", return_value=b"meta-blob"),
+            patch.object(ibh, "unpack_artist_metadata", return_value=(fake_map, fake_gmm)),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is fake_index
@@ -100,10 +100,11 @@ class TestLoadArtistIndexForQuerying:
         assert agm.reverse_artist_map == {"Artist A": 0, "Artist B": 1}
 
     def test_no_ivf_index_resets_cache(self):
-        """No IVF index built yet -> clean reset, no crash."""
         conn, cur = _conn_returning(None)
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=False):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=False),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
@@ -112,22 +113,19 @@ class TestLoadArtistIndexForQuerying:
         assert agm.reverse_artist_map is None
 
     def test_missing_metadata_resets_cache(self):
-        """IVF index present but metadata blob missing -> reset (no partial publish)."""
         conn, cur = _conn_returning(None)
         fake_index = MagicMock()
-        with patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}), \
-             patch("tasks.paged_ivf.has_paged_ivf", return_value=True), \
-             patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})), \
-             patch.object(ibh, "load_segmented_blob", return_value=None):
+        with (
+            patch.dict(sys.modules, {"app_helper": _fake_app_helper(conn)}),
+            patch("tasks.paged_ivf.has_paged_ivf", return_value=True),
+            patch("tasks.paged_ivf.load_paged_ivf_index", return_value=(fake_index, {0: "A"}, {})),
+            patch.object(ibh, "load_segmented_blob", return_value=None),
+        ):
             agm.load_artist_index_for_querying(force_reload=True)
 
         assert agm.artist_index is None
         assert agm.artist_map is None
 
-
-# ---------------------------------------------------------------------------
-# Orchestrator: tasks.analysis._run_all_index_builds
-# ---------------------------------------------------------------------------
 
 analysis_mod = None
 try:
@@ -163,19 +161,12 @@ _BUILDER_SOURCE_MODULES = {
 }
 
 
-@pytest.mark.skipif(analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env")
+@pytest.mark.skipif(
+    analysis_mod is None, reason="tasks.analysis (librosa/onnx) unavailable in this env"
+)
 class TestRunAllIndexBuilds:
-    """The single rebuild entry point shared by analysis, cleaning, collection_manager."""
-
     @contextmanager
     def _patched(self):
-        """Patch the orchestrator's deps and yield {name: mock}.
-
-        The six index builders are patched at their defining modules because
-        ``_run_all_index_builds`` imports them at call time; the projection
-        builders and DB/Redis deps remain module-level names on
-        ``tasks.analysis``.
-        """
         with ExitStack() as stack:
             mocks = {}
             for name, module in _BUILDER_SOURCE_MODULES.items():
@@ -189,16 +180,13 @@ class TestRunAllIndexBuilds:
             analysis_mod._run_all_index_builds(log_fn=None)
         for name in _BUILDER_NAMES:
             assert mocks[name].called, f"{name} was not invoked by the orchestrator"
-        # reload published + RAM released at the end
         assert mocks["redis_conn"].publish.called
         assert mocks["_release_freed_ram_to_os"].called
 
     def test_non_fatal_failure_does_not_abort_remaining_builders(self):
         with self._patched() as mocks:
             mocks["build_and_store_clap_index"].side_effect = RuntimeError("clap boom")
-            # must NOT raise — CLAP is non-fatal
             analysis_mod._run_all_index_builds(log_fn=None)
-            # everything after CLAP still ran
             assert mocks["build_and_store_lyrics_index"].called
             assert mocks["build_and_store_sem_grove_index"].called
             assert mocks["build_and_store_artist_index"].called
@@ -209,7 +197,6 @@ class TestRunAllIndexBuilds:
             mocks["build_and_store_ivf_index"].side_effect = RuntimeError("fatal ivf")
             with pytest.raises(RuntimeError, match="fatal ivf"):
                 analysis_mod._run_all_index_builds(log_fn=None)
-            # aborted at the first (fatal) step — later builders never ran
             assert not mocks["build_and_store_clap_index"].called
             assert not mocks["build_and_store_artist_index"].called
 
@@ -224,6 +211,6 @@ class TestRunAllIndexBuilds:
 
         progresses = [p for _, p in calls]
         messages = [m for m, _ in calls]
-        assert 95 in progresses          # initial "Performing final index rebuild..."
+        assert 95 in progresses
         assert any("CLAP" in m for m in messages)
         assert any("artist similarity" in m.lower() for m in messages)

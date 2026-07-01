@@ -1,13 +1,20 @@
-"""Flask application instance.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module exists solely to host the singleton ``Flask(__name__)`` used by
-both the web layer (``app.py``) and the RQ task modules under ``tasks/``.
-Keeping the instance here avoids the import cycle that occurs when ``app.py``
-imports task modules and a task module imports ``app`` to grab the Flask
-instance for ``app.app_context()``.
+"""Shared Flask application instance.
 
-Both sides should ``from flask_app import app``; ``app.py`` is then free to
-attach blueprints, hooks, and middleware without creating a cycle.
+Constructs the single ``app`` object with template and static folders resolved
+for both source and frozen (PyInstaller) runs, so ``app`` and the ``app_*``
+blueprint modules can import one instance without a circular dependency.
+
+Main Features:
+* Resolves resource paths via ``sys._MEIPASS`` when frozen, else the source tree.
+* Sets the global request-body size limit (MAX_CONTENT_LENGTH) to 5 GB for uploads.
 """
 
 import os
@@ -17,7 +24,6 @@ from flask import Flask
 
 
 def _resource_root():
-    """Root that holds ``templates/`` and ``static/`` (the PyInstaller bundle when frozen)."""
     if getattr(sys, 'frozen', False):
         return getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +35,4 @@ app = Flask(
     template_folder=os.path.join(_RESOURCE_ROOT, 'templates'),
     static_folder=os.path.join(_RESOURCE_ROOT, 'static'),
 )
-# Cap upload size at 5GB; chunked backup uploads (see templates/backup.html)
-# stay well under this, but allow some headroom for larger single requests.
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024

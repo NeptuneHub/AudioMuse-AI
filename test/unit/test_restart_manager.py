@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Guard conditions that decide whether a Flask restart may be scheduled.
+
+Covers restart_manager's gating so only a Flask service with restart enabled
+arms the restart timer, using a mocked timer to observe the decision.
+
+Main Features:
+* Returns False when the service type is unset or is a worker
+* Returns False when the Flask restart flag is disabled (case-insensitive)
+* Guards pass only for a Flask service with restart explicitly enabled
+"""
+
 from unittest.mock import MagicMock
 
 import pytest

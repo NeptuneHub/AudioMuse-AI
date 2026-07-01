@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Persist first-run setup and runtime config overrides in the database.
+
+Backs the setup wizard by storing config values in the app_config table so they
+survive restarts and take precedence over environment defaults from config.py.
+
+Main Features:
+* Reads and writes typed config overrides (casting stored strings back to the
+  default's type) and can bootstrap the table from valid environment config
+  when it is empty.
+* Hashes secrets with Argon2, skips re-hashing values already hashed, treats
+  placeholder values as unset, and reports whether server/auth setup is complete.
+"""
+
 import os
 import json
 import logging
@@ -20,14 +41,10 @@ BASIC_SERVER_FIELDS = {
     'LYRION_URL',
     'EMBY_URL',
     'EMBY_USER_ID',
-    'EMBY_TOKEN'
+    'EMBY_TOKEN',
 }
-AUTH_FIELDS = {
-    'AUTH_ENABLED',
-    'AUDIOMUSE_USER',
-    'AUDIOMUSE_PASSWORD',
-    'API_TOKEN'
-}
+AUTH_FIELDS = {'AUTH_ENABLED', 'AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD', 'API_TOKEN'}
+
 
 class SetupManager:
     def __init__(self, database_url=None):
@@ -41,6 +58,7 @@ class SetupManager:
             return env_url
 
         import sys
+
         if getattr(sys, "frozen", False):
             return None
 
@@ -64,8 +82,6 @@ class SetupManager:
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Serialize concurrent app_config/table creation across
-                    # multiple processes (Flask workers, RQ workers, setup_manager).
                     cur.execute("SELECT pg_advisory_lock(726354821)")
                     try:
                         cur.execute(
@@ -147,7 +163,7 @@ class SetupManager:
             'your_default_token',
             'http://your_jellyfin_server',
             'http://your-navidrome-server',
-            'http://your-lyrion-server'
+            'http://your-lyrion-server',
         ]
         for placeholder in placeholders:
             if placeholder in normalized:
@@ -191,17 +207,14 @@ class SetupManager:
         if not enabled:
             return True
 
-        # When auth is enabled, only username/password are mandatory.
-        # API_TOKEN is optional and does not control setup completeness.
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in ['AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD']
         )
 
     def is_valid_env_config(self, config_module):
-        return (
-            self._is_valid_server_config(config_module)
-            and self._is_valid_auth_config(config_module)
+        return self._is_valid_server_config(config_module) and self._is_valid_auth_config(
+            config_module
         )
 
     def bootstrap_env_config_if_empty(self, config_module):
@@ -249,11 +262,19 @@ class SetupManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     for key, value in values.items():
-                        if key == 'AUDIOMUSE_PASSWORD' and isinstance(value, str) and value and value != '********' and not self._is_argon2_password_hash(value):
+                        if (
+                            key == 'AUDIOMUSE_PASSWORD'
+                            and isinstance(value, str)
+                            and value
+                            and value != '********'
+                            and not self._is_argon2_password_hash(value)
+                        ):
                             try:
                                 value = self._password_hasher.hash(value)
                             except argon2_exceptions.HashingError as exc:
-                                self.logger.error(f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True)
+                                self.logger.error(
+                                    f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True
+                                )
                                 raise
                         cur.execute(
                             f"INSERT INTO {DEFAULT_CONFIG_TABLE} (key, value) VALUES (%s, %s) "
@@ -277,8 +298,7 @@ class SetupManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)",
-                        (list(keys),)
+                        f"DELETE FROM {DEFAULT_CONFIG_TABLE} WHERE key = ANY(%s)", (list(keys),)
                     )
                 conn.commit()
         except Exception as exc:
@@ -301,13 +321,15 @@ class SetupManager:
             else:
                 value = default_value
                 overridden = False
-            fields.append({
-                "name": name,
-                "default": self.format_value(default_value),
-                "value": self.format_value(value),
-                "type": type(default_value).__name__,
-                "overridden": overridden,
-            })
+            fields.append(
+                {
+                    "name": name,
+                    "default": self.format_value(default_value),
+                    "value": self.format_value(value),
+                    "type": type(default_value).__name__,
+                    "overridden": overridden,
+                }
+            )
         return fields
 
 

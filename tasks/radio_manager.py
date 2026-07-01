@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Build and refresh the user's "radio" playlists on the media server.
+
+Batch job that regenerates every enabled alchemy radio by running song_alchemy
+against each radio's anchor and pushing the result to the media server.
+
+Main Features:
+* Generates tracks per radio from its stored anchor, result count, and
+  temperature, skipping radios that yield no results.
+* Upserts each playlist, falling back to create_playlist when the provider does
+  not support create_or_replace_playlist, and returns a created/failed summary.
+"""
+
 import logging
 
 from .song_alchemy import song_alchemy
@@ -7,15 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 def run_radio_playlists():
-    """Generate one playlist per enabled radio (anchor + temperature + number of results).
-
-    Uses create_or_replace_playlist so the same server-side playlist (and ID,
-    where the backend allows) gets reused across runs — avoiding duplicate
-    playlists on online-first sync clients (e.g. Symfonium on Navidrome)
-    that track playlists by ID.
-
-    Falls back to create_playlist for unsupported backends.
-    """
     from database import get_alchemy_radios
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
@@ -29,14 +40,16 @@ def run_radio_playlists():
             outcome = song_alchemy(
                 add_items=[{'type': 'anchor', 'id': radio['anchor_id']}],
                 n_results=int(radio['n_results']),
-                temperature=float(radio['temperature'])
+                temperature=float(radio['temperature']),
             )
             item_ids = [r['item_id'] for r in (outcome.get('results') or []) if r.get('item_id')]
             if item_ids:
                 generated.append((playlist_name, item_ids))
             else:
                 failed.append(playlist_name)
-                logger.warning(f"Radio '{radio['name']}' produced no results; skipping playlist creation.")
+                logger.warning(
+                    f"Radio '{radio['name']}' produced no results; skipping playlist creation."
+                )
         except Exception:
             failed.append(playlist_name)
             logger.exception(f"Radio '{radio['name']}' failed; skipping playlist creation.")
@@ -47,7 +60,6 @@ def run_radio_playlists():
             try:
                 create_or_replace_playlist(playlist_name, item_ids)
             except NotImplementedError:
-                # Unsupported backend: fall back to plain create.
                 create_playlist(playlist_name, item_ids)
             created += 1
             logger.info(f"Radio playlist '{playlist_name}' upserted with {len(item_ids)} tracks.")

@@ -1,17 +1,22 @@
-"""Smoke test: every project module must import cleanly.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Complements the flake8 F821 (undefined-name) gate. F821 is static and cannot see
-cross-module breakage like ``from x import name_that_no_longer_exists`` or
-``import missing_module`` -- actually importing each module catches those plus
-any other module-load-time error (a moved function leaving a dangling import, a
-typo in a re-export, etc.).
+"""Import smoke test over every discovered project module.
 
-A psycopg2 / redis *connection* error means the import machinery already
-succeeded (the module merely tried to reach a service while loading, e.g.
-``app`` runs ``init_db()`` at import) and is treated as a pass. Genuinely-missing
-optional native deps are skipped; everything else (ImportError, NameError,
-SyntaxError, AttributeError) fails the test.
+Walks the repo (skipping build and vendored dirs) and imports each module to
+catch syntax and import-time errors that the unit suite would otherwise miss.
+
+Main Features:
+* Discovers all package/module names under the repo root
+* Each module imports cleanly, tolerating a reached DB or Redis connection
+* Missing optional deps (cuml/cupy/ivf/faiss/tensorflow) skip rather than fail
 """
+
 import importlib
 import os
 from pathlib import Path
@@ -21,15 +26,21 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Mirrors test_import_architecture._collect_modules excludes (plus scripts/ and
-# screenshot/, which are standalone tooling entry points -- the latter depends on
-# playwright -- not meant to import in a server context).
 EXCLUDED_DIRS = {
-    ".git", ".venv", ".venv-windows", "node_modules", "__pycache__",
-    "build", "dist", "pginstall", "native-build", "test", "scripts", "screenshot",
+    ".git",
+    ".venv",
+    ".venv-windows",
+    "node_modules",
+    "__pycache__",
+    "build",
+    "dist",
+    "pginstall",
+    "native-build",
+    "test",
+    "scripts",
+    "screenshot",
 }
 
-# ImportErrors naming an optional/native dependency that may be absent in CI.
 _OPTIONAL_DEPS = ("cuml", "cupy", "ivf", "faiss", "tensorflow")
 
 
@@ -55,11 +66,6 @@ MODULES = _discover_modules()
 
 @pytest.mark.parametrize("modname", MODULES)
 def test_module_imports_cleanly(modname):
-    """Importing the module must not raise an ImportError/NameError/etc.
-
-    Reaching a DB/Redis connection during import is fine -- it proves the module
-    loaded; only a real load-time error should fail.
-    """
     try:
         importlib.import_module(modname)
     except psycopg2.OperationalError:

@@ -1,34 +1,27 @@
-"""Source-level guard that the post-task index rebuild delegates to the single
-shared orchestrator (``tasks.analysis._run_all_index_builds``) rather than the
-old partial rebuild path.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-History this pins:
+"""Static check that cleaning delegates index rebuilds to the orchestrator.
 
-* ``collection_manager.sync_collections_task`` used to rebuild ONLY the audio
-  IVF index after a sync, leaving CLAP / lyrics / lyrics-axes / SemGrove /
-  artist and the 2D map projections stale until the next analysis run.
-* ``cleaning.identify_and_clean_orphaned_albums_task`` rebuilt a hand-maintained
-  subset of builders inline, in three separate branches.
+Parses tasks/cleaning.py with AST to confirm the orphan-cleaning task rebuilds
+indexes through the single orchestrator rather than a hand-maintained subset.
 
-Both now route through ``_run_all_index_builds``, which builds the full set in
-the same order as the analysis task and publishes the reload message. The
-runtime behaviour of the orchestrator itself is covered by
-``test_index_rebuild_integration.py``; this file only locks in the delegation
-contract so a future edit cannot silently revert either task to a partial
-rebuild.
-
-These tests parse the source with ``ast`` -- no import of the task modules, no
-DB, no ivf/sklearn/librosa -- so they run in every environment and never
-skip.
+Main Features:
+* The cleaning task calls _run_all_index_builds
+* It never calls the individual build_and_store_* builders directly, so the full
+  index set cannot drift out of sync
 """
 
 import ast
 import os
 
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 _PARTIAL_BUILDERS = (
     "build_and_store_ivf_index",
@@ -43,7 +36,6 @@ _PARTIAL_BUILDERS = (
 
 
 def _function_defs(rel_path):
-    """Return ``{function_name: FunctionDef}`` for every def in a source file."""
     path = os.path.join(REPO_ROOT, rel_path)
     with open(path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
@@ -55,7 +47,6 @@ def _function_defs(rel_path):
 
 
 def _called_names(func_node):
-    """Return the set of callee names (bare and attribute) inside a function."""
     names = set()
     for node in ast.walk(func_node):
         if isinstance(node, ast.Call):
@@ -68,8 +59,6 @@ def _called_names(func_node):
 
 
 class TestCleaningDelegatesRebuild:
-    """tasks/cleaning.py :: identify_and_clean_orphaned_albums_task"""
-
     def test_calls_run_all_index_builds(self):
         funcs = _function_defs("tasks/cleaning.py")
         assert "identify_and_clean_orphaned_albums_task" in funcs

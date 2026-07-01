@@ -1,27 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
 """Shared logging setup for every AudioMuse-AI entry point.
 
-Call ``configure_logging()`` exactly once per process, as early as possible —
-before any module that emits log records gets imported. ``logging.basicConfig``
-is a no-op if the root logger already has a handler, so calling this helper
-multiple times across imports is safe.
+Call ``configure_logging()`` exactly once per process, as early as possible,
+before any module that emits log records is imported. Workers that don't import
+``app`` (the high-priority worker, the janitor) call this instead of setting up
+logging inline, so formats stay uniform and no ``logger.info`` silently falls
+through to Python's ``lastResort`` handler during long jobs.
 
-Why this exists: workers that don't import ``app`` (the high-priority worker,
-the janitor) used to set up logging inline, with formats that drifted from
-``app.py``. When one of them forgot to call ``basicConfig`` at all, every
-``logger.info(...)`` from task modules fell through to Python's ``lastResort``
-handler — silently dropping INFO-level output during long-running jobs.
-
-Record sanitization: the ``LogSanitizingFilter`` cleans every log record before
-it reaches a handler. It removes emoji / non-Latin-1 symbols (which raise
-``UnicodeEncodeError`` / ``UnicodeDecodeError`` on Windows when stdout is a pipe
-or the console code-page cannot represent the character) and neutralizes CR/LF
-and other control characters so an attacker-controlled value embedded in a
-message cannot forge or split log lines (CWE-117, log injection). This is the
-single, centralized place where log-message sanitization happens — call sites
-log the raw value and the filter cleans it. HTML templates and web-UI progress
-messages are unaffected — only the Python ``logging`` pipeline is sanitised, and
-the traceback ``logger.exception`` appends is left intact (the formatter renders
-it after filtering, so the full error is always visible in the log).
+Main Features:
+* One shared format and a re-entrant setup (``basicConfig`` is a no-op once the
+  root logger has a handler), safe to call from any entry point.
+* ``LogSanitizingFilter`` cleans every record before a handler sees it: strips
+  emoji / non-Latin-1 symbols that raise UnicodeEncodeError on Windows pipes,
+  and neutralizes CR/LF and other control chars to block log injection
+  (CWE-117), while leaving ``logger.exception`` tracebacks intact.
 """
 
 import logging
@@ -39,14 +38,14 @@ LOG_DATEFMT = "%d-%m-%Y %H-%M-%S"
 # Characters within Latin-1 (U+0000-U+00FF) are *not* stripped, so
 # European accented letters pass through unchanged.
 _EMOJI_RE = re.compile(
-    "[\U0001F300-\U0001F9FF"   # Misc Symbols, Emoticons, Transport, Supplemental
-    "\U0001FA00-\U0001FAFF"    # Chess Symbols, Symbols Extended-A
-    "\U00002190-\U000027BF"    # Arrows, Misc Technical, Dingbats
-    "\U000025A0-\U000025FF"    # Geometric Shapes
-    "\U00002B00-\U00002BFF"    # Misc Symbols & Arrows
-    "\U0001F000-\U0001F02F"    # Mahjong Tiles
-    "\U0001F0A0-\U0001F0FF"    # Playing Cards
-    "\\uFE0F\\u200D"           # Variation Selector-16, Zero-Width Joiner
+    "[\U0001f300-\U0001f9ff"  # Misc Symbols, Emoticons, Transport, Supplemental
+    "\U0001fa00-\U0001faff"  # Chess Symbols, Symbols Extended-A
+    "\U00002190-\U000027bf"  # Arrows, Misc Technical, Dingbats
+    "\U000025a0-\U000025ff"  # Geometric Shapes
+    "\U00002b00-\U00002bff"  # Misc Symbols & Arrows
+    "\U0001f000-\U0001f02f"  # Mahjong Tiles
+    "\U0001f0a0-\U0001f0ff"  # Playing Cards
+    "\\uFE0F\\u200D"  # Variation Selector-16, Zero-Width Joiner
     "]+"
 )
 
@@ -84,7 +83,7 @@ class LogSanitizingFilter(logging.Filter):
     with ``propagate=False`` (e.g. the Windows supervisor's own log) are not
     affected. The exception traceback added by ``logger.exception`` lives in
     ``record.exc_info`` and is rendered by the formatter after this filter runs,
-    so it is never altered here — the full error always reaches the log.
+    so it is never altered here - the full error always reaches the log.
     """
 
     def filter(self, record):
@@ -98,8 +97,7 @@ class LogSanitizingFilter(logging.Filter):
                 }
             elif isinstance(record.args, (list, tuple)):
                 record.args = tuple(
-                    _sanitize_log_text(a) if isinstance(a, str) else a
-                    for a in record.args
+                    _sanitize_log_text(a) if isinstance(a, str) else a for a in record.args
                 )
         return True
 

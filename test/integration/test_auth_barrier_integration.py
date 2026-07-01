@@ -1,33 +1,23 @@
-"""Real-Postgres integration test that automates the manual auth pen test.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Mounts the production ``app_auth`` request barrier (the ``before_request``
-guard that protects every route) on a Flask app backed by a live
-``audiomuse_users`` table, then drives it through Flask's test client to prove
-the security invariants a black-box pen test checks by hand:
+"""End-to-end auth barrier tests over a real Flask app and Postgres.
 
-  * an unauthenticated API call is refused with 401, a page request redirects
-    to /login, and /api/health stays open without auth;
-  * a real argon2 login through /auth issues a usable HttpOnly session cookie;
-  * a tampered token (alg=none, wrong secret, or expired) is always rejected;
-  * a non-admin session is forbidden from an admin-only path while an admin
-    session and a valid Bearer API token are allowed.
+Exercises the before-request auth guard end to end: unauthenticated
+requests, real logins issuing working sessions, JWT and bearer tokens,
+and admin-path role enforcement against a live database.
 
-These exercise the real barrier, the real PyJWT round-trip and the real argon2
-verify against Postgres, so a regression that opens a hole - a skipped auth
-check, an accepted unsigned token, a broken admin gate - fails the build. A
-mocked client could not prove the signature pinning or the argon2 round-trip.
-
-Redis is not required: the barrier only reads config and the users table.
-
-Database selection mirrors test_auth_users_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL - a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_auth_barrier_integration.py -m integration -s -v --tb=short
+Main Features:
+* Unauthenticated API 401 / page redirect and open health endpoint.
+* Rejects alg=none, wrong-secret, expired, and wrong-bearer tokens.
+* Enforces admin vs user roles on admin and normal paths.
 """
+
 import base64
 import datetime
 import json
@@ -104,6 +94,7 @@ def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub='tester'):
 def _alg_none_token(role, sub='tester'):
     def _b64(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b'=').decode()
+
     header = _b64({'alg': 'none', 'typ': 'JWT'})
     payload = _b64({'sub': sub, 'role': role, 'exp': 9999999999})
     return f"{header}.{payload}."

@@ -527,8 +527,8 @@
                     // stepper instead of wiping it, and explain what happened.
                     finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
                     showErrorBelowStepper(timedOut
-                        ? 'Timed out waiting for the AI — please try again.'
-                        : 'Connection interrupted — please try again.');
+                        ? 'Timed out waiting for the AI - please try again.'
+                        : 'Connection interrupted - please try again.');
                     return;
                 } finally {
                     if (idleTimer) clearTimeout(idleTimer);
@@ -537,7 +537,7 @@
                 // Stream closed without a terminal done/error event.
                 if (!gotDone && !gotError) {
                     finalizeLiveStepper(parsePipelineLog(rawLines.join('\n')));
-                    showErrorBelowStepper('The connection ended before the playlist was ready — please try again.');
+                    showErrorBelowStepper('The connection ended before the playlist was ready - please try again.');
                 }
             }
 
@@ -591,7 +591,7 @@
             function understandHeadline(m) {
                 let h = intentHeadline(m.intentPrimaries, m.needsFilter);
                 if (h == null) {
-                    h = m.intentFallback ? "Couldn't auto-classify — considered all options." : 'Read your request.';
+                    h = m.intentFallback ? "Couldn't auto-classify - considered all options." : 'Read your request.';
                 }
                 if (m.hints.length) h += ' · Also spotted: ' + m.hints.join('; ');
                 return h;
@@ -613,14 +613,14 @@
                     const sp = splitDims(m.filterDims);
                     const catText = sp.cat.length ? sp.cat.join(' + ') : 'your filters';
                     const contText = sp.cont.length ? sp.cont.join(' + ') : 'similarity';
-                    if (m.matched === 0) return 'No song has the requested ' + catText + ' — ordered by ' + contText + ' instead.';
-                    return 'Ranked ' + catText + ' first — ' + m.matched + ' of ' + m.total + ' match; rest ordered by ' + contText + '.';
+                    if (m.matched === 0) return 'No song has the requested ' + catText + ' - ordered by ' + contText + ' instead.';
+                    return 'Ranked ' + catText + ' first - ' + m.matched + ' of ' + m.total + ' match; rest ordered by ' + contText + '.';
                 }
                 const dims = humanDims(m.filterDims);
                 const dimText = dims.length ? dims.join(' + ') : 'your filters';
-                if (m.matched === 0) return 'Checked ' + dimText + ', no song matched — kept similarity order.';
-                if (m.moved === 0 && (m.matched != null || m.filterUnchanged)) return 'Checked ' + dimText + ' — ranking already optimal.';
-                if (m.moved != null) return 'Re-ranked by ' + dimText + ' — ' + (m.matched || 0) + ' of ' + (m.total || m.poolSize || '?') + ' matched and moved to the top.';
+                if (m.matched === 0) return 'Checked ' + dimText + ', no song matched - kept similarity order.';
+                if (m.moved === 0 && (m.matched != null || m.filterUnchanged)) return 'Checked ' + dimText + ' - ranking already optimal.';
+                if (m.moved != null) return 'Re-ranked by ' + dimText + ' - ' + (m.matched || 0) + ' of ' + (m.total || m.poolSize || '?') + ' matched and moved to the top.';
                 return LIVE_PENDING.filter;
             }
             function assembleHeadline(m) {
@@ -633,7 +633,7 @@
                     if (ex.length) h += ' with ' + ex.join(' and ');
                     return h + '.';
                 }
-                if (m.planningFailed) return "The AI couldn't build a plan for this request — try rephrasing it.";
+                if (m.planningFailed) return "The AI couldn't build a plan for this request - try rephrasing it.";
                 if (m.noSongs) return 'No songs matched this request.';
                 return LIVE_PENDING.assemble;
             }
@@ -792,7 +792,7 @@
                 if (primaries == null) return null;
                 if (!primaries.length) return needsFilter ? INTENT_LABEL.metadata : null;
                 let h = primaries.map(p => INTENT_LABEL[p] || p).join(' + ');
-                if (needsFilter) h += ' — plus your extra filters';
+                if (needsFilter) h += ' - plus your extra filters';
                 return h;
             }
             const TOOL_LABEL = {
@@ -806,7 +806,7 @@
                 energy: 'energy', tempo: 'tempo', year: 'era', min_rating: 'rating',
                 scale: 'scale', key: 'key', artist: 'artist', album: 'album'
             };
-            // Mirrors CATEGORICAL_DIMS in planner.py — presence/identity dims that
+            // Mirrors CATEGORICAL_DIMS in planner.py - presence/identity dims that
             // get priority-tier ranking over continuous gradient dims.
             const CATEGORICAL_DIM_SET = ['genres', 'voices', 'scale', 'artist', 'album'];
             function splitDims(dims) {
@@ -951,20 +951,20 @@
                         const catText = sp.cat.length ? sp.cat.join(' + ') : 'your filters';
                         const contText = sp.cont.length ? sp.cont.join(' + ') : 'similarity';
                         if (model.matched === 0) {
-                            h4 = 'No song has the requested ' + catText + ' — ordered by ' + contText + ' instead.';
+                            h4 = 'No song has the requested ' + catText + ' - ordered by ' + contText + ' instead.';
                             variant = 'warn';
                         } else {
-                            h4 = 'Ranked ' + catText + ' first — ' + model.matched + ' of ' + (model.total || model.poolSize || '?') + ' match; rest ordered by ' + contText + '.';
+                            h4 = 'Ranked ' + catText + ' first - ' + model.matched + ' of ' + (model.total || model.poolSize || '?') + ' match; rest ordered by ' + contText + '.';
                         }
                     } else if (model.filterUnchanged || model.moved === 0) {
                         if (model.matched === 0) {
-                            h4 = 'Checked ' + dimText + ', but no song matched — kept the pure similarity order.';
+                            h4 = 'Checked ' + dimText + ', but no song matched - kept the pure similarity order.';
                         } else {
-                            h4 = 'Checked ' + dimText + ' (' + (model.matched || 0) + ' matched), ranking already optimal — no song moved.';
+                            h4 = 'Checked ' + dimText + ' (' + (model.matched || 0) + ' matched), ranking already optimal - no song moved.';
                         }
                         variant = 'warn';
                     } else {
-                        h4 = 'Re-ranked by ' + dimText + ' — ' + (model.matched || 0) + ' of ' + (model.total || model.poolSize || '?') + ' matched and moved to the top.';
+                        h4 = 'Re-ranked by ' + dimText + ' - ' + (model.matched || 0) + ' of ' + (model.total || model.poolSize || '?') + ' matched and moved to the top.';
                     }
                     steps.push({ icon: '🎚️', title: 'Applied your filters', headline: h4, variant: variant });
                 }
@@ -982,7 +982,7 @@
                     if (model.ratingRemoved > 0) step5.sub = 'Removed ' + model.ratingRemoved + ' songs below your rating threshold.';
                     steps.push(step5);
                 } else if (model.planningFailed) {
-                    steps.push({ icon: '⚠️', title: 'Planning failed', headline: "The AI couldn't build a plan for this request — try rephrasing it.", variant: 'warn' });
+                    steps.push({ icon: '⚠️', title: 'Planning failed', headline: "The AI couldn't build a plan for this request - try rephrasing it.", variant: 'warn' });
                 } else if (model.noSongs) {
                     steps.push({ icon: '😕', title: 'No songs found', headline: 'Nothing matched this request. Try naming a song/artist or loosening filters.', variant: 'warn' });
                 }

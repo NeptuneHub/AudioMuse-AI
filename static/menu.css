@@ -272,7 +272,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     background-color: #2563EB;
 }
 
-/* Submenu — dark mode */
+/* Submenu - dark mode */
 body.dark-mode .submenu li a,
 html.dark-mode .submenu li a {
     color: var(--text-sub);

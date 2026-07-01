@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Linux packaging steps for the standalone build.
+
+Platform module invoked by ``build.py`` to stage the Linux bundle: it checks
+the vendored redis/PostgreSQL/pg-contrib inputs are present, verifies the
+pgserver bundle when used, and produces the distributable (nfpm packages,
+icons). The macOS/Windows modules are the platform-specific siblings.
+
+Main Features:
+* Validates vendored redis, PostgreSQL and pg-contrib files per architecture.
+* Builds .deb/.rpm packages via nfpm and generates the app icons.
+"""
+
 import shutil
 import subprocess
 
@@ -64,12 +84,23 @@ def _stage(ctx):
     (stage / "opt").mkdir(parents=True)
     (stage / "usr" / "share" / "applications").mkdir(parents=True)
     (stage / "usr" / "lib" / "systemd" / "user").mkdir(parents=True)
-    subprocess.run(["cp", "-a", str(ctx.bundle_dir), str(stage / "opt" / "AudioMuse-AI")], check=True)
+    subprocess.run(
+        ["cp", "-a", str(ctx.bundle_dir), str(stage / "opt" / "AudioMuse-AI")], check=True
+    )
 
     pkg = ctx.root / "native-build" / "linux" / "packaging"
-    shutil.copy2(pkg / "AudioMuse-AI.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI.desktop")
-    shutil.copy2(pkg / "AudioMuse-AI-stop.desktop", stage / "usr" / "share" / "applications" / "AudioMuse-AI-stop.desktop")
-    shutil.copy2(pkg / "audiomuse-ai.service", stage / "usr" / "lib" / "systemd" / "user" / "audiomuse-ai.service")
+    shutil.copy2(
+        pkg / "AudioMuse-AI.desktop",
+        stage / "usr" / "share" / "applications" / "AudioMuse-AI.desktop",
+    )
+    shutil.copy2(
+        pkg / "AudioMuse-AI-stop.desktop",
+        stage / "usr" / "share" / "applications" / "AudioMuse-AI-stop.desktop",
+    )
+    shutil.copy2(
+        pkg / "audiomuse-ai.service",
+        stage / "usr" / "lib" / "systemd" / "user" / "audiomuse-ai.service",
+    )
 
     for size in _ICON_SIZES:
         src = pkg / "icons" / f"audiomuse-ai_{size}.png"
@@ -104,8 +135,16 @@ def package(ctx):
     pkg.mkdir(parents=True, exist_ok=True)
     for packager in ("deb", "rpm"):
         subprocess.run(
-            ["nfpm", "package", "--config", str(ctx.dist_dir / "nfpm.yaml"),
-             "--packager", packager, "--target", str(pkg) + "/"],
+            [
+                "nfpm",
+                "package",
+                "--config",
+                str(ctx.dist_dir / "nfpm.yaml"),
+                "--packager",
+                packager,
+                "--target",
+                str(pkg) + "/",
+            ],
             check=True,
             cwd=str(ctx.root),
         )

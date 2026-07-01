@@ -146,7 +146,7 @@ function createInputField(field, value) {
         // 'False', '1', '0', etc. from the API) to canonical 'true'/'false'.
         // For enums, do a case-insensitive match against the canonical
         // options so legacy stale-cased entries (e.g. 'DBSCAN') still display
-        // selected — saving will persist the canonical casing.
+        // selected - saving will persist the canonical casing.
         var normalized = '';
         if (value !== undefined && value !== null && String(value) !== '') {
             var raw = String(value).trim();
@@ -237,6 +237,12 @@ function createInputField(field, value) {
         }
         if (field.secret) {
             input.type = 'password';
+            // Stop the browser password manager from autofilling a saved
+            // credential over the masked '********' placeholder; that wrong
+            // value would then be submitted and overwrite the stored secret.
+            input.setAttribute('autocomplete', 'new-password');
+        } else {
+            input.setAttribute('autocomplete', 'off');
         }
     }
     if (field.required) {
@@ -631,7 +637,7 @@ function updateServerFields() {
     // If the user flips back to the original provider, the next render will
     // re-check the matching names. The renderer's case-insensitive name
     // match means stale names against a new provider's libraries simply
-    // miss and leave their boxes unchecked — no leakage into the save.
+    // miss and leave their boxes unchecked - no leakage into the save.
     hideMusicLibrariesSection();
 }
 
@@ -730,7 +736,7 @@ function fetchProviderLibraries(serverType, configOverride) {
             updateMusicLibrariesHint();
         }
     }).catch(function() {
-        // Don't block the user on list failures — the free-text value still
+        // Don't block the user on list failures - the free-text value still
         // works on save (empty string = scan everything).
         hideMusicLibrariesSection();
     });
@@ -803,7 +809,7 @@ function renderLibraryCheckboxes(libraries, selectedNames) {
         // but disabled (the user shouldn't be picking from a list that is
         // already overridden). When off, honor the saved selection.
         cb.checked = noRestriction ? false : !!selectedLower[name.toLowerCase()];
-        // Override `.field-row input { width: 100% }` from setup.html — that
+        // Override `.field-row input { width: 100% }` from setup.html - that
         // global rule would stretch each checkbox across the row and push
         // the label text to the far right.
         cb.style.width = 'auto';
@@ -1078,7 +1084,7 @@ if (advancedCollapseAll) {
 }
 
 // ---------------------------------------------------------------------------
-// Lyrics API section — interactive analyze & configure
+// Lyrics API section - interactive analyze & configure
 // ---------------------------------------------------------------------------
 var lyricsApiState = {};
 [1, 2].forEach(function(s) {
@@ -1512,7 +1518,7 @@ function showLyricsApiSlotSummary(slot, template, artistParam, titleParam, lyric
     summary.appendChild(editBtn);
 }
 
-// Show a "pending deletion" warning — hidden inputs are cleared so the next Save
+// Show a "pending deletion" warning - hidden inputs are cleared so the next Save
 // will commit the deletion, but the user can Undo before that.
 function pendingDeleteLyricsApiSlot(slot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal) {
     var pre = 'LYRICS_API_' + slot + '_';

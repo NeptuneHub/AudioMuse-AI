@@ -16,7 +16,7 @@ RUN set -ux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        echo "apt-get attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     rm -rf /var/lib/apt/lists/*
@@ -37,7 +37,7 @@ RUN set -eux; \
                 break; \
             fi; \
             n=$((n+1)); \
-            echo "wget attempt $n for $u failed — retrying in $((n*n))s"; \
+            echo "wget attempt $n for $u failed - retrying in $((n*n))s"; \
             sleep $((n*n)); \
         done; \
         if [ "$n" -ge 5 ]; then \
@@ -84,7 +84,7 @@ RUN set -ux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        echo "apt-get attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     rm -rf /var/lib/apt/lists/* && \
@@ -121,7 +121,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -179,7 +179,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for DCLAP audio model failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -195,7 +195,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio data failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for DCLAP audio data failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -212,7 +212,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for text model failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -252,7 +252,7 @@ RUN set -eux; \
             echo "✓ whisper bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for whisper bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -288,7 +288,7 @@ RUN set -eux; \
             echo "✓ silero bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for silero bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -318,7 +318,7 @@ RUN set -eux; \
             echo "✓ gte bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for gte bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for gte bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \

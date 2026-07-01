@@ -1,16 +1,24 @@
-"""Minimal unit tests for the lyrics analysis helpers.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Focus on the deterministic, dependency-free pieces:
-- ``axis_columns()`` — canonical (axis, label) ordering and total size.
-- ``_score_axes()`` — produced vector matches ``axis_columns()`` length and
-  ordering (each axis chunk is a softmax that sums to 1.0).
-- ``_sanitize_lyrics_text()`` — real cleanup behaviour on representative input.
-- ``_softmax()`` — basic sanity (sums to 1, monotonic).
+"""Lyrics axis scoring and text sanitization in lyrics.lyrics_transcriber.
 
-These tests do NOT load whisper, transformers, or torch heavyweights. The
-embedding integration is covered separately by
-``test/integration/test_lyrics_analysis_integration.py``.
+Covers the pinned 27-label axis column order, per-axis softmax scoring of an
+embedding, and the cleanup applied to raw lyric text before embedding.
+
+Main Features:
+* axis_columns is a pure, duplicate-free 27-tuple in canonical axis/label order
+* _score_axes returns one softmax chunk per axis that sums to 1 and whose argmax
+  points at the targeted label
+* _sanitize_lyrics_text strips control/zero-width chars, HTML, and LRC timestamps
+  and truncates to a word cap; _softmax sums to one and is temperature-monotonic
 """
+
 from __future__ import annotations
 
 import importlib
@@ -22,23 +30,12 @@ import pytest
 
 @pytest.fixture(scope='module')
 def lt():
-    """Import lyrics.lyrics_transcriber once for the whole module."""
     return importlib.import_module('lyrics.lyrics_transcriber')
 
 
-# ---------------------------------------------------------------------------
-# axis_columns(): the most critical invariant for downstream BYTEA storage.
-# ---------------------------------------------------------------------------
-
 class TestAxisColumns:
-    # Hard-coded expected size: axes 1-3 have 6 labels, axis 4 has 5, axis 5
-    # has 4 -> 6+6+6+5+4 = 27. Bumping this requires a deliberate schema change
-    # since the resulting BYTEA vector is persisted in the DB.
     EXPECTED_TOTAL_LABELS = 27
 
-    # Canonical (axis, label) sequence. Pinned here so accidental reordering of
-    # ``MUSIC_ANALYSIS_AXES`` (which would silently shuffle every persisted
-    # vector dimension) fails this test loudly.
     EXPECTED_ORDER = (
         ('AXIS_1_SETTING', 'URBAN'),
         ('AXIS_1_SETTING', 'WILDERNESS'),
@@ -77,9 +74,6 @@ class TestAxisColumns:
         assert len(lt.axis_columns()) == self.EXPECTED_TOTAL_LABELS
 
     def test_canonical_order_is_pinned(self, lt):
-        """Hard-coded order guard: the persisted vector layout must NEVER
-        change without a deliberate migration. If this fails, every BYTEA
-        vector already in the DB would be misinterpreted."""
         assert tuple(lt.axis_columns()) == self.EXPECTED_ORDER
 
     def test_order_is_axes_then_labels_in_definition_order(self, lt):
@@ -106,16 +100,9 @@ class TestAxisColumns:
         assert lt.axis_columns() == lt.axis_columns()
 
 
-# ---------------------------------------------------------------------------
-# _score_axes(): same length & order invariants on the produced vector.
-# ---------------------------------------------------------------------------
-
 class TestScoreAxes:
     @staticmethod
     def _fake_axis_state(lt):
-        """Build a deterministic fake (label_map, axis_embeddings) keyed in
-        the canonical order with random unit-norm row vectors. The actual
-        numbers don't matter — we only assert structural invariants."""
         rng = np.random.default_rng(42)
         label_map = {}
         axis_embeddings = {}
@@ -133,13 +120,11 @@ class TestScoreAxes:
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         assert vec.dtype == np.float32
         assert vec.shape == (len(lt.axis_columns()),)
-        # Hard-coded absolute size guard (see TestAxisColumns).
         assert vec.shape == (27,)
 
     def test_each_axis_chunk_is_softmax_summing_to_one(self, lt):
@@ -147,14 +132,13 @@ class TestScoreAxes:
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         offset = 0
         for axis_name, meta in lt.MUSIC_ANALYSIS_AXES.items():
             n = len(meta['labels'])
-            chunk = vec[offset:offset + n]
+            chunk = vec[offset : offset + n]
             assert np.all(chunk >= 0.0), f'{axis_name}: negative softmax entry'
             assert np.all(chunk <= 1.0), f'{axis_name}: softmax entry > 1'
             assert chunk.sum() == pytest.approx(1.0, abs=1e-5), (
@@ -164,22 +148,17 @@ class TestScoreAxes:
         assert offset == vec.shape[0]
 
     def test_chunk_layout_aligns_with_axis_columns(self, lt):
-        """The i-th component of the vector must correspond to axis_columns()[i]."""
         label_map, axis_embeddings, emb_dim = self._fake_axis_state(lt)
         embedding = np.ones(emb_dim, dtype=np.float32)
         embedding /= np.linalg.norm(embedding)
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(embedding)
 
         cols = lt.axis_columns()
-        # Group columns by axis and verify each grouped sum == 1.0 in vec order.
         by_axis: dict[str, list[int]] = {}
         for i, (axis_name, _label) in enumerate(cols):
             by_axis.setdefault(axis_name, []).append(i)
-        # axis_columns() iterates axes in MUSIC_ANALYSIS_AXES order, and within
-        # each axis its indices are contiguous and ascending.
         prev_end = 0
         for axis_name in lt.MUSIC_ANALYSIS_AXES.keys():
             indices = by_axis[axis_name]
@@ -188,26 +167,17 @@ class TestScoreAxes:
             prev_end += len(indices)
 
     def test_argmax_per_axis_points_to_targeted_label(self, lt):
-        """End-to-end ordering proof: build axis embeddings where each axis
-        has ONE specific label whose row matches the query embedding exactly,
-        then assert that the argmax position inside that axis's chunk in the
-        produced vector is the index of that targeted label.
-
-        This catches any off-by-one or accidental shuffling between
-        ``_score_axes``' internal iteration and ``axis_columns()`` ordering.
-        """
         rng = np.random.default_rng(7)
         emb_dim = 8
         query = rng.standard_normal(emb_dim).astype(np.float32)
         query /= np.linalg.norm(query)
 
-        # Per axis, hand-pick a winning label (varied positions across axes).
         winners = {
-            'AXIS_1_SETTING': 'TRANSIT',           # idx 3 of 6
-            'AXIS_2_SOCIAL_DYNAMIC': 'DIVINE',     # idx 5 of 6 (last)
-            'AXIS_3_EMOTIONAL_VALENCE': 'RADIANT', # idx 0 of 6 (first)
-            'AXIS_4_NARRATIVE_TEMPORALITY': 'EXISTENTIAL',  # idx 2 of 5
-            'AXIS_5_THEMATIC_WEIGHT': 'POLITICAL', # idx 2 of 4
+            'AXIS_1_SETTING': 'TRANSIT',
+            'AXIS_2_SOCIAL_DYNAMIC': 'DIVINE',
+            'AXIS_3_EMOTIONAL_VALENCE': 'RADIANT',
+            'AXIS_4_NARRATIVE_TEMPORALITY': 'EXISTENTIAL',
+            'AXIS_5_THEMATIC_WEIGHT': 'POLITICAL',
         }
 
         label_map = {}
@@ -217,35 +187,27 @@ class TestScoreAxes:
             label_map[axis_name] = labels
             mat = rng.standard_normal((len(labels), emb_dim)).astype(np.float32)
             mat /= np.linalg.norm(mat, axis=1, keepdims=True).clip(min=1e-9)
-            # Force the targeted label's row to equal the query (max dot product).
             target_idx = [name for name, _ in labels].index(winners[axis_name])
             mat[target_idx] = query
             axis_embeddings[axis_name] = mat
 
-        with patch.object(lt, '_get_axis_embeddings',
-                          return_value=(label_map, axis_embeddings)):
+        with patch.object(lt, '_get_axis_embeddings', return_value=(label_map, axis_embeddings)):
             vec = lt._score_axes(query)
 
         cols = lt.axis_columns()
         offset = 0
         for axis_name, meta in lt.MUSIC_ANALYSIS_AXES.items():
             n = len(meta['labels'])
-            chunk = vec[offset:offset + n]
+            chunk = vec[offset : offset + n]
             argmax_global = offset + int(np.argmax(chunk))
             actual_axis, actual_label = cols[argmax_global]
-            assert actual_axis == axis_name, (
-                f'Argmax for {axis_name} landed in {actual_axis}'
-            )
+            assert actual_axis == axis_name, f'Argmax for {axis_name} landed in {actual_axis}'
             assert actual_label == winners[axis_name], (
                 f'{axis_name}: expected winning label {winners[axis_name]!r}, '
                 f'got {actual_label!r} (vector ordering mismatch)'
             )
             offset += n
 
-
-# ---------------------------------------------------------------------------
-# _sanitize_lyrics_text(): real cleanup, no mocks.
-# ---------------------------------------------------------------------------
 
 class TestSanitizeLyricsText:
     def test_empty_input_returns_empty(self, lt):
@@ -278,16 +240,11 @@ class TestSanitizeLyricsText:
     def test_collapses_blank_line_runs(self, lt):
         text = 'a\n\n\n\nb\n\n\n\n\nc'
         out = lt._sanitize_lyrics_text(text)
-        # No more than one consecutive blank line.
         lines = out.split('\n')
         for i in range(len(lines) - 1):
             if lines[i] == '' and lines[i + 1] == '':
                 pytest.fail(f'Multiple consecutive blank lines: {lines!r}')
 
-
-# ---------------------------------------------------------------------------
-# _strip_lrc_timestamps(): real behaviour.
-# ---------------------------------------------------------------------------
 
 class TestStripLrcTimestamps:
     def test_strips_leading_timestamps(self, lt):
@@ -300,10 +257,6 @@ class TestStripLrcTimestamps:
         out = lt._strip_lrc_timestamps(lrc)
         assert out == 'only content'
 
-
-# ---------------------------------------------------------------------------
-# _softmax(): basic numeric sanity.
-# ---------------------------------------------------------------------------
 
 class TestSoftmax:
     def test_sums_to_one(self, lt):

@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 10.11.8, Navidrome 0.61.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.11.8%2C%20Navidrome%200.61.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 12.0, Navidrome 0.62.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2012.0%2C%20Navidrome%200.62.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
 <a href="https://liberapay.com/NeptuneHub/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a>
 
@@ -30,7 +30,7 @@ You can run it locally with Docker Compose or Podman, or deploy it at scale in a
 
 AudioMuse-AI lets you explore your music library in innovative ways, just **start with an initial analysis**, and you’ll unlock features like:
 * **Clustering**: Automatically groups sonically similar songs, creating genre-defying playlists based on the music's actual sound.
-* **Instant Playlists**: Simply tell the AI what you want to hear—like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
+* **Instant Playlists**: Simply tell the AI what you want to hear-like "high-tempo, low-energy music" and it will instantly generate a playlist for you.
 * **Music Map**: Discover your music collection visually with a vibrant, genre-based 2D map.
 * **Playlist from Similar Songs**: Pick a track you love, and AudioMuse-AI will find all the songs in your library that share its sonic signature, creating a new discovery playlist.
 * **Song Paths**: Create a seamless listening journey between two songs. AudioMuse-AI finds the perfect tracks to bridge the sonic gap.
@@ -59,17 +59,8 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 2.3.0** Added [donate button](https://liberapay.com/NeptuneHub/donate) to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.
-> * **Version 2.1.4** introduces the Windows native version. Attached to each release you will find `AudioMuse-AI-amd64-windows.zip`.
-> * **Version 2.1.3** introduces the Linux native version. Attached to each release you will find `.deb` and `.rpm` file.
-> * **Version 2.1.2** introduces the MacOS native version. Attached to each release you will find `AudioMuse-AI-arm64.zip`.
-> * **Version 2.1.0** re-exports the GTE lyrics model so it produces correct embeddings on **every CPU**. The only affected users are those who analyzed lyrics on an **older CPU without VNNI** (`avx512_vnni`/`avx_vnni`), where the previous model could produce degraded vectors, they should re-analyze the lyrics. To check if your CPU has VNNI, run on the host: `grep -oE 'avx512_vnni|avx_vnni' /proc/cpuinfo | head -1` , if it prints nothing, you have no VNNI and we suggest to re-analyze. Before re-analyzing, drop the old lyrics tables:
-> ```bash
-> docker compose exec -e PGPASSWORD=audiomusepassword postgres \
->   psql -U audiomuse -d audiomusedb \
->   -c "DROP TABLE IF EXISTS lyrics_embedding; DROP TABLE IF EXISTS lyrics_index_data; DROP TABLE IF EXISTS lyrics_axes_index_data;"
-> ```
-> * **Version 2.0.0** introduces a new faster and reliable multilangue model for lyrics search. Follow the release note to drop the old lyrics index and re-analyze the lyrics.
+> * **Version 2.3.3** added the support to Jellyfin 12.0 authentication method.
+> * **Version 2.3.0** added [donate button](https://liberapay.com/NeptuneHub/donate) to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.
 
 ## Disclaimer
 
@@ -124,7 +115,7 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
 3. **Access the application:**
    - Web UI: `http://localhost:8000`
    - Interactive API documentation (Swagger UI): `http://localhost:8000/apidocs/`
-     (when authentication is enabled, log in via the Web UI first — `/apidocs/`
+     (when authentication is enabled, log in via the Web UI first - `/apidocs/`
      is gated by the same JWT cookie as the rest of the app.)
 
 4. **Run your first analysis:**
@@ -145,11 +136,11 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 > The apps are not signed, so your OS may warn you on first launch, see the per-platform notes below for how to allow them.
 
 <details>
-<summary><b>macOS</b> — Apple Silicon, <code>AudioMuse-AI-arm64.zip</code> (from <code>v2.1.2</code>)</summary>
+<summary><b>macOS</b> - Apple Silicon, <code>AudioMuse-AI-arm64.zip</code> (from <code>v2.1.2</code>)</summary>
 
 - Unzip and move `AudioMuse-AI.app` to `/Applications`.
 - Remove the quarantine flag (the app is unsigned), either way:
-  - **Terminal:** `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then double-click — the icon appears in your menu bar.
+  - **Terminal:** `xattr -dr com.apple.quarantine /Applications/AudioMuse-AI.app`, then double-click - the icon appears in your menu bar.
   - **No Terminal:** double-click and dismiss the warning, then System Settings → Privacy & Security → "Open Anyway", authenticate, and launch again.
 - Runs only on Apple Silicon (ARM) on recent macOS (tested on macOS 15.3.1, Mac Mini M4 / 16 GB).
 
@@ -182,7 +173,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 </details>
 
 <details>
-<summary><b>Windows</b> — x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
+<summary><b>Windows</b> - x86_64, <code>AudioMuse-AI-amd64-windows.zip</code> (from <code>v2.1.4</code>)</summary>
 
 - Unzip the portable archive anywhere.
 - From a terminal you can start with `AudioMuse-AI.exe start` and stop with `AudioMuse-AI.exe stop`.

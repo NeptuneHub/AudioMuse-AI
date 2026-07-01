@@ -1,50 +1,22 @@
-"""Real provider-migration integration test (runs against a live Postgres).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Unlike a mocked-cursor unit test, this drives the *actual* migration end to
-end against a real PostgreSQL database for every combination of supported
-providers (including migrating a provider to itself):
+"""Provider-migration tests against a real Postgres database.
 
-  1. build a small library exactly as the SOURCE provider's score rows look
-     (provider-specific item_id + file_path), seed it into a real ``score``
-     table plus the embedding / ivf / map-projection / artist tables the
-     migration touches,
-  2. build the same library as the TARGET provider's probe would return it,
-  3. run the real ``tasks.provider_migration_matcher.match_tracks`` to produce
-     the old_id -> new_id mapping (one source-only track stays unmatched so we
-     also exercise orphan deletion),
-  4. persist a ``migration_session`` in ``dry_run_ready`` and run the real
-     ``tasks.provider_migration_tasks.execute_provider_migration`` job (the
-     transactional id rewrite),
-  5. assert the database ended up correct: item_ids rewritten, embeddings
-     followed through the FK cascade, the orphan deleted, ivf / map
-     id_maps rewritten, provider-specific artist tables cleared, ``app_config``
-     updated with the target provider's credentials, and the session marked
-     completed.
+Drives tasks.provider_migration_matcher and provider_migration_tasks over a
+live database to migrate item ids between providers and rewrite the stored
+segmented id map end to end.
 
-The only thing faked is the provider HTTP layer (we hand the matcher the
-probe-shaped dicts directly) and the embedding bytes — everything that touches
-the database is the production code path.
-
-Migrating a provider to itself is the most demanding case: it models a library
-re-scan that re-issues ids so the new ids overlap the existing ones, which is
-exactly what the two-pass ``_MIG_TMP_PREFIX`` rewrite in
-``_run_migration_transaction`` exists to survive. A mocked cursor can never
-prove that works; a real Postgres can.
-
-Database selection (in priority order):
-  * ``AUDIOMUSE_TEST_DATABASE_URL`` — a throwaway DB the test fully owns. The
-    test DROPs and recreates the ``public`` schema, so this MUST point at a
-    disposable database (the GitHub workflow points it at a postgres service).
-    The generic ``DATABASE_URL`` is intentionally NOT used, to avoid ever
-    dropping a real database.
-  * otherwise, an ephemeral instance via the optional ``pgserver`` package
-    (``pip install pgserver``) for zero-infra local runs.
-  * otherwise the whole module is skipped.
-
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_provider_migration_integration.py -s -v --tb=short
+Main Features:
+* Real cross-provider migration for each source/target pairing.
+* Segmented id-map rewrite and relabel-overflow soft-failure handling.
 """
+
 import importlib.util
 import json
 import os
@@ -63,8 +35,6 @@ except Exception:  # pragma: no cover - psycopg2 is in test/requirements.txt
 
 
 def _load_module(mod_name, *rel_parts):
-    """Load a ``tasks.*`` module straight from its file (same loader the
-    provider-migration unit tests use)."""
     if mod_name in sys.modules:
         return sys.modules[mod_name]
     repo_root = os.path.normpath(
@@ -80,12 +50,8 @@ def _load_module(mod_name, *rel_parts):
     return mod
 
 
-matcher = _load_module(
-    'tasks.provider_migration_matcher', 'tasks', 'provider_migration_matcher.py'
-)
-mig = _load_module(
-    'tasks.provider_migration_tasks', 'tasks', 'provider_migration_tasks.py'
-)
+matcher = _load_module('tasks.provider_migration_matcher', 'tasks', 'provider_migration_matcher.py')
+mig = _load_module('tasks.provider_migration_tasks', 'tasks', 'provider_migration_tasks.py')
 
 
 PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion')
@@ -117,17 +83,43 @@ _TARGET_CREDS = {
 
 
 SHARED_TRACKS = [
-    {'artist': 'Daft Punk', 'album': 'Discovery', 'album_artist': 'Daft Punk',
-     'title': 'One More Time', 'disc': 1, 'track': 1, 'ext': 'flac'},
-    {'artist': 'Green Day', 'album': 'American Idiot', 'album_artist': 'Green Day',
-     'title': 'Boulevard of Broken Dreams', 'disc': 1, 'track': 4, 'ext': 'flac'},
-    {'artist': 'Eagles', 'album': 'Ultimate Rock Hits', 'album_artist': 'Various Artists',
-     'title': 'Hotel California', 'disc': 1, 'track': 3, 'ext': 'mp3'},
+    {
+        'artist': 'Daft Punk',
+        'album': 'Discovery',
+        'album_artist': 'Daft Punk',
+        'title': 'One More Time',
+        'disc': 1,
+        'track': 1,
+        'ext': 'flac',
+    },
+    {
+        'artist': 'Green Day',
+        'album': 'American Idiot',
+        'album_artist': 'Green Day',
+        'title': 'Boulevard of Broken Dreams',
+        'disc': 1,
+        'track': 4,
+        'ext': 'flac',
+    },
+    {
+        'artist': 'Eagles',
+        'album': 'Ultimate Rock Hits',
+        'album_artist': 'Various Artists',
+        'title': 'Hotel California',
+        'disc': 1,
+        'track': 3,
+        'ext': 'mp3',
+    },
 ]
 
 ORPHAN_TRACK = {
-    'artist': 'Nobody', 'album': 'Orphan Album', 'album_artist': 'Nobody',
-    'title': 'Orphan Track', 'disc': 1, 'track': 1, 'ext': 'flac',
+    'artist': 'Nobody',
+    'album': 'Orphan Album',
+    'album_artist': 'Nobody',
+    'title': 'Orphan Track',
+    'disc': 1,
+    'track': 1,
+    'ext': 'flac',
 }
 
 
@@ -155,11 +147,6 @@ def _provider_path(provider, rel):
         return 'file:///media/music/MyTunes/' + quote(rel)
     return rel
 
-
-# ---------------------------------------------------------------------------
-# Schema — mirrors the tables tasks.provider_migration_tasks touches, copied
-# from app_helper.init_db so the transaction runs against a real layout.
-# ---------------------------------------------------------------------------
 
 _SCHEMA_DDL = [
     "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, "
@@ -197,12 +184,15 @@ _SCHEMA_DDL = [
     "status TEXT NOT NULL DEFAULT 'in_progress', source_type TEXT NOT NULL, "
     "target_type TEXT NOT NULL, target_creds TEXT NOT NULL, "
     "state JSONB NOT NULL DEFAULT '{}')",
+    "CREATE TABLE migration_target_meta (session_id INTEGER NOT NULL "
+    "REFERENCES migration_session(id) ON DELETE CASCADE, new_id TEXT NOT NULL, "
+    "path TEXT, title TEXT, artist TEXT, album TEXT, album_artist TEXT, "
+    "year INTEGER, PRIMARY KEY (session_id, new_id))",
 ]
 
 
 @pytest.fixture(scope='session')
 def pg_dsn():
-    """A libpq DSN for a throwaway Postgres the test fully owns."""
     if psycopg2 is None:
         pytest.skip("psycopg2 not importable")
 
@@ -233,7 +223,6 @@ def pg_dsn():
 
 @pytest.fixture
 def migration_db(pg_dsn):
-    """Reset the schema, wire the execute job at the real DB, yield helpers."""
     setup = psycopg2.connect(pg_dsn)
     setup.autocommit = True
     with setup.cursor() as cur:
@@ -265,34 +254,29 @@ def migration_db(pg_dsn):
 
 
 def _insert_segmented_index(cur, table, binary_col, base, id_map_json, dim, n_parts=3):
-    """Write ``id_map_json`` split across ``n_parts`` rows, mimicking the
-    large-library layout produced by ``store_ivf_index_segmented`` (each
-    row holds a partial-JSON fragment; the binary lives on part 1)."""
     step = max(1, -(-len(id_map_json) // n_parts))
-    frags = [id_map_json[i:i + step] for i in range(0, len(id_map_json), step)]
+    frags = [id_map_json[i : i + step] for i in range(0, len(id_map_json), step)]
     while len(frags) < n_parts:
         frags.append('')
     for k in range(1, n_parts + 1):
         cur.execute(
             f"INSERT INTO {table} (index_name, {binary_col}, id_map_json, "
             f"embedding_dimension) VALUES (%s, %s, %s, %s)",
-            (f"{base}_{k}_{n_parts}",
-             psycopg2.Binary(b'\x00' if k == 1 else b''), frags[k - 1], dim),
+            (
+                f"{base}_{k}_{n_parts}",
+                psycopg2.Binary(b'\x00' if k == 1 else b''),
+                frags[k - 1],
+                dim,
+            ),
         )
 
 
 def _reassemble_id_map(parts):
-    """Concatenate ``(index_name, id_map_json)`` fragments in part order."""
     ordered = sorted(parts, key=lambda p: int(re.match(r'^.*_(\d+)_\d+$', p[0]).group(1)))
     return ''.join((frag or '') for _, frag in ordered)
 
 
 def _seed_library(conn, source_rendered, segmented=False):
-    """Insert the source library into every table the migration rewrites.
-
-    With ``segmented=True`` the ivf / map-projection id_maps are written
-    split across part rows (the >~1M-song layout) instead of as a single row.
-    """
     src_ids = [r['id'] for r in source_rendered]
     ivf_map = json.dumps({str(i): sid for i, sid in enumerate(src_ids)})
     projection_map = json.dumps(src_ids)
@@ -301,16 +285,25 @@ def _seed_library(conn, source_rendered, segmented=False):
             cur.execute(
                 "INSERT INTO score (item_id, title, author, album, album_artist, "
                 "file_path, year) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (r['id'], r['title'], r['artist'], r['album'], r['album_artist'],
-                 r['path'], 1900 + index),
+                (
+                    r['id'],
+                    r['title'],
+                    r['artist'],
+                    r['album'],
+                    r['album_artist'],
+                    r['path'],
+                    1900 + index,
+                ),
             )
             for table in ('embedding', 'clap_embedding', 'lyrics_embedding'):
                 cur.execute(f"INSERT INTO {table} (item_id) VALUES (%s)", (r['id'],))
         if segmented:
-            _insert_segmented_index(cur, 'voyager_index_data', 'index_data',
-                                    'ivf_main', ivf_map, 128)
-            _insert_segmented_index(cur, 'map_projection_data', 'projection_data',
-                                    'map_main', projection_map, 2)
+            _insert_segmented_index(
+                cur, 'voyager_index_data', 'index_data', 'ivf_main', ivf_map, 128
+            )
+            _insert_segmented_index(
+                cur, 'map_projection_data', 'projection_data', 'map_main', projection_map, 2
+            )
         else:
             cur.execute(
                 "INSERT INTO voyager_index_data (index_name, index_data, id_map_json, "
@@ -348,7 +341,6 @@ def _insert_session(conn, source, target, matches, new_meta):
         'dry_run': {'matches': matches},
         'manual_matches': {},
         'manual_unmatches': [],
-        'new_meta': new_meta,
         'selected_libraries': None,
     }
     with conn.cursor() as cur:
@@ -358,6 +350,21 @@ def _insert_session(conn, source, target, matches, new_meta):
             (source, target, json.dumps(_TARGET_CREDS[target]), json.dumps(state)),
         )
         session_id = cur.fetchone()[0]
+        for new_id, meta in (new_meta or {}).items():
+            cur.execute(
+                "INSERT INTO migration_target_meta (session_id, new_id, path, title, "
+                "artist, album, album_artist, year) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    session_id,
+                    new_id,
+                    meta.get('path'),
+                    meta.get('title'),
+                    meta.get('artist'),
+                    meta.get('album'),
+                    meta.get('album_artist'),
+                    meta.get('year'),
+                ),
+            )
     conn.commit()
     return session_id
 
@@ -366,44 +373,67 @@ def _insert_session(conn, source, target, matches, new_meta):
 @pytest.mark.parametrize('target', PROVIDERS)
 @pytest.mark.parametrize('source', PROVIDERS)
 def test_real_provider_migration(source, target, migration_db):
-    """Run the real execute transaction for one (source -> target) pair."""
     self_migration = source == target
     target_shift = 1 if self_migration else _CROSS_TARGET_SHIFT
 
     source_rendered = []
     for index, track in enumerate(SHARED_TRACKS):
         rel = _relative_path(track)
-        source_rendered.append({
-            'id': _provider_id(source, 0, index),
-            'path': _provider_path(source, rel),
-            'title': track['title'], 'artist': track['artist'],
-            'album': track['album'], 'album_artist': track['album_artist'],
-        })
+        source_rendered.append(
+            {
+                'id': _provider_id(source, 0, index),
+                'path': _provider_path(source, rel),
+                'title': track['title'],
+                'artist': track['artist'],
+                'album': track['album'],
+                'album_artist': track['album_artist'],
+            }
+        )
     orphan_rel = _relative_path(ORPHAN_TRACK)
-    source_rendered.append({
-        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
-        'path': _provider_path(source, orphan_rel),
-        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
-        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
-    })
+    source_rendered.append(
+        {
+            'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+            'path': _provider_path(source, orphan_rel),
+            'title': ORPHAN_TRACK['title'],
+            'artist': ORPHAN_TRACK['artist'],
+            'album': ORPHAN_TRACK['album'],
+            'album_artist': ORPHAN_TRACK['album_artist'],
+        }
+    )
     target_rendered = []
     for index, track in enumerate(SHARED_TRACKS):
         rel = _relative_path(track)
-        target_rendered.append({
-            'id': _provider_id(target, target_shift, index),
-            'path': _provider_path(target, rel),
-            'title': track['title'], 'artist': track['artist'],
-            'album': track['album'], 'album_artist': track['album_artist'],
-        })
+        target_rendered.append(
+            {
+                'id': _provider_id(target, target_shift, index),
+                'path': _provider_path(target, rel),
+                'title': track['title'],
+                'artist': track['artist'],
+                'album': track['album'],
+                'album_artist': track['album_artist'],
+            }
+        )
 
     old_rows = [
-        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
-         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'item_id': r['id'],
+            'file_path': r['path'],
+            'title': r['title'],
+            'author': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in source_rendered
     ]
     new_tracks = [
-        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-         'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'id': r['id'],
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in target_rendered
     ]
 
@@ -412,8 +442,7 @@ def test_real_provider_migration(source, target, migration_db):
 
     orphan_id = source_rendered[-1]['id']
     expected_map = {
-        source_rendered[i]['id']: target_rendered[i]['id']
-        for i in range(len(SHARED_TRACKS))
+        source_rendered[i]['id']: target_rendered[i]['id'] for i in range(len(SHARED_TRACKS))
     }
     assert matches == expected_map, (
         f"{source}->{target}: matcher mapping wrong\n  expected {expected_map}\n  got {matches}"
@@ -421,9 +450,14 @@ def test_real_provider_migration(source, target, migration_db):
     assert orphan_id not in matches, "the source-only track must stay unmatched"
 
     new_meta = {
-        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-                  'album': r['album'], 'album_artist': r['album_artist'],
-                  'year': 2000 + i}
+        r['id']: {
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+            'year': 2000 + i,
+        }
         for i, r in enumerate(target_rendered)
     }
 
@@ -478,8 +512,12 @@ def test_real_provider_migration(source, target, migration_db):
         assert proj_map[-1] is None, "orphan slot in the projection list must become None"
         assert set(v for v in proj_map if v is not None) == new_ids
 
-        for table in ('artist_index_data', 'artist_metadata_data',
-                      'artist_component_projection', 'artist_mapping'):
+        for table in (
+            'artist_index_data',
+            'artist_metadata_data',
+            'artist_component_projection',
+            'artist_mapping',
+        ):
             cur.execute(f"SELECT COUNT(*) FROM {table}")
             assert cur.fetchone()[0] == 0, f"{table} should be cleared on migration"
 
@@ -498,60 +536,80 @@ def test_real_provider_migration(source, target, migration_db):
 
 @pytest.mark.integration
 def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
-    """Regression: a SEGMENTED ivf / map id_map must be rewritten end to end.
-
-    ``store_ivf_index_segmented`` splits ``id_map_json`` across part rows
-    once a library is large enough (~1M+ songs), so every segmented row holds a
-    partial-JSON fragment. The migration must reassemble + rewrite + re-split;
-    the previous per-row ``json.loads`` left every fragment untouched, leaving
-    the index pointing at deleted old-provider ids. This drives the real
-    execute job against a real Postgres with a segmented index seeded.
-    """
     source, target = 'jellyfin', 'navidrome'
 
     source_rendered = []
     for index, track in enumerate(SHARED_TRACKS):
         rel = _relative_path(track)
-        source_rendered.append({
-            'id': _provider_id(source, 0, index),
-            'path': _provider_path(source, rel),
-            'title': track['title'], 'artist': track['artist'],
-            'album': track['album'], 'album_artist': track['album_artist'],
-        })
-    source_rendered.append({
-        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
-        'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
-        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
-        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
-    })
-    target_rendered = [{
-        'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
-        'path': _provider_path(target, _relative_path(track)),
-        'title': track['title'], 'artist': track['artist'],
-        'album': track['album'], 'album_artist': track['album_artist'],
-    } for index, track in enumerate(SHARED_TRACKS)]
+        source_rendered.append(
+            {
+                'id': _provider_id(source, 0, index),
+                'path': _provider_path(source, rel),
+                'title': track['title'],
+                'artist': track['artist'],
+                'album': track['album'],
+                'album_artist': track['album_artist'],
+            }
+        )
+    source_rendered.append(
+        {
+            'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+            'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
+            'title': ORPHAN_TRACK['title'],
+            'artist': ORPHAN_TRACK['artist'],
+            'album': ORPHAN_TRACK['album'],
+            'album_artist': ORPHAN_TRACK['album_artist'],
+        }
+    )
+    target_rendered = [
+        {
+            'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
+            'path': _provider_path(target, _relative_path(track)),
+            'title': track['title'],
+            'artist': track['artist'],
+            'album': track['album'],
+            'album_artist': track['album_artist'],
+        }
+        for index, track in enumerate(SHARED_TRACKS)
+    ]
 
     old_rows = [
-        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
-         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'item_id': r['id'],
+            'file_path': r['path'],
+            'title': r['title'],
+            'author': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in source_rendered
     ]
     new_tracks = [
-        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-         'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'id': r['id'],
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in target_rendered
     ]
     matches = matcher.match_tracks(old_rows, new_tracks)['matches']
     expected_map = {
-        source_rendered[i]['id']: target_rendered[i]['id']
-        for i in range(len(SHARED_TRACKS))
+        source_rendered[i]['id']: target_rendered[i]['id'] for i in range(len(SHARED_TRACKS))
     }
     assert matches == expected_map
     orphan_id = source_rendered[-1]['id']
     new_meta = {
-        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-                  'album': r['album'], 'album_artist': r['album_artist'],
-                  'year': 2000 + i}
+        r['id']: {
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+            'year': 2000 + i,
+        }
         for i, r in enumerate(target_rendered)
     }
 
@@ -587,59 +645,80 @@ def test_real_provider_migration_rewrites_segmented_id_map(migration_db):
 
 
 def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
-    """A relabel that cannot fit back into the existing part rows is a SOFT
-    failure: the migration still commits, the stale index is dropped, and
-    ``index_rebuild_needed`` is flagged so the UI can ask for a re-analysis.
-
-    Forced by shrinking ``IVF_MAX_PART_SIZE_MB`` to 0 so the rewritten
-    id_map needs far more part rows than the seeded index has, which is exactly
-    the condition ``rewrite_segmented_id_map`` raises ``ValueError`` for.
-    """
     import config
 
     source, target = 'jellyfin', 'navidrome'
 
     source_rendered = []
     for index, track in enumerate(SHARED_TRACKS):
-        source_rendered.append({
-            'id': _provider_id(source, 0, index),
-            'path': _provider_path(source, _relative_path(track)),
-            'title': track['title'], 'artist': track['artist'],
-            'album': track['album'], 'album_artist': track['album_artist'],
-        })
-    source_rendered.append({
-        'id': _provider_id(source, 0, _ORPHAN_OFFSET),
-        'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
-        'title': ORPHAN_TRACK['title'], 'artist': ORPHAN_TRACK['artist'],
-        'album': ORPHAN_TRACK['album'], 'album_artist': ORPHAN_TRACK['album_artist'],
-    })
-    target_rendered = [{
-        'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
-        'path': _provider_path(target, _relative_path(track)),
-        'title': track['title'], 'artist': track['artist'],
-        'album': track['album'], 'album_artist': track['album_artist'],
-    } for index, track in enumerate(SHARED_TRACKS)]
+        source_rendered.append(
+            {
+                'id': _provider_id(source, 0, index),
+                'path': _provider_path(source, _relative_path(track)),
+                'title': track['title'],
+                'artist': track['artist'],
+                'album': track['album'],
+                'album_artist': track['album_artist'],
+            }
+        )
+    source_rendered.append(
+        {
+            'id': _provider_id(source, 0, _ORPHAN_OFFSET),
+            'path': _provider_path(source, _relative_path(ORPHAN_TRACK)),
+            'title': ORPHAN_TRACK['title'],
+            'artist': ORPHAN_TRACK['artist'],
+            'album': ORPHAN_TRACK['album'],
+            'album_artist': ORPHAN_TRACK['album_artist'],
+        }
+    )
+    target_rendered = [
+        {
+            'id': _provider_id(target, _CROSS_TARGET_SHIFT, index),
+            'path': _provider_path(target, _relative_path(track)),
+            'title': track['title'],
+            'artist': track['artist'],
+            'album': track['album'],
+            'album_artist': track['album_artist'],
+        }
+        for index, track in enumerate(SHARED_TRACKS)
+    ]
 
     old_rows = [
-        {'item_id': r['id'], 'file_path': r['path'], 'title': r['title'],
-         'author': r['artist'], 'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'item_id': r['id'],
+            'file_path': r['path'],
+            'title': r['title'],
+            'author': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in source_rendered
     ]
     new_tracks = [
-        {'id': r['id'], 'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-         'album': r['album'], 'album_artist': r['album_artist']}
+        {
+            'id': r['id'],
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+        }
         for r in target_rendered
     ]
     matches = matcher.match_tracks(old_rows, new_tracks)['matches']
     expected_map = {
-        source_rendered[i]['id']: target_rendered[i]['id']
-        for i in range(len(SHARED_TRACKS))
+        source_rendered[i]['id']: target_rendered[i]['id'] for i in range(len(SHARED_TRACKS))
     }
     new_ids = set(expected_map.values())
     new_meta = {
-        r['id']: {'path': r['path'], 'title': r['title'], 'artist': r['artist'],
-                  'album': r['album'], 'album_artist': r['album_artist'],
-                  'year': 2000 + i}
+        r['id']: {
+            'path': r['path'],
+            'title': r['title'],
+            'artist': r['artist'],
+            'album': r['album'],
+            'album_artist': r['album_artist'],
+            'year': 2000 + i,
+        }
         for i, r in enumerate(target_rendered)
     }
 
@@ -672,4 +751,6 @@ def test_segmented_id_map_relabel_overflow_is_soft_failure(migration_db):
         cur.execute("SELECT status FROM migration_session WHERE id = %s", (session_id,))
         assert cur.fetchone()[0] == 'completed'
     verify.close()
-    print(f"  ok (soft-fail): stale index dropped + flagged, {len(score_ids)} tracks migrated -> {target}")
+    print(
+        f"  ok (soft-fail): stale index dropped + flagged, {len(score_ids)} tracks migrated -> {target}"
+    )

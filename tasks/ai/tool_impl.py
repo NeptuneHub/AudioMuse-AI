@@ -1,20 +1,23 @@
-"""MCP tool implementations.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Synchronous bodies for every MCP tool dispatched by ``tasks.ai.tools``.
-Each function performs DB queries and/or AI calls and returns a result dict
-shaped like ``{"songs": [...], "message": "..."}``.
+"""Grounded implementations of the AI playlist tools.
 
-This module contains *only* tool bodies and a small shared helper. Prompts
-live in ``tasks.ai.prompts``; AI calls go through ``tasks.ai.api``; DB
-connections come from ``tasks.mcp_helper.get_db_connection``.
+Backs the schemas in ``tools`` with real queries against the ``score`` table
+and the similarity/index managers: seed song/artist similarity, song
+alchemy, CLAP audio and lyrics text search, metadata filtering, and the
+brainstorm recipe runner. This is where every AI tool actually touches data.
 
-Dependencies on heavy submodules (``tasks.artist_gmm_manager``,
-``tasks.clap_text_search``, ``tasks.ivf_manager``, ``tasks.song_alchemy``,
-``tasks.ai.api``) are imported lazily inside each tool function. Each of those
-imports appears at most once across the module, so the lazy pattern is not
-duplication -- it is the standard way to keep this module loadable in test
-environments that stub those submodules via ``sys.modules``.
+Main Features:
+* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row.
+* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor.
 """
+
 import json
 import logging
 import re
@@ -29,17 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 def _reroute_other_feature_labels(genres, moods, other_features):
-    """Move ``OTHER_FEATURE_LABELS`` mistakenly passed as ``genres`` or ``moods`` into
-    ``other_features``.
-
-    Small AI models often confuse the 6 CLAP labels (``danceable``, ``aggressive``,
-    ``happy``, ``party``, ``relaxed``, ``sad``) with genres or mood-vector tags.
-    These labels live in ``score.other_features``; only their canonical
-    ``"label:score"`` form survives the substring search there.
-
-    Returns (new_genres, new_moods, new_other_features, log_message_or_None).
-    """
     from config import OTHER_FEATURE_LABELS
+
     other_set = {m.lower() for m in OTHER_FEATURE_LABELS}
     canonical_by_lower = {m.lower(): m for m in OTHER_FEATURE_LABELS}
 
@@ -73,12 +67,8 @@ def _reroute_other_feature_labels(genres, moods, other_features):
 
 
 def _reroute_mood_labels_from_genres(genres, moods):
-    """Legacy shim: keeps the old (genres, moods) -> (genres, moods, msg) contract
-    for callers that haven't migrated to the 3-list signature. Internally now
-    routes OTHER_FEATURE_LABELS to the moods list as before (the new function
-    handles other_features routing directly).
-    """
     from config import OTHER_FEATURE_LABELS
+
     if not genres:
         return genres, moods, None
     mood_set = {m.lower() for m in OTHER_FEATURE_LABELS}
@@ -101,7 +91,6 @@ _FUZZY_MATCH_CUTOFF = 75
 _FUZZY_CANDIDATE_POOL_LIMIT = 500
 _FUZZY_PREFIX_LEN = 1
 
-# Shared SQL fragments for mood_vector substring queries (avoids literal duplication).
 _MOOD_VECTOR_GE_SQL = (
     "COALESCE(CAST(NULLIF(SUBSTRING(mood_vector FROM %s), '') AS NUMERIC), 0) >= %s"
 )
@@ -118,17 +107,10 @@ COALESCE(
     ),
     0
 )"""
-# Canonical regex for the instrumental label in mood_vector (musicnn output).
 _INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
 
 
 def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
-    """Fetch the scoring columns for a set of item_ids via the PK fast-path.
-
-    Returns ``{item_id: {mood_vector, other_features, tempo, energy, year,
-    scale, key, rating, author, album}}``. Empty dict when given no ids. One
-    indexed query (item_id = ANY) -- no text-column scan, no new index.
-    """
     if not item_ids:
         return {}
     db_conn = get_db_connection()
@@ -166,8 +148,14 @@ def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
 def _normalize_for_match(s: Optional[str]) -> str:
     if not s:
         return ""
-    return (s.replace(' ', '').replace('-', '').replace('‐', '')
-            .replace('/', '').replace("'", '').lower())
+    return (
+        s.replace(' ', '')
+        .replace('-', '')
+        .replace('‐', '')
+        .replace('/', '')
+        .replace("'", '')
+        .lower()
+    )
 
 
 def _fuzzy_match_author_title(
@@ -175,21 +163,15 @@ def _fuzzy_match_author_title(
     requested_author: str,
     requested_title: Optional[str] = None,
 ) -> Optional[Dict]:
-    """Last-resort fuzzy DB lookup using rapidfuzz on a narrowed candidate pool.
-
-    When the exact / ILIKE-normalized passes have failed, narrow the search to
-    rows whose author OR title shares a short prefix with the requested values
-    (cheap SQL filter), then rank candidates with token_set_ratio. Returns
-    ``{"item_id", "title", "author", "album", "score", "matched_label"}`` on a
-    confident match (score >= _FUZZY_MATCH_CUTOFF), or None.
-    """
     from rapidfuzz import fuzz
 
     if not requested_author and not requested_title:
         return None
 
     author_prefix = _normalize_for_match(requested_author)[:_FUZZY_PREFIX_LEN]
-    title_prefix = _normalize_for_match(requested_title)[:_FUZZY_PREFIX_LEN] if requested_title else ""
+    title_prefix = (
+        _normalize_for_match(requested_title)[:_FUZZY_PREFIX_LEN] if requested_title else ""
+    )
 
     prefix_conditions = []
     prefix_params: List = []
@@ -256,31 +238,40 @@ def _fuzzy_match_author_title(
 
 
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict:
-    """Find songs by an artist plus songs by similar artists (GMM-based)."""
     from tasks.artist_gmm_manager import find_similar_artists, reverse_artist_map
 
     db_conn = get_db_connection()
     log_messages = []
 
     try:
-        # STEP 1: Fuzzy lookup in database to find correct artist name
         log_messages.append(f"Looking up artist in database: '{artist}'")
 
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT DISTINCT author
                 FROM public.score
                 WHERE LOWER(author) = LOWER(%s)
                 LIMIT 1
-            """, (artist,))
+            """,
+                (artist,),
+            )
             result = cur.fetchone()
 
             if not result:
-                # Normalize: remove spaces, dashes, slashes to handle variations
-                artist_normalized = artist.replace(' ', '').replace('-', '').replace('\u2010', '').replace('/', '').replace("'", '')
+                artist_normalized = (
+                    artist.replace(' ', '')
+                    .replace('-', '')
+                    .replace('\u2010', '')
+                    .replace('/', '')
+                    .replace("'", '')
+                )
 
-                log_messages.append(f"No exact match, trying fuzzy search for normalized: '{artist_normalized}'")
-                cur.execute("""
+                log_messages.append(
+                    f"No exact match, trying fuzzy search for normalized: '{artist_normalized}'"
+                )
+                cur.execute(
+                    """
                     SELECT author, LENGTH(author) as len
                     FROM (
                         SELECT DISTINCT author
@@ -289,12 +280,16 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                     ) AS distinct_authors
                     ORDER BY len
                     LIMIT 1
-                """, (f"%{artist_normalized}%",))
+                """,
+                    (f"%{artist_normalized}%",),
+                )
                 result = cur.fetchone()
                 if result:
                     log_messages.append(f"Fuzzy search found: '{result['author']}'")
                 else:
-                    log_messages.append(f"Fuzzy search returned no results for: '{artist_normalized}'")
+                    log_messages.append(
+                        f"Fuzzy search returned no results for: '{artist_normalized}'"
+                    )
 
             if not result:
                 log_messages.append("ILIKE fallback miss, trying rapidfuzz fallback...")
@@ -312,7 +307,6 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             else:
                 log_messages.append(f"Artist not found in database, using original: '{artist}'")
 
-        # STEP 2: Now call similarity API with correct artist name
         log_messages.append(f"Calling similarity API for: '{artist}'")
         similar_artists = find_similar_artists(artist, n=25)
 
@@ -322,12 +316,15 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             if reverse_artist_map:
                 artist_lower = artist.lower()
                 matches = [
-                    gmm_artist for gmm_artist in reverse_artist_map.keys()
+                    gmm_artist
+                    for gmm_artist in reverse_artist_map.keys()
                     if artist_lower in gmm_artist.lower()
                 ]
                 if matches:
                     best_match = min(matches, key=len)
-                    log_messages.append(f"Found fuzzy match in GMM index: '{best_match}' (from '{artist}')")
+                    log_messages.append(
+                        f"Found fuzzy match in GMM index: '{best_match}' (from '{artist}')"
+                    )
                     similar_artists = find_similar_artists(best_match, n=25)
 
             if not similar_artists:
@@ -337,13 +334,18 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                     similar_artists = find_similar_artists(clean_artist, n=25)
 
         if not similar_artists:
-            return {"songs": [], "message": "\n".join(log_messages) + f"\nNo similar artists found for '{artist}'"}
+            return {
+                "songs": [],
+                "message": "\n".join(log_messages) + f"\nNo similar artists found for '{artist}'",
+            }
 
         artist_names = [a['artist'] for a in similar_artists[:count]]
         log_messages.append(f"Found {len(artist_names)} similar artists")
 
         all_artist_names = [artist] + artist_names
-        log_messages.append(f"Searching songs from {len(all_artist_names)} artists (original + similar)")
+        log_messages.append(
+            f"Searching songs from {len(all_artist_names)} artists (original + similar)"
+        )
 
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             placeholders = ','.join(['%s'] * len(all_artist_names))
@@ -360,38 +362,43 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             cur.execute(query, all_artist_names + [get_songs])
             results = cur.fetchall()
 
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
+        songs = [
+            {
+                "item_id": r['item_id'],
+                "title": r['title'],
+                "artist": r['author'],
+                "album": r.get('album', ''),
+            }
+            for r in results
+        ]
         log_messages.append(f"Retrieved {len(songs)} songs from original + similar artists")
 
         component_matches = []
         for artist_name in all_artist_names:
             artist_songs = [s for s in songs if s['artist'] == artist_name]
             if artist_songs:
-                component_matches.append({
-                    "artist": artist_name,
-                    "is_original": artist_name == artist,
-                    "song_count": len(artist_songs),
-                    "songs": artist_songs
-                })
+                component_matches.append(
+                    {
+                        "artist": artist_name,
+                        "is_original": artist_name == artist,
+                        "song_count": len(artist_songs),
+                        "songs": artist_songs,
+                    }
+                )
 
         return {
             "songs": songs,
             "similar_artists": artist_names,
             "component_matches": component_matches,
-            "message": "\n".join(log_messages)
+            "message": "\n".join(log_messages),
         }
     finally:
         db_conn.close()
 
 
-def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int) -> Dict:
-    """CLAP audio text search -- PURE similarity, returns a large pool.
-
-    No tempo/energy/genre filtering happens here: the chat planner routes any
-    such filter through the ONE shared soft re-rank (``planner._rerank_pool``),
-    so this tool just returns the CLAP-similarity-ranked pool. ``tempo_filter`` /
-    ``energy_filter`` are accepted for signature compatibility but ignored.
-    """
+def _text_search_sync(
+    description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int
+) -> Dict:
     from tasks.clap_text_search import search_by_text
     from config import CLAP_ENABLED
 
@@ -399,7 +406,10 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
     try:
         if not CLAP_ENABLED:
             log_messages.append("CLAP text search is disabled")
-            return {"songs": [], "message": "CLAP text search is not enabled. Please enable CLAP_ENABLED in config."}
+            return {
+                "songs": [],
+                "message": "CLAP text search is not enabled. Please enable CLAP_ENABLED in config.",
+            }
 
         if not description:
             return {"songs": [], "message": "No description provided for text search"}
@@ -413,7 +423,12 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
             return {"songs": [], "message": "\n".join(log_messages)}
 
         songs = [
-            {"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')}
+            {
+                "item_id": r['item_id'],
+                "title": r['title'],
+                "artist": r['author'],
+                "album": r.get('album', ''),
+            }
             for r in clap_results
         ]
         log_messages.append(
@@ -428,7 +443,6 @@ def _text_search_sync(description: str, tempo_filter: Optional[str], energy_filt
 
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> Dict:
-    """Find similar songs to a (title, artist) seed via IVF nearest neighbors."""
     from tasks.ivf_manager import find_nearest_neighbors_by_id
 
     get_songs = int(get_songs) if get_songs is not None else 100
@@ -440,37 +454,55 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         if not song_title or not song_title.strip():
             return {
                 "songs": [],
-                "message": "ERROR: song_similarity requires a valid song title! If you don't have a specific title, use ai_brainstorm instead."
+                "message": "ERROR: song_similarity requires a valid song title! If you don't have a specific title, use ai_brainstorm instead.",
             }
         if not song_artist or not song_artist.strip():
             return {
                 "songs": [],
-                "message": "ERROR: song_similarity requires an artist name! Both title and artist are required."
+                "message": "ERROR: song_similarity requires an artist name! Both title and artist are required.",
             }
 
         log_messages.append(f"Looking up song in database: '{song_title}' by '{song_artist}'")
 
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT item_id, title, author, album FROM public.score
                 WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
                 LIMIT 1
-            """, (song_title, song_artist))
+            """,
+                (song_title, song_artist),
+            )
             seed = cur.fetchone()
 
             if not seed:
                 log_messages.append("No exact match, trying fuzzy search...")
-                title_normalized = song_title.replace(' ', '').replace('-', '').replace('\u2010', '').replace('/', '').replace("'", '')
-                artist_normalized = song_artist.replace(' ', '').replace('-', '').replace('\u2010', '').replace('/', '').replace("'", '')
+                title_normalized = (
+                    song_title.replace(' ', '')
+                    .replace('-', '')
+                    .replace('\u2010', '')
+                    .replace('/', '')
+                    .replace("'", '')
+                )
+                artist_normalized = (
+                    song_artist.replace(' ', '')
+                    .replace('-', '')
+                    .replace('\u2010', '')
+                    .replace('/', '')
+                    .replace("'", '')
+                )
 
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT item_id, title, author, album
                     FROM public.score
                     WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '\u2010', ''), '/', ''), '''', '') ILIKE %s
                       AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '\u2010', ''), '/', ''), '''', '') ILIKE %s
                     ORDER BY LENGTH(title) + LENGTH(author)
                     LIMIT 1
-                """, (f"%{title_normalized}%", f"%{artist_normalized}%"))
+                """,
+                    (f"%{title_normalized}%", f"%{artist_normalized}%"),
+                )
                 seed = cur.fetchone()
 
             if not seed:
@@ -483,7 +515,11 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
                     seed = fz
 
             if not seed:
-                return {"songs": [], "message": "\n".join(log_messages) + f"\nSong '{song_title}' by '{song_artist}' not found in database"}
+                return {
+                    "songs": [],
+                    "message": "\n".join(log_messages)
+                    + f"\nSong '{song_title}' by '{song_artist}' not found in database",
+                }
 
             seed_id = seed['item_id']
             actual_title = seed['title']
@@ -491,7 +527,9 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
             log_messages.append(f"Found: '{actual_title}' by '{actual_artist}' (ID: {seed_id})")
             log_messages.append(f"Found seed song: {song_title} by {song_artist}")
 
-        similar_results = find_nearest_neighbors_by_id(seed_id, n=get_songs + 1, eliminate_duplicates=False, radius_similarity=False)
+        similar_results = find_nearest_neighbors_by_id(
+            seed_id, n=get_songs + 1, eliminate_duplicates=False, radius_similarity=False
+        )
 
         similar_ids = [r['item_id'] for r in similar_results if r['item_id'] != seed_id][:get_songs]
 
@@ -502,15 +540,26 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
 
             with db_conn.cursor(cursor_factory=DictCursor) as cur:
                 placeholders = ','.join(['%s'] * len(similar_ids))
-                cur.execute(f"""
+                cur.execute(
+                    f"""
                     SELECT item_id, title, author, album
                     FROM public.score
                     WHERE item_id IN ({placeholders})
-                """, similar_ids)
+                """,
+                    similar_ids,
+                )
                 results = cur.fetchall()
 
             sorted_results = sorted(results, key=lambda r: id_to_order.get(r['item_id'], 999999))
-            songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in sorted_results]
+            songs = [
+                {
+                    "item_id": r['item_id'],
+                    "title": r['title'],
+                    "artist": r['author'],
+                    "album": r.get('album', ''),
+                }
+                for r in sorted_results
+            ]
 
         log_messages.append(f"Retrieved {len(songs)} similar songs")
 
@@ -519,122 +568,165 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
         db_conn.close()
 
 
-def _song_alchemy_sync(add_items: List[Dict], subtract_items: Optional[List[Dict]] = None, get_songs: int = 100) -> Dict:
-    """Blend or subtract musical vibes via vector arithmetic over items."""
+def _alchemy_parse_tag_scores(text):
+    scores = {}
+    for tag in (text or '').split(','):
+        tag = tag.strip()
+        if ':' not in tag:
+            continue
+        name, score_str = tag.split(':', 1)
+        try:
+            scores[name.strip()] = float(score_str)
+        except ValueError:
+            pass
+    return scores
+
+
+def _alchemy_collect_seed_ids(cur, add_items):
+    seed_ids = []
+    for item in add_items:
+        item_type = item.get('type', 'artist')
+        item_id_val = item.get('id', '')
+        if item_type == 'artist':
+            cur.execute(
+                "SELECT item_id FROM public.score WHERE LOWER(author) = LOWER(%s) LIMIT 10",
+                (item_id_val,),
+            )
+            seed_ids.extend([r['item_id'] for r in cur.fetchall()])
+        elif item_type == 'song' and ' by ' in item_id_val:
+            parts = item_id_val.rsplit(' by ', 1)
+            cur.execute(
+                "SELECT item_id FROM public.score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1",
+                (parts[0].strip(), parts[1].strip()),
+            )
+            row = cur.fetchone()
+            if row:
+                seed_ids.append(row['item_id'])
+    return seed_ids
+
+
+def _alchemy_top_seed_genres(cur, seed_ids):
+    if not seed_ids:
+        return []
+    ph = ','.join(['%s'] * len(seed_ids))
+    cur.execute(
+        f"""
+        SELECT unnest(string_to_array(mood_vector, ',')) AS tag
+        FROM public.score
+        WHERE item_id IN ({ph})
+        AND mood_vector IS NOT NULL AND mood_vector != ''
+    """,
+        seed_ids,
+    )
+    seed_genre_scores = {}
+    for r in cur:
+        tag = r['tag'].strip()
+        if ':' not in tag:
+            continue
+        name, score_str = tag.split(':', 1)
+        name = name.strip()
+        try:
+            seed_genre_scores[name] = seed_genre_scores.get(name, 0) + float(score_str)
+        except ValueError:
+            pass
+    return sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:3]
+
+
+def _alchemy_result_genres(cur, result_ids):
+    if not result_ids:
+        return {}
+    ph2 = ','.join(['%s'] * len(result_ids))
+    cur.execute(
+        f"""
+        SELECT item_id, mood_vector
+        FROM public.score
+        WHERE item_id IN ({ph2})
+    """,
+        result_ids,
+    )
+    return {r['item_id']: _alchemy_parse_tag_scores(r['mood_vector'] or '') for r in cur}
+
+
+def _alchemy_apply_genre_filter(cur, songs, add_items, log_messages):
+    seed_ids = _alchemy_collect_seed_ids(cur, add_items)
+    top_seed_genres = _alchemy_top_seed_genres(cur, seed_ids)
+    if not top_seed_genres:
+        return songs
+
+    result_genres = _alchemy_result_genres(cur, [s['item_id'] for s in songs])
+
+    filtered = []
+    for s in songs:
+        g = result_genres.get(s['item_id'], {})
+        if not g or any(g.get(tg, 0) >= 0.2 for tg in top_seed_genres):
+            filtered.append(s)
+
+    if len(filtered) < len(songs) * 0.4:
+        return songs
+
+    removed = len(songs) - len(filtered)
+    if removed > 0:
+        log_messages.append(
+            f"Genre filter: removed {removed} off-genre songs (seed genres: {', '.join(top_seed_genres[:3])})"
+        )
+    return filtered
+
+
+def _alchemy_genre_filter(songs, add_items, log_messages):
+    if not songs or not add_items:
+        return songs
+    try:
+        db_conn_gc = get_db_connection()
+        try:
+            with db_conn_gc.cursor(cursor_factory=DictCursor) as cur:
+                return _alchemy_apply_genre_filter(cur, songs, add_items, log_messages)
+        finally:
+            db_conn_gc.close()
+    except Exception as e:
+        logger.warning(f"Alchemy genre filter failed (non-fatal): {e}")
+        return songs
+
+
+def _alchemy_log_items(log_messages, add_items, subtract_items):
+    log_messages.append(
+        f"Song Alchemy: ADD {len(add_items)} items"
+        + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else "")
+    )
+    for item in add_items:
+        log_messages.append(f"  + ADD {item.get('type', 'unknown')}: {item.get('id', 'unknown')}")
+    for item in subtract_items or []:
+        log_messages.append(
+            f"  - SUBTRACT {item.get('type', 'unknown')}: {item.get('id', 'unknown')}"
+        )
+
+
+def _song_alchemy_sync(
+    add_items: List[Dict], subtract_items: Optional[List[Dict]] = None, get_songs: int = 100
+) -> Dict:
     from tasks.song_alchemy import song_alchemy
 
     log_messages = []
 
     try:
-        log_messages.append(f"Song Alchemy: ADD {len(add_items)} items" + (f", SUBTRACT {len(subtract_items)} items" if subtract_items else ""))
-
-        for item in add_items:
-            item_type = item.get('type', 'unknown')
-            item_id = item.get('id', 'unknown')
-            log_messages.append(f"  + ADD {item_type}: {item_id}")
-
-        if subtract_items:
-            for item in subtract_items:
-                item_type = item.get('type', 'unknown')
-                item_id = item.get('id', 'unknown')
-                log_messages.append(f"  - SUBTRACT {item_type}: {item_id}")
+        _alchemy_log_items(log_messages, add_items, subtract_items)
 
         result = song_alchemy(
-            add_items=add_items,
-            subtract_items=subtract_items,
-            n_results=get_songs
+            add_items=add_items, subtract_items=subtract_items, n_results=get_songs
         )
 
         raw_songs = result.get('results', [])
-        songs = [{"item_id": s['item_id'], "title": s['title'], "artist": s.get('author', s.get('artist', '')), "album": s.get('album', '')} for s in raw_songs]
+        songs = [
+            {
+                "item_id": s['item_id'],
+                "title": s['title'],
+                "artist": s.get('author', s.get('artist', '')),
+                "album": s.get('album', ''),
+            }
+            for s in raw_songs
+        ]
         log_messages.append(f"Retrieved {len(songs)} songs from alchemy")
 
-        # --- Genre-coherence filter: remove off-genre results ---
-        try:
-            if songs and add_items:
-                db_conn_gc = get_db_connection()
-                try:
-                    with db_conn_gc.cursor(cursor_factory=DictCursor) as cur:
-                        seed_ids = []
-                        for item in add_items:
-                            item_type = item.get('type', 'artist')
-                            item_id_val = item.get('id', '')
-                            if item_type == 'artist':
-                                cur.execute(
-                                    "SELECT item_id FROM public.score WHERE LOWER(author) = LOWER(%s) LIMIT 10",
-                                    (item_id_val,)
-                                )
-                                seed_ids.extend([r['item_id'] for r in cur.fetchall()])
-                            elif item_type == 'song' and ' by ' in item_id_val:
-                                parts = item_id_val.rsplit(' by ', 1)
-                                cur.execute(
-                                    "SELECT item_id FROM public.score WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s) LIMIT 1",
-                                    (parts[0].strip(), parts[1].strip())
-                                )
-                                row = cur.fetchone()
-                                if row:
-                                    seed_ids.append(row['item_id'])
-
-                        if seed_ids:
-                            ph = ','.join(['%s'] * len(seed_ids))
-                            cur.execute(f"""
-                                SELECT unnest(string_to_array(mood_vector, ',')) AS tag
-                                FROM public.score
-                                WHERE item_id IN ({ph})
-                                AND mood_vector IS NOT NULL AND mood_vector != ''
-                            """, seed_ids)
-                            seed_genre_scores = {}
-                            for r in cur:
-                                tag = r['tag'].strip()
-                                if ':' in tag:
-                                    name, score_str = tag.split(':', 1)
-                                    name = name.strip()
-                                    try:
-                                        seed_genre_scores[name] = seed_genre_scores.get(name, 0) + float(score_str)
-                                    except ValueError:
-                                        pass
-                            top_seed_genres = sorted(seed_genre_scores, key=seed_genre_scores.get, reverse=True)[:3]
-
-                            if top_seed_genres:
-                                result_ids = [s['item_id'] for s in songs]
-                                ph2 = ','.join(['%s'] * len(result_ids))
-                                cur.execute(f"""
-                                    SELECT item_id, mood_vector
-                                    FROM public.score
-                                    WHERE item_id IN ({ph2})
-                                """, result_ids)
-                                result_genres = {}
-                                for r in cur:
-                                    mv = r['mood_vector'] or ''
-                                    genres_found = {}
-                                    for tag in mv.split(','):
-                                        tag = tag.strip()
-                                        if ':' in tag:
-                                            gname, gscore = tag.split(':', 1)
-                                            try:
-                                                genres_found[gname.strip()] = float(gscore)
-                                            except ValueError:
-                                                pass
-                                    result_genres[r['item_id']] = genres_found
-
-                                filtered = []
-                                for s in songs:
-                                    sid = s['item_id']
-                                    g = result_genres.get(sid, {})
-                                    if not g:
-                                        filtered.append(s)
-                                    elif any(g.get(tg, 0) >= 0.2 for tg in top_seed_genres):
-                                        filtered.append(s)
-
-                                if len(filtered) >= len(songs) * 0.4:
-                                    removed = len(songs) - len(filtered)
-                                    if removed > 0:
-                                        log_messages.append(f"Genre filter: removed {removed} off-genre songs (seed genres: {', '.join(top_seed_genres[:3])})")
-                                    songs = filtered
-                finally:
-                    db_conn_gc.close()
-        except Exception as e:
-            logger.warning(f"Alchemy genre filter failed (non-fatal): {e}")
+        songs = _alchemy_genre_filter(songs, add_items, log_messages)
 
         return {"songs": songs, "message": "\n".join(log_messages)}
 
@@ -670,7 +762,9 @@ def _database_genre_query_sync(
     db_conn = get_db_connection()
     log_messages = []
 
-    genres, moods, other_features, reroute_msg = _reroute_other_feature_labels(genres, moods, other_features)
+    genres, moods, other_features, reroute_msg = _reroute_other_feature_labels(
+        genres, moods, other_features
+    )
     if reroute_msg:
         log_messages.append(reroute_msg)
 
@@ -727,7 +821,6 @@ def _database_genre_query_sync(
 
             has_instrumental_filter = False
             if instrumental is not None:
-                # Coerce string values (AI models sometimes pass 'true'/'false' as strings).
                 if isinstance(instrumental, str):
                     instrumental = instrumental.strip().lower() in ('true', '1', 'yes')
                 instrumental = bool(instrumental)
@@ -838,7 +931,11 @@ def _database_genre_query_sync(
                 relevance_expr = " + ".join(score_parts)
                 all_params = score_params + params
 
-                inner_order = "ORDER BY relevance_score DESC, RANDOM()" if pool_order_index is None else "ORDER BY relevance_score DESC"
+                inner_order = (
+                    "ORDER BY relevance_score DESC, RANDOM()"
+                    if pool_order_index is None
+                    else "ORDER BY relevance_score DESC"
+                )
                 query = f"""
                     SELECT DISTINCT item_id, title, author, album
                     FROM (
@@ -866,10 +963,18 @@ def _database_genre_query_sync(
 
             results = cur.fetchall()
 
-        songs = [{"item_id": r['item_id'], "title": r['title'], "artist": r['author'], "album": r.get('album', '')} for r in results]
+        songs = [
+            {
+                "item_id": r['item_id'],
+                "title": r['title'],
+                "artist": r['author'],
+                "album": r.get('album', ''),
+            }
+            for r in results
+        ]
 
         if pool_order_index is not None:
-            songs.sort(key=lambda s: pool_order_index.get(s['item_id'], 10 ** 9))
+            songs.sort(key=lambda s: pool_order_index.get(s['item_id'], 10**9))
 
         filters = []
         if candidate_item_ids:
@@ -899,7 +1004,9 @@ def _database_genre_query_sync(
         if instrumental is not None:
             filters.append(f"instrumental: {instrumental}")
 
-        log_messages.append(f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}")
+        log_messages.append(
+            f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}"
+        )
 
         return {"songs": songs, "message": "\n".join(log_messages)}
     finally:
@@ -907,19 +1014,15 @@ def _database_genre_query_sync(
 
 
 def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
-    """Find songs whose lyrics semantically match a free-text query.
-
-    Wraps ``tasks.lyrics_manager.search_by_text`` (the same backend that powers
-    the ``/api/lyrics/search/text`` endpoint), maps ``author`` -> ``artist`` to
-    match the shape other MCP tools return, and surfaces a clear message when
-    lyrics are disabled or the ivf index is not yet loaded.
-    """
     from config import LYRICS_ENABLED
 
     log_messages = []
 
     if not LYRICS_ENABLED:
-        return {"songs": [], "message": "lyrics_search is disabled (set LYRICS_ENABLED=true in config to enable)"}
+        return {
+            "songs": [],
+            "message": "lyrics_search is disabled (set LYRICS_ENABLED=true in config to enable)",
+        }
 
     text = (query or '').strip()
     if not text:
@@ -927,6 +1030,7 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
 
     try:
         from tasks.lyrics_manager import search_by_text
+
         log_messages.append(f"Lyrics search: '{text}'")
         results = search_by_text(text, limit=int(get_songs) if get_songs else 200, artist_cap=0)
         if not results:
@@ -950,12 +1054,6 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
 
 
 def _extract_json_object(raw: str) -> Optional[Dict]:
-    """Best-effort recovery of a single JSON object from a model response.
-
-    Strips markdown code fences and any leading ``<think>...</think>`` preamble,
-    then parses the outermost ``{...}`` span. Returns the parsed dict, or ``None``
-    when no JSON object can be recovered.
-    """
     if not raw:
         return None
     text = raw.strip()
@@ -976,20 +1074,13 @@ def _extract_json_object(raw: str) -> Optional[Dict]:
     if start == -1 or end == -1 or end <= start:
         return None
     try:
-        parsed = json.loads(text[start:end + 1])
+        parsed = json.loads(text[start : end + 1])
     except (ValueError, TypeError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
 def _clamp_recipe(recipe: Dict) -> Dict:
-    """Normalise a raw brainstorm recipe to safe, library-valid values.
-
-    Clamps genres/moods/voices to the known vocab (case/punctuation-insensitive),
-    coerces numeric ranges into bounds and repairs reversed min/max, and caps the
-    list fields by their config limits. Always returns the full set of keys so the
-    executor never has to defend against missing fields.
-    """
     import config
 
     def _norm(s):
@@ -1052,13 +1143,18 @@ def _clamp_recipe(recipe: Dict) -> Dict:
 
     seed_artists = (
         _clean_strings(_as_list(recipe.get("seed_artists")), config.AI_BRAINSTORM_SEED_ARTISTS_MAX)
-        if config.AI_BRAINSTORM_USE_ARTIST_SEEDS else []
+        if config.AI_BRAINSTORM_USE_ARTIST_SEEDS
+        else []
     )
 
     return {
         "filters": {
-            "genres": _clamp_to_vocab(_as_list(raw_filters.get("genres")), config.STRATIFIED_GENRES),
-            "moods": _clamp_to_vocab(_as_list(raw_filters.get("moods")), config.OTHER_FEATURE_LABELS),
+            "genres": _clamp_to_vocab(
+                _as_list(raw_filters.get("genres")), config.STRATIFIED_GENRES
+            ),
+            "moods": _clamp_to_vocab(
+                _as_list(raw_filters.get("moods")), config.OTHER_FEATURE_LABELS
+            ),
             "voices": _clamp_to_vocab(_as_list(raw_filters.get("voices")), config.VOICE_VOCAB),
             "year_min": year_min,
             "year_max": year_max,
@@ -1068,24 +1164,16 @@ def _clamp_recipe(recipe: Dict) -> Dict:
             "tempo_max": tempo_max,
         },
         "sound_descriptions": _clean_strings(
-            _as_list(recipe.get("sound_descriptions")), config.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX),
+            _as_list(recipe.get("sound_descriptions")), config.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX
+        ),
         "seed_artists": seed_artists,
         "lyric_themes": _clean_strings(
-            _as_list(recipe.get("lyric_themes")), config.AI_BRAINSTORM_LYRIC_THEMES_MAX),
+            _as_list(recipe.get("lyric_themes")), config.AI_BRAINSTORM_LYRIC_THEMES_MAX
+        ),
     }
 
 
 def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> Dict:
-    """Grounded brainstorm: the model emits a search RECIPE, not song titles.
-
-    The recipe (metadata filters + "how it sounds" descriptions + seed artists +
-    lyric themes) is executed against the real library through the existing
-    grounded channels (CLAP audio search, artist similarity, lyrics search,
-    metadata filter) and the results are fused. Small models recall specific songs
-    poorly but understand and categorise requests well, so this keeps the catalog
-    external to the model's weights (issue #643). Grounding happens inside this
-    tool, so the planner still returns the result as-is.
-    """
     import config
     from tasks.ai.api import generate_text as _ai_generate_text
     from tasks.ai.prompts import build_ai_brainstorm_prompt
@@ -1102,8 +1190,14 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
 
     parsed = _extract_json_object(raw_response)
     if parsed is None:
-        logger.warning("Brainstorm recipe parse failed. Raw response (first 2000 chars): %s", raw_response[:2000])
-        return {"songs": [], "message": "AI brainstorm could not produce a recipe; check the container logs."}
+        logger.warning(
+            "Brainstorm recipe parse failed. Raw response (first 2000 chars): %s",
+            raw_response[:2000],
+        )
+        return {
+            "songs": [],
+            "message": "AI brainstorm could not produce a recipe; check the container logs.",
+        }
 
     recipe = _clamp_recipe(parsed)
     filt = recipe["filters"]
@@ -1111,12 +1205,15 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
     log_messages.append(
         "Recipe: genres={g} moods={m} voices={v} year={y0}-{y1} energy={e0}-{e1} | "
         "descriptions={nd} artists={na} lyric_themes={nl}".format(
-            g=filt["genres"] or "-", m=filt["moods"] or "-", v=filt["voices"] or "-",
+            g=filt["genres"] or "-",
+            m=filt["moods"] or "-",
+            v=filt["voices"] or "-",
             y0=filt["year_min"] if filt["year_min"] is not None else "any",
             y1=filt["year_max"] if filt["year_max"] is not None else "any",
             e0=filt["energy_min"] if filt["energy_min"] is not None else "any",
             e1=filt["energy_max"] if filt["energy_max"] is not None else "any",
-            nd=len(recipe["sound_descriptions"]), na=len(recipe["seed_artists"]),
+            nd=len(recipe["sound_descriptions"]),
+            na=len(recipe["seed_artists"]),
             nl=len(recipe["lyric_themes"]),
         )
     )
@@ -1132,12 +1229,14 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
         key = (s.get("title", "").strip().lower(), s.get("artist", "").strip().lower())
         if key in seen_keys:
             return False
-        found_songs.append({
-            "item_id": iid,
-            "title": s.get("title", ""),
-            "artist": s.get("artist", ""),
-            "album": s.get("album", ""),
-        })
+        found_songs.append(
+            {
+                "item_id": iid,
+                "title": s.get("title", ""),
+                "artist": s.get("artist", ""),
+                "album": s.get("album", ""),
+            }
+        )
         seen_ids.add(iid)
         seen_keys.add(key)
         return True
@@ -1157,52 +1256,69 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
         return config.ENERGY_MIN + float(value) * (config.ENERGY_MAX - config.ENERGY_MIN)
 
     def _year_gate(songs, year_min, year_max):
-        """Keep only songs whose release year is in range. Sound/artist channels
-        match on audio/similarity and cannot honor a release-year constraint, so a
-        request like '90s rap' would otherwise leak any-era songs. No-op when no
-        year is set."""
         if year_min is None and year_max is None:
             return songs or []
         ids = [s.get("item_id") for s in (songs or []) if s.get("item_id")]
         if not ids:
             return []
         gated = _database_genre_query_sync(
-            get_songs=len(ids), year_min=year_min, year_max=year_max, candidate_item_ids=ids,
+            get_songs=len(ids),
+            year_min=year_min,
+            year_max=year_max,
+            candidate_item_ids=ids,
         )
         return gated.get("songs") or []
 
     def _run_filter(year_min, year_max, use_scored):
-        return _database_genre_query_sync(
-            genres=filt["genres"] or None,
-            get_songs=get_songs,
-            moods=(filt["moods"] or None) if use_scored else None,
-            tempo_min=filt["tempo_min"] if use_scored else None,
-            tempo_max=filt["tempo_max"] if use_scored else None,
-            energy_min=_energy_to_raw(filt["energy_min"]) if (use_scored and filt["energy_min"] is not None) else None,
-            energy_max=_energy_to_raw(filt["energy_max"]) if (use_scored and filt["energy_max"] is not None) else None,
-            year_min=year_min,
-            year_max=year_max,
-            voices=filt["voices"] or None,
-            score_threshold=config.AI_BRAINSTORM_GENRE_SCORE_THRESHOLD,
-        ).get("songs") or []
+        return (
+            _database_genre_query_sync(
+                genres=filt["genres"] or None,
+                get_songs=get_songs,
+                moods=(filt["moods"] or None) if use_scored else None,
+                tempo_min=filt["tempo_min"] if use_scored else None,
+                tempo_max=filt["tempo_max"] if use_scored else None,
+                energy_min=_energy_to_raw(filt["energy_min"])
+                if (use_scored and filt["energy_min"] is not None)
+                else None,
+                energy_max=_energy_to_raw(filt["energy_max"])
+                if (use_scored and filt["energy_max"] is not None)
+                else None,
+                year_min=year_min,
+                year_max=year_max,
+                voices=filt["voices"] or None,
+                score_threshold=config.AI_BRAINSTORM_GENRE_SCORE_THRESHOLD,
+            ).get("songs")
+            or []
+        )
 
     has_filter = bool(
-        filt["genres"] or filt["moods"] or filt["voices"]
-        or filt["year_min"] is not None or filt["year_max"] is not None
-        or filt["energy_min"] is not None or filt["energy_max"] is not None
-        or filt["tempo_min"] is not None or filt["tempo_max"] is not None
+        filt["genres"]
+        or filt["moods"]
+        or filt["voices"]
+        or filt["year_min"] is not None
+        or filt["year_max"] is not None
+        or filt["energy_min"] is not None
+        or filt["energy_max"] is not None
+        or filt["tempo_min"] is not None
+        or filt["tempo_max"] is not None
     )
-    relax_anchor = bool(filt["genres"] or filt["year_min"] is not None or filt["year_max"] is not None)
+    relax_anchor = bool(
+        filt["genres"] or filt["year_min"] is not None or filt["year_max"] is not None
+    )
     ymin, ymax = filt["year_min"], filt["year_max"]
 
     try:
         channels = []
         for i, desc in enumerate(recipe["sound_descriptions"]):
-            songs = _year_gate(_text_search_sync(desc, None, None, get_songs).get("songs"), ymin, ymax)
+            songs = _year_gate(
+                _text_search_sync(desc, None, None, get_songs).get("songs"), ymin, ymax
+            )
             if songs:
                 channels.append((f"audio#{i + 1}", songs))
         for art in recipe["seed_artists"]:
-            raw = _artist_similarity_api_sync(art, config.AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED, get_songs)
+            raw = _artist_similarity_api_sync(
+                art, config.AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED, get_songs
+            )
             songs = _year_gate(raw.get("songs"), ymin, ymax)
             if songs:
                 channels.append((f"artist:{art}", songs))
@@ -1242,7 +1358,9 @@ def _ai_brainstorm_sync(user_request: str, ai_config: Dict, get_songs: int) -> D
             rmax = (ymax + pad) if ymax is not None else None
             _add_batch(_run_filter(rmin, rmax, use_scored=False), "relax:filter")
             if len(found_songs) < floor and filt["genres"]:
-                relaxed = _text_search_sync(", ".join(filt["genres"]) + " music", None, None, get_songs).get("songs")
+                relaxed = _text_search_sync(
+                    ", ".join(filt["genres"]) + " music", None, None, get_songs
+                ).get("songs")
                 _add_batch(_year_gate(relaxed, rmin, rmax), "relax:audio")
     except Exception:
         logger.exception("Brainstorm channel execution failed")

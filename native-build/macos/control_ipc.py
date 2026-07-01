@@ -1,11 +1,21 @@
-"""Unix-socket control server for the standalone supervisor.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This replaces supervisord on macOS. The web UI's "save config -> restart workers"
-flow publishes to Redis; ``restart_listener`` (a supervised child) receives it and
-calls ``restart_manager``, which -- on macOS -- sends a single line of JSON
-(``{"action": ..., "services": [...]}``) to this socket instead of shelling out to
-``supervisorctl``. The supervisor applies the same start/stop/restart semantics to
-its managed processes.
+"""Unix-socket control IPC server for the macOS standalone build.
+
+Runs a small line-oriented server over a mode-0600 Unix domain socket so the
+menu-bar app and CLI can send control commands (start, stop, restart, status)
+to the running ``macos.supervisor``. The Windows sibling uses a TCP control
+server instead.
+
+Main Features:
+* Accepts JSON control requests on a private Unix socket in a daemon thread.
+* Dispatches each request to a supplied handler and returns its JSON reply.
 """
 
 import json
@@ -46,7 +56,9 @@ class ControlServer:
                     conn.settimeout(15)
                     data = conn.recv(4096).strip()
                     request = json.loads(data.decode("utf-8"))
-                    ok = bool(self._dispatch(request.get("action", ""), request.get("services", [])))
+                    ok = bool(
+                        self._dispatch(request.get("action", ""), request.get("services", []))
+                    )
                     conn.sendall(b"ok" if ok else b"error")
                 except Exception:
                     logger.exception("Control request failed")

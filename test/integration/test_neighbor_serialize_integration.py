@@ -1,21 +1,22 @@
-"""Real-Postgres integration test for the shared similarity-response serializer.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Proves serialize_neighbor_results (app_helper.py, PR.md theme #8) preserves the
-missing_album sentinel contract when the details_map comes from REAL SQL rather
-than a hand-built dict. The serializer fetches details through
-database.get_score_data_by_ids -> get_db(); we monkeypatch get_db to a live
-psycopg2 connection so the production SELECT (... FROM score WHERE item_id IN %s)
-runs against a real seeded ``score`` table holding NULL and empty-string albums.
+"""Neighbor-serialization tests against a real Postgres database.
 
-Database selection mirrors test_app_endpoints_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
+Seeds the score table and runs app_helper.serialize_neighbor_results over
+real rows to confirm field mapping, missing-album handling, and injection
+safety through the actual SELECT path.
 
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_neighbor_serialize_integration.py -m integration -s -v --tb=short
+Main Features:
+* Missing-album sentinel vs None handling and title/author from rows.
+* Unknown ids skipped, album-artist flag, and injection-style id safety.
 """
+
 import os
 import sys
 import tempfile
@@ -77,7 +78,6 @@ def serialize_db(pg_dsn):
         cur.execute("DROP TABLE IF EXISTS score CASCADE")
         cur.execute(_SCORE_DDL)
         rows = [
-            # item_id, title, author, album, album_artist, mood_vector
             ('null-album', 'No Album Track', 'Artist A', None, 'AA', 'rock:0.9'),
             ('empty-album', 'Empty Album Track', 'Artist B', '', 'BB', 'pop:0.8'),
             ('normal-1', 'Real Title One', 'Real Author One', 'Real Album One', 'RA1', 'jazz:0.7'),
@@ -94,8 +94,8 @@ def serialize_db(pg_dsn):
 
 
 def _bind_real_db(monkeypatch, conn):
-    """Make get_score_data_by_ids run its REAL SELECT against ``conn``."""
     import database
+
     monkeypatch.setattr(database, 'get_db', lambda: conn)
 
 
@@ -119,6 +119,7 @@ def _score_count(conn):
 class TestSerializeNeighborResultsRealDb:
     def test_missing_album_sentinel_substitutes_null_and_empty(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'null-album', 'distance': 0.10},
@@ -132,6 +133,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_missing_album_none_preserves_raw_album(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'null-album', 'distance': 0.10},
@@ -145,6 +147,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_title_author_come_from_real_rows(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'normal-1', 'distance': 0.30},
@@ -160,6 +163,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_unknown_id_absent_from_db_is_skipped(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [
             {'item_id': 'normal-1', 'distance': 0.30},
@@ -173,6 +177,7 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_include_album_artist_flag_omits_field(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         neighbors = [{'item_id': 'normal-1', 'distance': 0.30}]
         out = app_helper.serialize_neighbor_results(neighbors, include_album_artist=False)
@@ -181,14 +186,13 @@ class TestSerializeNeighborResultsRealDb:
 
     def test_injection_style_id_through_real_select_is_safe(self, serialize_db, monkeypatch):
         import app_helper
+
         _bind_real_db(monkeypatch, serialize_db)
         before = _score_count(serialize_db)
         neighbors = [
             {'item_id': _INJECTION_ID, 'distance': 0.50},
             {'item_id': 'normal-1', 'distance': 0.30},
         ]
-        # The real parameterized SELECT must treat the metacharacter id as a
-        # plain (non-matching) literal: no SQL error, table untouched.
         out = app_helper.serialize_neighbor_results(neighbors)
         ids = {row['item_id'] for row in out}
         assert _INJECTION_ID not in ids

@@ -1,21 +1,23 @@
-"""MCP tool definitions and dispatcher.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module owns:
-* ``get_mcp_tools()`` -- canonical MCP tool definitions (JSON Schema) used by
-  every AI provider when calling with tools.
-* ``execute_mcp_tool(...)`` -- dispatcher that runs the actual tool body
-  (delegating to the ``_*_sync`` helpers in ``tasks.ai.tool_impl``).
+"""MCP tool schemas and dispatch for the playlist AI.
 
-Surface: 4 LLM-facing tools that collapse the previous 7 into shapes a small
-self-hosted model (qwen2.5:7b-9b on Ollama) can pick reliably:
+Defines the tool surface the LLM sees (seed_search, text_match,
+knowledge_lookup, search_database) via get_mcp_tools, and dispatches each
+emitted call to the grounded implementations in ``tool_impl``. Sits between
+``planner`` (which builds the plan) and the real library queries.
 
-* ``seed_search``     -- replaces song_similarity / artist_similarity / song_alchemy
-* ``text_match``      -- replaces text_search / lyrics_search
-* ``knowledge_lookup`` -- renamed ai_brainstorm
-* ``search_database`` -- unchanged metadata filter
-
-This module is purely MCP plumbing -- no DB queries, no AI calls.
+Main Features:
+* get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled and pulling genre/mood enums from config.
+* execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
 """
+
 import logging
 import re
 from typing import Dict, List, Optional
@@ -121,8 +123,9 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
             "message": "seed_search(union) found no songs across seeds\n" + "\n".join(messages),
         }
     return {
-        "songs": all_songs[:get_songs * len(seeds)],
-        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n" + "\n".join(messages),
+        "songs": all_songs[: get_songs * len(seeds)],
+        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n"
+        + "\n".join(messages),
     }
 
 
@@ -155,7 +158,6 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
-    """Execute an MCP tool. Returns the tool's result dict."""
     try:
         if tool_name == "seed_search":
             return _dispatch_seed_search(tool_args, ai_config)
@@ -174,14 +176,10 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             e_max = tool_args.get("energy_max")
             if e_min is not None:
                 e_min = float(e_min)
-                energy_min_raw = config.ENERGY_MIN + e_min * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
+                energy_min_raw = config.ENERGY_MIN + e_min * (config.ENERGY_MAX - config.ENERGY_MIN)
             if e_max is not None:
                 e_max = float(e_max)
-                energy_max_raw = config.ENERGY_MIN + e_max * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
+                energy_max_raw = config.ENERGY_MIN + e_max * (config.ENERGY_MAX - config.ENERGY_MIN)
 
             return _database_genre_query_sync(
                 tool_args.get("genres"),
@@ -213,7 +211,6 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def get_mcp_tools() -> List[Dict]:
-    """Return the LLM-facing tool list. Gated by CLAP_ENABLED / LYRICS_ENABLED."""
     from config import CLAP_ENABLED, LYRICS_ENABLED
 
     text_match_modes = ["audio"] if CLAP_ENABLED else []
@@ -242,9 +239,18 @@ def get_mcp_tools() -> List[Dict]:
                             "type": "object",
                             "properties": {
                                 "type": {"type": "string", "enum": ["song", "artist"]},
-                                "title": {"type": "string", "description": "Song title (when type='song')"},
-                                "artist": {"type": "string", "description": "Artist name (when type='song')"},
-                                "name": {"type": "string", "description": "Artist name (when type='artist')"},
+                                "title": {
+                                    "type": "string",
+                                    "description": "Song title (when type='song')",
+                                },
+                                "artist": {
+                                    "type": "string",
+                                    "description": "Artist name (when type='song')",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Artist name (when type='artist')",
+                                },
                             },
                             "required": ["type"],
                         },
@@ -279,9 +285,13 @@ def get_mcp_tools() -> List[Dict]:
     if text_match_modes:
         mode_desc_parts = []
         if "audio" in text_match_modes:
-            mode_desc_parts.append("'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental').")
+            mode_desc_parts.append(
+                "'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental')."
+            )
         if "lyrics" in text_match_modes:
-            mode_desc_parts.append("'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom').")
+            mode_desc_parts.append(
+                "'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom')."
+            )
         mode_desc = ". ".join(mode_desc_parts)
 
         tools.append(
@@ -388,15 +398,33 @@ def get_mcp_tools() -> List[Dict]:
                     },
                     "tempo_min": {"type": "number", "description": "Min BPM (40-200)"},
                     "tempo_max": {"type": "number", "description": "Max BPM (40-200)"},
-                    "energy_min": {"type": "number", "description": "Min energy 0.0 (calm) to 1.0 (intense)"},
-                    "energy_max": {"type": "number", "description": "Max energy 0.0 (calm) to 1.0 (intense)"},
-                    "key": {"type": "string", "description": "Musical key (C, D, E, F, G, A, B with # or b)"},
+                    "energy_min": {
+                        "type": "number",
+                        "description": "Min energy 0.0 (calm) to 1.0 (intense)",
+                    },
+                    "energy_max": {
+                        "type": "number",
+                        "description": "Max energy 0.0 (calm) to 1.0 (intense)",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Musical key (C, D, E, F, G, A, B with # or b)",
+                    },
                     "scale": {"type": "string", "enum": ["major", "minor"]},
-                    "year_min": {"type": "integer", "description": "Earliest release year (e.g. 1990)"},
-                    "year_max": {"type": "integer", "description": "Latest release year (e.g. 1999)"},
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Earliest release year (e.g. 1990)",
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Latest release year (e.g. 1999)",
+                    },
                     "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
                     "album": {"type": "string", "description": "Album name to filter by"},
-                    "artist": {"type": "string", "description": "Single artist name (use seed_search for multiple)"},
+                    "artist": {
+                        "type": "string",
+                        "description": "Single artist name (use seed_search for multiple)",
+                    },
                     "instrumental": {
                         "type": "boolean",
                         "description": "true = only instrumental tracks. false = only tracks with vocals.",

@@ -1,18 +1,23 @@
-"""Fuzzy vocabulary normalization for AI-emitted filter values.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-The AI router emits free-text mood/genre/scale/tempo/energy phrases. This
-module maps them to the canonical labels stored in ``score.mood_vector`` and
-``score.other_features``. Two columns matter:
+"""Fuzzy vocabulary normalizer for AI-emitted filter labels.
 
-  * ``score.mood_vector``    -> top-5 entries from ``config.MOOD_LABELS``
-    with score > 0.5 (genre + vocal + era + descriptor tags).
-  * ``score.other_features`` -> all 6 ``config.OTHER_FEATURE_LABELS`` with
-    their CLAP cosine scores; > 0.5 means the label is "active".
+Maps free-form genre/mood/voice/scale/tempo/energy terms from the LLM onto
+the fixed catalog vocab in config, so ``planner`` can build a filter the
+database understands. Combines curated alias tables, rapidfuzz matching, and
+an optional WordNet synonym fallback.
 
-Some labels live in BOTH columns (``happy``, ``sad``, ``party``); the
-normalizer returns the column-classified hits so the SQL layer can query
-the right column(s).
+Main Features:
+* Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges.
+* Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
 """
+
 import functools
 import re
 from typing import List, Optional, Tuple
@@ -23,25 +28,66 @@ import config
 
 
 _MOOD_VOCAB_FROM_MOODVECTOR_RAW = [
-    'female vocalists', 'female vocalist', 'male vocalists',
-    '60s', '70s', '80s', '90s', '00s',
-    'beautiful', 'chillout', 'chill', 'Mellow', 'sexy', 'catchy',
-    'oldies', 'easy listening', 'instrumental', 'guitar',
-    'sad', 'happy', 'party',
+    'female vocalists',
+    'female vocalist',
+    'male vocalists',
+    '60s',
+    '70s',
+    '80s',
+    '90s',
+    '00s',
+    'beautiful',
+    'chillout',
+    'chill',
+    'Mellow',
+    'sexy',
+    'catchy',
+    'oldies',
+    'easy listening',
+    'instrumental',
+    'guitar',
+    'sad',
+    'happy',
+    'party',
 ]
 MOOD_VOCAB_FROM_MOODVECTOR = [m for m in _MOOD_VOCAB_FROM_MOODVECTOR_RAW if m in config.MOOD_LABELS]
 
 OTHER_FEATURE_VOCAB = list(config.OTHER_FEATURE_LABELS)
 
 _GENRE_FROM_MOODS_RAW = [
-    'rock', 'pop', 'alternative', 'indie', 'electronic', 'dance',
-    'alternative rock', 'jazz', 'metal', 'classic rock', 'soul',
-    'indie rock', 'electronica', 'folk', 'punk', 'blues',
-    'hard rock', 'ambient', 'acoustic', 'experimental',
-    'Hip-Hop', 'country', 'funk', 'electro', 'heavy metal',
-    'Progressive rock', 'rnb', 'indie pop', 'House',
+    'rock',
+    'pop',
+    'alternative',
+    'indie',
+    'electronic',
+    'dance',
+    'alternative rock',
+    'jazz',
+    'metal',
+    'classic rock',
+    'soul',
+    'indie rock',
+    'electronica',
+    'folk',
+    'punk',
+    'blues',
+    'hard rock',
+    'ambient',
+    'acoustic',
+    'experimental',
+    'Hip-Hop',
+    'country',
+    'funk',
+    'electro',
+    'heavy metal',
+    'Progressive rock',
+    'rnb',
+    'indie pop',
+    'House',
 ]
-_GENRE_VOCAB_SET = set(config.STRATIFIED_GENRES) | {g for g in _GENRE_FROM_MOODS_RAW if g in config.MOOD_LABELS}
+_GENRE_VOCAB_SET = set(config.STRATIFIED_GENRES) | {
+    g for g in _GENRE_FROM_MOODS_RAW if g in config.MOOD_LABELS
+}
 GENRE_VOCAB = sorted(_GENRE_VOCAB_SET, key=lambda s: s.lower())
 
 
@@ -200,7 +246,9 @@ _FUZZY_REMAP_MIN_LEN = 4
 
 _GENDER_FEMALE_RE = re.compile(r'\b(female|woman|women|girl|girls|lady|ladies)\b')
 _GENDER_MALE_RE = re.compile(r'\b(male|man|men|boy|boys|gentleman|gentlemen)\b')
-_VOCAL_HINT_RE = re.compile(r'\b(singer|singers|vocalist|vocalists|vocaliser|vocalizer|voice|voices|vocal|vocals)\b')
+_VOCAL_HINT_RE = re.compile(
+    r'\b(singer|singers|vocalist|vocalists|vocaliser|vocalizer|voice|voices|vocal|vocals)\b'
+)
 
 
 def _wn_lemmas(synset) -> List[str]:
@@ -208,7 +256,7 @@ def _wn_lemmas(synset) -> List[str]:
         lems = synset.lemmas() or []
     except Exception:
         return []
-    return [l for l in lems if isinstance(l, str)]
+    return [lem for lem in lems if isinstance(lem, str)]
 
 
 def _wn_related(synset) -> List:
@@ -236,27 +284,11 @@ def _wn_definition(synset) -> str:
 
 @functools.lru_cache(maxsize=512)
 def _wordnet_synonyms(value: str) -> Tuple[str, ...]:
-    """Return WordNet-derived candidate phrases for `value`.
-
-    Combines four sources so we don't need to hand-list every synonym in
-    ALIAS_MOOD:
-      1. Direct synset lemmas (true synonyms in the same synset).
-      2. Hypernym lemmas -- broader categories. Essential for terms like
-         'soprano' whose IS-A chain reaches 'singer' / 'vocalist'.
-      3. 'similar' / 'also' lemmas -- adjective synonyms (joyful -> happy).
-      4. Gendered composite phrases synthesised from the synset definition:
-         when the gloss contains 'female'/'woman'/'girl' (or the male
-         equivalents) and any nearby lemma is a vocal term, we emit
-         'female singer', 'female vocalist', 'female voice' (or 'male ...').
-         These then match existing ALIAS_MOOD entries.
-
-    Lazy-imports `wn`; returns empty tuple on any error (missing install,
-    missing corpus, weird input). Caller never sees an exception.
-    """
     if not value or not isinstance(value, str):
         return ()
     try:
         import wn
+
         synsets = wn.synsets(value.strip(), lang='en')
     except Exception:
         return ()
@@ -329,12 +361,16 @@ def normalize_mood(value: str, notes: Optional[List[str]] = None) -> Tuple[List[
 
     candidates = list(_MOOD_VOCAB_LOWER.keys()) + list(_OTHER_FEATURE_VOCAB_LOWER.keys())
     if len(key) >= _FUZZY_REMAP_MIN_LEN:
-        hit = process.extractOne(key, candidates, scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF)
+        hit = process.extractOne(
+            key, candidates, scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF
+        )
         if hit:
             mv2, of2 = _classify_label(hit[0])
             if notes is not None and (mv2 or of2):
-                target = (mv2 or of2)
-                notes.append(f"vocab_normalizer remapped mood '{value}' -> {target} (fuzzy {int(hit[1])})")
+                target = mv2 or of2
+                notes.append(
+                    f"vocab_normalizer remapped mood '{value}' -> {target} (fuzzy {int(hit[1])})"
+                )
             return mv2, of2
 
     for syn in _wordnet_synonyms(key):
@@ -377,11 +413,18 @@ def normalize_genre(value: str, notes: Optional[List[str]] = None) -> Optional[s
         return _GENRE_VOCAB_LOWER[key]
 
     if len(key) >= _FUZZY_REMAP_MIN_LEN:
-        hit = process.extractOne(key, list(_GENRE_VOCAB_LOWER.keys()), scorer=fuzz.WRatio, score_cutoff=_FUZZY_REMAP_CUTOFF)
+        hit = process.extractOne(
+            key,
+            list(_GENRE_VOCAB_LOWER.keys()),
+            scorer=fuzz.WRatio,
+            score_cutoff=_FUZZY_REMAP_CUTOFF,
+        )
         if hit:
             mapped = _GENRE_VOCAB_LOWER[hit[0]]
             if notes is not None:
-                notes.append(f"vocab_normalizer remapped genre '{value}' -> '{mapped}' (fuzzy {int(hit[1])})")
+                notes.append(
+                    f"vocab_normalizer remapped genre '{value}' -> '{mapped}' (fuzzy {int(hit[1])})"
+                )
             return mapped
     return None
 
@@ -412,10 +455,17 @@ _VOICE_LABELS_SET = {'female vocalists', 'female vocalist', 'male vocalists'}
 
 def normalize_mood_list(values) -> dict:
     if not values:
-        return {'mood_vector': [], 'voices': [], 'other_features': [],
-                'energy_min': None, 'energy_max': None,
-                'tempo_min': None, 'tempo_max': None,
-                'dropped': [], 'notes': []}
+        return {
+            'mood_vector': [],
+            'voices': [],
+            'other_features': [],
+            'energy_min': None,
+            'energy_max': None,
+            'tempo_min': None,
+            'tempo_max': None,
+            'dropped': [],
+            'notes': [],
+        }
     mv_all: List[str] = []
     voices_all: List[str] = []
     of_all: List[str] = []

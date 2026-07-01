@@ -217,13 +217,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     restoreStatus.style.color = 'var(--color-success, green)';
                     let countdown = 60;
                     restoreStatus.textContent =
-                        'All chunks uploaded. Database restore started. Restarting application — '
+                        'All chunks uploaded. Database restore started. Restarting application - '
                         + 'redirecting in ' + countdown + ' seconds…';
                     const countdownInterval = setInterval(() => {
                         countdown -= 1;
                         if (countdown > 0) {
                             restoreStatus.textContent =
-                                'All chunks uploaded. Database restore started. Restarting application — '
+                                'All chunks uploaded. Database restore started. Restarting application - '
                                 + 'redirecting in ' + countdown + ' seconds…';
                         } else {
                             clearInterval(countdownInterval);

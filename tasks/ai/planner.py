@@ -1,29 +1,23 @@
-"""Chat-pipeline orchestration: pre-extract, classifier, validation, plan execution.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Single home for everything that turns a user's natural-language request into
-executed tool calls. Replaces the old split across ``tool_plan.py`` +
-``tool_planner.py`` + ``intent_classifier.py`` + ``intent_preextract.py``.
+"""Two-stage plan builder and executor for AI playlist requests.
 
-Public surface (call sites elsewhere import from here):
+Orchestrates the AI pipeline between ``api``/``prompts`` (LLM calls),
+``vocab`` (label normalization), and ``tools`` (execution): it classifies
+intent, narrows the tool surface, validates and merges the emitted tool
+calls into a normalized plan, runs it, and composes the resulting songs.
 
-    Pre-extract:
-        extract_hints(text)            -> dict
-        format_hints_block(hints)      -> str
-
-    Plan model + validation:
-        ToolPlan                       (dataclass)
-        validate_plan_args(...)        pre-execution sanity checks
-        validate_and_normalize_plan(...) raw tool_calls -> ToolPlan
-        plan_from_tool_calls(...)      thin alias
-
-    Intent classifier (stage 1):
-        classify(user_message, ai_config, log_messages=None) -> Optional[dict]
-        tools_for_intent(primaries, needs_filter, all_tools)  -> filtered tool list
-
-    Orchestrators:
-        call_ai_for_plan(...)          one transport call, returns raw tool_calls
-        plan_and_execute_once(...)     two-stage classifier + execute pipeline
+Main Features:
+* Regex pre-extraction of years/decades/BPM/tempo/energy hints plus soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) - never a hard cut.
+* knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short.
 """
+
 import json
 import logging
 import re
@@ -55,15 +49,8 @@ FILTER_NAME = 'search_database'
 RELAX_THRESHOLD_STEPS = (0.5, 0.4, 0.3, 0.2)
 SCORED_FILTER_KEYS = ('genres', 'voices', 'moods', 'other_features')
 
-# Presence/identity dims the user names explicitly. In the composition re-rank
-# these act as a priority tier (songs that HAVE them rank above songs that
-# don't); the continuous dims only order songs within each tier. Everything else
-# requested (moods, energy, tempo, year, min_rating, key) is a gradient.
 CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album')
 
-# text_match carries coarse audio buckets; map them to the same filter dims the
-# soft re-rank scores, so a text_match's tempo/energy goes through the ONE
-# central re-rank (energy normalized 0..1; tempo in BPM).
 _ENERGY_BUCKET_RANGE = {'low': (0.0, 0.33), 'medium': (0.33, 0.66), 'high': (0.66, 1.0)}
 _TEMPO_BUCKET_RANGE = {'slow': (None, 90), 'medium': (90, 140), 'fast': (140, None)}
 
@@ -72,14 +59,31 @@ COMPOSITION_POOL_TARGET = 10000
 YEAR_DECAY_SPAN = 30.0
 
 _KEY_PC = {
-    'C': 0, 'B#': 0, 'C#': 1, 'DB': 1, 'D': 2, 'D#': 3, 'EB': 3,
-    'E': 4, 'FB': 4, 'F': 5, 'E#': 5, 'F#': 6, 'GB': 6, 'G': 7,
-    'G#': 8, 'AB': 8, 'A': 9, 'A#': 10, 'BB': 10, 'B': 11, 'CB': 11,
+    'C': 0,
+    'B#': 0,
+    'C#': 1,
+    'DB': 1,
+    'D': 2,
+    'D#': 3,
+    'EB': 3,
+    'E': 4,
+    'FB': 4,
+    'F': 5,
+    'E#': 5,
+    'F#': 6,
+    'GB': 6,
+    'G': 7,
+    'G#': 8,
+    'AB': 8,
+    'A': 9,
+    'A#': 10,
+    'BB': 10,
+    'B': 11,
+    'CB': 11,
 }
 
 
 def _key_pitch_class(k) -> Optional[int]:
-    """Map a key label ('C', 'F# minor', 'Bb') to a 0..11 pitch class, or None."""
     if not k:
         return None
     s = str(k).strip().upper().replace('♯', '#').replace('♭', 'B')
@@ -91,13 +95,6 @@ def _key_pitch_class(k) -> Optional[int]:
 
 
 def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
-    """Continuous 0..1 fit of a normalized value against a requested [lo,hi] band.
-
-    All args are in [0,1]. Directional so that 'high X' (band open at the top)
-    rewards higher values, 'low X' (band open at the bottom) rewards lower
-    values, and a bounded band rewards proximity to its centre. Always
-    differentiates, so songs never tie on a continuous feature.
-    """
     v = max(0.0, min(1.0, v_norm))
     prefer_high = req_hi >= 0.99 and req_lo > 0.01
     prefer_low = req_lo <= 0.01 and req_hi < 0.99
@@ -111,7 +108,6 @@ def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
 
 
 def _parse_tag_scores(raw: str) -> Dict[str, float]:
-    """Parse a 'label:score,label:score' column into {label_lower: float}."""
     out: Dict[str, float] = {}
     if not raw or not isinstance(raw, str):
         return out
@@ -130,15 +126,6 @@ def _parse_tag_scores(raw: str) -> Dict[str, float]:
 
 
 def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
-    """Raw 0..1 per-dimension match scores for one song (only requested dims).
-
-    Routing follows the data model: genres/voices -> mood_vector;
-    moods/other_features -> other_features; energy/tempo -> directional
-    gradient; year -> distance-decay; rating -> /5; key -> chromatic distance;
-    scale/artist/album -> identity. Keyed by dimension name so the caller can
-    min-max normalize each dimension across the pool before blending (otherwise
-    a wide-range dim like energy drowns a narrow one like a mood confidence).
-    """
     out: Dict[str, float] = {}
     if not filt or not feats:
         return out
@@ -184,9 +171,19 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
             t_lo, t_hi = config.TEMPO_MIN_BPM, config.TEMPO_MAX_BPM
             span = (t_hi - t_lo) or 1.0
             v_norm = (float(tempo) - t_lo) / span
-            req_lo = ((float(filt['tempo_min']) - t_lo) / span) if filt.get('tempo_min') is not None else 0.0
-            req_hi = ((float(filt['tempo_max']) - t_lo) / span) if filt.get('tempo_max') is not None else 1.0
-            out['tempo'] = _range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi)))
+            req_lo = (
+                ((float(filt['tempo_min']) - t_lo) / span)
+                if filt.get('tempo_min') is not None
+                else 0.0
+            )
+            req_hi = (
+                ((float(filt['tempo_max']) - t_lo) / span)
+                if filt.get('tempo_max') is not None
+                else 1.0
+            )
+            out['tempo'] = _range_pref_score(
+                v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))
+            )
 
     if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
         energy = feats.get('energy')
@@ -197,7 +194,9 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
             v_norm = (float(energy) - config.ENERGY_MIN) / span
             req_lo = float(filt['energy_min']) if filt.get('energy_min') is not None else 0.0
             req_hi = float(filt['energy_max']) if filt.get('energy_max') is not None else 1.0
-            out['energy'] = _range_pref_score(v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi)))
+            out['energy'] = _range_pref_score(
+                v_norm, max(0.0, min(1.0, req_lo)), max(0.0, min(1.0, req_hi))
+            )
 
     if filt.get('scale'):
         s = (feats.get('scale') or '').strip().lower()
@@ -230,12 +229,6 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
 
 
 def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]):
-    """Per-dimension truthful stats for the composition re-rank log.
-
-    Returns (human_lines, machine_dict). Tag dims report how many pool songs
-    carry the requested label(s) and the score range, noting dense
-    (other_features, every song 0..1) vs sparse (mood_vector top-5, absence=0).
-    """
     items = [feats_map.get(s.get('item_id'), {}) for s in pool_songs]
     n = len(items) or 1
     lines: List[str] = []
@@ -256,28 +249,42 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
 
     if filt.get('genres'):
         nz, lo, hi = _tag_stats(filt['genres'], 'mood_vector')
-        lines.append(f"   genres {filt['genres']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})")
+        lines.append(
+            f"   genres {filt['genres']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})"
+        )
         machine['genres'] = (nz, round(lo, 2), round(hi, 2))
     if filt.get('voices'):
         nz, lo, hi = _tag_stats(filt['voices'], 'mood_vector')
-        lines.append(f"   voices {filt['voices']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})")
+        lines.append(
+            f"   voices {filt['voices']} -> mood_vector (top-5, sparse): {nz}/{n} carry it, rest scored 0 (range {lo:.2f}..{hi:.2f})"
+        )
         machine['voices'] = (nz, round(lo, 2), round(hi, 2))
     if filt.get('moods'):
         nz, lo, hi = _tag_stats(filt['moods'], 'other_features')
-        lines.append(f"   moods {filt['moods']} -> other_features (dense, every song 0..1): range {lo:.2f}..{hi:.2f}")
+        lines.append(
+            f"   moods {filt['moods']} -> other_features (dense, every song 0..1): range {lo:.2f}..{hi:.2f}"
+        )
         machine['moods'] = (nz, round(lo, 2), round(hi, 2))
     if filt.get('other_features'):
         nz, lo, hi = _tag_stats(filt['other_features'], 'other_features')
-        lines.append(f"   other_features {filt['other_features']} -> other_features (dense): range {lo:.2f}..{hi:.2f}")
+        lines.append(
+            f"   other_features {filt['other_features']} -> other_features (dense): range {lo:.2f}..{hi:.2f}"
+        )
         machine['other_features'] = (nz, round(lo, 2), round(hi, 2))
     if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
-        lines.append(f"   energy {filt.get('energy_min', '?')}..{filt.get('energy_max', '?')} -> continuous gradient")
+        lines.append(
+            f"   energy {filt.get('energy_min', '?')}..{filt.get('energy_max', '?')} -> continuous gradient"
+        )
         machine['energy'] = (filt.get('energy_min'), filt.get('energy_max'))
     if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
-        lines.append(f"   tempo {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> continuous gradient")
+        lines.append(
+            f"   tempo {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> continuous gradient"
+        )
         machine['tempo'] = (filt.get('tempo_min'), filt.get('tempo_max'))
     if filt.get('year_min') is not None or filt.get('year_max') is not None:
-        lines.append(f"   year {filt.get('year_min', '?')}..{filt.get('year_max', '?')} -> proximity gradient")
+        lines.append(
+            f"   year {filt.get('year_min', '?')}..{filt.get('year_max', '?')} -> proximity gradient"
+        )
         machine['year'] = (filt.get('year_min'), filt.get('year_max'))
     if filt.get('min_rating') is not None:
         lines.append(f"   min_rating {filt['min_rating']} -> rating/5 gradient")
@@ -298,15 +305,6 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
 
 
 def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: List[str]):
-    """The ONE soft re-rank shared by every primary tool (seed_search, text_match).
-
-    Scores each pool song across ALL requested filter dimensions (genres, voices,
-    moods, energy, tempo, year, rating, scale, key, artist, album) via
-    ``_filter_dim_scores``, per-pool min-max normalizes each dim, then sorts:
-    songs matching a requested CATEGORICAL dim float to the top, continuous dims
-    order within. NEVER removes a song -- it only reorders. Returns
-    ``(ordered_songs, matched_count, moved_count)``.
-    """
     N = len(pool_songs)
     clean_filter = {k: v for k, v in filt.items() if k not in ('candidate_item_ids', 'get_songs')}
 
@@ -342,16 +340,19 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
 
     if dim_keys:
         norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
-        log_messages.append(f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}")
+        log_messages.append(
+            f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}"
+        )
 
     if cat_keys:
-        # Tiered: songs matching the requested categorical(s) rank above those
-        # that don't; the continuous dims (and categorical confidence) only
-        # order songs WITHIN each tier. Soft -- non-matching songs backfill.
         matched = sum(1 for d in raw_dims if _cat_count(d) > 0)
         order = sorted(
             range(N),
-            key=lambda i: (_cat_count(raw_dims[i]), _cont_score(raw_dims[i]), _cat_conf(raw_dims[i])),
+            key=lambda i: (
+                _cat_count(raw_dims[i]),
+                _cont_score(raw_dims[i]),
+                _cat_conf(raw_dims[i]),
+            ),
             reverse=True,
         )
         final = [pool_songs[i] for i in order]
@@ -360,8 +361,7 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
         cont_label = ", ".join(cont_keys) if cont_keys else "similarity"
         if matched == 0:
             log_messages.append(
-                f"   re-rank: 0/{N} match the requested {cat_label}; "
-                f"all ordered by {cont_label}"
+                f"   re-rank: 0/{N} match the requested {cat_label}; all ordered by {cont_label}"
             )
         else:
             log_messages.append(
@@ -369,20 +369,23 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
                 f"remaining ordered by {cont_label} (categorical priority, then gradient)"
             )
     else:
-        # Continuous-only: blend the normalized gradient dims.
         matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
         fscores = [_cont_score(d) for d in raw_dims]
         if matched == 0:
             final = list(pool_songs)
             order = list(range(N))
             moved = 0
-            log_messages.append(f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)")
+            log_messages.append(
+                f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)"
+            )
         else:
             order = sorted(range(N), key=lambda i: fscores[i], reverse=True)
             final = [pool_songs[i] for i in order]
             moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
             if moved == 0:
-                log_messages.append(f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position")
+                log_messages.append(
+                    f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position"
+                )
             else:
                 log_messages.append(
                     f"   re-rank: {matched}/{N} matched the filter and rose to the top; "
@@ -392,7 +395,10 @@ def _rerank_pool(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: 
 
     logger.info(
         "soft re-rank: pool=%d matched=%d moved=%d filter=%s dim_range=%s",
-        N, matched, moved, clean_filter,
+        N,
+        matched,
+        moved,
+        clean_filter,
         {k: (round(dim_min[k], 2), round(dim_max[k], 2)) for k in dim_keys},
     )
     return final, matched, moved
@@ -402,9 +408,7 @@ FILTER_LIST_KEYS = ('genres', 'voices', 'moods', 'other_features')
 FILTER_MIN_KEYS = ('tempo_min', 'energy_min', 'year_min', 'min_rating')
 FILTER_MAX_KEYS = ('tempo_max', 'energy_max', 'year_max')
 FILTER_SCALAR_KEYS = ('key', 'scale', 'album', 'artist', 'instrumental')
-FILTER_ALL_KEYS = (
-    FILTER_LIST_KEYS + FILTER_MIN_KEYS + FILTER_MAX_KEYS + FILTER_SCALAR_KEYS
-)
+FILTER_ALL_KEYS = FILTER_LIST_KEYS + FILTER_MIN_KEYS + FILTER_MAX_KEYS + FILTER_SCALAR_KEYS
 
 
 @dataclass
@@ -435,11 +439,6 @@ def _normalize_decade(prefix: str) -> int:
 
 
 def extract_hints(text: str) -> Dict:
-    """Return a dict of deterministically-extracted hints from raw user input.
-
-    Keys (only present when the corresponding pattern matched):
-        years, year_min, year_max, bpm, tempo_min/tempo_max, energy_min/energy_max, notes.
-    """
     if not text or not isinstance(text, str):
         return {}
 
@@ -469,15 +468,23 @@ def extract_hints(text: str) -> Dict:
     low = text.lower()
     for phrase, (tmin, tmax) in ALIAS_TEMPO.items():
         if re.search(rf"\b{re.escape(phrase)}\b", low):
-            hints['tempo_min'] = tmin if hints.get('tempo_min') is None else min(hints['tempo_min'], tmin)
-            hints['tempo_max'] = tmax if hints.get('tempo_max') is None else max(hints['tempo_max'], tmax)
+            hints['tempo_min'] = (
+                tmin if hints.get('tempo_min') is None else min(hints['tempo_min'], tmin)
+            )
+            hints['tempo_max'] = (
+                tmax if hints.get('tempo_max') is None else max(hints['tempo_max'], tmax)
+            )
             notes.append(f"tempo phrase '{phrase}' -> {tmin}-{tmax} BPM")
             break
 
     for phrase, (emin, emax) in ALIAS_ENERGY.items():
         if re.search(rf"\b{re.escape(phrase)}\b", low):
-            hints['energy_min'] = emin if hints.get('energy_min') is None else min(hints['energy_min'], emin)
-            hints['energy_max'] = emax if hints.get('energy_max') is None else max(hints['energy_max'], emax)
+            hints['energy_min'] = (
+                emin if hints.get('energy_min') is None else min(hints['energy_min'], emin)
+            )
+            hints['energy_max'] = (
+                emax if hints.get('energy_max') is None else max(hints['energy_max'], emax)
+            )
             notes.append(f"energy phrase '{phrase}' -> {emin}-{emax}")
             break
 
@@ -486,12 +493,13 @@ def extract_hints(text: str) -> Dict:
         try:
             v = float(energy_num.group(1))
             if 0.0 <= v <= 1.0:
-                hints['energy_min'] = v if hints.get('energy_min') is None else min(hints['energy_min'], v)
+                hints['energy_min'] = (
+                    v if hints.get('energy_min') is None else min(hints['energy_min'], v)
+                )
                 notes.append(f"explicit energy floor: {v}")
         except ValueError:
             pass
 
-    # Instrumental detection: keyword-based, same pattern as tempo/energy above.
     if _INSTRUMENTAL_RE.search(text):
         hints['instrumental'] = True
         notes.append("instrumental requested")
@@ -502,29 +510,25 @@ def extract_hints(text: str) -> Dict:
 
 
 def format_hints_block(hints: Optional[Dict]) -> str:
-    """Render hints as a compact prompt block. Empty string if no hints."""
     if not hints:
         return ""
     lines: List[str] = []
     if hints.get('year_min') is not None or hints.get('year_max') is not None:
-        lines.append(
-            f"  year: {hints.get('year_min', '?')}..{hints.get('year_max', '?')}"
-        )
+        lines.append(f"  year: {hints.get('year_min', '?')}..{hints.get('year_max', '?')}")
     if hints.get('bpm') is not None:
         lines.append(f"  bpm: {hints['bpm']}")
     if hints.get('tempo_min') is not None or hints.get('tempo_max') is not None:
-        lines.append(
-            f"  tempo: {hints.get('tempo_min', '?')}..{hints.get('tempo_max', '?')}"
-        )
+        lines.append(f"  tempo: {hints.get('tempo_min', '?')}..{hints.get('tempo_max', '?')}")
     if hints.get('energy_min') is not None or hints.get('energy_max') is not None:
-        lines.append(
-            f"  energy: {hints.get('energy_min', '?')}..{hints.get('energy_max', '?')}"
-        )
+        lines.append(f"  energy: {hints.get('energy_min', '?')}..{hints.get('energy_max', '?')}")
     if hints.get('instrumental') is True:
         lines.append("  instrumental: true (use instrumental=true in search_database)")
     if not lines:
         return ""
-    return "EXTRACTED_HINTS (use these values directly in search_database if relevant):\n" + "\n".join(lines)
+    return (
+        "EXTRACTED_HINTS (use these values directly in search_database if relevant):\n"
+        + "\n".join(lines)
+    )
 
 
 def _has_filter_content(args: Dict) -> bool:
@@ -608,13 +612,29 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
         else:
             filt.pop('moods', None)
         if m['energy_min'] is not None:
-            filt['energy_min'] = m['energy_min'] if filt.get('energy_min') is None else min(filt['energy_min'], m['energy_min'])
+            filt['energy_min'] = (
+                m['energy_min']
+                if filt.get('energy_min') is None
+                else min(filt['energy_min'], m['energy_min'])
+            )
         if m['energy_max'] is not None:
-            filt['energy_max'] = m['energy_max'] if filt.get('energy_max') is None else max(filt['energy_max'], m['energy_max'])
+            filt['energy_max'] = (
+                m['energy_max']
+                if filt.get('energy_max') is None
+                else max(filt['energy_max'], m['energy_max'])
+            )
         if m['tempo_min'] is not None:
-            filt['tempo_min'] = m['tempo_min'] if filt.get('tempo_min') is None else min(filt['tempo_min'], m['tempo_min'])
+            filt['tempo_min'] = (
+                m['tempo_min']
+                if filt.get('tempo_min') is None
+                else min(filt['tempo_min'], m['tempo_min'])
+            )
         if m['tempo_max'] is not None:
-            filt['tempo_max'] = m['tempo_max'] if filt.get('tempo_max') is None else max(filt['tempo_max'], m['tempo_max'])
+            filt['tempo_max'] = (
+                m['tempo_max']
+                if filt.get('tempo_max') is None
+                else max(filt['tempo_max'], m['tempo_max'])
+            )
         for n in m.get('notes') or []:
             notes.append(n)
 
@@ -635,18 +655,6 @@ def validate_plan_args(
     user_wants_rating: bool,
     log_messages: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """Pre-execution validation + coercion on a raw tool_calls list.
-
-    Drops or coerces obviously-wrong calls before they reach the executor:
-    - seed_search with no usable seeds -> dropped
-    - seed_search blend_mode='alchemy' with <2 seeds -> coerced to 'union'
-    - seed_search blend_mode='subtract' with empty 'subtract' list -> dropped
-    - text_match with empty query -> dropped; unknown mode -> coerced to 'audio'
-    - knowledge_lookup with empty user_request -> dropped
-    - search_database with year <1900 -> stripped
-    - search_database with min_rating but user didn't mention ratings -> stripped
-    - search_database with no filters at all -> dropped
-    """
     if log_messages is None:
         log_messages = []
 
@@ -751,8 +759,12 @@ def validate_plan_args(
                 )
                 args.pop('min_rating', None)
 
-            if not _has_filter_content(args) and not args.get('min_rating') \
-                    and args.get('year_min') is None and args.get('year_max') is None:
+            if (
+                not _has_filter_content(args)
+                and not args.get('min_rating')
+                and args.get('year_min') is None
+                and args.get('year_max') is None
+            ):
                 log_messages.append(f"   skip {name}: no filters specified")
                 continue
 
@@ -828,12 +840,6 @@ def _coerce_needs_filter(value) -> bool:
 
 
 def _normalize_classifier_result(parsed: Optional[Dict]) -> Optional[Dict]:
-    """Normalize a stage-1 classifier response into {"primaries": [...], "needs_filter": bool}.
-
-    Accepts the current multi-primary shape and translates the legacy single-intent
-    shape ({"intent": ..., "needs_filter": ...}); returns None for unusable output so
-    the caller falls back to the full tool surface.
-    """
     if not isinstance(parsed, dict):
         return None
 
@@ -870,7 +876,6 @@ def classify(
     ai_config: Dict,
     log_messages: Optional[List[str]] = None,
 ) -> Optional[Dict]:
-    """Stage-1 classifier: returns {"primaries": [<class>...], "needs_filter": bool} or None on any failure."""
     if log_messages is None:
         log_messages = []
 
@@ -882,9 +887,7 @@ def classify(
 
     try:
         from tasks.ai.api import generate_text
-        # NOTE: do NOT pass a low max_tokens here. A reasoning model (e.g. qwen3.5
-        # on OpenRouter) spends tokens thinking first; a tight cap truncates it
-        # before the JSON answer -> empty -> retry loop. Keep the generous default.
+
         response = generate_text(prompt, ai_config, skip_delay=True, temperature=0.0)
     except Exception as e:
         logger.warning("intent_classifier transport error: %s", e)
@@ -892,13 +895,17 @@ def classify(
         return None
 
     if not isinstance(response, str) or response.startswith("Error"):
-        log_messages.append(f"intent_classifier: provider returned error ({response[:120] if response else 'empty'}), falling back to full tools")
+        log_messages.append(
+            f"intent_classifier: provider returned error ({response[:120] if response else 'empty'}), falling back to full tools"
+        )
         return None
 
     parsed = _extract_first_json_object(response)
     result = _normalize_classifier_result(parsed)
     if result is None:
-        log_messages.append(f"intent_classifier: could not parse a valid JSON intent from response: {response[:160]!r}")
+        log_messages.append(
+            f"intent_classifier: could not parse a valid JSON intent from response: {response[:160]!r}"
+        )
         return None
 
     log_messages.append(
@@ -908,11 +915,6 @@ def classify(
 
 
 def tools_for_intent(primaries: List[str], needs_filter: bool, all_tools: List[Dict]) -> List[Dict]:
-    """Filter the full tool list down to the subset the Stage-2 call should see.
-
-    Each primary intent maps to its tool; ``search_database`` is added when a
-    metadata filter is requested OR when there is no primary at all (pure filter).
-    """
     by_name = {t.get("name"): t for t in all_tools if isinstance(t, dict)}
 
     primary_map = {
@@ -926,8 +928,11 @@ def tools_for_intent(primaries: List[str], needs_filter: bool, all_tools: List[D
         tool_name = primary_map.get(p)
         if tool_name and tool_name in by_name and by_name[tool_name] not in chosen:
             chosen.append(by_name[tool_name])
-    if (needs_filter or not primaries) and "search_database" in by_name \
-            and by_name["search_database"] not in chosen:
+    if (
+        (needs_filter or not primaries)
+        and "search_database" in by_name
+        and by_name["search_database"] not in chosen
+    ):
         chosen.append(by_name["search_database"])
 
     return chosen if chosen else list(all_tools)
@@ -939,14 +944,6 @@ def _run_search_database_with_relax(
     target_count: int,
     log_messages: List[str],
 ) -> Dict:
-    """Run search_database, progressively relaxing the score threshold until target_count is met.
-
-    Loops ``RELAX_THRESHOLD_STEPS`` (0.5 -> 0.4 -> 0.3 -> 0.2). Returns the LAST
-    result that still meets target OR the last step's result (whichever is closer
-    to target). Only relaxes when the filter actually uses a scored column
-    (genres / voices / moods / other_features); otherwise runs once at the
-    default threshold.
-    """
     from tasks.ai.tools import execute_mcp_tool
 
     has_scored = any(filter_args.get(k) for k in SCORED_FILTER_KEYS)
@@ -961,13 +958,15 @@ def _run_search_database_with_relax(
         if 'error' in result:
             return result
         songs = result.get('songs', [])
-        log_messages.append(
-            f"   relax: score_threshold={step_threshold} -> {len(songs)} songs"
-        )
+        log_messages.append(f"   relax: score_threshold={step_threshold} -> {len(songs)} songs")
         last_result = result
         if len(songs) >= target_count:
             return result
-    return last_result if last_result is not None else {"songs": [], "message": "relax loop produced no result"}
+    return (
+        last_result
+        if last_result is not None
+        else {"songs": [], "message": "relax loop produced no result"}
+    )
 
 
 def call_ai_for_plan(
@@ -977,8 +976,8 @@ def call_ai_for_plan(
     log_messages: List[str],
     library_context: Optional[Dict] = None,
 ) -> Dict:
-    """Call the AI transport once and return the raw tool-calling result."""
     from tasks.ai.api import call_with_tools as _call_with_tools
+
     return _call_with_tools(
         user_message=user_message,
         tools=tools,
@@ -999,15 +998,6 @@ def plan_and_execute_once(
     collection_cap: int = 1000,
     target_song_count: int = 100,
 ):
-    """Two-stage orchestrator: classifier narrows tools -> single AI plan -> execute.
-
-    This is a GENERATOR: it appends progress to ``log_messages`` and ``yield``s a
-    bare tick after each blocking step (classify, plan, each tool call, the
-    re-rank) so the caller can flush new lines live. Its final ``return`` value is
-    ``{songs, song_sources, tools_used_history, tool_execution_summary,
-    detected_min_rating, plan_notes, executed_query_str, filter_applied}`` or
-    ``{"error": ...}`` (delivered via ``StopIteration.value`` -- use ``yield from``).
-    """
     from tasks.ai.tools import execute_mcp_tool
     from tasks.ai.tool_impl import _fetch_pool_features
 
@@ -1017,7 +1007,9 @@ def plan_and_execute_once(
 
     classification = classify(user_message, ai_config, log_messages=log_messages)
     if classification is not None:
-        narrowed = tools_for_intent(classification['primaries'], classification['needs_filter'], tools)
+        narrowed = tools_for_intent(
+            classification['primaries'], classification['needs_filter'], tools
+        )
         if narrowed and len(narrowed) < len(tools):
             kept = ", ".join(t.get('name', '') for t in narrowed)
             log_messages.append(f"   stage-2 tools narrowed to: {kept}")
@@ -1025,7 +1017,9 @@ def plan_and_execute_once(
         else:
             log_messages.append("   stage-2 tools: keeping full surface (no narrowing)")
     else:
-        log_messages.append("   classifier returned no intent; using full 4-tool surface for stage-2")
+        log_messages.append(
+            "   classifier returned no intent; using full 4-tool surface for stage-2"
+        )
 
     if classification is not None and 'knowledge' in classification['primaries']:
         user_message = (
@@ -1059,17 +1053,19 @@ def plan_and_execute_once(
 
     if classification is not None and 'knowledge' in classification['primaries']:
         has_knowledge = any(
-            isinstance(tc, dict) and tc.get('name') == 'knowledge_lookup'
-            for tc in raw_calls
+            isinstance(tc, dict) and tc.get('name') == 'knowledge_lookup' for tc in raw_calls
         )
         if not has_knowledge:
             log_messages.append(
                 "   intent=knowledge but no knowledge_lookup in plan -- injecting one"
             )
-            raw_calls.insert(0, {
-                'name': 'knowledge_lookup',
-                'arguments': {'user_request': original_user_message, 'get_songs': 200},
-            })
+            raw_calls.insert(
+                0,
+                {
+                    'name': 'knowledge_lookup',
+                    'arguments': {'user_request': original_user_message, 'get_songs': 200},
+                },
+            )
 
     if not raw_calls:
         return {"error": "No valid tool calls after validation"}
@@ -1080,9 +1076,6 @@ def plan_and_execute_once(
     if not plan.primaries and plan.filter is None:
         return {"error": "Plan was empty after normalization"}
 
-    # Route a primary's coarse audio buckets (text_match's tempo_filter /
-    # energy_filter) into plan.filter so they pass through the ONE central soft
-    # re-rank like every other filter -- the tool itself no longer filters.
     for p in plan.primaries:
         if not isinstance(p, dict) or p.get('name') != 'text_match':
             continue
@@ -1104,13 +1097,16 @@ def plan_and_execute_once(
                 derived['tempo_max'] = hi
         if derived:
             plan.filter = _merge_filter(plan.filter, derived)
-            log_messages.append(f"   text_match audio buckets -> filter {derived} (handled by the shared soft re-rank)")
+            log_messages.append(
+                f"   text_match audio buckets -> filter {derived} (handled by the shared soft re-rank)"
+            )
 
-    # HARD RULE: never apply a filter/re-rank to AI brainstorming. Brainstormed
-    # (knowledge_lookup) songs are returned exactly as suggested.
     if plan.filter is not None and any(
-            isinstance(p, dict) and p.get('name') == 'knowledge_lookup' for p in plan.primaries):
-        log_messages.append("   AI brainstorming: filter NOT applied — knowledge results returned as-is")
+        isinstance(p, dict) and p.get('name') == 'knowledge_lookup' for p in plan.primaries
+    ):
+        log_messages.append(
+            "   AI brainstorming: filter NOT applied - knowledge results returned as-is"
+        )
         plan.filter = None
 
     detected_min_rating: Optional[int] = None
@@ -1174,9 +1170,9 @@ def plan_and_execute_once(
             for s in seeds[:4]:
                 if isinstance(s, dict):
                     if s.get('type') == 'song':
-                        seed_summary.append(f"song:'{s.get('title','')}'")
+                        seed_summary.append(f"song:'{s.get('title', '')}'")
                     elif s.get('type') == 'artist':
-                        seed_summary.append(f"artist:'{s.get('name','')}'")
+                        seed_summary.append(f"artist:'{s.get('name', '')}'")
             if seed_summary:
                 parts.append(f"seeds=[{', '.join(seed_summary)}]")
             if blend and blend != 'union':
@@ -1233,16 +1229,24 @@ def plan_and_execute_once(
                     pool_songs.append(s)
                     pool_ids.add(iid)
                     added_to_pool += 1
-            log_messages.append(f"   pooled {added_to_pool}/{len(songs)} unique (pool={len(pool_songs)})")
+            log_messages.append(
+                f"   pooled {added_to_pool}/{len(songs)} unique (pool={len(pool_songs)})"
+            )
             primary_logs.append((tn, ta, added_to_pool, False, res.get('message', '')))
             yield
 
         if not pool_songs:
-            for (tn, ta, _added, errored, msg) in primary_logs:
-                tools_used_history.append({
-                    'name': tn, 'args': ta, 'songs': 0, 'error': errored,
-                    'call_index': tool_call_counter, 'result_message': msg,
-                })
+            for tn, ta, _added, errored, msg in primary_logs:
+                tools_used_history.append(
+                    {
+                        'name': tn,
+                        'args': ta,
+                        'songs': 0,
+                        'error': errored,
+                        'call_index': tool_call_counter,
+                        'result_message': msg,
+                    }
+                )
                 tool_execution_summary.append(_summary(tn, ta, 0))
                 tool_call_counter += 1
             return {
@@ -1262,21 +1266,31 @@ def plan_and_execute_once(
         final, matched, moved = _rerank_pool(pool_songs, plan.filter, feats, log_messages)
         yield
 
-        for (tn, ta, pooled, errored, msg) in primary_logs:
-            tools_used_history.append({
-                'name': tn, 'args': ta, 'songs': pooled, 'error': errored,
-                'call_index': tool_call_counter, 'result_message': msg,
-            })
+        for tn, ta, pooled, errored, msg in primary_logs:
+            tools_used_history.append(
+                {
+                    'name': tn,
+                    'args': ta,
+                    'songs': pooled,
+                    'error': errored,
+                    'call_index': tool_call_counter,
+                    'result_message': msg,
+                }
+            )
             tool_execution_summary.append(_summary(tn, ta, pooled))
             tool_call_counter += 1
 
         filter_call_index = tool_call_counter
         added = _add_songs(final, filter_call_index)
-        tools_used_history.append({
-            'name': 'search_database', 'args': dict(plan.filter), 'songs': added,
-            'call_index': filter_call_index,
-            'result_message': f"priority re-rank: {matched}/{N} matched filter",
-        })
+        tools_used_history.append(
+            {
+                'name': 'search_database',
+                'args': dict(plan.filter),
+                'songs': added,
+                'call_index': filter_call_index,
+                'result_message': f"priority re-rank: {matched}/{N} matched filter",
+            }
+        )
         tool_execution_summary.append(_summary('search_database', plan.filter, added))
         tool_call_counter += 1
 
@@ -1296,16 +1310,23 @@ def plan_and_execute_once(
             except TypeError:
                 log_messages.append(f"   Arguments: {pretty}")
             if tn == 'search_database':
-                res = _run_search_database_with_relax(ta, ai_config, target_song_count, log_messages)
+                res = _run_search_database_with_relax(
+                    ta, ai_config, target_song_count, log_messages
+                )
             else:
                 res = execute_mcp_tool(tn, ta, ai_config)
             if 'error' in res:
                 log_messages.append(f"   error: {res['error']}")
-                tools_used_history.append({
-                    'name': tn, 'args': ta, 'songs': 0, 'error': True,
-                    'call_index': tool_call_counter,
-                    'result_message': res.get('error', ''),
-                })
+                tools_used_history.append(
+                    {
+                        'name': tn,
+                        'args': ta,
+                        'songs': 0,
+                        'error': True,
+                        'call_index': tool_call_counter,
+                        'result_message': res.get('error', ''),
+                    }
+                )
                 tool_execution_summary.append(_summary(tn, ta, 0))
                 tool_call_counter += 1
                 continue
@@ -1316,11 +1337,15 @@ def plan_and_execute_once(
                         log_messages.append(f"   {line}")
             added = _add_songs(songs, tool_call_counter)
             log_messages.append(f"   retrieved {len(songs)} songs, added {added} new")
-            tools_used_history.append({
-                'name': tn, 'args': ta, 'songs': added,
-                'call_index': tool_call_counter,
-                'result_message': res.get('message', ''),
-            })
+            tools_used_history.append(
+                {
+                    'name': tn,
+                    'args': ta,
+                    'songs': added,
+                    'call_index': tool_call_counter,
+                    'result_message': res.get('message', ''),
+                }
+            )
             tool_execution_summary.append(_summary(tn, ta, added))
             tool_call_counter += 1
             yield

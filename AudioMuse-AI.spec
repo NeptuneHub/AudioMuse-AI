@@ -52,6 +52,14 @@ binaries = [
 for _pkg in ("av", "psycopg2"):
     binaries += collect_dynamic_libs(_pkg)
 
+# numkong's Windows wheel links LLVM's libomp but, unlike its mac/linux wheels, does not bundle it.
+if target == "windows":
+    _omp = os.path.join(ROOT, cfg["vendor_dir"], "numkong", arch, _cfg.windows_omp_dll(arch))
+    if not os.path.exists(_omp):
+        raise SystemExit(f"Missing vendored OpenMP runtime: {_omp} "
+                         "(see native-build/windows/vendor/README.md).")
+    binaries.append((_omp, "numkong"))
+
 if USE_PGSERVER:
     _pg_contrib = os.path.join(ROOT, cfg["vendor_dir"], "pg-contrib", arch)
     _pg_dst = "pgserver/pginstall"
@@ -70,6 +78,8 @@ hiddenimports = [
     "restart_listener",
     "waitress",
     "flasgger",
+    "numkong",
+    "numkong._numkong",
 ]
 hiddenimports += cfg["extra_hiddenimports"]
 for _mod in ("tasks", "lyrics", "sklearn", *cfg["collect_submodules"]):

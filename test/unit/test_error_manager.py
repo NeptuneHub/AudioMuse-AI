@@ -1,16 +1,27 @@
-"""Unit tests for the centralized error package (error/).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-These exercise the pure-data registry and the manager helpers without importing
-any heavy application modules. The `error` package only depends on `config`
-(lightweight env reads) and its own dictionary, so it imports as a normal
-package here.
+"""Error registry, classification, and safe message building in error_manager.
+
+Covers the code registry, build/from_exception/classify/record, and the guarantee
+that no traceback or raw exception text ever reaches the returned message.
+
+Main Features:
+* Registry completeness and unknown-code fallbacks for class and message
+* Detail appended as a single truncated line; unknown codes suppress caller detail
+* classify maps exception names via MRO; record logs the full trace to the logger
+  only, and http_status_for_code maps error classes to HTTP statuses
 """
+
 import os
 import sys
 
-REPO_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-)
+REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -22,8 +33,7 @@ def _named_codes():
     return [
         value
         for name, value in vars(ed).items()
-        if (name.startswith('ERR_') or name == 'UNKNOWN_ERROR_CODE')
-        and isinstance(value, int)
+        if (name.startswith('ERR_') or name == 'UNKNOWN_ERROR_CODE') and isinstance(value, int)
     ]
 
 
@@ -40,7 +50,10 @@ class TestRegistry:
 
     def test_unknown_code_helpers_fall_back(self):
         assert ed.get_error_class(123456) == 'Unknown Error'
-        assert ed.get_default_message(123456) == ed.ERROR_REGISTRY[ed.UNKNOWN_ERROR_CODE]['default_message']
+        assert (
+            ed.get_default_message(123456)
+            == ed.ERROR_REGISTRY[ed.UNKNOWN_ERROR_CODE]['default_message']
+        )
 
 
 class TestBuild:
@@ -82,7 +95,9 @@ class TestClassify:
         class ReadTimeout(Exception):
             pass
 
-        assert em.classify(ReadTimeout('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+        assert (
+            em.classify(ReadTimeout('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+        )
 
     def test_unknown_exception_uses_default(self):
         assert em.classify(ValueError('x'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_ANALYSIS_FAILED

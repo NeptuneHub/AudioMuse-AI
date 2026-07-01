@@ -122,14 +122,14 @@
     }
     /* Alert boxes keep their pastel backgrounds in both themes, so their text
        must also stay dark. .mig-card p globally forces var(--text-sub) which
-       in dark mode is light grey — invisible on the pastel backgrounds.
+       in dark mode is light grey - invisible on the pastel backgrounds.
        Force descendants to inherit the alert's own dark color. */
     .mig-success p, .mig-warning p, .mig-error p,
     .mig-success small, .mig-warning small, .mig-error small,
     .mig-success code, .mig-warning code, .mig-error code {
         color: inherit;
     }
-    /* Plain .btn has white text with no background — invisible on the pastel
+    /* Plain .btn has white text with no background - invisible on the pastel
        alert backgrounds. Give secondary buttons inside alerts a mode-agnostic
        dark-on-light style since the alert bg is itself mode-agnostic. */
     .mig-warning .btn:not(.btn-primary):not(.btn-danger),
@@ -392,7 +392,7 @@
             <div class="mig-row">
                 <label for="mig-target-type">Provider:</label>
                 <select id="mig-target-type">
-                    <option value="">— Select —</option>
+                    <option value="">- Select -</option>
                     <option value="jellyfin">Jellyfin</option>
                     <option value="navidrome">Navidrome</option>
                     <option value="emby">Emby</option>
@@ -470,7 +470,7 @@
             <div id="mig-libraries-section" style="display:none; margin-top:1rem;">
                 <p style="margin:0 0 0.5rem 0;">
                     <strong>Music libraries to scan:</strong>
-                    <small>Check "No restriction" to scan every library on the target server (including any added later) — this disables the per-library checkboxes. Otherwise check only the specific libraries you want. Stored as MUSIC_LIBRARIES after the migration commits.</small>
+                    <small>Check "No restriction" to scan every library on the target server (including any added later) - this disables the per-library checkboxes. Otherwise check only the specific libraries you want. Stored as MUSIC_LIBRARIES after the migration commits.</small>
                 </p>
                 <div id="mig-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem;"></div>
             </div>
@@ -491,7 +491,7 @@
                 </label>
             </div>
             <div id="mig-loose-match-disclaimer" class="mig-warning" style="display:none; margin-top:0.5rem;">
-                <strong>Looser fallback — review before executing.</strong>
+                <strong>Looser fallback - review before executing.</strong>
                 When strict tiers (path + full metadata) can&rsquo;t match a track, the
                 matcher will try normalized (title, artist) alone. This can pair
                 tracks with different album versions &mdash; studio vs. compilation,
@@ -663,7 +663,7 @@
             data = JSON.parse(text);
         } catch {
             // Server returned HTML (e.g. Flask's default 500 page). Don't
-            // inject that into the DOM — showError uses innerHTML and the
+            // inject that into the DOM - showError uses innerHTML and the
             // raw HTML is unreadable in dark mode. Surface a short summary.
             data = { error: 'Server error (HTTP ' + res.status + '). Check the server logs for details.' };
         }
@@ -700,13 +700,13 @@
                 body: JSON.stringify({ session_id: sessionId })
             });
         } catch (e) {
-            // Don't block step 3 — library selection is optional.
+            // Don't block step 3 - library selection is optional.
             hideMigLibrariesSection();
             return;
         }
         if (data.unsupported || !Array.isArray(data.libraries) || data.libraries.length === 0) {
             hideMigLibrariesSection();
-            // Nothing to filter on — clear any prior selection so the backend
+            // Nothing to filter on - clear any prior selection so the backend
             // treats this as "scan everything" at commit time.
             saveMigLibrariesSelection(null);
             return;
@@ -867,7 +867,7 @@
                 body: JSON.stringify({ session_id: sessionId, libraries: libraries })
             });
         } catch (e) {
-            // Non-fatal — the user can retry by toggling again; selection
+            // Non-fatal - the user can retry by toggling again; selection
             // also defaults to null on the backend if this write is missed.
         }
     }
@@ -954,7 +954,7 @@
     $('mig-loose-accept').addEventListener('click', () => {
         looseMatchEnabled = true;
         $('mig-loose-match-disclaimer').style.display = 'none';
-        $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album) — enabled';
+        $('mig-loose-match-label').textContent = 'Also match by title + artist (ignore album) - enabled';
     });
     $('mig-loose-cancel').addEventListener('click', () => {
         looseMatchEnabled = false;
@@ -982,7 +982,31 @@
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
         if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        // The heavy fetch+match runs in an RQ worker now; poll for the result.
+        if (data.task_id) {
+            return await pollMigrationJob(data.task_id);
+        }
         return data;
+    }
+
+    // Poll a backgrounded migration helper job (dry-run / source-path refresh)
+    // via the shared status endpoint. Returns the job result on success;
+    // throws on failure or a controlled {error} result.
+    async function pollMigrationJob(taskId) {
+        const statusUrl = "{{ url_for('migration_bp.job_status', task_id='__TID__') }}".replace('__TID__', taskId);
+        while (true) {
+            const res = await jsonFetch(statusUrl);
+            const s = res.status || 'unknown';
+            if (s === 'finished') {
+                const r = res.result || {};
+                if (r && r.error) throw new Error(r.error);
+                return r;
+            }
+            if (s === 'failed') {
+                throw new Error(res.error || 'Background job failed. Check the container logs for details.');
+            }
+            await new Promise(r => setTimeout(r, 2000));
+        }
     }
 
     function renderSourceRefreshPanel(info) {
@@ -1007,7 +1031,7 @@
         $('mig-refresh-src').addEventListener('click', refreshSourcePaths);
         $('mig-bypass-src').addEventListener('click', () => {
             $('mig-source-refresh').style.display = 'none';
-            $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching (metadata only) — this can take a few minutes…</div>';
+            $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching (metadata only) - this can take a few minutes…</div>';
             runDryRun({ bypass_source_check: true })
                 .then(renderDryRunResult)
                 .catch(e => { if (e.message !== '__source_refresh__') showError($('mig-dry-result'), e.message); });
@@ -1016,13 +1040,15 @@
 
     async function refreshSourcePaths() {
         const statusEl = $('mig-source-refresh-status');
-        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider…</div>';
+        statusEl.innerHTML = '<div class="mig-status">Fetching fresh paths from current provider… this can take a few minutes on large libraries.</div>';
         try {
-            const result = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
+            const enq = await jsonFetch("{{ url_for('migration_bp.source_paths_refresh') }}", {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: sessionId }),
             });
+            // Heavy source re-probe runs in an RQ worker now; poll for it.
+            const result = enq.task_id ? await pollMigrationJob(enq.task_id) : enq;
             if (result.path_format === 'absolute') {
                 statusEl.innerHTML = '<div class="mig-success">Loaded ' + result.overrides_count +
                     ' real paths from ' + esc(result.source_type) + '. You can run automatic matching now.</div>';
@@ -1031,7 +1057,7 @@
                 // dry-run will now skip the gate because overrides are stored.
             } else {
                 const warn = (result.warnings && result.warnings[0])
-                    || 'Paths are still not absolute — try enabling Report Real Path and refresh again.';
+                    || 'Paths are still not absolute - try enabling Report Real Path and refresh again.';
                 statusEl.innerHTML = '<div class="mig-warning">' + esc(warn) + '</div>';
             }
         } catch (e) {
@@ -1062,7 +1088,7 @@
         unlock(4);
         setActive(4);
         resetFromStep(5);
-        // Step 4 is optional — unmatched albums get deleted on execute, so
+        // Step 4 is optional - unmatched albums get deleted on execute, so
         // the user can always skip to step 5. If nothing is unmatched,
         // auto-advance to step 5 for convenience.
         unlock(5);
@@ -1074,7 +1100,7 @@
     $('mig-run-dry').addEventListener('click', async () => {
         if (!sessionId) return;
         $('mig-source-refresh').style.display = 'none';
-        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching — this can take a few minutes on large libraries…</div>';
+        $('mig-dry-result').innerHTML = '<div class="mig-status">Running automatic matching - this can take a few minutes on large libraries…</div>';
         try {
             const result = await runDryRun();
             await renderDryRunResult(result);
@@ -1099,7 +1125,7 @@
             : unmatchedAlbums.length;
         const list = $('mig-album-list');
         if (!unmatchedAlbums.length) {
-            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">All tracks matched automatically — nothing to do in this step. Proceed to step 5.</div>';
+            list.innerHTML = '<div class="mig-status" style="padding:0.75rem;">All tracks matched automatically - nothing to do in this step. Proceed to step 5.</div>';
             return;
         }
         list.innerHTML = '';
@@ -1115,7 +1141,7 @@
             const div = document.createElement('div');
             div.className = 'mig-album-item';
             div.dataset.idx = idx;
-            div.innerHTML = '<div><strong>' + esc(a.album || '(no album)') + '</strong> — ' +
+            div.innerHTML = '<div><strong>' + esc(a.album || '(no album)') + '</strong> - ' +
                 esc(a.album_artist || '(no artist)') +
                 '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s)</div></div>' +
                 '<div>›</div>';
@@ -1129,7 +1155,7 @@
         isRematch = false;
         currentAlbumKey = [a.album_artist, a.album];
         $('mig-match-album-title').textContent =
-            (a.album_artist || '?') + ' — ' + (a.album || '?') + ' (' + a.track_count + ' tracks)';
+            (a.album_artist || '?') + ' - ' + (a.album || '?') + ' (' + a.track_count + ' tracks)';
         $('mig-match-query').value = ((a.album_artist || '') + ' ' + (a.album || '')).trim();
         $('mig-match-candidates').innerHTML = '';
         $('mig-match-pane').classList.add('visible');
@@ -1172,8 +1198,8 @@
             slice.forEach(a => {
                 const div = document.createElement('div');
                 div.className = 'mig-album-item';
-                const oldLabel = esc(a.old_album_artist || '(no artist)') + ' — ' + esc(a.old_album || '(no album)');
-                const newLabel = esc(a.new_album_artist || '?')          + ' — ' + esc(a.new_album || '?');
+                const oldLabel = esc(a.old_album_artist || '(no artist)') + ' - ' + esc(a.old_album || '(no album)');
+                const newLabel = esc(a.new_album_artist || '?')          + ' - ' + esc(a.new_album || '?');
                 const tierTag = TIER_LABEL[a.tier] || '';
                 div.innerHTML = '<div><strong>' + oldLabel + '</strong>' +
                     '<div class="mig-album-meta">' + esc(a.track_count) + ' track(s) &rarr; ' + newLabel +
@@ -1232,9 +1258,9 @@
         isRematch = true;
         currentAlbumKey = [a.old_album_artist, a.old_album];
         $('mig-match-album-title').textContent =
-            'Re-target: ' + (a.old_album_artist || '?') + ' — ' + (a.old_album || '?') +
+            'Re-target: ' + (a.old_album_artist || '?') + ' - ' + (a.old_album || '?') +
             ' (' + a.track_count + ' tracks, currently → ' +
-            (a.new_album_artist || '?') + ' — ' + (a.new_album || '?') + ')';
+            (a.new_album_artist || '?') + ' - ' + (a.new_album || '?') + ')';
         $('mig-match-query').value = ((a.old_album_artist || '') + ' ' + (a.old_album || '')).trim();
         $('mig-match-candidates').innerHTML = '';
         $('mig-match-pane').classList.add('visible');
@@ -1274,7 +1300,7 @@
             albums.forEach(a => {
                 const row = document.createElement('div');
                 row.className = 'mig-candidate';
-                row.innerHTML = '<strong>' + esc(a.name || '?') + '</strong> — ' +
+                row.innerHTML = '<strong>' + esc(a.name || '?') + '</strong> - ' +
                     esc(a.artist || '?') + (a.year ? ' · ' + esc(a.year) : '') +
                     (a.track_count ? ' · ' + esc(a.track_count) + ' tracks' : '');
                 row.addEventListener('click', () => pickCandidate(a.id, row));
@@ -1473,7 +1499,7 @@
     async function pollJob(taskId) {
         const statusEl = $('mig-exec-status');
         const logEl    = $('mig-exec-log');
-        statusEl.innerHTML = '<div class="mig-status">Running migration — do not close this tab.</div>';
+        statusEl.innerHTML = '<div class="mig-status">Running migration - do not close this tab.</div>';
         const statusUrl = "{{ url_for('migration_bp.job_status', task_id='__TID__') }}".replace('__TID__', taskId);
 
         while (true) {
@@ -1486,7 +1512,7 @@
                     const indexNote = r.index_rebuild_needed
                         ? '<p style="margin:0.5rem 0 0;"><strong>Note:</strong> ' +
                           'the similarity / map index for this library was reset during the ' +
-                          'migration. The <strong>full analysis</strong> above rebuilds it too — ' +
+                          'migration. The <strong>full analysis</strong> above rebuilds it too - ' +
                           'search and instant mixes will use the refreshed index once that finishes.</p>'
                         : '';
                     showSuccess(statusEl,
@@ -1508,7 +1534,7 @@
                     const countdownHost = document.createElement('p');
                     countdownHost.id = 'mig-restart-countdown';
                     countdownHost.style.cssText = 'margin:1rem 0 0; font-size:1.1rem; font-weight:700; color:#b45309; text-align:center;';
-                    countdownHost.textContent = 'Restarting services — redirecting to login in 20 seconds...';
+                    countdownHost.textContent = 'Restarting services - redirecting to login in 20 seconds...';
                     statusEl.parentNode.insertBefore(countdownHost, statusEl.nextSibling);
                     // Flask is restarting to pick up the new provider config cleanly
                     // (same pattern as the setup wizard). Count down and redirect to
@@ -1517,7 +1543,7 @@
                     const cdInterval = setInterval(function() {
                         countdown -= 1;
                         if (countdown > 0) {
-                            countdownHost.textContent = 'Restarting services — redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
+                            countdownHost.textContent = 'Restarting services - redirecting to login in ' + countdown + ' second' + (countdown === 1 ? '' : 's') + '...';
                         } else {
                             countdownHost.textContent = 'Redirecting...';
                             clearInterval(cdInterval);
@@ -1546,7 +1572,7 @@
 
     // If the server found an in-flight migration session, resume it rather
     // than making the user start over (which would create a brand new row).
-    // Credentials are never sent back to the browser — they live in the DB
+    // Credentials are never sent back to the browser - they live in the DB
     // and the server uses them via session_id. We only re-show target_type
     // and jump the wizard to whichever step matches the persisted state.
     const resumeSessionId = parseInt(document.getElementById('mig-server-data').dataset.resumeSessionId, 10) || 0;
@@ -1606,7 +1632,7 @@
                 return;
             }
 
-            // Step 6: an execute job is already running — jump straight there.
+            // Step 6: an execute job is already running - jump straight there.
             if (state.exec_task_id) {
                 [4, 5, 6].forEach(unlock);
                 setActive(6);
@@ -1614,7 +1640,19 @@
                 return;
             }
 
-            // Steps 4 / 5: a dry run was already produced — re-render it so
+            // Step 3: a dry-run job is still running (large library). Resume
+            // polling instead of leaving the user staring at step 3.
+            if (state.dry_run_task_id && !state.dry_run) {
+                setActive(3);
+                $('mig-dry-result').innerHTML =
+                    '<div class="mig-status">Resuming automatic matching - this can take a few minutes…</div>';
+                pollMigrationJob(state.dry_run_task_id)
+                    .then(renderDryRunResult)
+                    .catch(e => { if (e.message !== '__source_refresh__') showError($('mig-dry-result'), e.message); });
+                return;
+            }
+
+            // Steps 4 / 5: a dry run was already produced - re-render it so
             // the user keeps manual matches made before the refresh.
             if (state.dry_run) {
                 const albums = state.dry_run.unmatched_albums || [];
@@ -1631,10 +1669,10 @@
                 return;
             }
 
-            // Otherwise: session exists but no dry run yet — sit at step 3.
+            // Otherwise: session exists but no dry run yet - sit at step 3.
             setActive(3);
         } catch (e) {
-            // Resume failed — fall back to a normal fresh wizard.
+            // Resume failed - fall back to a normal fresh wizard.
             console.warn('migration resume failed:', e);
         }
     }

@@ -1,0 +1,32 @@
+# Ruff config: formatter + linter (modern replacement for the standalone flake8 gate).
+line-length = 100
+target-version = "py311"
+extend-exclude = ["query", "dist", "model", "native-build/**/_vendor"]
+
+[format]
+# Keep the codebase's existing single quotes - do not restyle string literals.
+quote-style = "preserve"
+
+[lint]
+# Enforced gate (kept green): the flake8 rule set plus TRY400, which flake8 cannot
+# do - logging.error inside an except block must be logging.exception. The N rules
+# enforce snake_case (functions/args/locals), PascalCase classes, and self/cls.
+# Line length (E501) and blank-line spacing are still NOT gated: long strings can't
+# be auto-wrapped; run `ruff format` / `ruff check` ad hoc to see those.
+select = [
+  "F", "E9", "E401", "E711", "E712", "E713", "E714", "E722", "W605", "TRY400",
+  "E731", "E741", "W291", "W293", "W292",
+  "N801", "N802", "N803", "N804", "N805", "N806",
+]
+
+[lint.pep8-naming]
+# Naming policy: a name starting with an UPPERCASE letter or an underscore is
+# exempt (PascalCase classes/types, SCREAMING_CASE constants declared inside a
+# function, ML feature matrices X / X_train / N, GPU aliases). A name that starts
+# with a lowercase letter must be valid snake_case, so camelCase (getFooBar) fails.
+extend-ignore-names = ["[A-Z_]*"]
+
+[lint.per-file-ignores]
+# Test method names are intentionally descriptive and reference real API fields
+# (test_calls_getAlbum_endpoint, ..._lastPlayed_field), so do not force snake_case.
+"test/**" = ["N802"]

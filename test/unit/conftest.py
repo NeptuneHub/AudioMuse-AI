@@ -1,14 +1,27 @@
-"""Shared fixtures and helpers for AudioMuse-AI test suite.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Centralises duplicated helpers across test files:
-- importlib bypass loader (avoids tasks/__init__.py -> pydub -> audioop chain)
-- Session-scoped module fixtures for mcp_server, ai_mcp_client
-- FakeRow / mock-connection helpers
-- Autouse config restoration fixture
+"""Shared pytest fixtures and helpers for the unit-test suite.
+
+Provides file-path module loaders, fake DB rows and connections, an
+autouse fixture that snapshots and restores mutated config attributes,
+and a terminal-summary hook that prints the import-architecture report.
+
+Main Features:
+* Forces spawn over fork on Windows and loads modules by file path.
+* Restores config values touched by tests and reports import architecture.
 """
+
 import sys as _sys
+
 if _sys.platform == 'win32':
     import multiprocessing as _mp
+
     _o = _mp.get_context
     _mp.get_context = lambda m=None: _o('spawn') if m == 'fork' else _o(m)
 
@@ -19,19 +32,7 @@ import pytest
 from unittest.mock import Mock, MagicMock
 
 
-# ---------------------------------------------------------------------------
-# Module import helper
-# ---------------------------------------------------------------------------
-
 def _import_module(mod_name: str, relative_path: str):
-    """Load a module directly by file path, bypassing package __init__.py.
-
-    Args:
-        mod_name: Dotted module name to register in sys.modules
-                  (e.g. 'tasks.mcp_helper').
-        relative_path: Path relative to the repo root
-                       (e.g. 'tasks/mcp_helper.py').
-    """
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
@@ -45,47 +46,28 @@ def _import_module(mod_name: str, relative_path: str):
     return sys.modules[mod_name]
 
 
-# ---------------------------------------------------------------------------
-# Session-scoped module fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope='session')
 def mcp_server_mod():
-    """Load tasks.mcp_helper directly (session-scoped).
-
-    Fixture name kept as ``mcp_server_mod`` for historical reasons; the
-    underlying module is now ``tasks.mcp_helper``.
-    """
     return _import_module('tasks.mcp_helper', 'tasks/mcp_helper.py')
 
 
-# ---------------------------------------------------------------------------
-# DB mock helpers
-# ---------------------------------------------------------------------------
-
 def make_dict_row(mapping: dict):
-    """Create an object that supports both dict-key and attribute access,
-    mimicking psycopg2 DictRow."""
     class FakeRow(dict):
         def __getattr__(self, name):
             try:
                 return self[name]
             except KeyError:
                 raise AttributeError(name)
+
     return FakeRow(mapping)
 
 
 def make_mock_connection(cursor):
-    """Wrap a mock cursor in a mock connection with close()."""
     conn = MagicMock()
     conn.cursor.return_value = cursor
     conn.close = Mock()
     return conn
 
-
-# ---------------------------------------------------------------------------
-# Config restoration (autouse)
-# ---------------------------------------------------------------------------
 
 _CONFIG_ATTRS_TO_RESTORE = (
     'ENERGY_MIN',
@@ -105,8 +87,8 @@ _CONFIG_ATTRS_TO_RESTORE = (
 
 @pytest.fixture(autouse=True)
 def config_restore():
-    """Save and restore mutated config attributes after each test."""
     import config as cfg
+
     saved = {}
     for attr in _CONFIG_ATTRS_TO_RESTORE:
         if hasattr(cfg, attr):
@@ -116,24 +98,13 @@ def config_restore():
         setattr(cfg, attr, val)
 
 
-# ---------------------------------------------------------------------------
-# Import-architecture report (terminal summary)
-# ---------------------------------------------------------------------------
-
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Print the import-architecture report (layer table, max-chain confirmation,
-    and the recap of chains at the ceiling) whenever the architecture gate ran.
-
-    Uses the terminal reporter so the report shows on every run -- pass or fail --
-    without needing ``-s``. A PR that deepens the eager import graph will see the
-    new chains listed here (and the depth test will fail with the same recap).
-    """
-    # The gate may be imported bare ("test_import_architecture") or
-    # package-qualified ("test.unit.test_import_architecture") depending on the
-    # presence of __init__.py files, so match by suffix.
     mod = next(
-        (m for name, m in list(sys.modules.items())
-         if name == "test_import_architecture" or name.endswith(".test_import_architecture")),
+        (
+            m
+            for name, m in sys.modules.items()
+            if name == "test_import_architecture" or name.endswith(".test_import_architecture")
+        ),
         None,
     )
     if mod is None:
@@ -147,7 +118,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         return
     try:
         lines = mod.architecture_report()
-    except Exception as exc:  # never let the report break the run
+    except Exception as exc:
         terminalreporter.write_line(f"[architecture] report unavailable: {exc}")
         return
     terminalreporter.section("Import-architecture report", "=")

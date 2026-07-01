@@ -23,7 +23,7 @@ on:
   # Allow manual runs for debugging or manual pushes
   workflow_dispatch:
 
-# Prevent concurrent builds for the same branch/tag — a new push cancels the in-progress build.
+# Prevent concurrent builds for the same branch/tag - a new push cancels the in-progress build.
 # This avoids race conditions where two builds overwrite each other's temporary tags.
 concurrency:
   group: build-${{ github.ref }}
@@ -125,7 +125,7 @@ jobs:
 
   build-arm64:
     needs: prepare
-    runs-on: ubuntu-24.04-arm  # Native ARM64 runner — no QEMU emulation
+    runs-on: ubuntu-24.04-arm  # Native ARM64 runner - no QEMU emulation
     permissions:
       contents: read
       packages: write

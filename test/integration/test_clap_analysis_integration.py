@@ -1,19 +1,21 @@
-# CLAP analysis integration test
-# 1. Create a virtual environment:
-#      python3 -m venv test/.venv
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
 #
-# 2. Activate the virtual environment:
-#      source test/.venv/bin/activate
-#
-# 3. Install requirements:
-#      pip install -r test/requirements.txt
-# 4. Run this script:
-#      pytest test/integration/test_clap_analysis_integration.py -s -q
-#
-# Note: Test audio files should be in test/songs/
-#       CLAP ONNX models:
-#         - DCLAP audio: model_epoch_36.onnx + model_epoch_36.onnx.data in test/models/
-#         - Text: clap_text_model.onnx in test/models/
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""End-to-end test of the real CLAP audio and text analyzer.
+
+Runs tasks.clap_analyzer over real test audio using the actual ONNX audio
+and text models, skipping when models, onnxruntime, or librosa are absent.
+
+Main Features:
+* Produces 1-D audio embeddings and per-query text embeddings.
+* Compares cosine similarities against recorded expected values.
+"""
+
 import os
 import sys
 from pathlib import Path
@@ -22,26 +24,12 @@ import numpy as np
 
 
 def _ensure_stubs():
-    """Insert minimal runtime stubs for optional heavy packages (currently none needed)."""
-    # No stubs needed - transformers is installed in test requirements
+    # no-op hook: integration run uses real modules, no stubbing needed
     pass
 
 
 @pytest.mark.integration
 def test_clap_analysis_runs_and_shows_output():
-    """Integration test: runs CLAP analysis on test tracks and validates results.
-    
-    This test analyzes three test tracks with the CLAP model:
-    1. Art Flower - Art Flower - Creamy Snowflakes.mp3
-    2. Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3
-    3. Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3
-
-    Validates that cosine similarities match expected values (tolerance: 0.001).
-    """
-    
-    # Expected cosine similarities for each track and query
-    # NOTE: These values are for the DCLAP distilled student model (model_epoch_36.onnx).
-    # They will differ from the original teacher CLAP model values.
     expected_similarities = {
         'Art Flower - Art Flower - Creamy Snowflakes.mp3': {
             'rock': 0.328612,
@@ -66,98 +54,84 @@ def test_clap_analysis_runs_and_shows_output():
     models_dir = project_root / 'test' / 'models'
     clap_audio_model = models_dir / 'model_epoch_36.onnx'
     clap_text_model = models_dir / 'clap_text_model.onnx'
-    
+
     if not clap_audio_model.exists():
         pytest.skip(f"DCLAP audio model not present in test/models: {clap_audio_model}")
-    
+
     if not clap_text_model.exists():
         pytest.skip(f"CLAP text model not present in test/models: {clap_text_model}")
 
-    # Ensure onnxruntime is available
     try:
         import onnxruntime as ort  # noqa: F401
     except Exception as e:
         pytest.skip(f"onnxruntime not importable: {e}")
 
-    # Ensure librosa is available
     try:
         import librosa  # noqa: F401
     except Exception as e:
         pytest.skip(f"librosa not importable: {e}")
 
-    # Force Transformers into offline mode for this integration test.
     os.environ.setdefault('TRANSFORMERS_OFFLINE', '1')
     os.environ.setdefault('HF_HUB_OFFLINE', '1')
     os.environ.setdefault('HF_DATASETS_OFFLINE', '1')
 
-    # Ensure the project is importable and provide stubs
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     _ensure_stubs()
 
-    # Validate that the required offline tokenizer exists. Failure here should fail the test.
     from transformers import AutoTokenizer
+
     AutoTokenizer.from_pretrained('roberta-base', local_files_only=True)
 
-    # Override config before importing CLAP analyzer
     import config
+
     config.CLAP_AUDIO_MODEL_PATH = str(clap_audio_model)
     config.CLAP_TEXT_MODEL_PATH = str(clap_text_model)
     config.CLAP_ENABLED = True
 
-    # Import CLAP analyzer
     from tasks.clap_analyzer import analyze_audio_file, get_text_embedding
 
-    # Define test queries
-    test_queries = [
-        "rock",
-        "classic piano song",
-        "electro",
-        "acoustic"
-    ]
+    test_queries = ["rock", "classic piano song", "electro", "acoustic"]
 
-    # Define test tracks
     test_tracks = [
         'Art Flower - Art Flower - Creamy Snowflakes.mp3',
         'Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3',
-        "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3"
+        "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
     ]
 
     for track_name in test_tracks:
         track_path = project_root / 'test' / 'songs' / track_name
-        
+
         if not track_path.exists():
             print(f'\n{track_name} not present in test/songs/; skipping.')
             continue
-        
-        print(f'\n{"="*80}')
+
+        print(f'\n{"=" * 80}')
         print(f'=== Analyzing with CLAP: {track_name} ===')
-        print(f'{"="*80}')
-        
+        print(f'{"=" * 80}')
+
         try:
-            # Run CLAP analysis (returns tuple: embedding, duration, num_segments)
             embedding, duration, num_segments = analyze_audio_file(str(track_path))
-            
-            # Validate embedding
+
             assert embedding is not None, f'{track_name}: CLAP returned None'
             assert isinstance(embedding, np.ndarray), f'{track_name}: embedding not numpy array'
-            assert embedding.ndim == 1, f'{track_name}: expected 1-D embedding, got {embedding.ndim}-D'
-            
+            assert embedding.ndim == 1, (
+                f'{track_name}: expected 1-D embedding, got {embedding.ndim}-D'
+            )
+
             emb_dim = embedding.shape[0]
             print(f'\nAudio duration: {duration:.2f} seconds')
             print(f'Number of segments: {num_segments}')
             print(f'Embedding dimension: {emb_dim}')
-            
-            # Test text queries and compute cosine similarities
-            print(f'\n{"="*80}')
-            print(f'Text Query Similarities:')
-            print(f'{"="*80}')
-            
+
+            print(f'\n{"=" * 80}')
+            print('Text Query Similarities:')
+            print(f'{"=" * 80}')
+
             expected_sims = expected_similarities.get(track_name, {})
             all_passed = True
-            
+
             for query in test_queries:
-                # try once, then retry once on failure
                 text_embedding = None
                 last_exc = None
                 for attempt in range(2):
@@ -167,7 +141,6 @@ def test_clap_analysis_runs_and_shows_output():
                         break
                     except Exception as e:
                         last_exc = e
-                        # small pause if second try will be attempted
                         if attempt == 0:
                             continue
                 if last_exc is not None:
@@ -175,42 +148,47 @@ def test_clap_analysis_runs_and_shows_output():
 
                 if text_embedding is None:
                     print(f'  {query:25s} - Failed to compute text embedding')
-                    pytest.fail(f'{track_name}: Failed to compute text embedding for query "{query}"')
+                    pytest.fail(
+                        f'{track_name}: Failed to compute text embedding for query "{query}"'
+                    )
                     continue
-                
-                # Compute cosine similarity (dot product of normalized vectors)
+
                 cosine_sim = np.dot(embedding, text_embedding)
-                
-                # Check against expected value
+
                 expected_sim = expected_sims.get(query)
                 if expected_sim is not None:
                     diff = abs(cosine_sim - expected_sim)
                     tolerance = 0.001
                     passed = diff <= tolerance
-                    status = "✓" if passed else "✗"
-                    
-                    print(f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (expected: {expected_sim:.6f}) {status}')
-                    
+                    status = "OK" if passed else "X"
+
+                    print(
+                        f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (expected: {expected_sim:.6f}) {status}'
+                    )
+
                     if not passed:
                         all_passed = False
                         print(f'    ERROR: Difference {diff:.6f} exceeds tolerance {tolerance}')
                 else:
-                    print(f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (no expected value)')
-            
-            # Fail test if any similarities don't match
+                    print(
+                        f'  {query:25s} - Cosine Similarity: {cosine_sim:.6f} (no expected value)'
+                    )
+
             if not all_passed:
-                pytest.fail(f'{track_name}: One or more cosine similarities differ from expected values')
-            
-            print(f'\n{track_name}: ✓ CLAP analysis completed successfully')
-            
+                pytest.fail(
+                    f'{track_name}: One or more cosine similarities differ from expected values'
+                )
+
+            print(f'\n{track_name}: OK CLAP analysis completed successfully')
+
         except Exception as e:
-            print(f'\n{track_name}: ✗ CLAP analysis failed with error:')
+            print(f'\n{track_name}: X CLAP analysis failed with error:')
             print(f'  {type(e).__name__}: {e}')
             import traceback
+
             traceback.print_exc()
             raise
 
 
 if __name__ == '__main__':
-    # Allow running directly with: python test/integration/test_clap_analysis_integration.py
     pytest.main([__file__, '-s', '-v'])

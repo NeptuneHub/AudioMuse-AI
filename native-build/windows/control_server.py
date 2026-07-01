@@ -1,18 +1,22 @@
-"""TCP control server for the standalone Windows supervisor.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Replaces the Unix-domain-socket ``native-build/macos/control_ipc.py`` on Windows, where
-``AF_UNIX`` is not available. The protocol is identical (JSON line → response),
-just the transport is TCP on localhost.
+"""Loopback TCP control server for the Windows standalone build.
 
-The web UI's "save config -> restart workers" flow publishes to Redis;
-``restart_listener`` (a supervised child) receives it and calls
-``restart_manager``, which -- on the standalone builds -- sends a single line of
-JSON (``{"action": ..., "services": [...]}``) to this server instead of shelling
-out to ``supervisorctl``. The supervisor applies the same start/stop/restart
-semantics to its managed processes.
+Windows lacks the Unix domain sockets the macOS build uses, so control commands
+travel over a loopback-only TCP socket instead. The server runs in a daemon
+thread (default 127.0.0.1:8001) and speaks two shapes: HTTP-style ``GET
+/status`` and ``POST /stop`` used by the CLI, plus JSON start/stop/restart
+requests dispatched to the ``windows.supervisor``.
 
-Also serves a minimal HTTP endpoint at ``/status`` and ``/stop`` for the
-``AudioMuse-AI.exe status`` and ``AudioMuse-AI.exe stop`` CLI commands.
+Main Features:
+* Listens on 127.0.0.1 with a 1s accept timeout so ``stop`` unblocks cleanly.
+* Answers GET /status and POST /stop directly; dispatches JSON control requests.
 """
 
 import json
@@ -52,7 +56,9 @@ class ControlServer:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._handle, args=(conn, addr), name=f"ctrl-{addr}", daemon=True).start()
+            threading.Thread(
+                target=self._handle, args=(conn, addr), name=f"ctrl-{addr}", daemon=True
+            ).start()
 
     def _handle(self, conn, addr):
         with conn:
@@ -61,10 +67,11 @@ class ControlServer:
                 data = conn.recv(4096).strip()
                 text = data.decode("utf-8", errors="replace")
 
-                # Minimal HTTP handling for status/stop CLI commands.
                 if text.startswith("GET /status"):
                     state = self._supervisor.state() if self._supervisor else "unknown"
-                    conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{state}".encode())
+                    conn.sendall(
+                        f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{state}".encode()
+                    )
                     return
                 if text.startswith("POST /stop"):
                     if self._supervisor:
@@ -72,7 +79,6 @@ class ControlServer:
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nstopping")
                     return
 
-                # JSON control protocol (same as native-build/macos/control_ipc.py).
                 request = json.loads(text)
                 ok = bool(self._dispatch(request.get("action", ""), request.get("services", [])))
                 conn.sendall(b"ok" if ok else b"error")
