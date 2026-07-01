@@ -348,7 +348,7 @@ def cancel_job_and_children_recursive(
     NOTE: Minimal global behavior - when invoked from the API cancel endpoint we clear RQ queues,
     attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
     REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
-    This keeps the function signature unchanged and is intentionally simple and destructive (as requested).
+    This is intentionally simple and destructive (as requested).
     """
     cancelled_count = 0
 

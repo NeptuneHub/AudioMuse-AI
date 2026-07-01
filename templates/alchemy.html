@@ -844,16 +844,16 @@
                         if (plotEl && (data.centroid_2d || (data.results && data.results.length) || (data.filtered_out && data.filtered_out.length))) {
                             // Build datasets
                             const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
-                            const kept = (data.results || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
-                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
+                            const kept = (data.results || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
+                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
                             
                             // Separate songs from artist components
-                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -961,12 +961,10 @@
                                         tooltip: {
                                             callbacks: {
                                                 label: (ctx) => {
-                                                    const label = ctx.raw.label || '';
-                                                    const parts = label.split(' - ');
-                                                    if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' - ')}`];
+                                                    if (ctx.raw.title) {
+                                                        return [`Title: ${ctx.raw.title}`, `Artist: ${ctx.raw.author || ''}`];
                                                     }
-                                                    return label;
+                                                    return ctx.raw.label || '';
                                                 }
                                             },
                                             backgroundColor: '#1F2937',
@@ -1020,16 +1018,16 @@
                         const plotEl = document.getElementById('alchemy-plot');
                         if (plotEl && (data.centroid_2d || (data.filtered_out && data.filtered_out.length) || (data.add_points && data.add_points.length) || (data.sub_points && data.sub_points.length))) {
                             const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
-                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
+                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
                             const kept = [];
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
                             
                             // Separate songs from artist components
-                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -1136,12 +1134,10 @@
                                         tooltip: {
                                             callbacks: {
                                                 label: (ctx) => {
-                                                    const label = ctx.raw.label || '';
-                                                    const parts = label.split(' - ');
-                                                    if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' - ')}`];
+                                                    if (ctx.raw.title) {
+                                                        return [`Title: ${ctx.raw.title}`, `Artist: ${ctx.raw.author || ''}`];
                                                     }
-                                                    return label;
+                                                    return ctx.raw.label || '';
                                                 }
                                             },
                                             backgroundColor: '#1F2937',

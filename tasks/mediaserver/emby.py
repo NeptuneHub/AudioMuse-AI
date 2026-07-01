@@ -150,11 +150,11 @@ def get_recent_albums(limit):
 
 
 def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=None):
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     """
     Fetches recent standalone audio tracks that are not properly organized in albums.
     This captures orphaned tracks, loose files, and tracks with missing album metadata.
     """
+    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if (
         target_library_ids is not None
         and isinstance(target_library_ids, set)
