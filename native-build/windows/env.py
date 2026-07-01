@@ -37,7 +37,7 @@ def build_child_env(role, db_conn, redis_url):
     )
     env.update(
         {
-            "AUDIOMUSE_PLATFORM": "macos",
+            "AUDIOMUSE_PLATFORM": "windows",
             "APP_DATA_DIR": paths.app_support_dir(),
             "AUDIOMUSE_CONTROL_SOCKET": "",
             "AUDIOMUSE_CONTROL_HOST": "127.0.0.1",

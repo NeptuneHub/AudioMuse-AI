@@ -63,7 +63,7 @@ def build_child_env(role, database_url, redis_url):
     model_dir = paths.model_dir()
     env.update(
         {
-            "AUDIOMUSE_PLATFORM": "macos",
+            "AUDIOMUSE_PLATFORM": "linux",
             "APP_DATA_DIR": paths.app_support_dir(),
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
             "DATABASE_TYPE": "embedded",

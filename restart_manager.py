@@ -15,7 +15,7 @@ that actually stop, start, and restart the managed services.
 Main Features:
 * ``publish_*`` helpers broadcast restart/stop/start requests to workers.
 * supervisorctl-driven actions over the known Flask and worker service names.
-* On macOS, dispatches actions to the control socket/host:port instead of supervisorctl.
+* On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
 """
 
 import json
@@ -67,40 +67,45 @@ def publish_start_request():
     return publish_control_request('start')
 
 
+def _control_endpoint():
+    host = config.AUDIOMUSE_CONTROL_HOST
+    port = config.AUDIOMUSE_CONTROL_PORT
+    if host and port:
+        if not str(port).isdigit():
+            logger.error('Invalid AUDIOMUSE_CONTROL_PORT %r; expected an integer', port)
+            return None
+        return socket.AF_INET, (str(host), int(port)), f'{host}:{port}'
+    if config.AUDIOMUSE_CONTROL_SOCKET:
+        return socket.AF_UNIX, config.AUDIOMUSE_CONTROL_SOCKET, config.AUDIOMUSE_CONTROL_SOCKET
+    return None
+
+
+def _use_control_ipc():
+    return _control_endpoint() is not None
+
+
 def _send_control(arguments):
     if not arguments:
         return False
 
-    control_host = config.AUDIOMUSE_CONTROL_HOST
-    control_port = config.AUDIOMUSE_CONTROL_PORT
+    endpoint = _control_endpoint()
+    if endpoint is None:
+        logger.error(
+            'Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s',
+            arguments,
+        )
+        return False
+    family, address, label = endpoint
 
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
-        if control_host and control_port:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(15)
-                sock.connect((str(control_host), int(control_port)))
-                sock.sendall(payload + b'\n')
-                response = sock.recv(1024).strip()
-        elif config.AUDIOMUSE_CONTROL_SOCKET:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(15)
-                sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
-                sock.sendall(payload + b'\n')
-                response = sock.recv(1024).strip()
-        else:
-            logger.error(
-                'Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s',
-                arguments,
-            )
-            return False
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(15)
+            sock.connect(address)
+            sock.sendall(payload + b'\n')
+            response = sock.recv(1024).strip()
     except Exception:
-        target = (
-            f'{control_host}:{control_port}'
-            if (control_host and control_port)
-            else config.AUDIOMUSE_CONTROL_SOCKET
-        )
-        logger.exception('Failed to send control command %s to %s', arguments, target)
+        logger.exception('Failed to send control command %s to %s', arguments, label)
         return False
     if response == b'ok':
         logger.info('Control command succeeded: %s', arguments)
@@ -110,7 +115,7 @@ def _send_control(arguments):
 
 
 def _run_supervisorctl(arguments):
-    if config.AUDIOMUSE_PLATFORM == 'macos':
+    if _use_control_ipc():
         return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
@@ -154,7 +159,7 @@ def start_supervisor_workers():
 
 
 def _spawn_supervisorctl(arguments):
-    if config.AUDIOMUSE_PLATFORM == 'macos':
+    if _use_control_ipc():
         return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
