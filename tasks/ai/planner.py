@@ -16,7 +16,7 @@ validated, deduplicated, merged into a normalized plan, run, and composed.
 Main Features:
 * Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental args absent from the request are stripped; unsupported constraints (duration) surface as plan notes.
 * Soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut; multiple finder tools get an intersection boost (songs returned by several tools rank first).
-* knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped (and reported as ignored) so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short. Duplicate tool calls are dropped, plans cap at 4 calls, and a zero-result run triggers ONE replan with failure feedback.
+* knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped (and reported as ignored) so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool. Duplicate tool calls are dropped, plans cap at 4 calls, and a zero-result run triggers ONE replan with failure feedback.
 """
 
 import json
@@ -51,7 +51,7 @@ FILTER_NAME = 'search_database'
 RELAX_THRESHOLD_STEPS = (0.5, 0.4, 0.3, 0.2)
 SCORED_FILTER_KEYS = ('genres', 'voices', 'moods', 'other_features')
 
-CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album')
+CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album', 'instrumental')
 
 _NON_SONG_TITLE_RE = re.compile(
     r'\b(?:intro|outro|skit|interlude|interludio|prelude|epilogue)\b',
@@ -156,6 +156,13 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
         out['moods'] = _max_conf(filt['moods'], of)
     if filt.get('other_features'):
         out['other_features'] = _max_conf(filt['other_features'], of)
+
+    if filt.get('instrumental') is not None:
+        want = filt['instrumental']
+        if isinstance(want, str):
+            want = want.strip().lower() in ('true', '1', 'yes')
+        conf = mv.get('instrumental', 0.0)
+        out['instrumental'] = conf if want else max(0.0, 1.0 - conf)
 
     if filt.get('year_min') is not None or filt.get('year_max') is not None:
         year = feats.get('year')
@@ -278,6 +285,12 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
             f"   other_features {filt['other_features']} -> other_features (dense): range {lo:.2f}..{hi:.2f}"
         )
         machine['other_features'] = (nz, round(lo, 2), round(hi, 2))
+    if filt.get('instrumental') is not None:
+        nz, lo, hi = _tag_stats(['instrumental'], 'mood_vector')
+        lines.append(
+            f"   instrumental={filt['instrumental']} -> mood_vector (top-5, sparse): {nz}/{n} carry the tag (range {lo:.2f}..{hi:.2f})"
+        )
+        machine['instrumental'] = (nz, round(lo, 2), round(hi, 2))
     if filt.get('energy_min') is not None or filt.get('energy_max') is not None:
         lines.append(
             f"   energy {filt.get('energy_min', '?')}..{filt.get('energy_max', '?')} -> continuous gradient"
@@ -498,7 +511,7 @@ class ToolPlan:
 
 
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
-_DECADE_RE = re.compile(r"\b(60|70|80|90|00|10|20)s\b", re.IGNORECASE)
+_DECADE_RE = re.compile(r"\b((?:19|20)?(?:60|70|80|90|00|10|20))s\b", re.IGNORECASE)
 _BPM_RE = re.compile(r"\b(\d{2,3})\s*bpm\b", re.IGNORECASE)
 _ENERGY_NUM_RE = re.compile(
     r"\benergy\s*(?:above|>=?|over|min(?:imum)?)\s*([0-9]*\.[0-9]+|[0-9]+)\b", re.IGNORECASE
@@ -563,6 +576,8 @@ def _extract_genre_hints(text: str) -> Dict[str, List[str]]:
 
 def _normalize_decade(prefix: str) -> int:
     p = int(prefix)
+    if p >= 1000:
+        return p
     if p >= 30:
         return 1900 + p
     return 2000 + p
@@ -984,9 +999,13 @@ def validate_plan_args(
                         if title and artist:
                             cleaned_sub.append({'type': 'song', 'title': title, 'artist': artist})
                 if not cleaned_sub:
-                    log_messages.append("   skip seed_search(subtract): empty 'subtract' list")
-                    continue
-                args['subtract'] = cleaned_sub
+                    log_messages.append(
+                        "   coerce blend_mode 'subtract' -> 'union' (empty 'subtract' list)"
+                    )
+                    args.pop('subtract', None)
+                    blend = 'union'
+                else:
+                    args['subtract'] = cleaned_sub
             args['blend_mode'] = blend
 
         if name == 'text_match':
@@ -1111,34 +1130,90 @@ def dedupe_and_cap_calls(
     return out
 
 
+SOFT_SQL_KEYS = (
+    'tempo_min',
+    'tempo_max',
+    'energy_min',
+    'energy_max',
+    'moods',
+    'key',
+    'scale',
+    'min_rating',
+)
+
+
+def _broaden_underfilled(
+    filter_args: Dict,
+    strict_result: Dict,
+    ai_config: Dict,
+    target_count: int,
+    pool_target: int,
+    log_messages: List[str],
+) -> Dict:
+    from tasks.ai.tools import execute_mcp_tool
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    strict_songs = strict_result.get('songs', []) or []
+    if len(strict_songs) >= target_count:
+        return strict_result
+    dropped = [k for k in SOFT_SQL_KEYS if filter_args.get(k) not in (None, '', [])]
+    if not dropped:
+        return strict_result
+
+    broad_args = {k: v for k, v in filter_args.items() if k not in SOFT_SQL_KEYS}
+    broad_args['get_songs'] = pool_target
+    if any(broad_args.get(k) for k in SCORED_FILTER_KEYS):
+        broad_args['score_threshold'] = RELAX_THRESHOLD_STEPS[-1]
+    broad = execute_mcp_tool('search_database', broad_args, ai_config)
+    if 'error' in broad:
+        return strict_result
+    pool_songs = broad.get('songs', []) or []
+    if len(pool_songs) <= len(strict_songs):
+        return strict_result
+
+    log_messages.append(
+        f"   underfilled: hard cut left {len(strict_songs)} songs (target {target_count}) -> "
+        f"re-queried without {dropped} ({len(pool_songs)}-song pool), "
+        "applying them as a soft re-rank instead"
+    )
+    feats = _fetch_pool_features([s['item_id'] for s in pool_songs])
+    final, _matched, _moved = _rerank_pool(pool_songs, filter_args, feats, log_messages)
+    return {"songs": final, "message": broad.get('message', '')}
+
+
 def _run_search_database_with_relax(
     filter_args: Dict,
     ai_config: Dict,
     target_count: int,
     log_messages: List[str],
+    pool_target: Optional[int] = None,
 ) -> Dict:
     from tasks.ai.tools import execute_mcp_tool
 
     has_scored = any(filter_args.get(k) for k in SCORED_FILTER_KEYS)
     if not has_scored:
-        return execute_mcp_tool('search_database', filter_args, ai_config)
-
-    last_result: Optional[Dict] = None
-    for step_threshold in RELAX_THRESHOLD_STEPS:
-        args = dict(filter_args)
-        args['score_threshold'] = step_threshold
-        result = execute_mcp_tool('search_database', args, ai_config)
-        if 'error' in result:
-            return result
-        songs = result.get('songs', [])
-        log_messages.append(f"   relax: score_threshold={step_threshold} -> {len(songs)} songs")
-        last_result = result
-        if len(songs) >= target_count:
-            return result
-    return (
-        last_result
-        if last_result is not None
-        else {"songs": [], "message": "relax loop produced no result"}
+        result = execute_mcp_tool('search_database', filter_args, ai_config)
+    else:
+        result = None
+        for step_threshold in RELAX_THRESHOLD_STEPS:
+            args = dict(filter_args)
+            args['score_threshold'] = step_threshold
+            step_result = execute_mcp_tool('search_database', args, ai_config)
+            if 'error' in step_result:
+                return step_result
+            songs = step_result.get('songs', [])
+            log_messages.append(
+                f"   relax: score_threshold={step_threshold} -> {len(songs)} songs"
+            )
+            result = step_result
+            if len(songs) >= target_count:
+                break
+        if result is None:
+            result = {"songs": [], "message": "relax loop produced no result"}
+    if 'error' in result or not pool_target:
+        return result
+    return _broaden_underfilled(
+        filter_args, result, ai_config, target_count, pool_target, log_messages
     )
 
 
@@ -1461,8 +1536,13 @@ def plan_and_execute_once(
             except TypeError:
                 log_messages.append(f"   Arguments: {pretty}")
             if tn == 'search_database':
+                relax_pool_target = COMPOSITION_POOL_TARGET
+                db_total = library_context.get('total_songs', 0) if library_context else 0
+                if db_total and db_total < relax_pool_target:
+                    relax_pool_target = db_total
                 res = _run_search_database_with_relax(
-                    ta, ai_config, target_song_count, log_messages
+                    ta, ai_config, target_song_count, log_messages,
+                    pool_target=relax_pool_target,
                 )
             else:
                 res = execute_mcp_tool(tn, ta, ai_config)

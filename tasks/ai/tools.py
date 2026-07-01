@@ -424,7 +424,12 @@ def get_mcp_tools() -> List[Dict]:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Short vivid description of the sound or the lyrical topic.",
+                            "description": (
+                                "Short vivid description of the sound or the lyrical topic. "
+                                "ALWAYS in English: when the user wrote another language, "
+                                "translate the description (the underlying embeddings only "
+                                "understand English)."
+                            ),
                         },
                         "mode": {
                             "type": "string",

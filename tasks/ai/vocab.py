@@ -225,6 +225,12 @@ ALIAS_ENERGY = {
     'powerful': (0.7, 1.0),
     'upbeat': (0.55, 1.0),
     'workout': (0.65, 1.0),
+    'cheer me up': (0.55, 1.0),
+    'cheer up': (0.55, 1.0),
+    'cheerful': (0.55, 1.0),
+    'uplifting': (0.55, 1.0),
+    'feel-good': (0.55, 1.0),
+    'feel good': (0.55, 1.0),
 }
 
 
