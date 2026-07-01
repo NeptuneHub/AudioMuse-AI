@@ -100,27 +100,23 @@ When submitting a pull request, ensure:
 * **AGPLv3 License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
-* **Static analysis (flake8):** the `Static Analysis` workflow (`.github/workflows/lint-flake8.yml`) runs `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` on every push/PR to `main` and must pass. It covers syntax errors, all pyflakes checks (undefined/leftover names, unused imports and locals, f-string and `%`-format mistakes), invalid escape sequences, `== None`/`== True` comparisons, bare `except:`, and multiple imports on one line. Run `git ls-files '*.py' | xargs flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` before pushing (plain `flake8 .` also scans your local virtualenv). In particular: don't reference undefined names, leftover/renamed variables, or unresolved imports; fix syntax errors; and only keep a `global`/`nonlocal` declaration when the function actually reassigns that name (declaring one for a variable you merely read or mutate in place - `d[k]=v`, `.append()`, `.update()` - will fail the check). Style/formatting rules (line length, whitespace, blank lines) are intentionally not enforced here.
-* **logging.exception (ruff TRY400):** the `Ruff` workflow (`.github/workflows/lint-ruff.yml`, config in `ruff.toml`) runs the flake8 rule set plus `TRY400` - inside an `except` block use `logging.exception("msg")`, never `logging.error(...)`. The same workflow also gates the naming and whitespace rules described in **Code style & cleanliness** below. Run `ruff check .` before pushing. `ruff format` (single-quote-preserving) and the line-length rule (`E501`) are available to run ad hoc but are not required to pass.
-* **Spell check (codespell):** the `Spell Check (codespell)` workflow (`.github/workflows/lint-codespell.yml`) runs `codespell` over the whole repository and must pass. Fix real typos; add genuine false positives (with a short reason) to `.codespellrc`.
-* **No emoji/icons in code:** code files must stay plain ASCII - decorative emoji break the Windows console (cp1252) when logged. Use ASCII instead (`OK`, `X`, `->`). The `No Emoji In Code` workflow (`.github/workflows/lint-no-emoji.yml`) enforces this for `.py` using the maintained `emoji` library (run `pip install emoji && python scripts/check_no_emoji.py` locally). Emoji remain fine in HTML/templates and frontend JS.
-* **Line endings (LF):** every file must use LF line endings; the `Line Ending Linter` workflow rejects CRLF.
-* **Type check (mypy):** the `Type Check (mypy)` workflow (`.github/workflows/lint-mypy.yml`) runs `mypy --config-file mypy.ini`, scoped to a small set of core modules listed in `mypy.ini`. If you touch one of those modules, run `mypy --config-file mypy.ini` locally and keep it green.
-
-### Code style & cleanliness
-Checked by the `Ruff` workflow and the unit tests, so a sloppy PR goes red in CI. Run `ruff check .` and `pytest test/unit/` before pushing.
-
-* **snake_case names:** use `song_count`, `get_albums()` - not `songCount` or `getAlbums`; classes stay PascalCase (`SongIndex`).
-* **No stray whitespace:** no trailing spaces, no spaces on blank lines, and end every file with a single newline.
-* **No emoji in code:** plain ASCII only (`OK`, `->`); emoji belong only in HTML/templates.
-* **Lean imports:** no import cycles, keep the chain shallow - move heavy imports inside the function that uses them.
-* **One config default:** define each tunable once in `config.py` and import `config.NAME`; never re-read its env var elsewhere.
 
 > Important: Prefear opening small PR, focused on specific functionality that directly add value. Avoid to change multiple unrelated functionality to facilitate test.
 
 > Contributions generated with AI are welcome, provided that a qualified human reviewer verifies, tests, and understands the code. AI tools can assist in development, but all pull requests must be submitted by someone capable of ensuring correctness and maintainability. 
 
 > Missing requirements may lead to requests for additional information and, if not provided, the PR may be closed. Regardless of the above, the final decision to merge a pull request is at the maintainer’s discretion.
+
+### Linting & Code Style
+All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locally before pushing:
+
+* **Naming:** snake_case for functions/variables (`song_count`, `get_albums()`), PascalCase for classes (`SongIndex`); no trailing whitespace, and end every file with a single newline.
+* **Imports at the top:** keep imports at the top of the file; only move one inside a function when it's truly necessary (e.g. to break an import cycle or avoid a heavy/optional dependency at module load time).
+* **One config default:** define each tunable once in `config.py` and import `config.NAME` - never re-read its env var elsewhere.
+* **Plain ASCII, no emoji:** `.py` files stay plain ASCII (`OK`, `->`) - decorative emoji break the Windows console when logged. Emoji are still fine in HTML/templates and frontend JS.
+* **flake8 + ruff:** `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` catches syntax errors and pyflakes issues (undefined/unused names, bad `== None`/`== True` comparisons, bare `except:`); `ruff check .` adds the naming/whitespace rules above plus `TRY400` (use `logging.exception(...)`, not `logging.error(...)`, inside an `except` block). Run both before pushing.
+* **codespell:** must pass repo-wide; fix real typos, and add genuine false positives (with a short reason) to `.codespellrc`.
+* **LF line endings & mypy:** every file must use LF line endings (no CRLF); if you touch a module listed in `mypy.ini`, run `mypy --config-file mypy.ini` and keep it green.
 
 ### How to Open a Draft PR
 1. Push your branch to your fork
