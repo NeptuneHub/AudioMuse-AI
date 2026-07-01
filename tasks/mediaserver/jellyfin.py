@@ -699,7 +699,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
             f"Reuse of existing playlist '{playlist_name}' not supported from the Music Server, going to create a new one."
         )
         if not delete_playlist(playlist_id):
-            logger.error(
+            logger.exception(
                 f"Jellyfin: failed to delete playlist '{playlist_name}' (Id={playlist_id}) for fallback recreate"
             )
             return None
