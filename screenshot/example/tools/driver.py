@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Playwright screenshot driver for the AudioMuse-AI documentation images.
+
+Development tool that drives a headless browser against a running instance,
+logs in, walks the main UI pages and captures the screenshots used in the docs.
+It intercepts ``/api/**`` responses to substitute generated placeholder data
+(fake playlist/artist names) so published screenshots contain no real library
+content. ``driver2.py`` is the flow-driven companion.
+
+Main Features:
+* Automates login and per-page navigation, then captures screenshots.
+* Masks API JSON with LLM-generated placeholder names to avoid leaking data.
+"""
+
 import os
 import json
 import traceback

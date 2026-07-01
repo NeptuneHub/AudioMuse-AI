@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Orchestrate the media-provider migration as RQ jobs.
+
+Drives the multi-step migration flow whose dry-run and source-refresh phases run
+as RQ jobs polled by the UI; delegates track matching to provider_migration_matcher
+and reuses the app's core routines under an app context.
+
+Main Features:
+* Under an advisory lock, pauses and drains workers, then rewrites item ids and
+  index id-maps inside a single transaction that drops and re-adds the score
+  foreign keys, applies new provider metadata, and updates app_config.
+* Reads target metadata from the migration_target_meta side table and builds
+  the old->new id mapping via indexed per-album queries; reloads state and
+  index tables after commit.
+"""
+
 import json
 import logging
 import re

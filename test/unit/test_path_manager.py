@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Distance metrics, centroid interpolation and signature normalization.
+
+Covers the path_manager math used to walk between embedding centroids: the
+euclidean/angular distance functions, linear and SLERP interpolation, and
+signature normalization.
+
+Main Features:
+* Euclidean and angular distances on known vectors, with None yielding inf
+* get_distance selects euclidean by default and angular when configured
+* Linear interpolation endpoints/midpoints and SLERP arc on the unit sphere
+* SLERP falls back to linear for collinear/zero vectors; signatures normalized
+"""
+
 import numpy as np
 from tasks.path_manager import (
     get_euclidean_distance,

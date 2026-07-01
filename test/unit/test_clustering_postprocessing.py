@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Playlist post-processing filters in clustering_postprocessing.
+
+Covers the filters that trim and deduplicate clustering output before it becomes
+playlists: size threshold, title/artist dedup, distance filtering, and diversity.
+
+Main Features:
+* Minimum-size filter drops small playlists and keeps exact-threshold ones
+* Title/artist dedup normalizes remastered/explicit markers and is case-insensitive
+* Distance filtering drops near-duplicate vectors, falls back to title/artist dedup
+  when vectors are missing, and select_top_n_diverse picks the largest first
+"""
+
 import numpy as np
 from unittest.mock import MagicMock, patch
 from tasks.clustering_postprocessing import (

@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for Song Alchemy: blend songs/artists into a playlist.
+
+Serves the `/alchemy` UI and its API, delegating the actual centroid-based
+blending to `tasks.song_alchemy.song_alchemy`. Also manages the persisted
+"anchors" and "radios" that let a saved blend be re-run on demand.
+
+Main Features:
+* Routes: `/alchemy` page, artist/playlist autocomplete, `/api/alchemy`, plus
+  CRUD for `/api/anchors` and `/api/radios` (with `/api/radios/run`).
+* Serves and builds the 2D artist projection; wraps the playlist list in a
+  short-TTL in-process cache guarded by a lock.
+"""
+
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import math

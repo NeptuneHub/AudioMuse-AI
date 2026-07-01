@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Per-artist GMM fitting and soft-Chamfer similarity in artist_gmm_manager.
+
+Covers component selection, GMM parameter construction from track embeddings,
+the mode-to-mode divergence metric, and candidate reranking in find_similar_artists.
+
+Main Features:
+* select_optimal_gmm_components respects sample size and min/max bounds
+* fit_artist_gmm produces normalized weights, correct means shape, few-songs flag,
+  and omits covariance fields
+* gmm_soft_chamfer_distance is zero for identical, scale-invariant, symmetric,
+  and weight-sensitive; find_similar_artists reranks and excludes self
+"""
+
 import numpy as np
 from tasks.artist_gmm_manager import (
     select_optimal_gmm_components,

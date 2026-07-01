@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Standalone research script for the GMM-based brainstorm/similarity experiment.
+
+Offline experiment (not part of the app runtime) that connects directly to a
+Postgres AudioMuse-AI database, loads the mood/MSD ONNX label models, and fits
+per-item Gaussian Mixture Models to prototype the "real GMM" brainstorm ranking.
+
+Main Features:
+* Reads embeddings and labels straight from the database via a hardcoded DB_CONFIG.
+* Fits scikit-learn GaussianMixture models to evaluate GMM-based candidate scoring.
+"""
+
 import onnx
 import numpy as np
 import psycopg2

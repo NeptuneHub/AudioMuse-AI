@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flow-driven Playwright screenshot driver for AudioMuse-AI docs.
+
+Development tool that captures screenshots of the feature pages
+(similarity, artist similarity, path, waveform, lyrics search, alchemy) by
+replaying declarative interaction ``FLOWS`` (type/click/wait steps) against a
+running instance. It reuses the login and helper machinery from ``driver.py``.
+
+Main Features:
+* Declarative per-page step flows drive typing, clicks and result waits.
+* Reuses ``driver.py`` for login and shared helpers to keep screenshots clean.
+"""
+
 import os
 import traceback
 

@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Prompt and JSON-schema templates for the playlist AI.
+
+Central store of every prompt string the AI layer sends: the playlist-naming
+template, the intent classifier, the MCP tool-router system prompt, the
+Ollama tool-calling prompt with worked examples, and the grounded brainstorm
+recipe prompt. Consumed by ``planner``, ``api``, ``tool_impl``, and providers.
+
+Main Features:
+* Prompts are built dynamically from config vocab (genres/voices/moods) and library_context so allowed values stay in sync with the catalog.
+* build_tool_calls_schema emits the strict JSON shape (1-4 tool calls, name enum) used to constrain Ollama structured output.
+"""
+
 from typing import Dict, List, Optional
 
 import config

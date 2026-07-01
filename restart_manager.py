@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Supervisor control plane for restarting Flask and RQ worker processes.
+
+Publishes control requests onto the Redis restart channel that
+``restart_listener`` consumes, and provides the supervisorctl-backed helpers
+that actually stop, start, and restart the managed services.
+
+Main Features:
+* ``publish_*`` helpers broadcast restart/stop/start requests to workers.
+* supervisorctl-driven actions over the known Flask and worker service names.
+* On macOS, dispatches actions to the control socket/host:port instead of supervisorctl.
+"""
+
 import json
 import logging
 import os

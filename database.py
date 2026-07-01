@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Postgres data-access layer for the whole application.
+
+Owns the per-request connection (via Flask ``g``), the embedded-server
+lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
+tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
+
+Main Features:
+* Connection management plus ``init_db`` table/index creation and migrations.
+* Task-status and history persistence with sanitized fields and capped history rows.
+* Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
+"""
+
 import json
 import logging
 import sys

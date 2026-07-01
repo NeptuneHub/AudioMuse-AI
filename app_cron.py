@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for managing and running cron-scheduled tasks.
+
+Serves the `/cron` UI and CRUD over the `cron` table, plus the tick function
+that reads enabled rows and runs the matching task (analysis, clustering,
+sonic fingerprint, or alchemy radio) when its cron expression matches now.
+
+Main Features:
+* Routes: `/cron` page and `/api/cron` (GET list, POST create/update).
+* Cron evaluation that enqueues `tasks.analysis.run_analysis_task` or
+  `tasks.clustering.run_clustering_task`, and runs the sonic-fingerprint and
+  alchemy-radio generators synchronously, guarding against re-running a job
+  that ran recently.
+"""
+
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 from database import get_db, save_task_status

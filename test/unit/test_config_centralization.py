@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Config-default centralization for RQ and instrumentation settings.
+
+Asserts each tunable exists in config with its default, honors its environment
+variable, and that importer modules reference config rather than re-reading env.
+
+Main Features:
+* config attributes exist with the documented default and coerce env overrides
+* Importer modules still reference the config names they depend on
+* Importers have no local os.environ.get or getattr-fallback default for those names
+"""
+
 import importlib
 import os
 import re

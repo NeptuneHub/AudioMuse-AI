@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Manage the semantic grove index that fuses lyric and audio embeddings.
+
+Builds, caches, and queries a dedicated index over merged lyrics+audio vectors,
+sitting alongside the other similarity indexes but combining two modalities.
+
+Main Features:
+* Merges per-song lyric and audio embeddings into one whitened, weighted vector
+  (each modality L2-normalised; weights square-rooted so their squares equal
+  SEM_GROVE_WEIGHT_LYRICS (0.75) and SEM_GROVE_WEIGHT_AUDIO (0.25)) and persists
+  the index and whitening stats to the database.
+* Weights are baked in at build time, so changing them requires an index rebuild.
+* Serves a process-wide cache with radius-walk neighbour search that applies
+  near-duplicate suppression and per-artist caps.
+"""
+
 import gc
 import logging
 import math

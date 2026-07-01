@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""CLAP audio/text embedding backend used during analysis and text search.
+
+Loads the CLAP ONNX audio and text encoders and produces the shared embedding
+space that links a track's audio to natural-language descriptions. The analysis
+pipeline calls analyze_audio_file per track; tasks.clap_text_search calls the
+text-encoder side to embed queries against the stored audio embeddings.
+
+Main Features:
+* initialize/unload/get accessors that load the audio and text models lazily and
+  free them independently to keep worker RSS low between jobs.
+* analyze_audio_file: segment audio, build mel spectrograms, and embed each track.
+* get_text_embedding(_batch) plus other-feature label embeddings for CLAP-derived
+  scalar features, cached in Redis to avoid re-encoding fixed label sets.
+"""
+
 import os
 import logging
 import numpy as np

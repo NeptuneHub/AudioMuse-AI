@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Error registry, classification, and safe message building in error_manager.
+
+Covers the code registry, build/from_exception/classify/record, and the guarantee
+that no traceback or raw exception text ever reaches the returned message.
+
+Main Features:
+* Registry completeness and unknown-code fallbacks for class and message
+* Detail appended as a single truncated line; unknown codes suppress caller detail
+* classify maps exception names via MRO; record logs the full trace to the logger
+  only, and http_status_for_code maps error classes to HTTP statuses
+"""
+
 import os
 import sys
 

@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Two-stage plan builder and executor for AI playlist requests.
+
+Orchestrates the AI pipeline between ``api``/``prompts`` (LLM calls),
+``vocab`` (label normalization), and ``tools`` (execution): it classifies
+intent, narrows the tool surface, validates and merges the emitted tool
+calls into a normalized plan, runs it, and composes the resulting songs.
+
+Main Features:
+* Regex pre-extraction of years/decades/BPM/tempo/energy hints plus soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) - never a hard cut.
+* knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short.
+"""
+
 import json
 import logging
 import re

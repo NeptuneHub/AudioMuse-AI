@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Silero voice-activity-detection runtime (ONNX) that gates lyrics ASR.
+
+Runs the Silero VAD model on onnxruntime to find the voiced spans of a clip so
+lyrics_transcriber can send only speech to whisper_onnx, cutting wasted ASR on
+instrumental sections. Provides both the segment list and the raw window
+probabilities so callers can retry at a lower threshold.
+
+Main Features:
+* Streaming per-window inference at 8 kHz or 16 kHz, carrying the recurrent
+  state and a context window across chunks as the model requires.
+* Hysteresis segmentation (threshold / neg_threshold with min-speech,
+  min-silence and speech-pad smoothing) exposed via analyze_audio,
+  get_speech_timestamps and a standalone threshold_segments for retries.
+* Lazy thread-safe session load keyed on model path, plus is_loaded /
+  reset_session for memory release.
+"""
+
 from __future__ import annotations
 
 import logging

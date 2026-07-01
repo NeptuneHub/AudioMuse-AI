@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Assorted correctness guards for isolated numeric and config behaviors.
+
+Groups small regression checks that each pin one previously broken behavior,
+loading target modules in isolation with stubbed dependencies.
+
+Main Features:
+* Mistral request timeout scales linearly with the configured seconds
+* GMM component count is capped at the available sample count and never crashes
+"""
+
 import importlib.util
 import os
 import sys

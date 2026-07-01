@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_alchemy alchemy-request payload validation.
+
+Posts item payloads to the /api/alchemy endpoint to confirm operation and
+id validation runs before the request reaches the alchemy engine.
+
+Main Features:
+* Payloads with no ADD operation and ADD items missing an id return 400.
+* ADD items without ids are filtered out before dispatch.
+"""
+
 import pytest
 from unittest.mock import patch
 from flask import Flask

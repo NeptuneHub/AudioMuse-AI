@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Centralized HTTP layer for media-server backends.
+
+Provides a drop-in replacement for the parts of `requests` used by backends,
+adopted via `from . import http as requests`.
+
+Main Features:
+* Wraps every call with a connection-only retry to survive the macOS first-
+  outbound-request race ("[Errno 65] No route to host") right after launch.
+* Automatically delegates all other `requests` attributes to the real library.
+"""
+
 import requests as _requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry

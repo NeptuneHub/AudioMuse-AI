@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Clustering orchestrator: evolutionary search that turns embeddings into playlists.
+
+The main clustering RQ job. run_clustering_task drives an evolutionary/elitist
+search over clustering method and parameters, dispatching run_clustering_batch_task
+child jobs and monitoring them, then names and materializes the best playlists.
+Delegates the per-iteration work to clustering_helper, the models to clustering_gpu,
+and dedup/size/diversity filtering to clustering_postprocessing.
+
+Main Features:
+* run_clustering_task / _monitor_and_process_batches / _launch_batch_job: fan out
+  parameter sets into batch jobs, track elites, and adapt sampling each generation.
+* Genre-stratified sampling (_prepare_genre_map, _calculate_target_songs_per_genre)
+  so playlists span the library rather than one dominant genre.
+* _name_and_prepare_playlists: score, name (optionally via AI) and persist results;
+  app imports are deferred inside functions to avoid circular imports.
+"""
+
 from collections import defaultdict
 import numpy as np
 import json

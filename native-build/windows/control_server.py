@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Loopback TCP control server for the Windows standalone build.
+
+Windows lacks the Unix domain sockets the macOS build uses, so control commands
+travel over a loopback-only TCP socket instead. The server runs in a daemon
+thread (default 127.0.0.1:8001) and speaks two shapes: HTTP-style ``GET
+/status`` and ``POST /stop`` used by the CLI, plus JSON start/stop/restart
+requests dispatched to the ``windows.supervisor``.
+
+Main Features:
+* Listens on 127.0.0.1 with a 1s accept timeout so ``stop`` unblocks cleanly.
+* Answers GET /status and POST /stop directly; dispatches JSON control requests.
+"""
+
 import json
 import logging
 import socket

@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Parameter generation and model fitting in clustering_helper.
+
+Covers the random/mutated parameter builders for each clustering method, data
+scaling, and the model-application path that runs the chosen algorithm.
+
+Main Features:
+* _mutate_param clamps to min/max for ints and floats
+* Random and mutated parameters for kmeans, dbscan, gmm, and spectral stay in range
+* _prepare_and_scale_data honors the embeddings flag; _apply_clustering_model runs
+  kmeans/dbscan and rejects invalid params; stratified subset excludes prior ids
+"""
+
 import numpy as np
 import random
 from unittest.mock import patch

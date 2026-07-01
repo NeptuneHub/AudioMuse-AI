@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Repo-wide guard that no tracked source file contains an em-dash.
+
+Scans every git-tracked file (skipping the vendored tree) for U+2014 and fails
+with the offending paths, enforcing the plain-hyphen house rule.
+
+Main Features:
+* The candidate file list is non-empty so the scan cannot silently pass
+* No em-dash appears in any tracked file outside vendor
+"""
+
 import os
 import subprocess
 

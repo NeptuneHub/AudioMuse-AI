@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Shared, provider-agnostic helpers for the AudioMuse-AI media servers.
+
+Used by every backend for cross-cutting concerns, keeping the per-provider
+modules focused on their own API specifics.
+
+Main Features:
+* Detects rejected-credential errors (is_auth_error: HTTP 401/403 plus wording).
+* Selects the best artist from provider metadata and normalizes path/format fields.
+"""
+
 import logging
 import os
 import re

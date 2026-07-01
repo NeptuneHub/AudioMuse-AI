@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Build a smooth song-to-song path through the audio embedding space.
+
+Powers the "sonic path" playlist: given a start and end track it interpolates
+intermediate centroids and picks real songs near each so the sequence morphs
+gradually between the endpoints. Uses the neighbor queries in tasks.ivf_manager
+to resolve candidates and shares the audio metric with the IVF index.
+
+Main Features:
+* find_path_between_songs: orchestrates centroid interpolation (linear or
+  angular slerp), per-step candidate search, and either a variable- or
+  fixed-size result via merge/refill passes.
+* Candidate evaluation with per-artist caps, content de-duplication, and a
+  proximity gate that rejects picks too close to recently chosen songs.
+* Governed by config: PATH_DISTANCE_METRIC ('angular'), PATH_DEFAULT_LENGTH (25),
+  PATH_CANDIDATES_PER_STEP (25), and PATH_FIX_SIZE (False = allow shorter paths).
+"""
+
 import logging
 import numpy as np
 

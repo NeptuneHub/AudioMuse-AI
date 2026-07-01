@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Provider-migration tests against a real Postgres database.
+
+Drives tasks.provider_migration_matcher and provider_migration_tasks over a
+live database to migrate item ids between providers and rewrite the stored
+segmented id map end to end.
+
+Main Features:
+* Real cross-provider migration for each source/target pairing.
+* Segmented id-map rewrite and relabel-overflow soft-failure handling.
+"""
+
 import importlib.util
 import json
 import os

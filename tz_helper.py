@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Timezone helpers for storing UTC and displaying local time.
+
+Provides the canonical SQL snippet for UTC-now writes and converters that turn
+naive/UTC datetimes into the host's local timezone for display, keeping storage
+in UTC while presentation is localized.
+
+Main Features:
+* ``UTC_NOW_SQL`` constant for consistent UTC timestamps in queries.
+* ``to_local`` / ``to_local_str`` convert UTC datetimes to local time and formatted strings.
+"""
+
 import datetime
 
 

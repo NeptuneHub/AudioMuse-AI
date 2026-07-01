@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Process supervisor for the macOS standalone build.
+
+Boots and monitors the full local stack in dependency order: embedded
+PostgreSQL (via the shared ``database`` module), Redis, the Flask/waitress
+server and the RQ worker/janitor/restart-listener children (each re-spawned
+from ``macos.launcher`` with a ``--role=``). It restarts crashed children,
+serves the Unix-socket control server, and tears everything down on shutdown.
+The Linux/Windows supervisors are the platform-specific siblings.
+
+Main Features:
+* Ordered boot, health polling and automatic restart of Flask + RQ children.
+* Runs the control-socket server and writes newest-first rotating logs.
+"""
+
 import json
 import logging
 import os

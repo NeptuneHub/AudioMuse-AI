@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Order tracks within a playlist for a smooth sonic flow.
+
+Consumed by playlist-building features (radio, sonic fingerprint, alchemy) to
+sequence a finished set of item ids rather than to select them.
+
+Main Features:
+* Greedy nearest-neighbour walk over a composite tempo/energy/key distance,
+  seeding from a low-energy track (the first quartile of the energy sort).
+* Optional energy-arc reshaping (build-up then wind-down) applied only to
+  playlists of ten or more tracks; ids with no score row are appended untouched.
+"""
+
 import logging
 from typing import List, Dict, Optional
 

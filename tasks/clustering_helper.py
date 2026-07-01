@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Per-iteration clustering worker: parameter generation, fitting and scoring.
+
+The inner loop of the clustering search run by tasks.clustering. Given a method
+and parameter set it prepares and scales the feature/embedding data, fits a model
+(via clustering_gpu), and scores the resulting playlists. Also generates the
+random and evolutionary parameter mutations that the elitist search explores.
+
+Main Features:
+* _perform_single_clustering_iteration / _apply_clustering_model: run one
+  clustering attempt end to end and return a scored result.
+* _generate_random_parameters / _mutate_parameters / _generate_evolutionary_parameters:
+  sample and mutate KMeans/DBSCAN/GMM/spectral/PCA params within configured ranges.
+* Playlist shaping helpers (chunking, shuffling, optional AI naming) for each run.
+"""
+
 import json
 import random
 import logging

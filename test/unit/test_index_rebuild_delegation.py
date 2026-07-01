@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Static check that cleaning delegates index rebuilds to the orchestrator.
+
+Parses tasks/cleaning.py with AST to confirm the orphan-cleaning task rebuilds
+indexes through the single orchestrator rather than a hand-maintained subset.
+
+Main Features:
+* The cleaning task calls _run_all_index_builds
+* It never calls the individual build_and_store_* builders directly, so the full
+  index set cannot drift out of sync
+"""
+
 import ast
 import os
 

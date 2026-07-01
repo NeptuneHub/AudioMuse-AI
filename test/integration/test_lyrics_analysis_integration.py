@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Golden-vector record/replay test of the real lyrics embedding pipeline.
+
+Feeds fixed fake lyrics through the actual gte-multilingual-base ONNX
+embedder and compares the produced vectors against a recorded baseline
+using a cosine-similarity threshold.
+
+Main Features:
+* Replays lyric embeddings against stored golden vectors.
+* Records a fresh baseline when none is present.
+"""
+
 import json
 import os
 import sys

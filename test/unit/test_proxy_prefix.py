@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Reverse-proxy prefix handling and the StripDuplicatedScriptName middleware.
+
+Covers the WSGI middleware that collapses a duplicated SCRIPT_NAME prefix so the
+auth barrier does not redirect-loop under a misconfigured proxy.
+
+Main Features:
+* A duplicated prefix is collapsed while correct or unrelated paths are untouched
+* Path equal to the prefix becomes root and trailing slashes are normalized
+* Without the fix the barrier loops; with it the loop is broken
+* Root redirect targets stay prefixed under the recommended config
+"""
+
 from flask import Flask, request, redirect, url_for, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 

@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Index-build primitives in index_build_helpers.
+
+Covers SQL-identifier validation, id-map building, byte/text splitting, segmented
+id-map storage and reassembly, and streaming embeddings out of Postgres.
+
+Main Features:
+* _validate_sql_identifier accepts bare names and rejects injection-shaped input
+* build_id_map, _split_bytes/_split_text, and reassemble/rewrite of segmented id maps
+* store_ivf_index_segmented delete-then-upsert across parts with id map only on part 1
+* stream_embeddings_to_buffer / iter_embedding_batches skip null/wrong-dim rows,
+  grow the buffer, use a read-only non-autocommit side session, and close on failure
+"""
+
 import importlib.util
 import json
 import os

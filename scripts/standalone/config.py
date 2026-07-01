@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Per-platform packaging configuration for the standalone build.
+
+Central table of PyInstaller settings for each target (launcher path, vendor
+dir, bundled binary names, hidden imports, excludes, icons, pgserver policy)
+that ``build.py`` and the ``platforms`` modules consume. Also reads the app
+version out of the project root ``config.py`` without importing it. This is the
+build-time config, distinct from the application's root ``config.py``.
+
+Main Features:
+* ``PLATFORMS`` dict describing how to package windows/macos/linux bundles.
+* ``read_app_version`` parses ``APP_VERSION`` from the root config via ``ast``.
+"""
+
 import ast
 import os
 import sys

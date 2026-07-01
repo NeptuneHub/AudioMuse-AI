@@ -1,3 +1,27 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Build, cache and query the lyrics IVF indexes.
+
+Manages the lyrics-side similarity search: the embedding index over
+lyrics_embedding and the per-axis index used for axis-targeted lookups. Builds
+via tasks.index_build_helpers, stores/queries through the disk-paged IVF engine
+in tasks.paged_ivf, and pairs with tasks.gte_warm_cache which owns the GTE model
+lifetime used to embed text queries.
+
+Main Features:
+* build_and_store_lyrics_index / build_and_store_lyrics_axes_index and the
+  load/refresh helpers: construct and hold the two lyrics indexes in memory.
+* search_by_text: embeds a query with gte-multilingual-base and returns nearest
+  lyrics, with metadata joined from the score table.
+* search_by_axes / get_axes_definition: rank songs against per-axis targets.
+"""
+
 import logging
 import sys
 from typing import Dict, List, Optional

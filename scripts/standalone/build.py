@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Top-level standalone-build orchestrator (PyInstaller packaging).
+
+Main entry point (``build.py --platform {windows,macos,linux}``) that runs
+PyInstaller against the selected platform launcher and drives the packaging
+steps, delegating platform-specific staging and post-processing to the
+matching module under ``platforms/``. Reads the app version from ``config.py``
+and produces the frozen bundle for one target.
+
+Main Features:
+* Resolves the build context (target, arch, version, dist/bundle paths) and
+  dispatches ``prepare``/packaging to the right ``platforms`` module.
+* Runs PyInstaller and sanitizes the version string for package naming.
+"""
+
 import argparse
 import os
 import platform as _platform

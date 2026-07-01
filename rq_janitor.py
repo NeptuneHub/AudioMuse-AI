@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Standalone process that reaps stale RQ job registries.
+
+Runs an infinite loop cleaning the started, finished, and failed job registries
+of the high and default queues so orphaned jobs (from crashed or restarted
+workers) do not accumulate; a sibling to the worker entrypoints.
+
+Main Features:
+* Periodic cleanup of started/finished/failed registries every 10 seconds.
+* Logs only when jobs are actually reaped, and survives per-iteration errors.
+"""
+
 import os
 import sys
 import time

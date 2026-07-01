@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Query manager for the audio similarity IVF index.
+
+Builds, loads and queries the primary audio embedding index (module renamed
+from the former Voyager manager; Voyager is fully removed). Delegates on-disk
+storage and cell scanning to tasks.paged_ivf and shares build helpers with
+tasks.index_build_helpers, exposing the high-level nearest-neighbor and search
+API the playlist, similarity and path features call.
+
+Main Features:
+* build_and_store_ivf_index / load_ivf_index_for_querying: build the disk-paged
+  IVF index from pgvector embeddings and hold one process-wide instance.
+* find_nearest_neighbors_by_id / _by_vector, search_tracks_unified, radius walk:
+  neighbor queries with f32 re-rank overfetch, artist capping, content
+  de-duplication and optional mood-similarity filtering.
+* TTL-bounded result caches and a shared thread pool for parallel cell fetches.
+"""
+
 import os
 import time
 import logging

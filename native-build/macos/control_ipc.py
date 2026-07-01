@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unix-socket control IPC server for the macOS standalone build.
+
+Runs a small line-oriented server over a mode-0600 Unix domain socket so the
+menu-bar app and CLI can send control commands (start, stop, restart, status)
+to the running ``macos.supervisor``. The Windows sibling uses a TCP control
+server instead.
+
+Main Features:
+* Accepts JSON control requests on a private Unix socket in a daemon thread.
+* Dispatches each request to a supplied handler and returns its JSON reply.
+"""
+
 import json
 import logging
 import os

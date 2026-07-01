@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Consistency of the mediaserver obsolete-fields config maps.
+
+Asserts MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE is derived correctly from
+MEDIASERVER_FIELDS_BY_TYPE so per-type field cleanup stays coherent.
+
+Main Features:
+* Both maps cover the same media types
+* Each type's obsolete set equals the union of other types' fields minus its own
+* A type's obsolete set never includes its own active fields
+"""
+
 import pytest
 
 import config

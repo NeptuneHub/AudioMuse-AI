@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""SSRF guard for validating user-supplied outbound URLs.
+
+Vets URLs before the application makes outbound HTTP requests on their behalf,
+rejecting non-http(s) schemes and hosts that resolve into blocked special-use
+address ranges. Note: loopback and private (RFC 1918) addresses are NOT rejected
+here; callers needing those blocked must add their own check.
+
+Main Features:
+* ``validate_outbound_url`` checks scheme, resolves the host, and inspects every IP.
+* Blocks link-local, multicast, reserved, and unspecified resolved addresses.
+"""
+
 import ipaddress
 import socket
 from urllib.parse import urlparse

@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Media-server backend adapters for Jellyfin, Emby, Navidrome and Lyrion.
+
+Exercises the per-provider helpers that talk to each music server plus the
+shared dispatcher, asserting request URLs/params, response normalization and
+error handling without hitting a live server.
+
+Main Features:
+* Auth header/param construction and auth-failure classification per provider
+* Best-artist selection, field normalization and playlist/album/track parsing
+* getAllSongs pagination, list-libraries shape, and create-or-replace flows
+* Dispatcher validation and automatic-playlist deletion routing
+"""
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 import requests

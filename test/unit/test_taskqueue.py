@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""RQ queue, registry and Redis connection configuration in taskqueue.
+
+Covers how taskqueue wires queues, registries and the Redis connection, including
+the platform-specific death-penalty class and socket-option selection by URL scheme.
+
+Main Features:
+* Base registry and queues use the platform death-penalty class, inherited by registries
+* Redis socket options drop keepalive for unix sockets and keep it for tcp/tls
+* Embedded-Redis argv builds the expected binary flags and URL
+* Queue names, connection kwargs and default timeout are as configured; app_helper re-exports handles
+"""
+
 import config
 import taskqueue
 from rq.registry import BaseRegistry

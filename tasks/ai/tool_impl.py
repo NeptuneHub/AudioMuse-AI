@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Grounded implementations of the AI playlist tools.
+
+Backs the schemas in ``tools`` with real queries against the ``score`` table
+and the similarity/index managers: seed song/artist similarity, song
+alchemy, CLAP audio and lyrics text search, metadata filtering, and the
+brainstorm recipe runner. This is where every AI tool actually touches data.
+
+Main Features:
+* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row.
+* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor.
+"""
+
 import json
 import logging
 import re

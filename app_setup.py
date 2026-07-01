@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""First-run setup wizard routes, registered on the shared Flask ``app``.
+
+Attaches the ``/setup`` page and ``/api/setup*`` endpoints directly to the app
+from ``flask_app`` (no blueprint), persisting configuration through
+``tasks.setup_manager`` and triggering a config reload / restart via
+``restart_manager``.
+
+Main Features:
+* Reads and saves the wizard config (basic server + auth fields plus advanced
+  and lyrics-API fields), masking secrets and treating a blank secret as
+  "keep the stored value" except where blank has its own meaning.
+* Validates enum fields against fixed option sets, tests the media-server
+  connection, and lists provider libraries so the wizard can populate itself.
+"""
+
 import re
 import types
 from flask import request, jsonify, render_template, make_response, after_this_request

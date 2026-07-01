@@ -1,12 +1,21 @@
-# app_artist_similarity.py
-"""
-Flask Blueprint for Artist Similarity functionality.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Provides endpoints for:
-- Searching for artists (autocomplete)
-- Finding similar artists using GMM-based HNSW index
-- Getting all tracks for an artist
-- Creating playlists from artist tracks
+"""Flask blueprint for Artist Similarity: find and play similar artists.
+
+Serves the `/artist_similarity` UI and its API, delegating lookups to
+`tasks.artist_gmm_manager` which backs similarity with a GMM-based index.
+
+Main Features:
+* Routes: `/artist_similarity` page, `/api/search_artists` (autocomplete),
+  `/api/similar_artists`, and `/api/artist_tracks` (all tracks for an artist).
+* Pure route layer with no local state; playlist creation is driven from the
+  returned track lists.
 """
 
 from flask import Blueprint, jsonify, request, render_template

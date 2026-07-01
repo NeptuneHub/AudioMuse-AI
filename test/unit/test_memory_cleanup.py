@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Model and CUDA memory cleanup around track and album analysis.
+
+Verifies that analyze_track and analyze_album_task release ONNX sessions and
+CUDA memory on the success, inference-error and database-error paths.
+
+Main Features:
+* ONNX sessions and CUDA memory are freed when inference raises
+* Externally supplied album sessions are not cleaned up by the callee
+* analyze_album_task runs comprehensive cleanup and CLAP unload in finally
+* Database failure re-raises while still tearing down loaded models
+"""
+
 import sys
 from unittest.mock import MagicMock, patch
 

@@ -1,17 +1,23 @@
-"""App-layer helpers that compose the data (``database``) and queue
-(``taskqueue``) layers for the web and task tiers.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This is NOT the database layer -- all SQL lives in ``database.py``. What remains
-here is orchestration and presentation glue:
+"""App-layer helpers composing the data and queue layers for the web/task tiers.
 
-- ``cancel_job_and_children_recursive`` -- recursively cancel an RQ job tree.
-- ``build_and_store_map_projection`` / ``build_and_store_artist_projection`` --
-  compute a 2D projection and persist it via ``database``.
-- ``attach_song_features`` / ``top_stratified_genre`` -- enrich API result rows.
+Orchestration and presentation glue on top of ``database`` and ``taskqueue``.
+This is NOT the database layer: all SQL lives in ``database.py``. It also
+re-exports the most-used ``database`` / ``taskqueue`` handles so the many
+modules doing ``from app_helper import get_db, redis_conn, ...`` stay untouched.
 
-It also re-exports the most commonly used ``database`` / ``taskqueue`` handles so
-the many modules doing ``from app_helper import get_db, redis_conn, ...`` are
-untouched.
+Main Features:
+* ``cancel_job_and_children_recursive`` recursively cancels an RQ job tree.
+* ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
+  compute a 2D projection and persist it; ``attach_song_features`` /
+  ``top_stratified_genre`` enrich API result rows.
 """
 
 import json

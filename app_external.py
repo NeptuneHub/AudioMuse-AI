@@ -1,4 +1,21 @@
-# app_external.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for the external track-lookup API (mounted at `/external`).
+
+Read-only endpoints that expose stored analysis for third-party integrations,
+returning per-track scores/embeddings and running unified similarity search via
+`tasks.ivf_manager.search_tracks_unified`.
+
+Main Features:
+* Routes: `/get_score`, `/get_embedding` (by item id) and `/search` (similarity).
+* Imports `get_db` lazily inside each handler to avoid a circular import.
+"""
 
 from flask import Blueprint, jsonify, request
 from psycopg2.extras import DictCursor

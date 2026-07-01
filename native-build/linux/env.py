@@ -1,3 +1,27 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Native library-path handling and child-env builder for the Linux standalone build.
+
+PyInstaller sets ``LD_LIBRARY_PATH`` to the bundle so the frozen app finds its
+own libraries; that same path breaks child processes (postgres, redis) that
+need the system loader. This module restores the original
+``LD_LIBRARY_PATH_ORIG`` for child environments and also assembles the full
+per-child environment (embedded DB/queue selection, model/cache/temp/backup
+paths, offline-model flags) that the Linux supervisor spawns each role with.
+
+Main Features:
+* ``restore_native_lib_path`` rewrites a child env dict to the system loader path;
+  ``native_lib_path_restored`` applies the same fix in-process (no-op when not frozen).
+* ``build_child_env`` points model/cache/temp/backup paths at ``linux.paths`` and
+  forces offline HuggingFace/Transformers for supervised Flask/RQ children.
+"""
+
 import contextlib
 import os
 import sys

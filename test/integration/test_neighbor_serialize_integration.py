@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Neighbor-serialization tests against a real Postgres database.
+
+Seeds the score table and runs app_helper.serialize_neighbor_results over
+real rows to confirm field mapping, missing-album handling, and injection
+safety through the actual SELECT path.
+
+Main Features:
+* Missing-album sentinel vs None handling and title/author from rows.
+* Unknown ids skipped, album-artist flag, and injection-style id safety.
+"""
+
 import os
 import sys
 import tempfile

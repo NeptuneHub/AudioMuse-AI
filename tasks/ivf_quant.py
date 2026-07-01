@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Vector storage-dtype codec and per-cell distance kernels for the IVF index.
+
+Low-level helper for tasks.paged_ivf: encodes/decodes stored vectors in the
+storage dtype set by config.IVF_STORAGE_DTYPE (default 'i8'/int8) and computes
+query-to-cell distances directly in that dtype. int8 is the coarse angular-only
+stage (euclidean/dot auto-fall back to f16); 'f16' and 'f32' (no quantization)
+are the other options, with an exact-float32 re-rank overfetch done upstream.
+
+Main Features:
+* dtype_code/name/np_dtype/elem_size and effective_code: map storage-dtype names
+  to codes, with int8 auto-downgraded to f16 for non-angular metrics.
+* encode_vectors / decode_row / prepare_query: f32<->f16<->int8 conversion
+  (int8 scaled by 127, angular queries pre-normalized).
+* cell_distances: angular/euclidean/dot per-cell scan via NumKong native kernels
+  when available, falling back to an equivalent NumPy path otherwise.
+"""
+
 from __future__ import annotations
 
 import logging

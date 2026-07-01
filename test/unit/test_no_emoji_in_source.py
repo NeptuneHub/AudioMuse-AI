@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Repo-wide guard that no tracked code file contains emoji or icons.
+
+Scans tracked files with code extensions for emoji code points and fails with
+the offending paths, since emoji break the Windows build.
+
+Main Features:
+* The candidate file list is non-empty so the scan cannot silently pass
+* No emoji appears in any tracked code file
+"""
+
 import os
 import subprocess
 

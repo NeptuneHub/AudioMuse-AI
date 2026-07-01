@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Task-note summary strings built by app_helper._build_task_note.
+
+Covers the per-task-type note produced for analysis, cleaning, and clustering,
+including subtask aggregation from the DB and fallbacks to detail fields.
+
+Main Features:
+* Analysis: sums tracks_analyzed across subtasks, falls back to album counts,
+  survives DB errors and invalid subtask JSON
+* Cleaning: first recognized numeric key wins, floats truncated, zero reported
+* Clustering: sampled/cluster counts from best_params with graceful fallbacks;
+  unknown task types and non-dict details yield an empty string
+"""
+
 import json
 from unittest.mock import MagicMock
 

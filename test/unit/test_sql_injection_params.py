@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""SQL injection resistance via parameterized queries on id endpoints.
+
+Verifies that item-id endpoints and the AI tool-impl IN clause pass ids as
+bound query parameters rather than interpolating them into the SQL string.
+
+Main Features:
+* Score, embedding and waveform endpoints pass the id as a bound param
+* The song-similarity IN clause is parameterized with placeholders
+"""
+
 import importlib.util
 import os
 import sys

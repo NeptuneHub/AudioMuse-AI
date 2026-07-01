@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Filesystem path resolution for the macOS standalone build.
+
+Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
+repo) and the per-user data locations under ``~/Library``, so the macOS
+launcher, supervisor and control-socket modules agree on where pgdata, redis,
+logs, models and the control socket live. The Linux/Windows ``paths`` modules
+are the platform-specific siblings.
+
+Main Features:
+* ``resource_root`` plus ``~/Library`` data and ``~/Library/Logs`` directories.
+* Control-socket and model paths shared across the macOS supervisor children.
+"""
+
 import os
 import platform
 import sys

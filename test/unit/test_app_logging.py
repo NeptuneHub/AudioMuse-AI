@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Log sanitization and filter installation in app_logging.
+
+Covers _sanitize_log_text, the LogSanitizingFilter that applies it to records,
+and configure_logging attaching that filter to the root handlers.
+
+Main Features:
+* Strips emoji/control chars and collapses newlines and Unicode line separators
+  so log lines cannot be forged (log injection defense)
+* Preserves tabs and Latin-1 accents; non-string values pass through unchanged
+* Filter sanitizes msg plus tuple and dict args; configure_logging is idempotent
+"""
+
 import logging
 
 from app_logging import _sanitize_log_text, LogSanitizingFilter, configure_logging

@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Main Flask application: root routes, task control, and blueprint wiring.
+
+Owns the shared Flask instance (imported from `flask_app`), installs the
+`before_request` auth barrier from `app_auth`, mounts Swagger, and registers
+every feature blueprint (`app_*`). Sibling `app_*` modules provide the feature
+routes; this module provides the app-wide plumbing they all hang off.
+
+Main Features:
+* Core routes: health, `/analysis` landing page, generic task status/cancel/
+  cancel-all, last-task and active-tasks polling, `/api/config`, `/api/playlists`.
+* Registers all feature blueprints and, on the Flask server only (never RQ
+  workers), loads similarity indexes/caches and starts the background listener.
+"""
+
 import os
 from psycopg2.extras import DictCursor
 from flask import jsonify, request, render_template, g

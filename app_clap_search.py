@@ -1,6 +1,23 @@
-"""
-CLAP Text Search Blueprint
-Provides web interface and API for natural language music search.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for CLAP natural-language music search.
+
+Serves the `/clap_search` UI and its API, delegating to
+`tasks.clap_text_search` which matches a text query against tracks via CLAP
+audio<->text embeddings and caches results.
+
+Main Features:
+* Routes: `/clap_search` page, `/api/clap/search`, warmup (`/api/clap/warmup`
+  and its `/status`), `/api/clap/cache/refresh`, `/api/clap/stats`,
+  `/api/clap/top_queries`.
+* Task imports are deferred into the handlers so the blueprint loads even when
+  CLAP is disabled.
 """
 
 from flask import Blueprint, render_template, request, jsonify

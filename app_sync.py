@@ -1,16 +1,25 @@
-"""Mobile sync endpoint for companion client apps.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Exposes ``GET /api/sync`` - a read-only export of the analysis library
-(metadata, mood/energy, MusiCNN + CLAP embeddings, UMAP 2D coordinates).
+"""Mobile-sync Flask blueprint (sync_bp) for companion client apps.
 
-Three modes, all read-only (no schema, no triggers, no write path):
-  * ``?fields=index`` -> lightweight ``{id, fp}`` manifest (<=1000/page) for
-    client-side change detection.
-  * ``?ids=a,b,c``    -> full payloads for a specific id set (<=500).
-  * (default)         -> full paginated export (<=500/page).
+Exposes ``GET /api/sync``, a read-only export of the analysis library
+(metadata, mood/energy, MusiCNN + CLAP embeddings, UMAP 2D coordinates) with
+no schema, triggers, or write path.
 
-``fp`` is a read-time fingerprint over the analysis columns; a client diffs
-the manifest against its local fingerprints to derive adds/updates/deletes.
+Main Features:
+* Three modes: ``?fields=index`` returns a lightweight ``{id, fp}`` manifest
+  (<=1000/page), ``?ids=a,b,c`` returns full payloads for a specific id set
+  (<=500), and the default returns the full paginated export (<=500/page).
+* ``fp`` is a read-time md5 fingerprint over the analysis columns (UMAP and
+  rating excluded), so a client diffs the manifest against its local
+  fingerprints to derive adds/updates/deletes without a global re-projection
+  flipping every row.
 """
 
 import base64

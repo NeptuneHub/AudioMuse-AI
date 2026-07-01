@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Import smoke test over every discovered project module.
+
+Walks the repo (skipping build and vendored dirs) and imports each module to
+catch syntax and import-time errors that the unit suite would otherwise miss.
+
+Main Features:
+* Discovers all package/module names under the repo root
+* Each module imports cleanly, tolerating a reached DB or Redis connection
+* Missing optional deps (cuml/cupy/ivf/faiss/tensorflow) skip rather than fail
+"""
+
 import importlib
 import os
 from pathlib import Path

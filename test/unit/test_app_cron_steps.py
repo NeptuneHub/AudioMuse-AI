@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Cron step-value and day-of-week edge cases in app_cron.
+
+Verifies step syntax (star-slash and range-slash) anchoring per field and the
+day-of-week conventions that cron_matches_now applies to real timestamps.
+
+Main Features:
+* Step anchoring at 1 for month/day-of-month and at 0 for minute/hour
+* Range-with-step matches only stepped values, inclusive of the upper bound
+* Day-of-week 7 and 0 both mean Sunday; epoch timestamp is evaluated correctly
+"""
+
 import os
 import time
 

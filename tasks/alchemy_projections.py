@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""2D projection helpers for the Song Alchemy map.
+
+Reduces high-dimensional song/artist embeddings to the (x, y) coordinates the
+alchemy UI plots. Called by tasks.song_alchemy; the projection basis (PCA/SVD,
+UMAP or a supervised discriminant) is persisted so anchors and candidates stay
+in a shared, stable coordinate frame across requests.
+
+Main Features:
+* _project_to_2d / _project_with_umap / _project_with_discriminant: alternative
+  dimensionality reductions, with a plain SVD fallback when sklearn is absent.
+* _project_aligned_add_sub: projects added/subtracted anchors into an existing
+  basis so incremental map edits stay aligned with the saved projection.
+"""
+
 import logging
 from typing import List, Tuple
 

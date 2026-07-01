@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Input bounds and name validation on the search and alchemy API routes.
+
+Drives the IVF, artist-similarity, and alchemy blueprints to confirm untrusted
+range and count params are clamped and playlist/anchor names are validated.
+
+Main Features:
+* Search limits cap at 500 (tracks) / 100 (artists); small ranges pass through
+* Similar-tracks and alchemy n coerce non-numeric to the default and clamp
+  negatives up and huge values down to the configured maximum
+* Empty, whitespace, and non-string playlist/anchor names are rejected 4xx
+  before the backend is ever called
+"""
+
 from unittest.mock import patch
 import pytest
 from flask import Flask

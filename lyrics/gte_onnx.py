@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Multilingual GTE text-embedding runtime (INT8 ONNX) for lyrics vectors.
+
+Loads the quantized gte-multilingual-base model on onnxruntime and turns raw
+lyric or query text into 768-dim CLS-pooled embeddings, the text side of the
+lyrics pipeline that complements whisper_onnx (audio) and silero_onnx (VAD).
+Consumed by lyrics_transcriber for both stored lyric vectors and search queries.
+
+Main Features:
+* Lazy, thread-safe session and tokenizer load with model/tokenizer paths
+  overridable via env, adapting to the concrete model input names.
+* embed_text returns an L2-normalized float32 vector (or None on failure) plus
+  is_loaded / reset_session hooks so the models can be released for memory.
+"""
+
 from __future__ import annotations
 
 import logging

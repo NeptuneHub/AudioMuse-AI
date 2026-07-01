@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Linux packaging steps for the standalone build.
+
+Platform module invoked by ``build.py`` to stage the Linux bundle: it checks
+the vendored redis/PostgreSQL/pg-contrib inputs are present, verifies the
+pgserver bundle when used, and produces the distributable (nfpm packages,
+icons). The macOS/Windows modules are the platform-specific siblings.
+
+Main Features:
+* Validates vendored redis, PostgreSQL and pg-contrib files per architecture.
+* Builds .deb/.rpm packages via nfpm and generates the app icons.
+"""
+
 import shutil
 import subprocess
 

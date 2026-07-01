@@ -1,15 +1,27 @@
-"""Provider migration tool - Flask blueprint.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module is the single add-on entry point for switching the active media
-server provider on a running AudioMuse-AI install. It adds a wizard page at
-``/provider-migration`` plus the backing REST API under ``/api/migration/*``.
+"""Provider-migration Flask blueprint (migration_bp) for switching media servers.
 
-Credentials for the *target* provider stay in ``migration_session.target_creds``
-and are passed explicitly to ``tasks.provider_probe`` (which never reads
-``config``), so the current live provider keeps working throughout the dry-run
-and manual matching steps of the wizard. On successful execution the migration
-task writes the new provider settings to ``app_config`` and triggers a config
-reload + process restart via ``restart_manager``.
+Single add-on entry point for switching the active media-server provider on a
+running install: a wizard page at ``/provider-migration`` plus the backing REST
+API under ``/api/migration/*``. Target-provider probing runs through
+``tasks.provider_probe`` and the long migration through the RQ high queue.
+
+Main Features:
+* Full wizard flow: session start, probe test, library select, album search,
+  source-path refresh, dry-run, manual match/skip, finalize, and execute, with
+  status polling for the async RQ jobs.
+* Target credentials stay in ``migration_session.target_creds`` (never read
+  from ``config``), so the live provider keeps working throughout; a successful
+  execute writes the new settings to ``app_config`` and restarts via
+  ``restart_manager``. ``provider_probe`` is lazily imported to avoid loading
+  ``tasks/__init__.py`` at module import.
 """
 
 import csv

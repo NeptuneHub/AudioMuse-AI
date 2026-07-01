@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Match existing tracks to a target provider's library during migration.
+
+Pure matching helpers used by the provider-migration orchestration; the
+per-provider track fetching lives elsewhere and is not touched here.
+
+Main Features:
+* Path-normalisation that strips a wide set of common mount prefixes and
+  file:// URLs so paths from different servers compare on their library tails.
+* Tiered matching (normalised path, path tail, exact metadata, normalised
+  metadata, and an optional title+artist fallback) with disc/track
+  disambiguation when several candidates share a metadata key.
+"""
+
 import re
 from urllib.parse import unquote
 

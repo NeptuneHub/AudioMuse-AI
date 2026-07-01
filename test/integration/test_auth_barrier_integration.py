@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""End-to-end auth barrier tests over a real Flask app and Postgres.
+
+Exercises the before-request auth guard end to end: unauthenticated
+requests, real logins issuing working sessions, JWT and bearer tokens,
+and admin-path role enforcement against a live database.
+
+Main Features:
+* Unauthenticated API 401 / page redirect and open health endpoint.
+* Rejects alg=none, wrong-secret, expired, and wrong-bearer tokens.
+* Enforces admin vs user roles on admin and normal paths.
+"""
+
 import base64
 import datetime
 import json

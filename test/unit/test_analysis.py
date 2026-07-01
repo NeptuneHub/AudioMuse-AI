@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the tasks.analysis audio-analysis internals.
+
+Covers the ONNX helper functions and the analyze_track pipeline with mocked
+models and audio loading, plus the media-server reachability probe.
+
+Main Features:
+* ONNX output-name resolution, run_inference, and numerically stable sigmoid.
+* Robust audio load with fallback and analyze_track key/tempo/energy output.
+* OOM-to-CPU inference fallback and media-server auth/unreachable detection.
+"""
+
 import numpy as np
 import pytest
 from unittest.mock import Mock, patch

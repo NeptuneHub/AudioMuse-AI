@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Provider-agnostic AI entry point and text cleanup for the playlist AI.
+
+Facade over the ``providers`` subpackage: validates the AI config, then
+routes ``generate_text`` and ``call_with_tools`` to the selected vendor
+(Ollama/OpenAI/Gemini/Mistral). Also owns playlist-name generation and the
+Unicode text hygiene that sibling modules rely on.
+
+Main Features:
+* validate_ai_config gates each provider (URL shape, key, model) before any call is made.
+* clean_playlist_name repairs mojibake with ftfy + NFKC and strips non-ASCII; get_ai_playlist_name retries with feedback until the name fits the 5-40 char range.
+"""
+
 import logging
 import re
 import unicodedata

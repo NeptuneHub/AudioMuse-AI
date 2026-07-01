@@ -1,4 +1,24 @@
-# app_path.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Sonic-path Flask blueprint (path_bp) building a track-to-track journey.
+
+Serves the ``/path`` UI and the ``/api/find_path`` endpoint, delegating the
+graph walk to ``tasks.path_manager`` and vector lookups to
+``tasks.ivf_manager``.
+
+Main Features:
+* Builds an ordered playlist that smoothly interpolates between a start and end
+  song (or a mood centroid resolved to its nearest real song).
+* Loads mood centroids at import for mood-seeded endpoints and can pick a start
+  or end that excludes the other endpoint to avoid degenerate same-song paths.
+"""
+
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json

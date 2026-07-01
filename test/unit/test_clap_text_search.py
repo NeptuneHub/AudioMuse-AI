@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""CLAP text-to-audio search over the cached IVF index in clap_text_search.
+
+Covers cache stats/state reporting and search_by_text ranking against a dummy
+IVF index, using cosine similarity of the text embedding.
+
+Main Features:
+* get_cache_stats and is_clap_cache_loaded reflect loaded/unloaded state
+* Results are ranked by descending similarity, respect the limit, and carry the
+  required item_id/title/author/similarity fields
+* Edge cases: CLAP disabled, cache unloaded, failed text embedding, zero limit
+  all return an empty list
+"""
+
 import numpy as np
 from unittest.mock import patch
 

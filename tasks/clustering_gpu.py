@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Clustering model factory with optional GPU (cuML) acceleration.
+
+Provides the KMeans, DBSCAN, GMM, spectral and PCA estimators used by the
+clustering search, wrapping cuML/CuPy when a usable CUDA device is present and
+falling back to the scikit-learn CPU implementations otherwise. Callers in
+clustering_helper request models through get_clustering_model / get_pca_model
+without caring which backend is live.
+
+Main Features:
+* check_gpu_available / _check_cuda_driver_available: detect a real CUDA device
+  once and cache the result, so a missing driver degrades silently to CPU.
+* GPU wrapper classes (GPUKMeans, GPUDBSCAN, GPUPCA, GPUGaussianMixture,
+  GPUSpectralClustering) exposing the sklearn-style fit/predict surface.
+"""
+
 import logging
 from config import GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS
 

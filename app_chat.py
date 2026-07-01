@@ -1,4 +1,25 @@
-# app_chat.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for the AI chat playlist generator.
+
+Serves the chat UI (mounted at `/chat`) and turns a natural-language request
+into a playlist by calling `tasks.ai.planner.plan_and_execute_once` with the
+MCP tools from `tasks.ai.tools`, then materializes the result via
+`tasks.mediaserver.create_instant_playlist`.
+
+Main Features:
+* Routes: `/` chat page, `/api/config_defaults`, `/api/chatPlaylist`,
+  `/api/chatPlaylistStream` (Server-Sent Events), `/api/create_playlist`.
+* Per-request AI provider/model override (Ollama/OpenAI/Gemini/Mistral) and
+  optional `tasks.playlist_ordering.order_playlist` post-processing.
+"""
+
 from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context
 from flasgger import swag_from  # Import swag_from
 import json  # For JSON serialization of tool arguments

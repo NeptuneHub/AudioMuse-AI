@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint routes for the provider-migration wizard.
+
+Drives the migration endpoints with a test client and fake DB, asserting the
+session state machine, source-path override handling and SSRF/confirmation gates.
+
+Main Features:
+* Session start creates a row and rejects unknown target types
+* Source-path override refresh stores overrides and warns on non-absolute paths
+* Dry-run gate returns 409 on bad source paths unless overridden or bypassed
+* Execute gate requires backup confirmation and dry-run-ready state; probe URLs SSRF-validated
+"""
+
 import os
 import sys
 import importlib.util

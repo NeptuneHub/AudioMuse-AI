@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Newest-first rotating log handler for the standalone builds.
+
+Provides a logging handler that keeps the most recent lines at the top of the
+file (so the log reads newest-first) and caps the file at a maximum line count,
+flushing on a timer. Lives under ``macos`` but is imported by all three
+platform supervisors.
+
+Main Features:
+* Prepends new records and truncates to a bounded line count in memory.
+* Batches writes on a background flush timer to limit disk churn.
+"""
+
 import logging
 import os
 import threading

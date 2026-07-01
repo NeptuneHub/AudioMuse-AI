@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""macOS packaging steps for the standalone build.
+
+Platform module invoked by ``build.py`` to stage the macOS ``.app``: it
+generates the ``.icns`` icon, ad-hoc code-signs the nested binaries and dylibs,
+and assembles the distributable with the unsigned-app authorization README.
+The Linux/Windows modules are the platform-specific siblings.
+
+Main Features:
+* Generates icons and ad-hoc signs bundled binaries (redis, postgres, dylibs).
+* Ships a README instructing users to clear the quarantine xattr on the app.
+"""
+
 import os
 import subprocess
 

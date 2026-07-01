@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Search-query validation on the external blueprint's /search route.
+
+Drives app_external.external_bp with a Flask test client to check when a request
+reaches the unified search backend versus short-circuiting to an empty list.
+
+Main Features:
+* Missing or explicitly empty search_query returns [] without calling the backend
+* One-character and longer queries pass through to search_tracks_unified verbatim
+* Legacy title/artist params are combined into a single "artist title" query
+"""
+
 import sys
 import types
 from unittest.mock import MagicMock, patch

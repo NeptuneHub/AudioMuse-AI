@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Radius-walk playlist generation with artist-adjacency constraints.
+
+Covers the radius_walk helpers that build a walk-ordered playlist from candidate
+neighbours while capping per-artist repeats and avoiding runs of one artist.
+
+Main Features:
+* avoid_triple_adjacent swaps a third same-artist track with a later different one
+* execute_radius_walk returns dicts in walk order and honors empty input
+* max-songs-per-artist of one prevents author repeats
+* Duplicate title/author pairs are capped to one unless dedup is disabled
+"""
+
 import numpy as np
 
 from tasks.radius_walk_helper import avoid_triple_adjacent, execute_radius_walk

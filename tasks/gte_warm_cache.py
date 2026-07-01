@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Idle-based warm cache for the GTE lyrics-search embedding model.
+
+Keeps the gte-multilingual-base ONNX session loaded for a bounded window after
+a lyrics text search so back-to-back queries avoid repeated cold loads, then
+unloads it once the window lapses. Complements tasks.lyrics_manager (which owns
+the index caches) by managing only the ONNX model lifetime.
+
+Main Features:
+* warmup_gte_model: loads the model on demand and (re)arms the expiry timer.
+* _unload_timer_worker: single background thread that unloads gte_onnx and runs
+  comprehensive_memory_cleanup once the warm window expires; guarded by an RLock
+  shared via warm_lock so warmups and the timer never race.
+"""
+
 import logging
 import threading
 import time

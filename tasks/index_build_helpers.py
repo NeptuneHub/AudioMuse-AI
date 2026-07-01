@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Shared building blocks for constructing and persisting the IVF indexes.
+
+Provides the streaming embedding readers and the segmented-blob storage layer
+used by tasks.ivf_manager and tasks.lyrics_manager to build any of the six
+disk-paged IVF indexes without holding whole libraries in RAM. Sits below
+tasks.paged_ivf, which owns the on-disk IVF format and query path.
+
+Main Features:
+* stream_embeddings_to_buffer / iter_embedding_batches: read pgvector columns
+  over a read-only side connection with a server-side named cursor.
+* build_and_store_index_streaming and the segmented-blob helpers: split large
+  id maps and index payloads into row-sized fragments (SQL identifiers are
+  regex-validated before interpolation), plus artist-metadata pack/unpack.
+"""
+
 from __future__ import annotations
 
 import io

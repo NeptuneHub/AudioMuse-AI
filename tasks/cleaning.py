@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Library cleanup task: prune analysis rows for tracks no longer on the server.
+
+Runs as an RQ job. Compares the media server's current track set against the
+analyzed rows in the database and removes orphaned entries (and their embeddings)
+so stale data does not leak into clustering, similarity or radio results.
+
+Main Features:
+* identify_and_clean_orphaned_albums_task: the RQ entry point that detects tracks
+  present in the DB but absent from the server and deletes them in batches.
+* delete_orphaned_albums_sync: synchronous helper that removes analysis and
+  embedding rows for a set of orphaned track ids across the related tables.
+"""
+
 import time
 import logging
 import uuid

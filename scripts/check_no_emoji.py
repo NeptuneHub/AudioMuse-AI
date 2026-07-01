@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Fail the build when emoji or icon glyphs appear in Python source.
+
+CI guard that scans every tracked ``*.py`` file (skipping generated ``query/``
+and vendored ``native-build`` trees) for emoji and a small set of banned
+symbol codepoints, since those characters break the Windows build. It exits
+non-zero and lists the offending file:line:codepoint when any are found.
+
+Main Features:
+* Uses the ``emoji`` library plus an explicit extra/allow set to classify glyphs.
+* Reports all violations at once so contributors can fix them in a single pass.
+"""
 
 import subprocess
 import sys

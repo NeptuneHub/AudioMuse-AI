@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Mistral client for the playlist AI.
+
+One of the per-provider backends dispatched from ``tasks.ai.api``, using the
+mistralai SDK. Exposes generate_text and single-turn call_with_tools with
+tool_choice="any", returning the shared {"name","arguments"} tool-call shape.
+
+Main Features:
+* Probes for the mistralai SDK at import (is_available) since the package has been quarantined on PyPI; when missing, every call returns a clear "pick another provider" message instead of raising.
+* Honors a pre-call delay (env MISTRAL_API_CALL_DELAY_SECONDS, default 7s) and config.AI_REQUEST_TIMEOUT_SECONDS; errors collapse to a generic unavailable message, never a traceback.
+"""
+
 import json
 import logging
 import os

@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Shared pytest fixtures and helpers for the unit-test suite.
+
+Provides file-path module loaders, fake DB rows and connections, an
+autouse fixture that snapshots and restores mutated config attributes,
+and a terminal-summary hook that prints the import-architecture report.
+
+Main Features:
+* Forces spawn over fork on Windows and loads modules by file path.
+* Restores config values touched by tests and reports import architecture.
+"""
+
 import sys as _sys
 
 if _sys.platform == 'win32':

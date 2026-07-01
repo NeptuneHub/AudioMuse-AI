@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Artist-index loading and the _run_all_index_builds orchestrator.
+
+Covers load_artist_index_for_querying wiring the artist globals from the paged
+IVF index and metadata, and the orchestrator that runs all index builders.
+
+Main Features:
+* Artist index load sets or resets the module globals depending on IVF presence
+  and metadata availability
+* The orchestrator invokes all eight builders and publishes progress
+* A non-fatal builder failure continues; a fatal IVF failure propagates and aborts
+"""
+
 import sys
 import types
 from contextlib import ExitStack, contextmanager

@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""IVF detail-batch fetch tests against a real Postgres database.
+
+Seeds a large score table and exercises tasks.ivf_manager._fetch_details_map
+to confirm its multi-batch id fetching returns complete and correct rows.
+
+Main Features:
+* Full multi-batch fetch is complete and matches seeded rows.
+* Spot-checked and partial id subsets spanning batch boundaries.
+"""
+
 import importlib.util
 import os
 import sys

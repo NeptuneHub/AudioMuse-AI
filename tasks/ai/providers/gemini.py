@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Google Gemini client for the playlist AI.
+
+One of the per-provider backends dispatched from ``tasks.ai.api``, using the
+google-genai SDK. Exposes generate_text for plain naming/brainstorm calls and
+call_with_tools for single-turn function-calling that returns a normalized
+list of tool calls.
+
+Main Features:
+* call_with_tools forces function_calling_config mode ANY and flattens the SDK function_call parts into the shared {"name","arguments"} shape.
+* Applies an optional pre-call delay (env GEMINI_API_CALL_DELAY_SECONDS, default 7s) for rate limits; on any SDK error returns a generic "AI service unavailable" string, never a traceback.
+"""
+
 import logging
 import os
 import time

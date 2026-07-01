@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""User-management tests against a real Postgres database.
+
+Runs app_auth user create, verify, count, and delete logic against a live
+audiomuse_users table to confirm password hashing and the admin-safety
+gate behave against real SQL.
+
+Main Features:
+* Argon2 create/verify roundtrip and duplicate-username rejection.
+* Admin-user counting and refusing to delete the last admin.
+"""
+
 import os
 import sys
 import tempfile

@@ -1,3 +1,30 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Multi-source lyrics acquisition, transcription and text embedding pipeline.
+
+Orchestrates the full analyze_lyrics flow that feeds the lyrics embedding
+column, delegating heavy lifting to the sibling ONNX modules: silero_onnx for
+voice activity detection, whisper_onnx for speech recognition and gte_onnx for
+multilingual text embeddings. Also derives a fixed set of 5-axis lyrical
+descriptors used for semantic scoring.
+
+Main Features:
+* Layered source resolution (musicnn instrumental short-circuit, media-server
+  lyrics, configurable external lyrics APIs, then Whisper ASR as last resort),
+  with VAD gating that can be bypassed when a vocalist mood prior is present.
+* Aggressive text quality gates: sanitizer stripping LRC timestamps, section
+  headers and emoji, zlib compression-ratio and language-confidence rejects,
+  and a CJK-script override for mislabeled non-Latin transcripts.
+* Runs Whisper under a 300s SIGALRM watchdog guarded by hasattr(signal,
+  'SIGALRM') so it degrades to no timeout on platforms without the signal.
+"""
+
 from __future__ import annotations
 
 import logging

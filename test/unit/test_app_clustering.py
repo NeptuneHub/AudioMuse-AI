@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_clustering blueprint start endpoint.
+
+Registers the clustering blueprint and posts to the start route with mocked
+queue and status calls to check enqueueing and active-task gating.
+
+Main Features:
+* Starts clustering when no task is active.
+* Blocks when a clustering task or another batch is already active.
+"""
+
 import pytest
 from unittest.mock import Mock, patch
 from flask import Flask

@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Song Alchemy centroid math and playlist-component generation.
+
+Covers the alchemy engine that blends song/artist centroids into a new playlist,
+including vector arithmetic, temperature sampling and cluster component selection.
+
+Main Features:
+* Centroids computed from songs or artists and combined via add/subtract
+* Temperature sampling and euclidean/angular metric distance behavior
+* get_playlist_components uses cell groups, caps clusters and samples large playlists
+* Full alchemy flow dedups songs and applies the distance filter
+"""
+
 import pytest
 from unittest.mock import patch
 import numpy as np

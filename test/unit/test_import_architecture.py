@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Module-level import architecture guardrails across the codebase.
+
+Builds an eager-import graph via AST and asserts the layering, acyclicity, and
+independence rules that keep import time and coupling under control.
+
+Main Features:
+* Foundation modules stay leaves and there are no module-level import cycles
+* Eager import chains stay within the depth ceiling
+* Layered dependencies point downward, forbidden edges are absent, and the
+  independent app_* blueprints do not cross-import
+"""
+
 import ast
 import os
 from collections import defaultdict

@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_analysis blueprint endpoints.
+
+Registers the analysis blueprint and drives the analysis and cleaning start
+routes with mocked queue and status calls to check parameters and gating.
+
+Main Features:
+* Analysis start with defaults, config defaults, and custom parameters.
+* Enqueue parameters, pending-status saving, and active-task blocking.
+* Cleaning start, prior-task cleanup, enqueue-failure, and method restrictions.
+"""
+
 import pytest
 from unittest.mock import Mock, patch
 from flask import Flask

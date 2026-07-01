@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_sync client-sync blueprint endpoints.
+
+Drives the sync payload, manifest, and UMAP endpoints against a fake DB to
+check the response envelope, pagination, track shape, and embedding output.
+
+Main Features:
+* Envelope keys, pagination math, and limit/page clamping.
+* Track field renaming, fingerprint SQL, and ids-filter behavior.
+* Include-embeddings toggle, base64 roundtrip, UMAP coords, and DB-error 500.
+"""
+
 import base64
 import importlib.util
 import os

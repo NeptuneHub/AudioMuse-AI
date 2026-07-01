@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""End-to-end test of the real CLAP audio and text analyzer.
+
+Runs tasks.clap_analyzer over real test audio using the actual ONNX audio
+and text models, skipping when models, onnxruntime, or librosa are absent.
+
+Main Features:
+* Produces 1-D audio embeddings and per-query text embeddings.
+* Compares cosine similarities against recorded expected values.
+"""
+
 import os
 import sys
 from pathlib import Path

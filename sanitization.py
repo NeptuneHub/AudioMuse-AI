@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""String and JSON sanitization helpers for safe database and API round-trips.
+
+Strips control characters that Postgres rejects (notably NUL) from text before
+persistence, and normalizes numpy scalars/arrays into JSON-serializable values;
+used across the data-access layer and API responses.
+
+Main Features:
+* ``sanitize_db_field`` removes non-printable characters and truncates to a max length.
+* ``sanitize_string_for_db`` / ``sanitize_json_for_db`` strip NUL and control chars from text and nested JSON.
+* ``sanitize_for_json`` converts numpy int/float/bool/array types to native Python.
+"""
+
 import logging
 import re
 from typing import Optional

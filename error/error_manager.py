@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Builds, classifies, and records structured application errors.
+
+Turns raw exceptions and error codes into the standard error dict (code, class,
+message) using ``error_dictionary``, mapping exception types to codes and
+capping message detail so no raw traceback leaks to callers.
+
+Main Features:
+* ``classify`` / ``from_exception`` map exception types to registry codes.
+* ``build`` produces one-line, length-bounded messages and ``http_status_for_code`` maps to HTTP.
+"""
+
 import logging
 
 from error.error_dictionary import (

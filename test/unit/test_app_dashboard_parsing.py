@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Key-value parsing for the dashboard's mood and feature strings.
+
+Covers _parse_keyval, which turns "label:score" comma lists into a float map
+while tolerating malformed input.
+
+Main Features:
+* Empty and None inputs yield an empty dict
+* Pairs with a non-numeric value, no separator, or empty key are skipped
+* Whitespace around keys and values is stripped before parsing
+"""
+
 from app_dashboard import _parse_keyval
 
 

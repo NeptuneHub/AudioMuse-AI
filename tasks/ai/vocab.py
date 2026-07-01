@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Fuzzy vocabulary normalizer for AI-emitted filter labels.
+
+Maps free-form genre/mood/voice/scale/tempo/energy terms from the LLM onto
+the fixed catalog vocab in config, so ``planner`` can build a filter the
+database understands. Combines curated alias tables, rapidfuzz matching, and
+an optional WordNet synonym fallback.
+
+Main Features:
+* Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges.
+* Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
+"""
+
 import functools
 import re
 from typing import List, Optional, Tuple

@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Cron scheduler dispatch for the sonic-fingerprint job.
+
+Exercises run_due_cron_jobs when a due row selects the sonic-fingerprint task,
+asserting how generated fingerprints flow into playlist creation.
+
+Main Features:
+* Empty fingerprint results skip both playlist upsert and the legacy fallback
+* Non-empty results upsert under the constant cron playlist name via item_ids
+* NotImplementedError from the backend falls back to a timestamped legacy playlist
+"""
+
 from unittest.mock import MagicMock, patch
 
 

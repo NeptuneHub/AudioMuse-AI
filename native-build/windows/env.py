@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Child-process environment builder for the Windows standalone build.
+
+Assembles the environment variables each supervised child (Flask, RQ workers)
+inherits: the embedded database URL built from the connection dict, queue
+selection, per-user data and model paths, offline-model flags and the loopback
+control host/port (used instead of the macOS control socket). The macOS/Linux
+``env`` modules build the equivalent environments for their platforms.
+
+Main Features:
+* Builds the DATABASE_URL from the embedded connection and per-user data paths.
+* Points model/cache/temp/backup paths at ``windows.paths`` and forces offline models.
+"""
+
 import os
 from urllib.parse import quote
 

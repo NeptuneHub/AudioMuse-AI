@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Provider probe that normalizes tracks and delegates to media servers.
+
+Covers the probe layer used by migration to fetch and normalize catalog data
+from any supported provider through a uniform track shape.
+
+Main Features:
+* normalize_track coerces Jellyfin/lowercase items and invalid years to None
+* Provider-type normalization lowercases supported and raises on unsupported
+* fetch_all_tracks/search_albums/get_album_tracks delegate then normalize
+* test_connection delegates and unsupported providers raise before any call
+"""
+
 import importlib.util
 import os
 import sys

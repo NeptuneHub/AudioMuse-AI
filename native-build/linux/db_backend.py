@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Linux embedded-PostgreSQL backend selector.
+
+Chooses the embedded-database implementation for the Linux standalone build
+based on CPU architecture: x86_64 uses the pgserver-backed path in the shared
+``database`` module (wrapped in the native library-path context), while other
+architectures fall back to the bundled-binary ``linux.embedded_pg`` control.
+
+Main Features:
+* Detects architecture and exposes ``using_pgserver`` for callers.
+* Dispatches ``start_embedded`` / ``ensure_embedded_running`` to the right backend.
+"""
+
 import platform
 
 _USE_PGSERVER = platform.machine() in ("x86_64", "amd64")

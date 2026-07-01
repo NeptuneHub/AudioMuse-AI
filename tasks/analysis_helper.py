@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Analysis helpers: ONNX inference, feature extraction and per-track persistence.
+
+Support code factored out of tasks.analysis so the album loop stays readable.
+Owns ONNX Runtime session creation and provider selection (CPU/CUDA/CoreML), the
+MusiCNN inference path, spectrogram/feature extraction, and the "what does this
+track still need" decisions plus the DB upserts that store each result.
+
+Main Features:
+* create_onnx_session / load_musicnn_sessions / run_inference_with_oom_fallback:
+  build sessions, resolve execution providers, and retry inference on OOM.
+* compute_album_needs / decide_track_needs: per-track dedup deciding which of
+  musicnn, CLAP and lyrics embeddings are missing (the real analysis dedup).
+* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors.
+"""
+
 import gc
 import importlib
 import logging

@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Sonic fingerprint generation from a user's recently played songs.
+
+Covers generate_sonic_fingerprint building a recency-weighted seed vector,
+querying the IVF index for neighbours and combining seeds with results.
+
+Main Features:
+* Recently played songs are weighted higher; seeds keep zero distance
+* Empty top-songs or missing embeddings return an empty fingerprint
+* IVF is called with the right params, dedups results and tolerates exceptions
+* ISO timestamp parsing handles Z, microseconds, truncation and future dates
+"""
+
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch

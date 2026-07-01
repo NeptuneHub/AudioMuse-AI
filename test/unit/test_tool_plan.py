@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""AI tool-plan normalization, vocabulary aliasing and intent classification.
+
+Covers the planner that turns raw LLM tool arguments into a validated plan:
+vocabulary remapping, mood/voice routing, argument validation and multi-intent shaping.
+
+Main Features:
+* Vocabulary aliases map short female/male tokens to voices and drop unknowns
+* Mood lists split out voices and energy phrases; non-canonical genres dropped with a note
+* Plan args drop seedless searches, hallucinated min_rating and sub-1900 years
+* Multi-primary classification preserves, dedupes and coerces intents including legacy shapes
+"""
+
 import importlib
 import sys
 import types

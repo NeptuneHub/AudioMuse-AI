@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""String sanitization applied when persisting track and artist rows.
+
+Verifies that the save paths clean caller-supplied strings before writing to the
+database, patching get_db to capture the values actually bound to the query.
+
+Main Features:
+* NUL bytes and control characters are stripped from saved track strings
+* None values are handled and over-long strings are truncated
+* Whitespace is trimmed while unicode is preserved
+* Artist mapping names/ids are sanitized and truncated the same way
+"""
+
 from unittest.mock import Mock, MagicMock, patch
 import numpy as np
 

@@ -1,4 +1,26 @@
-# app_waveform.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Waveform-visualization Flask blueprint (waveform_bp).
+
+Serves the ``/waveform`` UI and ``/api/waveform``, computing min/max peak data
+from an audio file for fast client-side rendering. Self-contained: it reads the
+track from the DB and downsamples with librosa rather than calling a tasks
+module.
+
+Main Features:
+* Generates downsampled min/max peak pairs (default 500) from decoded audio for
+  the visualizer.
+* Runs decoding on a bounded thread pool with a timeout so a slow or oversized
+  file cannot block the request thread; degrades gracefully when librosa is
+  unavailable.
+"""
+
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import os

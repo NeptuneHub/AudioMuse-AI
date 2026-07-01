@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Self-contained ONNX Whisper-small speech-to-text pipeline for lyrics ASR.
+
+Implements the whole Whisper inference loop by hand on onnxruntime (encoder plus
+merged decoder with a past-key-values KV cache) so no torch/transformers runtime
+is required at serving time. Called by lyrics_transcriber to transcribe the
+voiced audio that silero_onnx isolates.
+
+Main Features:
+* Log-mel spectrogram front end, forced-language-token detection, and greedy or
+  beam decoding with repetition-penalty, no-repeat-ngram and suppress-token
+  logit shaping to curb hallucinated loops.
+* Rejects likely-garbage output via a zlib compression-ratio threshold and a
+  no-speech probability check, returning avg_logprob for upstream gating.
+* Lazy thread-safe session load with a minimum-free-RAM guard (raises
+  WhisperLoadRefused) plus unload / reset_session hooks for memory reclaim.
+"""
+
 from __future__ import annotations
 
 import logging

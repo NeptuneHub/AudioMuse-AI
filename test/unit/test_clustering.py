@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Clustering pipeline helpers across clustering, clustering_helper, and postprocessing.
+
+Covers parameter mutation, data scaling, genre stratification, JSON sanitization,
+and playlist post-processing that together drive the evolutionary clustering run.
+
+Main Features:
+* Param mutation stays within bounds; data prep scales features/embeddings and
+  returns None for empty input
+* Genre maps, per-genre target counts, primary-genre lookup, and cluster naming
+  by tempo and top moods
+* sanitize_for_json unwraps numpy types; postprocessing applies min-size filter,
+  title/artist dedup, and top-N diverse playlist selection
+"""
+
 import numpy as np
 from unittest.mock import Mock, patch
 from collections import defaultdict

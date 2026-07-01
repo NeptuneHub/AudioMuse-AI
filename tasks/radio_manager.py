@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Build and refresh the user's "radio" playlists on the media server.
+
+Batch job that regenerates every enabled alchemy radio by running song_alchemy
+against each radio's anchor and pushing the result to the media server.
+
+Main Features:
+* Generates tracks per radio from its stored anchor, result count, and
+  temperature, skipping radios that yield no results.
+* Upserts each playlist, falling back to create_playlist when the provider does
+  not support create_or_replace_playlist, and returns a created/failed summary.
+"""
+
 import logging
 
 from .song_alchemy import song_alchemy

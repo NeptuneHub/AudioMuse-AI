@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""SSRF protection in validate_outbound_url for user-supplied URLs.
+
+Covers the guard that blocks requests to internal/metadata targets, checking
+scheme, URL structure and the resolved IP class including DNS rebinding.
+
+Main Features:
+* Non-http(s) schemes and URLs missing scheme or host are rejected
+* Loopback, RFC1918 and public IPs are allowed; dangerous classes rejected
+* DNS names resolving to metadata IPs and unresolvable hosts are rejected
+"""
+
 import socket
 from unittest.mock import patch
 

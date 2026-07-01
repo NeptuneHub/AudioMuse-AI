@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Grounded brainstorm retrieval test against a real Postgres database.
+
+Seeds the score table and runs the brainstorm recipe filter channel
+through tasks.ai.tool_impl to confirm grounding happens inside the tool
+against the real library.
+
+Main Features:
+* Filter channel surfaces only rows matching the recipe filters.
+"""
+
 import importlib.util
 import json
 import os

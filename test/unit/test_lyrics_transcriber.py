@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Lyrics axis scoring and text sanitization in lyrics.lyrics_transcriber.
+
+Covers the pinned 27-label axis column order, per-axis softmax scoring of an
+embedding, and the cleanup applied to raw lyric text before embedding.
+
+Main Features:
+* axis_columns is a pure, duplicate-free 27-tuple in canonical axis/label order
+* _score_axes returns one softmax chunk per axis that sums to 1 and whose argmax
+  points at the targeted label
+* _sanitize_lyrics_text strips control/zero-width chars, HTML, and LRC timestamps
+  and truncates to a word cap; _softmax sums to one and is temperature-monotonic
+"""
+
 from __future__ import annotations
 
 import importlib

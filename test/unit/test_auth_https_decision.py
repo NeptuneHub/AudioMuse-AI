@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""HTTPS detection and bearer-token auth in app_auth.
+
+Covers _original_request_is_https behind a proxy and check_auth_needed enforcing
+the API token via a constant-time comparison.
+
+Main Features:
+* Direct TLS and X-Forwarded-Proto (list/case variants) drive the HTTPS decision
+* Unicode bearer tokens compare without raising and match only when correct
+* Correct token authenticates as admin; wrong token yields a 401
+"""
+
 import pytest
 from flask import Flask, Blueprint
 

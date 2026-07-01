@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Native standalone supervisor thread and child-process lifecycle.
+
+Covers the process supervisor that boots and health-checks Flask and worker
+children, focusing on its threading guards and start/stop state machine.
+
+Main Features:
+* join_workers returns promptly from the boot thread and skips the main thread on Windows
+* The health loop clears a preset stop flag and spawns a live watcher thread
+* start_child refuses to spawn while stopping but is allowed while starting
+* start_in_background owns the boot thread and invokes start_all
+"""
+
 import importlib.util
 import os
 import sys

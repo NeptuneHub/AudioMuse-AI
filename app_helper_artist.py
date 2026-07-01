@@ -1,7 +1,21 @@
-# app_helper_artist.py
-"""
-Helper functions for artist mapping between names and IDs.
-Separated to avoid circular imports.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Artist name/ID mapping helpers backed by the artist_mapping table.
+
+Small shared module that upserts and looks up the (artist_name, artist_id)
+correspondence used across the app; kept separate from app_helper to avoid
+circular imports.
+
+Main Features:
+* Single and bulk upsert of (name, id) pairs, sanitized and length-capped.
+* Name-to-ID and ID-to-name lookups; every write swallows errors and rolls
+  back so mapping maintenance never breaks a caller.
 """
 
 import logging

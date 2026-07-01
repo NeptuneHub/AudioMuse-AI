@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Database context and connection helpers for the MCP / AI-chat server.
+
+Supplies the MCP server and AI-chat features with a cached, high-level summary
+of the music library and with a connection scoped to an optional least-privilege
+chat DB user. Sits between those callers and Postgres so the AI side reads
+library stats without holding admin credentials.
+
+Main Features:
+* get_library_context: single aggregate snapshot (song/artist counts, year span,
+  rating coverage, top genres/moods, scales) cached in process until refreshed.
+* get_db_connection with _ensure_ai_chat_db_user: connect as the configured
+  AI_CHAT_DB_USER when set, auto-creating or resetting that role's password, and
+  fall back to the primary DATABASE_URL otherwise.
+"""
+
 import logging
 from typing import Dict
 from urllib.parse import quote, urlparse, urlunparse

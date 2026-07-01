@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for database backup and restore.
+
+Serves the `/backup` UI and drives `pg_dump`/`psql` against the configured
+Postgres instance, coordinating with `restart_manager` to bounce the app and
+workers around a restore.
+
+Main Features:
+* Routes: `/backup` page, `/api/backup/create`, `/api/backup/restore`.
+* Serializes restores across containers with a self-releasing Redis lock and
+  strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+"""
+
 import os
 import re
 import shutil

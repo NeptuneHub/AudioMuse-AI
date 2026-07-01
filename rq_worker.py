@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Entrypoint for the default-priority RQ worker process.
+
+Configures the worker role and BLAS/OpenMP thread caps before importing heavy
+numeric libraries, then runs a worker on the ``default`` queue; the companion
+of ``rq_worker_high_priority`` for the ``high`` queue.
+
+Main Features:
+* Caps math-library threads (cpu_count // 2) and pins passive OpenMP waiting.
+* Uses ``SimpleWorker`` on Windows and restarts after ``RQ_MAX_JOBS`` to limit leaks.
+"""
+
 import os
 import sys
 import logging

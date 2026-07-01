@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Shared task-layer helpers: track metadata lookup and feature scoring.
+
+Small utilities reused across the task modules to avoid duplication. Fetches
+per-track metadata maps and computes the scalar feature score used to rank and
+describe songs, normalizing tempo/energy against the configured min/max bounds.
+
+Main Features:
+* fetch_track_metadata_map: batch title/author/album lookup keyed by item id.
+* score_vector: derive a track's scored feature values from its mood and other
+  feature labels, clamped to the configured tempo and energy ranges.
+"""
+
 import logging
 
 import numpy as np

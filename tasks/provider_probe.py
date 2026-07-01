@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Probe a media provider and normalise its track metadata for migration.
+
+Thin, provider-agnostic wrapper over the mediaserver clients used by the
+migration flow to test connectivity, enumerate libraries, and pull tracks.
+
+Main Features:
+* Supports jellyfin, emby, navidrome, and lyrion, rejecting any other provider
+  type early.
+* Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
+  camelCase, and lower-case variants) into one flat track dict, coercing the
+  year to an int.
+"""
+
 from tasks import mediaserver
 
 

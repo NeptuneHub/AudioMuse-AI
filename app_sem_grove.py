@@ -1,8 +1,20 @@
-"""
-Semantic & Groove (SemGrove) Search Blueprint
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Provides the API for the "By Song" tab in the Lyrics Search page.
-Uses the merged lyrics+audio IVF index built by tasks/sem_grove_manager.py.
+"""Semantic and Groove (SemGrove) search Flask blueprint (sem_grove_bp).
+
+Backs the "By Song" tab on the Lyrics Search page, delegating every query to
+``tasks.sem_grove_manager`` and its merged lyrics+audio IVF index.
+
+Main Features:
+* Similarity search by seed song id, returning sorted tracks with the seed
+  itself flagged (``is_seed=true``).
+* Endpoints to refresh the merged-index cache and report its stats for the UI.
 """
 
 import logging

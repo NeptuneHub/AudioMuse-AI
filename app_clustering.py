@@ -1,4 +1,24 @@
-# app_clustering.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for launching the clustering / playlist-generation task.
+
+Thin route layer that validates the many clustering parameters (algorithm,
+cluster-count ranges, scoring weights) and enqueues the main clustering job on
+the high priority RQ queue for the UI to poll via the generic status routes.
+
+Main Features:
+* Route: `/api/clustering/start` (enqueues `tasks.clustering.run_clustering_task`
+  as a `main_clustering` task).
+* Registers an RQ failure handler that records the task as FAILURE so a crashed
+  job still surfaces in the UI.
+"""
+
 from flask import Blueprint, jsonify, request
 import uuid
 import logging

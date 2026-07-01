@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Persist first-run setup and runtime config overrides in the database.
+
+Backs the setup wizard by storing config values in the app_config table so they
+survive restarts and take precedence over environment defaults from config.py.
+
+Main Features:
+* Reads and writes typed config overrides (casting stored strings back to the
+  default's type) and can bootstrap the table from valid environment config
+  when it is empty.
+* Hashes secrets with Argon2, skips re-hashing values already hashed, treats
+  placeholder values as unset, and reports whether server/auth setup is complete.
+"""
+
 import os
 import json
 import logging

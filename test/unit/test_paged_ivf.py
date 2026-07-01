@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Disk-paged IVF index format, distance math and cell caches.
+
+Exercises the on-disk directory/cell serialization, quantized distance kernels
+and the L1/global cell caches with their byte bounds, eviction and idle drops.
+
+Main Features:
+* Directory and cell round-trips preserve ids, flags, dtype and record size
+* i8/f16 quantized cell distances match numpy cosine/euclidean within tolerance
+* Cell grouping and over-cap splitting stay within the configured cap
+* Global cache honors byte bounds, per-index invalidation and idle mmap drops
+"""
+
 import os
 import sys
 import threading

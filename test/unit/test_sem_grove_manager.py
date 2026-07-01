@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Semantic-grove index that fuses lyrics and audio vectors for song search.
+
+Covers the sem-grove manager's merged-vector construction, in-memory cache
+helpers and song-seeded neighbour search, plus a small build-and-search round trip.
+
+Main Features:
+* make_merged_vector returns a scaled float32 vector or None for zero inputs
+* Cache helpers report loaded state and item ids only once filled
+* search_by_song puts the seed first, excludes it from the limit and caps per artist
+* Same title/artist neighbours are de-duplicated; round trip is seed-first
+"""
+
 import sys
 import os
 import importlib.util

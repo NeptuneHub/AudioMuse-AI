@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Post-processing filters applied to a clustering result before it becomes playlists.
+
+Cleans up the best clustering result chosen by tasks.clustering: it strips
+duplicate and too-close tracks, drops tiny playlists, and selects a diverse
+top-N. The distance and regex work that used to live in clustering.py was moved
+here so the orchestrator stays focused on the search.
+
+Main Features:
+* apply_distance_filtering_direct / apply_title_artist_deduplication: remove
+  near-duplicate vectors and same title/artist repeats within each playlist.
+* apply_minimum_size_filter_to_clustering_result: drop playlists below a size floor.
+* select_top_n_diverse_playlists: pick the final, mutually distinct set of playlists.
+"""
+
 import logging
 import numpy as np
 import re

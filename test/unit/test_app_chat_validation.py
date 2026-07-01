@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for chat-endpoint request-body validation.
+
+Posts malformed and valid bodies to the chat routes to confirm the shared
+user-input validation rejects bad requests and lets valid ones proceed.
+
+Main Features:
+* Non-dict bodies and missing, non-string, empty, or blank user input return 400.
+* A well-formed body passes validation into the handler.
+"""
+
 import sys
 import types
 import json

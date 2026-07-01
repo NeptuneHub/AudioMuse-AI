@@ -1,11 +1,22 @@
-"""Dashboard blueprint: landing page with recent activity, content metrics,
-index counts, workers and scheduled tasks.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Heavy library aggregates (content metrics) are NOT recomputed
-on each request. They are refreshed by ``refresh_dashboard_stats()`` at app
-startup and then once per hour, and persisted in the singleton
-``dashboard_stats`` table. The summary endpoint only reads that row and
-combines it with the cheap, always-live bits (workers, recent tasks, cron).
+"""Flask blueprint for the dashboard landing page.
+
+Serves the `/` home page and its summary API, showing recent activity, content
+metrics, index counts, active workers, and scheduled tasks.
+
+Main Features:
+* Routes: `/` dashboard page and `/api/dashboard/summary`.
+* Heavy library aggregates are NOT recomputed per request: they are refreshed
+  by ``refresh_dashboard_stats()`` at startup and hourly into the singleton
+  ``dashboard_stats`` row, which the summary reads alongside the cheap live bits
+  (workers, recent tasks, cron).
 """
 
 import json

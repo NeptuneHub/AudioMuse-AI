@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Natural-language ("search by text") lookup over stored CLAP audio embeddings.
+
+Serves the text-to-song search feature: an in-process cache of CLAP audio
+embeddings plus their IVF index is loaded from the DB, and a query string is
+embedded with the CLAP text encoder (tasks.clap_analyzer) and matched against it.
+Manages its own warm-up and idle unload of the text model to bound worker RSS.
+
+Main Features:
+* build_and_store / load / refresh of the CLAP embedding cache and its IVF index.
+* search_by_text: embed the query and return ranked nearest songs.
+* warmup_text_search_model with an idle-unload timer, plus a persisted top-queries
+  table (ensure_text_search_queries_table) used to pre-warm popular searches.
+"""
+
 import logging
 import sys
 import threading

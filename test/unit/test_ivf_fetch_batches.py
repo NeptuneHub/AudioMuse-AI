@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Batched detail fetching in ivf_manager._fetch_in_batches and _fetch_details_map.
+
+Covers the batching helper that splits large id lists into DB-sized chunks and
+the query that maps item ids to their score-table detail columns.
+
+Main Features:
+* Empty ids skip the fetch; ids split into BATCH_SIZE_DB_OPS chunks and merge,
+  running sequentially on the caller's thread with later keys overriding earlier
+* _fetch_details_map builds an id->details map via an ANY() query
+* An empty id list issues no query and respects the requested column list
+"""
+
 import os
 import sys
 import threading

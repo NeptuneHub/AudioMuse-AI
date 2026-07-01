@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""MCP tool schemas and dispatch for the playlist AI.
+
+Defines the tool surface the LLM sees (seed_search, text_match,
+knowledge_lookup, search_database) via get_mcp_tools, and dispatches each
+emitted call to the grounded implementations in ``tool_impl``. Sits between
+``planner`` (which builds the plan) and the real library queries.
+
+Main Features:
+* get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled and pulling genre/mood enums from config.
+* execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
+"""
+
 import logging
 import re
 from typing import Dict, List, Optional

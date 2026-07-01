@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the AI provider layer and playlist-name helpers.
+
+Mocks the HTTP and SDK calls to exercise tasks.ai name cleaning and the
+OpenAI-compatible, Ollama, Gemini, and Mistral text-generation providers.
+
+Main Features:
+* Playlist-name sanitizing, unicode normalization, and think-tag stripping.
+* Streaming chunk assembly, rate-limit backoff, and parameter fallbacks.
+* URL-based OpenAI-vs-Ollama format detection and API-error handling.
+"""
+
 import os
 import sys
 import types

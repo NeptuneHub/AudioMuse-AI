@@ -1,3 +1,29 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Blend and subtract musical anchors to generate an alchemy playlist.
+
+Powers the song-alchemy feature (and the radios built on it): callers add and
+subtract songs, artists, moods, playlists, or saved anchors and get back a
+ranked set of tracks near the blended centroid.
+
+Main Features:
+* Gathers anchor points across item types (song/artist GMM/mood centroid/
+  playlist/saved anchor), forms add and subtract centroids, and multi-queries
+  the similarity index around them.
+* Temperature controls exploration, with a zero-temperature single-song shortcut
+  to plain nearest-neighbours; subtracted regions are filtered by distance and a
+  2D projection of the centroid is returned for the UI.
+* Governed by config: ALCHEMY_DEFAULT_N_RESULTS (100) capped by ALCHEMY_MAX_N_RESULTS
+  (200), ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0).
+"""
+
 import json
 import logging
 import math

@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Library map Flask blueprint (map_bp) serving the 2D song projection.
+
+Renders the ``/map`` page and streams the projected library as JSON at
+``/api/map``, reusing the UMAP / discriminant projection helpers from
+``tasks.alchemy_projections`` and the stored projection from ``app_helper``.
+
+Main Features:
+* Serves the map at four density levels (100/75/50/25 percent), each cached
+  in memory as pre-serialized JSON plus a gzip-compressed copy for fast reads.
+* Endpoints to report cache status and to rebuild the cache on demand; songs
+  are labelled by their top mood parsed from the stored mood_vector string.
+"""
+
 import gc
 import json
 import math

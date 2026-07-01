@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Artist-metadata blob codec and segmented DB storage in index_build_helpers.
+
+Covers pack/unpack of the artist map plus GMM params into a binary blob and the
+store/load of that blob across one or many rows in a segmented table.
+
+Main Features:
+* Round-trips artist map and GMM params (means/weights/flags), preserving Unicode
+  names and dropping covariance fields
+* Header magic validation rejects bad magic, truncation, and means-shape mismatch
+* store/load_segmented_blob split large payloads, reassemble in part order, and
+  raise on incomplete or total-count-mismatched segments
+"""
+
 import importlib.util
 import os
 import sys

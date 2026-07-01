@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Numeric-stack startup guards for scipy/sklearn and numpy longdouble.
+
+Provides bootstrap helpers imported before the RQ worker forks, working around
+the macOS newlocale race that breaks ``numpy.longdouble`` parsing and warming
+the scipy/sklearn imports so analysis tasks do not fail on first use.
+
+Main Features:
+* ``warmup_scipy_longdouble`` retries the fragile imports and reports failure once.
+* ``pin_numeric_locale`` forces the C numeric locale (a no-op on some platforms).
+"""
+
 import logging
 import os
 import sys

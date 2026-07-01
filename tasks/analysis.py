@@ -1,3 +1,28 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Audio analysis pipeline stage: feature extraction, embeddings and index rebuilds.
+
+Runs as RQ jobs. run_analysis_task fans work out into per-album analyze_album_task
+jobs, each of which downloads/decodes tracks, runs the MusiCNN mood/embedding models
+(via analysis_helper), the optional CLAP and lyrics embedders, and persists results.
+Once analysis completes it rebuilds the six similarity indexes; the clustering,
+similarity and radio features consume the vectors this stage produces.
+
+Main Features:
+* analyze_track / analyze_album_task / run_analysis_task: decode audio and extract
+  mood tags, MusiCNN embeddings, CLAP and lyrics embeddings, then upsert to the DB.
+* Media-server reachability and auth probing before enqueuing, so a bad server aborts
+  early instead of failing every child job.
+* rebuild_all_indexes_task and _run_all_index_builds rebuild every similarity index
+  after new embeddings land; freed audio RAM is returned to the OS between albums.
+"""
+
 import os
 import shutil
 import numpy as np

@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Central media-server dispatcher and public API for AudioMuse-AI.
+
+Single abstraction over every supported external media server: higher layers
+call these dispatcher functions, which delegate to the active backend selected
+by config.MEDIASERVER_TYPE.
+
+Main Features:
+* Lazily imports and dispatches to the active provider backend (jellyfin, emby,
+  navidrome, lyrion), so importing this package does not load inactive backends.
+* Centralizes the provider-agnostic public API; shared HTTP and metadata parsing
+  live in http.py and helper.py.
+"""
+
 import logging
 import os
 from importlib import import_module

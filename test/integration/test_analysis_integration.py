@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""End-to-end test of the real musicnn analysis pipeline.
+
+Loads the actual musicnn ONNX embedding and prediction models and runs
+tasks.analysis over real test audio, skipping when the models are absent.
+
+Main Features:
+* Verifies the analyzed track output shape (tempo, key, energy, moods).
+* Checks mood-vector values against recorded expected numbers.
+"""
+
 import sys
 import types
 from pathlib import Path

@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Filesystem path resolution for the Linux standalone build.
+
+Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
+repo) and the per-user data locations under ``XDG_DATA_HOME`` (logs under
+``XDG_STATE_HOME``), so the Linux launcher, supervisor and embedded-Postgres
+modules agree on where pgdata, redis, logs, models and temp files live. Paths
+containing spaces fall back to a ``/tmp`` location so the Unix sockets work.
+The macOS/Windows ``paths`` modules are the platform-specific siblings.
+
+Main Features:
+* ``resource_root`` and data dirs from ``XDG_DATA_HOME``; logs from ``XDG_STATE_HOME``.
+* Bundled PostgreSQL bin/lib lookup (pgserver on x86_64, vendored binaries elsewhere).
+"""
+
 import os
 import platform
 import sys

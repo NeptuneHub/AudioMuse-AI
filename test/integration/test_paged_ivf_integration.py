@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Disk-paged IVF index tests against a real Postgres database.
+
+Builds, loads, and queries the IVF index over a live database to verify
+recall, storage encoding, caching, disk-mmap paging, and cell layout of
+the disk-paged manager end to end.
+
+Main Features:
+* Build/load/query recall, RAM bound, and int8 storage roundtrip.
+* Cross-request cell reuse, global-cache invalidation, and disk mmap paging.
+* Cell segmentation, oversized-cell splitting, and Euclidean metric.
+"""
+
 import os
 import sys
 import tempfile

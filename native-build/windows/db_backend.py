@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Embedded-PostgreSQL control for the Windows standalone build.
+
+Selects between pgserver (when importable) and the vendored PostgreSQL binaries,
+then starts, ensures-running and stops the embedded server for the Windows
+supervisor. Child processes spawn detached with a hidden console. An
+``_embedded_lock`` serializes concurrent ensure/start calls so the backup-restore
+restart race cannot deadlock pgserver's non-thread-safe inter-process lock.
+
+Main Features:
+* pgserver-or-bundled selection with detached, no-window process spawning.
+* Serialized ensure/start with a long start timeout and non-destructive retry.
+"""
+
 import importlib
 import logging
 import os

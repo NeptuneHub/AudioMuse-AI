@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Filesystem path resolution for the Windows standalone build.
+
+Resolves the bundle resource root (PyInstaller ``_MEIPASS`` or the source
+repo) and the per-user data locations under ``%LOCALAPPDATA%`` (falling back to
+``%PROGRAMDATA%`` when the path contains spaces), so the Windows launcher,
+supervisor and embedded-Postgres modules agree on where pgdata, redis, logs,
+models and temp files live. The Linux/macOS ``paths`` modules are the
+platform-specific siblings.
+
+Main Features:
+* ``resource_root``, tray-icon path and per-user data directories under LOCALAPPDATA.
+* Fixed loopback ports (pg 5432, redis 6379, control 8001) plus persisted random
+  DB/Redis passwords cached under a per-user ``secrets`` dir.
+"""
+
 import os
 import platform
 import secrets

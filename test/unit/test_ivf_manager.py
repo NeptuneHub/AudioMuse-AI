@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Distance math, index loading, and lookups in ivf_manager.
+
+Covers direct distance functions, string/mood parsing, cached-vector priming,
+IVF index load/query guards, playlist creation, search, and the result cache.
+
+Main Features:
+* Euclidean/cosine/direct distance including None, zero, and dtype edge cases
+* String normalization, same-song matching, and mood-feature parsing
+* Vector lookup prefers primed f32 over the index; load and neighbor queries raise
+  when the index or id maps are unloaded
+* create_playlist_from_ids error paths and the LRU/TTL _ResultCache behavior
+"""
+
 import pytest
 import numpy as np
 from unittest.mock import Mock, patch

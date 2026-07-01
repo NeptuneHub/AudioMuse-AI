@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Build a user's sonic fingerprint playlist from their listening history.
+
+Derives a personalised playlist by expanding the user's most-played songs into
+similar tracks, using the media server's play counts and the similarity index.
+
+Main Features:
+* Fetches the top played songs, loads their embeddings, and grows the set toward
+  a target size via nearest-neighbour lookups around each seed.
+* Falls back gracefully to an empty result when no play history or embeddings are
+  available, and can scope play counts to per-user credentials.
+"""
+
 import logging
 import numpy as np
 from datetime import datetime, timezone

@@ -1,3 +1,21 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_backup chunked-restore endpoint.
+
+Posts restore chunks to confirm confirmation, file, and chunk-field
+validation plus the cross-chunk restore locking behavior.
+
+Main Features:
+* Confirmation, missing-file, and chunk-field/range validation returning 400.
+* First-chunk lock-held and later-chunk lock-missing returning 409.
+"""
+
 import io
 import os
 from unittest.mock import MagicMock

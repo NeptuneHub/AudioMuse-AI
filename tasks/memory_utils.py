@@ -1,3 +1,27 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Memory-reclamation helpers for GPU, ONNX and process heap.
+
+Shared cleanup utilities used across analysis and embedding tasks to release
+memory between jobs and recover from allocator pressure. Reclaims through
+legitimate frees only; it never sets MALLOC_ARENA_MAX or otherwise tampers with
+glibc allocator defaults.
+
+Main Features:
+* comprehensive_memory_cleanup: one-shot gc + optional CUDA (PyTorch/CuPy) cache
+  release + ONNX pool reset + Linux malloc_trim(0) to return freed heap to the OS.
+* handle_onnx_memory_error: detects ONNX/GPU OOM strings and drives cleanup,
+  retry, or CPU-session fallback.
+* SessionRecycler: interval counter that signals when to rebuild a long-lived
+  ONNX session to bound its memory growth.
+"""
+
 import gc
 import logging
 from typing import Optional, Dict, Any, Callable

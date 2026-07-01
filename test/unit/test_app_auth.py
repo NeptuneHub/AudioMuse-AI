@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_auth before-request guard and user hashing.
+
+Drives the JWT-cookie and bearer-token checks, admin-path enforcement, and
+the create/verify user helpers with mocked persistence.
+
+Main Features:
+* JWT cookie role assignment plus empty-secret and tampered-token rejection.
+* Bearer compare_digest checks and admin-path 403 or login redirect.
+* Argon2 create/verify roundtrip with empty, invalid-role, and duplicate guards.
+"""
+
 from unittest.mock import MagicMock
 
 import jwt as pyjwt

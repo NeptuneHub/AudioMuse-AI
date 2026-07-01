@@ -1,18 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
 """Centralized authentication and user-management layer.
 
-This module owns everything related to the auth/setup barrier and the
-``audiomuse_users`` table:
+Owns everything behind the auth/setup barrier and the ``audiomuse_users``
+table, and exposes ``init_app`` so ``app.py`` can wire the barrier as a
+``before_request`` guard. Table creation itself lives in ``database.init_db``
+so a cold start only calls one init routine.
 
-* Role constants and password hashing.
-* CRUD helpers for user accounts.
+Main Features:
+* Role constants, password hashing, and CRUD helpers for user accounts.
 * The ``check_setup_needed`` / ``check_auth_needed`` / ``check_admin_needed``
-  barrier functions used as ``before_request`` guards.
-* The Flask routes for ``/login``, ``/auth``, ``/logout`` and ``/api/users``.
-* One-shot helpers for the legacy env -> users-table seed and the JWT secret
-  resolution used at startup.
-
-The table creation itself still lives in ``app_helper.init_db`` (alongside
-all other schema objects) so a cold start only calls one init routine.
+  barrier guards and the ``/login``, ``/auth``, ``/logout``, ``/api/users`` routes.
+* One-shot legacy env -> users-table seed and the startup JWT-secret resolution.
 """
 
 import datetime

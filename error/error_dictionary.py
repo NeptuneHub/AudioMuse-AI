@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Canonical registry of numeric error codes and their default text.
+
+Defines the stable integer error codes grouped by domain (config, media
+server, analysis, index, database, backup, lyrics, clustering) and maps each to
+a human-readable class and default message consumed by ``error_manager``.
+
+Main Features:
+* ``ERROR_REGISTRY`` maps every code to its error class and default message.
+* Lookup helpers resolve unknown codes to ``UNKNOWN_ERROR_CODE`` safely.
+"""
+
 ERR_CONFIG_INVALID = 1001
 ERR_CONFIG_MEDIASERVER_CREDENTIALS = 1002
 ERR_STARTUP = 1003

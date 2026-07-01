@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Entry point and role dispatcher for the Windows standalone build.
+
+Single frozen executable that runs as the tray supervisor by default or, with
+``--role=``, as one of its child processes: the Flask/waitress server or an RQ
+worker/janitor/restart-listener. It installs Windows-only shims first (forcing
+multiprocessing ``fork`` to ``spawn`` and stubbing the POSIX ``os.wait*``
+helpers RQ expects) so the POSIX-oriented worker code runs on Windows. The
+Linux/macOS launchers are the platform-specific siblings.
+
+Main Features:
+* Runs Flask via waitress or launches a named RQ role in-process.
+* Patches multiprocessing and os so fork-based RQ workers run on Windows.
+"""
+
 import multiprocessing
 
 _orig_get_context = multiprocessing.get_context

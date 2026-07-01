@@ -1,4 +1,24 @@
-#AudioMuse-AI/config.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Single source of truth for environment-variable-driven configuration.
+
+Reads every tunable from ``os.environ`` at import time and exposes it as a
+module-level constant with a baked-in default, so other modules import the
+resolved value instead of re-reading the environment or re-specifying defaults.
+
+Main Features:
+* Centralizes app/media-server/database/Redis/task and index defaults in one place.
+* Keeps the section and per-parameter comments that document each setting.
+* At import, ``_apply_db_overrides`` layers persisted setup-wizard values from the
+  DB over the env defaults (skipping Redis/Postgres/admin/precomputed keys).
+"""
+
 import os
 import tempfile
 

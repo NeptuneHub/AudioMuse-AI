@@ -1,3 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Shared pgserver bundle staging and verification for standalone builds.
+
+Helper used by the Linux/macOS/Windows packaging modules to restore the
+pgserver ``pginstall`` tree into the frozen bundle (PyInstaller strips parts of
+it) and smoke-test that the bundled embedded PostgreSQL is runnable before the
+build is accepted.
+
+Main Features:
+* Merges the source ``pginstall`` and ``pgserver.libs`` trees into the bundle.
+* ``verify_pgserver_bundle`` runs the bundled ``initdb`` to create a throwaway
+  cluster (and checks ``initdb --version``); ``strict=False`` downgrades a
+  failure to a warning (Windows best-effort).
+"""
+
 import os
 import shutil
 import subprocess

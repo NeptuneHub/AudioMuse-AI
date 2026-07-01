@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Setup-manager config value parsing, validation and placeholder detection.
+
+Covers the helpers that read stored setup values: placeholder/validity checks,
+argon2 hash detection and the cast/format round trip used by the config store.
+
+Main Features:
+* Placeholder and empty/whitespace strings are detected while real values pass
+* Argon2id/argon2i hashes are recognized and bcrypt/plain are not
+* cast_value coerces bool/int/float/list/dict and falls back on invalid JSON
+* cast and format round-trip preserves the original value; DATABASE_URL env honored
+"""
+
 import json
 import os
 import types

@@ -1,27 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
 """Shared logging setup for every AudioMuse-AI entry point.
 
-Call ``configure_logging()`` exactly once per process, as early as possible -
-before any module that emits log records gets imported. ``logging.basicConfig``
-is a no-op if the root logger already has a handler, so calling this helper
-multiple times across imports is safe.
+Call ``configure_logging()`` exactly once per process, as early as possible,
+before any module that emits log records is imported. Workers that don't import
+``app`` (the high-priority worker, the janitor) call this instead of setting up
+logging inline, so formats stay uniform and no ``logger.info`` silently falls
+through to Python's ``lastResort`` handler during long jobs.
 
-Why this exists: workers that don't import ``app`` (the high-priority worker,
-the janitor) used to set up logging inline, with formats that drifted from
-``app.py``. When one of them forgot to call ``basicConfig`` at all, every
-``logger.info(...)`` from task modules fell through to Python's ``lastResort``
-handler - silently dropping INFO-level output during long-running jobs.
-
-Record sanitization: the ``LogSanitizingFilter`` cleans every log record before
-it reaches a handler. It removes emoji / non-Latin-1 symbols (which raise
-``UnicodeEncodeError`` / ``UnicodeDecodeError`` on Windows when stdout is a pipe
-or the console code-page cannot represent the character) and neutralizes CR/LF
-and other control characters so an attacker-controlled value embedded in a
-message cannot forge or split log lines (CWE-117, log injection). This is the
-single, centralized place where log-message sanitization happens - call sites
-log the raw value and the filter cleans it. HTML templates and web-UI progress
-messages are unaffected - only the Python ``logging`` pipeline is sanitised, and
-the traceback ``logger.exception`` appends is left intact (the formatter renders
-it after filtering, so the full error is always visible in the log).
+Main Features:
+* One shared format and a re-entrant setup (``basicConfig`` is a no-op once the
+  root logger has a handler), safe to call from any entry point.
+* ``LogSanitizingFilter`` cleans every record before a handler sees it: strips
+  emoji / non-Latin-1 symbols that raise UnicodeEncodeError on Windows pipes,
+  and neutralizes CR/LF and other control chars to block log injection
+  (CWE-117), while leaving ``logger.exception`` tracebacks intact.
 """
 
 import logging

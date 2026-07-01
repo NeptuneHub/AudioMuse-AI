@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Serialization of neighbour search results into API response rows.
+
+Covers app_helper.serialize_neighbor_results joining neighbour distances with a
+details map, and the neighbour-search endpoint's error mapping.
+
+Main Features:
+* Empty or None input short-circuits without a details lookup
+* Missing album falls back to a default or is kept as None per the contract
+* Distance passes through from the neighbour map and features default to None
+* Endpoint maps RuntimeError to 503 and unexpected errors to 500 without leaking text
+"""
+
 from unittest.mock import patch
 
 import pytest

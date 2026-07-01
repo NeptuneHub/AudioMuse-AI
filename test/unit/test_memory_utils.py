@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Memory-utility helpers plus DB string/JSON sanitization.
+
+Covers cleanup_cuda_memory, cleanup_onnx_session, the SessionRecycler counter,
+handle_onnx_memory_error retry/fallback logic and comprehensive_memory_cleanup,
+alongside the sanitization routines that strip control bytes before DB writes.
+
+Main Features:
+* SessionRecycler increment/should_recycle/reset lifecycle at the interval
+* Non-memory errors re-raise unchanged; OOM triggers cleanup, retry or CPU fallback
+* comprehensive_memory_cleanup returns the expected bool-valued result map
+* sanitize_string/json remove null and control chars while preserving unicode
+"""
+
 import pytest
 from unittest.mock import Mock, MagicMock
 

@@ -1,3 +1,30 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Disk-paged IVF index: on-disk format, cell caches and query path.
+
+The storage and read engine shared by all six similarity indexes. Vectors are
+grouped into IVF cells persisted as segmented blobs in Postgres, exported to a
+local cell file, and mmap-paged at query time so only IVF_NPROBE cells are read
+per request. Callers (tasks.ivf_manager, tasks.lyrics_manager) build via
+build_and_store_paged_ivf and query via the PagedIvfIndex returned by
+load_paged_ivf_index; distance math is delegated to tasks.ivf_quant.
+
+Main Features:
+* PagedIvfIndex: nprobe cell selection with single-round-trip ANY() reads over
+  the mmap'd cell file; angular vectors are stored normalized (header flag) so
+  scans skip renormalizing.
+* Process-wide L2 cell cache (IVF_GLOBAL_CACHE_MB) layered over a per-request L1,
+  with opt-in IVF_PRELOAD_ALL; STORAGE EXTERNAL blobs avoid TOAST compression.
+* Idle mmap page-dropping (Windows and POSIX) and idle callbacks that return
+  freed heap to the OS without touching glibc arena tuning.
+"""
+
 from __future__ import annotations
 
 import glob

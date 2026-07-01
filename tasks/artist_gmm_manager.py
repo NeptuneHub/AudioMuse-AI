@@ -1,3 +1,26 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Artist-similarity manager: per-artist Gaussian mixture models and their index.
+
+Models each artist as a Gaussian mixture over its tracks' embeddings, then serves
+artist-to-artist similarity. Builds and persists the artist index (parallel to the
+per-song IVF indexes), loads it for querying, and answers the similar-artists and
+artist-search endpoints; also used by tasks.song_alchemy for artist anchors.
+
+Main Features:
+* fit_artist_gmm / select_optimal_gmm_components: fit a diagonal-covariance GMM per
+  artist, auto-selecting component count within configured bounds.
+* gmm_soft_chamfer_distance: soft-Chamfer distance over component means for
+  artist-vs-artist scoring, with a lazily loaded, force-reloadable index cache.
+* find_similar_artists / search_artists_by_name / get_artist_tracks: query surface.
+"""
+
 import logging
 import hashlib
 import numpy as np

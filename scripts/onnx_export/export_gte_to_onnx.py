@@ -1,29 +1,25 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
 """Export the gte-multilingual-base lyrics embedding model to INT8 ONNX.
 
-Run this once at export time (where torch + transformers + optimum + onnx
-are installed). It exports ``Alibaba-NLP/gte-multilingual-base`` to ONNX and
-then applies dynamic INT8 weight quantization, producing
-``gte-multilingual-base-int8.onnx``. The result is loaded at runtime by
-``lyrics/gte_onnx.py`` via ``onnxruntime`` + the bare ``tokenizers`` package,
-so the runtime CPU image needs neither torch nor transformers.
+Offline build tool (torch + transformers + optimum + onnx) that converts
+``Alibaba-NLP/gte-multilingual-base`` to ONNX and applies dynamic INT8 weight
+quantization, producing the ``gte-multilingual-base-int8.onnx`` that
+``lyrics/gte_onnx.py`` loads at runtime via onnxruntime and the bare
+``tokenizers`` package, so the runtime CPU image needs neither torch nor
+transformers. Companion to ``export_whisper_to_onnx.py``.
 
-gte-multilingual-base uses a custom architecture, so ``trust_remote_code`` is
-required when loading it. The sentence embedding is the CLS token of the last
-hidden state (see the model's ``1_Pooling/config.json``); pooling is done at
-runtime in ``lyrics/gte_onnx.py``, so this script exports the raw encoder
-(``last_hidden_state``) only.
-
-Usage
------
-    python3 export_gte_to_onnx.py \
-        --input /tmp/gte-multilingual-base \
-        --output /app/model/gte-multilingual-base-int8.onnx \
-        --tokenizer-out /app/model/gte-multilingual-base
-
-The input directory must contain the standard HuggingFace files
-(``config.json``, ``tokenizer.json``, ``model.safetensors`` plus the custom
-``modeling`` code). The tokenizer files are copied to ``--tokenizer-out`` so
-the runtime can load ``tokenizer.json`` without transformers.
+Main Features:
+* Loads the custom-architecture model with ``trust_remote_code`` and exports
+  only the raw encoder ``last_hidden_state`` (CLS pooling happens at runtime).
+* Copies the HuggingFace tokenizer files to ``--tokenizer-out`` so the runtime
+  can tokenize without transformers.
 """
 
 from __future__ import annotations

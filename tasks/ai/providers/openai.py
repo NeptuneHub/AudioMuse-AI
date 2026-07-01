@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""OpenAI-compatible client (OpenAI, OpenRouter, Ollama) for the playlist AI.
+
+The HTTP backend dispatched from ``tasks.ai.api`` for every non-SDK provider.
+generate_text streams SSE completions; call_with_tools does single-turn
+function-calling; call_with_tools_ollama drives Ollama's structured-output
+JSON path since Ollama lacks native tool calls.
+
+Main Features:
+* Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output.
+* Robust 400 fallbacks: retries without reasoning_effort (caching rejecting models), swaps max_tokens->max_completion_tokens, and cycles DeepSeek thinking-off forms; tool-call count is capped to 4 and all failures return a generic error, never a traceback.
+"""
+
 import json
 import logging
 import os
