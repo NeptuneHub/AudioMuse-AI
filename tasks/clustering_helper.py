@@ -196,7 +196,7 @@ def _perform_single_clustering_iteration(
             data_after_pca = pca_model.fit_transform(data_to_cluster)
             params['pca_config']['components'] = pca_model.n_components_
 
-        labels, cluster_centers_map, model = _apply_clustering_model(
+        labels, cluster_centers_map, _ = _apply_clustering_model(
             data_after_pca, params['clustering_method_config'], log_prefix, run_idx
         )
         if labels is None:
@@ -288,7 +288,7 @@ def _random_pca_config(pca_ranges, data):
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
         min_pca = max_pca
-    pca_comps = random.randint(min_pca, max_pca) if max_pca >= min_pca and max_pca > 0 else min_pca
+    pca_comps = random.randint(min_pca, max_pca) if max_pca > 0 else min_pca
     return {"enabled": pca_comps > 0, "components": pca_comps}
 
 
@@ -331,7 +331,7 @@ def _random_spectral_params(spec_ranges, data):
         lower_k = 2
     if upper_k < lower_k:
         upper_k = lower_k
-    n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
+    n_clust = random.randint(lower_k, upper_k)
     return {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
 
 
