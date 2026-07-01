@@ -162,8 +162,8 @@ def load_musicnn_sessions(model_paths):
         sessions = {n: create_onnx_session(p, opts, label=n) for n, p in model_paths.items()}
         logger.info(f"OK Loaded {len(sessions)} MusiCNN models for album reuse")
         return sessions
-    except Exception as e:
-        logger.exception(f"Failed to load MusiCNN models: {e}")
+    except Exception:
+        logger.exception("Failed to load MusiCNN models")
         return None
 
 

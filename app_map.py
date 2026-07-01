@@ -213,8 +213,8 @@ def build_map_cache():
                 coords_by_id[str(items[idx]['item_id'])] = (float(coord[0]), float(coord[1]))
             if used_projection == 'none':
                 used_projection = used
-        except Exception as e:
-            logger.exception('Failed to compute missing projections: %s', e)
+        except Exception:
+            logger.exception('Failed to compute missing projections')
 
     for it in items:
         it.pop('embedding', None)

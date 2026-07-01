@@ -279,8 +279,8 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
             logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
         return audio, target_sr
-    except Exception as e:
-        logger.exception(f"PyAV fallback loading also failed for {name}: {e}")
+    except Exception:
+        logger.exception(f"PyAV fallback loading also failed for {name}")
         return None, None
 
 
@@ -292,7 +292,7 @@ def rebuild_all_indexes_task():
             logger.info("OK Index rebuild task completed successfully")
             return {"status": "SUCCESS", "message": "All indexes rebuilt"}
         except Exception as e:
-            logger.exception(f"X Index rebuild task failed: {e}")
+            logger.exception("X Index rebuild task failed")
             return {"status": "FAILURE", "message": str(e)}
 
 
@@ -316,9 +316,9 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
                 f"Track too short to create spectrogram patches: {os.path.basename(file_path)}"
             )
             return (None, None, None, None) if return_audio else (None, None)
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"Spectrogram creation failed for {os.path.basename(file_path)}: {e}"
+            f"Spectrogram creation failed for {os.path.basename(file_path)}"
         )
         return (None, None, None, None) if return_audio else (None, None)
 
@@ -383,9 +383,9 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
             label: float(score) for label, score in zip(mood_labels_list, final_mood_predictions)
         }
 
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"Main model inference failed for {os.path.basename(file_path)}: {e}"
+            f"Main model inference failed for {os.path.basename(file_path)}"
         )
         return (None, None, None, None) if return_audio else (None, None)
     finally:
@@ -611,7 +611,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 else:
                     path = None
 
-                def _ensure_track_download():
+                def _ensure_track_download(item=item):
                     nonlocal path
                     if path is None:
                         path = download_track(TEMP_DIR, item)
@@ -754,7 +754,7 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
 
         except OperationalError as e:
             logger.exception(
-                f"Database connection error during album analysis {album_id}: {e}. This job will be retried."
+                f"Database connection error during album analysis {album_id}. This job will be retried."
             )
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
             log_and_update_album_task(
@@ -956,8 +956,8 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                             for j in list(active_jobs.keys()):
                                 if j in terminal_ids:
                                     active_jobs.pop(j, None)
-                    except Exception as e:
-                        logger.exception(f"Failed to reconcile child tasks from DB: {e}")
+                    except Exception:
+                        logger.exception("Failed to reconcile child tasks from DB")
 
                 if albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE:
                     log_and_update_main(

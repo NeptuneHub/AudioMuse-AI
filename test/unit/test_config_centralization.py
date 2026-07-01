@@ -10,16 +10,23 @@
 
 Asserts each tunable exists in config with its default, honors its environment
 variable, and that importer modules reference config rather than re-reading env.
+Also enforces the house rule repo-wide: a tunable's default lives ONLY in
+config.py, so no other runtime module may re-read its env var with a second
+default or use a getattr(config, ...) fallback default.
 
 Main Features:
 * config attributes exist with the documented default and coerce env overrides
 * Importer modules still reference the config names they depend on
 * Importers have no local os.environ.get or getattr-fallback default for those names
+* Repo-wide: no runtime module re-reads a config-owned env var with a default
+* Repo-wide: no runtime module uses getattr(config, 'NAME', default) fallbacks
 """
 
+import ast
 import importlib
 import os
 import re
+import subprocess
 
 import pytest
 
@@ -101,3 +108,105 @@ def test_importer_has_no_local_default(relative_path, names):
             f"{relative_path} has a getattr fallback default for {name}; "
             f"must use config.{name} directly"
         )
+
+
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+
+_SCAN_EXCLUDED_PREFIXES = (
+    'test/',
+    'screenshot/',
+    'query/',
+    'native-build/',
+    'scripts/',
+)
+
+
+def _tracked_runtime_py_files():
+    out = subprocess.check_output(['git', 'ls-files', '*.py'], cwd=_REPO_ROOT).decode('utf-8')
+    files = []
+    for rel in out.splitlines():
+        if not rel or rel == 'config.py':
+            continue
+        if rel.startswith(_SCAN_EXCLUDED_PREFIXES):
+            continue
+        files.append(rel)
+    return files
+
+
+def _is_os_environ_get(node):
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr == 'getenv' and isinstance(func.value, ast.Name) and func.value.id == 'os':
+        return True
+    return (
+        func.attr == 'get'
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == 'environ'
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == 'os'
+    )
+
+
+def _config_owned_env_names():
+    with open(os.path.join(_REPO_ROOT, 'config.py'), encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _is_os_environ_get(node):
+            if node.args and isinstance(node.args[0], ast.Constant):
+                names.add(node.args[0].value)
+    return names
+
+
+def _parse(rel_path):
+    with open(os.path.join(_REPO_ROOT, rel_path), encoding='utf-8') as fh:
+        return ast.parse(fh.read(), filename=rel_path)
+
+
+def test_config_owned_env_names_found():
+    names = _config_owned_env_names()
+    assert len(names) > 100, f'config.py env-var extraction looks broken ({len(names)} names)'
+
+
+def test_no_module_rereads_config_env_with_default():
+    owned = _config_owned_env_names()
+    violations = []
+    for rel in _tracked_runtime_py_files():
+        for node in ast.walk(_parse(rel)):
+            if not (isinstance(node, ast.Call) and _is_os_environ_get(node)):
+                continue
+            if len(node.args) < 2:
+                continue
+            if not (node.args and isinstance(node.args[0], ast.Constant)):
+                continue
+            name = node.args[0].value
+            if name in owned:
+                violations.append(f'{rel}:{node.lineno}: os.environ.get({name!r}, <default>)')
+    assert not violations, (
+        'Env vars owned by config.py must not be re-read with a second default '
+        '(import config.<NAME> instead, or read the env without a default):\n  '
+        + '\n  '.join(sorted(violations))
+    )
+
+
+def test_no_module_uses_getattr_config_fallback():
+    violations = []
+    for rel in _tracked_runtime_py_files():
+        for node in ast.walk(_parse(rel)):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == 'getattr'
+                and len(node.args) == 3
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == 'config'
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                continue
+            violations.append(f'{rel}:{node.lineno}: getattr(config, {node.args[1].value!r}, <default>)')
+    assert not violations, (
+        'getattr(config, ..., default) fallbacks re-specify a default outside '
+        'config.py; config always defines the attribute, so access it directly:\n  '
+        + '\n  '.join(sorted(violations))
+    )

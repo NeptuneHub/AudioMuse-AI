@@ -297,7 +297,7 @@ class TestEndpointErrorHandling:
     ):
         mock_queue.enqueue.side_effect = Exception("Queue error")
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Queue error"):
             client.post('/api/analysis/start', json={})
 
     @patch(
@@ -322,15 +322,16 @@ class TestEndpointErrorHandling:
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
 
+    @patch('app_analysis.get_active_main_task', return_value=None)
     @patch('app_analysis.rq_queue_high')
     @patch('app_analysis.clean_up_previous_main_tasks')
     @patch('app_analysis.save_task_status')
     def test_cleaning_handles_enqueue_failure(
-        self, mock_save_status, mock_cleanup, mock_queue, client
+        self, mock_save_status, mock_cleanup, mock_queue, mock_get_active, client
     ):
         mock_queue.enqueue.side_effect = Exception("Queue error")
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Queue error"):
             client.post('/api/cleaning/start')
 
 

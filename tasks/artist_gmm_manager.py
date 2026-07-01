@@ -159,8 +159,8 @@ def fit_artist_gmm(artist_name: str, track_embeddings: List[np.ndarray]) -> Opti
 
         return gmm_params
 
-    except Exception as e:
-        logger.exception(f"Failed to fit GMM for artist '{artist_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to fit GMM for artist '{artist_name}'")
         return None
 
 
@@ -303,8 +303,8 @@ def build_and_store_artist_index(db_conn=None):
                         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
                         track_embeddings.append(embedding)
 
-            except Exception as e:
-                logger.exception(f"Failed to fetch embeddings for artist {artist_name}: {e}")
+            except Exception:
+                logger.exception(f"Failed to fetch embeddings for artist {artist_name}")
                 continue
 
             if len(track_embeddings) >= MIN_TRACKS_PER_ARTIST:
@@ -353,8 +353,8 @@ def build_and_store_artist_index(db_conn=None):
         logger.info("Artist IVF index built and stored (%d artists).", len(artist_gmms))
         return
 
-    except Exception as e:
-        logger.error(f"Failed to build artist index: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to build artist index")
         db_conn.rollback()
         raise
 
@@ -421,8 +421,8 @@ def load_artist_index_for_querying(force_reload=False):
             logger.info("Artist IVF index loaded (%d artists).", len(artist_map))
             return
 
-        except Exception as e:
-            logger.error(f"Failed to load artist index: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Failed to load artist index")
             artist_index = None
             artist_map = None
             reverse_artist_map = None
@@ -481,8 +481,8 @@ def get_representative_songs_for_component(
         song_distances.sort(key=lambda x: x['distance_to_component'])
         return song_distances[:top_k]
 
-    except Exception as e:
-        logger.exception(f"Failed to get representative songs for artist '{artist_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to get representative songs for artist '{artist_name}'")
         return []
 
     finally:
@@ -603,8 +603,8 @@ def find_similar_artists(
     query_vector = serialize_gmm_for_hnsw(query_gmm)
     try:
         labels, _distances = artist_index.query(query_vector, k=k_candidates)
-    except Exception as e:
-        logger.error(f"IVF query failed for artist '{artist_name}': {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"IVF query failed for artist '{artist_name}'")
         return []
 
     scored = _score_candidate_artists(labels, query_id, query_gmm)
@@ -654,8 +654,8 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
 
         return results
 
-    except Exception as e:
-        logger.exception(f"Failed to search artists: {e}")
+    except Exception:
+        logger.exception("Failed to search artists")
         return []
 
     finally:
@@ -692,8 +692,8 @@ def get_artist_tracks(artist_identifier: str) -> List[Dict]:
 
         return results
 
-    except Exception as e:
-        logger.exception(f"Failed to get tracks for artist '{artist_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to get tracks for artist '{artist_name}'")
         return []
 
     finally:

@@ -76,7 +76,7 @@ if __name__ == '__main__':
                         failed_cleaned,
                         queue.name,
                     )
-        except Exception as e:
-            logger.exception("Error in RQ Janitor loop: %s", e)
+        except Exception:
+            logger.exception("Error in RQ Janitor loop")
 
         time.sleep(10)

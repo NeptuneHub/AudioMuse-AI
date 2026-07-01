@@ -430,13 +430,13 @@ def run_due_cron_jobs():
                                         f"Cron: created sonic fingerprint playlist '{legacy_name}' "
                                         f"(playlist_id={playlist_id}, job_id={job_id})"
                                     )
-                            except Exception as e:
+                            except Exception:
                                 logger.exception(
-                                    f"Cron: error creating/updating playlist for sonic fingerprint: {e}"
+                                    "Cron: error creating/updating playlist for sonic fingerprint"
                                 )
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
-                    except Exception as e:
-                        logger.exception(f"Cron: error running sonic fingerprint: {e}")
+                    except Exception:
+                        logger.exception("Cron: error running sonic fingerprint")
                 elif task_type == 'alchemy_radio':
                     from tasks.radio_manager import run_radio_playlists
 
@@ -452,8 +452,8 @@ def run_due_cron_jobs():
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))
                 db.commit()
                 cur2.close()
-        except Exception as e:
-            logger.exception(f"Error processing cron row {r}: {e}")
+        except Exception:
+            logger.exception(f"Error processing cron row {r}")
     cur.close()
 
 

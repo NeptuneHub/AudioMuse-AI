@@ -14,14 +14,14 @@ alchemy, CLAP audio and lyrics text search, metadata filtering, and the
 brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
-* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row.
-* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor.
+* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
+* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded); brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
+* Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs ordered by artist rank (seed artist first, then closest neighbors) so downstream rank blending stays meaningful.
 """
 
 import json
 import logging
 import re
-import traceback
 from typing import Dict, List, Optional
 
 from psycopg2.extras import DictCursor
@@ -108,6 +108,26 @@ COALESCE(
     0
 )"""
 _INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
+_EXCLUDE_GENRE_SCORE = 0.3
+_SIMILAR_ARTISTS_LIBRARY_DIVISOR = 10
+_SIMILAR_ARTISTS_MIN = 5
+
+_FLAT_TO_SHARP_KEY = {
+    'DB': 'C#',
+    'EB': 'D#',
+    'FB': 'E',
+    'GB': 'F#',
+    'AB': 'G#',
+    'BB': 'A#',
+    'CB': 'B',
+    'B#': 'C',
+    'E#': 'F',
+}
+
+
+def _normalize_key_name(key: str) -> str:
+    k = str(key).strip().replace('♯', '#').replace('♭', 'b').upper()
+    return _FLAT_TO_SHARP_KEY.get(k, k)
 
 
 def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
@@ -151,7 +171,7 @@ def _normalize_for_match(s: Optional[str]) -> str:
     return (
         s.replace(' ', '')
         .replace('-', '')
-        .replace('‐', '')
+        .replace('‐', '')  # noqa: RUF001 - non-breaking hyphen present in real titles/authors
         .replace('/', '')
         .replace("'", '')
         .lower()
@@ -177,12 +197,12 @@ def _fuzzy_match_author_title(
     prefix_params: List = []
     if author_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(author), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"  # noqa: RUF001 - non-breaking hyphen present in real titles/authors
         )
         prefix_params.append(f"{author_prefix}%")
     if title_prefix:
         prefix_conditions.append(
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(LOWER(title), ' ', ''), '-', ''), '‐', ''), '/', ''), '''', '') ILIKE %s"  # noqa: RUF001 - non-breaking hyphen present in real titles/authors
         )
         prefix_params.append(f"{title_prefix}%")
     if not prefix_conditions:
@@ -235,6 +255,57 @@ def _fuzzy_match_author_title(
             f"{best['author']} - {best['title']}" if requested_title else best['author']
         ),
     }
+
+
+def _normalized_ilike_sql(column: str) -> str:
+    hyphen = chr(0x2010)
+    return (
+        "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(" + column + ", ' ', ''), "
+        "'-', ''), '" + hyphen + "', ''), '/', ''), '''', '') ILIKE %s"
+    )
+
+
+def _resolve_song_row(
+    db_conn, song_title: str, song_artist: str, log_messages: List[str]
+) -> Optional[Dict]:
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT item_id, title, author, album FROM public.score
+            WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
+            LIMIT 1
+        """,
+            (song_title, song_artist),
+        )
+        seed = cur.fetchone()
+
+        if not seed:
+            log_messages.append("No exact match, trying fuzzy search...")
+            title_normalized = _normalize_for_match(song_title)
+            artist_normalized = _normalize_for_match(song_artist)
+
+            cur.execute(
+                f"""
+                SELECT item_id, title, author, album
+                FROM public.score
+                WHERE {_normalized_ilike_sql('title')}
+                  AND {_normalized_ilike_sql('author')}
+                ORDER BY LENGTH(title) + LENGTH(author)
+                LIMIT 1
+            """,
+                (f"%{title_normalized}%", f"%{artist_normalized}%"),
+            )
+            seed = cur.fetchone()
+
+    if not seed:
+        log_messages.append("ILIKE fallback miss, trying rapidfuzz fallback...")
+        fz = _fuzzy_match_author_title(db_conn, song_artist, song_title)
+        if fz:
+            log_messages.append(
+                f"fuzzy matched '{song_artist} - {song_title}' -> '{fz['matched_label']}' (score {fz['score']})"
+            )
+            seed = fz
+    return seed
 
 
 def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict:
@@ -339,6 +410,16 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                 "message": "\n".join(log_messages) + f"\nNo similar artists found for '{artist}'",
             }
 
+        total_indexed = len(reverse_artist_map or {})
+        if total_indexed:
+            scaled = max(_SIMILAR_ARTISTS_MIN, total_indexed // _SIMILAR_ARTISTS_LIBRARY_DIVISOR)
+            if scaled < count:
+                log_messages.append(
+                    f"Similar-artist fanout scaled to library size: {count} -> {scaled} "
+                    f"({total_indexed} artists indexed)"
+                )
+                count = scaled
+
         artist_names = [a['artist'] for a in similar_artists[:count]]
         log_messages.append(f"Found {len(artist_names)} similar artists")
 
@@ -356,10 +437,10 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                     FROM public.score
                     WHERE author IN ({placeholders})
                 ) AS distinct_songs
-                ORDER BY RANDOM()
+                ORDER BY array_position(%s::text[], author), RANDOM()
                 LIMIT %s
             """
-            cur.execute(query, all_artist_names + [get_songs])
+            cur.execute(query, all_artist_names + [all_artist_names, get_songs])
             results = cur.fetchall()
 
         songs = [
@@ -436,9 +517,9 @@ def _text_search_sync(
             f"filter is applied downstream as a soft re-rank, not a cut)"
         )
         return {"songs": songs, "message": "\n".join(log_messages)}
-    except Exception as e:
-        log_messages.append(f"Error in text search: {str(e)}")
-        log_messages.append(traceback.format_exc())
+    except Exception:
+        logger.exception("Error in CLAP text search")
+        log_messages.append("Error in text search: check container logs")
         return {"songs": [], "message": "\n".join(log_messages)}
 
 
@@ -464,68 +545,20 @@ def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int)
 
         log_messages.append(f"Looking up song in database: '{song_title}' by '{song_artist}'")
 
-        with db_conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT item_id, title, author, album FROM public.score
-                WHERE LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s)
-                LIMIT 1
-            """,
-                (song_title, song_artist),
-            )
-            seed = cur.fetchone()
+        seed = _resolve_song_row(db_conn, song_title, song_artist, log_messages)
 
-            if not seed:
-                log_messages.append("No exact match, trying fuzzy search...")
-                title_normalized = (
-                    song_title.replace(' ', '')
-                    .replace('-', '')
-                    .replace('\u2010', '')
-                    .replace('/', '')
-                    .replace("'", '')
-                )
-                artist_normalized = (
-                    song_artist.replace(' ', '')
-                    .replace('-', '')
-                    .replace('\u2010', '')
-                    .replace('/', '')
-                    .replace("'", '')
-                )
+        if not seed:
+            return {
+                "songs": [],
+                "message": "\n".join(log_messages)
+                + f"\nSong '{song_title}' by '{song_artist}' not found in database",
+            }
 
-                cur.execute(
-                    """
-                    SELECT item_id, title, author, album
-                    FROM public.score
-                    WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(title, ' ', ''), '-', ''), '\u2010', ''), '/', ''), '''', '') ILIKE %s
-                      AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(author, ' ', ''), '-', ''), '\u2010', ''), '/', ''), '''', '') ILIKE %s
-                    ORDER BY LENGTH(title) + LENGTH(author)
-                    LIMIT 1
-                """,
-                    (f"%{title_normalized}%", f"%{artist_normalized}%"),
-                )
-                seed = cur.fetchone()
-
-            if not seed:
-                log_messages.append("ILIKE fallback miss, trying rapidfuzz fallback...")
-                fz = _fuzzy_match_author_title(db_conn, song_artist, song_title)
-                if fz:
-                    log_messages.append(
-                        f"fuzzy matched '{song_artist} - {song_title}' -> '{fz['matched_label']}' (score {fz['score']})"
-                    )
-                    seed = fz
-
-            if not seed:
-                return {
-                    "songs": [],
-                    "message": "\n".join(log_messages)
-                    + f"\nSong '{song_title}' by '{song_artist}' not found in database",
-                }
-
-            seed_id = seed['item_id']
-            actual_title = seed['title']
-            actual_artist = seed['author']
-            log_messages.append(f"Found: '{actual_title}' by '{actual_artist}' (ID: {seed_id})")
-            log_messages.append(f"Found seed song: {song_title} by {song_artist}")
+        seed_id = seed['item_id']
+        actual_title = seed['title']
+        actual_artist = seed['author']
+        log_messages.append(f"Found: '{actual_title}' by '{actual_artist}' (ID: {seed_id})")
+        log_messages.append(f"Found seed song: {song_title} by {song_artist}")
 
         similar_results = find_nearest_neighbors_by_id(
             seed_id, n=get_songs + 1, eliminate_duplicates=False, radius_similarity=False
@@ -602,7 +635,40 @@ def _alchemy_collect_seed_ids(cur, add_items):
             row = cur.fetchone()
             if row:
                 seed_ids.append(row['item_id'])
+        elif item_type == 'song' and item_id_val:
+            seed_ids.append(item_id_val)
     return seed_ids
+
+
+def _resolve_alchemy_items(items, log_messages: List[str]) -> List[Dict]:
+    out: List[Dict] = []
+    db_conn = None
+    try:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            item_id_val = str(item.get('id') or '')
+            if item.get('type') == 'song' and ' by ' in item_id_val:
+                if db_conn is None:
+                    db_conn = get_db_connection()
+                title, _, artist = item_id_val.rpartition(' by ')
+                row = _resolve_song_row(db_conn, title.strip(), artist.strip(), log_messages)
+                if row:
+                    out.append({'type': 'song', 'id': row['item_id']})
+                    log_messages.append(
+                        f"alchemy: resolved '{item_id_val}' -> "
+                        f"'{row['title']}' by '{row['author']}' ({row['item_id']})"
+                    )
+                else:
+                    log_messages.append(
+                        f"alchemy: song '{item_id_val}' not found in library, seed skipped"
+                    )
+            else:
+                out.append(item)
+        return out
+    finally:
+        if db_conn is not None:
+            db_conn.close()
 
 
 def _alchemy_top_seed_genres(cur, seed_ids):
@@ -710,6 +776,10 @@ def _song_alchemy_sync(
     try:
         _alchemy_log_items(log_messages, add_items, subtract_items)
 
+        add_items = _resolve_alchemy_items(add_items, log_messages)
+        if subtract_items:
+            subtract_items = _resolve_alchemy_items(subtract_items, log_messages)
+
         result = song_alchemy(
             add_items=add_items, subtract_items=subtract_items, n_results=get_songs
         )
@@ -731,7 +801,7 @@ def _song_alchemy_sync(
         return {"songs": songs, "message": "\n".join(log_messages)}
 
     except Exception as e:
-        logger.exception(f"Error in song alchemy: {e}")
+        logger.exception("Error in song alchemy")
         log_messages.append(f"Error: {str(e)}")
         return {"songs": [], "message": "\n".join(log_messages)}
 
@@ -756,6 +826,9 @@ def _database_genre_query_sync(
     voices: Optional[List[str]] = None,
     score_threshold: Optional[float] = None,
     instrumental: Optional[bool] = None,
+    fuzzy_match: bool = False,
+    exclude_artists: Optional[List[str]] = None,
+    exclude_genres: Optional[List[str]] = None,
 ) -> Dict:
     get_songs = int(get_songs) if get_songs is not None else 100
 
@@ -865,7 +938,7 @@ def _database_genre_query_sync(
 
             if key:
                 conditions.append("key = %s")
-                params.append(key.upper())
+                params.append(_normalize_key_name(key))
 
             if scale:
                 conditions.append("LOWER(scale) = LOWER(%s)")
@@ -887,12 +960,33 @@ def _database_genre_query_sync(
                 params.append(f"%{album}%")
 
             if artist:
+                if fuzzy_match:
+                    conditions.append("LOWER(author) LIKE LOWER(%s)")
+                    params.append(f"%{artist}%")
+                else:
+                    conditions.append("""
+                        LOWER(REPLACE(REPLACE(REPLACE(REPLACE(author, '-', ''), '\u2010', ''), '/', ''), '''', ''))
+                        =
+                        LOWER(REPLACE(REPLACE(REPLACE(REPLACE(%s, '-', ''), '\u2010', ''), '/', ''), '''', ''))
+                    """)
+                    params.append(artist)
+
+            for ex_artist in exclude_artists or []:
+                if not isinstance(ex_artist, str) or not ex_artist.strip():
+                    continue
                 conditions.append("""
                     LOWER(REPLACE(REPLACE(REPLACE(REPLACE(author, '-', ''), '\u2010', ''), '/', ''), '''', ''))
-                    =
+                    <>
                     LOWER(REPLACE(REPLACE(REPLACE(REPLACE(%s, '-', ''), '\u2010', ''), '/', ''), '''', ''))
                 """)
-                params.append(artist)
+                params.append(ex_artist.strip())
+
+            for ex_genre in exclude_genres or []:
+                if not isinstance(ex_genre, str) or not ex_genre.strip():
+                    continue
+                conditions.append(_MOOD_VECTOR_LT_SQL)
+                params.append(f"(?i)(?:^|,)\\s*{re.escape(ex_genre.strip())}:(\\d+\\.?\\d*)")
+                params.append(_EXCLUDE_GENRE_SCORE)
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
@@ -1003,6 +1097,10 @@ def _database_genre_query_sync(
             filters.append(f"artist: {artist}")
         if instrumental is not None:
             filters.append(f"instrumental: {instrumental}")
+        if exclude_artists:
+            filters.append(f"exclude_artists: {', '.join(exclude_artists)}")
+        if exclude_genres:
+            filters.append(f"exclude_genres: {', '.join(exclude_genres)}")
 
         log_messages.append(
             f"Found {len(songs)} songs matching {', '.join(filters) if filters else 'all criteria'}"

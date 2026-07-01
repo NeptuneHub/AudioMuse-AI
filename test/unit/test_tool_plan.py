@@ -6,16 +6,18 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""AI tool-plan normalization, vocabulary aliasing and intent classification.
+"""AI tool-plan normalization, vocabulary aliasing and prompt/schema shape.
 
 Covers the planner that turns raw LLM tool arguments into a validated plan:
-vocabulary remapping, mood/voice routing, argument validation and multi-intent shaping.
+vocabulary remapping, mood/voice routing, argument validation, duplicate-call
+dedupe/cap, and the derived prompt/grammar builders.
 
 Main Features:
-* Vocabulary aliases map short female/male tokens to voices and drop unknowns
+* Vocabulary aliases map short female/male tokens to voices and drop unknowns; exact canonical moods win over energy aliases
 * Mood lists split out voices and energy phrases; non-canonical genres dropped with a note
-* Plan args drop seedless searches, hallucinated min_rating and sub-1900 years
-* Multi-primary classification preserves, dedupes and coerces intents including legacy shapes
+* Plan args drop seedless searches, hallucinated min_rating and sub-1900 years; duplicate calls dropped and plans capped
+* build_tool_calls_schema emits typed per-tool branches (reasoning first, name enum locked); prompts derive tool prose from the schemas
+* Genre/negation hint extraction, hint backstop, hallucinated year/instrumental stripping, similarity-blended re-rank with skit demotion, exclusion hard cuts, and the zero-result replan
 """
 
 import importlib
@@ -80,6 +82,14 @@ def _ensure_config_stub():
         'happy',
     ]
     cfg.OTHER_FEATURE_LABELS = ['danceable', 'aggressive', 'happy', 'party', 'relaxed', 'sad']
+    cfg.VOICE_VOCAB = ['female vocalists', 'female vocalist', 'male vocalists']
+    cfg.AI_FALLBACK_GENRES = 'rock, pop, jazz'
+    cfg.AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX = 4
+    cfg.AI_BRAINSTORM_SEED_ARTISTS_MAX = 4
+    cfg.AI_BRAINSTORM_LYRIC_THEMES_MAX = 3
+    cfg.AI_TOOLCALL_TEMPERATURE = 0.7
+    cfg.CLAP_ENABLED = True
+    cfg.LYRICS_ENABLED = True
     cfg.STRATIFIED_GENRES = [
         'rock',
         'pop',
@@ -168,7 +178,7 @@ class TestNormalizeMoodList:
         assert 'female vocalists' in result['voices']
         assert 'female vocalist' in result['voices']
         assert 'happy' in result['other_features']
-        assert result['mood_vector'] == ['happy']
+        assert result['mood_vector'] == []
 
     def test_energy_phrase_extracted(self):
         v = _vocab()
@@ -378,87 +388,404 @@ class TestIntentPreextract:
         assert h['energy_min'] == 0.5
 
 
-class TestMultiPrimaryClassifier:
-    def _tools(self):
-        return [
-            {'name': 'seed_search'},
-            {'name': 'text_match'},
-            {'name': 'knowledge_lookup'},
-            {'name': 'search_database'},
+def _prompts():
+    _ensure_config_stub()
+    import tasks.ai.prompts as pr
+
+    importlib.reload(pr)
+    return pr
+
+
+def _tools_fixture():
+    return [
+        {
+            'name': 'seed_search',
+            'description': 'Find songs similar to seed songs or artists.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'seeds': {'type': 'array', 'items': {'type': 'object'}},
+                    'blend_mode': {'type': 'string', 'enum': ['union', 'alchemy', 'subtract']},
+                    'subtract': {'type': 'array'},
+                },
+                'required': ['seeds'],
+            },
+        },
+        {
+            'name': 'text_match',
+            'description': 'Find songs from a free-text description.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'mode': {'type': 'string', 'enum': ['audio', 'lyrics']},
+                },
+                'required': ['query'],
+            },
+        },
+        {
+            'name': 'knowledge_lookup',
+            'description': 'Answer popularity or cultural requests.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {'user_request': {'type': 'string'}},
+                'required': ['user_request'],
+            },
+        },
+        {
+            'name': 'search_database',
+            'description': 'Filter the library by exact metadata.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'genres': {'type': 'array'},
+                    'artist': {'type': 'string'},
+                    'year_min': {'type': 'integer'},
+                },
+            },
+        },
+    ]
+
+
+class TestDedupeAndCapCalls:
+    def test_duplicates_dropped_order_preserved(self):
+        p = _plan()
+        log = []
+        calls = [
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'A'}]}},
+            {'name': 'search_database', 'arguments': {'genres': ['rock']}},
+            {'name': 'seed_search', 'arguments': {'seeds': [{'type': 'artist', 'name': 'A'}]}},
         ]
+        out = p.dedupe_and_cap_calls(calls, log_messages=log)
+        assert [c['name'] for c in out] == ['seed_search', 'search_database']
+        assert any('duplicate' in ln for ln in log)
 
-    @staticmethod
-    def _names(tools):
-        return {t['name'] for t in tools}
-
-    def test_new_shape_passthrough(self):
+    def test_same_tool_different_args_kept(self):
         p = _plan()
-        out = p._normalize_classifier_result({'primaries': ['text'], 'needs_filter': True})
-        assert out == {'primaries': ['text'], 'needs_filter': True}
+        calls = [
+            {'name': 'search_database', 'arguments': {'genres': ['rock']}},
+            {'name': 'search_database', 'arguments': {'genres': ['jazz']}},
+        ]
+        out = p.dedupe_and_cap_calls(calls)
+        assert len(out) == 2
 
-    def test_dedupe_drop_invalid_preserve_order(self):
+    def test_cap_at_max(self):
         p = _plan()
-        out = p._normalize_classifier_result(
-            {'primaries': ['text', 'text', 'bogus', 'seed'], 'needs_filter': False}
+        calls = [
+            {'name': 'search_database', 'arguments': {'year_min': 1990 + i}} for i in range(6)
+        ]
+        log = []
+        out = p.dedupe_and_cap_calls(calls, log_messages=log)
+        assert len(out) == p.MAX_TOOL_CALLS
+        assert any('capping' in ln for ln in log)
+
+    def test_non_dict_entries_skipped(self):
+        p = _plan()
+        out = p.dedupe_and_cap_calls(['bogus', {'name': 'text_match', 'arguments': {}}])
+        assert len(out) == 1
+
+
+class TestToolCallsSchema:
+    def test_reasoning_first_and_required(self):
+        pr = _prompts()
+        schema = pr.build_tool_calls_schema(_tools_fixture())
+        assert list(schema['properties'].keys())[0] == 'reasoning'
+        assert schema['required'] == ['reasoning', 'tool_calls']
+
+    def test_branches_lock_name_and_type_arguments(self):
+        pr = _prompts()
+        schema = pr.build_tool_calls_schema(_tools_fixture())
+        branches = schema['properties']['tool_calls']['items']['oneOf']
+        assert len(branches) == 4
+        by_name = {b['properties']['name']['enum'][0]: b for b in branches}
+        assert set(by_name) == {'seed_search', 'text_match', 'knowledge_lookup', 'search_database'}
+        sd_args = by_name['search_database']['properties']['arguments']
+        assert sd_args['additionalProperties'] is False
+        assert 'artist' in sd_args['properties']
+        seed_args = by_name['seed_search']['properties']['arguments']
+        assert seed_args['required'] == ['seeds']
+
+    def test_source_schema_not_mutated(self):
+        pr = _prompts()
+        tools = _tools_fixture()
+        pr.build_tool_calls_schema(tools)
+        assert 'additionalProperties' not in tools[0]['inputSchema']
+
+
+class TestPromptRendering:
+    def test_system_prompt_derives_tools_and_rules(self):
+        pr = _prompts()
+        text = pr.build_mcp_system_prompt(_tools_fixture())
+        for name in ('seed_search', 'text_match', 'knowledge_lookup', 'search_database'):
+            assert name in text
+        assert "artist='X'" in text
+        assert 'search_database(genres, artist, year_min)' in text
+
+    def test_ollama_prompt_contract_and_examples(self):
+        pr = _prompts()
+        text = pr.build_ollama_tool_calling_prompt('play jazz', _tools_fixture())
+        assert '"reasoning"' in text
+        assert '"tool_calls"' in text
+        assert text.count('"name"') >= 4
+        assert 'play jazz' in text
+        assert 'Johnny Cash' in text
+
+    def test_examples_shrink_with_tool_surface(self):
+        pr = _prompts()
+        only_filter = [t for t in _tools_fixture() if t['name'] == 'search_database']
+        text = pr.build_ollama_tool_calling_prompt('x', only_filter)
+        assert 'Daft Punk' not in text
+        assert 'seed_search' not in text
+
+
+class TestVocabExactMoodPrecedence:
+    def test_relaxed_stays_a_mood(self):
+        v = _vocab()
+        result = v.normalize_mood_list(['relaxed'])
+        assert result['other_features'] == ['relaxed']
+        assert result['energy_min'] is None
+        assert result['energy_max'] is None
+
+    def test_chill_still_maps_to_energy(self):
+        v = _vocab()
+        result = v.normalize_mood_list(['chill'])
+        assert result['energy_min'] == 0.0
+        assert result['energy_max'] == 0.35
+
+
+class TestGenreAndNegationHints:
+    def test_negated_genre_detected(self):
+        p = _plan()
+        h = p.extract_hints("upbeat party songs but absolutely no rap")
+        assert h.get('exclude_genres') == ['Hip-Hop']
+        assert 'genres' not in h
+
+    def test_positive_genre_detected(self):
+        p = _plan()
+        h = p.extract_hints("pop songs that talk about love")
+        assert h.get('genres') == ['pop']
+
+    def test_positive_and_negated_split(self):
+        p = _plan()
+        h = p.extract_hints("rock songs but not metal")
+        assert h.get('genres') == ['rock']
+        assert h.get('exclude_genres') == ['metal']
+
+    def test_duration_flagged_unsupported(self):
+        p = _plan()
+        h = p.extract_hints("short punchy songs under 3 minutes")
+        assert any('duration' in u for u in h.get('unsupported', []))
+
+
+class TestHintBackstop:
+    def test_missing_genre_merged(self):
+        p = _plan()
+        plan = p.ToolPlan(
+            primaries=[{'name': 'text_match', 'arguments': {'query': 'love', 'mode': 'lyrics'}}]
         )
-        assert out == {'primaries': ['text', 'seed'], 'needs_filter': False}
+        p._apply_hint_backstop(plan, {'genres': ['pop']}, [])
+        assert plan.filter['genres'] == ['pop']
 
-    def test_pure_metadata_passthrough(self):
+    def test_bpm_becomes_tempo_window(self):
         p = _plan()
-        out = p._normalize_classifier_result({'primaries': [], 'needs_filter': True})
-        assert out == {'primaries': [], 'needs_filter': True}
+        plan = p.ToolPlan(
+            primaries=[{'name': 'text_match', 'arguments': {'query': 'x', 'mode': 'audio'}}]
+        )
+        p._apply_hint_backstop(plan, {'bpm': 170}, [])
+        assert plan.filter['tempo_min'] == 160.0
+        assert plan.filter['tempo_max'] == 180.0
 
-    def test_degenerate_empty_returns_none(self):
+    def test_model_args_not_overridden(self):
         p = _plan()
-        assert p._normalize_classifier_result({'primaries': [], 'needs_filter': False}) is None
+        plan = p.ToolPlan(filter={'tempo_min': 100.0})
+        p._apply_hint_backstop(plan, {'bpm': 170}, [])
+        assert plan.filter['tempo_min'] == 100.0
+        assert 'tempo_max' not in plan.filter
 
-    def test_needs_filter_string_coerced(self):
-        p = _plan()
-        out = p._normalize_classifier_result({'primaries': ['seed'], 'needs_filter': 'true'})
-        assert out['needs_filter'] is True
 
-    def test_lone_string_primaries_coerced(self):
+class TestStripUnrequestedArgs:
+    def test_year_stripped_without_year_in_request(self):
         p = _plan()
-        out = p._normalize_classifier_result({'primaries': 'seed', 'needs_filter': False})
-        assert out == {'primaries': ['seed'], 'needs_filter': False}
+        plan = p.ToolPlan(filter={'year_min': 1900, 'year_max': 2100, 'genres': ['rock']})
+        p._strip_unrequested_filter_args(plan, {}, "energetic rock for the gym", [])
+        assert 'year_min' not in plan.filter
+        assert 'year_max' not in plan.filter
+        assert plan.filter['genres'] == ['rock']
 
-    def test_legacy_metadata_translated(self):
+    def test_year_kept_for_yearish_word(self):
         p = _plan()
-        out = p._normalize_classifier_result({'intent': 'metadata', 'needs_filter': False})
-        assert out == {'primaries': [], 'needs_filter': True}
+        plan = p.ToolPlan(filter={'year_min': 2015, 'year_max': 2024, 'genres': ['rock']})
+        p._strip_unrequested_filter_args(plan, {}, "recent rock hits", [])
+        assert plan.filter['year_min'] == 2015
 
-    def test_legacy_seed_translated(self):
+    def test_instrumental_false_stripped(self):
         p = _plan()
-        out = p._normalize_classifier_result({'intent': 'seed', 'needs_filter': True})
-        assert out == {'primaries': ['seed'], 'needs_filter': True}
+        plan = p.ToolPlan(filter={'instrumental': False, 'genres': ['rock']})
+        p._strip_unrequested_filter_args(plan, {}, "punchy rock", [])
+        assert 'instrumental' not in plan.filter
 
-    def test_non_dict_returns_none(self):
+    def test_instrumental_kept_when_requested(self):
         p = _plan()
-        assert p._normalize_classifier_result(None) is None
-        assert p._normalize_classifier_result("text") is None
+        plan = p.ToolPlan(filter={'instrumental': True})
+        p._strip_unrequested_filter_args(plan, {'instrumental': True}, "instrumental rock", [])
+        assert plan.filter['instrumental'] is True
 
-    def test_tools_text_plus_filter(self):
-        p = _plan()
-        out = p.tools_for_intent(['text'], True, self._tools())
-        assert self._names(out) == {'text_match', 'search_database'}
 
-    def test_tools_two_primaries_no_filter(self):
-        p = _plan()
-        out = p.tools_for_intent(['seed', 'text'], False, self._tools())
-        assert self._names(out) == {'seed_search', 'text_match'}
+class TestRerankSimilarityBlend:
+    def _pool(self):
+        songs = [
+            {'item_id': 'a', 'title': 'Song A'},
+            {'item_id': 'b', 'title': 'Song B'},
+            {'item_id': 'c', 'title': 'Song C'},
+        ]
+        feats = {
+            'a': {'other_features': 'party:0.50'},
+            'b': {'other_features': 'party:0.52'},
+            'c': {'other_features': 'party:0.60'},
+        }
+        return songs, feats
 
-    def test_tools_empty_primaries_with_filter(self):
+    def test_without_sim_pure_filter_order(self):
         p = _plan()
-        out = p.tools_for_intent([], True, self._tools())
-        assert self._names(out) == {'search_database'}
+        songs, feats = self._pool()
+        final, matched, _moved = p._rerank_pool(songs, {'moods': ['party']}, feats, [])
+        assert [s['item_id'] for s in final] == ['c', 'b', 'a']
+        assert matched == 3
 
-    def test_tools_knowledge_plus_filter(self):
+    def test_sim_rank_blended_into_order(self):
         p = _plan()
-        out = p.tools_for_intent(['knowledge'], True, self._tools())
-        assert self._names(out) == {'knowledge_lookup', 'search_database'}
+        songs, feats = self._pool()
+        final, _matched, _moved = p._rerank_pool(
+            songs,
+            {'moods': ['party']},
+            feats,
+            [],
+            sim_by_id={'a': 1.0, 'b': 0.0, 'c': 0.9},
+        )
+        assert [s['item_id'] for s in final] == ['c', 'a', 'b']
 
-    def test_tools_unresolvable_falls_back_to_full(self):
+    def test_skit_title_demoted_to_end(self):
         p = _plan()
-        tools = [{'name': 'text_match'}, {'name': 'seed_search'}]
-        out = p.tools_for_intent(['knowledge'], False, tools)
-        assert out == tools
+        songs = [
+            {'item_id': 'a', 'title': 'Party Anthem'},
+            {'item_id': 'b', 'title': 'Party Interlude'},
+            {'item_id': 'c', 'title': 'Dance Night'},
+        ]
+        feats = {
+            'a': {'other_features': 'party:0.50'},
+            'b': {'other_features': 'party:0.90'},
+            'c': {'other_features': 'party:0.60'},
+        }
+        final, _matched, _moved = p._rerank_pool(songs, {'moods': ['party']}, feats, [])
+        assert [s['item_id'] for s in final] == ['c', 'a', 'b']
+
+
+class TestExclusionsHardCut:
+    def test_exclude_artist_and_genre(self):
+        p = _plan()
+        songs = [
+            {'item_id': '1', 'title': 'S1', 'artist': '50 Cent'},
+            {'item_id': '2', 'title': 'S2', 'artist': 'Enya'},
+            {'item_id': '3', 'title': 'S3', 'artist': 'Mobb Deep'},
+        ]
+        feats = {
+            '1': {'author': '50 Cent', 'mood_vector': ''},
+            '2': {'author': 'Enya', 'mood_vector': 'pop:0.1'},
+            '3': {'author': 'Mobb Deep', 'mood_vector': 'Hip-Hop:0.8'},
+        }
+        kept = p._apply_exclusions(
+            songs,
+            {'exclude_artists': ['50 cent'], 'exclude_genres': ['Hip-Hop']},
+            feats,
+            [],
+        )
+        assert [s['item_id'] for s in kept] == ['2']
+
+    def test_no_exclusions_is_noop(self):
+        p = _plan()
+        songs = [{'item_id': '1', 'title': 'S1', 'artist': 'X'}]
+        assert p._apply_exclusions(songs, {'genres': ['rock']}, {}, []) is songs
+
+
+class TestPlanNormalizationExclusions:
+    def test_exclusion_args_survive_and_normalize(self):
+        p = _plan()
+        plan = p.validate_and_normalize_plan(
+            [
+                {
+                    'name': 'search_database',
+                    'arguments': {
+                        'exclude_genres': ['rap'],
+                        'exclude_artists': ['50 Cent', '50 Cent', ''],
+                    },
+                }
+            ]
+        )
+        assert plan.filter['exclude_genres'] == ['Hip-Hop']
+        assert plan.filter['exclude_artists'] == ['50 Cent']
+
+    def test_exclusion_only_filter_counts_as_content(self):
+        p = _plan()
+        assert p._has_filter_content({'exclude_artists': ['X']})
+
+    def test_conflicting_genre_exclusion_wins(self):
+        p = _plan()
+        plan = p.validate_and_normalize_plan(
+            [
+                {
+                    'name': 'search_database',
+                    'arguments': {'genres': ['Hip-Hop'], 'exclude_genres': ['rap']},
+                }
+            ]
+        )
+        assert 'genres' not in plan.filter
+        assert plan.filter['exclude_genres'] == ['Hip-Hop']
+
+
+class TestReasoningSchemaCap:
+    def test_reasoning_has_maxlength(self):
+        pr = _prompts()
+        schema = pr.build_tool_calls_schema(_tools_fixture())
+        assert schema['properties']['reasoning']['maxLength'] == 300
+
+
+class TestZeroResultReplan:
+    def test_replans_once_with_feedback(self, monkeypatch):
+        p = _plan()
+        calls = []
+
+        def fake_ai(user_message, tools, ai_config, log_messages, library_context=None):
+            calls.append(user_message)
+            if len(calls) == 1:
+                return {
+                    'tool_calls': [
+                        {'name': 'search_database', 'arguments': {'artist': 'Nobody'}}
+                    ]
+                }
+            return {
+                'tool_calls': [{'name': 'search_database', 'arguments': {'genres': ['rock']}}]
+            }
+
+        monkeypatch.setattr(p, 'call_ai_for_plan', fake_ai)
+
+        import tasks.ai.tools as tools_mod
+
+        def fake_exec(name, args, cfg):
+            if args.get('artist') == 'Nobody':
+                return {'songs': [], 'message': 'Found 0 songs matching artist: Nobody'}
+            return {'songs': [{'item_id': 'x1', 'title': 'T', 'artist': 'A'}], 'message': 'ok'}
+
+        monkeypatch.setattr(tools_mod, 'execute_mcp_tool', fake_exec)
+
+        logs = []
+        gen = p.plan_and_execute_once('songs by Nobody', [], {'provider': 'NONE'}, logs)
+        result = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            result = stop.value
+
+        assert result['songs']
+        assert len(calls) == 2
+        assert 'PREVIOUS ATTEMPT FAILED' in calls[1]

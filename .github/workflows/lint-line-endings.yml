@@ -21,7 +21,7 @@ jobs:
           BAD_FILES=$(grep -rIl $'\r' --exclude-dir=.git --exclude-dir=windows . || true)
           
           if [ -n "$BAD_FILES" ]; then
-            echo "❌ ERROR: CRLF (Windows) line endings detected!"
+            echo "ERROR: CRLF (Windows) line endings detected!"
             echo "The following files must be LF:"
             echo "$BAD_FILES"
             echo ""
@@ -31,5 +31,5 @@ jobs:
             echo "  git push"
             exit 1
           else
-            echo "✅ All files are clean (LF)."
+            echo "OK: All files are clean (LF)."
           fi

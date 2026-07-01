@@ -278,8 +278,8 @@ def _find_best_songs_for_job(
 
     try:
         candidates_ivf = neighbors_fn(centroid_vec, n=k_search)
-    except Exception as e:
-        logger.exception(f"Error finding neighbors for a centroid with k={k_search}: {e}")
+    except Exception:
+        logger.exception(f"Error finding neighbors for a centroid with k={k_search}")
         return []
 
     if not candidates_ivf:

@@ -84,8 +84,8 @@ def _load_clap_index_from_db() -> bool:
 
         logger.info(f"CLAP index loaded from database with {len(id_map)} items.")
         return True
-    except Exception as e:
-        logger.error(f"Failed to load CLAP index from DB: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to load CLAP index from DB")
         return False
 
 
@@ -292,8 +292,8 @@ def search_by_text(query_text: str, limit: int = 100) -> List[Dict]:
             )
             return results
 
-    except Exception as e:
-        logger.exception(f"Text search failed for '{query_text}': {e}")
+    except Exception:
+        logger.exception(f"Text search failed for '{query_text}'")
         return []
 
 
@@ -360,8 +360,8 @@ def ensure_text_search_queries_table():
             conn.commit()
             logger.info("Ensured text_search_queries table exists")
             return True
-    except Exception as e:
-        logger.exception(f"Failed to create text_search_queries table: {e}")
+    except Exception:
+        logger.exception("Failed to create text_search_queries table")
         if conn:
             conn.rollback()
         return False

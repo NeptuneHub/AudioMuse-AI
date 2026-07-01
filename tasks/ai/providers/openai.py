@@ -10,12 +10,14 @@
 
 The HTTP backend dispatched from ``tasks.ai.api`` for every non-SDK provider.
 generate_text streams SSE completions; call_with_tools does single-turn
-function-calling; call_with_tools_ollama drives Ollama's structured-output
-JSON path since Ollama lacks native tool calls.
+function-calling; call_with_tools_ollama tries native /api/chat tool-calling
+first (Hermes template), falling back to structured JSON output on
+/api/generate when native calls fail.
 
 Main Features:
 * Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output.
 * Robust 400 fallbacks: retries without reasoning_effort (caching rejecting models), swaps max_tokens->max_completion_tokens, and cycles DeepSeek thinking-off forms; tool-call count is capped to 4 and all failures return a generic error, never a traceback.
+* Ollama dual-path: native /api/chat tool-calling (enable_thinking=false for Qwen) with structured-output format=schema fallback; tool names are validated against the registry and invalid names trigger a feedback retry.
 """
 
 import json
@@ -245,22 +247,20 @@ def generate_text(
 
             try:
                 error_detail = e.response.text
-                logger.error(
-                    "Error calling OpenAI-compatible API: %s. Response body: %s",
-                    e,
+                logger.exception(
+                    "Error calling OpenAI-compatible API. Response body: %s",
                     error_detail,
-                    exc_info=True,
                 )
             except Exception:
-                logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+                logger.exception("Error calling OpenAI-compatible API")
             return "Error: AI service is currently unavailable."
 
-        except requests.exceptions.RequestException as e:
-            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+        except requests.exceptions.RequestException:
+            logger.exception("Error calling OpenAI-compatible API")
             return "Error: AI service is currently unavailable."
         except Exception:
-            logger.error(
-                "An unexpected error occurred in ai_api_openai.generate_text", exc_info=True
+            logger.exception(
+                "An unexpected error occurred in ai_api_openai.generate_text"
             )
             return "Error: AI service is currently unavailable."
 
@@ -405,6 +405,290 @@ def call_with_tools(
         return {"error": "OpenAI service is currently unavailable."}
 
 
+def _validate_tool_calls(
+    tool_calls: List[Dict],
+    known_names: set,
+    log_messages: List[str],
+) -> Dict:
+    """Validate and clean a list of raw tool-call dicts against the tool registry.
+
+    Returns ``{"tool_calls": [...], "reasoning": "..."}`` on success or
+    ``{"error": "..."}`` with a specific reason.
+    """
+    valid_calls: List[Dict] = []
+    unknown_names: List[str] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict) or "name" not in tc:
+            log_messages.append(f"WARN: Skipping invalid tool call: {tc}")
+            continue
+        name = tc.get("name", "")
+        if name not in known_names:
+            unknown_names.append(name)
+            log_messages.append(
+                f"WARN: Unknown tool '{name}' (known: {sorted(known_names)}); dropped"
+            )
+            continue
+        if "arguments" not in tc:
+            tc["arguments"] = {}
+        elif not isinstance(tc["arguments"], dict):
+            log_messages.append(
+                f"Coerced non-dict arguments for tool '{name}' to empty dict"
+            )
+            tc["arguments"] = {}
+        args = tc["arguments"]
+        keys_to_remove = []
+        for k, v in args.items():
+            if (v is None or v == "" or v == [] or v == {}) or (
+                k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0
+            ):
+                keys_to_remove.append(k)
+        for k in keys_to_remove:
+            log_messages.append(
+                f"   Stripped empty/default arg '{k}={args[k]}' from {name}"
+            )
+            del args[k]
+        valid_calls.append(tc)
+
+    if unknown_names:
+        msg = (
+            f"Unknown tool(s) requested: {', '.join(unknown_names)}. "
+            f"Use only: {', '.join(sorted(known_names))}."
+        )
+        log_messages.append(f"ERROR: {msg}")
+        return {"error": msg}
+
+    if not valid_calls:
+        return {"error": "No valid tool calls found in Ollama response"}
+
+    log_messages.append(f"OK: Ollama returned {len(valid_calls)} valid tool calls")
+    return {"tool_calls": valid_calls}
+
+
+def _parse_ollama_tool_response(
+    response_text: str,
+    log_messages: List[str],
+    tools: List[Dict],
+) -> Dict:
+    """Parse Ollama's structured JSON response, validate tool names, and clean args.
+
+    Returns ``{"tool_calls": [...], "reasoning": "..."}`` on success or
+    ``{"error": "..."}`` with an exact failure reason for the retry feedback loop.
+    """
+    cleaned = ""
+    known_names = {t.get("name") for t in tools if t.get("name")}
+    try:
+        cleaned = response_text.strip()
+        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+        if "<think>" in cleaned:
+            cleaned = (
+                cleaned.split(THINK_END_TAG)[-1].strip()
+                if THINK_END_TAG in cleaned
+                else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
+            )
+
+        log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
+
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0]
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0]
+        cleaned = cleaned.strip()
+
+        if (
+            cleaned.startswith("{")
+            and '"tool_calls"' not in cleaned
+            and '"properties"' in cleaned
+        ):
+            log_messages.append("WARN: Ollama returned the schema instead of tool calls")
+            return {"error": "Ollama returned schema definition instead of tool calls"}
+
+        parsed = json.loads(cleaned)
+
+        reasoning = None
+        if isinstance(parsed, dict):
+            r = parsed.get("reasoning")
+            if isinstance(r, str) and r.strip():
+                reasoning = r.strip()
+
+        if isinstance(parsed, dict) and "tool_calls" in parsed:
+            tool_calls = parsed["tool_calls"]
+        elif isinstance(parsed, list):
+            tool_calls = parsed
+            log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
+        elif isinstance(parsed, dict) and "name" in parsed:
+            tool_calls = [parsed]
+            log_messages.append("WARN: Got single tool call object (expected tool_calls array)")
+        elif isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
+            tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
+            log_messages.append("WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format")
+        else:
+            log_messages.append(
+                f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
+            )
+            return {"error": "Ollama response missing 'tool_calls' field"}
+
+        if not isinstance(tool_calls, list):
+            tool_calls = [tool_calls]
+
+        result = _validate_tool_calls(tool_calls, known_names, log_messages)
+        if "tool_calls" in result and reasoning:
+            result["reasoning"] = reasoning
+        return result
+
+    except json.JSONDecodeError:
+        logger.exception("JSON decode error while parsing Ollama tool response")
+        log_messages.append("X: Failed to parse Ollama JSON response.")
+        log_messages.append(f"Attempted to parse: {cleaned[:300]}")
+        return {
+            "error": "Failed to parse Ollama JSON response.",
+            "raw_response": response_text[:200],
+        }
+    except Exception:
+        logger.exception("Failed to parse Ollama response")
+        log_messages.append("Failed to parse Ollama response.")
+        log_messages.append(f"Response was: {response_text[:200]}")
+        return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
+
+
+def _try_native_ollama_tool_call(
+    chat_url: str,
+    model_name: str,
+    user_message: str,
+    tools: List[Dict],
+    log_messages: List[str],
+    library_context: Optional[Dict],
+    timeout: int,
+) -> Optional[Dict]:
+    """Attempt native Ollama /api/chat tool-calling (Hermes template path).
+
+    Returns ``{"tool_calls": [...]}`` on success, or ``None`` when the model
+    emitted no tool calls (caller should fall back to structured output).
+    """
+    from tasks.ai.prompts import build_mcp_system_prompt  # noqa: E402
+
+    system_prompt = build_mcp_system_prompt(tools, library_context)
+    ollama_tools = []
+    for t in tools:
+        ollama_tools.append({
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["inputSchema"],
+            },
+        })
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "tools": ollama_tools,
+        "stream": False,
+        "options": {
+            "temperature": config.AI_TOOLCALL_TEMPERATURE,
+            "top_p": 0.8,
+            "top_k": 20,
+            "num_predict": 1536,
+        },
+    }
+    # Disable thinking on Qwen3+ models via the API parameter
+    # (Ollama's parameter is top-level "think"; enable_thinking is ignored)
+    if "qwen" in (model_name or "").lower():
+        payload["think"] = False
+
+    log_messages.append("Attempting native Ollama /api/chat tool-calling...")
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(chat_url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+    message = result.get("message", {})
+    raw_tool_calls = message.get("tool_calls") or []
+
+    if not raw_tool_calls:
+        content = message.get("content", "")
+        log_messages.append(
+            f"Native tool-calling returned 0 tool calls; "
+            f"model responded with text (first 150 chars): {content[:150]}"
+        )
+        return None
+
+    tool_calls: List[Dict] = []
+    for tc in raw_tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name", "")
+        # Ollama /api/chat returns arguments as a JSON object; OpenAI-style
+        # servers return a JSON-encoded string. Accept both.
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, dict):
+            args = raw_args
+        elif isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args or "{}")
+            except json.JSONDecodeError:
+                log_messages.append(
+                    f"WARN: Could not parse arguments for tool '{name}', using empty dict"
+                )
+                args = {}
+        else:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        tool_calls.append({"name": name, "arguments": args})
+
+    # Validate and clean via the shared validator
+    known_names = {t.get("name") for t in tools if t.get("name")}
+    validated = _validate_tool_calls(tool_calls, known_names, log_messages)
+    if "tool_calls" in validated:
+        log_messages.append(
+            f"OK: Native tool-calling returned {len(validated['tool_calls'])} tool(s)"
+        )
+        return validated
+    log_messages.append(
+        f"Native tool-calling validation failed: {validated.get('error', 'unknown')}"
+    )
+    return None
+
+
+def _try_structured_ollama_call(
+    generate_url: str,
+    model_name: str,
+    prompt: str,
+    tools: List[Dict],
+    log_messages: List[str],
+    timeout: int,
+) -> Dict:
+    """Fallback: prompt-based JSON emission constrained by format=<schema>."""
+    from tasks.ai.prompts import build_tool_calls_schema  # noqa: E402
+
+    schema = build_tool_calls_schema(tools)
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "format": schema,
+        "think": False,
+        "options": {
+            "temperature": config.AI_TOOLCALL_TEMPERATURE,
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0.0,
+            "num_predict": 1536,
+        },
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(generate_url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+    if "response" not in result:
+        return {"error": "Invalid Ollama response"}
+
+    return _parse_ollama_tool_response(result["response"], log_messages, tools)
+
+
 def call_with_tools_ollama(
     ollama_url: str,
     model_name: str,
@@ -413,139 +697,75 @@ def call_with_tools_ollama(
     log_messages: List[str],
     library_context: Optional[Dict] = None,
 ) -> Dict:
-    from tasks.ai.prompts import build_ollama_tool_calling_prompt, build_tool_calls_schema  # noqa: E402
+    """Single-turn tool-calling for Ollama with native API first, structured fallback.
 
-    try:
-        prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
+    Strategy (two paths, one feedback retry each):
+    1. PRIMARY: Native /api/chat with ``tools`` parameter (Hermes template Qwen
+       was trained on). Disables thinking via ``enable_thinking=false``.
+    2. FALLBACK: Prompt-based JSON emission on /api/generate constrained by
+       ``format=<schema>``, used when native path returns no tool calls or when
+       the user's URL is already a /api/generate endpoint.
+    """
+    from tasks.ai.prompts import build_ollama_tool_calling_prompt  # noqa: E402
 
-        schema = build_tool_calls_schema(tools)
-        payload = {
-            "model": model_name,
-            "prompt": prompt,
-            "stream": False,
-            "format": schema,
-            "think": False,
-            "options": {"temperature": 0, "num_predict": 1024},
-        }
+    is_chat_url = "/api/chat" in ollama_url.lower()
+    is_generate_url = "/api/generate" in ollama_url.lower()
 
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(ollama_url, json=payload)
-            response.raise_for_status()
-            result = response.json()
+    # Determine the actual endpoints for each path
+    if is_chat_url:
+        chat_url = ollama_url
+        generate_url = re.sub(r"/api/chat", "/api/generate", ollama_url, flags=re.IGNORECASE)
+    elif is_generate_url:
+        chat_url = re.sub(r"/api/generate", "/api/chat", ollama_url, flags=re.IGNORECASE)
+        generate_url = ollama_url
+    else:
+        chat_url = ollama_url.rstrip("/") + "/api/chat"
+        generate_url = ollama_url.rstrip("/") + "/api/generate"
 
-        if "response" not in result:
-            return {"error": "Invalid Ollama response"}
+    timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+    log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
 
-        response_text = result["response"]
-
-        cleaned = ""
+    # -- Primary path: native tool-calling via /api/chat --
+    if not is_generate_url:
         try:
-            cleaned = response_text.strip()
-            cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-            if "<think>" in cleaned:
-                cleaned = (
-                    cleaned.split(THINK_END_TAG)[-1].strip()
-                    if THINK_END_TAG in cleaned
-                    else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
-                )
-
-            log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
-
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json")[1].split("```")[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```")[1].split("```")[0]
-            cleaned = cleaned.strip()
-
-            if cleaned.startswith("{") and '"type"' in cleaned and '"array"' in cleaned:
-                log_messages.append(
-                    "WARN: Ollama returned schema instead of tool calls, using fallback"
-                )
-                return {"error": "Ollama returned schema definition instead of tool calls"}
-
-            log_messages.append(f"Attempting to parse: {cleaned[:200]}")
-            parsed = json.loads(cleaned)
-
-            if isinstance(parsed, dict) and "tool_calls" in parsed:
-                tool_calls = parsed["tool_calls"]
-                log_messages.append(
-                    f"OK: Extracted tool_calls array with {len(tool_calls) if isinstance(tool_calls, list) else 1} items"
-                )
-            elif isinstance(parsed, list):
-                tool_calls = parsed
-                log_messages.append(
-                    "WARN: Got array directly (expected object with tool_calls field)"
-                )
-            elif isinstance(parsed, dict) and "name" in parsed:
-                tool_calls = [parsed]
-                log_messages.append(
-                    "WARN: Got single tool call object (expected object with tool_calls array)"
-                )
-            elif isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-                tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
-                log_messages.append(
-                    "WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format"
-                )
-            else:
-                log_messages.append(
-                    f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
-                )
-                return {"error": "Ollama response missing 'tool_calls' field"}
-
-            if not isinstance(tool_calls, list):
-                tool_calls = [tool_calls]
-
-            valid_calls = []
-            for tc in tool_calls:
-                if isinstance(tc, dict) and "name" in tc:
-                    if "arguments" not in tc:
-                        tc["arguments"] = {}
-                    elif not isinstance(tc["arguments"], dict):
-                        log_messages.append(
-                            f"Coerced non-dict arguments for tool '{tc['name']}' to empty dict"
-                        )
-                        tc["arguments"] = {}
-                    args = tc["arguments"]
-                    keys_to_remove = []
-                    for k, v in args.items():
-                        if (v is None or v == "" or v == [] or v == {}) or (
-                            k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0
-                        ):
-                            keys_to_remove.append(k)
-                    for k in keys_to_remove:
-                        log_messages.append(
-                            f"   Stripped empty/default arg '{k}={args[k]}' from {tc['name']}"
-                        )
-                        del args[k]
-                    valid_calls.append(tc)
-                else:
-                    log_messages.append(f"WARN: Skipping invalid tool call: {tc}")
-
-            if not valid_calls:
-                return {"error": "No valid tool calls found in Ollama response"}
-
-            log_messages.append(f"OK: Ollama returned {len(valid_calls)} valid tool calls")
-            return {"tool_calls": valid_calls}
-
-        except json.JSONDecodeError:
-            logger.exception("JSON decode error while parsing Ollama tool response")
-            log_messages.append("X: Failed to parse Ollama JSON response.")
-            log_messages.append(f"Attempted to parse: {cleaned[:300]}")
-            return {
-                "error": "Failed to parse Ollama JSON response.",
-                "raw_response": response_text[:200],
-            }
+            result = _try_native_ollama_tool_call(
+                chat_url, model_name, user_message, tools,
+                log_messages, library_context, timeout,
+            )
+            if result is not None and "tool_calls" in result:
+                return result
+            log_messages.append("Native path returned no tool calls; falling back to format=schema")
         except Exception:
-            logger.exception("Failed to parse Ollama response")
-            log_messages.append("Failed to parse Ollama response.")
-            log_messages.append(f"Response was: {response_text[:200]}")
-            return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
+            logger.warning(
+                "Native Ollama tool-calling failed; falling back to structured output", exc_info=True
+            )
+            log_messages.append("Native /api/chat tool-calling failed; falling back to format=schema")
+
+    # -- Fallback path: prompt-based JSON with format=<schema> --
+    log_messages.append("Using Ollama structured-output (format=schema) path")
+    try:
+        base_prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
+        prompt = base_prompt
+        last_result: Dict = {"error": "Ollama returned no usable tool calls"}
+        for attempt in range(2):
+            last_result = _try_structured_ollama_call(
+                generate_url, model_name, prompt, tools,
+                log_messages, timeout,
+            )
+            if "tool_calls" in last_result:
+                if attempt > 0:
+                    log_messages.append("OK: structured retry with feedback produced a valid plan")
+                return last_result
+            if attempt == 0:
+                err = last_result.get("error", "invalid output")
+                log_messages.append(f"Retrying once with feedback: {err}")
+                prompt = (
+                    f"{base_prompt}\n\nYour previous reply was invalid ({err}). "
+                    "Return ONLY the JSON object in the required shape."
+                )
+        return last_result
 
     except httpx.ReadTimeout:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"Ollama request timed out after {timeout} seconds")
         log_messages.append(
             f"Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow."
         )
@@ -556,8 +776,6 @@ def call_with_tools_ollama(
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
     except httpx.TimeoutException:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning("Ollama request timed out", exc_info=True)
         log_messages.append(f"Ollama request timed out after {timeout} seconds.")
         log_messages.append(
             "TIP: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"

@@ -14,7 +14,7 @@ database understands. Combines curated alias tables, rapidfuzz matching, and
 an optional WordNet synonym fallback.
 
 Main Features:
-* Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges.
+* Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges. Exact canonical mood labels (config.OTHER_FEATURE_LABELS) win over energy/tempo alias phrases so 'relaxed' stays a mood.
 * Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
 """
 
@@ -475,6 +475,12 @@ def normalize_mood_list(values) -> dict:
 
     for raw in values:
         if not isinstance(raw, str):
+            continue
+        low = raw.strip().lower()
+        if low in _OTHER_FEATURE_VOCAB_LOWER:
+            canonical = _OTHER_FEATURE_VOCAB_LOWER[low]
+            if canonical not in of_all:
+                of_all.append(canonical)
             continue
         e = normalize_energy_phrase(raw)
         if e is not None:

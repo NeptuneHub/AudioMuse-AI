@@ -560,7 +560,7 @@ def restore_backup():
                             if bytes_read == 0:
                                 raise Exception(f"Chunk {i} is empty!")
                         except IOError as e:
-                            raise Exception(f"Error reading chunk {i}: {str(e)}")
+                            raise Exception(f"Error reading chunk {i}: {str(e)}") from e
 
                     tmp.close()
                     file_size = os.path.getsize(restore_file)

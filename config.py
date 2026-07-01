@@ -314,6 +314,11 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 # For CPU-only Ollama instances or large models that take longer to generate responses, consider setting to 300-600 seconds.
 # Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
+
+# Sampling temperature for the tool-calling (playlist planning) LLM request.
+# Qwen3-family models officially warn against greedy decoding (temperature 0 causes
+# repetition loops); 0.7 is the vendor-recommended non-thinking value.
+AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.7"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
 # RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.

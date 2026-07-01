@@ -302,8 +302,8 @@ def build_and_store_index_streaming(
             db_conn.commit()
             logger.info("%s IVF index build successful.", label)
         return ok
-    except Exception as e:
-        logger.error("Failed to build/store %s IVF index: %s", label, e, exc_info=True)
+    except Exception:
+        logger.exception("Failed to build/store %s IVF index", label)
         try:
             db_conn.rollback()
         except Exception:

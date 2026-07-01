@@ -79,7 +79,7 @@ def _make_dict_row(mapping: dict):
             try:
                 return self[name]
             except KeyError:
-                raise AttributeError(name)
+                raise AttributeError(name) from None
 
     return FakeRow(mapping)
 
@@ -606,6 +606,53 @@ class TestExecuteMcpToolEnergyConversion:
         assert "error" in result
 
 
+class TestToolSurface:
+    def test_no_llm_facing_get_songs_or_dead_params(self):
+        ai_mod = _import_ai_mcp_client()
+        for tool in ai_mod.get_mcp_tools():
+            props = tool['inputSchema']['properties']
+            assert 'get_songs' not in props
+            if tool['name'] == 'text_match':
+                assert 'tempo_filter' not in props
+                assert 'energy_filter' not in props
+
+    def test_voices_enum_is_single_spelling(self):
+        ai_mod = _import_ai_mcp_client()
+        tools = {t['name']: t for t in ai_mod.get_mcp_tools()}
+        enum = tools['search_database']['inputSchema']['properties']['voices']['items']['enum']
+        assert enum == ['female vocalists', 'male vocalists']
+
+    def test_expand_voice_spellings_adds_catalog_variant(self):
+        ai_mod = _import_ai_mcp_client()
+        out = ai_mod._expand_voice_spellings(['female vocalists'])
+        assert set(out) == {'female vocalists', 'female vocalist'}
+        assert ai_mod._expand_voice_spellings(['male vocalists']) == ['male vocalists']
+        assert ai_mod._expand_voice_spellings(None) is None
+
+    def test_key_flats_normalized_to_sharps(self):
+        impl = _import_mcp_impl()
+        assert impl._normalize_key_name('Eb') == 'D#'
+        assert impl._normalize_key_name('bb') == 'A#'
+        assert impl._normalize_key_name('C') == 'C'
+        assert impl._normalize_key_name('F#') == 'F#'
+
+    def test_artist_substring_fallback_on_zero_exact(self):
+        ai_mod = _import_ai_mcp_client()
+        calls = []
+
+        def fake_query(*args, **kwargs):
+            calls.append(kwargs.get('fuzzy_match', False))
+            if kwargs.get('fuzzy_match'):
+                return {"songs": [{"item_id": "x", "title": "t", "artist": "a"}], "message": ""}
+            return {"songs": [], "message": ""}
+
+        with patch.object(ai_mod, '_database_genre_query_sync', side_effect=fake_query):
+            result = ai_mod.execute_mcp_tool("search_database", {"artist": "clapton eric"}, {})
+        assert calls == [False, True]
+        assert result['songs']
+        assert 'substring' in result['message']
+
+
 @pytest.mark.unit
 class TestSongSimilarityLookup:
     def test_exact_match_case_insensitive(self):
@@ -950,6 +997,80 @@ class TestSongAlchemySync:
 
         assert "songs" in result
         assert "message" in result
+
+    def test_title_by_artist_song_seed_resolved_to_item_id(self):
+        mod = _import_mcp_impl()
+
+        alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
+        row = {"item_id": "real-123", "title": "Get Lucky", "author": "Daft Punk"}
+
+        with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}), \
+                patch.object(mod, 'get_db_connection', return_value=MagicMock()), \
+                patch.object(mod, '_resolve_song_row', return_value=row) as resolver:
+            result = mod._song_alchemy_sync(
+                add_items=[
+                    {"type": "song", "id": "Get Lucky by Daft Punk"},
+                    {"type": "artist", "id": "Mozart"},
+                ],
+                get_songs=10,
+            )
+
+        resolver.assert_called_once()
+        assert resolver.call_args[0][1] == "Get Lucky"
+        assert resolver.call_args[0][2] == "Daft Punk"
+        alchemy_mod.song_alchemy.assert_called_once_with(
+            add_items=[
+                {"type": "song", "id": "real-123"},
+                {"type": "artist", "id": "Mozart"},
+            ],
+            subtract_items=None,
+            n_results=10,
+        )
+        assert "resolved 'Get Lucky by Daft Punk'" in result["message"]
+
+    def test_unresolvable_song_seed_skipped_with_note(self):
+        mod = _import_mcp_impl()
+
+        alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
+
+        with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}), \
+                patch.object(mod, 'get_db_connection', return_value=MagicMock()), \
+                patch.object(mod, '_resolve_song_row', return_value=None):
+            result = mod._song_alchemy_sync(
+                add_items=[
+                    {"type": "song", "id": "Ghost Song by Nobody"},
+                    {"type": "artist", "id": "Mozart"},
+                ],
+                get_songs=10,
+            )
+
+        alchemy_mod.song_alchemy.assert_called_once_with(
+            add_items=[{"type": "artist", "id": "Mozart"}],
+            subtract_items=None,
+            n_results=10,
+        )
+        assert "not found in library" in result["message"]
+
+    def test_subtract_song_seed_also_resolved(self):
+        mod = _import_mcp_impl()
+
+        alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
+        row = {"item_id": "real-456", "title": "Song2", "author": "Blur"}
+
+        with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}), \
+                patch.object(mod, 'get_db_connection', return_value=MagicMock()), \
+                patch.object(mod, '_resolve_song_row', return_value=row):
+            mod._song_alchemy_sync(
+                add_items=[{"type": "artist", "id": "Oasis"}],
+                subtract_items=[{"type": "song", "id": "Song2 by Blur"}],
+                get_songs=10,
+            )
+
+        alchemy_mod.song_alchemy.assert_called_once_with(
+            add_items=[{"type": "artist", "id": "Oasis"}],
+            subtract_items=[{"type": "song", "id": "real-456"}],
+            n_results=10,
+        )
 
 
 @pytest.mark.unit

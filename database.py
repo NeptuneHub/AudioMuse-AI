@@ -64,8 +64,8 @@ def get_db():
                 keepalives_count=3,
                 options='-c statement_timeout=600000',
             )
-        except psycopg2.OperationalError as e:
-            logger.exception(f"Failed to connect to database: {e}")
+        except psycopg2.OperationalError:
+            logger.exception("Failed to connect to database")
             raise
     return g.db
 

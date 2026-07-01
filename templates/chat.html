@@ -589,17 +589,13 @@
             };
 
             function understandHeadline(m) {
-                let h = intentHeadline(m.intentPrimaries, m.needsFilter);
-                if (h == null) {
-                    h = m.intentFallback ? "Couldn't auto-classify - considered all options." : 'Read your request.';
-                }
+                let h = m.reasoning ? m.reasoning : 'Read your request.';
                 if (m.hints.length) h += ' · Also spotted: ' + m.hints.join('; ');
                 return h;
             }
             function toolsHeadline(m) {
                 let toolList = m.composition ? m.primaries.slice() : m.seqTools.slice();
                 if (m.composition && m.compositionHasFilter && toolList.indexOf('search_database') === -1) toolList.push('search_database');
-                if (!toolList.length && m.toolNames.length) toolList = m.toolNames.slice();
                 if (!toolList.length) return 'Selected the tools.';
                 return 'Using ' + toolList.map(n => TOOL_LABEL[n] || n).join(' + ') + '.';
             }
@@ -641,7 +637,7 @@
             /** Ordered live-step descriptors for the current parsed model. */
             function liveStepDefs(m) {
                 const defs = [
-                    { id: 'understand', done: (m.intentPrimaries != null || m.intentFallback), headline: understandHeadline },
+                    { id: 'understand', done: (m.reasoning != null || m.emitted != null), headline: understandHeadline },
                     { id: 'tools', done: m.emitted != null, headline: toolsHeadline },
                     { id: 'found', done: (m.composition && m.poolSize != null) || (!m.composition && m.seqRetrieved > 0), headline: foundHeadline }
                 ];
@@ -779,22 +775,6 @@
                 return `var(${varName})`;
             }
 
-            const INTENT_LABEL = {
-                seed: 'Find songs like the track or artist you named',
-                text: 'Match a sound or lyric description',
-                knowledge: 'Suggest well-known songs from world knowledge',
-                metadata: 'Filter your library directly'
-            };
-            // Build a headline from the stage-1 primaries list (null = not classified,
-            // [] + needsFilter = pure metadata filter). Returns null to let the caller
-            // fall back to its fallback/default wording.
-            function intentHeadline(primaries, needsFilter) {
-                if (primaries == null) return null;
-                if (!primaries.length) return needsFilter ? INTENT_LABEL.metadata : null;
-                let h = primaries.map(p => INTENT_LABEL[p] || p).join(' + ');
-                if (needsFilter) h += ' - plus your extra filters';
-                return h;
-            }
             const TOOL_LABEL = {
                 seed_search: 'Song/Artist Similarity',
                 text_match: 'Sound/Lyrics Match',
@@ -820,8 +800,8 @@
                 const lines = (text || '').split('\n');
                 const model = {
                     request: null, provider: null,
-                    intentPrimaries: null, needsFilter: false, intentFallback: false, hints: [],
-                    toolNames: [], narrowed: false, emitted: null,
+                    reasoning: null, hints: [],
+                    emitted: null,
                     composition: false, compositionHasFilter: false, primaries: [], seqTools: [], poolSize: null,
                     seqRetrieved: 0, seqAdded: 0,
                     filterRan: false, filterDims: [], relaxSteps: [],
@@ -836,17 +816,7 @@
                     let m;
                     if ((m = t.match(/^Request:\s*'(.*)'$/))) model.request = m[1];
                     else if ((m = t.match(/^AI Provider:\s*(.+)$/))) model.provider = m[1];
-                    else if ((m = t.match(/intent_classifier:\s*primaries=\[(.*?)\],\s*needs_filter=(\w+)/i))) {
-                        model.intentPrimaries = m[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-                        model.needsFilter = /true/i.test(m[2]);
-                    }
-                    else if (/classifier returned no intent|falling back to full tools|could not parse a valid JSON intent|provider returned error|transport error/i.test(t)) {
-                        model.intentFallback = true;
-                    }
-                    else if ((m = t.match(/stage-2 tools narrowed to:\s*(.+)$/))) {
-                        model.toolNames = m[1].split(',').map(s => s.trim()).filter(Boolean);
-                        model.narrowed = true;
-                    }
+                    else if ((m = t.match(/^AI reasoning:\s*(.+)$/))) model.reasoning = m[1];
                     else if ((m = t.match(/^pre-extract:\s*(.+)$/))) model.hints.push(m[1]);
                     else if ((m = t.match(/AI emitted (\d+) tool call/i))) model.emitted = parseInt(m[1], 10);
                     else if (/^---\s*Composition:/i.test(t)) { model.composition = true; if (/\+\s*1 filter/i.test(t)) model.compositionHasFilter = true; }
@@ -862,8 +832,8 @@
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*songs matched the filter\s*->\s*order UNCHANGED/i))) {
                         model.filterUnchanged = true; model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
                     }
-                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*songs changed position.*?\((\d+)\s*matched/i))) {
-                        model.moved = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.matched = parseInt(m[3], 10);
+                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched the filter and rose to the top;\s*(\d+)\s*songs shifted/i))) {
+                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = parseInt(m[3], 10);
                     }
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched but scores tied/i))) {
                         model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
@@ -908,12 +878,7 @@
                 }
 
                 // 1. Understood your request
-                let h1 = intentHeadline(model.intentPrimaries, model.needsFilter);
-                if (h1 == null) {
-                    h1 = model.intentFallback
-                        ? "Couldn't auto-classify your request, so I considered all options."
-                        : 'Read your request.';
-                }
+                const h1 = model.reasoning ? model.reasoning : 'Read your request.';
                 const step1 = { icon: '🧭', title: 'Understood your request', headline: h1 };
                 if (model.hints.length) step1.sub = 'Also spotted: ' + model.hints.join('; ');
                 steps.push(step1);
@@ -921,12 +886,9 @@
                 // 2. Picked the tools
                 let toolList = model.composition ? model.primaries.slice() : model.seqTools.slice();
                 if (model.composition && model.filterRan && toolList.indexOf('search_database') === -1) toolList.push('search_database');
-                if (!toolList.length && model.toolNames.length) toolList = model.toolNames.slice();
                 if (toolList.length) {
                     const friendly = toolList.map(n => TOOL_LABEL[n] || n);
-                    const step2 = { icon: '🛠️', title: 'Picked the tools', headline: 'Using ' + friendly.join(' + ') + '.' };
-                    if (model.narrowed) step2.sub = 'Narrowed from the full tool set to just what your request needs.';
-                    steps.push(step2);
+                    steps.push({ icon: '🛠️', title: 'Picked the tools', headline: 'Using ' + friendly.join(' + ') + '.' });
                 }
 
                 // 3. Found candidate songs

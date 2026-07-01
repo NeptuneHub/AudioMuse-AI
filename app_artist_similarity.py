@@ -94,8 +94,8 @@ def search_artists_endpoint():
     try:
         results = search_artists_by_name(query, limit=limit, offset=offset)
         return jsonify(results)
-    except Exception as e:
-        logger.exception(f"Error during artist search: {e}")
+    except Exception:
+        logger.exception("Error during artist search")
         return jsonify({"error": "An error occurred during search."}), 500
 
 
@@ -193,16 +193,16 @@ def get_similar_artists_endpoint():
 
         return jsonify(similar_artists)
 
-    except RuntimeError as e:
+    except RuntimeError:
         logger.exception(
-            f"Runtime error finding similar artists for '{query_artist}': {e}"
+            f"Runtime error finding similar artists for '{query_artist}'"
         )
         return jsonify(
             {"error": "The artist similarity search service is currently unavailable."}
         ), 503
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"Unexpected error finding similar artists for '{query_artist}': {e}"
+            f"Unexpected error finding similar artists for '{query_artist}'"
         )
         return jsonify({"error": "An unexpected error occurred."}), 500
 
@@ -256,6 +256,6 @@ def get_artist_tracks_endpoint():
     try:
         tracks = get_artist_tracks(query_artist)
         return jsonify(tracks)
-    except Exception as e:
-        logger.exception(f"Error getting tracks for artist '{query_artist}': {e}")
+    except Exception:
+        logger.exception(f"Error getting tracks for artist '{query_artist}'")
         return jsonify({"error": "An error occurred while fetching tracks."}), 500
