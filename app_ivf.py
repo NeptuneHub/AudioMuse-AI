@@ -1,4 +1,23 @@
-# app_ivf.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Similarity-search Flask blueprint (ivf_bp) over the disk-paged IVF index.
+
+Serves the ``/similarity`` UI and the similarity REST API, delegating every
+vector query to ``tasks.ivf_manager`` (the disk-paged IVF index in Postgres).
+
+Main Features:
+* Routes for track search, similar tracks by id or by mood centroid, per-track
+  max distance, track lookup, and playlist creation from a result set.
+* Lazily loads and caches mood centroids once (thread-locked) so a
+  mood-seeded search can start from a centroid vector instead of a song id.
+"""
+
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
@@ -6,15 +25,19 @@ import threading
 import numpy as np
 
 # Import the new config option
-from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DEFAULT, MOOD_CENTROIDS_FILE
+from config import (
+    SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
+    SIMILARITY_RADIUS_DEFAULT,
+    MOOD_CENTROIDS_FILE,
+)
 from app_helper import serialize_neighbor_results
 from tasks.ivf_manager import (
-    find_nearest_neighbors_by_id, 
+    find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
     create_playlist_from_ids,
     search_tracks_unified,
-    get_item_id_by_title_and_artist
+    get_item_id_by_title_and_artist,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,16 +47,18 @@ logger = logging.getLogger(__name__)
 # reused by every similarity mode).
 def _neighbor_search_error_response(ctx, exc, is_runtime):
     if is_runtime:
-        logger.error(f"Runtime error finding neighbors for {ctx}: {exc}", exc_info=True)
+        logger.exception(f"Runtime error finding neighbors for {ctx}: {exc}")
         return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-    logger.error(f"Unexpected error finding neighbors for {ctx}: {exc}", exc_info=True)
+    logger.exception(f"Unexpected error finding neighbors for {ctx}: {exc}")
     return jsonify({"error": "An unexpected error occurred."}), 500
 
 
 # Wrap the shared vector-neighbor search + error mapping
 def _vector_neighbors_or_error(vector, num_neighbors, eliminate_duplicates, ctx, empty_msg):
     try:
-        results = find_nearest_neighbors_by_vector(vector, n=num_neighbors, eliminate_duplicates=eliminate_duplicates)
+        results = find_nearest_neighbors_by_vector(
+            vector, n=num_neighbors, eliminate_duplicates=eliminate_duplicates
+        )
     except RuntimeError as e:
         return None, _neighbor_search_error_response(ctx, e, is_runtime=True)
     except Exception as e:
@@ -53,6 +78,7 @@ _MOOD_CENTROIDS_META = {}  # mood_name -> list of {cluster_id, top_tags (top 3)}
 _mood_centroids_loaded = False
 _mood_centroids_lock = threading.Lock()
 
+
 def _load_mood_centroids_for_similarity():
     try:
         with open(MOOD_CENTROIDS_FILE, encoding='utf-8') as f:
@@ -64,17 +90,22 @@ def _load_mood_centroids_for_similarity():
             for i, c in enumerate(centroids):
                 tags = c.get('top_tags', {})
                 top5 = sorted(tags.items(), key=lambda x: -x[1])[:5]
-                meta_list.append({
-                    'index': i,
-                    'top_tags': [t[0] for t in top5],
-                    'n_songs': c.get('n_songs', 0),
-                    'mood_score': c.get('mood_score', 0),
-                    'cluster_id': c.get('cluster_id', i),
-                })
+                meta_list.append(
+                    {
+                        'index': i,
+                        'top_tags': [t[0] for t in top5],
+                        'n_songs': c.get('n_songs', 0),
+                        'mood_score': c.get('mood_score', 0),
+                        'cluster_id': c.get('cluster_id', i),
+                    }
+                )
             _MOOD_CENTROIDS_META[mood] = meta_list
-        logger.info(f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}")
+        logger.info(
+            f"Loaded mood centroids for similarity: {', '.join(f'{m}({len(cs)})' for m, cs in _MOOD_CENTROIDS_DATA.items())}"
+        )
     except Exception as e:
         logger.warning(f"Could not load mood centroids from {MOOD_CENTROIDS_FILE}: {e}")
+
 
 def _ensure_mood_centroids_loaded():
     """Parse the mood-centroids JSON on first use instead of at import.
@@ -93,8 +124,10 @@ def _ensure_mood_centroids_loaded():
         _load_mood_centroids_for_similarity()
         _mood_centroids_loaded = True
 
+
 # Create a Blueprint for IVF (similarity) related routes
 ivf_bp = Blueprint('ivf_bp', __name__, template_folder='../templates')
+
 
 @ivf_bp.route('/similarity', methods=['GET'])
 def similarity_page():
@@ -111,7 +144,10 @@ def similarity_page():
             schema:
               type: string
     """
-    return render_template('similarity.html', title = 'AudioMuse-AI - Playlist from Similar Song', active='similarity')
+    return render_template(
+        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity'
+    )
+
 
 @ivf_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():
@@ -177,9 +213,10 @@ def search_tracks_endpoint():
     if index_param == 'sem_grove':
         try:
             from tasks.sem_grove_manager import get_sem_grove_item_ids
+
             item_id_filter = get_sem_grove_item_ids()
             if not item_id_filter:
-                # Index not loaded yet — don't fall back to showing all songs
+                # Index not loaded yet - don't fall back to showing all songs
                 return jsonify([])
         except Exception as e:
             logger.warning(f"Could not load SemGrove item IDs for autocomplete filter: {e}")
@@ -197,25 +234,28 @@ def search_tracks_endpoint():
     offset = start
 
     try:
-        raw_results = search_tracks_unified(search_query, limit=limit, offset=offset,
-                                             item_id_filter=item_id_filter)
+        raw_results = search_tracks_unified(
+            search_query, limit=limit, offset=offset, item_id_filter=item_id_filter
+        )
         results = []
         for r in raw_results:
             # Be defensive in case the source returns non-dict entries
             if isinstance(r, dict):
                 album = (r.get('album') or '').strip() or 'unknown'
-                results.append({
-                    'item_id': r.get('item_id'),
-                    'title': r.get('title'),
-                    'author': r.get('author'),
-                    'album': album,
-                    'album_artist': (r.get('album_artist') or '').strip() or 'unknown'
-                })
+                results.append(
+                    {
+                        'item_id': r.get('item_id'),
+                        'title': r.get('title'),
+                        'author': r.get('author'),
+                        'album': album,
+                        'album_artist': (r.get('album_artist') or '').strip() or 'unknown',
+                    }
+                )
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         return jsonify(results)
     except Exception as e:
-        logger.error(f"Error during track search: {e}", exc_info=True)
+        logger.exception(f"Error during track search: {e}")
         return jsonify({"error": "An error occurred during search."}), 500
 
 
@@ -241,7 +281,11 @@ def get_mood_centroids_endpoint():
     mood_filter = request.args.get('mood', '', type=str).strip().lower()
     if mood_filter:
         if mood_filter not in _MOOD_CENTROIDS_META:
-            return jsonify({"error": f"Unknown mood '{mood_filter}'. Available: {list(_MOOD_CENTROIDS_META.keys())}"}), 400
+            return jsonify(
+                {
+                    "error": f"Unknown mood '{mood_filter}'. Available: {list(_MOOD_CENTROIDS_META.keys())}"
+                }
+            ), 400
         return jsonify({mood_filter: _MOOD_CENTROIDS_META[mood_filter]})
     return jsonify(_MOOD_CENTROIDS_META)
 
@@ -327,7 +371,7 @@ def get_similar_tracks_endpoint():
 
     # Optional anchor parameter
     anchor_id_param = request.args.get('anchor_id', None, type=int)
-    
+
     eliminate_duplicates_str = request.args.get('eliminate_duplicates')
     if eliminate_duplicates_str is None:
         eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
@@ -351,15 +395,27 @@ def get_similar_tracks_endpoint():
     if mood_param and centroid_index_param is not None:
         _ensure_mood_centroids_loaded()
         if mood_param not in _MOOD_CENTROIDS_DATA:
-            return jsonify({"error": f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}"}), 400
+            return jsonify(
+                {
+                    "error": f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}"
+                }
+            ), 400
         centroids = _MOOD_CENTROIDS_DATA[mood_param]
         if centroid_index_param < 0 or centroid_index_param >= len(centroids):
-            return jsonify({"error": f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' (0-{len(centroids)-1})."}), 400
+            return jsonify(
+                {
+                    "error": f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' (0-{len(centroids) - 1})."
+                }
+            ), 400
 
         centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
-            centroid_vector, num_neighbors, eliminate_duplicates,
-            "mood centroid", "No similar tracks found for this mood centroid.")
+            centroid_vector,
+            num_neighbors,
+            eliminate_duplicates,
+            "mood centroid",
+            "No similar tracks found for this mood centroid.",
+        )
         if err:
             return err
         return jsonify(_serialize_neighbor_results(neighbor_results))
@@ -367,14 +423,21 @@ def get_similar_tracks_endpoint():
     # --- Anchor mode: use anchor's centroid vector ---
     if anchor_id_param is not None:
         from database import get_alchemy_anchor_by_id
+
         anchor = get_alchemy_anchor_by_id(anchor_id_param)
         if not anchor or not anchor.get('centroid'):
-            return jsonify({"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}), 404
+            return jsonify(
+                {"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}
+            ), 404
 
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
-            anchor_vector, num_neighbors, eliminate_duplicates,
-            f"anchor {anchor_id_param}", "No similar tracks found for this anchor.")
+            anchor_vector,
+            num_neighbors,
+            eliminate_duplicates,
+            f"anchor {anchor_id_param}",
+            "No similar tracks found for this anchor.",
+        )
         if err:
             return err
         return jsonify(_serialize_neighbor_results(neighbor_results))
@@ -387,21 +450,29 @@ def get_similar_tracks_endpoint():
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
-            return jsonify({"error": f"Track '{title}' by '{artist}' not found in the database."}), 404
+            return jsonify(
+                {"error": f"Track '{title}' by '{artist}' not found in the database."}
+            ), 404
         target_item_id = resolved_id
     else:
-        return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist', or 'mood' and 'centroid_index'."}), 400
+        return jsonify(
+            {
+                "error": "Request must include either 'item_id' or both 'title' and 'artist', or 'mood' and 'centroid_index'."
+            }
+        ), 400
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id, 
+            target_item_id,
             n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
             mood_similarity=mood_similarity,
-            radius_similarity=radius_similarity
+            radius_similarity=radius_similarity,
         )
         if not neighbor_results:
-            return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404
+            return jsonify(
+                {"error": "Target track not found in index or no similar tracks found."}
+            ), 404
 
         return jsonify(_serialize_neighbor_results(neighbor_results))
     except RuntimeError as e:
@@ -412,112 +483,118 @@ def get_similar_tracks_endpoint():
 
 @ivf_bp.route('/api/max_distance', methods=['GET'])
 def get_max_distance_endpoint():
-  """
-  Maximum distance from a track to any other.
-  ---
-  tags:
-    - Similarity
-  summary: Return the largest cosine/euclidean distance between the given item and any other item in the IVF index.
-  parameters:
-    - name: item_id
-      in: query
-      required: true
-      schema: { type: string }
-  responses:
-    200:
-      description: Distance and farthest item.
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              max_distance:
-                type: number
-                format: float
-              farthest_item_id:
-                type: string
-                nullable: true
-    400:
-      description: Missing item_id.
-    404:
-      description: Item not found in the index.
-    503:
-      description: IVF index unavailable.
-  """
-  item_id = request.args.get('item_id')
-  if not item_id:
-    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+    """
+    Maximum distance from a track to any other.
+    ---
+    tags:
+      - Similarity
+    summary: Return the largest cosine/euclidean distance between the given item and any other item in the IVF index.
+    parameters:
+      - name: item_id
+        in: query
+        required: true
+        schema: { type: string }
+    responses:
+      200:
+        description: Distance and farthest item.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_distance:
+                  type: number
+                  format: float
+                farthest_item_id:
+                  type: string
+                  nullable: true
+      400:
+        description: Missing item_id.
+      404:
+        description: Item not found in the index.
+      503:
+        description: IVF index unavailable.
+    """
+    item_id = request.args.get('item_id')
+    if not item_id:
+        return jsonify({"error": "Missing 'item_id' parameter."}), 400
 
-  try:
-    result = get_max_distance_for_id(item_id)
-    if result is None:
-      return jsonify({"error": f"Item '{item_id}' not found in index or index unavailable."}), 404
-    return jsonify(result)
-  except RuntimeError as e:
-    logger.error(f"Runtime error computing max distance for {item_id}: {e}", exc_info=True)
-    return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-  except Exception as e:
-    logger.error(f"Unexpected error computing max distance for {item_id}: {e}", exc_info=True)
-    return jsonify({"error": "An unexpected error occurred."}), 500
+    try:
+        result = get_max_distance_for_id(item_id)
+        if result is None:
+            return jsonify(
+                {"error": f"Item '{item_id}' not found in index or index unavailable."}
+            ), 404
+        return jsonify(result)
+    except RuntimeError as e:
+        logger.exception(f"Runtime error computing max distance for {item_id}: {e}")
+        return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+    except Exception as e:
+        logger.exception(f"Unexpected error computing max distance for {item_id}: {e}")
+        return jsonify({"error": "An unexpected error occurred."}), 500
 
 
 @ivf_bp.route('/api/track', methods=['GET'])
 def get_track_endpoint():
-  """
-  Basic track metadata.
-  ---
-  tags:
-    - Similarity
-  summary: Return title, author, album, and album_artist for a given item_id.
-  parameters:
-    - name: item_id
-      in: query
-      required: true
-      schema: { type: string }
-  responses:
-    200:
-      description: Track metadata.
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              item_id:
-                type: string
-              title:
-                type: string
-              author:
-                type: string
-              album:
-                type: string
-              album_artist:
-                type: string
-    400:
-      description: Missing item_id.
-    404:
-      description: Item not found.
-  """
-  item_id = request.args.get('item_id')
-  if not item_id:
-    return jsonify({"error": "Missing 'item_id' parameter."}), 400
+    """
+    Basic track metadata.
+    ---
+    tags:
+      - Similarity
+    summary: Return title, author, album, and album_artist for a given item_id.
+    parameters:
+      - name: item_id
+        in: query
+        required: true
+        schema: { type: string }
+    responses:
+      200:
+        description: Track metadata.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                item_id:
+                  type: string
+                title:
+                  type: string
+                author:
+                  type: string
+                album:
+                  type: string
+                album_artist:
+                  type: string
+      400:
+        description: Missing item_id.
+      404:
+        description: Item not found.
+    """
+    item_id = request.args.get('item_id')
+    if not item_id:
+        return jsonify({"error": "Missing 'item_id' parameter."}), 400
 
-  try:
-    from app_helper import get_score_data_by_ids
-    details = get_score_data_by_ids([item_id])
-    if not details:
-      return jsonify({"error": f"Item '{item_id}' not found."}), 404
-    # Return only the basic fields
-    d = details[0]
-    return jsonify({
-        "item_id": d.get('item_id'),
-        "title": d.get('title'),
-        "author": d.get('author'),
-        "album": (d.get('album') or 'unknown'),
-        "album_artist": (d.get('album_artist') or 'unknown')
-    }), 200
-  except Exception as e:
-    logger.error(f"Unexpected error fetching track {item_id}: {e}", exc_info=True)
-    return jsonify({"error": "An unexpected error occurred."}), 500
+    try:
+        from app_helper import get_score_data_by_ids
+
+        details = get_score_data_by_ids([item_id])
+        if not details:
+            return jsonify({"error": f"Item '{item_id}' not found."}), 404
+        # Return only the basic fields
+        d = details[0]
+        return jsonify(
+            {
+                "item_id": d.get('item_id'),
+                "title": d.get('title'),
+                "author": d.get('author'),
+                "album": (d.get('album') or 'unknown'),
+                "album_artist": (d.get('album_artist') or 'unknown'),
+            }
+        ), 200
+    except Exception as e:
+        logger.exception(f"Unexpected error fetching track {item_id}: {e}")
+        return jsonify({"error": "An unexpected error occurred."}), 500
+
 
 @ivf_bp.route('/api/create_playlist', methods=['POST'])
 def create_media_server_playlist():
@@ -584,15 +661,23 @@ def create_media_server_playlist():
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
 
     try:
-        new_playlist_id = create_playlist_from_ids(playlist_name, final_track_ids, user_creds=user_creds)
+        new_playlist_id = create_playlist_from_ids(
+            playlist_name, final_track_ids, user_creds=user_creds
+        )
 
         logger.info(f"Successfully created playlist '{playlist_name}' with ID {new_playlist_id}.")
 
-        return jsonify({
-            "message": f"Playlist '{playlist_name}' created successfully!",
-            "playlist_id": new_playlist_id
-        }), 201
+        return jsonify(
+            {
+                "message": f"Playlist '{playlist_name}' created successfully!",
+                "playlist_id": new_playlist_id,
+            }
+        ), 201
 
     except Exception as e:
-        logger.error(f"Failed to create media server playlist '{playlist_name}': {e}", exc_info=True)
-        return jsonify({"error": "An error occurred while creating the playlist on the media server."}), 500
+        logger.exception(
+            f"Failed to create media server playlist '{playlist_name}': {e}"
+        )
+        return jsonify(
+            {"error": "An error occurred while creating the playlist on the media server."}
+        ), 500

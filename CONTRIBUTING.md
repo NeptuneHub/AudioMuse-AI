@@ -12,8 +12,8 @@ Multiple information can be found in the [docs](docs/) folder.
 
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
-* **Flask Web Application (audiomuse-ai-flask):** Here you have the front-end of the application both intended as html page and API. Here live also the logic of the service that are syncronous like get the similar song.
-* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for what need to be executed in async, like analyze the song, do clustering or reconstruct the index for similar song search. With the redis queue and a kubernetes architecture is possible to spawn more woker for increase scalability and avaiability.
+* **Flask Web Application (audiomuse-ai-flask):** Here is the front-end of the application, intended as both an HTML page and an API. Here also lives the logic of the services that are synchronous, such as getting similar songs.
+* **Redis Queue (RQ) Workers (audiomuse-ai-worker):** This is for tasks that need to be executed asynchronously, such as analyzing songs, performing clustering, or reconstructing the index for similar song searches. With the Redis queue and a Kubernetes architecture, it is possible to spawn more workers to increase scalability and availability.
 * **Redis Queue:** where Flask write the job, and Workers check the job to do.
 * **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
 
@@ -22,7 +22,7 @@ Remember that this software support both Intel and Arm architecture. So avoid co
 
 Remember that AudioMuse-AI is also shipped as native app for MacOS, Linux and Windows and your change must avoid to brake them-
 
-Rememeber also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
+Remember also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
 
 
 ## **The Codebase Map**
@@ -87,7 +87,7 @@ docker-compose up --build -d
 ### PR Requirements
 When submitting a pull request, ensure:
 
-* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also cleary explain how you tested it and how to replicate those test
+* **Clear description:** Explain what the PR achieves and why the change is needed with **HUMAN generated** text. Also clearly explain how you tested it and how to replicate those tests
 * **Link the PR to an existing issue:** in this way you work on something already agreed on and you avoid many rework.
 * **Testing:** Verify core features work on at least one architecture (Intel/ARM) and one media server:
   * Analysis and Clustering
@@ -100,13 +100,23 @@ When submitting a pull request, ensure:
 * **AGPLv3 License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
-* **Static analysis (flake8):** the `Static Analysis` workflow (`.github/workflows/lint-flake8.yml`) runs `flake8 --select=E9,F63,F7,F82` on every push/PR to `main` and must pass. To avoid failing it: don't reference undefined names, leftover/renamed variables, or unresolved imports; fix syntax errors; and only keep a `global`/`nonlocal` declaration when the function actually reassigns that name (declaring one for a variable you merely read or mutate in place — `d[k]=v`, `.append()`, `.update()` — will fail the check).
 
 > Important: Prefear opening small PR, focused on specific functionality that directly add value. Avoid to change multiple unrelated functionality to facilitate test.
 
 > Contributions generated with AI are welcome, provided that a qualified human reviewer verifies, tests, and understands the code. AI tools can assist in development, but all pull requests must be submitted by someone capable of ensuring correctness and maintainability. 
 
 > Missing requirements may lead to requests for additional information and, if not provided, the PR may be closed. Regardless of the above, the final decision to merge a pull request is at the maintainer’s discretion.
+
+### Linting & Code Style
+All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locally before pushing:
+
+* **Naming:** snake_case for functions/variables (`song_count`, `get_albums()`), PascalCase for classes (`SongIndex`); no trailing whitespace, and end every file with a single newline.
+* **Imports at the top:** keep imports at the top of the file; only move one inside a function when it's truly necessary (e.g. to break an import cycle or avoid a heavy/optional dependency at module load time).
+* **One config default:** define each tunable once in `config.py` and import `config.NAME` - never re-read its env var elsewhere.
+* **Plain ASCII, no emoji:** `.py` files stay plain ASCII (`OK`, `->`) - decorative emoji break the Windows console when logged. Emoji are still fine in HTML/templates and frontend JS.
+* **flake8 + ruff:** `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` catches syntax errors and pyflakes issues (undefined/unused names, bad `== None`/`== True` comparisons, bare `except:`); `ruff check .` adds the naming/whitespace rules above plus `TRY400` (use `logging.exception(...)`, not `logging.error(...)`, inside an `except` block). Run both before pushing.
+* **codespell:** must pass repo-wide; fix real typos, and add genuine false positives (with a short reason) to `.codespellrc`.
+* **LF line endings & mypy:** every file must use LF line endings (no CRLF); if you touch a module listed in `mypy.ini`, run `mypy --config-file mypy.ini` and keep it green.
 
 ### How to Open a Draft PR
 1. Push your branch to your fork

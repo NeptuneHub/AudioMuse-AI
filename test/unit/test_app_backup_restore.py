@@ -1,11 +1,21 @@
-"""Unit tests for app_backup.restore_backup() chunk and lock validation.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Exercises the /api/backup/restore route through a Flask test client with
-multipart/form-data uploads. The module-level Redis lock helpers are patched
-(the functions, not redis), BACKUP_DIR is redirected to a pytest tmp dir, and
-no test ever completes a chunk set, so the detached restore subprocess is
-never spawned.
+"""Unit tests for the app_backup chunked-restore endpoint.
+
+Posts restore chunks to confirm confirmation, file, and chunk-field
+validation plus the cross-chunk restore locking behavior.
+
+Main Features:
+* Confirmation, missing-file, and chunk-field/range validation returning 400.
+* First-chunk lock-held and later-chunk lock-missing returning 409.
 """
+
 import io
 import os
 from unittest.mock import MagicMock
@@ -65,13 +75,16 @@ class TestRestoreValidation:
         assert resp.status_code == 400
         assert 'must be integers' in resp.get_json()['error']
 
-    @pytest.mark.parametrize('chunk_num,total_chunks', [
-        (0, 3),
-        (4, 3),
-        (2, 1),
-        (-1, 3),
-        (0, 0),
-    ])
+    @pytest.mark.parametrize(
+        'chunk_num,total_chunks',
+        [
+            (0, 3),
+            (4, 3),
+            (2, 1),
+            (-1, 3),
+            (0, 0),
+        ],
+    )
     def test_chunk_num_out_of_range_is_400(self, client, chunk_num, total_chunks):
         resp = _post(client, chunk_num=chunk_num, total_chunks=total_chunks)
         assert resp.status_code == 400

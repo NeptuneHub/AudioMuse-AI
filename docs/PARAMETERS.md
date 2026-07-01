@@ -78,11 +78,11 @@ These are the default parameters used when launching analysis or clustering task
 | `MAX_DISTANCE`                              | Normalized distance threshold for tracks in a cluster.                                                                    | `0.5`           |
 | `CLUSTERING_RUNS`                           | Iterations for Monte Carlo evolutionary search.                                                                           | `1000`          |
 | `TOP_N_PLAYLISTS`                           | POST Clustering it keep only the top N diverse playlist.                                                                  | `8`             |
-| `USE_GPU_CLUSTERING`                        | When true enalbe the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
+| `USE_GPU_CLUSTERING`                        | When true enable the use of GPU on K-Means, DBSCAN and PCA                                                                | `false`         |
 | **Similarity General**                      |                                                                                                                           |                 |
 | `IVF_METRIC`                                | Distance metric used by the similarity index: `angular` (cosine), `euclidean`, or `dot` (inner product). Changing it requires an index rebuild.                                                                                            | `angular`       |
 | **Disk-Paged IVF Similarity Index**         |                                                                                                                            |                 |
-| `IVF_NPROBE`                                | Number of nearest IVF cells probed per query — the dominant recall/latency knob. Higher = better recall + slower queries.   | `1024`          |
+| `IVF_NPROBE`                                | Number of nearest IVF cells probed per query - the dominant recall/latency knob. Higher = better recall + slower queries.   | `1024`          |
 | `IVF_RERANK_OVERFETCH`                      | int8 is the coarse stage: the similarity query over-fetches this multiple of the result pool and re-ranks it with exact float32 (read from the source `embedding` table) so the top-K ordering matches full precision. Higher = more exact tail recall, more per-query float32 reads. | `4`             |
 | `IVF_NLIST_MAX`                             | Upper cap on the number of IVF cells (coarse centroids) created at build time. Requires an index rebuild after change.      | `8192`          |
 | `IVF_STORAGE_DTYPE`                         | Stored cell-vector precision: `i8` (int8; angular only, euclidean/dot fall back to f16), `f16`, or `f32` (no quantization). Smaller = less RAM and disk I/O; distances are computed directly in that dtype via NumKong (NumPy fallback). Requires an index rebuild after change. | `i8`            |
@@ -186,7 +186,7 @@ These are the default parameters used when launching analysis or clustering task
 | `LYRICS_API_2_TIMEOUT`                      | HTTP timeout in seconds for API slot 2.                                                    | `5.0`                                  |
 | `VAD_VOICE_RECOGNITION`                     | Minimum seconds of voiced audio Silero VAD must detect before a track is sent to the Whisper-small ASR engine for lyric transcription. Tracks below this threshold are treated as instrumental/ambient and skip ASR entirely (the instrumental embedding sentinel is used instead). Use this knob to fine-tune instrumental/ambient song recognition in the lyrics analysis pipeline. Setting it very high (e.g. `1000`) effectively disables ASR transcription for every track, since no song can reach that much voiced audio within the 4-minute analysis clip. | `25` |
 | `LYRICS_ASR_BEAM_SIZE`                      | Beam search width for the Whisper-small ASR decoder. 1 = pure greedy (fastest, most error-prone), 2 = sweet spot (catches stuck-loop attractors at ~2× greedy cost), 5 = Whisper-upstream default (max quality, ~5× cost). Each extra beam adds one extra decoder.run per generated token plus its own KV cache (~30-80 MB at a full 30 s chunk). | `5` |
-| `LYRICS_ASR_MIN_AVG_LOGPROB`                | General avg_logprob floor for ASR output. Whisper-small's per-chunk avg_logprob is averaged over the track; if the result is below this threshold the transcript is dropped as likely hallucination and the track is treated as instrumental. Values are negative — closer to `0` is stricter (rejects more), more negative is looser (accepts more). `-1.0` is a permissive global floor that catches only truly degenerate transcriptions. | `-1.0` |
+| `LYRICS_ASR_MIN_AVG_LOGPROB`                | General avg_logprob floor for ASR output. Whisper-small's per-chunk avg_logprob is averaged over the track; if the result is below this threshold the transcript is dropped as likely hallucination and the track is treated as instrumental. Values are negative - closer to `0` is stricter (rejects more), more negative is looser (accepts more). `-1.0` is a permissive global floor that catches only truly degenerate transcriptions. | `-1.0` |
 | `LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB`        | Additional avg_logprob floor applied only when Whisper reports a non-English language. Whisper-small is English-biased, so legitimate non-English transcriptions (CJK, Cyrillic, Arabic, etc.) naturally score lower in the `-0.5` to `-0.8` range; set this looser than the English floor (more negative) to avoid dropping valid foreign-language lyrics. Raise toward `-0.5` if you see garbage non-English transcriptions slipping through. | `-0.85` |
 | `LYRICS_TEXT_MAX_COMPRESSION_RATIO`         | Compression ratio (zlib) used to filter out text that is not real lyrics. Highly repetitive content compresses far more than real lyrics, so text above this ratio is dropped before embedding. Set to `0` to disable the gate. | `15.0` |
 | `LYRICS_MIN_CHARS_FOR_EMBEDDING`            | Minimum number of characters a transcript must have for the pipeline to compute a lyrics embedding. Below this the track is treated as having no usable lyrics and gets the instrumental sentinel. Char-based (not word-based) so CJK / Thai / Lao scripts are not spuriously dropped. | `250` |
@@ -197,7 +197,7 @@ These are the default parameters used when launching analysis or clustering task
 | `SEM_GROVE_WEIGHT_AUDIO`                    | Contribution of the MusicNN audio embedding to the merged SemGrove cosine similarity (squared scale factor, [0.0–1.0]). Requires index rebuild after change. | `0.25` |
 
 
-> ⚠️ **The only officially supported model is `qwen3.5:9b` or `qwen3.5:4b` for faster one**. Compatibility testing is done exclusively against it. Other models below were tested and may work, but **use them at your own risk** — issues opened for untested or arbitrary models could be closed. Different models behave differently and outputs vary between runs.
+> ⚠️ **The only officially supported model is `qwen3.5:9b` or `qwen3.5:4b` for faster one**. Compatibility testing is done exclusively against it. Other models below were tested and may work, but **use them at your own risk** - issues opened for untested or arbitrary models could be closed. Different models behave differently and outputs vary between runs.
 
 > ℹ️ **The models listed below were tested in the past and will not be retested going forward.** They are documented for reference only.
 
@@ -205,7 +205,7 @@ These are the default parameters used when launching analysis or clustering task
 
 **Cloud, tested March 2026:** `claude-sonnet-4.6` (best), `claude-haiku-4.5`, `gemini-3-flash-preview`. Earlier: mistral:7b, llama3.1:8b, gemini-2.5-pro, gemini-1.5-flash-latest.
 
-You can use either an external AI API or self-host with Ollama — deployment example here:
+You can use either an external AI API or self-host with Ollama - deployment example here:
 
 * https://github.com/NeptuneHub/k3s-supreme-waffle/tree/main/ollama
 

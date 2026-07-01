@@ -46,4 +46,4 @@ Add any other context about the problem here. For example, logs from the `audiom
 
 If the bug is related to a specific album/songs please share information like format, size, bitrate. On linux you can use `mediainfo yoursong.flac`.
 
-If the bug is related to backup and restore functionality, remeber to attach the log file that you can found in `Flask` container under `/app/backup`
+If the bug is related to backup and restore functionality, remember to attach the log file that you can found in `Flask` container under `/app/backup`

@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Cron field and expression matching in app_cron.
+
+Covers _field_matches for single fields and cron_matches_now for whole
+five-part expressions evaluated against fixed timestamps in a pinned UTC zone.
+
+Main Features:
+* Field syntax: star, exact value, inclusive ranges, comma lists
+* Malformed and non-numeric fields resolve to no match
+* Full expressions match on minute/hour/day/month and day-of-week (OR) semantics
+"""
+
 import os
 import time
 

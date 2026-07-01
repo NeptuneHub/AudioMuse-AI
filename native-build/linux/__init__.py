@@ -1,21 +1,9 @@
-"""Standalone Linux packaging for AudioMuse-AI (.deb / .rpm).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This package is the Linux counterpart of the ``macos`` package: everything
-specific to the no-container native Linux build -- the launcher, the process
-supervisor that runs embedded PostgreSQL/Redis and the app processes, the
-path/env helpers, and the PyInstaller build tooling. None of it is imported by
-the cloud/container deployment.
-
-Design notes
-------------
-* It deliberately reuses the two *platform-agnostic* helpers from the ``macos``
-  package (``macos.control_ipc.ControlServer`` and
-  ``macos.reverse_log.NewestFirstFileHandler``) instead of duplicating them.
-  Both are pure-stdlib and contain nothing macOS-specific.
-* The child env (``native-build/linux/env.py``) reports ``AUDIOMUSE_PLATFORM=macos`` on
-  purpose: that value is the *only* platform-keyed branch in the shared
-  ``restart_manager.py`` and it selects the unix-socket control-server path
-  (which this package's supervisor implements identically). We are not allowed
-  to touch shared code to add a separate ``linux`` value, so we ride the
-  existing standalone-mode branch. See ``native-build/linux/env.py`` for the full rationale.
-"""
+"""Package marker for the Linux standalone-build launcher and support modules."""

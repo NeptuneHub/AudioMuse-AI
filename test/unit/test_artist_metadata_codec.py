@@ -1,19 +1,22 @@
-# test/unit/test_artist_metadata_codec.py
-"""
-Unit tests for the artist metadata storage helpers in
-``tasks/index_build_helpers.py``:
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-- ``pack_artist_metadata`` / ``unpack_artist_metadata`` (binary codec)
-- ``store_segmented_blob`` / ``load_segmented_blob`` (segmented BYTEA storage)
+"""Artist-metadata blob codec and segmented DB storage in index_build_helpers.
 
-The codec replaces the previous JSON-of-floats storage of artist GMM
-parameters. The segmented-blob helpers decouple metadata storage from the
-IVF index storage so a single PG column value cannot exceed
-``MaxAllocSize`` (1 GB) at any realistic library size.
+Covers pack/unpack of the artist map plus GMM params into a binary blob and the
+store/load of that blob across one or many rows in a segmented table.
 
-The helper module is loaded via importlib so this file does not pull in
-``tasks/__init__.py`` (which imports librosa). Same pattern the other
-tasks unit tests use.
+Main Features:
+* Round-trips artist map and GMM params (means/weights/flags), preserving Unicode
+  names and dropping covariance fields
+* Header magic validation rejects bad magic, truncation, and means-shape mismatch
+* store/load_segmented_blob split large payloads, reassemble in part order, and
+  raise on incomplete or total-count-mismatched segments
 """
 
 import importlib.util
@@ -27,7 +30,6 @@ from unittest.mock import MagicMock
 
 
 def _load_helpers():
-    """Load tasks.index_build_helpers without triggering tasks/__init__.py."""
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
@@ -41,7 +43,7 @@ def _load_helpers():
     mod_name = 'tasks.index_build_helpers'
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
-        mod  = importlib.util.module_from_spec(spec)
+        mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
         spec.loader.exec_module(mod)
     return sys.modules[mod_name]
@@ -51,11 +53,6 @@ _helpers = _load_helpers()
 
 
 def _make_synthetic_artists(n_artists, n_features=8, rng_seed=42):
-    """Return (artist_map, artist_gmms) with random GMM params.
-
-    Mix of few-songs (1-4 components) and multi-song (5+ components) artists
-    to exercise both code paths in ``pack_artist_metadata``.
-    """
     rng = np.random.default_rng(rng_seed)
     artist_map = {}
     artist_gmms = {}
@@ -87,7 +84,6 @@ def _make_synthetic_artists(n_artists, n_features=8, rng_seed=42):
 
 
 class TestPackUnpackArtistMetadata:
-
     def test_round_trip_preserves_artist_map(self):
         artist_map, artist_gmms = _make_synthetic_artists(5)
         blob = _helpers.pack_artist_metadata(artist_map, artist_gmms)
@@ -101,13 +97,13 @@ class TestPackUnpackArtistMetadata:
         assert set(loaded_gmms.keys()) == set(artist_gmms.keys())
         for name, original in artist_gmms.items():
             got = loaded_gmms[name]
-            assert got['n_components']  == original['n_components']
-            assert got['n_features']    == original['n_features']
-            assert got['n_tracks']      == original['n_tracks']
-            assert got['is_few_songs']  == original['is_few_songs']
-            assert got['tracks_hash']   == original['tracks_hash']
+            assert got['n_components'] == original['n_components']
+            assert got['n_features'] == original['n_features']
+            assert got['n_tracks'] == original['n_tracks']
+            assert got['is_few_songs'] == original['is_few_songs']
+            assert got['tracks_hash'] == original['tracks_hash']
             np.testing.assert_allclose(
-                np.asarray(got['means'],   dtype=np.float32),
+                np.asarray(got['means'], dtype=np.float32),
                 np.asarray(original['means'], dtype=np.float32),
                 atol=0,
             )
@@ -118,8 +114,6 @@ class TestPackUnpackArtistMetadata:
             )
 
     def test_covariances_and_covariance_type_never_appear_in_output(self):
-        """Even if the input still carries them (mid-migration), the codec
-        must not propagate them. covariances has zero live readers."""
         artist_map, artist_gmms = _make_synthetic_artists(3)
         for gmm in artist_gmms.values():
             gmm['covariances'] = [[0.01] * gmm['n_features']] * gmm['n_components']
@@ -143,13 +137,13 @@ class TestPackUnpackArtistMetadata:
         artist_map = {0: "Sigur Rós", 1: "東京事変", 2: "Mötley Crüe"}
         artist_gmms = {
             name: {
-                'means':       [[0.1, 0.2, 0.3]],
-                'weights':     [1.0],
+                'means': [[0.1, 0.2, 0.3]],
+                'weights': [1.0],
                 'n_components': 1,
-                'n_features':   3,
-                'n_tracks':     1,
+                'n_features': 3,
+                'n_tracks': 1,
                 'is_few_songs': True,
-                'tracks_hash':  f"{i:032x}",
+                'tracks_hash': f"{i:032x}",
             }
             for i, name in artist_map.items()
         }
@@ -171,13 +165,13 @@ class TestPackUnpackArtistMetadata:
         artist_map = {0: "X"}
         artist_gmms = {
             "X": {
-                'means':       [[1.0, 2.0]],
-                'weights':     [1.0],
+                'means': [[1.0, 2.0]],
+                'weights': [1.0],
                 'n_components': 1,
-                'n_features':   3,
-                'n_tracks':     1,
+                'n_features': 3,
+                'n_tracks': 1,
                 'is_few_songs': True,
-                'tracks_hash':  "0" * 32,
+                'tracks_hash': "0" * 32,
             }
         }
         with pytest.raises(ValueError, match="means shape"):
@@ -185,8 +179,6 @@ class TestPackUnpackArtistMetadata:
 
 
 class TestStoreLoadSegmentedBlob:
-    """Mock psycopg2 cursor to verify the segmented-blob storage pattern."""
-
     def _captured_conn(self):
         captured = []
         mock_cur = MagicMock()
@@ -267,7 +259,7 @@ class TestStoreLoadSegmentedBlob:
         n_parts = len(inserts)
         for idx, (sql, params) in enumerate(inserts, start=1):
             assert "INSERT INTO artist_metadata_data" in sql
-            assert "ON CONFLICT" in sql  # segmented inserts are now idempotent (ON CONFLICT DO UPDATE)
+            assert "ON CONFLICT" in sql
             assert params[0] == f"artist_metadata_{idx}_{n_parts}"
 
     def test_load_returns_none_when_no_rows(self):

@@ -1,18 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
 """Centralized authentication and user-management layer.
 
-This module owns everything related to the auth/setup barrier and the
-``audiomuse_users`` table:
+Owns everything behind the auth/setup barrier and the ``audiomuse_users``
+table, and exposes ``init_app`` so ``app.py`` can wire the barrier as a
+``before_request`` guard. Table creation itself lives in ``database.init_db``
+so a cold start only calls one init routine.
 
-* Role constants and password hashing.
-* CRUD helpers for user accounts.
+Main Features:
+* Role constants, password hashing, and CRUD helpers for user accounts.
 * The ``check_setup_needed`` / ``check_auth_needed`` / ``check_admin_needed``
-  barrier functions used as ``before_request`` guards.
-* The Flask routes for ``/login``, ``/auth``, ``/logout`` and ``/api/users``.
-* One-shot helpers for the legacy env -> users-table seed and the JWT secret
-  resolution used at startup.
-
-The table creation itself still lives in ``app_helper.init_db`` (alongside
-all other schema objects) so a cold start only calls one init routine.
+  barrier guards and the ``/login``, ``/auth``, ``/logout``, ``/api/users`` routes.
+* One-shot legacy env -> users-table seed and the startup JWT-secret resolution.
 """
 
 import datetime
@@ -36,6 +41,8 @@ from psycopg2.extras import DictCursor
 from tz_helper import UTC_NOW_SQL, to_local_str
 
 logger = logging.getLogger(__name__)
+
+_API_SETUP_PATH = '/api/setup'
 
 
 def _original_request_is_https():
@@ -68,11 +75,13 @@ def _normalize_role(role):
 
 def _get_password_hasher():
     from argon2 import PasswordHasher
+
     return PasswordHasher()
 
 
 def _get_db():
     from app_helper import get_db
+
     return get_db()
 
 
@@ -91,6 +100,7 @@ def _jwt_secret():
 
 
 # --- User CRUD --------------------------------------------------------------
+
 
 def list_additional_users(username=None):
     """Return dicts ``{id, username, role, created_at}`` for user rows.
@@ -113,12 +123,14 @@ def list_additional_users(username=None):
         rows = cur.fetchall()
     out = []
     for row in rows:
-        out.append({
-            'id': row['id'],
-            'username': row['username'],
-            'role': row['role'] or USER_ROLE_USER,
-            'created_at': to_local_str(row['created_at']),
-        })
+        out.append(
+            {
+                'id': row['id'],
+                'username': row['username'],
+                'role': row['role'] or USER_ROLE_USER,
+                'created_at': to_local_str(row['created_at']),
+            }
+        )
     return out
 
 
@@ -173,7 +185,7 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     try:
         password_hash = hasher.hash(password)
     except Exception as exc:
-        logger.error(f"Failed to hash password for new user {username!r}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash password for new user {username!r}: {exc}")
         return False, "Failed to hash password."
 
     db = _get_db()
@@ -244,7 +256,7 @@ def delete_additional_user_safe(user_id):
             db.rollback()
         except Exception:
             pass
-        logger.error(f"Failed to atomically delete user {user_id}: {exc}", exc_info=True)
+        logger.exception(f"Failed to atomically delete user {user_id}: {exc}")
         return "error", "Database error while deleting user."
 
 
@@ -259,7 +271,7 @@ def update_additional_user_password(user_id, new_password):
     try:
         password_hash = _get_password_hasher().hash(new_password)
     except Exception as exc:
-        logger.error(f"Failed to hash new password for user {user_id}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash new password for user {user_id}: {exc}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -293,7 +305,7 @@ def verify_additional_user(username, password):
     try:
         import argon2
     except ImportError as exc:
-        logger.error(f"argon2 is not installed: {exc}", exc_info=True)
+        logger.exception(f"argon2 is not installed: {exc}")
         return None
 
     try:
@@ -301,7 +313,7 @@ def verify_additional_user(username, password):
     except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.VerificationError):
         return None
     except Exception as exc:
-        logger.error(f"Unexpected error during password verification: {exc}", exc_info=True)
+        logger.exception(f"Unexpected error during password verification: {exc}")
         return None
     return _normalize_role(role) or USER_ROLE_USER
 
@@ -321,7 +333,7 @@ def upsert_admin_user(username, password):
     try:
         password_hash = _get_password_hasher().hash(password)
     except Exception as exc:
-        logger.error(f"Failed to hash password for admin {username!r}: {exc}", exc_info=True)
+        logger.exception(f"Failed to hash password for admin {username!r}: {exc}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -356,7 +368,7 @@ def seed_admin_from_env():
             purge_legacy_admin_config()
             return False
     except Exception as exc:
-        logger.error(f"seed_admin_from_env: failed to count admins: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: failed to count admins: {exc}")
         return False
 
     # 2. Fall back to legacy rows persisted in app_config.
@@ -379,7 +391,7 @@ def seed_admin_from_env():
         else:
             password_hash = _get_password_hasher().hash(password)
     except Exception as exc:
-        logger.error(f"seed_admin_from_env: failed to prepare password: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: failed to prepare password: {exc}")
         return False
     db = _get_db()
     try:
@@ -391,7 +403,12 @@ def seed_admin_from_env():
                 (user.strip(), password_hash, USER_ROLE_ADMIN),
             )
         db.commit()
-        safe_source = 'app_config' if source == 'app_config' else ('env' if source == 'env' else 'unknown')
+        if source == 'app_config':
+            safe_source = 'app_config'
+        elif source == 'env':
+            safe_source = 'env'
+        else:
+            safe_source = 'unknown'
         logger.info(
             "Seeded admin into audiomuse_users from %s.",
             safe_source,
@@ -403,7 +420,7 @@ def seed_admin_from_env():
         return True
     except Exception as exc:
         db.rollback()
-        logger.error(f"seed_admin_from_env: insert failed: {exc}", exc_info=True)
+        logger.exception(f"seed_admin_from_env: insert failed: {exc}")
         return False
 
 
@@ -420,13 +437,16 @@ def _read_legacy_admin_from_app_config():
             )
             rows = cur.fetchall() or []
     except Exception as exc:
-        logger.error(
+        logger.exception(
             f"_read_legacy_admin_from_app_config: lookup failed: {exc}",
-            exc_info=True,
         )
         return '', '', 'app_config'
     values = {row[0]: row[1] for row in rows}
-    return values.get('AUDIOMUSE_USER', '') or '', values.get('AUDIOMUSE_PASSWORD', '') or '', 'app_config'
+    return (
+        values.get('AUDIOMUSE_USER', '') or '',
+        values.get('AUDIOMUSE_PASSWORD', '') or '',
+        'app_config',
+    )
 
 
 def purge_legacy_admin_config():
@@ -450,16 +470,18 @@ def purge_legacy_admin_config():
         return removed
     except Exception as exc:
         db.rollback()
-        logger.error(f"purge_legacy_admin_config failed: {exc}", exc_info=True)
+        logger.exception(f"purge_legacy_admin_config failed: {exc}")
         return 0
 
 
 # --- Barrier helpers --------------------------------------------------------
 
+
 def check_setup_needed():
     """Return True when the install still needs the setup wizard."""
     from tasks.setup_manager import SetupManager
     import config as _cfg
+
     sm = SetupManager()
 
     if not sm._is_valid_server_config(_cfg):
@@ -474,7 +496,9 @@ def check_setup_needed():
     try:
         return count_admin_users() <= 0
     except Exception as exc:
-        logger.error(f"Failed to count admin users while checking setup status: {exc}", exc_info=True)
+        logger.exception(
+            f"Failed to count admin users while checking setup status: {exc}"
+        )
         return True
 
 
@@ -513,7 +537,11 @@ def check_auth_needed(jwt_secret):
     # Check valid Bearer token (M2M callers) - always admin-equivalent.
     # Use secrets.compare_digest to avoid leaking token contents via timing.
     auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and _cfg.API_TOKEN and secrets.compare_digest(auth_header[7:].encode('utf-8'), _cfg.API_TOKEN.encode('utf-8')):
+    if (
+        auth_header.startswith('Bearer ')
+        and _cfg.API_TOKEN
+        and secrets.compare_digest(auth_header[7:].encode('utf-8'), _cfg.API_TOKEN.encode('utf-8'))
+    ):
         g.auth_role = 'admin'
         g.auth_user = None
         return None
@@ -530,15 +558,25 @@ def check_auth_needed(jwt_secret):
 # user can reach them; the per-request handlers enforce that non-admins
 # only see and modify their own account.
 _ADMIN_PATH_PREFIXES = (
-    '/setup', '/api/setup',
-    '/cleaning', '/api/cleaning',
-    '/cron', '/api/cron',
-    '/backup', '/api/backup',
-    '/provider-migration', '/api/migration',
-    '/analysis', '/api/analysis', '/api/clustering',
-    '/api/cancel', '/api/cancel_all',
+    '/setup',
+    _API_SETUP_PATH,
+    '/cleaning',
+    '/api/cleaning',
+    '/cron',
+    '/api/cron',
+    '/backup',
+    '/api/backup',
+    '/provider-migration',
+    '/api/migration',
+    '/analysis',
+    '/api/analysis',
+    '/api/clustering',
+    '/api/cancel',
+    '/api/cancel_all',
     '/api/rebuild_map_cache',
-    '/api/clap/cache/refresh', '/api/lyrics/cache/refresh', '/api/sem_grove/cache/refresh',
+    '/api/clap/cache/refresh',
+    '/api/lyrics/cache/refresh',
+    '/api/sem_grove/cache/refresh',
 )
 
 
@@ -571,10 +609,12 @@ def check_admin_needed():
         request.path,
     )
     if request.path.startswith('/api/'):
-        if request.path == '/api/setup':
-            return jsonify({
-                "error": "Error saving configuration: Non-admin user denied access to admin path. Please refresh the page and try again."
-            }), 403
+        if request.path == _API_SETUP_PATH:
+            return jsonify(
+                {
+                    "error": "Error saving configuration: Non-admin user denied access to admin path. Please refresh the page and try again."
+                }
+            ), 403
         return jsonify({"error": "Forbidden"}), 403
     return redirect(url_for('dashboard_bp.dashboard_page'))
 
@@ -585,7 +625,7 @@ def auth_setup_barrier():
         return
 
     if check_setup_needed():
-        if request.path in ('/setup', '/api/setup'):
+        if request.path in ('/setup', _API_SETUP_PATH):
             return
         if request.path.startswith('/api/'):
             current_app.logger.warning(
@@ -608,6 +648,7 @@ def auth_setup_barrier():
 
 # --- JWT secret resolution --------------------------------------------------
 
+
 def resolve_jwt_secret(setup_manager):
     """Return a usable JWT secret, generating and persisting one if needed.
 
@@ -619,6 +660,7 @@ def resolve_jwt_secret(setup_manager):
     restart that re-runs this). Safe to call only after ``init_db``.
     """
     import config as _cfg
+
     secret = _cfg.JWT_SECRET
     if secret or not _cfg.AUTH_ENABLED:
         return secret
@@ -641,6 +683,7 @@ def resolve_jwt_secret(setup_manager):
 # endpoint names stay unqualified (``login_page``, ``logout_endpoint``, ...)
 # and match the names used by existing templates via ``url_for``.
 
+
 def login_page():
     """
     Login page.
@@ -652,9 +695,10 @@ def login_page():
       200:
         description: Login HTML rendered.
       302:
-        description: Already authenticated or auth disabled — redirect to dashboard.
+        description: Already authenticated or auth disabled - redirect to dashboard.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return redirect(url_for('dashboard_bp.dashboard_page'))
     token = request.cookies.get('audiomuse_jwt')
@@ -712,15 +756,15 @@ def auth_endpoint():
         description: Database error while validating.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     try:
         admin_count = count_admin_users()
     except Exception as exc:
-        current_app.logger.error(
+        current_app.logger.exception(
             'Failed to count admin users during authentication: %s',
             exc,
-            exc_info=True,
         )
         return jsonify({"error": "Database error while checking admin accounts."}), 500
     if admin_count <= 0:
@@ -753,12 +797,10 @@ def auth_endpoint():
 
     secret = _jwt_secret()
     if not secret:
-        # Refuse to mint a session signed with an empty key — such a token
+        # Refuse to mint a session signed with an empty key - such a token
         # would be trivially forgeable. This should never happen once
         # resolve_jwt_secret has run, so surface it as a server error.
-        current_app.logger.error(
-            "Cannot issue session token: JWT secret is not configured."
-        )
+        current_app.logger.error("Cannot issue session token: JWT secret is not configured.")
         return jsonify({"error": "Server authentication is misconfigured."}), 500
 
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -799,7 +841,7 @@ def logout_endpoint():
       200:
         description: AJAX logout acknowledged.
       302:
-        description: Browser logout — redirect to /login.
+        description: Browser logout - redirect to /login.
     """
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     if is_ajax:
@@ -813,6 +855,7 @@ def logout_endpoint():
 # --- /api/users -------------------------------------------------------------
 # Admins can list and manage every account. Non-admins can only see and
 # modify their own row; the handlers below enforce that explicitly.
+
 
 def list_users_endpoint():
     """
@@ -843,6 +886,7 @@ def list_users_endpoint():
         description: Database error.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     role = getattr(g, 'auth_role', None)
@@ -855,13 +899,15 @@ def list_users_endpoint():
             # other users' rows from the database at all.
             users = list_additional_users(username=current_username) if current_username else []
     except Exception as exc:
-        current_app.logger.error(f"Failed to list users: {exc}", exc_info=True)
+        current_app.logger.exception(f"Failed to list users: {exc}")
         return jsonify({"error": "Failed to list users"}), 500
-    return jsonify({
-        "users": users,
-        "current_user": current_username,
-        "is_admin": role == 'admin',
-    })
+    return jsonify(
+        {
+            "users": users,
+            "current_user": current_username,
+            "is_admin": role == 'admin',
+        }
+    )
 
 
 def create_user_endpoint():
@@ -898,6 +944,7 @@ def create_user_endpoint():
         description: Auth disabled.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     if getattr(g, 'auth_role', None) != 'admin':
@@ -941,6 +988,7 @@ def delete_user_endpoint(user_id):
         description: Database error.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     if getattr(g, 'auth_role', None) != 'admin':
@@ -1000,6 +1048,7 @@ def update_user_password_endpoint(user_id):
         description: Auth disabled or user not found.
     """
     import config as _cfg
+
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
     target = get_additional_user_by_id(user_id)
@@ -1021,6 +1070,7 @@ def update_user_password_endpoint(user_id):
 
 # --- Flask registration -----------------------------------------------------
 
+
 def init_app(app, setup_manager, jwt_secret_getter):
     """Wire the auth barrier and auth routes onto ``app``.
 
@@ -1036,8 +1086,27 @@ def init_app(app, setup_manager, jwt_secret_getter):
     app.before_request(auth_setup_barrier)
     app.add_url_rule('/login', endpoint='login_page', view_func=login_page, methods=['GET'])
     app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_endpoint, methods=['POST'])
-    app.add_url_rule('/logout', endpoint='logout_endpoint', view_func=logout_endpoint, methods=['POST'])
-    app.add_url_rule('/api/users', endpoint='list_users_endpoint', view_func=list_users_endpoint, methods=['GET'])
-    app.add_url_rule('/api/users', endpoint='create_user_endpoint', view_func=create_user_endpoint, methods=['POST'])
-    app.add_url_rule('/api/users/<int:user_id>', endpoint='delete_user_endpoint', view_func=delete_user_endpoint, methods=['DELETE'])
-    app.add_url_rule('/api/users/<int:user_id>/password', endpoint='update_user_password_endpoint', view_func=update_user_password_endpoint, methods=['PUT'])
+    app.add_url_rule(
+        '/logout', endpoint='logout_endpoint', view_func=logout_endpoint, methods=['POST']
+    )
+    app.add_url_rule(
+        '/api/users', endpoint='list_users_endpoint', view_func=list_users_endpoint, methods=['GET']
+    )
+    app.add_url_rule(
+        '/api/users',
+        endpoint='create_user_endpoint',
+        view_func=create_user_endpoint,
+        methods=['POST'],
+    )
+    app.add_url_rule(
+        '/api/users/<int:user_id>',
+        endpoint='delete_user_endpoint',
+        view_func=delete_user_endpoint,
+        methods=['DELETE'],
+    )
+    app.add_url_rule(
+        '/api/users/<int:user_id>/password',
+        endpoint='update_user_password_endpoint',
+        view_func=update_user_password_endpoint,
+        methods=['PUT'],
+    )

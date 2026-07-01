@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Windows application-support directory selection and space-in-path fallback.
+
+Covers how the standalone Windows build picks its data directory, avoiding paths
+with spaces that break the embedded Postgres server.
+
+Main Features:
+* A space-free LOCALAPPDATA is used directly
+* LOCALAPPDATA containing a space falls back to PROGRAMDATA
+* A PROGRAMDATA env override replaces the fallback root
+* Missing LOCALAPPDATA uses the home profile, falling back again if it has a space
+"""
+
 import os
 from unittest.mock import patch
 
@@ -45,8 +65,10 @@ class TestAppSupportDir:
     def test_missing_localappdata_uses_home_profile(self, monkeypatch):
         mod = _load_paths()
         monkeypatch.delenv('LOCALAPPDATA', raising=False)
-        with patch('os.path.expanduser', return_value='/home/tester') as exp, \
-                patch('os.makedirs') as mk:
+        with (
+            patch('os.path.expanduser', return_value='/home/tester') as exp,
+            patch('os.makedirs') as mk,
+        ):
             result = mod.app_support_dir()
         exp.assert_called_once_with('~')
         expected = os.path.join('/home/tester', 'AppData', 'Local', 'AudioMuse-AI')
@@ -58,8 +80,7 @@ class TestAppSupportDir:
         mod = _load_paths()
         monkeypatch.delenv('LOCALAPPDATA', raising=False)
         monkeypatch.delenv('PROGRAMDATA', raising=False)
-        with patch('os.path.expanduser', return_value='/home/John Doe'), \
-                patch('os.makedirs') as mk:
+        with patch('os.path.expanduser', return_value='/home/John Doe'), patch('os.makedirs') as mk:
             result = mod.app_support_dir()
         assert _norm(result) == 'C:/ProgramData/AudioMuse-AI'
         assert ' ' not in result

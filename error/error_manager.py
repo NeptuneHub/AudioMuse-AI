@@ -1,17 +1,22 @@
-"""Central error manager for AudioMuse-AI.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-The rest of the codebase calls this module to turn a chosen error code (and an
-optional one-line detail) into the canonical structured error that the frontend
-renders:
+"""Builds, classifies, and records structured application errors.
 
-    {"error_code": int, "error_class": str, "error_message": str}
+Turns raw exceptions and error codes into the standard error dict (code, class,
+message) using ``error_dictionary``, mapping exception types to codes and
+capping message detail so no raw traceback leaks to callers.
 
-The user-facing ``error_message`` is always collapsed to a single line and never
-carries a stack trace. The full traceback is for the container log only (callers
-pass a ``logger`` here, or log it themselves with ``exc_info``); it is never put
-into the dict returned to the frontend. Unknown/unhandled errors resolve to a
-generic message that points the user at the container logs.
+Main Features:
+* ``classify`` / ``from_exception`` map exception types to registry codes.
+* ``build`` produces one-line, length-bounded messages and ``http_status_for_code`` maps to HTTP.
 """
+
 import logging
 
 from error.error_dictionary import (
@@ -53,12 +58,6 @@ def _one_line(text):
 
 
 def build(code, message=None):
-    """Return the canonical {error_code, error_class, error_message} dict.
-
-    The dict never contains a stack trace. For an unknown/unregistered code the
-    generic message (which points at the container logs) is used and any caller
-    detail is ignored, so unhandled errors never leak specifics to the frontend.
-    """
     resolved_code = code if code in ERROR_REGISTRY else UNKNOWN_ERROR_CODE
     error_class = get_error_class(resolved_code)
     base = get_default_message(resolved_code)
@@ -70,12 +69,6 @@ def build(code, message=None):
 
 
 def classify(exc, default_code=UNKNOWN_ERROR_CODE):
-    """Map an exception to a registry code by type, falling back to default_code.
-
-    Walks the exception's MRO so a subclass of a registered exception (e.g. a
-    custom error inheriting from ConnectionError/OperationalError) is still
-    classified correctly, without importing the third-party classes.
-    """
     if isinstance(exc, AudioMuseError):
         return exc.code
     for cls in type(exc).__mro__:
@@ -85,7 +78,6 @@ def classify(exc, default_code=UNKNOWN_ERROR_CODE):
 
 
 def http_status_for_code(code):
-    """Return the HTTP status a synchronous handler should use for a code."""
     if 1100 <= code < 1200:
         return 502
     if 1000 <= code < 1100:
@@ -96,12 +88,6 @@ def http_status_for_code(code):
 
 
 class AudioMuseError(Exception):
-    """Raised by synchronous code paths that want a structured, coded error.
-
-    ``str(err)`` yields the single-line user-facing message, so it is always safe
-    to display directly. ``cause`` is kept for logging only.
-    """
-
     def __init__(self, code, message=None, cause=None):
         self.code = code if code in ERROR_REGISTRY else UNKNOWN_ERROR_CODE
         self.error_class = get_error_class(self.code)
@@ -122,11 +108,6 @@ class AudioMuseError(Exception):
 
 
 def record(code, message=None, exc=None, logger=None, level=logging.ERROR):
-    """Build the structured error and, when a logger is given, log the full trace.
-
-    Returns the canonical dict. The full traceback only ever reaches the container
-    log (via ``exc_info``); it is never added to the returned dict.
-    """
     err = build(code, message)
     if logger is not None:
         logger.log(
@@ -141,14 +122,6 @@ def record(code, message=None, exc=None, logger=None, level=logging.ERROR):
 
 
 def from_exception(exc, code=None, message=None, logger=None, level=logging.ERROR):
-    """Build a structured error from any exception.
-
-    An ``AudioMuseError`` keeps its own code/class/message. Any other exception is
-    classified by type (or uses ``code`` when supplied); when it resolves to the
-    generic unknown code the exception text is suppressed so only the generic
-    "check the container logs" message reaches the frontend. The full trace goes
-    to ``logger`` (when supplied) and never into the returned dict.
-    """
     if isinstance(exc, AudioMuseError):
         err = exc.to_dict()
         if logger is not None:
@@ -172,8 +145,6 @@ def from_exception(exc, code=None, message=None, logger=None, level=logging.ERRO
 
 
 class ErrorManager:
-    """Convenience facade grouping the module-level helpers."""
-
     AudioMuseError = AudioMuseError
     build = staticmethod(build)
     record = staticmethod(record)

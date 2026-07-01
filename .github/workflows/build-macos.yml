@@ -2,7 +2,7 @@
 # zip to the GitHub release that triggered the run.
 #
 # Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
-# exclusively — there is no Intel build. onnxruntime/PyAV wheels are not
+# exclusively - there is no Intel build. onnxruntime/PyAV wheels are not
 # reliably universal2, so we build natively on an arm64 runner (macos-14).
 #
 # Reproducibility: the small, exact-version native build inputs are committed in
@@ -16,7 +16,7 @@
 #
 # The ~5 GB of models are NOT in git. This workflow assembles ./model from the
 # GitHub releases the Dockerfile uses, INCLUDING the HuggingFace cache
-# (huggingface_models.tar.gz) — native-build/macos/env.py points HF_HOME at model/huggingface
+# (huggingface_models.tar.gz) - native-build/macos/env.py points HF_HOME at model/huggingface
 # for the CLAP RoBERTa tokenizer, so the bundle needs it. The HF cache is then
 # trimmed to just that tokenizer (bert/bart and the roberta weights are unused by
 # the app, ~1.4 GB) so the release zip stays under GitHub's 2 GB asset limit.
@@ -52,7 +52,7 @@ env:
 jobs:
   build:
     # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
-    # Skip draft PRs and fork PRs — the same guard the Docker build workflows use.
+    # Skip draft PRs and fork PRs - the same guard the Docker build workflows use.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&

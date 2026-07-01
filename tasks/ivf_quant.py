@@ -1,20 +1,28 @@
-"""Storage quantization and SIMD distance kernels for the disk-paged IVF index.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Stored cell vectors are quantized to shrink the on-disk / mmap footprint and the
-per-query memory bandwidth: int8 for the scale-invariant ``angular`` (cosine)
-metric -- unit vectors map cleanly to ``[-127, 127]`` -- and float16 for the
-magnitude metrics (``euclidean`` / ``dot``), where int8 would discard the norm.
-Distances are computed directly on the quantized vectors with NumKong's SIMD
-kernels (runtime CPU dispatch: AVX-512 / AVX2 / NEON / scalar), falling back to a
-pure-NumPy path so the index still works on a build without the native library
-(int8 still saves storage/IO there; only the per-scan compute differs).
+"""Vector storage-dtype codec and per-cell distance kernels for the IVF index.
 
-Coarse centroids stay float32 and are ranked in full precision (see
-``PagedIvfIndex._rank_cells``), so cell selection -- and therefore recall -- is
-unaffected by the stored-vector precision. The only accuracy cost is the
-quantization of the final per-candidate distance, which i8 keeps tiny
-(~0.008 on a unit-cosine scale) and f16 keeps near-lossless.
+Low-level helper for tasks.paged_ivf: encodes/decodes stored vectors in the
+storage dtype set by config.IVF_STORAGE_DTYPE (default 'i8'/int8) and computes
+query-to-cell distances directly in that dtype. int8 is the coarse angular-only
+stage (euclidean/dot auto-fall back to f16); 'f16' and 'f32' (no quantization)
+are the other options, with an exact-float32 re-rank overfetch done upstream.
+
+Main Features:
+* dtype_code/name/np_dtype/elem_size and effective_code: map storage-dtype names
+  to codes, with int8 auto-downgraded to f16 for non-angular metrics.
+* encode_vectors / decode_row / prepare_query: f32<->f16<->int8 conversion
+  (int8 scaled by 127, angular queries pre-normalized).
+* cell_distances: angular/euclidean/dot per-cell scan via NumKong native kernels
+  when available, falling back to an equivalent NumPy path otherwise.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,6 +43,7 @@ I8_SCALE = np.float32(127.0)
 
 try:
     import numkong as _nk
+
     HAVE_NUMKONG = True
 except Exception:  # pragma: no cover - exercised only on builds without the wheel
     _nk = None
@@ -58,7 +67,6 @@ def elem_size(code) -> int:
 
 
 def effective_code(requested_code, metric) -> int:
-    """Storage dtype actually used for ``metric`` (i8 -> f16 for non-angular)."""
     code = int(requested_code)
     if code == DTYPE_I8 and (metric or "angular").lower() != "angular":
         return DTYPE_F16
@@ -66,7 +74,6 @@ def effective_code(requested_code, metric) -> int:
 
 
 def encode_vectors(vecs_f32, code) -> np.ndarray:
-    """Quantize a float32 ``(n, dim)`` matrix to the storage dtype."""
     if code == DTYPE_I8:
         scaled = np.rint(np.asarray(vecs_f32, dtype=np.float32) * I8_SCALE)
         return np.clip(scaled, -127, 127).astype(np.int8)
@@ -76,14 +83,12 @@ def encode_vectors(vecs_f32, code) -> np.ndarray:
 
 
 def decode_row(v, code) -> np.ndarray:
-    """Dequantize one stored vector to an OWNED float32 array (never an mmap view)."""
     if code == DTYPE_I8:
         return np.asarray(v, dtype=np.float32) / I8_SCALE
     return np.array(v, dtype=np.float32)
 
 
 def prepare_query(q_f32, code, metric) -> np.ndarray:
-    """Return the query in the stored dtype, ready for :func:`cell_distances`."""
     q = np.asarray(q_f32, dtype=np.float32).reshape(-1)
     if (metric or "angular").lower() == "angular":
         q = q / (float(np.linalg.norm(q)) + 1e-12)
@@ -95,7 +100,6 @@ def prepare_query(q_f32, code, metric) -> np.ndarray:
 
 
 def cell_distances(metric, code, qp, vecs, normalized) -> np.ndarray:
-    """Distances from prepared query ``qp`` to each row of ``vecs`` (smaller = nearer)."""
     if vecs.shape[0] == 0:
         return np.empty(0, dtype=np.float32)
     if code != DTYPE_F32 and HAVE_NUMKONG:
@@ -122,7 +126,11 @@ def _cell_distances_nk(metric, qp, vecs) -> np.ndarray:
 def _cell_distances_np(metric, code, qp, vecs, normalized) -> np.ndarray:
     metric = (metric or "angular").lower()
     q = decode_row(qp, code)
-    v = np.asarray(vecs, dtype=np.float32) if code != DTYPE_I8 else (np.asarray(vecs, dtype=np.float32) / I8_SCALE)
+    v = (
+        np.asarray(vecs, dtype=np.float32)
+        if code != DTYPE_I8
+        else (np.asarray(vecs, dtype=np.float32) / I8_SCALE)
+    )
     if metric == "euclidean":
         diffs = v - q[None, :]
         return np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)

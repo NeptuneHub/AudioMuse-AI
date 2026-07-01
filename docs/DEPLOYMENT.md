@@ -54,7 +54,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
   * Web UI: `http://<EXTERNAL-IP>:8000`
 
 **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
 
 ## Local Deployment with Docker Compose
 
@@ -103,7 +103,7 @@ AudioMuse-AI provides Docker Compose files example:
    Open `http://localhost:8000` in your browser.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
 
 6. **Stop the services:**
    ```bash
@@ -214,7 +214,7 @@ The native Windows package is shipped as a release asset for x86_64 only: a port
   ```
 
 **Important:**
-* The app is unsigned, so Windows SmartScreen may warn on first run — choose "More info" then "Run anyway".
+* The app is unsigned, so Windows SmartScreen may warn on first run - choose "More info" then "Run anyway".
 * The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
 
 **Data and logs:**
@@ -255,7 +255,7 @@ These files are configured to automatically update AudioMuse-AI using the [lates
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
    
 6.  **Stopping the Services:**
     ```bash

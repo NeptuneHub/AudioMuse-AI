@@ -25,7 +25,7 @@ RUN set -ux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        echo "apt-get attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     rm -rf /var/lib/apt/lists/*
@@ -52,7 +52,7 @@ RUN set -eux; \
                 break; \
             fi; \
             n=$((n+1)); \
-            echo "wget attempt $n for $u failed — retrying in $((n*n))s"; \
+            echo "wget attempt $n for $u failed - retrying in $((n*n))s"; \
             sleep $((n*n)); \
         done; \
         if [ "$n" -ge 5 ]; then \
@@ -81,7 +81,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -139,7 +139,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for DCLAP audio model failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -157,7 +157,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for DCLAP audio data failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for DCLAP audio data failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -176,7 +176,7 @@ RUN set -eux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "Download attempt $n for text model failed — retrying in $((n*n))s"; \
+        echo "Download attempt $n for text model failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -208,7 +208,7 @@ RUN set -eux; \
     echo "✓ CLAP models downloaded successfully (arch: $arch)"; \
     ls -lh /app/model/model_epoch_36.onnx /app/model/model_epoch_36.onnx.data "/app/model/$text_model"
 
-# Download Whisper-small ONNX bundle (~570 MB) — HuggingFace optimum export
+# Download Whisper-small ONNX bundle (~570 MB) - HuggingFace optimum export
 # of openai/whisper-small (encoder_model.onnx + decoder_model_merged.onnx +
 # tokenizer files + preprocessor config). Re-hosted on the project's GitHub
 # release for mirror independence. Bundle ships `whisper-small-onnx/` as
@@ -227,7 +227,7 @@ RUN set -eux; \
             echo "✓ whisper bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for whisper bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for whisper bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -250,7 +250,7 @@ RUN set -eux; \
     echo "✓ Whisper-small ONNX model ready in $whisper_dir"; \
     du -sh "$whisper_dir"
 
-# Download silero VAD ONNX (~2 MB) — re-hosted on the project's GitHub release
+# Download silero VAD ONNX (~2 MB) - re-hosted on the project's GitHub release
 # for mirror independence (original source: snakers4/silero-vad). Bundle ships
 # silero_vad.onnx at archive root. Loaded by lyrics/silero_onnx.py via raw
 # onnxruntime.
@@ -267,7 +267,7 @@ RUN set -eux; \
             echo "✓ silero bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for silero bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for silero bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -283,7 +283,7 @@ RUN set -eux; \
     fi; \
     ls -lh "$silero_path"
 
-# Download gte-multilingual-base INT8 ONNX bundle (~325 MB) — multilingual
+# Download gte-multilingual-base INT8 ONNX bundle (~325 MB) - multilingual
 # sentence embedding pre-exported and dynamic-INT8-quantized by this project.
 # Tarball ships the ONNX file flat at the archive root
 # (`gte-multilingual-base-int8.onnx`) plus a sibling `gte-multilingual-base/`
@@ -303,7 +303,7 @@ RUN set -eux; \
             echo "✓ gte bundle downloaded"; break; \
         fi; \
         n=$((n+1)); \
-        echo "wget attempt $n for gte bundle failed — retrying in $((n*n))s"; \
+        echo "wget attempt $n for gte bundle failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     if [ "$n" -ge 5 ]; then \
@@ -326,12 +326,12 @@ RUN set -eux; \
     du -sh "$gte_onnx_path" "$gte_tok_dir"
 
 # ============================================================================
-# Stage 2a: runtime-base — RUNTIME-ONLY system libs (parent of `runner`)
+# Stage 2a: runtime-base - RUNTIME-ONLY system libs (parent of `runner`)
 # ============================================================================
 # This stage holds only what the application needs at run time: shared
 # libraries (.so) that Python wheels load, plus the small set of CLI tools
 # the entrypoint / supervisord / debugging rely on. It deliberately omits
-# compilers and -dev headers — those live in the `base` stage below, which
+# compilers and -dev headers - those live in the `base` stage below, which
 # is used solely to build Python wheels in the `libraries` stage and never
 # becomes a parent of `runner`.
 #
@@ -369,7 +369,7 @@ RUN set -ux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        echo "apt-get attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     rm -rf /var/lib/apt/lists/* && \
@@ -378,10 +378,10 @@ RUN set -ux; \
     rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED
 
 # ============================================================================
-# Stage 2b: base — runtime-base + compilers / -dev headers (BUILD-ONLY)
+# Stage 2b: base - runtime-base + compilers / -dev headers (BUILD-ONLY)
 # ============================================================================
 # Adds the toolchain needed to compile Python wheels (psycopg2, essentia,
-# numpy/scipy fallbacks, etc.). Parent of `libraries` only — `runner`
+# numpy/scipy fallbacks, etc.). Parent of `libraries` only - `runner`
 # branches off `runtime-base`, so gcc/g++/python3-dev and the -dev headers
 # never reach the final published image.
 FROM runtime-base AS base
@@ -407,7 +407,7 @@ RUN set -ux; \
             break; \
         fi; \
         n=$((n+1)); \
-        echo "apt-get attempt $n failed — retrying in $((n*n))s"; \
+        echo "apt-get attempt $n failed - retrying in $((n*n))s"; \
         sleep $((n*n)); \
     done; \
     rm -rf /var/lib/apt/lists/*

@@ -1,14 +1,22 @@
-# test/unit/test_ivf_manager.py
-"""
-Unit tests for tasks/ivf_manager.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Tests cover:
-- Distance calculation functions (Euclidean and Cosine)
-- String normalization and song comparison
-- Mood feature parsing
-- Vector caching
-- Deduplication logic
-- Index loading and querying
+"""Distance math, index loading, and lookups in ivf_manager.
+
+Covers direct distance functions, string/mood parsing, cached-vector priming,
+IVF index load/query guards, playlist creation, search, and the result cache.
+
+Main Features:
+* Euclidean/cosine/direct distance including None, zero, and dtype edge cases
+* String normalization, same-song matching, and mood-feature parsing
+* Vector lookup prefers primed f32 over the index; load and neighbor queries raise
+  when the index or id maps are unloaded
+* create_playlist_from_ids error paths and the LRU/TTL _ResultCache behavior
 """
 
 import pytest
@@ -16,294 +24,232 @@ import numpy as np
 from unittest.mock import Mock, patch
 
 
-# =============================================================================
-# DISTANCE CALCULATION TESTS - Pure functions, no mocking needed
-# =============================================================================
-
 class TestDirectEuclideanDistance:
-    """Test Euclidean distance calculation"""
-
     def test_identical_vectors_return_zero(self):
-        """Identical vectors should have distance 0"""
         from tasks.ivf_manager import _get_direct_euclidean_distance
-        
+
         v1 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         v2 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        
+
         dist = _get_direct_euclidean_distance(v1, v2)
-        
+
         assert dist == 0.0
 
     def test_known_distance(self):
-        """Test with known Euclidean distance"""
         from tasks.ivf_manager import _get_direct_euclidean_distance
-        
+
         v1 = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         v2 = np.array([3.0, 4.0, 0.0], dtype=np.float32)
-        
+
         dist = _get_direct_euclidean_distance(v1, v2)
-        
-        # sqrt(3^2 + 4^2) = 5
+
         assert abs(dist - 5.0) < 1e-5
 
     def test_none_vector_returns_inf(self):
-        """None vectors should return infinity"""
         from tasks.ivf_manager import _get_direct_euclidean_distance
-        
+
         v1 = np.array([1.0, 2.0], dtype=np.float32)
-        
+
         assert _get_direct_euclidean_distance(None, v1) == float('inf')
         assert _get_direct_euclidean_distance(v1, None) == float('inf')
         assert _get_direct_euclidean_distance(None, None) == float('inf')
 
     def test_handles_different_dtypes(self):
-        """Should handle different numpy dtypes"""
         from tasks.ivf_manager import _get_direct_euclidean_distance
-        
+
         v1 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         v2 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        
+
         dist = _get_direct_euclidean_distance(v1, v2)
-        
+
         assert dist == 0.0
 
 
 class TestDirectCosineDistance:
-    """Test Cosine distance calculation (1 - cosine_similarity)"""
-
     def test_identical_vectors_return_zero(self):
-        """Identical vectors should have cosine distance 0"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         v2 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        
+
         dist = _get_direct_cosine_distance(v1, v2)
-        
-        assert abs(dist) < 1e-5  # Should be ~0
+
+        assert abs(dist) < 1e-5
 
     def test_orthogonal_vectors_return_one(self):
-        """Orthogonal vectors should have cosine distance 1"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([1.0, 0.0], dtype=np.float32)
         v2 = np.array([0.0, 1.0], dtype=np.float32)
-        
+
         dist = _get_direct_cosine_distance(v1, v2)
-        
+
         assert abs(dist - 1.0) < 1e-5
 
     def test_opposite_vectors_return_two(self):
-        """Opposite vectors should have cosine distance 2"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([1.0, 0.0], dtype=np.float32)
         v2 = np.array([-1.0, 0.0], dtype=np.float32)
-        
+
         dist = _get_direct_cosine_distance(v1, v2)
-        
+
         assert abs(dist - 2.0) < 1e-5
 
     def test_none_vector_returns_inf(self):
-        """None vectors should return infinity"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([1.0, 2.0], dtype=np.float32)
-        
+
         assert _get_direct_cosine_distance(None, v1) == float('inf')
         assert _get_direct_cosine_distance(v1, None) == float('inf')
 
     def test_zero_vector_returns_inf(self):
-        """Zero vector should return infinity (division by zero)"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([0.0, 0.0], dtype=np.float32)
         v2 = np.array([1.0, 1.0], dtype=np.float32)
-        
+
         dist = _get_direct_cosine_distance(v1, v2)
-        
+
         assert dist == float('inf')
 
     def test_parallel_vectors_different_magnitude(self):
-        """Parallel vectors with different magnitudes should have distance ~0"""
         from tasks.ivf_manager import _get_direct_cosine_distance
-        
+
         v1 = np.array([1.0, 1.0], dtype=np.float32)
         v2 = np.array([10.0, 10.0], dtype=np.float32)
-        
+
         dist = _get_direct_cosine_distance(v1, v2)
-        
-        assert abs(dist) < 1e-5  # Same direction = similar
+
+        assert abs(dist) < 1e-5
 
 
 class TestGetDirectDistance:
-    """Test the public distance helper that picks metric based on config"""
-
     @patch('tasks.ivf_manager.IVF_METRIC', 'angular')
     def test_uses_cosine_for_angular_metric(self):
-        """Should use cosine distance when metric is 'angular'"""
         from tasks.ivf_manager import get_direct_distance
-        
+
         v1 = np.array([1.0, 0.0], dtype=np.float32)
         v2 = np.array([0.0, 1.0], dtype=np.float32)
-        
+
         dist = get_direct_distance(v1, v2)
-        
-        # Orthogonal vectors have cosine distance = 1
+
         assert abs(dist - 1.0) < 1e-5
 
     @patch('tasks.ivf_manager.IVF_METRIC', 'euclidean')
     def test_uses_euclidean_for_euclidean_metric(self):
-        """Should use Euclidean distance when metric is 'euclidean'"""
         from tasks.ivf_manager import get_direct_distance
-        
+
         v1 = np.array([0.0, 0.0], dtype=np.float32)
         v2 = np.array([3.0, 4.0], dtype=np.float32)
-        
+
         dist = get_direct_distance(v1, v2)
-        
-        # sqrt(3^2 + 4^2) = 5
+
         assert abs(dist - 5.0) < 1e-5
 
 
-# =============================================================================
-# STRING NORMALIZATION AND COMPARISON TESTS
-# =============================================================================
-
 class TestNormalizeString:
-    """Test string normalization for song comparison"""
-
     def test_lowercase_and_strip(self):
-        """Should lowercase and strip whitespace"""
         from tasks.ivf_manager import _normalize_string
-        
+
         assert _normalize_string("  Hello World  ") == "hello world"
         assert _normalize_string("UPPERCASE") == "uppercase"
         assert _normalize_string("  mixed CASE  ") == "mixed case"
 
     def test_empty_string(self):
-        """Should handle empty strings"""
         from tasks.ivf_manager import _normalize_string
-        
+
         assert _normalize_string("") == ""
         assert _normalize_string("   ") == ""
 
     def test_none_returns_empty(self):
-        """Should handle None"""
         from tasks.ivf_manager import _normalize_string
-        
+
         assert _normalize_string(None) == ""
 
 
 class TestIsSameSong:
-    """Test song comparison logic"""
-
     def test_exact_match(self):
-        """Exact match should return True"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("Song Title", "Artist", "Song Title", "Artist") is True
 
     def test_case_insensitive_match(self):
-        """Case-insensitive match should return True"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("SONG TITLE", "ARTIST", "song title", "artist") is True
         assert _is_same_song("Song Title", "Artist Name", "song title", "artist name") is True
 
     def test_whitespace_insensitive(self):
-        """Whitespace differences should still match"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("  Song Title  ", "  Artist  ", "Song Title", "Artist") is True
 
     def test_different_title_returns_false(self):
-        """Different titles should return False"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("Song A", "Artist", "Song B", "Artist") is False
 
     def test_different_artist_returns_false(self):
-        """Different artists should return False"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("Song", "Artist A", "Song", "Artist B") is False
 
     def test_empty_fields(self):
-        """Empty fields should be handled"""
         from tasks.ivf_manager import _is_same_song
-        
+
         assert _is_same_song("", "", "", "") is True
         assert _is_same_song("Song", "", "Song", "") is True
         assert _is_same_song("", "Artist", "", "Artist") is True
 
 
-# =============================================================================
-# MOOD FEATURE PARSING TESTS
-# =============================================================================
-
 class TestParseMoodFeatures:
-    """Test mood feature string parsing"""
-
     def test_parses_valid_format(self):
-        """Should parse comma-separated key:value pairs"""
         from tasks.ivf_manager import _parse_mood_features
-        
+
         features_str = "danceable:0.5,aggressive:0.2,happy:0.8"
-        
+
         result = _parse_mood_features(features_str)
-        
+
         assert result['danceable'] == 0.5
         assert result['aggressive'] == 0.2
         assert result['happy'] == 0.8
 
     def test_handles_whitespace(self):
-        """Should handle whitespace around keys and values"""
         from tasks.ivf_manager import _parse_mood_features
-        
+
         features_str = " danceable : 0.5 , aggressive : 0.2 "
-        
+
         result = _parse_mood_features(features_str)
-        
+
         assert result['danceable'] == 0.5
         assert result['aggressive'] == 0.2
 
     def test_empty_string_returns_empty_dict(self):
-        """Empty string should return empty dict"""
         from tasks.ivf_manager import _parse_mood_features
-        
+
         result = _parse_mood_features("")
-        
+
         assert result == {}
 
     def test_invalid_format_returns_empty_dict(self):
-        """Invalid format should return empty dict without crashing"""
         from tasks.ivf_manager import _parse_mood_features
-        
-        # Missing colon
+
         result = _parse_mood_features("danceable0.5")
         assert result == {}
 
     def test_non_numeric_value_returns_empty(self):
-        """Non-numeric values should cause empty dict return"""
         from tasks.ivf_manager import _parse_mood_features
-        
+
         result = _parse_mood_features("danceable:notanumber")
-        
-        # Should fail gracefully
+
         assert result == {}
 
 
-# =============================================================================
-# VECTOR CACHING TESTS
-# =============================================================================
-
 class TestGetVectorById:
-    """Test vector retrieval by item ID"""
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_returns_none_when_index_not_loaded(self):
-        """Should return None if index not loaded"""
         from tasks.ivf_manager import get_vector_by_id
 
         result = get_vector_by_id('some-item-id')
@@ -313,7 +259,6 @@ class TestGetVectorById:
     @patch('tasks.ivf_manager.reverse_id_map', {'item-123': 0})
     @patch('tasks.ivf_manager.ivf_index')
     def test_returns_vector_when_found(self, mock_index):
-        """Should return vector when item exists"""
         from tasks.ivf_manager import _get_cached_vector
 
         expected_vector = np.array([1.0, 2.0, 3.0], dtype=np.float32)
@@ -327,7 +272,6 @@ class TestGetVectorById:
     @patch('tasks.ivf_manager.reverse_id_map', {})
     @patch('tasks.ivf_manager.ivf_index', Mock())
     def test_returns_none_when_item_not_in_map(self):
-        """Should return None if item not in reverse_id_map"""
         from tasks.ivf_manager import _get_cached_vector
 
         result = _get_cached_vector('unknown-item')
@@ -335,48 +279,40 @@ class TestGetVectorById:
         assert result is None
 
     def test_prefers_primed_exact_f32_over_index_int8(self):
-        """The per-request exact-f32 cache must win over the int8 index vector."""
         import tasks.ivf_manager as im
 
         exact = np.array([0.1, 0.2, 0.3], dtype=np.float32)
         mock_index = Mock()
         mock_index.get_vector.return_value = np.array([9.0, 9.0, 9.0], dtype=np.float32)
-        with patch.object(im, 'ivf_index', mock_index), patch.object(im, 'reverse_id_map', {'item-123': 0}):
+        with (
+            patch.object(im, 'ivf_index', mock_index),
+            patch.object(im, 'reverse_id_map', {'item-123': 0}),
+        ):
             im._prime_request_f32({'item-123': exact})
             try:
                 np.testing.assert_array_equal(im._get_cached_vector('item-123'), exact)
                 mock_index.get_vector.assert_not_called()
             finally:
                 im._clear_request_f32()
-            # after clearing the request cache, it falls back to the index (int8) vector
             np.testing.assert_array_equal(
                 im._get_cached_vector('item-123'), np.array([9.0, 9.0, 9.0], dtype=np.float32)
             )
 
 
-# =============================================================================
-# INDEX LOADING TESTS
-# =============================================================================
-
 class TestLoadIVFIndex:
-    """Test IVF index loading from database"""
-
     @patch('tasks.ivf_manager.ivf_index', Mock())
     def test_skips_reload_if_already_loaded(self):
-        """Should skip reload if index already in memory"""
         from tasks.ivf_manager import load_ivf_index_for_querying
-        
+
         with patch('app_helper.get_db') as mock_get_db:
             load_ivf_index_for_querying(force_reload=False)
-            
-            # get_db should not be called if index already loaded
+
             mock_get_db.assert_not_called()
 
     @patch('tasks.ivf_manager.ivf_index', None)
     @patch('tasks.ivf_manager.id_map', None)
     @patch('tasks.ivf_manager.reverse_id_map', None)
     def test_loads_index_from_database(self):
-        """Should load the IVF index from database when not in memory"""
         import tasks.ivf_manager as vm
 
         with patch('app_helper.get_db') as mock_get_db:
@@ -386,6 +322,7 @@ class TestLoadIVFIndex:
                 mock_load.return_value = (mock_index, {0: 'item-1'}, {'item-1': 0})
 
                 from tasks.ivf_manager import load_ivf_index_for_querying
+
                 load_ivf_index_for_querying(force_reload=True)
 
                 mock_load.assert_called_once()
@@ -394,41 +331,31 @@ class TestLoadIVFIndex:
     @patch('tasks.ivf_manager.ivf_index', None)
     @patch('tasks.ivf_manager.id_map', None)
     def test_handles_missing_index_gracefully(self):
-        """Should handle missing index in database"""
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
-            mock_cursor.fetchone.return_value = None  # No index found
-            
+            mock_cursor.fetchone.return_value = None
+
             from tasks.ivf_manager import load_ivf_index_for_querying
-            
-            # Should not raise
+
             load_ivf_index_for_querying(force_reload=True)
 
 
-# =============================================================================
-# NEIGHBOR SEARCH TESTS
-# =============================================================================
-
 class TestFindNearestNeighborsById:
-    """Test nearest neighbor search functionality"""
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_raises_when_index_not_loaded(self):
-        """Should raise RuntimeError if index not loaded"""
         from tasks.ivf_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             find_nearest_neighbors_by_id('item-123', n=10)
 
     @patch('tasks.ivf_manager.ivf_index', Mock())
     @patch('tasks.ivf_manager.id_map', None)
     def test_raises_when_id_map_not_loaded(self):
-        """Should raise RuntimeError if id_map not loaded"""
         from tasks.ivf_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             find_nearest_neighbors_by_id('item-123', n=10)
 
@@ -436,97 +363,78 @@ class TestFindNearestNeighborsById:
     @patch('tasks.ivf_manager.id_map', {0: 'item-1'})
     @patch('tasks.ivf_manager.reverse_id_map', None)
     def test_raises_when_reverse_id_map_not_loaded(self):
-        """Should raise RuntimeError if reverse_id_map not loaded"""
         from tasks.ivf_manager import find_nearest_neighbors_by_id
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             find_nearest_neighbors_by_id('item-123', n=10)
 
 
 class TestFindNearestNeighborsByVector:
-    """Test nearest neighbor search by vector"""
-
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_raises_when_index_not_loaded(self):
-        """Should raise RuntimeError if index not loaded"""
         from tasks.ivf_manager import find_nearest_neighbors_by_vector
-        
+
         query_vec = np.array([1.0, 2.0], dtype=np.float32)
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             find_nearest_neighbors_by_vector(query_vec, n=10)
 
     @patch('tasks.ivf_manager.ivf_index', Mock())
     @patch('tasks.ivf_manager.id_map', None)
     def test_raises_when_id_map_not_loaded(self):
-        """Should raise RuntimeError if id_map not loaded"""
         from tasks.ivf_manager import find_nearest_neighbors_by_vector
-        
+
         query_vec = np.array([1.0, 2.0], dtype=np.float32)
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             find_nearest_neighbors_by_vector(query_vec, n=10)
 
 
-# =============================================================================
-# PLAYLIST CREATION TESTS
-# =============================================================================
-
 class TestCreatePlaylistFromIds:
-    """Test playlist creation functionality"""
-
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_calls_mediaserver_create_playlist(self, mock_create):
-        """Should call mediaserver create_instant_playlist"""
         from tasks.ivf_manager import create_playlist_from_ids
-        
+
         mock_create.return_value = {'Id': 'playlist-123', 'Name': 'Test Playlist'}
-        
+
         result = create_playlist_from_ids('Test Playlist', ['track-1', 'track-2'])
-        
+
         assert result == 'playlist-123'
-        mock_create.assert_called_once_with('Test Playlist', ['track-1', 'track-2'], user_creds=None)
+        mock_create.assert_called_once_with(
+            'Test Playlist', ['track-1', 'track-2'], user_creds=None
+        )
 
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_raises_on_creation_failure(self, mock_create):
-        """Should raise exception if playlist creation fails"""
         from tasks.ivf_manager import create_playlist_from_ids
-        
+
         mock_create.return_value = None
-        
+
         with pytest.raises(Exception, match="Playlist creation failed"):
             create_playlist_from_ids('Test Playlist', ['track-1'])
 
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_raises_on_missing_playlist_id(self, mock_create):
-        """Should raise exception if response has no Id"""
         from tasks.ivf_manager import create_playlist_from_ids
-        
-        mock_create.return_value = {'Name': 'Test'}  # Missing 'Id'
-        
+
+        mock_create.return_value = {'Name': 'Test'}
+
         with pytest.raises(Exception, match="did not include a playlist ID"):
             create_playlist_from_ids('Test Playlist', ['track-1'])
 
     @patch('tasks.mediaserver.create_instant_playlist')
     def test_passes_user_credentials(self, mock_create):
-        """Should pass user credentials to mediaserver"""
         from tasks.ivf_manager import create_playlist_from_ids
-        
+
         mock_create.return_value = {'Id': 'playlist-123'}
         user_creds = {'user_id': 'user1', 'token': 'token123'}
-        
+
         create_playlist_from_ids('Test', ['track-1'], user_creds=user_creds)
-        
+
         mock_create.assert_called_once_with('Test', ['track-1'], user_creds=user_creds)
 
 
-# =============================================================================
-# SEARCH TESTS
-# =============================================================================
-
 class TestSearchTracksByTitleAndArtist:
-    """Test track search functionality"""
-
     def test_search_with_single_keyword(self):
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
@@ -542,20 +450,15 @@ class TestSearchTracksByTitleAndArtist:
 
             results = search_tracks_unified("test", limit=10)
 
-            # Verify query was executed
             mock_cursor.execute.assert_called_once()
 
             query, params = mock_cursor.execute.call_args[0]
-            # WHERE must include one LIKE condition
             assert query.count("search_u LIKE") == 1
             assert "AND search_u LIKE" not in query
-            # Ranking should include one block
             assert query.count("CASE WHEN lower(unaccent(title))") == 1
             assert query.count("CASE WHEN lower(unaccent(author))") == 1
             assert query.count("CASE WHEN lower(unaccent(album))") == 1
-            # Keywords must be wrapped correctly
             assert "%test%" in params
-            # Both items should be returned as they match in either title or author
             assert len(results) == 2
             assert {r['item_id'] for r in results} == {"item-1", "item-2"}
 
@@ -574,83 +477,66 @@ class TestSearchTracksByTitleAndArtist:
 
             results = search_tracks_unified("test song", limit=10)
 
-            # Verify query was executed
             mock_cursor.execute.assert_called_once()
 
             query, params = mock_cursor.execute.call_args[0]
-            # WHERE must include two LIKE conditions
             assert query.count("search_u LIKE") == 2
             assert query.count("AND search_u LIKE") == 1
-            # Ranking should include two block
             assert query.count("CASE WHEN lower(unaccent(title))") == 2
             assert query.count("CASE WHEN lower(unaccent(author))") == 2
             assert query.count("CASE WHEN lower(unaccent(album))") == 2
-            # Keywords must be wrapped correctly
             assert "%test%" in params
             assert "%song%" in params
-            # Both items should be returned as all keywords match in title or author
             assert len(results) == 2
             assert {r['item_id'] for r in results} == {"item-1", "item-2"}
 
     def test_returns_empty_for_no_query(self):
-        """Should return empty list when no search terms"""
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
-            
+
             from tasks.ivf_manager import search_tracks_unified
-            
+
             results = search_tracks_unified('')
-            
+
             assert results == []
 
 
 class TestGetItemIdByTitleAndArtist:
-    """Test item ID lookup by title/artist"""
-
     def test_finds_exact_match(self):
-        """Should find item with exact title/artist match"""
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchone.return_value = {'item_id': 'found-item'}
-            
+
             from tasks.ivf_manager import get_item_id_by_title_and_artist
-            
+
             result = get_item_id_by_title_and_artist('Song Title', 'Artist Name')
-            
+
             assert result == 'found-item'
 
     def test_returns_none_when_not_found(self):
-        """Should return None when no match found"""
         with patch('app_helper.get_db') as mock_get_db:
             mock_conn = Mock()
             mock_cursor = Mock()
             mock_get_db.return_value = mock_conn
             mock_conn.cursor.return_value = mock_cursor
             mock_cursor.fetchone.return_value = None
-            
+
             from tasks.ivf_manager import get_item_id_by_title_and_artist
-            
+
             result = get_item_id_by_title_and_artist('Unknown', 'Unknown')
-            
+
             assert result is None
 
 
-# =============================================================================
-# CLEANUP TESTS
-# =============================================================================
-
 class TestCleanupResources:
-    """Test resource cleanup functionality"""
-
     @patch('tasks.ivf_manager._shutdown_thread_pool')
     def test_shuts_down_pool(self, mock_shutdown):
-        """Should shutdown the thread pool"""
         from tasks.ivf_manager import cleanup_resources
 
         cleanup_resources()
@@ -658,24 +544,18 @@ class TestCleanupResources:
         mock_shutdown.assert_called_once()
 
 
-# =============================================================================
-# MAX DISTANCE TESTS
-# =============================================================================
-
 class TestGetMaxDistanceForId:
-    """Test max distance calculation"""
-
     @pytest.fixture(autouse=True)
     def _clear_max_distance_cache(self):
         from tasks.ivf_manager import _max_distance_cache
+
         _max_distance_cache.clear()
         yield
 
     @patch('tasks.ivf_manager.ivf_index', None)
     def test_raises_when_index_not_loaded(self):
-        """Should raise RuntimeError if index not loaded"""
         from tasks.ivf_manager import get_max_distance_for_id
-        
+
         with pytest.raises(RuntimeError, match="IVF index is not loaded"):
             get_max_distance_for_id('item-123')
 
@@ -683,7 +563,6 @@ class TestGetMaxDistanceForId:
     @patch('tasks.ivf_manager.id_map', {0: 'item-1', 1: 'item-2', 2: 'item-3'})
     @patch('tasks.ivf_manager.reverse_id_map', {'item-1': 0, 'item-2': 1, 'item-3': 2})
     def test_finds_farthest_item(self, mock_index):
-        """Should find the farthest item from target"""
         mock_index.get_max_distance.return_value = (1.5, 2)
         mock_index.__len__ = Mock(return_value=3)
 
@@ -698,7 +577,6 @@ class TestGetMaxDistanceForId:
     @patch('tasks.ivf_manager.id_map', {0: 'item-1'})
     @patch('tasks.ivf_manager.reverse_id_map', {'item-1': 0})
     def test_single_item_index(self, mock_index):
-        """Should handle single-item index"""
         mock_index.get_max_distance.return_value = (0.0, None)
         mock_index.__len__ = Mock(return_value=1)
 
@@ -713,7 +591,6 @@ class TestGetMaxDistanceForId:
     @patch('tasks.ivf_manager.id_map', {})
     @patch('tasks.ivf_manager.reverse_id_map', {})
     def test_unknown_item_returns_none(self, mock_index):
-        """Should return None for unknown item"""
         from tasks.ivf_manager import get_max_distance_for_id
 
         result = get_max_distance_for_id('unknown-item')
@@ -721,15 +598,10 @@ class TestGetMaxDistanceForId:
         assert result is None
 
 
-# =============================================================================
-# RESULT CACHE TESTS - TTL + LRU memoization of computed query results
-# =============================================================================
-
 class TestResultCache:
-    """Test the _ResultCache used to make repeated identical queries instant."""
-
     def test_lru_eviction_and_clear(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(100, 2)
         c.put("a", 1)
         c.put("b", 2)
@@ -743,6 +615,7 @@ class TestResultCache:
     def test_ttl_expiry(self):
         import time
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0.05, 10)
         c.put("k", 42)
         assert c.get("k") == 42
@@ -752,6 +625,7 @@ class TestResultCache:
     def test_sweep_expired_drops_only_expired_entries(self):
         import time
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0.05, 10)
         c.put("old", 1)
         time.sleep(0.1)
@@ -762,11 +636,13 @@ class TestResultCache:
 
     def test_sweep_expired_noop_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0, 10)
         c.sweep_expired()
 
     def test_disabled_when_ttl_zero(self):
         from tasks.ivf_manager import _ResultCache
+
         c = _ResultCache(0, 10)
         c.put("k", 1)
         assert c.get("k") is None

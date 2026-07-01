@@ -1,10 +1,28 @@
-#AudioMuse-AI/config.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Single source of truth for environment-variable-driven configuration.
+
+Reads every tunable from ``os.environ`` at import time and exposes it as a
+module-level constant with a baked-in default, so other modules import the
+resolved value instead of re-reading the environment or re-specifying defaults.
+
+Main Features:
+* Centralizes app/media-server/database/Redis/task and index defaults in one place.
+* Keeps the section and per-parameter comments that document each setting.
+* At import, ``_apply_db_overrides`` layers persisted setup-wizard values from the
+  DB over the env defaults (skipping Redis/Postgres/admin/precomputed keys).
+"""
+
 import os
 import tempfile
 
 # --- Task Status Constants ---
-# These are used across the application for task tracking. Placed here so they're
-# available everywhere without creating import chains.
 TASK_STATUS_PENDING = 'PENDING'
 TASK_STATUS_STARTED = 'STARTED'
 TASK_STATUS_PROGRESS = 'PROGRESS'
@@ -108,7 +126,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
     'AUDIOMUSE_PASSWORD',
-    # Computed numpy/precomputed constants — persisting them through
+    # Computed numpy/precomputed constants - persisting them through
     # setup_manager would stringify the ndarray ("[1. 0. 0. ...]") and
     # corrupt the value on reload (cast_value can't reverse str(ndarray)).
     'LYRICS_INSTRUMENTAL_EMBEDDING',
@@ -116,7 +134,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.3.3"
+APP_VERSION = "v2.3.4"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -173,7 +191,7 @@ SPECTRAL_N_NEIGHBORS = int(os.getenv("SPECTRAL_N_NEIGHBORS", "20"))
 # --- PCA Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for PCA components
 PCA_COMPONENTS_MIN = int(os.getenv("PCA_COMPONENTS_MIN", "0")) # 0 to disable PCA
-PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max components for PCA 8 for score vectore, 199 for embeding
+PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max components for PCA 8 for score vector, 199 for embedding
 
 # --- Clustering Runs for Diversity (New Constant) ---
 CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 100 runs for evolutionary search
@@ -273,7 +291,7 @@ OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(os.environ.get("OTHER_FE
 
 # --- AI Playlist Naming ---
 # USE_AI_PLAYLIST_NAMING is replaced by AI_MODEL_PROVIDER
-OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate") # URL for your Ollama instance
+OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate") # URL for your Ollama instance
 OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "qwen3.5:9b") # Ollama model to use
 
 # Maximum number of songs to include in AI naming prompts (to avoid token limit issues)
@@ -281,7 +299,7 @@ OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "qwen3.5:9b") # Ollama m
 MAX_SONGS_IN_AI_PROMPT = int(os.environ.get("MAX_SONGS_IN_AI_PROMPT", "25"))
 
 # OpenAI API (also used for OpenRouter) - uses same API standard as Ollama
-OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate"))
+OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate"))
 OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
@@ -381,8 +399,8 @@ LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
 LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
 # Beam search width for the Whisper-small ASR decoder. 1 = pure greedy
 # (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
-# attractors at ~2× greedy cost), 5 = Whisper-upstream default (max
-# quality, ~5× cost). Each extra beam adds one decoder.run per generated
+# attractors at ~2x greedy cost), 5 = Whisper-upstream default (max
+# quality, ~5x cost). Each extra beam adds one decoder.run per generated
 # token plus its own KV cache (~30-80 MB at a full 30 s chunk).
 LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
 LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
@@ -416,8 +434,8 @@ LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "7
 # Minimum number of CHARACTERS (not words) a transcript must have for the
 # lyrics pipeline to compute an embedding. Below this, the song is treated
 # as having no usable lyrics and gets the instrumental sentinel. Char-based
-# instead of word-based so CJK / Thai / Lao scripts — which have no spaces
-# between words — aren't all collapsed to "1 word" by str.split() and
+# instead of word-based so CJK / Thai / Lao scripts - which have no spaces
+# between words - aren't all collapsed to "1 word" by str.split() and
 # spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
 # or ~150 CJK chars (roughly equivalent lyrical content).
 LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
@@ -433,7 +451,7 @@ LYRICS_TEXT_MAX_COMPRESSION_RATIO = float(os.environ.get("LYRICS_TEXT_MAX_COMPRE
 # real lyrics. Below this the lyrics are dropped to the instrumental sentinel rather
 # than let unidentifiable junk (garbled API responses, mojibake, filler) pollute the
 # embedding (issue #543). Embedding is multilingual now, so this is purely a quality
-# gate — no translation is performed.
+# gate - no translation is performed.
 LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
 # Minimum fraction of letters that must be CJK script (Hangul / kana / Han) for the
 # lyrics to be treated as genuine CJK regardless of what langdetect reports. Code-mixed
@@ -444,7 +462,7 @@ LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", 
 LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
 # Maximum number of tokens fed to the gte-multilingual-base embedding model per
 # track. The model supports up to 8192; lyrics are truncated here (default 512,
-# roughly a full song — ~500 tokens for English, fewer characters for CJK which
+# roughly a full song - ~500 tokens for English, fewer characters for CJK which
 # fragments into more tokens). Higher values embed more of long songs at extra
 # CPU cost. Changing this alters the embeddings, so re-embed (drop the lyrics
 # tables) afterwards for consistency.
@@ -585,10 +603,14 @@ IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))  # Ma
 IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))  # Farthest cells probed for the max-distance display value (reverse-IVF); 0 or >= nlist = exact full scan
 IVF_DISK_CACHE_ENABLED = os.environ.get("IVF_DISK_CACHE_ENABLED", "true").lower() == "true"  # Export each index's cells to a local file at load and serve queries via mmap (OS page cache), instead of reading from Postgres per query; false = read from Postgres
 IVF_DISK_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_DISK_CACHE_IDLE_SECONDS", "300"))  # Drop the resident (RSS) pages of every disk-cache mmap after this many seconds with no query (MADV_DONTNEED; mapping stays, next query re-faults from disk); frees idle RAM; 0 = never drop
-IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or (
-    os.path.join(APP_DATA_DIR, "ivf_cache") if APP_DATA_DIR
-    else ("/app/ivf_cache" if os.path.isdir("/app") else os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache"))
-)  # Local dir for the mmap cell files: native build data dir, else /app/ivf_cache in containers, else a temp dir
+# Local dir for the mmap cell files: native build data dir, else /app/ivf_cache in containers, else a temp dir
+if APP_DATA_DIR:
+    _ivf_disk_cache_default = os.path.join(APP_DATA_DIR, "ivf_cache")
+elif os.path.isdir("/app"):
+    _ivf_disk_cache_default = "/app/ivf_cache"
+else:
+    _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
+IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -658,7 +680,7 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
 # Max tracks a single album may contribute to the seed pool, so one large album
-# (e.g. a 100+ track DJ mix) cannot dominate the fingerprint — see issue #603.
+# (e.g. a 100+ track DJ mix) cannot dominate the fingerprint - see issue #603.
 SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
 SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(

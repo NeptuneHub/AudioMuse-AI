@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""macOS packaging steps for the standalone build.
+
+Platform module invoked by ``build.py`` to stage the macOS ``.app``: it
+generates the ``.icns`` icon, ad-hoc code-signs the nested binaries and dylibs,
+and assembles the distributable with the unsigned-app authorization README.
+The Linux/Windows modules are the platform-specific siblings.
+
+Main Features:
+* Generates icons and ad-hoc signs bundled binaries (redis, postgres, dylibs).
+* Ships a README instructing users to clear the quarantine xattr on the app.
+"""
+
 import os
 import subprocess
 
@@ -25,8 +45,16 @@ def _sign_nested(app, entitlements):
         for name in files:
             if name.endswith(_SIGN_SUFFIXES) or name in _SIGN_NAMES:
                 subprocess.run(
-                    ["codesign", "--force", "--timestamp=none", "--sign", "-",
-                     "--entitlements", entitlements, os.path.join(root, name)],
+                    [
+                        "codesign",
+                        "--force",
+                        "--timestamp=none",
+                        "--sign",
+                        "-",
+                        "--entitlements",
+                        entitlements,
+                        os.path.join(root, name),
+                    ],
                     stderr=subprocess.DEVNULL,
                 )
 
@@ -39,8 +67,17 @@ def package(ctx):
 
     print("==> Ad-hoc signing the bundle")
     subprocess.run(
-        ["codesign", "--force", "--deep", "--timestamp=none", "--sign", "-",
-         "--entitlements", entitlements, str(app)],
+        [
+            "codesign",
+            "--force",
+            "--deep",
+            "--timestamp=none",
+            "--sign",
+            "-",
+            "--entitlements",
+            entitlements,
+            str(app),
+        ],
         check=True,
     )
 
@@ -52,7 +89,12 @@ def package(ctx):
     subprocess.run(["rm", "-rf", str(stage)], check=True)
     stage.mkdir(parents=True)
     staged_app = stage / "AudioMuse-AI.app"
-    if subprocess.run(["cp", "-cR", str(app), str(staged_app)], stderr=subprocess.DEVNULL).returncode != 0:
+    if (
+        subprocess.run(
+            ["cp", "-cR", str(app), str(staged_app)], stderr=subprocess.DEVNULL
+        ).returncode
+        != 0
+    ):
         subprocess.run(["ditto", str(app), str(staged_app)], check=True)
     (stage / "readme.md").write_text(_README)
 

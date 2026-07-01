@@ -1,20 +1,22 @@
-"""Real-Postgres integration tests for the read endpoints.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Drives the actual external_bp / waveform_bp blueprints against a live database
-seeded with a real ``score`` / ``embedding`` layout. Beyond happy-path lookups,
-it proves the SQL-injection regression at the database level: an item id full of
-SQL metacharacters returns 404 and leaves the ``score`` table intact, which a
-mocked cursor cannot demonstrate.
+"""Endpoint tests against a real seeded Postgres database.
 
-Database selection mirrors test_provider_migration_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
+Spins up an ephemeral Postgres (or a supplied DSN), seeds the score and
+embedding tables, and drives the score, embedding, and waveform lookup
+endpoints through their real DB queries.
 
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_app_endpoints_integration.py -m integration -s -v --tb=short
+Main Features:
+* Seeded lookups return rows and missing ids return 404.
+* Injection-style item ids are handled safely via parameterized SQL.
 """
+
 import os
 import sys
 import tempfile
@@ -134,6 +136,7 @@ def _score_count(conn):
 class TestScoreEndpointRealDb:
     def test_seeded_id_returns_row(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'track-1'})
@@ -145,6 +148,7 @@ class TestScoreEndpointRealDb:
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': 'does-not-exist'})
@@ -152,6 +156,7 @@ class TestScoreEndpointRealDb:
 
     def test_injection_id_is_safe(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_score', query_string={'id': _INJECTION_ID})
@@ -164,6 +169,7 @@ class TestScoreEndpointRealDb:
 class TestEmbeddingEndpointRealDb:
     def test_seeded_id_returns_embedding(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'track-1'})
@@ -175,6 +181,7 @@ class TestEmbeddingEndpointRealDb:
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
         import app_helper
+
         ext = _import_app_external()
         monkeypatch.setattr(app_helper, 'get_db', lambda: endpoints_db)
         resp = _external_client(ext).get('/get_embedding', query_string={'id': 'does-not-exist'})
@@ -185,6 +192,7 @@ class TestEmbeddingEndpointRealDb:
 class TestWaveformLookupRealDb:
     def _client(self):
         import app_waveform
+
         app = Flask(__name__)
         app.register_blueprint(app_waveform.waveform_bp)
         app.config['TESTING'] = True

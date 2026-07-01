@@ -6,9 +6,9 @@
 # pre-built artifacts so the Docker build does not have to re-export them.
 #
 # Outputs:
-#   model/gte-multilingual-base-int8.onnx  (~325 MB) — lyrics embedding (INT8 ONNX)
-#   model/gte-multilingual-base/           (~5 MB)   — gte tokenizer files (no weights)
-#   model/whisper-small-onnx/              (~1.1 GB) — speech-to-text (multilingual)
+#   model/gte-multilingual-base-int8.onnx  (~325 MB) - lyrics embedding (INT8 ONNX)
+#   model/gte-multilingual-base/           (~5 MB)   - gte tokenizer files (no weights)
+#   model/whisper-small-onnx/              (~1.1 GB) - speech-to-text (multilingual)
 #
 # Usage:
 #   source .venv/bin/activate

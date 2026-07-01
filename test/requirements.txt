@@ -56,7 +56,7 @@ torch==2.6.0
 langdetect==1.0.9
 
 # Notes:
-# - ffmpeg (system binary) is NOT included here — keep pydub/ffmpeg calls stubbed or
+# - ffmpeg (system binary) is NOT included here - keep pydub/ffmpeg calls stubbed or
 #   install ffmpeg separately on your machine if you want full fallback behavior.
 # - voyager is a system-level vector index; tests should keep a small stub rather
 #   than installing production Voyager binaries.

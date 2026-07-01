@@ -1,16 +1,26 @@
-"""Tests for app_cron.py — sonic_fingerprint cron branch (issue #336).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Verifies:
-- Empty fingerprint results → previous playlist is preserved (no upsert call)
-- Non-empty results → create_or_replace_playlist called with the constant name
-- Backend that raises NotImplementedError → falls back to legacy
-  date-suffixed create_playlist_from_ids path
+"""Cron scheduler dispatch for the sonic-fingerprint job.
+
+Exercises run_due_cron_jobs when a due row selects the sonic-fingerprint task,
+asserting how generated fingerprints flow into playlist creation.
+
+Main Features:
+* Empty fingerprint results skip both playlist upsert and the legacy fallback
+* Non-empty results upsert under the constant cron playlist name via item_ids
+* NotImplementedError from the backend falls back to a timestamped legacy playlist
 """
+
 from unittest.mock import MagicMock, patch
 
 
 def _make_cron_row(task_type='sonic_fingerprint'):
-    """Build a row dict matching the DictCursor shape used by run_due_cron_jobs."""
     return {
         'id': 1,
         'name': 'Sonic Fingerprint',
@@ -22,7 +32,6 @@ def _make_cron_row(task_type='sonic_fingerprint'):
 
 
 def _setup_db_mock():
-    """Mock a get_db() that returns one enabled sonic_fingerprint cron row."""
     cur = MagicMock()
     cur.fetchall.return_value = [_make_cron_row()]
     db = MagicMock()
@@ -33,15 +42,16 @@ def _setup_db_mock():
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_sonic_fingerprint_branch_skips_on_empty_results(mock_get_db, _matches):
-    """If generate_sonic_fingerprint returns [], do NOT call create_or_replace_playlist."""
     from app_cron import run_due_cron_jobs
 
     db, _cur = _setup_db_mock()
     mock_get_db.return_value = db
 
-    with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=[]) as gen, \
-         patch('tasks.mediaserver.create_or_replace_playlist') as upsert, \
-         patch('tasks.ivf_manager.create_playlist_from_ids') as legacy:
+    with (
+        patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=[]) as gen,
+        patch('tasks.mediaserver.create_or_replace_playlist') as upsert,
+        patch('tasks.ivf_manager.create_playlist_from_ids') as legacy,
+    ):
         run_due_cron_jobs()
 
     gen.assert_called_once()
@@ -52,7 +62,6 @@ def test_sonic_fingerprint_branch_skips_on_empty_results(mock_get_db, _matches):
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _matches):
-    """Non-empty results → upsert called once with SONIC_FINGERPRINT_CRON_PLAYLIST_NAME."""
     from app_cron import run_due_cron_jobs
     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
 
@@ -61,9 +70,13 @@ def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _
 
     fp = [{'item_id': 'a'}, {'item_id': 'b'}, {'item_id': 'c'}]
 
-    with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp), \
-         patch('tasks.mediaserver.create_or_replace_playlist', return_value={'Id': 'pl-x'}) as upsert, \
-         patch('tasks.ivf_manager.create_playlist_from_ids') as legacy:
+    with (
+        patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp),
+        patch(
+            'tasks.mediaserver.create_or_replace_playlist', return_value={'Id': 'pl-x'}
+        ) as upsert,
+        patch('tasks.ivf_manager.create_playlist_from_ids') as legacy,
+    ):
         run_due_cron_jobs()
 
     upsert.assert_called_once_with(SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, ['a', 'b', 'c'])
@@ -73,7 +86,6 @@ def test_sonic_fingerprint_branch_calls_upsert_with_constant_name(mock_get_db, _
 @patch('app_cron.cron_matches_now', return_value=True)
 @patch('app_cron.get_db')
 def test_sonic_fingerprint_branch_falls_back_for_unsupported_backend(mock_get_db, _matches):
-    """Backend raising NotImplementedError → legacy create_playlist_from_ids called."""
     from app_cron import run_due_cron_jobs
 
     db, _cur = _setup_db_mock()
@@ -81,9 +93,11 @@ def test_sonic_fingerprint_branch_falls_back_for_unsupported_backend(mock_get_db
 
     fp = [{'item_id': 'a'}]
 
-    with patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp), \
-         patch('tasks.mediaserver.create_or_replace_playlist', side_effect=NotImplementedError), \
-         patch('tasks.ivf_manager.create_playlist_from_ids', return_value='legacy-id') as legacy:
+    with (
+        patch('tasks.sonic_fingerprint_manager.generate_sonic_fingerprint', return_value=fp),
+        patch('tasks.mediaserver.create_or_replace_playlist', side_effect=NotImplementedError),
+        patch('tasks.ivf_manager.create_playlist_from_ids', return_value='legacy-id') as legacy,
+    ):
         run_due_cron_jobs()
 
     legacy.assert_called_once()

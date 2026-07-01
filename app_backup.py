@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for database backup and restore.
+
+Serves the `/backup` UI and drives `pg_dump`/`psql` against the configured
+Postgres instance, coordinating with `restart_manager` to bounce the app and
+workers around a restore.
+
+Main Features:
+* Routes: `/backup` page, `/api/backup/create`, `/api/backup/restore`.
+* Serializes restores across containers with a self-releasing Redis lock and
+  strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+"""
+
 import os
 import re
 import shutil
@@ -50,7 +70,7 @@ def _release_restore_lock():
 def _restore_lock_held():
     """Returns True if a restore lock is currently set in Redis.
 
-    On Redis errors, returns True to fail closed — better to refuse a chunk
+    On Redis errors, returns True to fail closed - better to refuse a chunk
     than to let it write into a possibly-orphaned chunks_dir.
     """
     try:
@@ -72,9 +92,12 @@ def _pg_cmd(tool, *extra_args):
     """Build a pg command list with common connection args."""
     return [
         tool,
-        '-h', POSTGRES_HOST,
-        '-p', POSTGRES_PORT,
-        '-U', POSTGRES_USER,
+        '-h',
+        POSTGRES_HOST,
+        '-p',
+        POSTGRES_PORT,
+        '-U',
+        POSTGRES_USER,
         *extra_args,
     ]
 
@@ -136,6 +159,7 @@ def _run_restore_runner(dump_file, log_file):
 
         try:
             from tasks.mcp_helper import _ensure_ai_chat_db_user
+
             _ensure_ai_chat_db_user()
             log.write("Ensured AI chat DB role exists before restore.\n")
             log.flush()
@@ -145,12 +169,16 @@ def _run_restore_runner(dump_file, log_file):
 
         restore_cmd = _pg_cmd(
             'psql',
-            '-d', POSTGRES_DB,
-            '-v', 'ON_ERROR_STOP=1',
+            '-d',
+            POSTGRES_DB,
+            '-v',
+            'ON_ERROR_STOP=1',
             '--single-transaction',
         )
         log.write(f"Running restore command: {' '.join(restore_cmd)} < {dump_file} (via stdin)\n")
-        log.write("Streaming dump via stdin (stripping pg_dump 17+ transaction_timeout for old-server compatibility).\n")
+        log.write(
+            "Streaming dump via stdin (stripping pg_dump 17+ transaction_timeout for old-server compatibility).\n"
+        )
         log.flush()
 
         proc = None
@@ -167,7 +195,9 @@ def _run_restore_runner(dump_file, log_file):
                 start_new_session=True,
                 close_fds=True,
             )
-            feeder = threading.Thread(target=_feed_dump, args=(proc.stdin, dump_file, feed_result), daemon=True)
+            feeder = threading.Thread(
+                target=_feed_dump, args=(proc.stdin, dump_file, feed_result), daemon=True
+            )
             feeder.start()
             ret = proc.wait(timeout=3600)
         except subprocess.TimeoutExpired:
@@ -299,7 +329,9 @@ def create_backup():
 
     try:
         with open(filepath, 'w') as f:
-            result = subprocess.run(cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True, timeout=600)
+            result = subprocess.run(
+                cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True, timeout=600
+            )
         if result.returncode != 0:
             logger.error("pg_dump failed: %s", result.stderr)
             if os.path.exists(filepath):
@@ -311,11 +343,11 @@ def create_backup():
                 err = error_manager.build(ERR_BACKUP_FAILED, stderr)
             return jsonify({**err, 'error': err['error_message']}), 500
     except FileNotFoundError:
-        logger.error("pg_dump not found on system PATH")
+        logger.exception("pg_dump not found on system PATH")
         err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
         return jsonify({**err, 'error': err['error_message']}), 500
     except subprocess.TimeoutExpired:
-        logger.error("pg_dump timed out")
+        logger.exception("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
         err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
@@ -436,28 +468,36 @@ def restore_backup():
                 return jsonify({'error': 'chunk_num and total_chunks must be integers.'}), 400
 
             if chunk_num < 1 or chunk_num > total_chunks or total_chunks < 1:
-                return jsonify({'error': f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}'}), 400
+                return jsonify(
+                    {
+                        'error': f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}'
+                    }
+                ), 400
 
             chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
             os.makedirs(chunks_dir, exist_ok=True)
 
             # Cross-container restore lock: chunk 1 acquires it, later chunks
-            # verify it is still held — protects against the lock auto-expiring
+            # verify it is still held - protects against the lock auto-expiring
             # mid-upload and a different session taking over.
             if chunk_num == 1:
                 if not _acquire_restore_lock():
                     logger.warning("Refusing chunk 1: restore lock already held.")
-                    return jsonify({
-                        'error': 'A database restore is already in progress. '
-                                 'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                    }), 409
+                    return jsonify(
+                        {
+                            'error': 'A database restore is already in progress. '
+                            'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
+                        }
+                    ), 409
             else:
                 if not _restore_lock_held():
                     logger.warning("Refusing chunk %s: restore lock no longer held.", chunk_num)
-                    return jsonify({
-                        'error': 'Restore session expired or was overtaken. '
-                                 'Restart the upload from chunk 1.'
-                    }), 409
+                    return jsonify(
+                        {
+                            'error': 'Restore session expired or was overtaken. '
+                            'Restart the upload from chunk 1.'
+                        }
+                    ), 409
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 
@@ -495,7 +535,9 @@ def restore_backup():
             logger.info(f"Received chunks: {sorted(received_chunks)}/{total_chunks}")
 
             # If all chunks received, reassemble
-            if len(received_chunks) == total_chunks and all(i in received_chunks for i in range(1, total_chunks + 1)):
+            if len(received_chunks) == total_chunks and all(
+                i in received_chunks for i in range(1, total_chunks + 1)
+            ):
                 logger.info(f"All {total_chunks} chunks received. Reassembling...")
 
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
@@ -538,40 +580,50 @@ def restore_backup():
                     if tmp:
                         try:
                             tmp.close()
-                        except:
+                        except Exception:
                             pass
                     if restore_file and os.path.exists(restore_file):
                         os.unlink(restore_file)
-                    # Free disk immediately — chunks are 1GB each.
+                    # Free disk immediately - chunks are 1GB each.
                     for i in range(1, total_chunks + 1):
                         chunk_path = os.path.join(chunks_dir, f'backup_{i}_of_{total_chunks}.sql')
                         try:
                             if os.path.exists(chunk_path):
                                 os.unlink(chunk_path)
                         except OSError:
-                            logger.warning("Could not delete chunk %s after reassembly failure", i, exc_info=True)
+                            logger.warning(
+                                "Could not delete chunk %s after reassembly failure",
+                                i,
+                                exc_info=True,
+                            )
                     _release_restore_lock()
-                    return jsonify({'error': 'Failed to reassemble chunks due to an internal error.'}), 500
+                    return jsonify(
+                        {'error': 'Failed to reassemble chunks due to an internal error.'}
+                    ), 500
             else:
                 # Still waiting for more chunks
                 missing_chunks = [i for i in range(1, total_chunks + 1) if i not in received_chunks]
-                return jsonify({
-                    'success': True,
-                    'message': f'Chunk {chunk_num}/{total_chunks} received. Waiting for chunks: {missing_chunks}',
-                    'chunk_num': chunk_num,
-                    'total_chunks': total_chunks,
-                    'received_chunks': sorted(received_chunks),
-                    'missing_chunks': missing_chunks,
-                    'all_chunks_received': False,
-                })
+                return jsonify(
+                    {
+                        'success': True,
+                        'message': f'Chunk {chunk_num}/{total_chunks} received. Waiting for chunks: {missing_chunks}',
+                        'chunk_num': chunk_num,
+                        'total_chunks': total_chunks,
+                        'received_chunks': sorted(received_chunks),
+                        'missing_chunks': missing_chunks,
+                        'all_chunks_received': False,
+                    }
+                )
         else:
             # Single file upload (non-chunked)
             if not _acquire_restore_lock():
                 logger.warning("Refusing non-chunked restore: lock already held.")
-                return jsonify({
-                    'error': 'A database restore is already in progress. '
-                             'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                }), 409
+                return jsonify(
+                    {
+                        'error': 'A database restore is already in progress. '
+                        'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
+                    }
+                ), 409
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
             uploaded.save(tmp)
             tmp.close()
@@ -590,7 +642,13 @@ def restore_backup():
             if getattr(sys, 'frozen', False):
                 restore_cmd = [sys.executable, '--run-restore', restore_file, restore_log]
             else:
-                restore_cmd = [sys.executable, os.path.abspath(__file__), '--run-restore', restore_file, restore_log]
+                restore_cmd = [
+                    sys.executable,
+                    os.path.abspath(__file__),
+                    '--run-restore',
+                    restore_file,
+                    restore_log,
+                ]
             popen_kwargs = dict(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -603,16 +661,18 @@ def restore_backup():
             restore_pid = proc.pid
             logger.info("Restore started in detached process %s", restore_pid)
 
-            return jsonify({
-                'success': True,
-                'message': 'Database restore started.',
-                'restore_pid': restore_pid,
-                'restore_log': restore_log,
-                'all_chunks_received': True,
-            })
+            return jsonify(
+                {
+                    'success': True,
+                    'message': 'Database restore started.',
+                    'restore_pid': restore_pid,
+                    'restore_log': restore_log,
+                    'all_chunks_received': True,
+                }
+            )
 
     except FileNotFoundError:
-        logger.error("Python executable not found for restore runner")
+        logger.exception("Python executable not found for restore runner")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()

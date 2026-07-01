@@ -1,20 +1,22 @@
-"""Real-Postgres integration tests for the audiomuse_users layer.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Drives app_auth's user CRUD against a live ``audiomuse_users`` table so the
-argon2 hash round-trip, the ON CONFLICT duplicate guard, and the
-SELECT ... FOR UPDATE last-admin gate all run as production code paths. A
-mocked cursor cannot prove the hash verifies against what was actually stored,
-nor that the last-admin deletion is refused atomically.
+"""User-management tests against a real Postgres database.
 
-Database selection mirrors test_provider_migration_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
+Runs app_auth user create, verify, count, and delete logic against a live
+audiomuse_users table to confirm password hashing and the admin-safety
+gate behave against real SQL.
 
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_auth_users_integration.py -m integration -s -v --tb=short
+Main Features:
+* Argon2 create/verify roundtrip and duplicate-username rejection.
+* Admin-user counting and refusing to delete the last admin.
 """
+
 import os
 import sys
 import tempfile
@@ -75,6 +77,7 @@ def users_db(pg_dsn, monkeypatch):
         cur.execute(_USERS_DDL)
     conn.commit()
     import app_auth
+
     monkeypatch.setattr(app_auth, '_get_db', lambda: conn)
     yield conn, app_auth
     conn.close()

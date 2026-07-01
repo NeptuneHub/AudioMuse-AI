@@ -1,7 +1,7 @@
 -- Instrumental sentinel queries (dimension-independent).
 -- Sentinel: embedding = [1.0, 0, 0, ...], axis = uniform negative fill.
 -- Works regardless of LYRICS_EMBEDDING_DIMENSION or MUSIC_ANALYSIS_AXES count.
--- Compatible with PostgreSQL < 14 (no repeat(bytea) — route through hex text).
+-- Compatible with PostgreSQL < 14 (no repeat(bytea) - route through hex text).
 
 -- Find instrumental rows with track metadata:
 SELECT s.item_id, s.title, s.author, s.album, le.updated_at

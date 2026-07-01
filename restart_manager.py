@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Supervisor control plane for restarting Flask and RQ worker processes.
+
+Publishes control requests onto the Redis restart channel that
+``restart_listener`` consumes, and provides the supervisorctl-backed helpers
+that actually stop, start, and restart the managed services.
+
+Main Features:
+* ``publish_*`` helpers broadcast restart/stop/start requests to workers.
+* supervisorctl-driven actions over the known Flask and worker service names.
+* On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
+"""
+
 import json
 import logging
 import os
@@ -19,7 +39,6 @@ ALL_SUPERVISOR_SERVICES = FLASK_SERVICE + WORKER_SERVICES
 
 
 def publish_control_request(action):
-    """Publish a control request to worker containers via Redis."""
     try:
         redis_conn = Redis.from_url(
             config.REDIS_URL,
@@ -48,40 +67,45 @@ def publish_start_request():
     return publish_control_request('start')
 
 
-def _send_control(arguments):
-    """Forward an ``[action, *services]`` request to the standalone supervisor.
+def _control_endpoint():
+    host = config.AUDIOMUSE_CONTROL_HOST
+    port = config.AUDIOMUSE_CONTROL_PORT
+    if host and port:
+        if not str(port).isdigit():
+            logger.error('Invalid AUDIOMUSE_CONTROL_PORT %r; expected an integer', port)
+            return None
+        return socket.AF_INET, (str(host), int(port)), f'{host}:{port}'
+    if config.AUDIOMUSE_CONTROL_SOCKET:
+        return socket.AF_UNIX, config.AUDIOMUSE_CONTROL_SOCKET, config.AUDIOMUSE_CONTROL_SOCKET
+    return None
 
-    On macOS/Linux the supervisor listens on a unix socket
-    (``AUDIOMUSE_CONTROL_SOCKET``).  On Windows it listens on TCP
-    (``AUDIOMUSE_CONTROL_HOST`` / ``AUDIOMUSE_CONTROL_PORT``) because
-    ``AF_UNIX`` is not available.  The JSON-line protocol is identical.
-    """
+
+def _use_control_ipc():
+    return _control_endpoint() is not None
+
+
+def _send_control(arguments):
     if not arguments:
         return False
 
-    control_host = config.AUDIOMUSE_CONTROL_HOST
-    control_port = config.AUDIOMUSE_CONTROL_PORT
+    endpoint = _control_endpoint()
+    if endpoint is None:
+        logger.error(
+            'Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s',
+            arguments,
+        )
+        return False
+    family, address, label = endpoint
 
     payload = json.dumps({'action': arguments[0], 'services': list(arguments[1:])}).encode('utf-8')
     try:
-        if control_host and control_port:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(15)
-                sock.connect((str(control_host), int(control_port)))
-                sock.sendall(payload + b'\n')
-                response = sock.recv(1024).strip()
-        elif config.AUDIOMUSE_CONTROL_SOCKET:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(15)
-                sock.connect(config.AUDIOMUSE_CONTROL_SOCKET)
-                sock.sendall(payload + b'\n')
-                response = sock.recv(1024).strip()
-        else:
-            logger.error('Neither AUDIOMUSE_CONTROL_SOCKET nor AUDIOMUSE_CONTROL_HOST/PORT set; cannot dispatch %s', arguments)
-            return False
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(15)
+            sock.connect(address)
+            sock.sendall(payload + b'\n')
+            response = sock.recv(1024).strip()
     except Exception:
-        target = f'{control_host}:{control_port}' if (control_host and control_port) else config.AUDIOMUSE_CONTROL_SOCKET
-        logger.exception('Failed to send control command %s to %s', arguments, target)
+        logger.exception('Failed to send control command %s to %s', arguments, label)
         return False
     if response == b'ok':
         logger.info('Control command succeeded: %s', arguments)
@@ -91,7 +115,7 @@ def _send_control(arguments):
 
 
 def _run_supervisorctl(arguments):
-    if config.AUDIOMUSE_PLATFORM == 'macos':
+    if _use_control_ipc():
         return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
@@ -107,38 +131,35 @@ def _run_supervisorctl(arguments):
         logger.exception('supervisorctl command not found at %s', SUPERVISORCTL_CMD)
         return False
     except subprocess.TimeoutExpired:
-        logger.error('supervisorctl timed out after 30s: %s', cmd)
+        logger.exception('supervisorctl timed out after 30s: %s', cmd)
         return False
     except Exception:
         logger.exception('Failed to run supervisorctl command: %s', cmd)
         return False
 
+
 def stop_local_flask_service():
-    """Stop the supervised Flask service locally."""
     logger.info('Stopping supervised Flask service')
     return _run_supervisorctl(['stop'] + FLASK_SERVICE)
 
 
 def start_local_flask_service():
-    """Start the supervised Flask service locally."""
     logger.info('Starting supervised Flask service')
     return _run_supervisorctl(['start'] + FLASK_SERVICE)
 
 
 def stop_supervisor_workers():
-    """Stop supervised worker processes via supervisorctl."""
     logger.info('Stopping supervised worker services: %s', WORKER_SERVICES)
     return _run_supervisorctl(['stop'] + WORKER_SERVICES)
 
 
 def start_supervisor_workers():
-    """Start supervised worker processes via supervisorctl."""
     logger.info('Starting supervised worker services: %s', WORKER_SERVICES)
     return _run_supervisorctl(['start'] + WORKER_SERVICES)
 
 
 def _spawn_supervisorctl(arguments):
-    if config.AUDIOMUSE_PLATFORM == 'macos':
+    if _use_control_ipc():
         return _send_control(arguments)
     cmd = [SUPERVISORCTL_CMD, '-c', SUPERVISOR_CONF] + arguments
     try:
@@ -164,7 +185,6 @@ def _restart_flask_program():
 
 
 def schedule_flask_restart(delay_seconds=2.5):
-    """Schedule a Flask container restart after the current response completes."""
     if os.environ.get('SERVICE_TYPE', '').lower() != 'flask':
         return False
 
@@ -178,7 +198,6 @@ def schedule_flask_restart(delay_seconds=2.5):
 
 
 def restart_supervisor_workers():
-    """Restart supervised worker programs inside the current worker container."""
     if os.environ.get('SERVICE_TYPE', '').lower() != 'worker':
         logger.info('SERVICE_TYPE is not worker; skipping supervised worker restart')
         return True

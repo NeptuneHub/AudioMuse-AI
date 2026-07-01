@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Windows packaging steps for the standalone build.
+
+Platform module invoked by ``build.py`` to stage the Windows bundle: it checks
+the vendored redis/pg-contrib/OpenMP inputs are present, stages the numkong
+OpenMP DLL needed by the INT8 SIMD kernels, and verifies the pgserver bundle.
+The Linux/macOS modules are the platform-specific siblings.
+
+Main Features:
+* Validates vendored redis, pg-contrib and OpenMP DLLs per architecture.
+* Stages the numkong OpenMP DLL so the i8 SIMD kernels load at runtime.
+"""
+
 import importlib.util
 import shutil
 from pathlib import Path
@@ -31,7 +51,6 @@ def prepare(ctx):
 
 
 def _stage_numkong_openmp(omp_dll):
-    # Drop numkong's unbundled libomp next to the installed extension.
     spec = importlib.util.find_spec("numkong")
     if not spec or not spec.origin:
         print("[WARN] numkong not installed in build venv; the i8 SIMD kernels will be absent.")

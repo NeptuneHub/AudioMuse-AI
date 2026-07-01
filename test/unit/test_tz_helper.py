@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Timezone conversion of stored timestamps into local display time.
+
+Covers tz_helper converting naive and aware datetimes to the configured local
+zone, including DST handling and non-datetime passthrough.
+
+Main Features:
+* None, string and int inputs pass through unchanged
+* Naive timestamps are treated as UTC, applying DST for summer dates
+* Aware UTC input matches the naive-UTC result
+* The string formatter returns None for None and formats naive winter times
+"""
+
 import datetime
 import time
 

@@ -1,13 +1,23 @@
-"""OpenAI-compatible transport (OpenAI, OpenRouter, Ollama, anything speaking /v1/chat/completions or /api/generate).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Three public functions:
-    generate_text(...)          -- single-prompt streaming completion (all providers)
-    call_with_tools(...)        -- native function/tool calling (OpenAI, OpenRouter, etc.)
-    call_with_tools_ollama(...) -- prompt-based JSON tool calling (Ollama, no native support)
+"""OpenAI-compatible client (OpenAI, OpenRouter, Ollama) for the playlist AI.
 
-These transports only handle HTTP plumbing. All business prompts come from
-`tasks/ai/prompts.py`.
+The HTTP backend dispatched from ``tasks.ai.api`` for every non-SDK provider.
+generate_text streams SSE completions; call_with_tools does single-turn
+function-calling; call_with_tools_ollama drives Ollama's structured-output
+JSON path since Ollama lacks native tool calls.
+
+Main Features:
+* Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output.
+* Robust 400 fallbacks: retries without reasoning_effort (caching rejecting models), swaps max_tokens->max_completion_tokens, and cycles DeepSeek thinking-off forms; tool-call count is capped to 4 and all failures return a generic error, never a traceback.
 """
+
 import json
 import logging
 import os
@@ -24,12 +34,10 @@ logger = logging.getLogger(__name__)
 
 THINK_END_TAG = "</think>"
 
-# Models that 400-rejected reasoning_effort once; skip the param for them next time.
 _MODELS_REJECTING_REASONING = set()
 
 
 def _is_ollama_format_url(server_url: str) -> bool:
-    """Detect Ollama endpoints from the URL path (issue #467 fix preserved)."""
     s = server_url.lower()
     return "/api/generate" in s or "/api/chat" in s
 
@@ -54,16 +62,6 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Generate freeform text from an OpenAI-compatible streaming endpoint.
-
-    Handles 429 retries (exponential backoff), 400 ``unsupported_parameter`` /
-    ``unsupported_value`` fallback (drop temperature, switch to
-    max_completion_tokens, then drop max_completion_tokens), and content
-    extraction-before-finish-reason ordering for OpenRouter compatibility.
-
-    NOTE: Detects Ollama vs OpenAI from the URL; the Ollama branch in
-    tasks/ai/api.py calls this directly (Ollama has no separate transport).
-    """
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format
     provider_label = "Ollama" if is_ollama_format else "OpenAI/OpenRouter"
@@ -142,8 +140,6 @@ def generate_text(
                     if is_openai_format:
                         if "choices" in chunk and len(chunk["choices"]) > 0:
                             choice = chunk["choices"][0]
-                            # Extract content FIRST (OpenRouter may bundle delta.content
-                            # with finish_reason='stop' in a single chunk).
                             delta = choice.get("delta")
                             if isinstance(delta, dict):
                                 content = delta.get("content")
@@ -175,23 +171,23 @@ def generate_text(
                     extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
 
             if extracted_text:
-                # SECURITY: log only length, not content (model output may
-                # echo back sensitive data from prompts/tool results).
                 logger.info(
                     "%s API returned non-empty content (length=%d chars).",
-                    provider_label, len(extracted_text),
+                    provider_label,
+                    len(extracted_text),
                 )
                 return extracted_text
             logger.warning(
                 "%s returned empty content (raw response length: %d chars).",
-                provider_label, len(full_raw_response_content),
+                provider_label,
+                len(full_raw_response_content),
             )
             logger.debug(
                 "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",
                 len(raw_sse_lines),
             )
             if attempt < max_retries:
-                sleep_time = base_delay * (2 ** attempt)
+                sleep_time = base_delay * (2**attempt)
                 logger.info("Retrying in %s seconds due to empty content...", sleep_time)
                 time.sleep(sleep_time)
                 continue
@@ -203,7 +199,7 @@ def generate_text(
                     "Rate limit exceeded (429). Attempt %d/%d", attempt + 1, max_retries + 1
                 )
                 if attempt < max_retries:
-                    sleep_time = base_delay * (2 ** attempt)
+                    sleep_time = base_delay * (2**attempt)
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
                     continue
@@ -217,11 +213,9 @@ def generate_text(
                     error_code = error_obj.get("code", "") or ""
                     error_param = error_obj.get("param", "") or ""
                     error_message = (error_obj.get("message", "") or "").lower()
-                    # gpt-4o*/gpt-4.1* reject reasoning_effort with error.code null;
-                    # drop it, remember the model, and retry (#696).
-                    if ("reasoning_effort" in payload
-                            and (error_param == "reasoning_effort"
-                                 or "reasoning_effort" in error_message)):
+                    if "reasoning_effort" in payload and (
+                        error_param == "reasoning_effort" or "reasoning_effort" in error_message
+                    ):
                         logger.info("reasoning_effort rejected (400); retrying without it")
                         payload.pop("reasoning_effort", None)
                         _MODELS_REJECTING_REASONING.add(model_name)
@@ -282,10 +276,6 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call an OpenAI-compatible /chat/completions endpoint with native tool calling.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on failure.
-    """
     try:
         functions = [
             {
@@ -309,10 +299,6 @@ def call_with_tools(
             "tools": functions,
             "tool_choice": "required",
             "temperature": 0,
-            # Bound generation so a model that won't stop (e.g. a reasoning model
-            # that thinks unbounded) can't run forever. Generic OpenAI param,
-            # works on any OpenAI-compatible provider (OpenRouter, vLLM, ...).
-            # Matches the local Ollama num_predict cap (1024) for consistency.
             "max_tokens": 1024,
         }
 
@@ -347,7 +333,9 @@ def call_with_tools(
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
                     payload.update(shape)
-                    log_messages.append("DeepSeek rejected the thinking-disable parameter; retrying with an alternate form")
+                    log_messages.append(
+                        "DeepSeek rejected the thinking-disable parameter; retrying with an alternate form"
+                    )
                     try:
                         result = _post(payload)
                         break
@@ -357,10 +345,14 @@ def call_with_tools(
                 if result is None:
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
-                    log_messages.append("DeepSeek rejected all thinking-disable forms; retrying without them")
+                    log_messages.append(
+                        "DeepSeek rejected all thinking-disable forms; retrying without them"
+                    )
                     result = _post(payload)
             elif "reasoning_effort" in payload:
-                log_messages.append("reasoning_effort unsupported by this model; retrying without it")
+                log_messages.append(
+                    "reasoning_effort unsupported by this model; retrying without it"
+                )
                 payload.pop("reasoning_effort", None)
                 _MODELS_REJECTING_REASONING.add(model_name)
                 result = _post(payload)
@@ -380,19 +372,13 @@ def call_with_tools(
                             }
                         )
 
-        # Max-items cap: never process a runaway list of tool calls (a tool plan
-        # needs only a few). Mirrors the Ollama schema maxItems; generic here.
         if len(tool_calls) > 4:
             log_messages.append(f"OpenAI returned {len(tool_calls)} tool calls; capping to first 4")
             tool_calls = tool_calls[:4]
 
         if not tool_calls:
-            text_response = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            log_messages.append(
-                f"OpenAI did not call tools. Response: {text_response[:200]}"
-            )
+            text_response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            log_messages.append(f"OpenAI did not call tools. Response: {text_response[:200]}")
             return {"error": "AI did not call any tools", "ai_response": text_response}
 
         log_messages.append(f"OpenAI called {len(tool_calls)} tools")
@@ -419,10 +405,6 @@ def call_with_tools(
         return {"error": "OpenAI service is currently unavailable."}
 
 
-# ---------------------------------------------------------------------------
-# Ollama prompt-based tool calling (Ollama lacks native function calling)
-# ---------------------------------------------------------------------------
-
 def call_with_tools_ollama(
     ollama_url: str,
     model_name: str,
@@ -431,15 +413,6 @@ def call_with_tools_ollama(
     log_messages: List[str],
     library_context: Optional[Dict] = None,
 ) -> Dict:
-    """Prompt-based tool calling for Ollama via /api/generate with structured output.
-
-    Ollama has no native function/tool calling. We build a JSON-output prompt
-    (via ``tasks.ai.prompts.build_ollama_tool_calling_prompt``) and set
-    ``format`` to the tool-calls JSON Schema so the model is forced to emit
-    valid JSON that we parse into ``{"tool_calls": [...]}``.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on failure.
-    """
     from tasks.ai.prompts import build_ollama_tool_calling_prompt, build_tool_calls_schema  # noqa: E402
 
     try:
@@ -452,17 +425,11 @@ def call_with_tools_ollama(
             "stream": False,
             "format": schema,
             "think": False,
-            # Cap generation so a model can't run forever. A tool call needs
-            # only a few hundred tokens.
             "options": {"temperature": 0, "num_predict": 1024},
         }
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
-        # Single bounded call: the httpx read timeout aborts it at `timeout`
-        # seconds so it can never run forever. NO retry -- if the model returns
-        # nothing usable, we error out and the chat pipeline falls back (the user
-        # still gets a playlist) rather than making a second multi-minute call.
         with httpx.Client(timeout=timeout) as client:
             response = client.post(ollama_url, json=payload)
             response.raise_for_status()
@@ -508,7 +475,9 @@ def call_with_tools_ollama(
                 )
             elif isinstance(parsed, list):
                 tool_calls = parsed
-                log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
+                log_messages.append(
+                    "WARN: Got array directly (expected object with tool_calls field)"
+                )
             elif isinstance(parsed, dict) and "name" in parsed:
                 tool_calls = [parsed]
                 log_messages.append(

@@ -1,23 +1,23 @@
-"""Export openai/whisper-small to ONNX.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Run once at export time (with torch + optimum installed). The resulting
-``encoder_model.onnx`` + ``decoder_model.onnx`` pair is then consumed at
-runtime by ``lyrics/whisper_onnx.py`` via raw onnxruntime + a numpy greedy
-decoder — no torch needed at runtime.
+"""Export openai/whisper-small to ONNX for lyrics transcription.
 
-Usage
------
-    python3 export_whisper_to_onnx.py \
-        --model openai/whisper-small \
-        --output /app/model/whisper-small-onnx
+Offline build tool (torch + optimum) that exports ``openai/whisper-small`` to
+an ``encoder_model.onnx`` + ``decoder_model.onnx`` pair plus its config and
+tokenizer files, which ``lyrics/whisper_onnx.py`` then runs at inference time
+via raw onnxruntime and a numpy greedy decoder, so no torch is needed at
+runtime. Companion to ``export_gte_to_onnx.py``.
 
-The output directory will contain:
-    encoder_model.onnx
-    decoder_model.onnx
-    config.json
-    generation_config.json
-    preprocessor_config.json   (mel filterbank parameters)
-    tokenizer.json + vocab.json + merges.txt + special_tokens_map.json + ...
+Main Features:
+* Drives ``optimum.exporters.onnx`` to produce the encoder/decoder ONNX pair.
+* Emits the config, generation/preprocessor config and tokenizer files the
+  runtime decoder and mel-filterbank preprocessing require.
 """
 
 from __future__ import annotations
@@ -32,9 +32,13 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     cmd = [
-        sys.executable, '-m', 'optimum.exporters.onnx',
-        '--model', model_id,
-        '--task', 'automatic-speech-recognition',
+        sys.executable,
+        '-m',
+        'optimum.exporters.onnx',
+        '--model',
+        model_id,
+        '--task',
+        'automatic-speech-recognition',
         '--no-post-process',
         output_dir,
     ]
@@ -43,9 +47,6 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
     if completed.returncode != 0:
         raise SystemExit(f'optimum-cli export failed (rc={completed.returncode})')
 
-    # Trim files we don't need at runtime. Our greedy decode loop only consumes
-    # encoder_model.onnx + decoder_model.onnx; the merged / past variants would
-    # double the disk footprint.
     drop = (
         'decoder_model_merged.onnx',
         'decoder_model_merged.onnx_data',
@@ -62,16 +63,15 @@ def export_whisper_to_onnx(model_id: str, output_dir: str) -> None:
         full = os.path.join(output_dir, entry)
         if os.path.isfile(full):
             total += os.path.getsize(full)
-    print(f'Whisper ONNX exported to {output_dir} ({total / (1024*1024):.1f} MB)',
-          flush=True)
+    print(f'Whisper ONNX exported to {output_dir} ({total / (1024 * 1024):.1f} MB)', flush=True)
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', default='openai/whisper-small',
-                        help='HF Hub id of the whisper model to export.')
-    parser.add_argument('--output', required=True,
-                        help='Destination directory for the ONNX files.')
+    parser.add_argument(
+        '--model', default='openai/whisper-small', help='HF Hub id of the whisper model to export.'
+    )
+    parser.add_argument('--output', required=True, help='Destination directory for the ONNX files.')
     args = parser.parse_args(argv)
     export_whisper_to_onnx(args.model, args.output)
     return 0
