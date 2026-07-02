@@ -45,7 +45,7 @@ def _retarget_shared_libomp(app):
     # which is older). numkong's kernels need ___kmpc_dispatch_deinit, absent
     # from sklearn's copy, so `import numkong` fails and the i8 IVF path falls
     # back to NumPy. libomp only ever adds symbols, so the newer numkong copy
-    # is safe for sklearn too — retarget the shared symlink at it.
+    # is safe for sklearn too - retarget the shared symlink at it.
     contents = os.path.join(str(app), "Contents")
     target = os.path.join("numkong", "__dot__dylibs", "libomp.dylib")
     if not os.path.exists(os.path.join(contents, "Frameworks", target)):
