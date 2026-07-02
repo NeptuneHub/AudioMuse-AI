@@ -977,7 +977,7 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
 
 def _seed_identity(seed: Dict) -> tuple:
     if seed.get('type') == 'artist':
-        return ('artist', (seed.get('name') or '').strip().lower())
+        return ('artist', (seed.get('name') or '').strip().lower(), '')
     return (
         'song',
         (seed.get('title') or '').strip().lower(),
