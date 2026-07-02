@@ -213,7 +213,7 @@ def _has_other_search_filters(tool_args: Dict) -> bool:
 def _retry_artist_substring(do_query, artist_arg):
     logger.info(
         "search_database exact match returned 0 songs; retrying with "
-        "artist ILIKE '%%%s%%'",
+        "whole-word artist match for '%s'",
         artist_arg,
     )
     result = do_query(artist_arg, fuzzy=True)
@@ -221,8 +221,8 @@ def _retry_artist_substring(do_query, artist_arg):
     if songs:
         msg = result.get("message", "")
         result["message"] = (
-            f"{msg}\n(artist relaxed to substring match: "
-            f"artist ILIKE '%{artist_arg}%')"
+            f"{msg}\n(artist relaxed to whole-word match: "
+            f"author contains the word '{artist_arg}')"
         )
     return result, songs
 

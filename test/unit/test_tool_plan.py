@@ -17,7 +17,7 @@ Main Features:
 * Mood lists split out voices and energy phrases; non-canonical genres dropped with a note
 * Plan args drop seedless searches, hallucinated min_rating and sub-1900 years; duplicate calls dropped and plans capped
 * build_tool_calls_schema emits typed per-tool branches (reasoning first, name enum locked); prompts derive tool prose from the schemas
-* Genre/negation hint extraction (incl. 4-digit decades), hint backstop, hallucinated year/instrumental stripping, similarity-blended re-rank with skit demotion and the instrumental dimension, exclusion hard cuts, empty-subtract coercion to union, underfilled-hard-filter broadening, and the zero-result replan
+* Genre/negation hint extraction (incl. 4-digit decades), hint backstop, hallucinated year/instrumental/exclusion stripping (exclusions need a negation cue), whole-word artist-relax regex, similarity-blended re-rank with skit demotion and the instrumental dimension, exclusion hard cuts, empty/self-subtract coercion to union, underfilled-hard-filter broadening, and the zero-result replan
 """
 
 import importlib
@@ -711,6 +711,63 @@ class TestStripUnrequestedArgs:
         plan = p.ToolPlan(filter={'instrumental': True})
         p._strip_unrequested_filter_args(plan, {'instrumental': True}, "instrumental rock", [])
         assert plan.filter['instrumental'] is True
+
+    def test_exclusions_stripped_without_negation_in_request(self):
+        p = _plan()
+        plan = p.ToolPlan(
+            filter={
+                'artist': 'Emmylou Harris',
+                'genres': ['country', 'folk'],
+                'exclude_genres': ['Hip-Hop', 'rock', 'pop'],
+                'exclude_artists': ['Pitbull'],
+            }
+        )
+        log = []
+        p._strip_unrequested_filter_args(
+            plan,
+            {'genres': ['country', 'folk']},
+            "Emmylou Harris songs plus similar country folk artists, only from the 70s",
+            log,
+        )
+        assert 'exclude_genres' not in plan.filter
+        assert 'exclude_artists' not in plan.filter
+        assert plan.filter['artist'] == 'Emmylou Harris'
+        assert any('hallucinated exclusions' in ln for ln in log)
+
+    def test_exclusions_kept_when_request_negates(self):
+        p = _plan()
+        plan = p.ToolPlan(
+            filter={
+                'moods': ['party'],
+                'exclude_genres': ['Hip-Hop'],
+                'exclude_artists': ['Pitbull'],
+            }
+        )
+        p._strip_unrequested_filter_args(
+            plan,
+            {'exclude_genres': ['Hip-Hop']},
+            "upbeat party songs but absolutely no rap and nothing by Pitbull",
+            [],
+        )
+        assert plan.filter['exclude_genres'] == ['Hip-Hop']
+        assert plan.filter['exclude_artists'] == ['Pitbull']
+
+    def test_artist_exclusion_kept_on_negation_cue_alone(self):
+        p = _plan()
+        plan = p.ToolPlan(filter={'genres': ['Hip-Hop'], 'exclude_artists': ['50 Cent']})
+        p._strip_unrequested_filter_args(
+            plan, {}, "Hip hop songs but absolutely no 50 Cent", []
+        )
+        assert plan.filter['exclude_artists'] == ['50 Cent']
+
+
+class TestArtistWordRegex:
+    def test_word_boundary_pattern(self):
+        _ensure_config_stub()
+        from tasks.ai.tool_impl import _artist_word_regex
+
+        assert _artist_word_regex('Nas') == r'\mNas\M'
+        assert _artist_word_regex('  AC/DC ') == r'\mAC/DC\M'
 
 
 class TestRerankSimilarityBlend:

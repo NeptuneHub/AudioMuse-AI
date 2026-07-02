@@ -650,7 +650,7 @@ class TestToolSurface:
             result = ai_mod.execute_mcp_tool("search_database", {"artist": "clapton eric"}, {})
         assert calls == [False, True]
         assert result['songs']
-        assert 'substring' in result['message']
+        assert 'whole-word' in result['message']
 
 
 @pytest.mark.unit

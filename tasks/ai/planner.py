@@ -14,7 +14,7 @@ LLM request over the full tool surface emits the plan, which is then
 validated, deduplicated, merged into a normalized plan, run, and composed.
 
 Main Features:
-* Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental args absent from the request are stripped; unsupported constraints (duration) surface as plan notes.
+* Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental/exclusion args absent from the request are stripped (exclusions survive only when the request carries a negation cue); unsupported constraints (duration) surface as plan notes.
 * Soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut; multiple finder tools get an intersection boost (songs returned by several tools rank first).
 * knowledge_lookup (AI brainstorm) results are returned as-is: any parsed filter is dropped (and reported as ignored) so brainstorm output is not re-ranked; score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool. Duplicate tool calls are dropped, plans cap at 4 calls, and a zero-result run triggers ONE replan with failure feedback.
 """
@@ -570,6 +570,11 @@ _NEGATION_TAIL_RE = re.compile(
     r"\b(?:no|not|without|except|excluding|avoid|nothing|never|zero)\b[^,.;!?]*$",
     re.IGNORECASE,
 )
+_NEGATION_CUE_RE = re.compile(
+    r"\b(?:no|not|without|except|excluding|exclude|avoid|nothing|never|zero|skip|hate)\b"
+    r"|anything but",
+    re.IGNORECASE,
+)
 _YEARISH_RE = re.compile(
     r'\b(?:recent|latest|new(?:est)?|modern|current|today|old(?:er)?|oldies|classic|'
     r'vintage|early|late|decades?|years?|era)\b',
@@ -773,6 +778,20 @@ def _strip_unrequested_filter_args(
             "(no vocal/instrumental wording in the request)"
         )
         filt.pop('instrumental', None)
+    if (
+        (filt.get('exclude_genres') or filt.get('exclude_artists'))
+        and not hints.get('exclude_genres')
+        and not _NEGATION_CUE_RE.search(original_message)
+    ):
+        dropped_ex = {
+            k: filt[k] for k in ('exclude_genres', 'exclude_artists') if filt.get(k)
+        }
+        log_messages.append(
+            f"   strip hallucinated exclusions {dropped_ex} "
+            "(nothing is excluded in the request)"
+        )
+        filt.pop('exclude_genres', None)
+        filt.pop('exclude_artists', None)
     if not _has_filter_content(filt):
         plan.notes.append('filter emptied after stripping hallucinated args')
         plan.filter = None

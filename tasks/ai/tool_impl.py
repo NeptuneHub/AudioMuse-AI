@@ -14,7 +14,7 @@ alchemy, CLAP audio and lyrics text search, metadata filtering, and the
 brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
-* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
+* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Nas' never matches 'Jonas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
 * search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded); brainstorm fuses audio/artist/lyrics/filter channels round-robin, year-gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
 * Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs ordered by artist rank (seed artist first, then closest neighbors) so downstream rank blending stays meaningful.
 """
@@ -163,6 +163,10 @@ def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
         return out
     finally:
         db_conn.close()
+
+
+def _artist_word_regex(artist) -> str:
+    return r'\m' + re.escape(str(artist).strip()) + r'\M'
 
 
 def _normalize_for_match(s: Optional[str]) -> str:
@@ -965,8 +969,8 @@ def _database_genre_query_sync(
 
             if artist:
                 if fuzzy_match:
-                    conditions.append("LOWER(author) LIKE LOWER(%s)")
-                    params.append(f"%{artist}%")
+                    conditions.append("author ~* %s")
+                    params.append(_artist_word_regex(artist))
                 else:
                     conditions.append("""
                         LOWER(REPLACE(REPLACE(REPLACE(REPLACE(author, '-', ''), '\u2010', ''), '/', ''), '''', ''))
