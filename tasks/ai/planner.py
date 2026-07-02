@@ -975,6 +975,16 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
     return filt
 
 
+def _seed_identity(seed: Dict) -> tuple:
+    if seed.get('type') == 'artist':
+        return ('artist', (seed.get('name') or '').strip().lower())
+    return (
+        'song',
+        (seed.get('title') or '').strip().lower(),
+        (seed.get('artist') or '').strip().lower(),
+    )
+
+
 def validate_plan_args(
     tool_calls: List[Dict],
     *,
@@ -1038,6 +1048,18 @@ def validate_plan_args(
                         artist = (s.get('artist') or '').strip()
                         if title and artist:
                             cleaned_sub.append({'type': 'song', 'title': title, 'artist': artist})
+                seed_keys = {_seed_identity(s) for s in cleaned_seeds}
+                self_subtracted = [
+                    s for s in cleaned_sub if _seed_identity(s) in seed_keys
+                ]
+                if self_subtracted:
+                    cleaned_sub = [
+                        s for s in cleaned_sub if _seed_identity(s) not in seed_keys
+                    ]
+                    log_messages.append(
+                        f"   drop self-subtraction: {len(self_subtracted)} subtract "
+                        "item(s) duplicate the seeds"
+                    )
                 if not cleaned_sub:
                     log_messages.append(
                         "   coerce blend_mode 'subtract' -> 'union' (empty 'subtract' list)"

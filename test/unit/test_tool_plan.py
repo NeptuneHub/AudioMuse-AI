@@ -304,6 +304,53 @@ class TestValidatePlanArgs:
         assert out[0]['arguments']['blend_mode'] == 'union'
         assert 'subtract' not in out[0]['arguments']
 
+    def test_coerces_self_subtraction_to_union(self):
+        p = _plan()
+        log = []
+        seeds = [
+            {'type': 'artist', 'name': 'Wu-Tang Clan'},
+            {'type': 'artist', 'name': 'Nujabes'},
+        ]
+        out = p.validate_plan_args(
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {
+                        'seeds': list(seeds),
+                        'blend_mode': 'subtract',
+                        'subtract': [dict(s) for s in seeds],
+                    },
+                }
+            ],
+            user_wants_rating=False,
+            log_messages=log,
+        )
+        assert len(out) == 1
+        assert out[0]['arguments']['blend_mode'] == 'union'
+        assert 'subtract' not in out[0]['arguments']
+        assert any('self-subtraction' in ln for ln in log)
+
+    def test_partial_self_subtraction_keeps_other_items(self):
+        p = _plan()
+        out = p.validate_plan_args(
+            [
+                {
+                    'name': 'seed_search',
+                    'arguments': {
+                        'seeds': [{'type': 'artist', 'name': 'Oasis'}],
+                        'blend_mode': 'subtract',
+                        'subtract': [
+                            {'type': 'artist', 'name': 'Oasis'},
+                            {'type': 'artist', 'name': 'Blur'},
+                        ],
+                    },
+                }
+            ],
+            user_wants_rating=False,
+        )
+        assert out[0]['arguments']['blend_mode'] == 'subtract'
+        assert out[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Blur'}]
+
     def test_strips_hallucinated_min_rating(self):
         p = _plan()
         out = p.validate_plan_args(
