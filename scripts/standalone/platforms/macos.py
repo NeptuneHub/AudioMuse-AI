@@ -38,6 +38,27 @@ def prepare(ctx):
     subprocess.run(["bash", "native-build/macos/make_icns.sh"], check=True, cwd=str(ctx.root))
 
 
+def _retarget_shared_libomp(app):
+    # sklearn and numkong both bundle libomp.dylib; PyInstaller rewrites every
+    # extension's rpath to the Frameworks root and points the shared top-level
+    # libomp.dylib symlink at whichever copy it collected first (sklearn's,
+    # which is older). numkong's kernels need ___kmpc_dispatch_deinit, absent
+    # from sklearn's copy, so `import numkong` fails and the i8 IVF path falls
+    # back to NumPy. libomp only ever adds symbols, so the newer numkong copy
+    # is safe for sklearn too — retarget the shared symlink at it.
+    contents = os.path.join(str(app), "Contents")
+    target = os.path.join("numkong", "__dot__dylibs", "libomp.dylib")
+    if not os.path.exists(os.path.join(contents, "Frameworks", target)):
+        print("[WARN] numkong libomp.dylib not found; leaving shared libomp symlink alone.")
+        return
+    for parent in ("Frameworks", "Resources"):
+        link = os.path.join(contents, parent, "libomp.dylib")
+        if os.path.islink(link):
+            os.unlink(link)
+            os.symlink(target, link)
+            print(f"==> Retargeted {parent}/libomp.dylib -> {target}")
+
+
 def _sign_nested(app, entitlements):
     print("==> Ad-hoc signing nested binaries")
     contents = os.path.join(str(app), "Contents")
@@ -63,6 +84,7 @@ def package(ctx):
     app = ctx.app_path
     entitlements = str(ctx.root / "native-build" / "macos" / "entitlements.plist")
 
+    _retarget_shared_libomp(app)
     _sign_nested(app, entitlements)
 
     print("==> Ad-hoc signing the bundle")

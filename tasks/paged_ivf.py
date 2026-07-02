@@ -59,9 +59,10 @@ def _warn_numkong_missing_once(dtype_name: str) -> None:
         return
     _warned_numkong_missing = True
     logger.warning(
-        "NumKong native kernels unavailable; %s IVF cells fall back to the NumPy distance "
-        "path (correct results, slower per-scan compute). Install the numkong wheel for this "
-        "platform, or set IVF_STORAGE_DTYPE=f32 to skip quantization.",
+        "NumKong native kernels unavailable (%s); %s IVF cells fall back to the NumPy "
+        "distance path (correct results, slower per-scan compute). Install the numkong wheel "
+        "for this platform, or set IVF_STORAGE_DTYPE=f32 to skip quantization.",
+        quant.NUMKONG_IMPORT_ERROR or "unknown import failure",
         dtype_name,
     )
 
