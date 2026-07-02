@@ -254,8 +254,8 @@ def search_tracks_endpoint():
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         return jsonify(results)
-    except Exception as e:
-        logger.exception(f"Error during track search: {e}")
+    except Exception:
+        logger.exception("Error during track search")
         return jsonify({"error": "An error occurred during search."}), 500
 
 
@@ -526,11 +526,11 @@ def get_max_distance_endpoint():
                 {"error": f"Item '{item_id}' not found in index or index unavailable."}
             ), 404
         return jsonify(result)
-    except RuntimeError as e:
-        logger.exception(f"Runtime error computing max distance for {item_id}: {e}")
+    except RuntimeError:
+        logger.exception(f"Runtime error computing max distance for {item_id}")
         return jsonify({"error": "The similarity search service is currently unavailable."}), 503
-    except Exception as e:
-        logger.exception(f"Unexpected error computing max distance for {item_id}: {e}")
+    except Exception:
+        logger.exception(f"Unexpected error computing max distance for {item_id}")
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -591,8 +591,8 @@ def get_track_endpoint():
                 "album_artist": (d.get('album_artist') or 'unknown'),
             }
         ), 200
-    except Exception as e:
-        logger.exception(f"Unexpected error fetching track {item_id}: {e}")
+    except Exception:
+        logger.exception(f"Unexpected error fetching track {item_id}")
         return jsonify({"error": "An unexpected error occurred."}), 500
 
 
@@ -674,9 +674,9 @@ def create_media_server_playlist():
             }
         ), 201
 
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"Failed to create media server playlist '{playlist_name}': {e}"
+            f"Failed to create media server playlist '{playlist_name}'"
         )
         return jsonify(
             {"error": "An error occurred while creating the playlist on the media server."}

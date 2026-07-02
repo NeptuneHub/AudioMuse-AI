@@ -195,7 +195,7 @@ jobs:
               --tag "${IMAGE}:${TAG}" \
               "${AMD64}" \
               "${ARM64}"
-            echo "✓ Pushed ${IMAGE}:${TAG}"
+            echo "OK: Pushed ${IMAGE}:${TAG}"
           done
 
       - name: Verify multi-arch manifest

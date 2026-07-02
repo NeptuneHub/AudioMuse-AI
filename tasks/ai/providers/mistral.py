@@ -96,8 +96,8 @@ def generate_text(
         logger.warning("Mistral returned no content. Raw response: %s", response)
         return "Error: mistral returned no content."
 
-    except Exception as e:
-        logger.error("Error calling Mistral API: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Error calling Mistral API")
         return "Error: AI service is currently unavailable."
 
 

@@ -123,7 +123,7 @@ def _lyrion_titles_response(response):
 
 
 def _get_target_paths_for_filtering():
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    folder_names_str = config.MUSIC_LIBRARIES
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
@@ -136,7 +136,7 @@ def _get_target_paths_for_filtering():
 
 
 def _get_target_music_folder_ids():
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    folder_names_str = config.MUSIC_LIBRARIES
 
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
@@ -282,8 +282,8 @@ def _get_first_player():
 
         logger.warning("No Lyrion players found, using fallback player ID")
         return "10.42.6.0"
-    except Exception as e:
-        logger.exception(f"Error getting Lyrion player: {e}")
+    except Exception:
+        logger.exception("Error getting Lyrion player")
         return "10.42.6.0"
 
 
@@ -329,12 +329,12 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None
             else:
                 err = f"Failed to connect to Lyrion after {max_retries} attempts: {e}"
                 logger.exception(err)
-                raise LyrionAPIError(err)
+                raise LyrionAPIError(err) from e
         except LyrionAPIError:
             raise
         except Exception as e:
             logger.exception(f"Failed to call Lyrion JSON-RPC API with method '{method}'")
-            raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}")
+            raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}") from e
 
     raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
 
@@ -873,8 +873,8 @@ def _add_to_playlist(playlist_id, item_ids):
                         f"Working with new playlist ID {final_playlist_id} which has the content"
                     )
                     return True
-                except Exception as e:
-                    logger.exception(f"Error handling new playlist: {e}")
+                except Exception:
+                    logger.exception("Error handling new playlist")
                     return False
         elif total_added > 0:
             logger.info(f"Successfully added {total_added} tracks (save response: {save_response})")
@@ -883,8 +883,8 @@ def _add_to_playlist(playlist_id, item_ids):
             logger.warning("No tracks were added to the playlist")
             return False
 
-    except Exception as e:
-        logger.exception(f"Error in playlist update method: {e}")
+    except Exception:
+        logger.exception("Error in playlist update method")
         return False
 
 
@@ -923,8 +923,8 @@ def _create_playlist_batched(playlist_name, item_ids):
         )
         return None
 
-    except Exception as e:
-        logger.exception(f"Exception creating Lyrion playlist '{playlist_name}': {e}")
+    except Exception:
+        logger.exception(f"Exception creating Lyrion playlist '{playlist_name}'")
         return None
 
 
@@ -957,8 +957,8 @@ def get_tracks_from_album(album_id, user_creds=None):
             "titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"], user_creds=user_creds
         )
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
-    except Exception as e:
-        logger.exception(f"Lyrion API call for album {album_id} failed: {e}")
+    except Exception:
+        logger.exception(f"Lyrion API call for album {album_id} failed")
         return []
 
     songs = []
@@ -1067,8 +1067,8 @@ def get_playlist_track_ids(playlist_id):
         response = _jsonrpc_request(
             "playlists", ["tracks", 0, 999999, f"playlist_id:{playlist_id}", "tags:u"]
         )
-    except Exception as e:
-        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}: {e}")
+    except Exception:
+        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}")
         return []
     if not response:
         return []

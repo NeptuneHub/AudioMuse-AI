@@ -351,9 +351,9 @@ def song_alchemy(
     subtract_items=None,
     add_ids=None,
     subtract_ids=None,
-    n_results: int = None,
-    subtract_distance: float = None,
-    temperature: float = None,
+    n_results: int | None = None,
+    subtract_distance: float | None = None,
+    temperature: float | None = None,
 ) -> dict:
     from app_helper_artist import get_artist_name_by_id
 

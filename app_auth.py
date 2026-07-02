@@ -184,8 +184,8 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     hasher = _get_password_hasher()
     try:
         password_hash = hasher.hash(password)
-    except Exception as exc:
-        logger.exception(f"Failed to hash password for new user {username!r}: {exc}")
+    except Exception:
+        logger.exception(f"Failed to hash password for new user {username!r}")
         return False, "Failed to hash password."
 
     db = _get_db()
@@ -251,12 +251,12 @@ def delete_additional_user_safe(user_id):
         if not deleted:
             return "not_found", None
         return "deleted", None
-    except Exception as exc:
+    except Exception:
         try:
             db.rollback()
         except Exception:
             pass
-        logger.exception(f"Failed to atomically delete user {user_id}: {exc}")
+        logger.exception(f"Failed to atomically delete user {user_id}")
         return "error", "Database error while deleting user."
 
 
@@ -270,8 +270,8 @@ def update_additional_user_password(user_id, new_password):
         return False, "Password is required."
     try:
         password_hash = _get_password_hasher().hash(new_password)
-    except Exception as exc:
-        logger.exception(f"Failed to hash new password for user {user_id}: {exc}")
+    except Exception:
+        logger.exception(f"Failed to hash new password for user {user_id}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -304,16 +304,16 @@ def verify_additional_user(username, password):
         return None
     try:
         import argon2
-    except ImportError as exc:
-        logger.exception(f"argon2 is not installed: {exc}")
+    except ImportError:
+        logger.exception("argon2 is not installed")
         return None
 
     try:
         _get_password_hasher().verify(stored, password)
     except (argon2.exceptions.VerifyMismatchError, argon2.exceptions.VerificationError):
         return None
-    except Exception as exc:
-        logger.exception(f"Unexpected error during password verification: {exc}")
+    except Exception:
+        logger.exception("Unexpected error during password verification")
         return None
     return _normalize_role(role) or USER_ROLE_USER
 
@@ -332,8 +332,8 @@ def upsert_admin_user(username, password):
         return False, "Username is too long."
     try:
         password_hash = _get_password_hasher().hash(password)
-    except Exception as exc:
-        logger.exception(f"Failed to hash password for admin {username!r}: {exc}")
+    except Exception:
+        logger.exception(f"Failed to hash password for admin {username!r}")
         return False, "Failed to hash password."
     db = _get_db()
     with db.cursor() as cur:
@@ -367,8 +367,8 @@ def seed_admin_from_env():
         if count_admin_users() > 0:
             purge_legacy_admin_config()
             return False
-    except Exception as exc:
-        logger.exception(f"seed_admin_from_env: failed to count admins: {exc}")
+    except Exception:
+        logger.exception("seed_admin_from_env: failed to count admins")
         return False
 
     # 2. Fall back to legacy rows persisted in app_config.
@@ -376,8 +376,8 @@ def seed_admin_from_env():
 
     # 3. Fall back to real process environment variables.
     if not (user and password):
-        user = os.environ.get('AUDIOMUSE_USER', '') or ''
-        password = os.environ.get('AUDIOMUSE_PASSWORD', '') or ''
+        user = os.environ.get('AUDIOMUSE_USER') or ''
+        password = os.environ.get('AUDIOMUSE_PASSWORD') or ''
         source = 'env'
 
     if not (isinstance(user, str) and user.strip() and isinstance(password, str) and password):
@@ -390,8 +390,8 @@ def seed_admin_from_env():
             password_hash = password
         else:
             password_hash = _get_password_hasher().hash(password)
-    except Exception as exc:
-        logger.exception(f"seed_admin_from_env: failed to prepare password: {exc}")
+    except Exception:
+        logger.exception("seed_admin_from_env: failed to prepare password")
         return False
     db = _get_db()
     try:
@@ -418,9 +418,9 @@ def seed_admin_from_env():
         if source == 'app_config':
             purge_legacy_admin_config()
         return True
-    except Exception as exc:
+    except Exception:
         db.rollback()
-        logger.exception(f"seed_admin_from_env: insert failed: {exc}")
+        logger.exception("seed_admin_from_env: insert failed")
         return False
 
 
@@ -436,9 +436,9 @@ def _read_legacy_admin_from_app_config():
                 "WHERE key IN ('AUDIOMUSE_USER', 'AUDIOMUSE_PASSWORD')"
             )
             rows = cur.fetchall() or []
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            f"_read_legacy_admin_from_app_config: lookup failed: {exc}",
+            "_read_legacy_admin_from_app_config: lookup failed",
         )
         return '', '', 'app_config'
     values = {row[0]: row[1] for row in rows}
@@ -468,9 +468,9 @@ def purge_legacy_admin_config():
                 removed,
             )
         return removed
-    except Exception as exc:
+    except Exception:
         db.rollback()
-        logger.exception(f"purge_legacy_admin_config failed: {exc}")
+        logger.exception("purge_legacy_admin_config failed")
         return 0
 
 
@@ -495,9 +495,9 @@ def check_setup_needed():
 
     try:
         return count_admin_users() <= 0
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            f"Failed to count admin users while checking setup status: {exc}"
+            "Failed to count admin users while checking setup status"
         )
         return True
 
@@ -761,10 +761,9 @@ def auth_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     try:
         admin_count = count_admin_users()
-    except Exception as exc:
+    except Exception:
         current_app.logger.exception(
-            'Failed to count admin users during authentication: %s',
-            exc,
+            'Failed to count admin users during authentication',
         )
         return jsonify({"error": "Database error while checking admin accounts."}), 500
     if admin_count <= 0:
@@ -898,8 +897,8 @@ def list_users_endpoint():
             # Scope the query to the caller so non-admins never receive
             # other users' rows from the database at all.
             users = list_additional_users(username=current_username) if current_username else []
-    except Exception as exc:
-        current_app.logger.exception(f"Failed to list users: {exc}")
+    except Exception:
+        current_app.logger.exception("Failed to list users")
         return jsonify({"error": "Failed to list users"}), 500
     return jsonify(
         {

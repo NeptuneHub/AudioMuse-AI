@@ -198,8 +198,8 @@ def build_and_store_map_projection(index_name='main_map'):
             dim=EMBEDDING_DIMENSION,
             where_clause="embedding IS NOT NULL",
         )
-    except Exception as e:
-        logger.error(f"Failed to stream embeddings for map projection: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to stream embeddings for map projection")
         return False
 
     if mat.shape[0] == 0:
@@ -240,8 +240,8 @@ def build_and_store_map_projection(index_name='main_map'):
         }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
-    except Exception as e:
-        logger.exception(f"Failed to build and store map projection: {e}")
+    except Exception:
+        logger.exception("Failed to build and store map projection")
         return False
 
 
@@ -341,8 +341,8 @@ def build_and_store_artist_projection(index_name='artist_map'):
         }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
-    except Exception as e:
-        logger.exception(f"Failed to build and store artist projection: {e}")
+    except Exception:
+        logger.exception("Failed to build and store artist projection")
         return False
 
 
@@ -397,8 +397,8 @@ def cancel_job_and_children_recursive(
                     logger.info(f"Sent stop/cancel for job {jid} during global cancel")
             except NoSuchJobError:
                 logger.debug(f"Job {jid} not found in RQ during global cancel")
-        except Exception as e_j:
-            logger.exception(f"Error cancelling job {jid} during global cancel: {e_j}")
+        except Exception:
+            logger.exception(f"Error cancelling job {jid} during global cancel")
 
     # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
     try:
@@ -471,9 +471,9 @@ def cancel_job_and_children_recursive(
         deleted = cur.rowcount
         db.commit()
         logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
-    except Exception as e_dbdel:
+    except Exception:
         db.rollback()
-        logger.exception(f"Error deleting task_status rows during global cancel: {e_dbdel}")
+        logger.exception("Error deleting task_status rows during global cancel")
     finally:
         cur.close()
 
@@ -486,7 +486,7 @@ def cancel_job_and_children_recursive(
             progress=100,
             details={"message": reason, "origin": "global_cancel"},
         )
-    except Exception as e_save:
-        logger.exception(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
+    except Exception:
+        logger.exception(f"Failed to insert REVOKED recap row for {job_id}")
 
     return cancelled_count

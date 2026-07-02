@@ -33,7 +33,7 @@ _TRACK_FIELDS = "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,A
 
 
 def _get_target_library_ids():
-    library_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    library_names_str = config.MUSIC_LIBRARIES
 
     if not library_names_str.strip():
         return None
@@ -90,9 +90,9 @@ def _get_target_library_ids():
         )
         return music_library_ids
 
-    except Exception as e:
-        logger.error(
-            f"Failed to fetch or parse Emby virtual folders at '{url}': {e}", exc_info=True
+    except Exception:
+        logger.exception(
+            f"Failed to fetch or parse Emby virtual folders at '{url}'"
         )
         return set()
 
@@ -118,8 +118,8 @@ def list_libraries(user_creds=None):
             and lib.get('ItemId')
             and lib.get('Name')
         ]
-    except Exception as e:
-        logger.error(f"Emby list_libraries failed at '{url}': {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Emby list_libraries failed at '{url}'")
         return []
 
 
@@ -130,8 +130,8 @@ def _emby_base_url(user_creds=None):
 
 
 def _emby_headers_from_creds(user_creds=None):
-    headers = dict(getattr(config, 'HEADERS', {}) or {})
-    token = user_creds.get('token') if user_creds else getattr(config, 'EMBY_TOKEN', None)
+    headers = dict(config.HEADERS or {})
+    token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
     if token:
         headers['X-Emby-Token'] = token
     return headers
@@ -144,8 +144,8 @@ def _emby_get_users(token):
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
-        logger.error(f"Emby get_users failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Emby get_users failed")
         return None
 
 
@@ -240,8 +240,8 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
                 if len(tracks_on_page) < page_size:
                     break
-            except Exception as e:
-                logger.error(f"Emby get_recent_standalone_tracks failed: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Emby get_recent_standalone_tracks failed")
                 break
 
     else:
@@ -303,10 +303,9 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
                     if len(tracks_on_page) < page_size:
                         break
-                except Exception as e:
-                    logger.error(
-                        f"Emby get_recent_standalone_tracks failed for library ID {library_id}: {e}",
-                        exc_info=True,
+                except Exception:
+                    logger.exception(
+                        f"Emby get_recent_standalone_tracks failed for library ID {library_id}",
                     )
                     break
 
@@ -366,9 +365,9 @@ def _get_recent_albums_only(limit, user_creds=None):
 
                 if len(albums_on_page) < page_size:
                     break
-            except Exception as e:
-                logger.error(
-                    f"Emby _get_recent_albums_only failed during 'scan all': {e}", exc_info=True
+            except Exception:
+                logger.exception(
+                    "Emby _get_recent_albums_only failed during 'scan all'"
                 )
                 break
 
@@ -406,10 +405,9 @@ def _get_recent_albums_only(limit, user_creds=None):
 
                     if len(albums_on_page) < page_size:
                         break
-                except Exception as e:
-                    logger.error(
-                        f"Emby _get_recent_albums_only failed for library ID {library_id}: {e}",
-                        exc_info=True,
+                except Exception:
+                    logger.exception(
+                        f"Emby _get_recent_albums_only failed for library ID {library_id}",
                     )
                     break
 
@@ -486,10 +484,9 @@ def get_tracks_from_album(album_id, user_creds=None):
             track_item['FilePath'] = track_item.get('Path')
 
             return [track_item]
-        except Exception as e:
-            logger.error(
-                f"Emby get_tracks_from_album failed for standalone track {real_track_id}: {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                f"Emby get_tracks_from_album failed for standalone track {real_track_id}",
             )
             return []
 
@@ -519,8 +516,8 @@ def get_tracks_from_album(album_id, user_creds=None):
             item['FilePath'] = item.get('Path')
 
         return items
-    except Exception as e:
-        logger.error(f"Emby get_tracks_from_album failed for album {album_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Emby get_tracks_from_album failed for album {album_id}")
         return []
 
 
@@ -539,8 +536,8 @@ def download_track(temp_dir, item):
                     f.write(chunk)
         logger.info(f"Downloaded '{item['Name']}' to '{local_filename}'")
         return local_filename
-    except Exception as e:
-        logger.error(f"Failed to download track {item.get('Name', 'Unknown')}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
         return None
 
 
@@ -584,8 +581,8 @@ def get_all_songs(user_creds=None):
                 break
 
             start_index += limit
-        except Exception as e:
-            logger.error(f"Emby get_all_songs failed at index {start_index}: {e}", exc_info=True)
+        except Exception:
+            logger.exception(f"Emby get_all_songs failed at index {start_index}")
             raise
 
     return all_items
@@ -620,8 +617,8 @@ def search_albums(query, user_creds=None):
             }
             for item in items
         ]
-    except Exception as e:
-        logger.error(f"Emby search_albums failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Emby search_albums failed")
         return []
 
 
@@ -690,8 +687,8 @@ def get_playlist_by_name(playlist_name, user_creds=None):
 
         return None
 
-    except Exception as e:
-        logger.error(f"Emby get_playlist_by_name failed for '{playlist_name}': {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Emby get_playlist_by_name failed for '{playlist_name}'")
         return None
 
 
@@ -725,23 +722,19 @@ def create_playlist(playlist_name, item_ids, user_creds=None):
         logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
         return r.json()
 
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            "HTTP Exception creating Emby playlist '%s' for user %s: %s",
+    except requests.exceptions.RequestException:
+        logger.exception(
+            "HTTP Exception creating Emby playlist '%s' for user %s",
             playlist_name,
             user_id,
-            e,
-            exc_info=True,
         )
         return None
 
-    except Exception as e:
-        logger.error(
-            "Generic exception creating Emby playlist '%s' for user %s: %s",
+    except Exception:
+        logger.exception(
+            "Generic exception creating Emby playlist '%s' for user %s",
             playlist_name,
             user_id,
-            e,
-            exc_info=True,
         )
         return None
 
@@ -754,8 +747,8 @@ def get_all_playlists(user_creds=None):
         r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return r.json().get("Items") or []
-    except Exception as e:
-        logger.error(f"Emby get_all_playlists failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Emby get_all_playlists failed")
         return []
 
 
@@ -766,8 +759,8 @@ def delete_playlist(playlist_id):
         r = requests.post(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return True
-    except Exception as e:
-        logger.error(f"Exception deleting Emby playlist ID {playlist_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Exception deleting Emby playlist ID {playlist_id}")
         return False
 
 
@@ -802,8 +795,8 @@ def get_top_played_songs(limit, user_creds=None):
             item['FilePath'] = item.get('Path')
 
         return items
-    except Exception as e:
-        logger.error(f"Emby get_top_played_songs failed for user {user_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Emby get_top_played_songs failed for user {user_id}")
         return []
 
 
@@ -820,10 +813,9 @@ def get_last_played_time(item_id, user_creds=None):
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return r.json().get("UserData", {}).get("LastPlayedDate")
-    except Exception as e:
-        logger.error(
-            f"Emby get_last_played_time failed for item {item_id}, user {user_id}: {e}",
-            exc_info=True,
+    except Exception:
+        logger.exception(
+            f"Emby get_last_played_time failed for item {item_id}, user {user_id}",
         )
         return None
 
@@ -874,23 +866,19 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
         return r.json()
 
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            "HTTP Exception creating Emby playlist '%s' for user %s: %s",
+    except requests.exceptions.RequestException:
+        logger.exception(
+            "HTTP Exception creating Emby playlist '%s' for user %s",
             playlist_name,
             user_id,
-            e,
-            exc_info=True,
         )
         return None
 
-    except Exception as e:
-        logger.error(
-            "Generic exception creating Emby playlist '%s' for user %s: %s",
+    except Exception:
+        logger.exception(
+            "Generic exception creating Emby playlist '%s' for user %s",
             playlist_name,
             user_id,
-            e,
-            exc_info=True,
         )
         return None
 
@@ -902,8 +890,8 @@ def _fetch_playlist_items(playlist_id, user_id, headers):
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return r.json().get("Items") or []
-    except Exception as e:
-        logger.exception(f"Emby _fetch_playlist_items failed for {playlist_id}: {e}")
+    except Exception:
+        logger.exception(f"Emby _fetch_playlist_items failed for {playlist_id}")
         return None
 
 
@@ -939,10 +927,9 @@ def _remove_playlist_entries(playlist_id, entry_ids, headers):
         try:
             r = requests.delete(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
-        except Exception as e:
-            logger.error(
-                f"Emby _remove_playlist_entries: batch starting at {i} failed for playlist {playlist_id}: {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                f"Emby _remove_playlist_entries: batch starting at {i} failed for playlist {playlist_id}",
             )
             return False
     return True
@@ -958,10 +945,9 @@ def _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
         try:
             r = requests.post(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
-        except Exception as e:
-            logger.error(
-                f"Emby _add_items_to_playlist: batch starting at {i} failed for playlist {playlist_id}: {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                f"Emby _add_items_to_playlist: batch starting at {i} failed for playlist {playlist_id}",
             )
             return False
     return True
@@ -994,10 +980,9 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
             r = requests.post(url, headers=headers, timeout=REQUESTS_TIMEOUT)
             r.raise_for_status()
             created = r.json()
-        except Exception as e:
-            logger.error(
-                f"Emby create_or_replace_playlist: create failed for '{playlist_name}': {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                f"Emby create_or_replace_playlist: create failed for '{playlist_name}'",
             )
             return None
 

@@ -62,8 +62,8 @@ def sonic_fingerprint_page():
             title='AudioMuse-AI - Sonic Fingerprint',
             active='sonic_fingerprint',
         )
-    except Exception as e:
-        logger.error(f"Error rendering sonic_fingerprint.html: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error rendering sonic_fingerprint.html")
         return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"
 
 
@@ -227,8 +227,8 @@ def generate_sonic_fingerprint_endpoint():
             fingerprint_results, missing_album=None, include_album_artist=False
         )
         return jsonify(final_results)
-    except Exception as e:
-        logger.error(f"Error in sonic_fingerprint endpoint: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error in sonic_fingerprint endpoint")
         return jsonify(
             {"error": "An unexpected error occurred while generating the sonic fingerprint."}
         ), 500

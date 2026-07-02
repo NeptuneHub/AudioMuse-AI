@@ -108,7 +108,7 @@ def generate_waveform_peaks(file_path, samples_count=500):
             logger.warning(
                 f"soundfile failed to read {file_path}: {sf_error}. Trying librosa fallback..."
             )
-            raise ImportError("soundfile failed, using librosa fallback")
+            raise ImportError("soundfile failed, using librosa fallback") from sf_error
 
         # Convert stereo to mono if needed (simple average, very fast)
         if y.ndim > 1:
@@ -174,7 +174,7 @@ def generate_waveform_peaks(file_path, samples_count=500):
         return peaks.tolist()
 
     except Exception as e:
-        raise RuntimeError(f"Failed to generate waveform: {str(e)}")
+        raise RuntimeError(f"Failed to generate waveform: {str(e)}") from e
 
 
 @waveform_bp.route('/api/waveform', methods=['GET'])
@@ -326,11 +326,11 @@ def get_waveform_endpoint():
 
         return jsonify(response), 200
 
-    except RuntimeError as e:
-        logger.error(f"Runtime error generating waveform for {item_id}: {e}", exc_info=True)
+    except RuntimeError:
+        logger.exception(f"Runtime error generating waveform for {item_id}")
         return jsonify({"error": "An error occurred during waveform generation"}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error generating waveform for {item_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Unexpected error generating waveform for {item_id}")
         return jsonify({"error": "An unexpected error occurred during waveform generation"}), 500
     finally:
         if temp_dir and os.path.exists(temp_dir):

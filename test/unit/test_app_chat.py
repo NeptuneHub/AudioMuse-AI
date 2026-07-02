@@ -8,13 +8,12 @@
 
 """Unit tests for chat request pre-validation and result shaping.
 
-Covers the input guards, artist-diversity enforcement, and per-iteration
-prompt message construction used by the chat planner loop.
+Covers the input guards and artist-diversity enforcement used by the chat
+pipeline.
 
 Main Features:
 * Song-similarity and search-database filter pre-validation.
 * Artist-diversity capping, overflow backfill, and underrepresented priority.
-* Iteration message content across the first and later planner passes.
 """
 
 class TestPreValidation:
@@ -248,60 +247,3 @@ class TestArtistDiversityEnforcement:
         assert len(result) == 3
         artist1_count = len([s for s in result if s['artist'] == 'Artist1'])
         assert artist1_count == 2
-
-
-class TestIterationMessage:
-    def test_iteration_0_message_is_minimal_request(self):
-        user_input = "songs like Radiohead"
-        target = 100
-
-        ai_context = f'Build a {target}-song playlist for: "{user_input}"'
-
-        assert "Build a 100-song playlist for:" in ai_context
-        assert "Radiohead" in ai_context
-        assert "Top artists:" not in ai_context
-        assert "Genres covered:" not in ai_context
-
-    def test_iteration_gt0_contains_top_artists(self):
-        current_song_count = 45
-        target_song_count = 100
-        songs_needed = target_song_count - current_song_count
-
-        artist_counts = {'Radiohead': 12, 'Thom Yorke': 8, 'The National': 6}
-        top_5 = sorted(artist_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        top_artists_str = ', '.join([f'{a}({c})' for a, c in top_5])
-
-        ai_context = f"""Original request: "songs like Radiohead"
-Progress: {current_song_count}/{target_song_count} songs collected. Need {songs_needed} MORE.
-
-What we have so far:
-- Top artists: {top_artists_str}
-"""
-
-        assert f"{current_song_count}/{target_song_count}" in ai_context
-        assert "Top artists:" in ai_context
-        assert "Radiohead(12)" in ai_context
-
-    def test_iteration_gt0_contains_diversity_ratio(self):
-        current_song_count = 45
-        unique_artists = 15
-        diversity_ratio = unique_artists / max(current_song_count, 1)
-
-        ai_context = (
-            f"Artist diversity: {unique_artists} unique artists (ratio: {diversity_ratio:.2f})"
-        )
-
-        assert "Artist diversity:" in ai_context
-        assert f"{unique_artists}" in ai_context
-
-    def test_iteration_gt0_contains_tools_used_history(self):
-        tools_used = [
-            {'name': 'text_search', 'songs': 25},
-            {'name': 'song_alchemy', 'songs': 20},
-        ]
-        tools_str = ', '.join([f"{t['name']}({t['songs']})" for t in tools_used])
-
-        ai_context = f"Tools used: {tools_str}"
-
-        assert "text_search(25)" in ai_context
-        assert "song_alchemy(20)" in ai_context

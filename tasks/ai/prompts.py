@@ -9,15 +9,17 @@
 """Prompt and JSON-schema templates for the playlist AI.
 
 Central store of every prompt string the AI layer sends: the playlist-naming
-template, the intent classifier, the MCP tool-router system prompt, the
-Ollama tool-calling prompt with worked examples, and the grounded brainstorm
-recipe prompt. Consumed by ``planner``, ``api``, ``tool_impl``, and providers.
+template, the single-call tool-router system prompt, the Ollama tool-calling
+prompt, and the grounded brainstorm recipe prompt. Consumed by ``planner``,
+``api``, ``tool_impl``, and providers.
 
 Main Features:
-* Prompts are built dynamically from config vocab (genres/voices/moods) and library_context so allowed values stay in sync with the catalog.
-* build_tool_calls_schema emits the strict JSON shape (1-4 tool calls, name enum) used to constrain Ollama structured output.
+* Tool prose and the Ollama structured-output grammar are both DERIVED from the get_mcp_tools schemas (names, descriptions, per-argument types and enums), so the routing knowledge lives in one place and stays in sync across providers.
+* build_tool_calls_schema emits a typed per-tool grammar (reasoning field first with a hard maxLength, name+arguments branches with enum-locked labels) used to constrain Ollama structured output; prompts stay short with a few diverse worked examples per intent class, including exclusion ('no rap') and language/scene routing rules.
 """
 
+import copy
+import json
 from typing import Dict, List, Optional
 
 import config
@@ -37,77 +39,229 @@ creative_prompt_template = (
 )
 
 
-INTENT_CLASSES = ["seed", "text", "knowledge", "metadata"]
-
-PRIMARY_INTENTS = ["seed", "text", "knowledge"]
-
-
 def _get_dynamic_genres(library_context: Optional[Dict]) -> str:
     if library_context and library_context.get('top_genres'):
         return ', '.join(library_context['top_genres'][:10])
     return config.AI_FALLBACK_GENRES
 
 
+def _render_tool_line(tool: Dict) -> str:
+    props = (tool.get('inputSchema') or {}).get('properties') or {}
+    args = ", ".join(props.keys())
+    return f"- {tool['name']}({args}): {tool['description']}"
+
+
 def build_mcp_system_prompt(
     tools: List[Dict],
     library_context: Optional[Dict] = None,
 ) -> str:
-    tool_names = {t['name'] for t in tools}
-    has_seed = 'seed_search' in tool_names
-    has_text = 'text_match' in tool_names
-    has_knowledge = 'knowledge_lookup' in tool_names
-
-    tool_lines: List[str] = []
-    if has_seed:
-        tool_lines.append(
-            "- seed_search(seeds[], blend_mode?, subtract?): songs from one or more SEED songs/artists. "
-            "Seeds can be a mix of songs and artists. Use blend_mode='union' (default) for "
-            "'similar to A and B'; 'alchemy' for 'A meets B' (2+ seeds); 'subtract' for 'A but not Y'."
-        )
-    if has_text:
-        tool_lines.append(
-            "- text_match(query, mode?): semantic text search. mode='audio' (default) for sound/instruments "
-            "('calm piano'); mode='lyrics' for lyrical themes ('about heartbreak in the rain'). "
-            "NOT for year/genre/mood (use search_database)."
-        )
-    if has_knowledge:
-        tool_lines.append(
-            "- knowledge_lookup(user_request): popularity / 'best of' / cultural requests "
-            "('best rap of the 90s', 'top festival anthems', 'Grammy winners 2020'). Turns the "
-            "request into a grounded library search (genre/year/energy + sound descriptions + "
-            "seed artists); never invents song titles."
-        )
-    tool_lines.append(
-        "- search_database(genres?, voices?, moods?, year_min?, year_max?, min_rating?, scale?, "
-        "key?, tempo_min?, tempo_max?, energy_min?, energy_max?, artist?, album?): "
-        "metadata filter. Can stand alone OR refine any primary pool."
-    )
-    tools_block = "\n".join(tool_lines)
+    tool_names = {t.get('name') for t in tools}
+    tools_block = "\n".join(_render_tool_line(t) for t in tools)
 
     genres_line = _get_dynamic_genres(library_context)
-    voices_line = ", ".join(config.VOICE_VOCAB)
+    voices_line = ", ".join(v for v in config.VOICE_VOCAB if v.endswith('vocalists'))
     moods_line = ", ".join(config.OTHER_FEATURE_LABELS)
 
-    prompt = f"""You are a music playlist router. Return ONLY a JSON object with one or more tool calls. Put EVERY intent in this one response.
+    rules: List[str] = []
+    finder_options: List[str] = []
+    if 'seed_search' in tool_names:
+        finder_options.append(
+            "the user names a song/artist to imitate ('like X', 'similar to X') -> seed_search"
+        )
+    if 'text_match' in tool_names:
+        finder_options.append(
+            "the user describes a sound or a lyric topic -> text_match"
+        )
+    if 'knowledge_lookup' in tool_names:
+        finder_options.append(
+            "the user asks for popular/famous/'best of' songs without naming a "
+            "specific artist, or for a language/nationality/scene ('French rap', "
+            "'Italian pop', 'K-pop') -> knowledge_lookup"
+        )
+    finder_options.append(
+        "the request is plain metadata only -> search_database by itself"
+    )
+    rules.append("Pick how to FIND songs: " + "; ".join(finder_options) + ".")
+    rules.append(
+        "Put EVERY stated metadata constraint (genre, voice, mood, year/decade, tempo, "
+        "energy, key, scale, rating, artist, album, instrumental) into ONE search_database "
+        "call, next to the finder tool when there is one."
+    )
+    rules.append(
+        "Exclusions ('no X', 'without X', 'except X', 'anything but X') go in "
+        "search_database exclude_artists/exclude_genres. NEVER put an excluded name in "
+        "seeds, in a text_match query, or in the positive artist/genres fields."
+    )
+    if 'seed_search' in tool_names:
+        rules.append(
+            "An artist's own songs ('songs by X', 'play X', 'best of X', where X is an "
+            "artist's name) -> search_database with artist='X'. Similar to X ('like X', "
+            "'sounds like X', 'in the style of X') -> seed_search."
+        )
+    rules.append(
+        "Fill only fields the user asked for, using the closest listed value; when no "
+        "field or listed value fits a word, leave it out."
+    )
+    rules.append("Emit each tool at most once; one finder plus one filter is the usual plan.")
+    rules_block = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, start=1))
+
+    return f"""You are a music playlist planner. Turn the user's request into tool calls; the app runs them against the user's own music library.
 
 TOOLS:
 {tools_block}
 
-search_database tag columns are SEPARATE -- do not mix:
-- genres : music styles -> {genres_line}
-- voices : vocal type -> {voices_line}
-- moods  : ONLY these 6 -> {moods_line}
-scale: major|minor. year: single year sets year_min=year_max; decade 80s -> 1980..1989. energy 0.0-1.0. tempo 40-200 BPM.
+VALUES for search_database:
+- genres in this library: {genres_line}
+- voices: {voices_line}
+- moods: {moods_line}
+- scale: major or minor. key: tonic note like C or F# (major/minor goes in scale).
+- Decade words map to years: '90s' -> year_min 1990, year_max 1999. energy 0.0-1.0 (calm <= 0.35, intense >= 0.7). tempo 40-200 BPM (slow <= 90, fast >= 130). min_rating 1-5.
 
-RULES:
-1. Only filters the user explicitly mentioned; never invent.
-2. seeds: a named TRACK -> {{type:'song',title,artist}} (e.g. "Iron Maiden Run to the Hills" = title 'Run to the Hills', artist 'Iron Maiden'); a bare artist -> {{type:'artist',name}}. Multiple in ONE seed_search: "A and B"=union, "A meets B"=alchemy, "A but not Y"=subtract.
-3. ANY descriptor beyond the song/artist (mood, genre, vocal, energy, tempo, year/decade, key, scale) MUST ALSO go in a search_database call. Even one trailing word: "...danceable" -> seed_search(...) AND search_database(moods=["danceable"]).
-4. voices: "female voice"/"woman singer" -> ["female vocalists","female vocalist"]; "male voice" -> ["male vocalists"]. Never put a voice or genre in 'moods'.
-5. "2024 songs" -> search_database(year_min=2024,year_max=2024), not text_match.
-6. A topic/scenario the song should be ABOUT ("about summer", "roadtrip", "songs about heartbreak") -> text_match(mode='lyrics'); any genre/voice/energy/tempo/year mentioned ALONGSIDE -> ALSO a search_database call. Keep BOTH."""
+HOW TO PLAN:
+{rules_block}"""
 
-    return prompt
+
+def _example(reasoning: str, calls: List[Dict]) -> str:
+    return json.dumps({"reasoning": reasoning, "tool_calls": calls}, ensure_ascii=True)
+
+
+def _text_match_modes(tools: List[Dict]) -> set:
+    for t in tools:
+        if t.get('name') == 'text_match':
+            props = (t.get('inputSchema') or {}).get('properties') or {}
+            return set((props.get('mode') or {}).get('enum') or [])
+    return set()
+
+
+def _build_examples(tools: List[Dict]) -> List[str]:
+    tool_names = {t.get('name') for t in tools}
+    modes = _text_match_modes(tools)
+
+    examples: List[str] = []
+    if 'search_database' in tool_names:
+        examples.append(
+            '"energetic songs by Johnny Cash"\n'
+            + _example(
+                "Johnny Cash's own songs, filtered to high energy.",
+                [
+                    {
+                        "name": "search_database",
+                        "arguments": {"artist": "Johnny Cash", "energy_min": 0.65},
+                    }
+                ],
+            )
+        )
+        examples.append(
+            '"aggressive metal from the 80s"\n'
+            + _example(
+                "Pure metadata: genre metal, mood aggressive, decade 1980s.",
+                [
+                    {
+                        "name": "search_database",
+                        "arguments": {
+                            "genres": ["metal"],
+                            "moods": ["aggressive"],
+                            "year_min": 1980,
+                            "year_max": 1989,
+                        },
+                    }
+                ],
+            )
+        )
+        examples.append(
+            '"party songs but absolutely no rap and nothing by Pitbull"\n'
+            + _example(
+                "Party mood with a genre and an artist exclusion.",
+                [
+                    {
+                        "name": "search_database",
+                        "arguments": {
+                            "moods": ["party"],
+                            "exclude_genres": ["Hip-Hop"],
+                            "exclude_artists": ["Pitbull"],
+                        },
+                    }
+                ],
+            )
+        )
+    if 'seed_search' in tool_names and 'search_database' in tool_names:
+        examples.append(
+            '"like Get Lucky by Daft Punk but with a female voice"\n'
+            + _example(
+                "Songs similar to a named track, constrained to female vocals.",
+                [
+                    {
+                        "name": "seed_search",
+                        "arguments": {
+                            "seeds": [
+                                {"type": "song", "title": "Get Lucky", "artist": "Daft Punk"}
+                            ]
+                        },
+                    },
+                    {
+                        "name": "search_database",
+                        "arguments": {"voices": ["female vocalists"]},
+                    },
+                ],
+            )
+        )
+    if 'seed_search' in tool_names:
+        examples.append(
+            '"in the style of Oasis but not Blur"\n'
+            + _example(
+                "Similar to one named artist while removing another's flavor.",
+                [
+                    {
+                        "name": "seed_search",
+                        "arguments": {
+                            "seeds": [{"type": "artist", "name": "Oasis"}],
+                            "blend_mode": "subtract",
+                            "subtract": [{"type": "artist", "name": "Blur"}],
+                        },
+                    }
+                ],
+            )
+        )
+    if 'text_match' in tool_names and 'audio' in modes:
+        examples.append(
+            '"soft acoustic guitar for studying"\n'
+            + _example(
+                "A sound description, matched by how the music sounds.",
+                [
+                    {
+                        "name": "text_match",
+                        "arguments": {"query": "soft acoustic guitar for studying", "mode": "audio"},
+                    }
+                ],
+            )
+        )
+    if 'text_match' in tool_names and 'lyrics' in modes:
+        examples.append(
+            '"songs about growing old"\n'
+            + _example(
+                "A lyric topic, matched by what the words are about.",
+                [
+                    {
+                        "name": "text_match",
+                        "arguments": {"query": "growing old", "mode": "lyrics"},
+                    }
+                ],
+            )
+        )
+    if 'knowledge_lookup' in tool_names:
+        examples.append(
+            '"greatest disco hits of the 70s"\n'
+            + _example(
+                "A popularity request that needs world knowledge.",
+                [
+                    {
+                        "name": "knowledge_lookup",
+                        "arguments": {"user_request": "greatest disco hits of the 70s"},
+                    }
+                ],
+            )
+        )
+    return examples
 
 
 def build_ollama_tool_calling_prompt(
@@ -116,119 +270,56 @@ def build_ollama_tool_calling_prompt(
     library_context: Optional[Dict] = None,
 ) -> str:
     system_prompt = build_mcp_system_prompt(tools, library_context)
+    examples_text = "\n\n".join(_build_examples(tools))
 
-    examples = []
-    examples.append(
-        '"Similar song to Red Hot Chili Peppers - By The Way and Iron Maiden Run to the Hills"\n'
-        '{{"tool_calls": [{{"name": "seed_search", "arguments": {{'
-        '"seeds": ['
-        '{{"type": "song", "title": "By The Way", "artist": "Red Hot Chili Peppers"}}, '
-        '{{"type": "song", "title": "Run to the Hills", "artist": "Iron Maiden"}}'
-        '], "blend_mode": "union", "get_songs": 1000}}}}]}}'
-    )
-    examples.append(
-        '"sounds like Iron Maiden and Metallica combined"\n'
-        '{{"tool_calls": [{{"name": "seed_search", "arguments": {{'
-        '"seeds": ['
-        '{{"type": "artist", "name": "Iron Maiden"}}, '
-        '{{"type": "artist", "name": "Metallica"}}'
-        '], "blend_mode": "alchemy", "get_songs": 200}}}}]}}'
-    )
-    examples.append(
-        '"Similar to By The Way by Red Hot Chili Peppers danceable"\n'
-        '{{"tool_calls": ['
-        '{{"name": "seed_search", "arguments": {{"seeds": [{{"type": "song", "title": "By The Way", "artist": "Red Hot Chili Peppers"}}], "get_songs": 1000}}}}, '
-        '{{"name": "search_database", "arguments": {{"moods": ["danceable"]}}}}'
-        ']}}'
-    )
-    examples.append(
-        '"calm piano songs"\n'
-        '{{"tool_calls": [{{"name": "text_match", "arguments": {{"query": "calm piano", "mode": "audio"}}}}]}}'
-    )
-    examples.append(
-        '"upbeat pop roadtrip songs about summer with female vocals"\n'
-        '{{"tool_calls": ['
-        '{{"name": "text_match", "arguments": {{"query": "summer roadtrip", "mode": "lyrics"}}}}, '
-        '{{"name": "search_database", "arguments": {{"genres": ["pop"], "voices": ["female vocalists", "female vocalist"], "energy_min": 0.55}}}}'
-        ']}}'
-    )
-    examples_text = "\n\n".join(examples)
+    return f"""{system_prompt}
 
-    return f"""/no_think
-{system_prompt}
-
-=== OUTPUT FORMAT (CRITICAL) ===
-Return ONLY a valid JSON object with this EXACT format:
-{{
-  "tool_calls": [
-    {{"name": "tool_name", "arguments": {{"param": "value"}}}}
-  ]
-}}
-
-=== EXAMPLES ===
-{examples_text}
-
-=== COMMON MISTAKES ===
-WRONG: only seed_search when a descriptor was added -> also emit search_database
-WRONG: putting a voice/genre in 'moods' -> moods is danceable/aggressive/happy/party/relaxed/sad ONLY
-WRONG: repeating the same tool -> emit each tool AT MOST once; usually ONE tool call is enough. Output the JSON and STOP.
-
-Do not reason or explain. Go straight to the JSON.
-Now analyze this request and return ONLY the JSON:
-Request: "{user_message}"
-"""
-
-
-def build_intent_classifier_prompt(user_message: str) -> str:
-    return f"""Classify a music request. Return ONLY JSON: {{"primaries": ["seed"|"text"|"knowledge", ...], "needs_filter": true|false}}.
-
-primaries (zero or more, the ways to FIND songs):
-- seed: names specific song(s)/artist(s) to find similar/blend/subtract ("similar to By The Way by RHCP", "songs like Madonna").
-- text: describes the SOUND, or a LYRIC/TOPIC/SCENARIO theme -- what the song is ABOUT ("calm piano", "songs about heartbreak", "roadtrip songs about summer").
-- knowledge: popularity/cultural/historical request ("top pop songs of 2025", "Grammy winners", "songs sampled by Daft Punk").
-
-THEME PRECEDENCE: a lyric/topic/scenario theme is a "text" primary and STAYS even when genre/voice/energy/tempo/year are also present -- those become the filter, they do NOT remove "text".
-A popularity word (top/best/popular/radio/Grammy/viral/#1/charts) makes it "knowledge" even with a year/genre: "top rock 2020" = knowledge, "rock 2020" = no primary.
-Multiple primaries can co-occur (e.g. a named song AND a theme -> ["seed","text"]).
-
-needs_filter: true when a metadata constraint (year/genre/mood/vocal/tempo/energy/scale/rating) is present.
-A PURE metadata filter with no theme/song/artist/popularity -> {{"primaries": [], "needs_filter": true}}.
+OUTPUT: return ONLY one JSON object, no other text:
+{{"reasoning": "one short sentence: what to find and which tools", "tool_calls": [{{"name": "tool_name", "arguments": {{...}}}}]}}
 
 EXAMPLES:
-"songs like Madonna" -> {{"primaries": ["seed"], "needs_filter": false}}
-"similar to Pink Floyd with female voice" -> {{"primaries": ["seed"], "needs_filter": true}}
-"top pop radio songs of 2025" -> {{"primaries": ["knowledge"], "needs_filter": true}}
-"sad jazz from the 90s" -> {{"primaries": [], "needs_filter": true}}
-"upbeat pop roadtrip songs about summer with female vocals" -> {{"primaries": ["text"], "needs_filter": true}}
-"pop instrumental" -> {{"primaries": [], "needs_filter": true}}
-"instrumental jazz" -> {{"primaries": [], "needs_filter": true}}
+{examples_text}
 
 Request: "{user_message}"
-JSON:"""
+Fill only fields the user asked for. Return ONLY the JSON object."""
 
 
 def build_tool_calls_schema(tools: List[Dict]) -> Dict:
-    tool_names = [t['name'] for t in tools if t.get('name')]
+    branches: List[Dict] = []
+    for t in tools:
+        name = t.get('name')
+        if not name:
+            continue
+        arg_schema = copy.deepcopy(t.get('inputSchema') or {"type": "object"})
+        arg_schema['additionalProperties'] = False
+        branches.append(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "enum": [name]},
+                    "arguments": arg_schema,
+                },
+                "required": ["name", "arguments"],
+            }
+        )
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "reasoning": {
+                "type": "string",
+                "maxLength": 300,
+                "description": "One short sentence: what to find and which tools.",
+            },
             "tool_calls": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 4,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "name": {"type": "string", "enum": tool_names},
-                        "arguments": {"type": "object"},
-                    },
-                    "required": ["name", "arguments"],
-                },
+                "items": {"oneOf": branches} if branches else {"type": "object"},
             },
         },
-        "required": ["tool_calls"],
+        "required": ["reasoning", "tool_calls"],
     }
 
 

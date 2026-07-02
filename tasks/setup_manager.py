@@ -25,7 +25,6 @@ import logging
 import psycopg2
 from argon2 import PasswordHasher
 from argon2 import exceptions as argon2_exceptions
-import config
 from psycopg2.extras import RealDictCursor
 from urllib.parse import quote
 
@@ -62,11 +61,13 @@ class SetupManager:
         if getattr(sys, "frozen", False):
             return None
 
-        user = os.environ.get("POSTGRES_USER", "audiomuse")
-        password = os.environ.get("POSTGRES_PASSWORD", "audiomusepassword")
-        host = os.environ.get("POSTGRES_HOST", "postgres-service.playlist")
-        port = os.environ.get("POSTGRES_PORT", "5432")
-        db = os.environ.get("POSTGRES_DB", "audiomusedb")
+        import config
+
+        user = os.environ.get("POSTGRES_USER") or config.POSTGRES_USER
+        password = os.environ.get("POSTGRES_PASSWORD") or config.POSTGRES_PASSWORD
+        host = os.environ.get("POSTGRES_HOST") or config.POSTGRES_HOST
+        port = os.environ.get("POSTGRES_PORT") or config.POSTGRES_PORT
+        db = os.environ.get("POSTGRES_DB") or config.POSTGRES_DB
         user_escaped = quote(user, safe='')
         password_escaped = quote(password, safe='')
         return f"postgresql://{user_escaped}:{password_escaped}@{host}:{port}/{db}"
@@ -189,15 +190,19 @@ class SetupManager:
             return False
         return not self._looks_like_placeholder(value)
 
-    SERVER_REQUIRED_FIELDS = config.MEDIASERVER_FIELDS_BY_TYPE
+    @property
+    def server_required_fields(self):
+        import config
+
+        return config.MEDIASERVER_FIELDS_BY_TYPE
 
     def _is_valid_server_config(self, config_module):
         media_type = getattr(config_module, 'MEDIASERVER_TYPE', '').strip().lower()
-        if media_type not in self.SERVER_REQUIRED_FIELDS:
+        if media_type not in self.server_required_fields:
             return False
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
-            for field in self.SERVER_REQUIRED_FIELDS[media_type]
+            for field in self.server_required_fields[media_type]
         )
 
     def _is_valid_auth_config(self, config_module):
@@ -256,7 +261,7 @@ class SetupManager:
 
     def save_config_values(self, values):
         if not isinstance(values, dict):
-            raise ValueError("Expected a dictionary of config values")
+            raise TypeError("Expected a dictionary of config values")
         self.ensure_table()
         try:
             with self.get_connection() as conn:
@@ -271,9 +276,9 @@ class SetupManager:
                         ):
                             try:
                                 value = self._password_hasher.hash(value)
-                            except argon2_exceptions.HashingError as exc:
-                                self.logger.error(
-                                    f"Unable to hash AUDIOMUSE_PASSWORD: {exc}", exc_info=True
+                            except argon2_exceptions.HashingError:
+                                self.logger.exception(
+                                    "Unable to hash AUDIOMUSE_PASSWORD"
                                 )
                                 raise
                         cur.execute(
@@ -286,6 +291,8 @@ class SetupManager:
             self.logger.warning(f"Unable to save setup config values: {exc}")
             raise
         try:
+            import config
+
             if hasattr(config, 'refresh_config'):
                 config.refresh_config()
         except Exception as exc:

@@ -116,7 +116,7 @@ def _ensure_mistralai_stub():
     except (ImportError, ModuleNotFoundError):
         pass
     mod = types.ModuleType('mistralai')
-    mod.Mistral = _MagicMock  # type: ignore
+    mod.Mistral = _MagicMock  # type: ignore[attr-defined]
     sys.modules['mistralai'] = mod
 
 

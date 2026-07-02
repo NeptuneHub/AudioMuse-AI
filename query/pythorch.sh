@@ -65,7 +65,7 @@ class AudioCLAPWrapper(nn.Module):
     '''
     Audio-only CLAP model for music encoding.
     
-    Takes mel-spectrogram → produces 512-dim audio embedding.
+    Takes mel-spectrogram -> produces 512-dim audio embedding.
     Produces identical embeddings as the original .pt model.
     '''
     def __init__(self, clap_model):
@@ -96,7 +96,7 @@ class TextCLAPWrapper(nn.Module):
     '''
     Text-only CLAP model for text encoding.
     
-    Takes tokenized text → produces 512-dim text embedding.
+    Takes tokenized text -> produces 512-dim text embedding.
     Produces identical embeddings as the original .pt model.
     '''
     def __init__(self, clap_model):
@@ -144,12 +144,12 @@ try:
     with torch.no_grad():
         audio_embed = audio_wrapper(dummy_mel)
         text_embed = text_wrapper(dummy_input_ids, dummy_attention_mask)
-        print(f'✓ Audio embedding shape: {audio_embed.shape}')
-        print(f'✓ Text embedding shape: {text_embed.shape}')
-        print(f'✓ Audio embedding norm: {torch.norm(audio_embed[0]).item():.4f}')
-        print(f'✓ Text embedding norm: {torch.norm(text_embed[0]).item():.4f}')
+        print(f'OK: Audio embedding shape: {audio_embed.shape}')
+        print(f'OK: Text embedding shape: {text_embed.shape}')
+        print(f'OK: Audio embedding norm: {torch.norm(audio_embed[0]).item():.4f}')
+        print(f'OK: Text embedding norm: {torch.norm(text_embed[0]).item():.4f}')
         similarity = torch.dot(audio_embed[0], text_embed[0]).item()
-        print(f'✓ Test similarity: {similarity:.4f}')
+        print(f'OK: Test similarity: {similarity:.4f}')
     
     print('')
     print('Exporting audio model to ONNX...')
@@ -191,7 +191,7 @@ try:
     
     print('')
     print('=' * 70)
-    print('✓ CLAP MODELS SUCCESSFULLY EXPORTED!')
+    print('OK: CLAP MODELS SUCCESSFULLY EXPORTED!')
     print('=' * 70)
     print(f'Audio model: $ONNX_AUDIO_MODEL')
     print(f'Text model: $ONNX_TEXT_MODEL')
@@ -221,12 +221,12 @@ try:
         # Verify audio model
         onnx_audio = onnx.load('$ONNX_AUDIO_MODEL')
         onnx.checker.check_model(onnx_audio)
-        print('✓ Audio ONNX model is valid')
+        print('OK: Audio ONNX model is valid')
         
         # Verify text model
         onnx_text = onnx.load('$ONNX_TEXT_MODEL')
         onnx.checker.check_model(onnx_text)
-        print('✓ Text ONNX model is valid')
+        print('OK: Text ONNX model is valid')
         
         # Test audio model
         audio_session = ort.InferenceSession('$ONNX_AUDIO_MODEL')
@@ -234,11 +234,11 @@ try:
             'mel_spectrogram': dummy_mel.numpy()
         })[0]
         
-        print(f'✓ ONNX audio embedding shape: {onnx_audio_embed.shape}')
-        print(f'✓ ONNX audio norm: {np.linalg.norm(onnx_audio_embed[0]):.4f}')
+        print(f'OK: ONNX audio embedding shape: {onnx_audio_embed.shape}')
+        print(f'OK: ONNX audio norm: {np.linalg.norm(onnx_audio_embed[0]):.4f}')
         
         audio_diff = np.abs(audio_embed.numpy() - onnx_audio_embed).max()
-        print(f'✓ Max difference audio (PyTorch vs ONNX): {audio_diff:.2e}')
+        print(f'OK: Max difference audio (PyTorch vs ONNX): {audio_diff:.2e}')
         
         # Test text model
         text_session = ort.InferenceSession('$ONNX_TEXT_MODEL')
@@ -247,15 +247,15 @@ try:
             'attention_mask': dummy_attention_mask.numpy()
         })[0]
         
-        print(f'✓ ONNX text embedding shape: {onnx_text_embed.shape}')
-        print(f'✓ ONNX text norm: {np.linalg.norm(onnx_text_embed[0]):.4f}')
+        print(f'OK: ONNX text embedding shape: {onnx_text_embed.shape}')
+        print(f'OK: ONNX text norm: {np.linalg.norm(onnx_text_embed[0]):.4f}')
         
         text_diff = np.abs(text_embed.numpy() - onnx_text_embed).max()
-        print(f'✓ Max difference text (PyTorch vs ONNX): {text_diff:.2e}')
+        print(f'OK: Max difference text (PyTorch vs ONNX): {text_diff:.2e}')
         
         if audio_diff < 1e-5 and text_diff < 1e-5:
             print('')
-            print('✓✓✓ EMBEDDINGS ARE IDENTICAL! Safe to use for your collection.')
+            print('OK OK OK: EMBEDDINGS ARE IDENTICAL! Safe to use for your collection.')
         else:
             print(f'')
             print(f'Warning: Small numerical differences detected (expected < 1e-5)')

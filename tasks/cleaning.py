@@ -320,7 +320,7 @@ def identify_and_clean_orphaned_albums_task():
 
         except OperationalError as e:
             logger.exception(
-                f"Database connection error during cleaning identification: {e}. This job will be retried."
+                "Database connection error during cleaning identification. This job will be retried."
             )
             err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
             log_and_update_main(
@@ -451,7 +451,7 @@ def delete_orphaned_albums_sync(orphaned_track_ids):
         }
 
     except Exception as e:
-        logger.exception(f"Failed to delete orphaned albums: {e}")
+        logger.exception("Failed to delete orphaned albums")
         return {
             "status": "FAILURE",
             "message": f"Failed to delete orphaned albums: {str(e)}",

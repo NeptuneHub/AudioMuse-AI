@@ -262,10 +262,10 @@ def chat_playlist_api():
     Process user chat input to generate a playlist using AI with MCP tools.
 
     MCP TOOLS (4 CORE):
-    1. artist_similarity - Songs from similar artists
-    2. song_similarity - Songs similar to a specific song
-    3. search_database - Search by genre, mood, tempo, energy, key (ALL filters in ONE call)
-    4. ai_brainstorm - AI suggests famous songs (trending, top hits, radio classics, etc.)
+    1. seed_search - Songs similar to named seed songs/artists (union/alchemy/subtract)
+    2. text_match - Semantic match on sound (CLAP) or lyric topics
+    3. search_database - Filter by artist, album, genre, voice, mood, year, tempo, energy, key (ALL filters in ONE call)
+    4. knowledge_lookup - Popularity/cultural requests turned into a grounded library recipe
 
     AI analyzes request -> calls tools -> combines results -> returns 100 songs
 
@@ -746,6 +746,10 @@ def _run_chat_pipeline(data, log_messages):
                 args_preview.append(f"genres={args['genres'][:2]}")
             if 'moods' in args and args['moods']:
                 args_preview.append(f"moods={args['moods'][:2]}")
+            if 'exclude_artists' in args and args['exclude_artists']:
+                args_preview.append(f"exclude_artists={args['exclude_artists'][:2]}")
+            if 'exclude_genres' in args and args['exclude_genres']:
+                args_preview.append(f"exclude_genres={args['exclude_genres'][:2]}")
             if 'user_request' in args:
                 args_preview.append(f"request='{args['user_request'][:30]}...'")
 
@@ -760,6 +764,15 @@ def _run_chat_pipeline(data, log_messages):
                 log_messages.append(f"   - {tool_name}({args_str}): {song_count} songs")
     else:
         log_messages.append("\nNo songs collected")
+        if plan_notes:
+            log_messages.append("\nPlan notes:")
+            for n in plan_notes:
+                log_messages.append(f"   {n}")
+        log_messages.append(
+            "\nNo matching songs were found in your library for this request "
+            "(a corrective retry was already attempted). Try naming an artist, album or "
+            "genre that exists in your library, or loosen the constraints."
+        )
         final_query_results_list = None
         final_executed_query_str = executed_query_str or "MCP single-pass: No results"
 
@@ -867,7 +880,7 @@ def create_media_server_playlist_api():
     except Exception as e:
         # Log detailed error on the server
         error_details_for_server = f"Media Server API Request Exception: {str(e)}\n"
-        if hasattr(e, 'response') and e.response is not None:  # type: ignore
+        if hasattr(e, 'response') and e.response is not None:  # type: ignore[attr-defined]
             try:
                 error_details_for_server += f" - Media Server Response: {e.response.text}\n"
             except Exception:

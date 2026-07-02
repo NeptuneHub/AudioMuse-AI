@@ -11,7 +11,7 @@
 Houses the AI layer that turns a natural-language playlist request into a
 plan of tool calls run against the real library. Submodules split by role:
 ``api`` (provider routing + text cleanup), ``providers`` (per-vendor
-clients), ``planner`` (two-stage classify/plan/execute), ``prompts``,
+clients), ``planner`` (single-call plan/execute), ``prompts``,
 ``tools``/``tool_impl`` (schemas + grounded implementations), and ``vocab``.
 
 Main Features:

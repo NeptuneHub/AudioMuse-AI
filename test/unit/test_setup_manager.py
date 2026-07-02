@@ -16,10 +16,13 @@ Main Features:
 * Argon2id/argon2i hashes are recognized and bcrypt/plain are not
 * cast_value coerces bool/int/float/list/dict and falls back on invalid JSON
 * cast and format round-trip preserves the original value; DATABASE_URL env honored
+* Importing tasks.setup_manager before config keeps the DB-override init working
 """
 
 import json
 import os
+import subprocess
+import sys
 import types
 import pytest
 from unittest.mock import MagicMock, patch
@@ -510,17 +513,17 @@ class TestGetConnection:
 class TestSaveConfigValuesValidation:
     def test_rejects_non_dict(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values("not a dict")
 
     def test_rejects_list(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values([("key", "val")])
 
     def test_rejects_none(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values(None)
 
 
@@ -646,4 +649,31 @@ class TestModuleConstants:
         import config
 
         mgr = _mgr()
-        assert mgr.SERVER_REQUIRED_FIELDS == config.MEDIASERVER_FIELDS_BY_TYPE
+        assert mgr.server_required_fields == config.MEDIASERVER_FIELDS_BY_TYPE
+
+
+class TestImportOrderIndependence:
+    def test_setup_manager_imports_before_config_without_breaking_overrides(self):
+        code = (
+            "import sys\n"
+            "import tasks.setup_manager\n"
+            "assert 'config' not in sys.modules, "
+            "'tasks.setup_manager must not import config at module level'\n"
+            "import config\n"
+            "assert config.refresh_config.__doc__, "
+            "'DB-override init was skipped: circular import regression'\n"
+        )
+        repo_root = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+        )
+        env = dict(os.environ)
+        env['DATABASE_URL'] = 'postgresql://u:p@127.0.0.1:1/db'
+        proc = subprocess.run(
+            [sys.executable, '-c', code],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr

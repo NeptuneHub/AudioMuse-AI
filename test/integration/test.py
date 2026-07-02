@@ -104,7 +104,8 @@ def test_instant_playlist_functionality():
     missing_keys = expected_keys - set(resp_obj.keys())
     if missing_keys:
         warnings.warn(
-            f"Shape warning: chatPlaylist response missing keys: {missing_keys} in {resp_obj}"
+            f"Shape warning: chatPlaylist response missing keys: {missing_keys} in {resp_obj}",
+            stacklevel=2,
         )
     results = resp_obj.get("query_results", [])
     assert isinstance(results, list) and results, (
@@ -137,7 +138,9 @@ def test_sonic_fingerprint_and_playlist():
     assert resp.status_code == 200, f"Status: {resp.status_code}, Body: {resp.text}"
     data = resp.json()
     if not (isinstance(data, list) and data and isinstance(data[0], dict) and 'item_id' in data[0]):
-        warnings.warn(f"Shape warning: sonic_fingerprint response shape unexpected: {data}")
+        warnings.warn(
+            f"Shape warning: sonic_fingerprint response shape unexpected: {data}", stacklevel=2
+        )
     track_ids = [track['item_id'] for track in data if 'item_id' in track]
     assert track_ids
 
@@ -149,7 +152,9 @@ def test_sonic_fingerprint_and_playlist():
     assert pl_resp.status_code == 201, f"Status: {pl_resp.status_code}, Body: {pl_resp.text}"
     pl_data = pl_resp.json()
     if 'playlist_id' not in pl_data:
-        warnings.warn(f"Shape warning: create_playlist response shape unexpected: {pl_data}")
+        warnings.warn(
+            f"Shape warning: create_playlist response shape unexpected: {pl_data}", stacklevel=2
+        )
     assert 'playlist_id' in pl_data
 
     elapsed = time.time() - start_time
@@ -201,7 +206,9 @@ def test_song_alchemy_and_playlist():
         "subtract_centroid_2d",
     }
     if not (isinstance(data, dict) and expected_keys.issubset(data.keys())):
-        warnings.warn(f"Shape warning: /api/alchemy response shape unexpected: {data}")
+        warnings.warn(
+            f"Shape warning: /api/alchemy response shape unexpected: {data}", stacklevel=2
+        )
     results = data.get('results', [])
     assert isinstance(results, list) and results, f"No results in alchemy response: {data}"
     track_ids = [track['item_id'] for track in results if 'item_id' in track]

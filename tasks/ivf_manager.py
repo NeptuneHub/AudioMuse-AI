@@ -294,8 +294,8 @@ def load_ivf_index_for_querying(force_reload=False):
         loaded = load_paged_ivf_index(
             conn, INDEX_NAME, EMBEDDING_DIMENSION, IVF_METRIC, label="audio"
         )
-    except Exception as e:
-        logger.exception("Failed to load audio IVF index: %s", e)
+    except Exception:
+        logger.exception("Failed to load audio IVF index")
         ivf_index, id_map, reverse_id_map = None, None, None
         return
     if loaded is None:
@@ -337,8 +337,8 @@ def build_and_store_ivf_index(db_conn=None):
         ):
             db_conn.commit()
             logger.info("Audio IVF index build and database storage complete.")
-    except Exception as e:
-        logger.exception("An error occurred during audio IVF index build: %s", e)
+    except Exception:
+        logger.exception("An error occurred during audio IVF index build")
         try:
             db_conn.rollback()
         except Exception:
@@ -371,8 +371,8 @@ def multi_query_ids(query_vectors, per_vector_n):
     for vec in query_vectors:
         try:
             vec_ids, _distances = ivf_index.query(vec, k=k)
-        except Exception as e:
-            logger.exception(f"IVF multi-query failed for a vector: {e}")
+        except Exception:
+            logger.exception("IVF multi-query failed for a vector")
             continue
         for vid in vec_ids:
             item_id = id_map.get(vid)
@@ -633,7 +633,7 @@ def _filter_by_mood_similarity(
     song_results: list,
     target_item_id: str,
     db_conn,
-    mood_threshold: float = None,
+    mood_threshold: float | None = None,
     target_other_features=None,
 ):
     if not song_results:
@@ -873,9 +873,9 @@ def _resolve_neighbor_query_vector(target_item_id, target_vec_id, db_conn):
 
     try:
         return ivf_index.get_vector(target_vec_id), None
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id}): {e}"
+            f"Could not retrieve vector for IVF ID {target_vec_id} (item_id: {target_item_id})"
         )
         return None
 
@@ -938,9 +938,9 @@ def _query_and_rerank_neighbors(query_vector, anchor_f32, num_to_query, n, targe
             neighbor_vec_ids, distances = [], []
         else:
             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=rerank_k)
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"An unexpected error occurred during IVF query for item '{target_item_id}': {e}"
+            f"An unexpected error occurred during IVF query for item '{target_item_id}'"
         )
         return None
 
@@ -1159,9 +1159,9 @@ def _find_nearest_neighbors_by_vector_impl(
             neighbor_vec_ids, distances = [], []
         else:
             neighbor_vec_ids, distances = ivf_index.query(query_vector, k=num_to_query)
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"An unexpected error occurred during IVF query for synthetic vector: {e}",
+            "An unexpected error occurred during IVF query for synthetic vector",
         )
         return []
 
@@ -1210,8 +1210,8 @@ def get_max_distance_for_id(target_item_id: str):
     _clear_request_f32()
     try:
         max_d, far_vec_id = ivf_index.get_max_distance(target_vec_id)
-    except Exception as e:
-        logger.exception(f"Error computing IVF max distance for {target_item_id}: {e}")
+    except Exception:
+        logger.exception(f"Error computing IVF max distance for {target_item_id}")
         return None
     if max_d is None:
         return None
@@ -1250,15 +1250,15 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
             return result['item_id']
 
         return None
-    except Exception as e:
-        logger.exception(f"Error fetching item_id for '{title}' by '{artist}': {e}")
+    except Exception:
+        logger.exception(f"Error fetching item_id for '{title}' by '{artist}'")
         return None
     finally:
         cur.close()
 
 
 def search_tracks_unified(
-    search_query: str, limit: int = 20, offset: int = 0, item_id_filter: set = None
+    search_query: str, limit: int = 20, offset: int = 0, item_id_filter: set | None = None
 ):
     from app_helper import get_db
     from psycopg2.extras import DictCursor
@@ -1322,15 +1322,15 @@ def search_tracks_unified(
         cur.execute(query, tuple(all_params))
         results = [dict(row) for row in cur.fetchall()]
 
-    except Exception as e:
-        logger.exception(f"Error searching tracks with query '{search_query}': {e}")
+    except Exception:
+        logger.exception(f"Error searching tracks with query '{search_query}'")
     finally:
         cur.close()
 
     return results
 
 
-def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict = None):
+def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: dict | None = None):
     try:
         from .mediaserver import create_instant_playlist
 
