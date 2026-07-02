@@ -283,7 +283,7 @@ def run_clustering_batch_task(
             }
 
         except Exception as e:
-            logger.error(f"Clustering batch {batch_id_str} failed", exc_info=True)
+            logger.exception(f"Clustering batch {batch_id_str} failed")
             err = error_manager.record(
                 error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e), exc=e
             )
@@ -870,9 +870,9 @@ def _monitor_and_process_batches(state_dict, parent_task_id, initial_check=False
                 f"Job {job_id} (status: {db_status}) not found in RQ (likely cleared). Treating as finished to prevent main task starvation."
             )
             jobs_ready_for_result_extraction.append(job_id)
-        except Exception as e:
+        except Exception:
             logger.exception(
-                f"Error checking RQ status for job {job_id}: {e}. Assuming terminal state to prevent starvation."
+                f"Error checking RQ status for job {job_id}. Assuming terminal state to prevent starvation."
             )
             jobs_ready_for_result_extraction.append(job_id)
 

@@ -83,6 +83,6 @@ if __name__ == '__main__':
 
     try:
         worker.work(logging_level=logging_level, max_jobs=max_jobs_before_restart)
-    except Exception as e:
-        logger.exception(f"RQ Worker failed to start or encountered an error: {e}")
+    except Exception:
+        logger.exception("RQ Worker failed to start or encountered an error")
         sys.exit(1)

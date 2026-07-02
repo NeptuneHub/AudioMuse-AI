@@ -57,7 +57,7 @@ def make_dict_row(mapping: dict):
             try:
                 return self[name]
             except KeyError:
-                raise AttributeError(name)
+                raise AttributeError(name) from None
 
     return FakeRow(mapping)
 

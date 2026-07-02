@@ -158,8 +158,8 @@ def clap_search_api():
     except ValueError as e:
         logger.warning(f"ValueError in DCLAP search API: {e}")
         return jsonify({'error': 'Invalid or missing request parameter.'}), 400
-    except Exception as e:
-        logger.exception(f"DCLAP search API error: {e}")
+    except Exception:
+        logger.exception("DCLAP search API error")
         return jsonify({'error': 'An internal server error occurred during DCLAP search.'}), 500
 
 
@@ -234,8 +234,8 @@ def warmup_status_api():
     try:
         status = get_warm_cache_status()
         return jsonify(status)
-    except Exception as e:
-        logger.exception(f"Failed to get warmup status: {e}")
+    except Exception:
+        logger.exception("Failed to get warmup status")
         return jsonify({'active': False, 'seconds_remaining': 0})
 
 
@@ -285,8 +285,8 @@ def refresh_cache_api():
                 {'success': False, 'message': 'Failed to refresh CLAP cache', 'stats': stats}
             ), 500
 
-    except Exception as e:
-        logger.exception(f"Cache refresh failed: {e}")
+    except Exception:
+        logger.exception("Cache refresh failed")
         return jsonify(
             {'success': False, 'error': 'An internal error occurred. Please try again later.'}
         ), 500

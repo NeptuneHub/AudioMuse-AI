@@ -78,8 +78,8 @@ def get_score_endpoint():
             return jsonify(dict(score_data))
         else:
             return jsonify({"error": f"Score not found for id: {item_id}"}), 404
-    except Exception as e:
-        logger.error(f"Error fetching score for id {item_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Error fetching score for id {item_id}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 
@@ -129,8 +129,8 @@ def get_embedding_endpoint():
             return jsonify(embedding_dict)
         else:
             return jsonify({"error": f"Embedding not found for id: {item_id}"}), 404
-    except Exception as e:
-        logger.error(f"Error fetching embedding for id {item_id}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Error fetching embedding for id {item_id}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 
@@ -187,6 +187,6 @@ def search_tracks_endpoint():
     try:
         results = search_tracks_unified(search_query)
         return jsonify(results)
-    except Exception as e:
-        logger.error(f"Error during external track search: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error during external track search")
         return jsonify({"error": "An error occurred during search."}), 500

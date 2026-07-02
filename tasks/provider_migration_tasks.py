@@ -90,11 +90,11 @@ def _get_dedicated_conn():
     import config  # noqa: F401  (lazy so tests don't need live env vars)
 
     return psycopg2.connect(
-        host=getattr(config, 'POSTGRES_HOST', 'localhost'),
-        port=getattr(config, 'POSTGRES_PORT', '5432'),
-        user=getattr(config, 'POSTGRES_USER', 'postgres'),
-        password=getattr(config, 'POSTGRES_PASSWORD', ''),
-        dbname=getattr(config, 'POSTGRES_DB', 'postgres'),
+        host=config.POSTGRES_HOST,
+        port=config.POSTGRES_PORT,
+        user=config.POSTGRES_USER,
+        password=config.POSTGRES_PASSWORD,
+        dbname=config.POSTGRES_DB,
     )
 
 

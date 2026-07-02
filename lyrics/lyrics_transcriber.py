@@ -341,7 +341,7 @@ _NON_TEXT_UNICODE_RE = re.compile(
 def _sanitize_lyrics_text(text: str, max_words: int = 300) -> str:
     if not text:
         return ''
-    text = text.replace('﻿', '').replace('​', '').replace('‌', '')
+    text = text.replace('﻿', '').replace('\u200b', '').replace('‌', '')
     text = _CONTROL_CHAR_RE.sub('', text)
     text = _NON_TEXT_UNICODE_RE.sub('', text)
     text = re.sub(

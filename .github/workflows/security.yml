@@ -121,6 +121,7 @@ jobs:
         accept() { ids="$ids $1"; }
         accept PYSEC-2025-217   # transformers X-CLIP checkpoint-conversion RCE - unreachable (no X-CLIP / checkpoint conversion)
         accept CVE-2026-1839    # transformers Trainer torch.load RCE - unreachable (no Trainer); fix only in 5.0.0rc3 (major RC)
+        accept CVE-2026-4372    # transformers config _attn_implementation_internal RCE - unreachable (no AutoModelForCausalLM, only trusted bundled models, optional 'kernels' pkg not installed); fix only in 5.x major
         accept PYSEC-2026-113   # pyarrow C++ Use-After-Free - Python binding is NOT vulnerable per the advisory
         accept PYSEC-2026-169   # distributed (Dask) dashboard XSS - needs Jupyter Lab + jupyter-server-proxy + a Dask cluster; none run here
         echo "ids=$(echo $ids | xargs)" >> "$GITHUB_OUTPUT"

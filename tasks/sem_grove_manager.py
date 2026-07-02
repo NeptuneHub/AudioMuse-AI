@@ -218,8 +218,8 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         logger.info("SemGrove IVF index build complete: %d songs, dim=%d.", w, merged_dim)
         return True
 
-    except Exception as exc:
-        logger.error("SemGrove index build failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("SemGrove index build failed")
         try:
             db_conn.rollback()
         except Exception:
@@ -269,8 +269,8 @@ def _load_sem_grove_index_from_db() -> bool:
         logger.info("SemGrove index loaded: %d items, dim=%d.", len(id_map), merged_dim)
         return True
 
-    except Exception as exc:
-        logger.error("SemGrove index load failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("SemGrove index load failed")
         return False
 
 
@@ -358,8 +358,8 @@ def find_sem_grove_neighbors_by_vector(query_vector, n: int = 100) -> List[Dict]
         neighbor_ids, distances = index.query(
             np.asarray(query_vector, dtype=np.float32), k=num_to_query
         )
-    except Exception as exc:
-        logger.error("SemGrove neighbor query failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("SemGrove neighbor query failed")
         return []
     results: List[Dict] = []
     for vid, dist in zip(neighbor_ids, distances):
@@ -643,8 +643,8 @@ def search_by_song(
 
     try:
         query_vector = index.get_vector(seed_vid)
-    except Exception as exc:
-        logger.exception("SemGrove: cannot fetch vector for seed '%s': %s", seed_item_id, exc)
+    except Exception:
+        logger.exception("SemGrove: cannot fetch vector for seed '%s'", seed_item_id)
         return []
 
     params = _resolve_search_params(limit, radius_similarity)
@@ -654,8 +654,8 @@ def search_by_song(
 
     try:
         neighbor_ids, distances = index.query(query_vector, k=num_to_query)
-    except Exception as exc:
-        logger.error("SemGrove: IVF query failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("SemGrove: IVF query failed")
         return []
 
     candidate_ids = [

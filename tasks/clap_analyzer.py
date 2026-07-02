@@ -54,7 +54,7 @@ def _static_shape_model_bytes(model_path):
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
 
-    hop = getattr(config, 'CLAP_AUDIO_HOP_LENGTH', 480)
+    hop = config.CLAP_AUDIO_HOP_LENGTH
     frames = 1 + _SEGMENT_LENGTH_SAMPLES // hop
 
     model = onnx.load(model_path, load_external_data=True)
@@ -169,8 +169,8 @@ def _load_audio_model():
             try:
                 session = _create_session(model_path, cpu_providers, cpu_opts)
                 logger.info("OK CLAP audio model loaded (CPU fallback, direct path)")
-            except Exception as cpu_err:
-                logger.exception(f"Failed to load ONNX audio model even with CPU: {cpu_err}")
+            except Exception:
+                logger.exception("Failed to load ONNX audio model even with CPU")
                 raise
 
     if session is None:
@@ -235,8 +235,8 @@ def _load_text_model():
                 model_path, sess_options=sess_options, providers=['CPUExecutionProvider']
             )
             logger.info("OK CLAP text model loaded successfully (CPU fallback)")
-        except Exception as cpu_error:
-            logger.exception(f"Failed to load ONNX text model even with CPU: {cpu_error}")
+        except Exception:
+            logger.exception("Failed to load ONNX text model even with CPU")
             raise
 
     if session is None:
@@ -276,8 +276,8 @@ def initialize_clap_audio_model():
         _audio_session = _load_audio_model()
         logger.info("OK CLAP audio model initialized successfully (for music analysis)")
         return True
-    except Exception as e:
-        logger.exception(f"Failed to initialize CLAP audio model: {e}")
+    except Exception:
+        logger.exception("Failed to initialize CLAP audio model")
         return False
 
 
@@ -301,8 +301,8 @@ def initialize_clap_text_model():
         _text_session = _load_text_model()
         logger.info("OK CLAP text model initialized successfully (for text search)")
         return True
-    except Exception as e:
-        logger.exception(f"Failed to initialize CLAP text model: {e}")
+    except Exception:
+        logger.exception("Failed to initialize CLAP text model")
         return False
 
 
@@ -320,8 +320,8 @@ def unload_clap_audio_only():
         cleanup_cuda_memory(force=True)
         logger.info("OK CLAP audio model unloaded (~268MB freed), text cache preserved")
         return True
-    except Exception as e:
-        logger.exception(f"Error unloading CLAP audio model: {e}")
+    except Exception:
+        logger.exception("Error unloading CLAP audio model")
         return False
 
 
@@ -354,8 +354,8 @@ def unload_clap_model():
             f"OK CLAP model(s) unloaded from memory (~{freed_mb}MB freed + GPU memory released)"
         )
         return True
-    except Exception as e:
-        logger.exception(f"Error unloading CLAP model: {e}")
+    except Exception:
+        logger.exception("Error unloading CLAP model")
         return False
 
 
@@ -478,7 +478,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
                 def cleanup_fn():
                     cleanup_cuda_memory(force=True)
 
-                def retry_fn():
+                def retry_fn(onnx_inputs=onnx_inputs):
                     return session.run(None, onnx_inputs)
 
                 result = handle_onnx_memory_error(
@@ -507,8 +507,8 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
         return audio_embedding, duration_sec, num_segments
 
-    except Exception as e:
-        logger.exception(f"CLAP analysis failed for {audio_path}: {e}")
+    except Exception:
+        logger.exception(f"CLAP analysis failed for {audio_path}")
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         return None, 0, 0
     finally:
@@ -543,8 +543,8 @@ def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
 
         return text_embedding
 
-    except Exception as e:
-        logger.exception(f"Failed to get text embedding for '{query_text}': {e}")
+    except Exception:
+        logger.exception(f"Failed to get text embedding for '{query_text}'")
         return None
 
 
@@ -576,8 +576,8 @@ def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:
 
         return text_embeddings
 
-    except Exception as e:
-        logger.exception(f"Failed to get batch text embeddings: {e}")
+    except Exception:
+        logger.exception("Failed to get batch text embeddings")
         return None
 
 
@@ -642,8 +642,8 @@ def get_or_cache_other_feature_text_embeddings(redis_conn) -> Optional[dict]:
         except Exception as e:
             logger.warning(f"Failed to write text embeddings to Redis: {e}")
         return result
-    except Exception as e:
-        logger.exception(f"Failed to compute CLAP text embeddings for other features: {e}")
+    except Exception:
+        logger.exception("Failed to compute CLAP text embeddings for other features")
         return None
     finally:
         global _text_session, _tokenizer

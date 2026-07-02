@@ -34,7 +34,7 @@ NAVIDROME_API_BATCH_SIZE = 40
 
 
 def _get_target_music_folder_ids(user_creds=None):
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    folder_names_str = config.MUSIC_LIBRARIES
 
     if not folder_names_str.strip():
         return None

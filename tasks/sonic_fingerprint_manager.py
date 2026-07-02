@@ -172,6 +172,6 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
 
         return combined_results
 
-    except Exception as e:
-        logger.error(f"Error finding neighbors for sonic fingerprint: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error finding neighbors for sonic fingerprint")
         return []

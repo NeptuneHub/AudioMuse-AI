@@ -278,7 +278,7 @@ def session_start():
 
     import config
 
-    source_type = getattr(config, 'MEDIASERVER_TYPE', '') or ''
+    source_type = config.MEDIASERVER_TYPE or ''
 
     db = get_db()
     with db.cursor() as cur:

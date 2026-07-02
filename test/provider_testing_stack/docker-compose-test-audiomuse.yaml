@@ -14,10 +14,10 @@
 #   docker compose -f docker-compose-test-audiomuse.yaml --env-file .env.test up -d --build
 #
 # Port map:
-#   Jellyfin  AudioMuse  → http://localhost:8001   Postgres 5433
-#   Emby      AudioMuse  → http://localhost:8002   Postgres 5434
-#   Navidrome AudioMuse  → http://localhost:8003   Postgres 5435
-#   Lyrion    AudioMuse  → http://localhost:8004   Postgres 5436
+#   Jellyfin  AudioMuse  -> http://localhost:8001   Postgres 5433
+#   Emby      AudioMuse  -> http://localhost:8002   Postgres 5434
+#   Navidrome AudioMuse  -> http://localhost:8003   Postgres 5435
+#   Lyrion    AudioMuse  -> http://localhost:8004   Postgres 5436
 # ============================================================================
 
 x-audiomuse-common: &audiomuse-common

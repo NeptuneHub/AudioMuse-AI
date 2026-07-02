@@ -408,7 +408,7 @@ def setup_api():
         all_fields = setup_manager.get_all_fields(config)
         # Determine which media server fields belong to non-active types
         # so their values are hidden from the UI.
-        active_server_type = getattr(config, 'MEDIASERVER_TYPE', '').strip().lower()
+        active_server_type = config.MEDIASERVER_TYPE.strip().lower()
         inactive_server_fields = set()
         for stype, sfields in config.MEDIASERVER_FIELDS_BY_TYPE.items():
             if stype != active_server_type:
@@ -443,7 +443,7 @@ def setup_api():
             elif should_show_advanced(f['name']):
                 advanced_fields.append(f)
 
-        music_libraries_value = getattr(config, 'MUSIC_LIBRARIES', '') or ''
+        music_libraries_value = config.MUSIC_LIBRARIES or ''
 
         # Build lyrics API field dict: {name: {value, has_value, secret}}
         lyrics_api_raw = setup_manager.get_raw_overrides(ensure_table=False)

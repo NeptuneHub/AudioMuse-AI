@@ -72,8 +72,8 @@ def warmup_gte_model() -> Dict:
         logger.info("Warming up gte-multilingual-base lyrics-search model...")
         try:
             gte_onnx.load_gte_model()
-        except Exception as e:
-            logger.exception("GTE warmup failed: %s", e)
+        except Exception:
+            logger.exception("GTE warmup failed")
             return {'loaded': False, 'expiry_seconds': 0}
 
     duration = config.LYRICS_GTE_WARMUP_DURATION

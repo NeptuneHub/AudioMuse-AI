@@ -230,19 +230,19 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
 
         title_clean = title_raw.lower().strip()
         title_clean = re.sub(
-            r'\s*\([^)]*(?:remaster|explicit|clean|radio|edit|version|mix)[^)]*\)',
+            r'\s*\((?=[^)]*(?:remaster|explicit|clean|radio|edit|version|mix))[^)]*\)',
             '',
             title_clean,
             flags=re.IGNORECASE,
         )
         title_clean = re.sub(
-            r'\s*\[[^\]]*(?:remaster|explicit|clean|radio|edit|version|mix)[^\]]*\]',
+            r'\s*\[(?=[^\]]*(?:remaster|explicit|clean|radio|edit|version|mix))[^\]]*\]',
             '',
             title_clean,
             flags=re.IGNORECASE,
         )
         title_clean = re.sub(
-            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*$',
+            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*',
             '',
             title_clean,
             flags=re.IGNORECASE,
@@ -362,9 +362,9 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
                         f"{log_prefix}Playlist '{playlist_name}': no songs filtered ({len(songs_list)} songs)"
                     )
 
-            except Exception as e:
+            except Exception:
                 logger.exception(
-                    f"{log_prefix}Error filtering playlist '{playlist_name}': {e}. Keeping original playlist."
+                    f"{log_prefix}Error filtering playlist '{playlist_name}'. Keeping original playlist."
                 )
                 filtered_playlists[playlist_name] = songs_list
                 total_songs_after += len(songs_list)
@@ -392,9 +392,9 @@ def apply_duplicate_filtering_to_clustering_result(best_result, log_prefix=""):
 
         return new_result
 
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"{log_prefix}Critical error in duplicate filtering: {e}. Returning original result."
+            f"{log_prefix}Critical error in duplicate filtering. Returning original result."
         )
         return best_result
 
@@ -459,9 +459,9 @@ def apply_minimum_size_filter_to_clustering_result(best_result, min_size=20, log
 
         return new_result
 
-    except Exception as e:
+    except Exception:
         logger.exception(
-            f"{log_prefix}Critical error in minimum size filtering: {e}. Returning original result."
+            f"{log_prefix}Critical error in minimum size filtering. Returning original result."
         )
         return best_result
 

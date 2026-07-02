@@ -50,8 +50,8 @@ def publish_control_request(action):
         )
         redis_conn.publish(RESTART_CHANNEL, action)
         return True
-    except Exception as exc:
-        logger.exception('Could not publish %s request to Redis: %s', action, exc)
+    except Exception:
+        logger.exception('Could not publish %s request to Redis', action)
         return False
 
 

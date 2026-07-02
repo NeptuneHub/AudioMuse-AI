@@ -142,8 +142,8 @@ def _load_lyrics_index_from_db() -> bool:
 
         logger.info(f"Lyrics index loaded from database with {len(id_map)} items.")
         return True
-    except Exception as e:
-        logger.error(f"Failed to load lyrics index from DB: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to load lyrics index from DB")
         return False
 
 
@@ -177,8 +177,8 @@ def _load_lyrics_axes_index_from_db() -> bool:
 
         logger.info(f"Lyrics axes index loaded from database with {len(id_map)} items.")
         return True
-    except Exception as e:
-        logger.error(f"Failed to load lyrics axes index from DB: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to load lyrics axes index from DB")
         return False
 
 
@@ -329,8 +329,8 @@ def search_by_axes(targets: Dict[str, str], limit: int = 50) -> List[Dict]:
 
     try:
         neighbor_ids, distances = ivf_index.query(query_vec, k=num_to_query)
-    except Exception as e:
-        logger.error(f"Lyrics axes ivf query failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Lyrics axes ivf query failed")
         return []
 
     results: List[Dict] = []
@@ -455,6 +455,6 @@ def search_by_text(
             f"(artist cap: {artist_cap or 'disabled'})"
         )
         return results
-    except Exception as e:
-        logger.error(f"Lyrics text search failed for {query_text!r}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Lyrics text search failed for {query_text!r}")
         return []

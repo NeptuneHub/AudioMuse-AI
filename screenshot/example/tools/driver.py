@@ -397,8 +397,7 @@ def fake_chat_response():
         [
             "Request: 'Similar to %s by %s'" % (seeds_title, seeds_artist),
             "AI Provider: OPENAI",
-            "intent_classifier: primaries=[seed], needs_filter=false",
-            "stage-2 tools narrowed to: seed_search",
+            "AI reasoning: Songs similar to a named track, via seed_search.",
             "AI emitted 1 tool call",
             "--- Composition: 1 primary",
             "PRIMARY: seed_search",

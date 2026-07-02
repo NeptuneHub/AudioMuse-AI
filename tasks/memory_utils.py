@@ -198,8 +198,8 @@ def handle_onnx_memory_error(
         try:
             logger.info(f"Performing cleanup for {context}...")
             cleanup_func()
-        except Exception as cleanup_error:
-            logger.exception(f"Cleanup failed for {context}: {cleanup_error}")
+        except Exception:
+            logger.exception(f"Cleanup failed for {context}")
 
     if fallback_to_cpu and session_creator:
         try:
@@ -214,7 +214,7 @@ def handle_onnx_memory_error(
             else:
                 return None, new_session, provider
         except Exception as fallback_error:
-            logger.exception(f"CPU fallback failed for {context}: {fallback_error}")
+            logger.exception(f"CPU fallback failed for {context}")
             raise fallback_error
 
     if retry_func:
@@ -224,7 +224,7 @@ def handle_onnx_memory_error(
             logger.info(f"Retry successful for {context}")
             return result
         except Exception as retry_error:
-            logger.exception(f"Retry failed for {context}: {retry_error}")
+            logger.exception(f"Retry failed for {context}")
             raise retry_error
     else:
         raise error
