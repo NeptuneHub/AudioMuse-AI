@@ -36,12 +36,30 @@ logger = logging.getLogger(__name__)
 
 THINK_END_TAG = "</think>"
 
+_OLLAMA_GENERATE_PATH = "/api/generate"
+_OLLAMA_CHAT_PATH = "/api/chat"
+_ZEROABLE_ARGS = ("tempo_min", "tempo_max", "energy_min", "min_rating")
+
 _MODELS_REJECTING_REASONING = set()
+
+
+def _tool_function_specs(tools: List[Dict]) -> List[Dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["inputSchema"],
+            },
+        }
+        for t in tools
+    ]
 
 
 def _is_ollama_format_url(server_url: str) -> bool:
     s = server_url.lower()
-    return "/api/generate" in s or "/api/chat" in s
+    return _OLLAMA_GENERATE_PATH in s or _OLLAMA_CHAT_PATH in s
 
 
 def _build_openai_headers(api_key: str, server_url: str) -> Dict[str, str]:
@@ -277,17 +295,7 @@ def call_with_tools(
     log_messages: List[str],
 ) -> Dict:
     try:
-        functions = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["inputSchema"],
-                },
-            }
-            for tool in tools
-        ]
+        functions = _tool_function_specs(tools)
 
         headers = _build_openai_headers(api_key, server_url)
         payload = {
@@ -405,6 +413,24 @@ def call_with_tools(
         return {"error": "OpenAI service is currently unavailable."}
 
 
+def _is_droppable_arg(key: str, value) -> bool:
+    if value is None or value == "" or value == [] or value == {}:
+        return True
+    return key in _ZEROABLE_ARGS and value == 0
+
+
+def _clean_call_arguments(tc: Dict, name: str, log_messages: List[str]) -> None:
+    if "arguments" not in tc:
+        tc["arguments"] = {}
+    elif not isinstance(tc["arguments"], dict):
+        log_messages.append(f"Coerced non-dict arguments for tool '{name}' to empty dict")
+        tc["arguments"] = {}
+    args = tc["arguments"]
+    for k in [k for k, v in args.items() if _is_droppable_arg(k, v)]:
+        log_messages.append(f"   Stripped empty/default arg '{k}={args[k]}' from {name}")
+        del args[k]
+
+
 def _validate_tool_calls(
     tool_calls: List[Dict],
     known_names: set,
@@ -428,25 +454,7 @@ def _validate_tool_calls(
                 f"WARN: Unknown tool '{name}' (known: {sorted(known_names)}); dropped"
             )
             continue
-        if "arguments" not in tc:
-            tc["arguments"] = {}
-        elif not isinstance(tc["arguments"], dict):
-            log_messages.append(
-                f"Coerced non-dict arguments for tool '{name}' to empty dict"
-            )
-            tc["arguments"] = {}
-        args = tc["arguments"]
-        keys_to_remove = []
-        for k, v in args.items():
-            if (v is None or v == "" or v == [] or v == {}) or (
-                k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0
-            ):
-                keys_to_remove.append(k)
-        for k in keys_to_remove:
-            log_messages.append(
-                f"   Stripped empty/default arg '{k}={args[k]}' from {name}"
-            )
-            del args[k]
+        _clean_call_arguments(tc, name, log_messages)
         valid_calls.append(tc)
 
     if unknown_names:
@@ -464,6 +472,43 @@ def _validate_tool_calls(
     return {"tool_calls": valid_calls}
 
 
+def _strip_thinking(cleaned: str) -> str:
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    if "<think>" in cleaned:
+        cleaned = (
+            cleaned.split(THINK_END_TAG)[-1].strip()
+            if THINK_END_TAG in cleaned
+            else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
+        )
+    return cleaned
+
+
+def _extract_json_fence(cleaned: str) -> str:
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json")[1].split("```")[0]
+    elif "```" in cleaned:
+        cleaned = cleaned.split("```")[1].split("```")[0]
+    return cleaned.strip()
+
+
+def _tool_calls_from_parsed(parsed, log_messages: List[str]):
+    """Return (tool_calls, error): exactly one is non-None."""
+    if isinstance(parsed, dict) and "tool_calls" in parsed:
+        return parsed["tool_calls"], None
+    if isinstance(parsed, list):
+        log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
+        return parsed, None
+    if isinstance(parsed, dict) and "name" in parsed:
+        log_messages.append("WARN: Got single tool call object (expected tool_calls array)")
+        return [parsed], None
+    if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
+        log_messages.append("WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format")
+        return [{"name": parsed["tool"], "arguments": parsed["arguments"]}], None
+    keys = list(parsed.keys()) if isinstance(parsed, dict) else "N/A"
+    log_messages.append(f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {keys}")
+    return None, {"error": "Ollama response missing 'tool_calls' field"}
+
+
 def _parse_ollama_tool_response(
     response_text: str,
     log_messages: List[str],
@@ -477,22 +522,9 @@ def _parse_ollama_tool_response(
     cleaned = ""
     known_names = {t.get("name") for t in tools if t.get("name")}
     try:
-        cleaned = response_text.strip()
-        cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-        if "<think>" in cleaned:
-            cleaned = (
-                cleaned.split(THINK_END_TAG)[-1].strip()
-                if THINK_END_TAG in cleaned
-                else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
-            )
-
+        cleaned = _strip_thinking(response_text.strip())
         log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
-
-        if "```json" in cleaned:
-            cleaned = cleaned.split("```json")[1].split("```")[0]
-        elif "```" in cleaned:
-            cleaned = cleaned.split("```")[1].split("```")[0]
-        cleaned = cleaned.strip()
+        cleaned = _extract_json_fence(cleaned)
 
         if (
             cleaned.startswith("{")
@@ -510,23 +542,9 @@ def _parse_ollama_tool_response(
             if isinstance(r, str) and r.strip():
                 reasoning = r.strip()
 
-        if isinstance(parsed, dict) and "tool_calls" in parsed:
-            tool_calls = parsed["tool_calls"]
-        elif isinstance(parsed, list):
-            tool_calls = parsed
-            log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
-        elif isinstance(parsed, dict) and "name" in parsed:
-            tool_calls = [parsed]
-            log_messages.append("WARN: Got single tool call object (expected tool_calls array)")
-        elif isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-            tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
-            log_messages.append("WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format")
-        else:
-            log_messages.append(
-                f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
-            )
-            return {"error": "Ollama response missing 'tool_calls' field"}
-
+        tool_calls, error = _tool_calls_from_parsed(parsed, log_messages)
+        if error:
+            return error
         if not isinstance(tool_calls, list):
             tool_calls = [tool_calls]
 
@@ -550,6 +568,21 @@ def _parse_ollama_tool_response(
         return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
 
 
+def _coerce_ollama_tool_args(raw_args, name: str, log_messages: List[str]) -> Dict:
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            args = json.loads(raw_args or "{}")
+        except json.JSONDecodeError:
+            log_messages.append(
+                f"WARN: Could not parse arguments for tool '{name}', using empty dict"
+            )
+            return {}
+        return args if isinstance(args, dict) else {}
+    return {}
+
+
 def _try_native_ollama_tool_call(
     chat_url: str,
     model_name: str,
@@ -567,16 +600,7 @@ def _try_native_ollama_tool_call(
     from tasks.ai.prompts import build_mcp_system_prompt  # noqa: E402
 
     system_prompt = build_mcp_system_prompt(tools, library_context)
-    ollama_tools = []
-    for t in tools:
-        ollama_tools.append({
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["inputSchema"],
-            },
-        })
+    ollama_tools = _tool_function_specs(tools)
 
     payload = {
         "model": model_name,
@@ -593,8 +617,6 @@ def _try_native_ollama_tool_call(
             "num_predict": 1536,
         },
     }
-    # Disable thinking on Qwen3+ models via the API parameter
-    # (Ollama's parameter is top-level "think"; enable_thinking is ignored)
     if "qwen" in (model_name or "").lower():
         payload["think"] = False
 
@@ -619,26 +641,10 @@ def _try_native_ollama_tool_call(
     for tc in raw_tool_calls:
         fn = tc.get("function") or {}
         name = fn.get("name", "")
-        # Ollama /api/chat returns arguments as a JSON object; OpenAI-style
-        # servers return a JSON-encoded string. Accept both.
-        raw_args = fn.get("arguments")
-        if isinstance(raw_args, dict):
-            args = raw_args
-        elif isinstance(raw_args, str):
-            try:
-                args = json.loads(raw_args or "{}")
-            except json.JSONDecodeError:
-                log_messages.append(
-                    f"WARN: Could not parse arguments for tool '{name}', using empty dict"
-                )
-                args = {}
-        else:
-            args = {}
-        if not isinstance(args, dict):
-            args = {}
-        tool_calls.append({"name": name, "arguments": args})
+        tool_calls.append(
+            {"name": name, "arguments": _coerce_ollama_tool_args(fn.get("arguments"), name, log_messages)}
+        )
 
-    # Validate and clean via the shared validator
     known_names = {t.get("name") for t in tools if t.get("name")}
     validated = _validate_tool_calls(tool_calls, known_names, log_messages)
     if "tool_calls" in validated:

@@ -640,29 +640,33 @@ def _alchemy_collect_seed_ids(cur, add_items):
     return seed_ids
 
 
+def _is_alchemy_song_ref(item: Dict) -> bool:
+    return item.get('type') == 'song' and ' by ' in str(item.get('id') or '')
+
+
+def _resolve_alchemy_song(db_conn, item_id_val: str, log_messages: List[str]) -> Optional[Dict]:
+    title, _, artist = item_id_val.rpartition(' by ')
+    row = _resolve_song_row(db_conn, title.strip(), artist.strip(), log_messages)
+    if row:
+        log_messages.append(
+            f"alchemy: resolved '{item_id_val}' -> "
+            f"'{row['title']}' by '{row['author']}' ({row['item_id']})"
+        )
+        return {'type': 'song', 'id': row['item_id']}
+    log_messages.append(f"alchemy: song '{item_id_val}' not found in library, seed skipped")
+    return None
+
+
 def _resolve_alchemy_items(items, log_messages: List[str]) -> List[Dict]:
-    out: List[Dict] = []
-    db_conn = None
+    dict_items = [i for i in (items or []) if isinstance(i, dict)]
+    db_conn = get_db_connection() if any(_is_alchemy_song_ref(i) for i in dict_items) else None
     try:
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            item_id_val = str(item.get('id') or '')
-            if item.get('type') == 'song' and ' by ' in item_id_val:
-                if db_conn is None:
-                    db_conn = get_db_connection()
-                title, _, artist = item_id_val.rpartition(' by ')
-                row = _resolve_song_row(db_conn, title.strip(), artist.strip(), log_messages)
-                if row:
-                    out.append({'type': 'song', 'id': row['item_id']})
-                    log_messages.append(
-                        f"alchemy: resolved '{item_id_val}' -> "
-                        f"'{row['title']}' by '{row['author']}' ({row['item_id']})"
-                    )
-                else:
-                    log_messages.append(
-                        f"alchemy: song '{item_id_val}' not found in library, seed skipped"
-                    )
+        out: List[Dict] = []
+        for item in dict_items:
+            if _is_alchemy_song_ref(item):
+                resolved = _resolve_alchemy_song(db_conn, str(item.get('id') or ''), log_messages)
+                if resolved is not None:
+                    out.append(resolved)
             else:
                 out.append(item)
         return out

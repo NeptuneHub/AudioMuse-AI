@@ -169,20 +169,27 @@ def test_config_owned_env_names_found():
     assert len(names) > 100, f'config.py env-var extraction looks broken ({len(names)} names)'
 
 
+def _config_reread_violation(rel, node, owned):
+    if not (isinstance(node, ast.Call) and _is_os_environ_get(node)):
+        return None
+    if len(node.args) < 2:
+        return None
+    if not (node.args and isinstance(node.args[0], ast.Constant)):
+        return None
+    name = node.args[0].value
+    if name in owned:
+        return f'{rel}:{node.lineno}: os.environ.get({name!r}, <default>)'
+    return None
+
+
 def test_no_module_rereads_config_env_with_default():
     owned = _config_owned_env_names()
     violations = []
     for rel in _tracked_runtime_py_files():
         for node in ast.walk(_parse(rel)):
-            if not (isinstance(node, ast.Call) and _is_os_environ_get(node)):
-                continue
-            if len(node.args) < 2:
-                continue
-            if not (node.args and isinstance(node.args[0], ast.Constant)):
-                continue
-            name = node.args[0].value
-            if name in owned:
-                violations.append(f'{rel}:{node.lineno}: os.environ.get({name!r}, <default>)')
+            violation = _config_reread_violation(rel, node, owned)
+            if violation:
+                violations.append(violation)
     assert not violations, (
         'Env vars owned by config.py must not be re-read with a second default '
         '(import config.<NAME> instead, or read the env without a default):\n  '

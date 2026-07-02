@@ -183,8 +183,8 @@ class TestNormalizeMoodList:
     def test_energy_phrase_extracted(self):
         v = _vocab()
         result = v.normalize_mood_list(['chill'])
-        assert result['energy_min'] == 0.0
-        assert result['energy_max'] == 0.35
+        assert abs(result['energy_min'] - 0.0) < 1e-9
+        assert abs(result['energy_max'] - 0.35) < 1e-9
 
     def test_drop_notes_emitted_for_unknown(self):
         v = _vocab()
@@ -412,8 +412,8 @@ class TestIntentPreextract:
         from tasks.ai.planner import extract_hints
 
         h = extract_hints("chill jazz")
-        assert h['energy_min'] == 0.0
-        assert h['energy_max'] == 0.35
+        assert abs(h['energy_min'] - 0.0) < 1e-9
+        assert abs(h['energy_max'] - 0.35) < 1e-9
 
     def test_explicit_energy_floor(self):
         _ensure_config_stub()
@@ -524,7 +524,7 @@ class TestToolCallsSchema:
     def test_reasoning_first_and_required(self):
         pr = _prompts()
         schema = pr.build_tool_calls_schema(_tools_fixture())
-        assert list(schema['properties'].keys())[0] == 'reasoning'
+        assert next(iter(schema['properties'])) == 'reasoning'
         assert schema['required'] == ['reasoning', 'tool_calls']
 
     def test_branches_lock_name_and_type_arguments(self):
@@ -584,8 +584,8 @@ class TestVocabExactMoodPrecedence:
     def test_chill_still_maps_to_energy(self):
         v = _vocab()
         result = v.normalize_mood_list(['chill'])
-        assert result['energy_min'] == 0.0
-        assert result['energy_max'] == 0.35
+        assert abs(result['energy_min'] - 0.0) < 1e-9
+        assert abs(result['energy_max'] - 0.35) < 1e-9
 
 
 class TestGenreAndNegationHints:
@@ -627,14 +627,14 @@ class TestHintBackstop:
             primaries=[{'name': 'text_match', 'arguments': {'query': 'x', 'mode': 'audio'}}]
         )
         p._apply_hint_backstop(plan, {'bpm': 170}, [])
-        assert plan.filter['tempo_min'] == 160.0
-        assert plan.filter['tempo_max'] == 180.0
+        assert abs(plan.filter['tempo_min'] - 160.0) < 1e-9
+        assert abs(plan.filter['tempo_max'] - 180.0) < 1e-9
 
     def test_model_args_not_overridden(self):
         p = _plan()
         plan = p.ToolPlan(filter={'tempo_min': 100.0})
         p._apply_hint_backstop(plan, {'bpm': 170}, [])
-        assert plan.filter['tempo_min'] == 100.0
+        assert abs(plan.filter['tempo_min'] - 100.0) < 1e-9
         assert 'tempo_max' not in plan.filter
 
 
@@ -721,9 +721,9 @@ class TestInstrumentalRerank:
         s = p._filter_dim_scores(
             {'instrumental': True}, {'mood_vector': 'instrumental:0.62,jazz:0.30'}
         )
-        assert s['instrumental'] == 0.62
+        assert abs(s['instrumental'] - 0.62) < 1e-9
         s = p._filter_dim_scores({'instrumental': True}, {'mood_vector': 'pop:0.50'})
-        assert s['instrumental'] == 0.0
+        assert abs(s['instrumental'] - 0.0) < 1e-9
 
     def test_dim_scores_instrumental_false(self):
         p = _plan()
@@ -830,7 +830,7 @@ class TestExclusionsHardCut:
     def test_no_exclusions_is_noop(self):
         p = _plan()
         songs = [{'item_id': '1', 'title': 'S1', 'artist': 'X'}]
-        assert p._apply_exclusions(songs, {'genres': ['rock']}, {}, []) is songs
+        assert p._apply_exclusions(songs, {'genres': ['rock']}, {}, []) == songs
 
 
 class TestPlanNormalizationExclusions:

@@ -230,19 +230,19 @@ def apply_title_artist_deduplication(song_results: list, db_conn, log_prefix="")
 
         title_clean = title_raw.lower().strip()
         title_clean = re.sub(
-            r'\s*\([^)]*(?:remaster|explicit|clean|radio|edit|version|mix)[^)]*\)',
+            r'\s*\((?=[^)]*(?:remaster|explicit|clean|radio|edit|version|mix))[^)]*\)',
             '',
             title_clean,
             flags=re.IGNORECASE,
         )
         title_clean = re.sub(
-            r'\s*\[[^\]]*(?:remaster|explicit|clean|radio|edit|version|mix)[^\]]*\]',
+            r'\s*\[(?=[^\]]*(?:remaster|explicit|clean|radio|edit|version|mix))[^\]]*\]',
             '',
             title_clean,
             flags=re.IGNORECASE,
         )
         title_clean = re.sub(
-            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*$',
+            r'\s*-\s*(?:remaster|explicit|clean|radio|edit|version|mix).*',
             '',
             title_clean,
             flags=re.IGNORECASE,

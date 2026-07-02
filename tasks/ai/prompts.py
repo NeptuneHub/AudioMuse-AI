@@ -125,13 +125,17 @@ def _example(reasoning: str, calls: List[Dict]) -> str:
     return json.dumps({"reasoning": reasoning, "tool_calls": calls}, ensure_ascii=True)
 
 
-def _build_examples(tools: List[Dict]) -> List[str]:
-    tool_names = {t.get('name') for t in tools}
-    modes = set()
+def _text_match_modes(tools: List[Dict]) -> set:
     for t in tools:
         if t.get('name') == 'text_match':
             props = (t.get('inputSchema') or {}).get('properties') or {}
-            modes = set((props.get('mode') or {}).get('enum') or [])
+            return set((props.get('mode') or {}).get('enum') or [])
+    return set()
+
+
+def _build_examples(tools: List[Dict]) -> List[str]:
+    tool_names = {t.get('name') for t in tools}
+    modes = _text_match_modes(tools)
 
     examples: List[str] = []
     if 'search_database' in tool_names:

@@ -814,40 +814,42 @@
                     const t = raw.trim();
                     if (!t) continue;
                     let m;
+                    const reasoningMatch = t.match(/^AI reasoning:(.+)$/);
+                    const roseMatch = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched the filter and rose to the top;\s*(\d+)\s*songs shifted/i);
                     if ((m = t.match(/^Request:\s*'(.*)'$/))) model.request = m[1];
                     else if ((m = t.match(/^AI Provider:\s*(.+)$/))) model.provider = m[1];
-                    else if ((m = t.match(/^AI reasoning:\s*(.+)$/))) model.reasoning = m[1];
+                    else if (reasoningMatch) model.reasoning = reasoningMatch[1].trim();
                     else if ((m = t.match(/^pre-extract:\s*(.+)$/))) model.hints.push(m[1]);
-                    else if ((m = t.match(/AI emitted (\d+) tool call/i))) model.emitted = parseInt(m[1], 10);
+                    else if ((m = t.match(/AI emitted (\d+) tool call/i))) model.emitted = Number.parseInt(m[1], 10);
                     else if (/^---\s*Composition:/i.test(t)) { model.composition = true; if (/\+\s*1 filter/i.test(t)) model.compositionHasFilter = true; }
                     else if ((m = t.match(/^PRIMARY:\s*(\w+)/))) model.primaries.push(m[1]);
                     else if ((m = t.match(/^TOOL:\s*(\w+)/))) model.seqTools.push(m[1]);
-                    else if ((m = t.match(/pooled\s+\d+\/\d+\s+unique\s*\(pool=(\d+)\)/i))) model.poolSize = parseInt(m[1], 10);
-                    else if ((m = t.match(/FILTER \(priority re-rank\):\s*(\d+)\s*songs/i))) { model.filterRan = true; model.total = parseInt(m[1], 10); }
-                    else if ((m = t.match(/relax:\s*score_threshold=([\d.]+)\s*->\s*(\d+)\s*songs/i))) model.relaxSteps.push({ th: m[1], n: parseInt(m[2], 10) });
+                    else if ((m = t.match(/pooled\s+\d+\/\d+\s+unique\s*\(pool=(\d+)\)/i))) model.poolSize = Number.parseInt(m[1], 10);
+                    else if ((m = t.match(/FILTER \(priority re-rank\):\s*(\d+)\s*songs/i))) { model.filterRan = true; model.total = Number.parseInt(m[1], 10); }
+                    else if ((m = t.match(/relax:\s*score_threshold=([\d.]+)\s*->\s*(\d+)\s*songs/i))) model.relaxSteps.push({ th: m[1], n: Number.parseInt(m[2], 10) });
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*match the requested/i))) {
-                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.categoricalPriority = true;
+                        model.matched = Number.parseInt(m[1], 10); model.total = Number.parseInt(m[2], 10); model.categoricalPriority = true;
                         model.moved = (model.matched > 0) ? model.matched : 0;
                     }
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*songs matched the filter\s*->\s*order UNCHANGED/i))) {
-                        model.filterUnchanged = true; model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
+                        model.filterUnchanged = true; model.matched = Number.parseInt(m[1], 10); model.total = Number.parseInt(m[2], 10); model.moved = 0;
                     }
-                    else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched the filter and rose to the top;\s*(\d+)\s*songs shifted/i))) {
-                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = parseInt(m[3], 10);
+                    else if (roseMatch) {
+                        model.matched = Number.parseInt(roseMatch[1], 10); model.total = Number.parseInt(roseMatch[2], 10); model.moved = Number.parseInt(roseMatch[3], 10);
                     }
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched but scores tied/i))) {
-                        model.matched = parseInt(m[1], 10); model.total = parseInt(m[2], 10); model.moved = 0;
+                        model.matched = Number.parseInt(m[1], 10); model.total = Number.parseInt(m[2], 10); model.moved = 0;
                     }
                     else if ((m = t.match(/^(genres|voices|moods|other_features|energy|tempo|year|min_rating|scale|key|artist|album)\s+.*->/))) {
                         if (model.filterDims.indexOf(m[1]) === -1) model.filterDims.push(m[1]);
                     }
-                    else if ((m = t.match(/retrieved\s+(\d+)\s+songs,\s*added\s+(\d+)/i))) { model.seqRetrieved += parseInt(m[1], 10); model.seqAdded += parseInt(m[2], 10); }
-                    else if ((m = t.match(/Rating filter \(min[^)]*\):\s*removed\s+(\d+)/i))) model.ratingRemoved = parseInt(m[1], 10);
-                    else if ((m = t.match(/Artist diversity:\s*removed\s+(\d+)/i))) model.diversityRemoved = parseInt(m[1], 10);
+                    else if ((m = t.match(/retrieved\s+(\d+)\s+songs,\s*added\s+(\d+)/i))) { model.seqRetrieved += Number.parseInt(m[1], 10); model.seqAdded += Number.parseInt(m[2], 10); }
+                    else if ((m = t.match(/Rating filter \(min[^)]*\):\s*removed\s+(\d+)/i))) model.ratingRemoved = Number.parseInt(m[1], 10);
+                    else if ((m = t.match(/Artist diversity:\s*removed\s+(\d+)/i))) model.diversityRemoved = Number.parseInt(m[1], 10);
                     else if ((m = t.match(/Pool:\s*(\d+)\s*collected.*?(\d+)\s*after diversity cap.*?(\d+)\s*in final/i))) {
-                        model.funnel = { a: parseInt(m[1], 10), b: parseInt(m[2], 10), c: parseInt(m[3], 10) };
+                        model.funnel = { a: Number.parseInt(m[1], 10), b: Number.parseInt(m[2], 10), c: Number.parseInt(m[3], 10) };
                     }
-                    else if ((m = t.match(/Collected\s+(\d+)\s+songs/i))) model.collected = parseInt(m[1], 10);
+                    else if ((m = t.match(/Collected\s+(\d+)\s+songs/i))) model.collected = Number.parseInt(m[1], 10);
                     else if (/Playlist ordered for smooth transitions/i.test(t)) model.ordered = true;
                     else if (/kept in filter-ranked order/i.test(t)) model.filterRankedOrder = true;
                     else if (/SUCCESS! Generated playlist/i.test(t)) model.success = true;

@@ -30,13 +30,13 @@ from error.error_manager import AudioMuseError
 
 BASELINE = {
     'MEDIASERVER_TYPE': 'navidrome',
-    'JELLYFIN_URL': 'http://saved-server:8096',
+    'JELLYFIN_URL': 'https://saved-server:8096',
     'JELLYFIN_TOKEN': 'saved-token',
 }
 
 USER_VALUES = {
     'MEDIASERVER_TYPE': 'JELLYFIN',
-    'JELLYFIN_URL': 'http://user-typed:8096',
+    'JELLYFIN_URL': 'https://user-typed:8096',
     'JELLYFIN_TOKEN': 'user-token',
 }
 
@@ -55,12 +55,12 @@ def _assert_config_matches(expected):
 
 class TestMergeTestConfig:
     def test_user_value_wins(self, saved_config):
-        merged = app_setup._merge_test_config({'JELLYFIN_URL': 'http://user-typed:8096'})
-        assert merged['JELLYFIN_URL'] == 'http://user-typed:8096'
+        merged = app_setup._merge_test_config({'JELLYFIN_URL': 'https://user-typed:8096'})
+        assert merged['JELLYFIN_URL'] == 'https://user-typed:8096'
 
     def test_missing_key_falls_back_to_current_config(self, saved_config):
         merged = app_setup._merge_test_config({})
-        assert merged['JELLYFIN_URL'] == 'http://saved-server:8096'
+        assert merged['JELLYFIN_URL'] == 'https://saved-server:8096'
         assert merged['JELLYFIN_TOKEN'] == 'saved-token'
 
     def test_masked_secret_keeps_stored_value(self, saved_config):
@@ -74,11 +74,11 @@ class TestMergeTestConfig:
 
 class TestPatchAndRestore:
     def test_patch_applies_and_restore_undoes(self, saved_config):
-        originals = app_setup._patch_config_for_test({'JELLYFIN_URL': 'http://patched'})
-        assert config.JELLYFIN_URL == 'http://patched'
-        assert originals['JELLYFIN_URL'] == 'http://saved-server:8096'
+        originals = app_setup._patch_config_for_test({'JELLYFIN_URL': 'https://patched'})
+        assert config.JELLYFIN_URL == 'https://patched'
+        assert originals['JELLYFIN_URL'] == 'https://saved-server:8096'
         app_setup._restore_config(originals)
-        assert config.JELLYFIN_URL == 'http://saved-server:8096'
+        assert config.JELLYFIN_URL == 'https://saved-server:8096'
 
 
 class TestConnectionProbeSeesUserValues:
@@ -102,7 +102,7 @@ class TestConnectionProbeSeesUserValues:
         result = app_setup._test_media_server_connection(dict(USER_VALUES))
 
         assert captured['MEDIASERVER_TYPE'] == 'jellyfin'
-        assert captured['JELLYFIN_URL'] == 'http://user-typed:8096'
+        assert captured['JELLYFIN_URL'] == 'https://user-typed:8096'
         assert captured['JELLYFIN_TOKEN'] == 'user-token'
         assert captured['limit'] == config.PROBE_TOP_PLAYED_LIMIT
         assert result['type'] == 'jellyfin'
@@ -115,14 +115,16 @@ class TestConnectionProbeSeesUserValues:
 
     def test_config_restored_after_provider_failure(self, saved_config, monkeypatch):
         self._fake_probe(monkeypatch, {}, RuntimeError('connection refused'))
+        args = dict(USER_VALUES)
         with pytest.raises(AudioMuseError):
-            app_setup._test_media_server_connection(dict(USER_VALUES))
+            app_setup._test_media_server_connection(args)
         _assert_config_matches(saved_config)
 
     def test_config_restored_after_empty_result(self, saved_config, monkeypatch):
         self._fake_probe(monkeypatch, {}, [])
+        args = dict(USER_VALUES)
         with pytest.raises(AudioMuseError):
-            app_setup._test_media_server_connection(dict(USER_VALUES))
+            app_setup._test_media_server_connection(args)
         _assert_config_matches(saved_config)
 
 
@@ -141,7 +143,7 @@ class TestListLibrariesSeesUserValues:
         result = app_setup._list_provider_libraries(dict(USER_VALUES))
 
         assert captured['provider_type'] == 'jellyfin'
-        assert captured['JELLYFIN_URL'] == 'http://user-typed:8096'
+        assert captured['JELLYFIN_URL'] == 'https://user-typed:8096'
         assert captured['JELLYFIN_TOKEN'] == 'user-token'
         assert result == [{'id': 'lib1', 'name': 'Music'}]
         _assert_config_matches(saved_config)

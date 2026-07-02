@@ -190,6 +190,115 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
     )
 
 
+_SEARCH_OTHER_FILTER_KEYS = (
+    "genres", "moods", "tempo_min", "tempo_max",
+    "energy_min", "energy_max", "key", "scale",
+    "year_min", "year_max", "min_rating",
+    "album", "other_features", "candidate_item_ids",
+    "voices", "instrumental",
+    "exclude_artists", "exclude_genres",
+)
+
+
+def _scale_energy(raw) -> Optional[float]:
+    if raw is None:
+        return None
+    return config.ENERGY_MIN + float(raw) * (config.ENERGY_MAX - config.ENERGY_MIN)
+
+
+def _has_other_search_filters(tool_args: Dict) -> bool:
+    return any(tool_args.get(k) for k in _SEARCH_OTHER_FILTER_KEYS)
+
+
+def _retry_artist_substring(do_query, artist_arg):
+    logger.info(
+        "search_database exact match returned 0 songs; retrying with "
+        "artist ILIKE '%%%s%%'",
+        artist_arg,
+    )
+    result = do_query(artist_arg, fuzzy=True)
+    songs = result.get("songs", [])
+    if songs:
+        msg = result.get("message", "")
+        result["message"] = (
+            f"{msg}\n(artist relaxed to substring match: "
+            f"artist ILIKE '%{artist_arg}%')"
+        )
+    return result, songs
+
+
+def _retry_fuzzy_artist(do_query, artist_arg, prev_result):
+    try:
+        db_conn = _get_db_connection()
+        try:
+            fuzzy_hit = _fuzzy_match_author_title(db_conn, artist_arg)
+        finally:
+            db_conn.close()
+        if fuzzy_hit and fuzzy_hit.get("author"):
+            canonical = fuzzy_hit["author"]
+            logger.info(
+                "Fuzzy-matched artist '%s' -> '%s' (score %s); re-querying",
+                artist_arg, canonical, fuzzy_hit.get("score", "?"),
+            )
+            result = do_query(canonical, fuzzy=False)
+            if result.get("songs", []):
+                msg = result.get("message", "")
+                result["message"] = (
+                    f"{msg}\n(artist fuzzy-matched: "
+                    f"'{artist_arg}' -> '{canonical}')"
+                )
+            return result
+    except Exception:
+        logger.warning(
+            "Fuzzy artist fallback failed for '%s'", artist_arg, exc_info=True
+        )
+    return prev_result
+
+
+def _dispatch_search_database(tool_args: Dict) -> Dict:
+    energy_min_raw = _scale_energy(tool_args.get("energy_min"))
+    energy_max_raw = _scale_energy(tool_args.get("energy_max"))
+    artist_arg = tool_args.get("artist")
+    album_arg = tool_args.get("album")
+
+    def _do_query(name, fuzzy: bool = False) -> Dict:
+        return _database_genre_query_sync(
+            tool_args.get("genres"),
+            tool_args.get("get_songs", 200),
+            tool_args.get("moods"),
+            tool_args.get("tempo_min"),
+            tool_args.get("tempo_max"),
+            energy_min_raw,
+            energy_max_raw,
+            tool_args.get("key"),
+            tool_args.get("scale"),
+            tool_args.get("year_min"),
+            tool_args.get("year_max"),
+            tool_args.get("min_rating"),
+            album_arg,
+            name,
+            other_features=tool_args.get("other_features"),
+            candidate_item_ids=tool_args.get("candidate_item_ids"),
+            voices=_expand_voice_spellings(tool_args.get("voices")),
+            score_threshold=tool_args.get("score_threshold"),
+            instrumental=tool_args.get("instrumental"),
+            fuzzy_match=fuzzy,
+            exclude_artists=tool_args.get("exclude_artists"),
+            exclude_genres=tool_args.get("exclude_genres"),
+        )
+
+    result = _do_query(artist_arg, fuzzy=False)
+    songs = result.get("songs", [])
+
+    if not songs and artist_arg:
+        result, songs = _retry_artist_substring(_do_query, artist_arg)
+
+    if not songs and artist_arg and not _has_other_search_filters(tool_args):
+        result = _retry_fuzzy_artist(_do_query, artist_arg, result)
+
+    return result
+
+
 def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
     try:
         if tool_name == "seed_search":
@@ -203,111 +312,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return _ai_brainstorm_sync(request, ai_config, tool_args.get("get_songs", 200))
 
         if tool_name == "search_database":
-            energy_min_raw = None
-            energy_max_raw = None
-            e_min = tool_args.get("energy_min")
-            e_max = tool_args.get("energy_max")
-            if e_min is not None:
-                e_min = float(e_min)
-                energy_min_raw = config.ENERGY_MIN + e_min * (config.ENERGY_MAX - config.ENERGY_MIN)
-            if e_max is not None:
-                e_max = float(e_max)
-                energy_max_raw = config.ENERGY_MIN + e_max * (config.ENERGY_MAX - config.ENERGY_MIN)
-
-            artist_arg = tool_args.get("artist")
-            album_arg = tool_args.get("album")
-
-            def _do_query(fuzzy: bool = False) -> Dict:
-                return _database_genre_query_sync(
-                    tool_args.get("genres"),
-                    tool_args.get("get_songs", 200),
-                    tool_args.get("moods"),
-                    tool_args.get("tempo_min"),
-                    tool_args.get("tempo_max"),
-                    energy_min_raw,
-                    energy_max_raw,
-                    tool_args.get("key"),
-                    tool_args.get("scale"),
-                    tool_args.get("year_min"),
-                    tool_args.get("year_max"),
-                    tool_args.get("min_rating"),
-                    album_arg,
-                    artist_arg,
-                    other_features=tool_args.get("other_features"),
-                    candidate_item_ids=tool_args.get("candidate_item_ids"),
-                    voices=_expand_voice_spellings(tool_args.get("voices")),
-                    score_threshold=tool_args.get("score_threshold"),
-                    instrumental=tool_args.get("instrumental"),
-                    fuzzy_match=fuzzy,
-                    exclude_artists=tool_args.get("exclude_artists"),
-                    exclude_genres=tool_args.get("exclude_genres"),
-                )
-
-            # Step 1: exact match (current behaviour)
-            result = _do_query(fuzzy=False)
-            songs = result.get("songs", [])
-
-            # Step 2: if 0 songs and an artist filter was given, retry with ILIKE
-            # substring (album is always substring-matched, so it gains nothing here)
-            if not songs and artist_arg:
-                logger.info(
-                    "search_database exact match returned 0 songs; retrying with "
-                    "artist ILIKE '%%%s%%'",
-                    artist_arg,
-                )
-                result = _do_query(fuzzy=True)
-                songs = result.get("songs", [])
-                if songs:
-                    msg = result.get("message", "")
-                    result["message"] = (
-                        f"{msg}\n(artist relaxed to substring match: "
-                        f"artist ILIKE '%{artist_arg}%')"
-                    )
-
-            # Step 3: if still 0 and only an artist was given (no other filters),
-            # try fuzzy matching to find the canonical artist name, then re-query
-            if (
-                not songs
-                and artist_arg
-                and not any(
-                    tool_args.get(k)
-                    for k in (
-                        "genres", "moods", "tempo_min", "tempo_max",
-                        "energy_min", "energy_max", "key", "scale",
-                        "year_min", "year_max", "min_rating",
-                        "album", "other_features", "candidate_item_ids",
-                        "voices", "instrumental",
-                        "exclude_artists", "exclude_genres",
-                    )
-                )
-            ):
-                try:
-                    db_conn = _get_db_connection()
-                    try:
-                        fuzzy_hit = _fuzzy_match_author_title(db_conn, artist_arg)
-                    finally:
-                        db_conn.close()
-                    if fuzzy_hit and fuzzy_hit.get("author"):
-                        canonical = fuzzy_hit["author"]
-                        logger.info(
-                            "Fuzzy-matched artist '%s' -> '%s' (score %s); re-querying",
-                            artist_arg, canonical, fuzzy_hit.get("score", "?"),
-                        )
-                        artist_arg = canonical
-                        result = _do_query(fuzzy=False)
-                        songs = result.get("songs", [])
-                        if songs:
-                            msg = result.get("message", "")
-                            result["message"] = (
-                                f"{msg}\n(artist fuzzy-matched: "
-                                f"'{tool_args.get('artist')}' -> '{canonical}')"
-                            )
-                except Exception:
-                    logger.warning(
-                        "Fuzzy artist fallback failed for '%s'", artist_arg, exc_info=True
-                    )
-
-            return result
+            return _dispatch_search_database(tool_args)
 
         return {"error": f"Unknown tool: {tool_name}"}
 

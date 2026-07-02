@@ -324,6 +324,112 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
     return lines, machine
 
 
+def _norm_dim(v, lo, hi):
+    return (v - lo) / (hi - lo) if hi > lo else 0.0
+
+
+def _cont_dim_score(d, cont_keys, dim_min, dim_max, sim_score):
+    total = sum(_norm_dim(d.get(k, 0.0), dim_min[k], dim_max[k]) for k in cont_keys)
+    n_dims = len(cont_keys)
+    if sim_score is not None:
+        total += sim_score
+        n_dims += 1
+    return total / n_dims if n_dims else 0.0
+
+
+def _cat_dim_count(d, cat_keys):
+    return sum(1 for k in cat_keys if d.get(k, 0.0) > 0)
+
+
+def _cat_dim_conf(d, cat_keys, dim_min, dim_max):
+    return sum(_norm_dim(d.get(k, 0.0), dim_min[k], dim_max[k]) for k in cat_keys)
+
+
+def _blend_sim_scores(sim_by_id, pool_songs):
+    if not sim_by_id:
+        return None
+    vals = [float(sim_by_id.get(s.get('item_id'), 0.0)) for s in pool_songs]
+    lo, hi = min(vals), max(vals)
+    if hi > lo:
+        return [(v - lo) / (hi - lo) for v in vals]
+    return None
+
+
+def _dimension_stats(raw_dims):
+    dim_keys = sorted({k for d in raw_dims for k in d})
+    dim_min = {k: min((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+    dim_max = {k: max((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
+    cat_keys = [k for k in dim_keys if k in CATEGORICAL_DIMS]
+    cont_keys = [k for k in dim_keys if k not in CATEGORICAL_DIMS]
+    return dim_keys, dim_min, dim_max, cat_keys, cont_keys
+
+
+def _log_pool_ranges(log_messages, dim_keys, dim_min, dim_max, sim_scores, n_demoted):
+    if dim_keys:
+        norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
+        if sim_scores is not None:
+            norm_summary += ", similarity[primary-tool rank, blended as an extra dimension]"
+        log_messages.append(
+            f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}"
+        )
+    if n_demoted:
+        log_messages.append(
+            f"   non-song tracks (intro/skit/interlude titles): {n_demoted} down-ranked to the end"
+        )
+
+
+def _order_by_category(pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages):
+    N = len(pool_songs)
+    matched = sum(1 for t in sort_keys if t[0] > 0)
+    order = sorted(
+        range(N),
+        key=lambda i: (keep_rank[i], sort_keys[i][0], sort_keys[i][1], sort_keys[i][2]),
+        reverse=True,
+    )
+    final = [pool_songs[i] for i in order]
+    moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+    if matched == 0:
+        log_messages.append(
+            f"   re-rank: 0/{N} match the requested {cat_label}; all ordered by {cont_label}"
+        )
+    else:
+        log_messages.append(
+            f"   re-rank: {matched}/{N} match the requested {cat_label} and rank first; "
+            f"remaining ordered by {cont_label} (categorical priority, then gradient)"
+        )
+    return final, matched, moved
+
+
+def _order_by_similarity(pool_songs, keep_rank, cont_scores, n_demoted, matched, log_messages):
+    N = len(pool_songs)
+    if matched == 0:
+        order = (
+            sorted(range(N), key=lambda i: keep_rank[i], reverse=True)
+            if n_demoted
+            else list(range(N))
+        )
+    else:
+        order = sorted(range(N), key=lambda i: (keep_rank[i], cont_scores[i]), reverse=True)
+    final = [pool_songs[i] for i in order]
+    moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+    if matched == 0:
+        log_messages.append(
+            f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)"
+        )
+    elif moved == 0:
+        log_messages.append(
+            f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position"
+        )
+    else:
+        log_messages.append(
+            f"   re-rank: {matched}/{N} matched the filter and rose to the top; "
+            f"{moved} songs shifted position vs pure similarity order "
+            f"(per-dim normalized then averaged with primary-tool rank, "
+            f"higher score = higher rank)"
+        )
+    return final, matched, moved
+
+
 def _rerank_pool(
     pool_songs: List[Dict],
     filt: Dict,
@@ -341,109 +447,41 @@ def _rerank_pool(
         log_messages.append(ln)
 
     raw_dims = [_filter_dim_scores(filt, feats.get(s['item_id'], {})) for s in pool_songs]
+    dim_keys, dim_min, dim_max, cat_keys, cont_keys = _dimension_stats(raw_dims)
 
-    dim_keys = sorted({k for d in raw_dims for k in d})
-    dim_min = {k: min((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
-    dim_max = {k: max((d.get(k, 0.0) for d in raw_dims), default=0.0) for k in dim_keys}
-
-    def _norm(k, v):
-        lo, hi = dim_min[k], dim_max[k]
-        return (v - lo) / (hi - lo) if hi > lo else 0.0
-
-    cat_keys = [k for k in dim_keys if k in CATEGORICAL_DIMS]
-    cont_keys = [k for k in dim_keys if k not in CATEGORICAL_DIMS]
-
-    sim_scores: Optional[List[float]] = None
-    if sim_by_id:
-        vals = [float(sim_by_id.get(s.get('item_id'), 0.0)) for s in pool_songs]
-        lo, hi = min(vals), max(vals)
-        if hi > lo:
-            sim_scores = [(v - lo) / (hi - lo) for v in vals]
-
+    sim_scores = _blend_sim_scores(sim_by_id, pool_songs)
     keep_rank = [0 if _NON_SONG_TITLE_RE.search(s.get('title') or '') else 1 for s in pool_songs]
     n_demoted = keep_rank.count(0)
 
-    def _cont_score(i):
-        d = raw_dims[i]
-        total = sum(_norm(k, d.get(k, 0.0)) for k in cont_keys)
-        n_dims = len(cont_keys)
-        if sim_scores is not None:
-            total += sim_scores[i]
-            n_dims += 1
-        return total / n_dims if n_dims else 0.0
-
-    def _cat_count(d):
-        return sum(1 for k in cat_keys if d.get(k, 0.0) > 0)
-
-    def _cat_conf(d):
-        return sum(_norm(k, d.get(k, 0.0)) for k in cat_keys)
-
-    if dim_keys:
-        norm_summary = ", ".join(f"{k}[{dim_min[k]:.2f}..{dim_max[k]:.2f}]" for k in dim_keys)
-        if sim_scores is not None:
-            norm_summary += ", similarity[primary-tool rank, blended as an extra dimension]"
-        log_messages.append(
-            f"   per-dim pool range (each normalized 0..1 for the blend): {norm_summary}"
+    cont_scores = [
+        _cont_dim_score(
+            raw_dims[i], cont_keys, dim_min, dim_max,
+            sim_scores[i] if sim_scores is not None else None,
         )
-    if n_demoted:
-        log_messages.append(
-            f"   non-song tracks (intro/skit/interlude titles): {n_demoted} down-ranked to the end"
-        )
+        for i in range(N)
+    ]
+
+    _log_pool_ranges(log_messages, dim_keys, dim_min, dim_max, sim_scores, n_demoted)
 
     if cat_keys:
-        matched = sum(1 for d in raw_dims if _cat_count(d) > 0)
-        order = sorted(
-            range(N),
-            key=lambda i: (
-                keep_rank[i],
-                _cat_count(raw_dims[i]),
-                _cont_score(i),
-                _cat_conf(raw_dims[i]),
-            ),
-            reverse=True,
-        )
-        final = [pool_songs[i] for i in order]
-        moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
+        sort_keys = [
+            (
+                _cat_dim_count(raw_dims[i], cat_keys),
+                cont_scores[i],
+                _cat_dim_conf(raw_dims[i], cat_keys, dim_min, dim_max),
+            )
+            for i in range(N)
+        ]
         cat_label = ", ".join(cat_keys)
         cont_label = ", ".join(cont_keys) if cont_keys else "similarity"
-        if matched == 0:
-            log_messages.append(
-                f"   re-rank: 0/{N} match the requested {cat_label}; all ordered by {cont_label}"
-            )
-        else:
-            log_messages.append(
-                f"   re-rank: {matched}/{N} match the requested {cat_label} and rank first; "
-                f"remaining ordered by {cont_label} (categorical priority, then gradient)"
-            )
+        final, matched, moved = _order_by_category(
+            pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages
+        )
     else:
         matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))
-        fscores = [_cont_score(i) for i in range(N)]
-        if matched == 0:
-            order = (
-                sorted(range(N), key=lambda i: keep_rank[i], reverse=True)
-                if n_demoted
-                else list(range(N))
-            )
-            final = [pool_songs[i] for i in order]
-            moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
-            log_messages.append(
-                f"   re-rank: 0/{N} songs matched the filter -> order UNCHANGED (pure similarity)"
-            )
-        else:
-            order = sorted(range(N), key=lambda i: (keep_rank[i], fscores[i]), reverse=True)
-            final = [pool_songs[i] for i in order]
-            moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
-            if moved == 0:
-                log_messages.append(
-                    f"   re-rank: {matched}/{N} matched but scores tied -> no song changed position"
-                )
-            else:
-                log_messages.append(
-                    f"   re-rank: {matched}/{N} matched the filter and rose to the top; "
-                    f"{moved} songs shifted position vs pure similarity order "
-                    f"(per-dim normalized then averaged with primary-tool rank, "
-                    f"higher score = higher rank)"
-                )
+        final, matched, moved = _order_by_similarity(
+            pool_songs, keep_rank, cont_scores, n_demoted, matched, log_messages
+        )
 
     logger.info(
         "soft re-rank: pool=%d matched=%d moved=%d filter=%s dim_range=%s",
@@ -470,31 +508,32 @@ FILTER_SCALAR_KEYS = ('key', 'scale', 'album', 'artist', 'instrumental')
 FILTER_ALL_KEYS = FILTER_LIST_KEYS + FILTER_MIN_KEYS + FILTER_MAX_KEYS + FILTER_SCALAR_KEYS
 
 
+def _song_is_excluded(s: Dict, feats: Dict, ex_artist_norms: set, ex_genre_lows: List[str]) -> bool:
+    from tasks.ai.tool_impl import _EXCLUDE_GENRE_SCORE, _normalize_for_match
+
+    f = feats.get(s.get('item_id'), {})
+    author = f.get('author') or s.get('artist') or ''
+    if _normalize_for_match(author) in ex_artist_norms:
+        return True
+    if ex_genre_lows:
+        mv = _parse_tag_scores(f.get('mood_vector') or '')
+        return any(mv.get(g, 0.0) >= _EXCLUDE_GENRE_SCORE for g in ex_genre_lows)
+    return False
+
+
 def _apply_exclusions(pool_songs: List[Dict], filt: Dict, feats: Dict, log_messages: List[str]):
     ex_artists = [a for a in (filt.get('exclude_artists') or []) if isinstance(a, str) and a.strip()]
     ex_genres = [g for g in (filt.get('exclude_genres') or []) if isinstance(g, str) and g.strip()]
     if not ex_artists and not ex_genres:
         return pool_songs
 
-    from tasks.ai.tool_impl import _EXCLUDE_GENRE_SCORE, _normalize_for_match
+    from tasks.ai.tool_impl import _normalize_for_match
 
     ex_artist_norms = {_normalize_for_match(a) for a in ex_artists}
     ex_genre_lows = [g.strip().lower() for g in ex_genres]
 
-    kept: List[Dict] = []
-    removed = 0
-    for s in pool_songs:
-        f = feats.get(s.get('item_id'), {})
-        author = f.get('author') or s.get('artist') or ''
-        if _normalize_for_match(author) in ex_artist_norms:
-            removed += 1
-            continue
-        if ex_genre_lows:
-            mv = _parse_tag_scores(f.get('mood_vector') or '')
-            if any(mv.get(g, 0.0) >= _EXCLUDE_GENRE_SCORE for g in ex_genre_lows):
-                removed += 1
-                continue
-        kept.append(s)
+    kept = [s for s in pool_songs if not _song_is_excluded(s, feats, ex_artist_norms, ex_genre_lows)]
+    removed = len(pool_songs) - len(kept)
     if removed:
         log_messages.append(
             f"   exclusions (hard cut): removed {removed}/{len(pool_songs)} songs "
@@ -742,46 +781,47 @@ def _strip_unrequested_filter_args(
 _BPM_HINT_HALF_WINDOW = 10.0
 
 
+def _backstop_min_max(backstop: Dict, filt: Dict, hints: Dict, min_key: str, max_key: str) -> None:
+    if filt.get(min_key) is not None or filt.get(max_key) is not None:
+        return
+    if hints.get(min_key) is not None:
+        backstop[min_key] = hints[min_key]
+    if hints.get(max_key) is not None:
+        backstop[max_key] = hints[max_key]
+
+
+def _backstop_tempo(backstop: Dict, filt: Dict, hints: Dict) -> None:
+    if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
+        return
+    if hints.get('bpm') is not None:
+        backstop['tempo_min'] = float(hints['bpm']) - _BPM_HINT_HALF_WINDOW
+        backstop['tempo_max'] = float(hints['bpm']) + _BPM_HINT_HALF_WINDOW
+    else:
+        _backstop_min_max(backstop, filt, hints, 'tempo_min', 'tempo_max')
+
+
+def _backstop_missing_list(backstop: Dict, filt: Dict, hints: Dict, key: str) -> None:
+    if not hints.get(key):
+        return
+    existing = {g.lower() for g in (filt.get(key) or [])}
+    missing = [g for g in hints[key] if g.lower() not in existing]
+    if missing:
+        backstop[key] = missing
+
+
 def _apply_hint_backstop(plan: 'ToolPlan', hints: Dict, log_messages: List[str]) -> None:
     filt = plan.filter or {}
     backstop: Dict = {}
 
-    if filt.get('tempo_min') is None and filt.get('tempo_max') is None:
-        if hints.get('bpm') is not None:
-            backstop['tempo_min'] = float(hints['bpm']) - _BPM_HINT_HALF_WINDOW
-            backstop['tempo_max'] = float(hints['bpm']) + _BPM_HINT_HALF_WINDOW
-        else:
-            if hints.get('tempo_min') is not None:
-                backstop['tempo_min'] = hints['tempo_min']
-            if hints.get('tempo_max') is not None:
-                backstop['tempo_max'] = hints['tempo_max']
-
-    if filt.get('energy_min') is None and filt.get('energy_max') is None:
-        if hints.get('energy_min') is not None:
-            backstop['energy_min'] = hints['energy_min']
-        if hints.get('energy_max') is not None:
-            backstop['energy_max'] = hints['energy_max']
-
-    if filt.get('year_min') is None and filt.get('year_max') is None:
-        if hints.get('year_min') is not None:
-            backstop['year_min'] = hints['year_min']
-        if hints.get('year_max') is not None:
-            backstop['year_max'] = hints['year_max']
+    _backstop_tempo(backstop, filt, hints)
+    _backstop_min_max(backstop, filt, hints, 'energy_min', 'energy_max')
+    _backstop_min_max(backstop, filt, hints, 'year_min', 'year_max')
 
     if filt.get('instrumental') is None and hints.get('instrumental') is True:
         backstop['instrumental'] = True
 
-    if hints.get('genres'):
-        existing = {g.lower() for g in (filt.get('genres') or [])}
-        missing = [g for g in hints['genres'] if g.lower() not in existing]
-        if missing:
-            backstop['genres'] = missing
-
-    if hints.get('exclude_genres'):
-        existing = {g.lower() for g in (filt.get('exclude_genres') or [])}
-        missing = [g for g in hints['exclude_genres'] if g.lower() not in existing]
-        if missing:
-            backstop['exclude_genres'] = missing
+    _backstop_missing_list(backstop, filt, hints, 'genres')
+    _backstop_missing_list(backstop, filt, hints, 'exclude_genres')
 
     if backstop:
         plan.filter = _merge_filter(plan.filter, backstop)
@@ -1496,7 +1536,7 @@ def plan_and_execute_once(
 
         if pool_songs:
             N = len(pool_songs)
-            final, matched, moved = _rerank_pool(
+            final, matched, _moved = _rerank_pool(
                 pool_songs, plan.filter, feats, log_messages, sim_by_id=sim_by_id
             )
             yield
