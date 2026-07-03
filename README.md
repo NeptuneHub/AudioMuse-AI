@@ -19,7 +19,7 @@
 
 AudioMuse-AI is an opensource and self-hosted tool that uses sonic analysis to rediscover forgotten songs in your music library and generate groove-aware playlists that also capture the meaning behind each track, without relying on metadata or external APIs.
 
-You can run it locally with Docker Compose or Podman, or deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported). It integrates with major self-hosted music servers including [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media), with more integrations planned.
+You can run it locally with Docker Compose or Podman, deploy it at scale in a Kubernetes cluster (**AMD64** and **ARM64** supported), or use native applications available for **macOS, Windows, and Linux**. It integrates with major self-hosted music servers including [Jellyfin](https://jellyfin.org), [Navidrome](https://www.navidrome.org/), [LMS](https://github.com/epoupon/lms/tree/master), [Lyrion](https://lyrion.org/), and [Emby](https://emby.media), with more integrations planned.
 
 > **Prefer not to self-host?** We're proud that [Elestio](https://elest.io/open-source/audiomuse-ai) picked AudioMuse-AI as a managed cloud service, happy to see the project reach more people.
 
