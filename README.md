@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate</a> to shape AudioMuse-AI future by supporting AI licenses, homelab infrastructure for testing and continuous development.
+💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate</a> to shape AudioMuse-AI future by supporting AI licenses, homelab infrastructure, and continuous development.
 </p>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
