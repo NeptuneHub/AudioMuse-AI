@@ -2,14 +2,13 @@
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
 ![Media Server Support: Jellyfin 12.0, Navidrome 0.62.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80](https://img.shields.io/badge/Media%20Server-Jellyfin%2012.0%2C%20Navidrome%200.62.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
-<a href="https://liberapay.com/NeptuneHub/donate"><img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg"></a>
 
 <p align="center">
 <strong>⭐ Leave a star on this project:</strong> One shines alone; together, they make it visible and keep it alive.
 </p>
 
 <p align="center">
-💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate</a> to shape AudioMuse-AI future by supporting AI licenses, homelab infrastructure, and continuous development.
+💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate</a> to shape AudioMuse-AI future by supporting AI licenses, homelab infrastructure for testing and continuous development.
 </p>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
