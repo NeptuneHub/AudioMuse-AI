@@ -39,8 +39,10 @@ The following table details the most important paths in the repository, their pu
 | Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` and `app_helepr.py` functionality |
 | static/ & templates/ | These directories contain all frontend assets. |
 | deployment/ | This contains deployment example but also the supervisord configuration |
-| Dockerfile, Dockerfile.nvidia | These files contain the instructions for building the OCI-compatible container images for the application. |
+| Dockerfile| These files contain the instructions for building the OCI-compatible container images for the application. |
 | .github/ | This directory holds GitHub-specific configuration files, such as issue templates, pull request templates, and potentially continuous integration/continuous deployment (CI/CD) workflows.1 |
+| test/ | This directory holds unit and integration test|
+| native-build/ | This directory holds all the scripts and file needed for the macOS, Windows and Linux native build|
 
 ## **Prerequisites**
 
