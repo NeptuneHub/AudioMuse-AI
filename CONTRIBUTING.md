@@ -107,17 +107,18 @@ When submitting a pull request, ensure:
 
 > Missing requirements may lead to requests for additional information and, if not provided, the PR may be closed. Regardless of the above, the final decision to merge a pull request is at the maintainer’s discretion.
 
-### Linting & Code Style
+### Linting, Code Style and test
 All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locally before pushing:
 
-* **Naming:** snake_case for functions/variables (`song_count`, `get_albums()`), PascalCase for classes (`SongIndex`); no trailing whitespace, and end every file with a single newline.
-* **Imports at the top:** keep imports at the top of the file; only move one inside a function when it's truly necessary (e.g. to break an import cycle or avoid a heavy/optional dependency at module load time).
-* **One config default:** define each tunable once in `config.py` and import `config.NAME` - never re-read its env var with a second default or use a `getattr(config, 'NAME', default)` fallback elsewhere (`test/unit/test_config_centralization.py` enforces this repo-wide).
-* **Plain ASCII, no emoji:** `.py` files stay plain ASCII (`OK`, `->`) - decorative emoji break the Windows console when logged. Emoji are still fine in HTML/templates and frontend JS.
-* **flake8 + ruff:** `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` catches syntax errors and pyflakes issues (undefined/unused names, bad `== None`/`== True` comparisons, bare `except:`); `ruff check .` (config in `ruff.toml`) adds the naming/whitespace rules above, `TRY400` (use `logging.exception(...)`, not `logging.error(...)`, inside an `except` block), and a correctness set - `B` (flake8-bugbear: mutable defaults, loop-variable closures, bare `raise` without `from` inside `except`, ...), `PLE` (pylint errors), `G010`/`G101`/`G201`/`G202` (logging misuse; `G201`: `logging.error(..., exc_info=True)` must be `logging.exception(...)`), `TRY004`, `TRY401` (no redundant `{e}` inside `logger.exception(...)` messages - the traceback already prints it), `RUF001`-`RUF003` (ambiguous/confusable Unicode - enforces the plain-ASCII/no-em-dash policy at the `.py` level), `RUF013` (implicit `Optional`), `E721`, `A001`, `YTT`, `ISC002`, `T100`, `PGH003`. Run both before pushing.
+* **Naming:** snake_case for functions/variables (`song_count`, `get_albums()`), no trailing whitespace, and end every file with a single newline.
+* **Imports at the top:** keep imports at the top of the file; only move one inside a function when it's truly necessary.
+* **One config default:** define each tunable once in `config.py` and import `config.NAME`.
+* **Plain ASCII, no emoji:** `.py` files stay plain ASCII. Emoji are still fine if used in a moderate way in HTML/templates and frontend JS.
+* **flake8 + ruff:** `flake8 --select=E9,F,W605,E711,E712,E713,E714,E722,E401` catches syntax errors and pyflakes issues. Test it before raising a PR.
 * **codespell:** must pass repo-wide; fix real typos, and add genuine false positives (with a short reason) to `.codespellrc`.
-* **LF line endings & mypy:** every file must use LF line endings (no CRLF); `test/unit/test_line_endings_index.py` guards this via the git index (`git ls-files --eol`), independent of the CI grep. If you touch a module listed in `mypy.ini`, run `mypy --config-file mypy.ini` and keep it green.
-* **Repo-wide unit guards:** beyond the lint tools above, `pytest test/unit/` also enforces house conventions that flake8/ruff cannot express - the file header convention (`test_file_header_convention.py`), no docstrings in `lyrics/*.py` beyond the required header (`test_lyrics_no_docstrings.py`), no emoji/decorative symbols in code (`test_no_emoji_in_source.py`), no em-dash (`test_no_em_dash_in_source.py`), and that `test/requirements.txt` pins stay aligned with `requirements/common.txt` (`test_requirements_alignment.py`, since Trivy's dependency scan skips `test/requirements.txt`).
+* **LF line endings & mypy:** every file must use LF line endings (no CRLF).
+* **Repo-wide unit and integration test:** beyond the lint tools above, `pytest test/unit/` and `pytest test/integration/` introduce unit and integration test.
+* **Exeternal tools:** Sonarcloud and eventually AI review will run on PR.
 
 ### How to Open a Draft PR
 1. Push your branch to your fork
