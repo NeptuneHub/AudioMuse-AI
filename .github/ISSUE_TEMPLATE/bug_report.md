@@ -34,7 +34,7 @@ If applicable, add screenshots to help explain your problem.
  - OS: [e.g. Debian, Windows]
  - Deployment: [e.g. Docker Compose, K3s, Helm]
  - AudioMuse-AI Version: [e.g. v0.4.0-beta, latest]
- - Jellyfin/Navidrome Version: [e.g. Navidrome 0.57.0]
+ - Navidrome/Jellyfin Version: [e.g. Navidrome 0.57.0]
  - Browser: [e.g. chrome, safari]
  - CPU: [e.g. Intel I5-6500, Arm xyz]
  - RAM: [e.g. 8GB DDR4]

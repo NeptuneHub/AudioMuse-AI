@@ -27,8 +27,8 @@
 - [ ] NVIDIA image
 
 **Tested on media server:**
-- [ ] Jellyfin
 - [ ] Navidrome
+- [ ] Jellyfin
 - [ ] Emby
 - [ ] Lyrion
 

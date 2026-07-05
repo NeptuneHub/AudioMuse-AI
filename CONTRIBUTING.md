@@ -33,7 +33,7 @@ The following table details the most important paths in the repository, their pu
 | :---- | :---- |
 | app.py, app_*.py | The main entry point for the Flask web application. It handles the initialization of the Flask app, database connections, and the registration of API routes and blueprints. |
 | tasks/ | **The Core Logic Hub.** This is where the most intensive computations occur. Each API or async task then point to an specific implementation in this directory|
-| tasks/mediaserver/ | In this package the generic methods to interact with the mediaservers (`__init__.py`) dispatch to the specific backend (`jellyfin.py`, `navidrome.py`, `emby.py`, `lyrion.py`) |
+| tasks/mediaserver/ | In this package the generic methods to interact with the mediaservers (`__init__.py`) dispatch to the specific backend (`navidrome.py`, `jellyfin.py`, `emby.py`, `lyrion.py`) |
 | tasks/ai/ | All AI / MCP code. `tasks/ai/api.py` is the provider dispatcher (called via `tasks.ai.api.call_with_tools()`), with backends in `tasks/ai/providers/{openai,gemini,mistral}.py` (openai.py also drives Ollama). Prompts and the derived tool-call grammar are in `tasks/ai/prompts.py`. MCP tool schemas + dispatcher in `tasks/ai/tools.py`; tool bodies in `tasks/ai/tool_impl.py`. Single-call planner (plan validation + execution) in `tasks/ai/planner.py`. Vocabulary normalization helpers in `tasks/ai/vocab.py`. |
 | config.py | Contains the application's default, non-sensitive configuration parameters. These values serve as fallbacks and can be easily overridden by environment variables, providing a flexible and secure configuration system. |
 | Authentication | Configured in `config.py` by `AUTH_ENABLED`, `AUDIOMUSE_USER`, `AUDIOMUSE_PASSWORD`, `API_TOKEN`, and `JWT_SECRET`. Enforcement happens in `app.py` and `app_helepr.py` functionality |
@@ -136,8 +136,8 @@ This workflow helps avoid spending time on PRs that may not align with project g
 Below the full list of related repository. When you submit a PR avoid to introduce change that could brake one or more of this repository:
   > * [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI): the core application, it run Flask and Worker containers to actually run all the feature;
   > * [AudioMuse-AI Helm Chart](https://github.com/NeptuneHub/AudioMuse-AI-helm): helm chart for easy installation on Kubernetes;
-  > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
   > * [AudioMuse-AI Plugin for Navidrome](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin): Navidrome Plugin;
+  > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 
