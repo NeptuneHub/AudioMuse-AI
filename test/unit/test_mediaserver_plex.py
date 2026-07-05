@@ -302,6 +302,16 @@ class TestPlexMusicLibrariesFilter:
 
         assert _target_sections() == [{'id': '5', 'name': 'Music'}]
 
+    @patch('tasks.mediaserver.plex.requests.get')
+    @patch('tasks.mediaserver.plex.config')
+    def test_user_creds_skip_music_libraries_filter(self, mock_config, mock_get):
+        from tasks.mediaserver.plex import _target_sections
+
+        _set_config(mock_config, music_libraries='Nonexistent')
+        mock_get.return_value = _resp(_sections_payload())
+
+        assert _target_sections({'url': PLEX_URL, 'token': 'x'}) == [{'id': '5', 'name': 'Music'}]
+
 
 class TestPlexGetAllSongsPagination:
     @patch('tasks.mediaserver.plex.requests.get')
@@ -634,6 +644,32 @@ class TestPlexTestConnection:
         assert result['auth_failed'] is False
         assert 'music library' in result['error'].lower()
 
+    @patch('tasks.mediaserver.plex.requests.get')
+    @patch('tasks.mediaserver.plex.config')
+    def test_samples_across_sections_when_first_empty(self, mock_config, mock_get):
+        from tasks.mediaserver.plex import test_connection
+
+        _set_config(mock_config)
+        two_music = _mc(
+            size=2,
+            Directory=[
+                {'key': '5', 'type': 'artist', 'title': 'Empty'},
+                {'key': '6', 'type': 'artist', 'title': 'Music'},
+            ],
+        )
+        mock_get.side_effect = [
+            _resp(two_music),
+            _resp_mc(size=0, Metadata=[]),
+            _resp_mc(size=1, Metadata=[_track(rating_key='101')]),
+        ]
+
+        result = test_connection()
+
+        assert result['ok'] is True
+        assert result['sample_count'] == 1
+        assert mock_get.call_args_list[1][0][0] == f'{PLEX_URL}/library/sections/5/all'
+        assert mock_get.call_args_list[2][0][0] == f'{PLEX_URL}/library/sections/6/all'
+
 
 class TestPlexPlaylistReads:
     @patch('tasks.mediaserver.plex.requests.get')
@@ -729,30 +765,45 @@ class TestPlexCreatePlaylist:
             'uri': f'server://{MACHINE_ID}/com.plexapp.plugins.library/library/metadata/1,2,3',
         }
 
+    @patch('tasks.mediaserver.plex.requests.put')
     @patch('tasks.mediaserver.plex.requests.post')
     @patch('tasks.mediaserver.plex.requests.get')
     @patch('tasks.mediaserver.plex.config')
-    def test_overflow_ids_added_in_second_post(self, mock_config, mock_get, mock_post):
+    def test_overflow_ids_added_in_second_request(self, mock_config, mock_get, mock_post, mock_put):
         from tasks.mediaserver.plex import create_instant_playlist
 
         _set_config(mock_config)
         mock_get.return_value = _resp(_identity_payload())
-        mock_post.side_effect = [
-            _resp(_mc(Metadata=[{'ratingKey': '900', 'title': 'Big_instant'}])),
-            _resp(_mc()),
-        ]
+        mock_post.return_value = _resp(_mc(Metadata=[{'ratingKey': '900', 'title': 'Big_instant'}]))
+        mock_put.return_value = _resp(_mc())
 
         ids = [str(i) for i in range(150)]
         create_instant_playlist('Big', ids)
 
-        assert mock_post.call_count == 2
+        assert mock_post.call_count == 1
         first_uri = mock_post.call_args_list[0].kwargs['params']['uri']
         assert first_uri.endswith('/library/metadata/' + ','.join(str(i) for i in range(100)))
-        add_call = mock_post.call_args_list[1]
+        add_call = mock_put.call_args_list[0]
         assert add_call[0][0] == f'{PLEX_URL}/playlists/900/items'
         assert add_call.kwargs['params']['uri'].endswith(
             '/library/metadata/' + ','.join(str(i) for i in range(100, 150))
         )
+
+    @patch('tasks.mediaserver.plex.requests.put')
+    @patch('tasks.mediaserver.plex.requests.post')
+    @patch('tasks.mediaserver.plex.requests.get')
+    @patch('tasks.mediaserver.plex.config')
+    def test_overflow_add_failure_returns_none(self, mock_config, mock_get, mock_post, mock_put):
+        from tasks.mediaserver.plex import create_instant_playlist
+
+        _set_config(mock_config)
+        mock_get.return_value = _resp(_identity_payload())
+        mock_post.return_value = _resp(_mc(Metadata=[{'ratingKey': '900', 'title': 'Big_instant'}]))
+        mock_put.return_value = _error_resp(500)
+
+        result = create_instant_playlist('Big', [str(i) for i in range(150)])
+
+        assert result is None
 
     @patch('tasks.mediaserver.plex.requests.post')
     @patch('tasks.mediaserver.plex.requests.get')

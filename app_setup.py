@@ -56,7 +56,7 @@ def _plex_pin_headers(client_id):
     return {
         "Accept": "application/json",
         "X-Plex-Product": PLEX_PIN_PRODUCT,
-        "X-Plex-Version": str(getattr(config, "APP_VERSION", "") or ""),
+        "X-Plex-Version": str(config.APP_VERSION or ""),
         "X-Plex-Client-Identifier": client_id,
         "X-Plex-Device-Name": PLEX_PIN_PRODUCT,
     }

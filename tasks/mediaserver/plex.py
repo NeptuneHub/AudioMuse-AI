@@ -134,6 +134,8 @@ def list_libraries(user_creds=None):
 
 def _target_sections(user_creds=None):
     sections = _music_sections(user_creds)
+    if user_creds:
+        return sections
     names_str = config.MUSIC_LIBRARIES
     if not names_str or not names_str.strip():
         return sections
@@ -338,25 +340,28 @@ def test_connection(user_creds=None):
         headers = _headers(user_creds)
         headers['X-Plex-Container-Start'] = '0'
         headers['X-Plex-Container-Size'] = '100'
-        r2 = requests.get(
-            f"{base}/library/sections/{music[0]['key']}/all",
-            headers=headers,
-            params={'type': PLEX_TRACK_TYPE},
-            timeout=REQUESTS_TIMEOUT,
-        )
-        r2.raise_for_status()
-        items = _container(r2.json()).get('Metadata') or []
         sample = []
-        for it in items:
-            track = _normalize_track(it)
-            sample.append(
-                {
-                    'Id': track['Id'],
-                    'Path': track['Path'],
-                    'Name': track['Name'],
-                    'AlbumArtist': track['AlbumArtist'],
-                }
+        for section in music:
+            r2 = requests.get(
+                f"{base}/library/sections/{section['key']}/all",
+                headers=headers,
+                params={'type': PLEX_TRACK_TYPE},
+                timeout=REQUESTS_TIMEOUT,
             )
+            r2.raise_for_status()
+            items = _container(r2.json()).get('Metadata') or []
+            for it in items:
+                track = _normalize_track(it)
+                sample.append(
+                    {
+                        'Id': track['Id'],
+                        'Path': track['Path'],
+                        'Name': track['Name'],
+                        'AlbumArtist': track['AlbumArtist'],
+                    }
+                )
+            if sample:
+                break
         path_format = detect_path_format(sample)
         return {
             'ok': True,
@@ -464,7 +469,7 @@ def _add_items(playlist_id, item_ids, machine_id, user_creds=None):
         batch = item_ids[i : i + PLEX_PLAYLIST_BATCH_SIZE]
         params = {'uri': _metadata_uri(machine_id, batch)}
         try:
-            r = requests.post(
+            r = requests.put(
                 f"{base}/playlists/{playlist_id}/items",
                 headers=_headers(user_creds),
                 params=params,
@@ -506,6 +511,7 @@ def _create_playlist_batched(title, item_ids, user_creds=None):
 
     if rest and not _add_items(new_id, rest, machine_id, user_creds):
         logger.error(f"Plex _create_playlist_batched: created '{title}' but failed to add overflow tracks")
+        return None
 
     return {'Id': _str_key(new_id), 'Name': created.get('title', title)}
 
@@ -603,8 +609,17 @@ def _epoch_to_iso(epoch):
         return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime(
             '%Y-%m-%dT%H:%M:%S.000Z'
         )
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OSError, OverflowError):
         return None
+
+
+def _lyric_key_from_part(part):
+    for stream in part.get('Stream') or []:
+        if isinstance(stream, dict) and stream.get('streamType') == _LYRIC_STREAM_TYPE:
+            key = stream.get('key')
+            if key:
+                return key
+    return None
 
 
 def _find_lyric_stream_key(item):
@@ -612,13 +627,10 @@ def _find_lyric_stream_key(item):
         if not isinstance(media, dict):
             continue
         for part in media.get('Part') or []:
-            if not isinstance(part, dict):
-                continue
-            for stream in part.get('Stream') or []:
-                if isinstance(stream, dict) and stream.get('streamType') == _LYRIC_STREAM_TYPE:
-                    key = stream.get('key')
-                    if key:
-                        return key
+            if isinstance(part, dict):
+                key = _lyric_key_from_part(part)
+                if key:
+                    return key
     return None
 
 
