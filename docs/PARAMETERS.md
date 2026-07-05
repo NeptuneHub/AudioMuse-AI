@@ -60,7 +60,7 @@ These parameters can be left as-is:
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
 | `CLEANING_SAFETY_LIMIT` | Max number of albums deleted during cleaning | `100`             |
-| `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names. | `""` (empty - scan all) |
+| `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L346) | `false` |
 | `WORKER_URL` | This is the Url your worker instance runs on. The server instance uses this parameter to call the worker. Make sure to include /worker at the end of the url (e.g. http://worker.example.com:8029/worker) | `false` |
 | `WORKER_POSTGRES_HOST` | This is the Url of your the postgres service on your server. The worker uses this to connect the postgres service the flask app uses too. Make sure to not include a protocol (like "http") (e.g. 100.000.00.00) | `false` |
@@ -175,7 +175,7 @@ These are the default parameters used when launching analysis or clustering task
 | `SCORE_WEIGHT_DAVIES_BOULDIN`               | Weight for Davies-Bouldin Index (cluster separation).                                     | `0.0`                                  |
 | `SCORE_WEIGHT_CALINSKI_HARABASZ`            | Weight for Calinski-Harabasz Index (cluster separation).                                  | `0.0`                                  |
 | **Lyrics & SemGrove (Semantic + Groove) Search** |                                                                                      |                                        |
-| `MUSICSERVER_LYRICS_TIMEOUT`                | Timeout (seconds) for fetching embedded lyrics from the media server (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics on-the-fly via plugins that may take several seconds to respond. | `2.5` |
+| `MUSICSERVER_LYRICS_TIMEOUT`                | Timeout (seconds) for fetching embedded lyrics from the media server (Navidrome / Jellyfin / Emby / Lyrion). Increase if your server fetches lyrics on-the-fly via plugins that may take several seconds to respond. | `2.5` |
 | `LYRICS_ENABLED`                            | When `false`, the lyrics transcription/embedding step is skipped entirely during analysis. | `true`                                |
 | `LYRICS_API_ENABLE`                         | When `true`, fetches lyrics from external APIs (slots 1 & 2) before falling back to Whisper-small ASR transcription. | `true`               |
 | `LYRICS_ASR_ENABLE`                         | When `false`, skips the Whisper-small ASR transcription stage entirely. Tracks with no media-server lyrics and no external-API lyrics are marked as instrumental (sentinel embedding) instead of being transcribed. | `true` |

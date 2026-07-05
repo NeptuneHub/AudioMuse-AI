@@ -484,7 +484,7 @@ The Song Clustering functionality is configured by the following environment var
 
 * REDIS\_URL: **(Required)** The connection string for the Redis server, used for task queueing and status management.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** The connection string for the PostgreSQL database where all analysis results are read from.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
 
 #### **Main Clustering Configuration**
 
@@ -633,7 +633,7 @@ The "Playlist from Similar Song" feature relies on the Voyager index built durin
 
 * REDIS\_URL: **(Required)** Used by the background listener thread that reloads the Voyager index.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to load the index data, fetch track details (Title/Artist), and perform autocomplete searches.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 #### **Voyager Index Querying (Used during Similarity Search)**
 
@@ -752,7 +752,7 @@ The Song Path feature uses the Voyager index and relies on several specific conf
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **5\. Song Alchemy**
 
@@ -858,7 +858,7 @@ Song Alchemy uses the Voyager index and several specific parameters:
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **6\. Music Map**
 
@@ -958,7 +958,7 @@ The Music Map relies heavily on data generated during Analysis but has fewer dir
 #### **Core Infrastructure**
 
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used by build\_map\_cache to fetch all song data and embeddings at startup, and potentially to load precomputed projections.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
 
 #### **Data & Visualization (Implicit)**
 
@@ -1000,7 +1000,7 @@ This feature combines media server interaction for user history with vector anal
 #### **Stage 1: API Call & Credential Handling**
 
 1. **Route:** Clicking "Generate My Sonic Fingerprint" sends a POST (or GET for backward compatibility) request to /api/sonic\_fingerprint/generate (app\_sonic\_fingerprint.py).  
-2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (jellyfin\_user\_identifier, jellyfin\_token or navidrome\_user, navidrome\_password).  
+2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (navidrome\_user, navidrome\_password or jellyfin\_user\_identifier, jellyfin\_token).  
 3. **Credential Resolution:**  
    * The backend retrieves the credentials from the request.  
    * For Jellyfin/Emby, it uses resolve\_emby\_jellyfin\_user to convert a username/identifier into the required User ID using the provided token.  
@@ -1451,7 +1451,7 @@ The Text Search functionality is configured by the following environment variabl
 
 * `REDIS_URL`: **(Required)** Used by RQ workers and pub/sub.
 * `DATABASE_URL` (or `POSTGRES_*` variables): **(Required)** Used to fetch CLAP embeddings and song metadata.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, etc.: **(Required)** Used to create playlists from search results.
+* `MEDIASERVER_TYPE`, `NAVIDROME_URL`, etc.: **(Required)** Used to create playlists from search results.
 
 #### **CLAP Feature Toggle**
 
