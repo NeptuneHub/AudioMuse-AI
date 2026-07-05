@@ -25,8 +25,17 @@ import logging
 from flask import Blueprint, jsonify, render_template, request
 
 from app_helper import attach_song_features
+from error import error_manager
+from error.error_dictionary import ERR_LYRICS_FAILED
 
 logger = logging.getLogger(__name__)
+
+
+def _lyrics_error_body(message, **extra):
+    payload = error_manager.build(ERR_LYRICS_FAILED)
+    payload["error"] = message
+    payload.update(extra)
+    return payload
 
 lyrics_search_bp = Blueprint('lyrics_search_bp', __name__, template_folder='../templates')
 
@@ -148,7 +157,7 @@ def lyrics_search_axes_api():
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
-        return jsonify({'error': 'An internal error occurred.'}), 500
+        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/search/text', methods=['POST'])
@@ -226,7 +235,7 @@ def lyrics_search_text_api():
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")
-        return jsonify({'error': 'An internal error occurred.'}), 500
+        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup', methods=['POST'])
@@ -257,7 +266,7 @@ def lyrics_warmup_api():
         return jsonify(warmup_gte_model())
     except Exception:
         logger.exception("Lyrics model warmup failed")
-        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
+        return jsonify(_lyrics_error_body('Warmup failed.', loaded=False)), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup/status', methods=['GET'])
@@ -322,7 +331,7 @@ def lyrics_refresh_cache_api():
         return jsonify({'success': success, 'stats': get_cache_stats()})
     except Exception:
         logger.exception("Lyrics cache refresh failed")
-        return jsonify({'success': False, 'error': 'Internal error.'}), 500
+        return jsonify(_lyrics_error_body('Internal error.', success=False)), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/stats', methods=['GET'])

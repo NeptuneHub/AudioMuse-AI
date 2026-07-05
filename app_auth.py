@@ -761,11 +761,17 @@ def auth_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     try:
         admin_count = count_admin_users()
-    except Exception:
+    except Exception as e:
         current_app.logger.exception(
             'Failed to count admin users during authentication',
         )
-        return jsonify({"error": "Database error while checking admin accounts."}), 500
+        # Imported lazily: app_auth sits deep in the eager import graph, so a
+        # module-level error import would push the import chain over its ceiling.
+        from error import error_manager
+        from error.error_dictionary import ERR_DB_QUERY
+
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
     if admin_count <= 0:
         current_app.logger.warning(
             "Auth is enabled but no admin account is configured. "
@@ -897,9 +903,13 @@ def list_users_endpoint():
             # Scope the query to the caller so non-admins never receive
             # other users' rows from the database at all.
             users = list_additional_users(username=current_username) if current_username else []
-    except Exception:
+    except Exception as e:
         current_app.logger.exception("Failed to list users")
-        return jsonify({"error": "Failed to list users"}), 500
+        from error import error_manager
+        from error.error_dictionary import ERR_DB_QUERY
+
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
     return jsonify(
         {
             "users": users,

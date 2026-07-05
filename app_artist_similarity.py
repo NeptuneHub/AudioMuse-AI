@@ -21,9 +21,19 @@ Main Features:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 
+from error import error_manager
+from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
 from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
 
 logger = logging.getLogger(__name__)
+
+
+# Structured error body with a stable, user-facing 'error' string plus the numeric
+# error_code so API consumers can distinguish an unbuilt index from a real crash.
+def _index_error_body(code, message):
+    payload = error_manager.build(code)
+    payload["error"] = message
+    return payload
 
 # Create Blueprint
 artist_similarity_bp = Blueprint('artist_similarity_bp', __name__, template_folder='templates')
@@ -96,7 +106,7 @@ def search_artists_endpoint():
         return jsonify(results)
     except Exception:
         logger.exception("Error during artist search")
-        return jsonify({"error": "An error occurred during search."}), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
 
 
 @artist_similarity_bp.route('/api/similar_artists', methods=['GET'])
@@ -198,13 +208,15 @@ def get_similar_artists_endpoint():
             f"Runtime error finding similar artists for '{query_artist}'"
         )
         return jsonify(
-            {"error": "The artist similarity search service is currently unavailable."}
+            _index_error_body(
+                ERR_INDEX_EMPTY, "The artist similarity search service is currently unavailable."
+            )
         ), 503
     except Exception:
         logger.exception(
             f"Unexpected error finding similar artists for '{query_artist}'"
         )
-        return jsonify({"error": "An unexpected error occurred."}), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
 
 
 @artist_similarity_bp.route('/api/artist_tracks', methods=['GET'])
@@ -258,4 +270,6 @@ def get_artist_tracks_endpoint():
         return jsonify(tracks)
     except Exception:
         logger.exception(f"Error getting tracks for artist '{query_artist}'")
-        return jsonify({"error": "An error occurred while fetching tracks."}), 500
+        return jsonify(
+            _index_error_body(UNKNOWN_ERROR_CODE, "An error occurred while fetching tracks.")
+        ), 500

@@ -27,6 +27,9 @@ import logging
 import re
 import time
 
+from error import error_manager
+from error.error_dictionary import UNKNOWN_ERROR_CODE
+
 
 logger = logging.getLogger(__name__)
 # Import config module - read attributes at call time so runtime updates take effect
@@ -888,5 +891,9 @@ def create_media_server_playlist_api():
         logger.exception(
             "Error in create_media_server_playlist_api: %s", error_details_for_server
         )
-        # Return generic error to client
-        return jsonify({"message": "An internal error occurred while creating the playlist."}), 500
+        # Return generic, structured error to client (traceback stays in the log only).
+        code = error_manager.classify(e, UNKNOWN_ERROR_CODE)
+        payload = error_manager.build(code)
+        payload["message"] = "An internal error occurred while creating the playlist."
+        payload["error"] = payload["message"]
+        return jsonify(payload), error_manager.http_status_for_code(code)

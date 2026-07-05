@@ -82,7 +82,7 @@ from app_helper import (
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
 )
-from database import get_child_tasks_from_db
+from database import get_child_tasks_from_db, get_failed_child_summary
 
 from error import error_manager
 from error.error_dictionary import (
@@ -756,26 +756,24 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             logger.exception(
                 f"Database connection error during album analysis {album_id}. This job will be retried."
             )
-            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            err = error_manager.record(ERR_DB_CONNECTION, str(e))
             log_and_update_album_task(
                 f"Database connection failed for album '{album_name}'. Retrying...",
                 current_progress_val,
                 task_state=TASK_STATUS_FAILURE,
                 error=err,
-                final_summary_details={"error": str(e)},
             )
             raise
         except Exception as e:
             logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
             err = error_manager.record(
-                error_manager.classify(e, ERR_ALBUM_ANALYSIS_FAILED), str(e), exc=e
+                error_manager.classify(e, ERR_ALBUM_ANALYSIS_FAILED), str(e)
             )
             log_and_update_album_task(
                 f"Failed to analyze album '{album_name}': {e}",
                 current_progress_val,
                 task_state=TASK_STATUS_FAILURE,
                 error=err,
-                final_summary_details={"error": str(e)},
             )
             raise
         finally:
@@ -1085,37 +1083,41 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 'Analysis complete. CLAP text search uses default queries (no auto-regeneration).'
             )
 
+            failed_count, failed_errors = get_failed_child_summary(current_task_id)
             final_message = (
-                f"Main analysis complete. Launched {albums_launched}, Skipped {albums_skipped}."
+                f"Main analysis complete. Launched {albums_launched}, "
+                f"Skipped {albums_skipped}, Failed {failed_count}."
             )
-            log_and_update_main(final_message, 100, task_state=TASK_STATUS_SUCCESS)
+            final_kwargs = {"task_state": TASK_STATUS_SUCCESS}
+            if failed_count:
+                final_kwargs["failed_albums"] = failed_count
+                final_kwargs["failed_album_errors"] = failed_errors
+            log_and_update_main(final_message, 100, **final_kwargs)
             clean_temp(TEMP_DIR)
-            return {"status": "SUCCESS", "message": final_message}
+            return {"status": "SUCCESS", "message": final_message, "failed_albums": failed_count}
 
         except OperationalError as e:
             logger.critical(
                 f"FATAL ERROR: Main analysis task failed due to DB connection issue: {e}",
                 exc_info=True,
             )
-            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            err = error_manager.record(ERR_DB_CONNECTION, str(e))
             log_and_update_main(
                 "X Main analysis failed due to a database connection error. The task may be retried.",
                 current_progress,
                 task_state=TASK_STATUS_FAILURE,
-                error_message=str(e),
                 error=err,
             )
             raise
         except Exception as e:
             logger.critical(f"FATAL ERROR: Analysis failed: {e}", exc_info=True)
             err = error_manager.record(
-                error_manager.classify(e, ERR_ANALYSIS_FAILED), str(e), exc=e
+                error_manager.classify(e, ERR_ANALYSIS_FAILED), str(e)
             )
             log_and_update_main(
                 f"X Main analysis failed: {e}",
                 current_progress,
                 task_state=TASK_STATUS_FAILURE,
-                error_message=str(e),
                 error=err,
             )
             raise

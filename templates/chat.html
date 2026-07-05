@@ -549,8 +549,10 @@
                     body: JSON.stringify(payload),
                 });
                 if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({ detail: "An unknown error occurred." }));
-                    throw new Error(`API Error: ${response.status} - ${errorData.detail || "Failed to get details"}`);
+                    const errorData = await response.json().catch(() => ({}));
+                    const structured = (typeof formatErrorText === 'function' && errorData && errorData.error_code) ? formatErrorText(errorData) : '';
+                    const detail = structured || errorData.error || errorData.message || errorData.detail || "Failed to get details";
+                    throw new Error(`API Error: ${response.status} - ${detail}`);
                 }
                 const data = await response.json();
                 renderResponse(data.response);

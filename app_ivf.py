@@ -31,6 +31,8 @@ from config import (
     MOOD_CENTROIDS_FILE,
 )
 from app_helper import serialize_neighbor_results
+from error import error_manager
+from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
 from tasks.ivf_manager import (
     find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
@@ -43,14 +45,27 @@ from tasks.ivf_manager import (
 logger = logging.getLogger(__name__)
 
 
+# Build a structured error body (error_code/error_class/error_message) while keeping
+# a stable, user-facing 'error' string so API consumers can key on the numeric code
+# without changing the human-readable text the UI already renders.
+def _index_error_body(code, message):
+    payload = error_manager.build(code)
+    payload["error"] = message
+    return payload
+
+
 # Map a neighbor-search exception to the shared JSON error response (one contract,
-# reused by every similarity mode).
+# reused by every similarity mode). A not-loaded/empty index surfaces ERR_INDEX_EMPTY.
 def _neighbor_search_error_response(ctx, exc, is_runtime):
     if is_runtime:
         logger.exception(f"Runtime error finding neighbors for {ctx}: {exc}")
-        return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        body = _index_error_body(
+            ERR_INDEX_EMPTY, "The similarity search service is currently unavailable."
+        )
+        return jsonify(body), 503
     logger.exception(f"Unexpected error finding neighbors for {ctx}: {exc}")
-    return jsonify({"error": "An unexpected error occurred."}), 500
+    body = _index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")
+    return jsonify(body), 500
 
 
 # Wrap the shared vector-neighbor search + error mapping
@@ -256,7 +271,7 @@ def search_tracks_endpoint():
         return jsonify(results)
     except Exception:
         logger.exception("Error during track search")
-        return jsonify({"error": "An error occurred during search."}), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
 
 
 @ivf_bp.route('/api/mood_centroids', methods=['GET'])
@@ -528,10 +543,14 @@ def get_max_distance_endpoint():
         return jsonify(result)
     except RuntimeError:
         logger.exception(f"Runtime error computing max distance for {item_id}")
-        return jsonify({"error": "The similarity search service is currently unavailable."}), 503
+        return jsonify(
+            _index_error_body(
+                ERR_INDEX_EMPTY, "The similarity search service is currently unavailable."
+            )
+        ), 503
     except Exception:
         logger.exception(f"Unexpected error computing max distance for {item_id}")
-        return jsonify({"error": "An unexpected error occurred."}), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
 
 
 @ivf_bp.route('/api/track', methods=['GET'])
@@ -593,7 +612,7 @@ def get_track_endpoint():
         ), 200
     except Exception:
         logger.exception(f"Unexpected error fetching track {item_id}")
-        return jsonify({"error": "An unexpected error occurred."}), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
 
 
 @ivf_bp.route('/api/create_playlist', methods=['POST'])

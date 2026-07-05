@@ -23,6 +23,7 @@ Main Features:
 import os
 from psycopg2.extras import DictCursor
 from flask import jsonify, request, render_template, g
+from werkzeug.exceptions import HTTPException
 import logging
 import threading
 import time
@@ -60,6 +61,7 @@ from app_helper import (
     get_task_info_from_db,
     cancel_job_and_children_recursive,
     coerce_db_details,
+    sanitize_task_details,
 )
 from database import init_db
 from config import (
@@ -92,7 +94,24 @@ def handle_audiomuse_error(err):
     app.logger.error(
         "[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err
     )
-    return jsonify(err.to_dict()), error_manager.http_status_for_code(err.code)
+    payload = {**err.to_dict(), "error": err.error_message}
+    return jsonify(payload), error_manager.http_status_for_code(err.code)
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(err):
+    """Return a safe structured JSON body for any otherwise-unhandled exception.
+
+    HTTP errors (404/405/...) pass through to their default rendering. Everything
+    else logs the full traceback to the container log only and returns the generic
+    UNKNOWN error, so a frontend calling res.json() never receives a Flask HTML 500
+    page or a raw stack trace.
+    """
+    if isinstance(err, HTTPException):
+        return err
+    app.logger.exception("Unhandled exception during request")
+    payload, status = error_manager.error_response(UNKNOWN_ERROR_CODE)
+    return jsonify(payload), status
 
 
 from app_logging import configure_logging
@@ -361,39 +380,9 @@ def get_task_status_endpoint(task_id):
     elif response['state'] == 'UNKNOWN':  # Not in RQ and not in DB
         return jsonify(response), 404
 
-    # Prune 'checked_album_ids' from details if the task is analysis-related
-    if response.get('task_type_from_db') and 'analysis' in response['task_type_from_db']:
-        if isinstance(response.get('details'), dict):
-            response['details'].pop('checked_album_ids', None)
-
-    if isinstance(response.get('details'), dict):
-        response['details'].pop('traceback', None)
-
-    # Truncate log entries to last 10 entries for all task types
-    if isinstance(response.get('details'), dict) and 'log' in response['details']:
-        log_entries = response['details']['log']
-        if isinstance(log_entries, list) and len(log_entries) > 10:
-            response['details']['log'] = [
-                f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                *log_entries[-10:],
-            ]
-
-    state_upper = str(response.get('state') or '').upper()
-    if state_upper in ('FAILED', 'FAILURE') and isinstance(response.get('details'), dict):
-        existing_error = response['details'].get('error')
-        if (
-            isinstance(existing_error, dict)
-            and 'error_code' in existing_error
-            and 'error_message' in existing_error
-        ):
-            pass
-        elif isinstance(existing_error, dict) and 'error_code' in existing_error:
-            response['details']['error'] = error_manager.build(existing_error['error_code'])
-        else:
-            response['details']['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
-        response['details'].setdefault(
-            'error_message', response['details']['error']['error_message']
-        )
+    response['details'] = sanitize_task_details(
+        response.get('details'), response.get('state'), response.get('task_type_from_db')
+    )
 
     # Clean up the final response to remove confusing raw time columns
     response.pop('timestamp', None)
@@ -577,14 +566,11 @@ def get_last_overall_task_status_endpoint():
         else:
             last_task_data['running_time_seconds'] = 0.0
 
-        # Truncate log entries to last 10 entries
-        if isinstance(last_task_data.get('details'), dict) and 'log' in last_task_data['details']:
-            log_entries = last_task_data['details']['log']
-            if isinstance(log_entries, list) and len(log_entries) > 10:
-                last_task_data['details']['log'] = [
-                    f"... ({len(log_entries) - 10} earlier log entries truncated)",
-                    *log_entries[-10:],
-                ]
+        last_task_data['details'] = sanitize_task_details(
+            last_task_data.get('details'),
+            last_task_data.get('status'),
+            last_task_data.get('task_type'),
+        )
 
         # Clean up raw time columns before sending response
         last_task_data.pop('start_time', None)
@@ -651,7 +637,6 @@ def get_active_tasks_endpoint():
 
         if task_item.get('details'):
             details = coerce_db_details(task_item['details'])
-            task_item['details'] = details
             # Prune specific large or internal keys from details
             if isinstance(details, dict):
                 details.pop('clustering_run_job_ids', None)
@@ -663,6 +648,9 @@ def get_active_tasks_endpoint():
                 )
                 if isinstance(cmc, dict) and isinstance(cmc.get('params'), dict):
                     cmc['params'].pop('initial_centroids', None)
+            task_item['details'] = sanitize_task_details(
+                details, task_item.get('status'), task_item.get('task_type')
+            )
 
         # Clean up raw time columns before sending response
         task_item.pop('start_time', None)

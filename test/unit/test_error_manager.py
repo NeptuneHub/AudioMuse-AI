@@ -95,6 +95,7 @@ class TestClassify:
         class ReadTimeout(Exception):
             pass
 
+        ReadTimeout.__module__ = 'requests.exceptions'
         assert (
             em.classify(ReadTimeout('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
         )
@@ -106,6 +107,8 @@ class TestClassify:
         class OperationalError(Exception):
             pass
 
+        OperationalError.__module__ = 'psycopg2'
+
         class MyCustomDbError(OperationalError):
             pass
 
@@ -114,6 +117,91 @@ class TestClassify:
     def test_audiomuse_error_keeps_its_code(self):
         exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down')
         assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
+
+    def test_module_prefix_prevents_name_collision(self):
+        # A library that reuses the name 'ConnectionError' (e.g. redis) must NOT be
+        # classified as a media-server refusal; it falls through to the caller default.
+        class ConnectionError(Exception):  # noqa: A001
+            pass
+
+        ConnectionError.__module__ = 'redis.exceptions'
+        assert (
+            em.classify(ConnectionError('redis down'), ed.ERR_CLUSTERING_FAILED)
+            == ed.ERR_CLUSTERING_FAILED
+        )
+
+    def test_requests_connection_error_maps_to_refused(self):
+        class ConnectionError(Exception):  # noqa: A001
+            pass
+
+        ConnectionError.__module__ = 'requests.exceptions'
+        assert (
+            em.classify(ConnectionError('refused'), ed.ERR_ANALYSIS_FAILED)
+            == ed.ERR_MEDIASERVER_REFUSED
+        )
+
+    def test_builtin_connection_reset_is_not_media_server(self):
+        # Builtin ConnectionResetError from local I/O must not become a media-server code.
+        assert (
+            em.classify(ConnectionResetError('pipe'), ed.ERR_ANALYSIS_FAILED)
+            == ed.ERR_ANALYSIS_FAILED
+        )
+
+    def test_psycopg2_interface_error_maps_to_db_connection(self):
+        class InterfaceError(Exception):
+            pass
+
+        InterfaceError.__module__ = 'psycopg2'
+        assert em.classify(InterfaceError('closed'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
+
+    def test_psycopg2_database_error_maps_to_db_query(self):
+        class DatabaseError(Exception):
+            pass
+
+        DatabaseError.__module__ = 'psycopg2'
+        assert em.classify(DatabaseError('bad query'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_QUERY
+
+    def test_builtin_timeout_error_maps_to_media_server_timeout(self):
+        assert (
+            em.classify(TimeoutError('slow'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+        )
+
+    def test_requests_ssl_error_maps_to_unreachable(self):
+        class SSLError(Exception):
+            pass
+
+        SSLError.__module__ = 'requests.exceptions'
+        assert (
+            em.classify(SSLError('cert'), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_UNREACHABLE
+        )
+
+    def test_http_401_maps_to_media_server_auth(self):
+        class _Response:
+            status_code = 401
+
+        class HTTPError(Exception):
+            pass
+
+        HTTPError.__module__ = 'requests.exceptions'
+        exc = HTTPError('unauthorized')
+        exc.response = _Response()
+        assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_AUTH
+
+    def test_http_401_via_cause_chain_maps_to_auth(self):
+        class _Response:
+            status_code = 403
+
+        inner = Exception('forbidden')
+        inner.response = _Response()
+        wrapper = RuntimeError('wrapped')
+        wrapper.__cause__ = inner
+        assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_AUTH
+
+    def test_memory_error_maps_to_model_inference(self):
+        assert em.classify(MemoryError(), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_INFERENCE
+
+    def test_default_code_override_is_returned(self):
+        assert em.classify(ValueError('x'), ed.ERR_CLEANING_FAILED) == ed.ERR_CLEANING_FAILED
 
 
 class TestFromException:
@@ -202,6 +290,19 @@ class TestAudioMuseError:
         assert exc.code == ed.UNKNOWN_ERROR_CODE
         assert exc.to_dict()['error_class'] == 'Unknown Error'
 
+    def test_unknown_code_suppresses_message_detail(self):
+        exc = em.AudioMuseError(424242, 'leak this secret')
+        assert 'leak this secret' not in str(exc)
+
+    def test_cause_is_stored(self):
+        cause = ValueError('root cause')
+        exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down', cause=cause)
+        assert exc.cause is cause
+
+    def test_cause_defaults_to_none(self):
+        exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down')
+        assert exc.cause is None
+
 
 class TestHttpStatus:
     def test_media_server_is_bad_gateway(self):
@@ -215,3 +316,146 @@ class TestHttpStatus:
 
     def test_other_is_internal_error(self):
         assert em.http_status_for_code(ed.ERR_ANALYSIS_FAILED) == 500
+
+    def test_index_range_is_service_unavailable(self):
+        assert em.http_status_for_code(ed.ERR_INDEX_EMPTY) == 503
+        assert em.http_status_for_code(ed.ERR_INDEX_BUILD) == 503
+
+    def test_media_server_auth_is_bad_gateway(self):
+        assert em.http_status_for_code(ed.ERR_MEDIASERVER_AUTH) == 502
+
+    def test_backup_codes_are_internal_error(self):
+        assert em.http_status_for_code(ed.ERR_BACKUP_FAILED) == 500
+        assert em.http_status_for_code(ed.ERR_RESTORE_FAILED) == 500
+
+    def test_range_boundaries(self):
+        assert em.http_status_for_code(999) == 500
+        assert em.http_status_for_code(1000) == 400
+        assert em.http_status_for_code(1099) == 400
+        assert em.http_status_for_code(1100) == 502
+        assert em.http_status_for_code(1199) == 502
+        assert em.http_status_for_code(1200) == 500
+        assert em.http_status_for_code(3000) == 503
+        assert em.http_status_for_code(3099) == 503
+        assert em.http_status_for_code(3100) == 500
+        assert em.http_status_for_code(4000) == 503
+        assert em.http_status_for_code(4099) == 503
+        assert em.http_status_for_code(4100) == 500
+
+
+class TestErrorResponse:
+    def test_returns_dict_and_status(self):
+        payload, status = em.error_response(ed.ERR_DB_CONNECTION)
+        assert status == 503
+        assert payload['error_code'] == ed.ERR_DB_CONNECTION
+        assert payload['error'] == payload['error_message']
+
+    def test_carries_legacy_error_alias(self):
+        payload, _status = em.error_response(ed.ERR_MEDIASERVER_UNREACHABLE)
+        assert set(payload.keys()) == {'error_code', 'error_class', 'error_message', 'error'}
+
+    def test_unknown_code_maps_to_500_and_generic(self):
+        payload, status = em.error_response(424242)
+        assert status == 500
+        assert payload['error_code'] == ed.UNKNOWN_ERROR_CODE
+        assert 'log' in payload['error'].lower()
+
+    def test_detail_is_bounded(self):
+        payload, _status = em.error_response(ed.ERR_ANALYSIS_FAILED, 'y' * 2000)
+        assert len(payload['error_message']) < 600
+
+
+class TestTruncationBoundary:
+    def test_exactly_at_limit_is_not_truncated(self):
+        detail = 'a' * em._MAX_MESSAGE_DETAIL
+        result = em.build(ed.ERR_ANALYSIS_FAILED, detail)
+        assert result['error_message'].endswith('a' * em._MAX_MESSAGE_DETAIL)
+        assert not result['error_message'].endswith('...')
+
+    def test_one_over_limit_is_truncated(self):
+        detail = 'a' * (em._MAX_MESSAGE_DETAIL + 1)
+        result = em.build(ed.ERR_ANALYSIS_FAILED, detail)
+        assert result['error_message'].endswith('...')
+
+    def test_one_line_collapses_whitespace(self):
+        assert em._one_line('a\n\t  b   c') == 'a b c'
+
+    def test_non_string_message_is_stringified(self):
+        result = em.build(ed.ERR_ANALYSIS_FAILED, 12345)
+        assert '12345' in result['error_message']
+
+
+class TestRecord:
+    def test_default_logger_still_emits_without_explicit_logger(self):
+        import logging as _logging
+
+        records = []
+
+        class _Cap(_logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        cap = _Cap()
+        em._LOGGER.addHandler(cap)
+        try:
+            em.record(ed.ERR_ANALYSIS_FAILED, 'boom')
+        finally:
+            em._LOGGER.removeHandler(cap)
+        assert records and records[0].levelno == _logging.ERROR
+
+    def test_level_is_respected(self):
+        import logging as _logging
+
+        records = []
+
+        class _Cap(_logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        cap = _Cap()
+        test_logger = _logging.getLogger('test_record_level')
+        test_logger.addHandler(cap)
+        test_logger.setLevel(_logging.WARNING)
+        em.record(ed.ERR_LYRICS_FAILED, 'x', logger=test_logger, level=_logging.WARNING)
+        test_logger.removeHandler(cap)
+        assert records and records[0].levelno == _logging.WARNING
+
+    def test_no_exc_means_no_exc_info(self):
+        import logging as _logging
+
+        records = []
+
+        class _Cap(_logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        cap = _Cap()
+        test_logger = _logging.getLogger('test_record_no_exc')
+        test_logger.addHandler(cap)
+        em.record(ed.ERR_ANALYSIS_FAILED, 'x', logger=test_logger)
+        test_logger.removeHandler(cap)
+        assert records and not records[0].exc_info
+
+
+class TestFromExceptionExtras:
+    def test_explicit_message_overrides_str(self):
+        result = em.from_exception(ValueError('raw'), code=ed.ERR_ANALYSIS_FAILED, message='safe')
+        assert 'safe' in result['error_message']
+        assert 'raw' not in result['error_message']
+
+    def test_audiomuse_error_logs_to_given_logger(self):
+        import logging as _logging
+
+        records = []
+
+        class _Cap(_logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        cap = _Cap()
+        test_logger = _logging.getLogger('test_from_exc_ame')
+        test_logger.addHandler(cap)
+        exc = em.AudioMuseError(ed.ERR_DB_CONNECTION, 'down')
+        em.from_exception(exc, logger=test_logger)
+        test_logger.removeHandler(cap)
+        assert records and records[0].exc_info is not None

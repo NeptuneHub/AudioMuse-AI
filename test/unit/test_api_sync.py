@@ -480,10 +480,15 @@ class TestUmap:
 
 
 class TestErrorHandling:
-    def test_db_error_returns_500(self, bp_mod, client, fake_db):
+    def test_db_error_returns_structured_503(self, bp_mod, client, fake_db):
         _, cur = fake_db
         _setup_payload(cur, total=0, tracks=[])
         cur._raise_on_execute = RuntimeError("simulated DB failure")
         resp = client.get('/api/sync?limit=1')
-        assert resp.status_code == 500
-        assert 'error' in resp.get_json()
+        # A DB failure on this data endpoint now surfaces the coded database error
+        # (503 Service Unavailable) instead of a generic, uncoded 500.
+        assert resp.status_code == 503
+        body = resp.get_json()
+        assert body['error_code'] == 4002
+        assert 'error' in body
+        assert 'simulated DB failure' not in body['error']

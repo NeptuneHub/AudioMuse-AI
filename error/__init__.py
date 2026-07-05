@@ -25,12 +25,12 @@ from error.error_dictionary import (
 )
 from error.error_manager import (
     AudioMuseError,
-    ErrorManager,
     build,
     record,
     classify,
     from_exception,
     http_status_for_code,
+    error_response,
 )
 
 __all__ = [
@@ -39,10 +39,10 @@ __all__ = [
     "get_error_class",
     "get_default_message",
     "AudioMuseError",
-    "ErrorManager",
     "build",
     "record",
     "classify",
     "from_exception",
     "http_status_for_code",
+    "error_response",
 ]
