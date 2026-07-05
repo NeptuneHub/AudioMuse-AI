@@ -74,6 +74,6 @@ spec:
 
 ## Plugin 
 
-> Actually Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
+> Navidrome plugin support it from release v7
 > 
-> Navidrome plugin support it from release v7 
+> Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support

@@ -86,7 +86,7 @@ Core components and responsibilities:
 
 - ONNX Models & Audio Stack: Analysis uses ONNX Runtime to run embedding and prediction models. Audio loading uses `librosa` with a `pydub`/ffmpeg fallback for resilient decoding. The Docker image pre-fetches ONNX model files and pins runtime libs to ensure consistent behavior across environments.
 
-- Media Server Adapters: the `tasks/mediaserver/` package provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
+- Media Server Adapters: the `tasks/mediaserver/` package provides adapters for Navidrome, Jellyfin, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
 
 Deployment considerations (informed by `Dockerfile`):
 
@@ -219,7 +219,7 @@ The technical process is a distributed, multi-stage pipeline orchestrated by a m
 
 This function, running in an RQ worker, acts as the "orchestrator."
 
-1. **Get Albums:** It calls get\_recent\_albums(num\_recent\_albums). This function's behavior is determined by MEDIASERVER\_TYPE (e.g., "jellyfin", "navidrome") and uses the corresponding credentials (e.g., JELLYFIN\_URL, JELLYFIN\_TOKEN, etc.) and MUSIC\_LIBRARIES to filter the scan.  
+1. **Get Albums:** It calls get\_recent\_albums(num\_recent\_albums). This function's behavior is determined by MEDIASERVER\_TYPE (e.g., "navidrome", "jellyfin") and uses the corresponding credentials (e.g., JELLYFIN\_URL, JELLYFIN\_TOKEN, etc.) and MUSIC\_LIBRARIES to filter the scan.  
 2. **Iterate & Check:** It loops through every album, checking against the PostgreSQL database (configured via DATABASE\_URL) to see if all tracks already exist in the score and embedding tables.  
 3. **Spawn Child Tasks:** For new or incomplete albums, it enqueues a tasks.analysis.analyze\_album\_task child task.  
 4. **Manage Parallelism:** The main task monitors the number of active\_jobs and limits concurrent enqueued album tasks to MAX\_QUEUED\_ANALYSIS\_JOBS.  
@@ -266,11 +266,11 @@ The Song Analysis functionality is configured by the following environment varia
 
 #### **Media Server**
 
-* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., jellyfin, navidrome, emby, lyrion).  
+* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., navidrome, jellyfin, emby, lyrion).  
 * MUSIC\_LIBRARIES: (Optional) A comma-separated list of library names to scan. If empty, all music libraries are scanned.  
+* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
 * JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Credentials for Jellyfin (if MEDIASERVER\_TYPE="jellyfin").  
 * EMBY\_URL, EMBY\_USER\_ID, EMBY\_TOKEN: Credentials for Emby (if MEDIASERVER\_TYPE="emby").  
-* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
 * LYRION\_URL: Credentials for Lyrion (if MEDIASERVER\_TYPE="lyrion").
 
 #### **Task & Performance Tuning**
@@ -484,7 +484,7 @@ The Song Clustering functionality is configured by the following environment var
 
 * REDIS\_URL: **(Required)** The connection string for the Redis server, used for task queueing and status management.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** The connection string for the PostgreSQL database where all analysis results are read from.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
 
 #### **Main Clustering Configuration**
 
@@ -633,7 +633,7 @@ The "Playlist from Similar Song" feature relies on the Voyager index built durin
 
 * REDIS\_URL: **(Required)** Used by the background listener thread that reloads the Voyager index.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to load the index data, fetch track details (Title/Artist), and perform autocomplete searches.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 #### **Voyager Index Querying (Used during Similarity Search)**
 
@@ -752,7 +752,7 @@ The Song Path feature uses the Voyager index and relies on several specific conf
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **5\. Song Alchemy**
 
@@ -858,7 +858,7 @@ Song Alchemy uses the Voyager index and several specific parameters:
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **6\. Music Map**
 
@@ -958,7 +958,7 @@ The Music Map relies heavily on data generated during Analysis but has fewer dir
 #### **Core Infrastructure**
 
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used by build\_map\_cache to fetch all song data and embeddings at startup, and potentially to load precomputed projections.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
 
 #### **Data & Visualization (Implicit)**
 
@@ -1000,7 +1000,7 @@ This feature combines media server interaction for user history with vector anal
 #### **Stage 1: API Call & Credential Handling**
 
 1. **Route:** Clicking "Generate My Sonic Fingerprint" sends a POST (or GET for backward compatibility) request to /api/sonic\_fingerprint/generate (app\_sonic\_fingerprint.py).  
-2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (jellyfin\_user\_identifier, jellyfin\_token or navidrome\_user, navidrome\_password).  
+2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (navidrome\_user, navidrome\_password or jellyfin\_user\_identifier, jellyfin\_token).  
 3. **Credential Resolution:**  
    * The backend retrieves the credentials from the request.  
    * For Jellyfin/Emby, it uses resolve\_emby\_jellyfin\_user to convert a username/identifier into the required User ID using the provided token.  
@@ -1045,8 +1045,8 @@ The Sonic Fingerprint feature uses the following configurations:
 #### **Media Server**
 
 * MEDIASERVER\_TYPE: **(Required)** Determines how to interact with the media server API to get play history and create playlists.  
-* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
 * NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Default Navidrome credentials (used if user doesn't provide specific ones).  
+* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
 * *(Other media server credentials)*: Used similarly based on MEDIASERVER\_TYPE.
 
 #### **Sonic Fingerprint Parameters**
@@ -1119,7 +1119,7 @@ Stage 5: Execute Query & Post-process Results
 
 Stage 6: Optional Playlist Creation on Media Server
 
-1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `tasks/mediaserver/`.
+1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Navidrome/Jellyfin/Emby). These adapter functions live in `tasks/mediaserver/`.
 2. Return the media server response (success, playlist id, or error) to the frontend and display it in the UI.
 
 Safety & Fallbacks
@@ -1180,7 +1180,7 @@ Key User Interactions & Workflow
 1. The user opens the Database Cleaning page (`/cleaning`) served by the `analysis_bp` blueprint. The page shows a summary area, Start/Clear buttons, and a status panel (see `templates/cleaning.html`).
 2. The user clicks "Start Cleaning". The frontend requests `/api/cleaning/start` which enqueues a high-priority RQ job (`tasks.cleaning.identify_and_clean_orphaned_albums_task`).
 3. The cleaning job performs these high-level steps:
-   - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Jellyfin/Navidrome/Emby).
+   - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Navidrome/Jellyfin/Emby).
    - Read all tracks currently present in the application's PostgreSQL database (score + embedding tables).
    - Compute the set difference to discover orphaned tracks (in DB but not on the media server).
    - Group orphaned tracks by artist/album and present a summary.
@@ -1236,7 +1236,7 @@ Core Infra
 
 * `REDIS_URL` - Required by RQ for job queueing and for the background listener used elsewhere.
 * `DATABASE_URL` - Required to query and delete database rows, and to rebuild the Voyager index.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, `NAVIDROME_URL`, etc. - Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
+* `MEDIASERVER_TYPE`, `NAVIDROME_URL`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, etc. - Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
 
 Cleaning-Specific
 
@@ -1451,7 +1451,7 @@ The Text Search functionality is configured by the following environment variabl
 
 * `REDIS_URL`: **(Required)** Used by RQ workers and pub/sub.
 * `DATABASE_URL` (or `POSTGRES_*` variables): **(Required)** Used to fetch CLAP embeddings and song metadata.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, etc.: **(Required)** Used to create playlists from search results.
+* `MEDIASERVER_TYPE`, `NAVIDROME_URL`, etc.: **(Required)** Used to create playlists from search results.
 
 #### **CLAP Feature Toggle**
 
