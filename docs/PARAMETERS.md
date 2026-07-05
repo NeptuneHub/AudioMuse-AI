@@ -26,15 +26,15 @@ The **mandatory** parameter that you need to change from the example are this:
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
+| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
+| `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
+| `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
 | `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
 | `JELLYFIN_USER_ID`   | (Required) Jellyfin User ID.                                            | *(N/A - from Secret)* |
 | `JELLYFIN_TOKEN`     | (Required) Jellyfin API Token.                                          | *(N/A - from Secret)* |
 | `EMBY_URL`           | (Required) Your Emby server's full URL                                  | `http://YOUR_EMBY_IP:8096`    |
 | `EMBY_USER_ID`       | (Required) Emby User ID.                                                | *(N/A - from Secret)* |
 | `EMBY_TOKEN`         | (Required) Emby API Token.                                              | *(N/A - from Secret)* |
-| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
-| `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
-| `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
 | `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
 | `PLEX_URL`           | (Required) Your Plex Media Server's full URL                            | `http://YOUR_PLEX_IP:32400`       |
 | `PLEX_TOKEN`         | (Required) Plex API token (X-Plex-Token).                               | *(N/A - from Secret)* |
