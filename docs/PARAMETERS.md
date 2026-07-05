@@ -26,7 +26,7 @@ The **mandatory** parameter that you need to change from the example are this:
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
-| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_JELLYFIN_IP:4553`    |
+| `NAVIDROME_URL`      | (Required) Your Navidrome server's full URL                             | `http://YOUR_NAVIDROME_IP:4533`   |
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
 | `JELLYFIN_URL`       | (Required) Your Jellyfin server's full URL                              | `http://YOUR_JELLYFIN_IP:8096`    |
