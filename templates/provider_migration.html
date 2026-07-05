@@ -474,6 +474,7 @@
                     <label>API Token:</label>
                     <input type="password" data-cred="token" placeholder="your-plex-token">
                 </div>
+                <div class="mig-row" id="mig-plex-pin" style="flex-direction:column; align-items:flex-start;"></div>
             </div>
 
             <div class="mig-row">
@@ -612,6 +613,7 @@
 
 {% block bodyAdditions %}
 <span id="mig-server-data" data-resume-session-id="{{ active_session_id or 0 }}" hidden></span>
+<script src="{{ url_for('static', filename='plex_link.js') }}"></script>
 <script>
 (function() {
     // ---------- State ----------
@@ -895,6 +897,18 @@
         $('mig-test-connection').disabled = false;
         hideMigLibrariesSection();
         resetFromStep(3);
+        if (window.PlexLink) {
+            window.PlexLink.stop();
+            if (targetType === 'plex' && $('mig-plex-pin')) {
+                window.PlexLink.attach($('mig-plex-pin'), {
+                    buttonClass: 'btn btn-primary',
+                    getTokenInput: () => {
+                        const f = document.querySelector('.mig-cred-field[data-for="plex"]');
+                        return f ? f.querySelector('[data-cred="token"]') : null;
+                    }
+                });
+            }
+        }
     });
 
     function collectCreds() {

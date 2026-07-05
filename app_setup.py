@@ -897,7 +897,11 @@ def setup_plex_pin_poll(pin_id):
         app.logger.exception('Plex PIN poll failed')
         return jsonify({'error': 'Unable to reach Plex while checking link status.'}), 502
 
-    return jsonify({'token': payload.get('authToken')}), 200
+    # The browser polls this URL repeatedly; no-store stops it serving a stale
+    # "token is still null" response from cache once linking completes.
+    poll_response = jsonify({'token': payload.get('authToken')})
+    poll_response.headers['Cache-Control'] = 'no-store'
+    return poll_response, 200
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])

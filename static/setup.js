@@ -276,7 +276,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -308,37 +308,11 @@ function renderServerFields(serverType, values, hasValueMap) {
     updateTestButtonState();
 }
 
-// --- Plex account linking (plex.tv/link) -----------------------------------
-// Optional helper next to the Plex token field: mint a PIN, let the user type
-// it at plex.tv/link, then poll our backend proxy for the resulting token and
-// drop it into PLEX_TOKEN. Manual cut & paste into the field still works.
-var plexPinPollTimer = null;
-
-function stopPlexPinPoll() {
-    if (plexPinPollTimer) {
-        clearInterval(plexPinPollTimer);
-        plexPinPollTimer = null;
-    }
-}
-
-function getPlexClientId() {
-    var key = 'audiomuse_plex_client_id';
-    var id = null;
-    try { id = window.localStorage.getItem(key); } catch (e) { id = null; }
-    if (!id) {
-        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-            id = 'audiomuse-' + window.crypto.randomUUID();
-        } else {
-            id = 'audiomuse-' + Date.now().toString(16) + '-' + Math.random().toString(16).slice(2);
-        }
-        try { window.localStorage.setItem(key, id); } catch (e) { /* private mode: ephemeral id is fine */ }
-    }
-    return id;
-}
-
 function maybeRenderPlexPin(serverType) {
-    stopPlexPinPoll();
-    if (serverType !== 'plex') {
+    if (window.PlexLink) {
+        window.PlexLink.stop();
+    }
+    if (serverType !== 'plex' || !window.PlexLink) {
         return;
     }
     if (!document.getElementById('PLEX_TOKEN')) {
@@ -348,89 +322,10 @@ function maybeRenderPlexPin(serverType) {
     row.className = 'field-row';
     row.style.flexDirection = 'column';
     row.style.alignItems = 'flex-start';
-
-    var link = document.createElement('a');
-    link.href = '#';
-    link.id = 'plex-pin-start';
-    link.textContent = 'Or sign in with Plex to fill the token automatically';
-
-    var status = document.createElement('p');
-    status.id = 'plex-pin-status';
-    status.className = 'inline-feedback';
-    status.style.display = 'none';
-    status.style.margin = '0.5rem 0 0 0';
-    status.style.width = '100%';
-
-    row.appendChild(link);
-    row.appendChild(status);
     serverConfigFields.appendChild(row);
-
-    link.addEventListener('click', function(ev) {
-        ev.preventDefault();
-        startPlexPinFlow(status);
+    window.PlexLink.attach(row, {
+        getTokenInput: function() { return document.getElementById('PLEX_TOKEN'); }
     });
-}
-
-function startPlexPinFlow(status) {
-    stopPlexPinPoll();
-    var clientId = getPlexClientId();
-    status.style.display = 'block';
-    status.className = 'status-pending inline-feedback';
-    status.textContent = 'Contacting Plex...';
-    fetch('/api/setup/plex/pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: clientId })
-    }).then(function(resp) {
-        return resp.json().then(function(data) {
-            if (!resp.ok) { throw new Error(data.error || 'Unable to start Plex linking.'); }
-            return data;
-        });
-    }).then(function(data) {
-        window.open('https://plex.tv/link', '_blank', 'noopener');
-        status.className = 'status-pending inline-feedback';
-        status.textContent = 'A new tab opened plex.tv/link. Enter this code and accept: ' + data.code
-            + '   (waiting for you to link...)';
-        pollPlexPin(String(data.id), clientId, status);
-    }).catch(function(err) {
-        status.className = 'status-failure inline-feedback';
-        status.style.display = 'block';
-        status.textContent = '✕ ' + (err.message || 'Unable to start Plex linking.');
-    });
-}
-
-function pollPlexPin(pinId, clientId, status) {
-    stopPlexPinPoll();
-    var deadline = Date.now() + 120000;  // stop after ~2 minutes
-    plexPinPollTimer = setInterval(function() {
-        if (Date.now() > deadline) {
-            stopPlexPinPoll();
-            status.className = 'status-failure inline-feedback';
-            status.textContent = 'Timed out waiting for Plex. Click the link to try again.';
-            return;
-        }
-        fetch('/api/setup/plex/pin/' + encodeURIComponent(pinId) + '?client_id=' + encodeURIComponent(clientId))
-            .then(function(resp) { return resp.json(); })
-            .then(function(data) {
-                if (data && data.token) {
-                    stopPlexPinPoll();
-                    applyPlexToken(data.token, status);
-                }
-            }).catch(function() { /* transient error: keep polling until the deadline */ });
-    }, 2500);
-}
-
-function applyPlexToken(token, status) {
-    var tokenInput = document.getElementById('PLEX_TOKEN');
-    if (tokenInput) {
-        tokenInput.value = token;
-        // Clear the stored original so collectConfigFromForm treats it as
-        // changed and actually submits the new token.
-        tokenInput.dataset.originalValue = '';
-    }
-    status.className = 'status-success inline-feedback';
-    status.textContent = '✓ Linked with Plex. Token filled in - click Test connection or Save.';
-    updateTestButtonState();
 }
 
 // Advanced parameters are grouped into collapsible sections so the long, flat
