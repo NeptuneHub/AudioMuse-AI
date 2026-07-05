@@ -54,13 +54,14 @@ matcher = _load_module('tasks.provider_migration_matcher', 'tasks', 'provider_mi
 mig = _load_module('tasks.provider_migration_tasks', 'tasks', 'provider_migration_tasks.py')
 
 
-PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion')
+PROVIDERS = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
 
 _ID_BASE = {
     'jellyfin': 0x10000,
     'emby': 5000,
     'navidrome': 0xABCD00,
     'lyrion': 90000,
+    'plex': 70000,
 }
 
 _CROSS_TARGET_SHIFT = 1_000_000
@@ -72,6 +73,7 @@ _EXPECTED_CONFIG_KEYS = {
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
     'lyrion': ['LYRION_URL'],
+    'plex': ['PLEX_URL', 'PLEX_TOKEN'],
 }
 
 _TARGET_CREDS = {
@@ -79,6 +81,7 @@ _TARGET_CREDS = {
     'emby': {'url': 'http://emby.test:8096', 'user_id': 'embyuser', 'token': 'embytoken'},
     'navidrome': {'url': 'http://nav.test:4533', 'user': 'navuser', 'password': 'navpass'},
     'lyrion': {'url': 'http://lms.test:9000'},
+    'plex': {'url': 'http://plex.test:32400', 'token': 'plextoken'},
 }
 
 
@@ -145,6 +148,8 @@ def _provider_path(provider, rel):
         return '/mnt/media/MyTunes/' + rel
     if provider == 'lyrion':
         return 'file:///media/music/MyTunes/' + quote(rel)
+    if provider == 'plex':
+        return '/data/music/MyTunes/' + rel
     return rel
 
 

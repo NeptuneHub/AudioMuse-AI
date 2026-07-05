@@ -517,6 +517,7 @@ _CREDS_TO_CONFIG = {
         'password': 'NAVIDROME_PASSWORD',
     },
     'lyrion': {'url': 'LYRION_URL'},
+    'plex': {'url': 'PLEX_URL', 'token': 'PLEX_TOKEN'},
 }
 
 

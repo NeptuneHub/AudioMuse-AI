@@ -78,7 +78,7 @@ provider_probe = _LazyProbe()
 # Supported target providers (what the tool knows how to talk to)
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion'})
+_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +159,11 @@ def _current_provider_creds():
         }
     if t == 'lyrion':
         return t, {'url': getattr(cfg, 'LYRION_URL', '')}
+    if t == 'plex':
+        return t, {
+            'url': getattr(cfg, 'PLEX_URL', ''),
+            'token': getattr(cfg, 'PLEX_TOKEN', ''),
+        }
     return None, {}
 
 
@@ -248,7 +253,7 @@ def session_start():
             properties:
               target_type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion]
+                enum: [jellyfin, emby, navidrome, lyrion, plex]
               target_creds:
                 type: object
                 additionalProperties: true
@@ -426,7 +431,7 @@ def probe_test():
             properties:
               type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion]
+                enum: [jellyfin, emby, navidrome, lyrion, plex]
               creds:
                 type: object
                 additionalProperties: true

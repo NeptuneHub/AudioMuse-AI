@@ -343,7 +343,7 @@
             <h1>AudioMuse-AI - Provider Migration</h1>
             <p class="subtitle">
                 AudioMuse-AI rewrites every track&rsquo;s internal ID from your <strong>old media provider</strong> to
-                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion&hellip;)
+                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion, Plex&hellip;)
                 so your analysis data, embeddings, and local playlists keep pointing at the right songs.
             </p>
             <div class="mig-info-box">
@@ -397,6 +397,7 @@
                     <option value="navidrome">Navidrome</option>
                     <option value="emby">Emby</option>
                     <option value="lyrion">Lyrion (LMS)</option>
+                    <option value="plex">Plex</option>
                 </select>
             </div>
 
@@ -460,6 +461,18 @@
                 <div class="mig-row">
                     <label>Password:</label>
                     <input type="password" data-cred="password" placeholder="(leave blank if no auth)">
+                </div>
+            </div>
+
+            <!-- Plex creds -->
+            <div class="mig-cred-field" data-for="plex">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://plex.local:32400">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token" placeholder="your-plex-token">
                 </div>
             </div>
 

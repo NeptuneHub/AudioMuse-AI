@@ -186,7 +186,7 @@
                         Media server type
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL.</span>
+                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL, Plex uses URL + API token.</span>
                         </span>
                     </label>
                     <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
@@ -194,6 +194,7 @@
                         <option value="navidrome">Navidrome</option>
                         <option value="lyrion">Lyrion</option>
                         <option value="emby">Emby</option>
+                        <option value="plex">Plex</option>
                     </select>
                 </div>
                 <div id="server-config-fields"></div>

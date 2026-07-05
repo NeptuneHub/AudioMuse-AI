@@ -251,7 +251,7 @@ class TestSourcePathsRefreshRoute:
     def test_rejects_unsupported_current_provider(self, bp_mod, client):
         import config
 
-        config.MEDIASERVER_TYPE = 'plex'
+        config.MEDIASERVER_TYPE = 'spotify'
         resp = client.post('/api/migration/source-paths/refresh', json={'session_id': 1})
         assert resp.status_code == 400
 

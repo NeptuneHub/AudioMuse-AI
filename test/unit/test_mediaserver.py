@@ -2769,6 +2769,19 @@ class TestDispatcherCreateOrReplacePlaylist:
 
         mock_provider.assert_called_once()
 
+    @patch('tasks.mediaserver.plex.create_or_replace_playlist')
+    @patch('tasks.mediaserver.config')
+    def test_dispatches_to_plex(self, mock_config, mock_provider):
+        from tasks.mediaserver import create_or_replace_playlist
+
+        mock_config.MEDIASERVER_TYPE = 'plex'
+        mock_provider.return_value = {'Id': 'pl-5'}
+
+        result = create_or_replace_playlist('SF', ['s1'])
+
+        mock_provider.assert_called_once_with('SF', ['s1'], None)
+        assert result['Id'] == 'pl-5'
+
 
 def _audio_page(n_items, start=0):
     resp = Mock()
