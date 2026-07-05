@@ -44,6 +44,8 @@ from tasks.ivf_manager import (
 
 logger = logging.getLogger(__name__)
 
+_UNEXPECTED_ERROR_MSG = "An unexpected error occurred."
+
 
 # Build a structured error body (error_code/error_class/error_message) while keeping
 # a stable, user-facing 'error' string so API consumers can key on the numeric code
@@ -64,7 +66,7 @@ def _neighbor_search_error_response(ctx, exc, is_runtime):
         )
         return jsonify(body), 503
     logger.exception(f"Unexpected error finding neighbors for {ctx}: {exc}")
-    body = _index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")
+    body = _index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)
     return jsonify(body), 500
 
 
@@ -550,7 +552,7 @@ def get_max_distance_endpoint():
         ), 503
     except Exception:
         logger.exception(f"Unexpected error computing max distance for {item_id}")
-        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)), 500
 
 
 @ivf_bp.route('/api/track', methods=['GET'])
@@ -612,7 +614,7 @@ def get_track_endpoint():
         ), 200
     except Exception:
         logger.exception(f"Unexpected error fetching track {item_id}")
-        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, "An unexpected error occurred.")), 500
+        return jsonify(_index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)), 500
 
 
 @ivf_bp.route('/api/create_playlist', methods=['POST'])

@@ -439,7 +439,7 @@ async function startTask(taskType) {
             lastPolledTaskDetails[result.task_id] = { state: 'PENDING', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
         } else {
-            const structured = (typeof formatErrorText === 'function' && result && result.error_code) ? formatErrorText(result) : '';
+            const structured = (typeof formatErrorText === 'function' && result?.error_code) ? formatErrorText(result) : '';
             throw new Error(structured || result.error || result.message || 'Failed to start task.');
         }
     } catch (error) {

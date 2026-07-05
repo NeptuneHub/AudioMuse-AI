@@ -1272,33 +1272,44 @@ def get_child_tasks_from_db(parent_task_id):
     return [dict(row) for row in tasks]
 
 
+def _child_error_from_row(row):
+    raw = row["details"]
+    if isinstance(raw, dict):
+        details = raw
+    elif raw:
+        try:
+            details = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+    else:
+        details = {}
+    structured = details.get("error") if isinstance(details, dict) else None
+    if isinstance(structured, dict) and "error_code" in structured:
+        return {"album_id": row["sub_type_identifier"], **structured}
+    return None
+
+
 def get_failed_child_summary(parent_task_id, sample_limit=5):
     conn = get_db()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    cur.execute(
-        "SELECT COUNT(*) AS failed_count FROM task_status "
-        "WHERE parent_task_id = %s AND status = %s",
-        (parent_task_id, TASK_STATUS_FAILURE),
-    )
-    failed_count = cur.fetchone()["failed_count"]
     errors = []
-    if failed_count:
+    with conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
-            "SELECT sub_type_identifier, details FROM task_status "
-            "WHERE parent_task_id = %s AND status = %s "
-            "ORDER BY timestamp DESC LIMIT %s",
-            (parent_task_id, TASK_STATUS_FAILURE, sample_limit),
+            "SELECT COUNT(*) AS failed_count FROM task_status "
+            "WHERE parent_task_id = %s AND status = %s",
+            (parent_task_id, TASK_STATUS_FAILURE),
         )
-        for row in cur.fetchall():
-            raw = row["details"]
-            try:
-                details = raw if isinstance(raw, dict) else (json.loads(raw) if raw else {})
-            except (json.JSONDecodeError, TypeError):
-                details = {}
-            structured = details.get("error") if isinstance(details, dict) else None
-            if isinstance(structured, dict) and "error_code" in structured:
-                errors.append({"album_id": row["sub_type_identifier"], **structured})
-    cur.close()
+        failed_count = cur.fetchone()["failed_count"]
+        if failed_count:
+            cur.execute(
+                "SELECT sub_type_identifier, details FROM task_status "
+                "WHERE parent_task_id = %s AND status = %s "
+                "ORDER BY timestamp DESC LIMIT %s",
+                (parent_task_id, TASK_STATUS_FAILURE, sample_limit),
+            )
+            for row in cur.fetchall():
+                child_error = _child_error_from_row(row)
+                if child_error is not None:
+                    errors.append(child_error)
     return failed_count, errors
 
 

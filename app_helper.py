@@ -117,16 +117,16 @@ def sanitize_task_details(details, state, task_type=None):
 
     if str(state or '').upper() in ('FAILED', 'FAILURE'):
         existing_error = details.get('error')
-        if (
+        has_full_error = (
             isinstance(existing_error, dict)
             and 'error_code' in existing_error
             and 'error_message' in existing_error
-        ):
-            pass
-        elif isinstance(existing_error, dict) and 'error_code' in existing_error:
-            details['error'] = error_manager.build(existing_error['error_code'])
-        else:
-            details['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
+        )
+        if not has_full_error:
+            if isinstance(existing_error, dict) and 'error_code' in existing_error:
+                details['error'] = error_manager.build(existing_error['error_code'])
+            else:
+                details['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
         details.setdefault('error_message', details['error']['error_message'])
 
     return details
