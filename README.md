@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Jellyfin 12.0, Navidrome 0.62.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex](https://img.shields.io/badge/Media%20Server-Jellyfin%2012.0%2C%20Navidrome%200.62.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 12.0, Navidrome 0.62.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2](https://img.shields.io/badge/Media%20Server-Jellyfin%2012.0%2C%20Navidrome%200.62.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
 
 <p align="center">
