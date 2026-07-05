@@ -52,6 +52,12 @@ spec:
       containers:
       - name: master
         image: redis:7-alpine # Lightweight Redis image
+        env:
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         resources:
           limits:
             cpu: 2000m
@@ -118,6 +124,12 @@ spec:
         imagePullPolicy: "IfNotPresent"
         ports:
         - containerPort: 5432
+        env:
+        - name: TZ
+          valueFrom:
+            configMapKeyRef:
+              name: audiomuse-ai-config
+              key: TZ
         envFrom:
         - secretRef:
             name: postgres-credentials

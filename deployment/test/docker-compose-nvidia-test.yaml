@@ -2,6 +2,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: audiomuse-nvidia-test-redis
+    environment:
+      TZ: "${TZ:-UTC}"
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -12,6 +14,7 @@ services:
     image: postgres:15-alpine
     container_name: audiomuse-nvidia-test-postgres
     environment:
+      TZ: "${TZ:-UTC}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
