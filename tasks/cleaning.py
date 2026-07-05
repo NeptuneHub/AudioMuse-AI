@@ -322,26 +322,24 @@ def identify_and_clean_orphaned_albums_task():
             logger.exception(
                 "Database connection error during cleaning identification. This job will be retried."
             )
-            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            err = error_manager.record(ERR_DB_CONNECTION, str(e))
             log_and_update_main(
                 "Database connection failed. Retrying...",
                 current_progress,
                 task_state=TASK_STATUS_FAILURE,
                 error=err,
-                final_summary_details={"error": str(e)},
             )
             raise
         except Exception as e:
             logger.critical(f"Orphaned album identification failed: {e}", exc_info=True)
             err = error_manager.record(
-                error_manager.classify(e, ERR_CLEANING_FAILED), str(e), exc=e
+                error_manager.classify(e, ERR_CLEANING_FAILED), str(e)
             )
             log_and_update_main(
                 f"X Orphaned album identification failed: {e}",
                 current_progress,
                 task_state=TASK_STATUS_FAILURE,
                 error=err,
-                final_summary_details={"error": str(e)},
             )
             raise
 

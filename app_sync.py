@@ -32,6 +32,8 @@ from flasgger import swag_from
 import config
 from database import get_db
 from app_helper import load_map_projection
+from error import error_manager
+from error.error_dictionary import ERR_DB_QUERY
 
 
 logger = logging.getLogger(__name__)
@@ -132,7 +134,7 @@ def sync_endpoint():
             if manifest_mode:
                 return _manifest_page(cur, page, limit)
             return _payload_page(cur, page, limit, include_embeddings, id_filter)
-    except Exception:
+    except Exception as e:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
             manifest_mode,
@@ -140,7 +142,8 @@ def sync_endpoint():
             page,
             limit,
         )
-        return jsonify({"error": "Internal server error"}), 500
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
 
 
 def _manifest_page(cur, page, limit):

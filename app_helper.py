@@ -62,6 +62,9 @@ from config import (  # noqa: F401
     TASK_STATUS_REVOKED,
 )
 
+from error import error_manager
+from error.error_dictionary import UNKNOWN_ERROR_CODE
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,6 +89,47 @@ def coerce_db_details(raw_details):
         except (json.JSONDecodeError, TypeError):
             return {}
     return {}
+
+
+def sanitize_task_details(details, state, task_type=None):
+    """Normalize a persisted task ``details`` dict for any task-status endpoint.
+
+    Applies the same safety pass to every endpoint that surfaces task details:
+    drops the internal traceback and the heavyweight analysis-only
+    ``checked_album_ids`` key, truncates the log to the last 10 entries, and
+    guarantees a well-formed structured ``error`` (plus ``error_message``) on
+    failed tasks so the frontend renderer always receives a consistent, safe
+    shape whether it hit ``/api/status``, ``/api/last_task`` or ``/api/active_tasks``.
+    """
+    if not isinstance(details, dict):
+        return details
+
+    if task_type and 'analysis' in task_type:
+        details.pop('checked_album_ids', None)
+    details.pop('traceback', None)
+
+    log_entries = details.get('log')
+    if isinstance(log_entries, list) and len(log_entries) > 10:
+        details['log'] = [
+            f"... ({len(log_entries) - 10} earlier log entries truncated)",
+            *log_entries[-10:],
+        ]
+
+    if str(state or '').upper() in ('FAILED', 'FAILURE'):
+        existing_error = details.get('error')
+        has_full_error = (
+            isinstance(existing_error, dict)
+            and 'error_code' in existing_error
+            and 'error_message' in existing_error
+        )
+        if not has_full_error:
+            if isinstance(existing_error, dict) and 'error_code' in existing_error:
+                details['error'] = error_manager.build(existing_error['error_code'])
+            else:
+                details['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
+        details.setdefault('error_message', details['error']['error_message'])
+
+    return details
 
 
 def top_stratified_genre(mood_vector):

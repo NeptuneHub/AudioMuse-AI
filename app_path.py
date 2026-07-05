@@ -22,6 +22,8 @@ Main Features:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
+from error import error_manager
+from error.error_dictionary import UNKNOWN_ERROR_CODE
 from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import (
@@ -392,4 +394,8 @@ def find_path_endpoint():
         logger.exception(
             f"Error finding path between {start_song_id} and {end_song_id}"
         )
-        return jsonify({"error": "An unexpected error occurred while finding the path."}), 500
+        body = {
+            **error_manager.build(UNKNOWN_ERROR_CODE),
+            "error": "An unexpected error occurred while finding the path.",
+        }
+        return jsonify(body), 500

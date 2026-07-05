@@ -41,6 +41,9 @@ from database import (
 from app_helper_artist import upsert_artist_mappings
 from psycopg2 import sql as pgsql
 
+from error import error_manager
+from error.error_dictionary import ERR_LYRICS_TRANSCRIPTION
+
 logger = logging.getLogger(__name__)
 
 
@@ -562,5 +565,11 @@ def run_lyrics_for_track(
         logger.info("  - Lyrics embedding saved")
         return True
     except Exception as e:
-        logger.warning(f"  - Lyrics analysis failed: {e}", exc_info=True)
+        error_manager.record(
+            error_manager.classify(e, ERR_LYRICS_TRANSCRIPTION),
+            str(e),
+            exc=e,
+            logger=logger,
+            level=logging.WARNING,
+        )
         return False

@@ -285,7 +285,7 @@ def run_clustering_batch_task(
         except Exception as e:
             logger.exception(f"Clustering batch {batch_id_str} failed")
             err = error_manager.record(
-                error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e), exc=e
+                error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
             )
             _log_and_update(
                 f"Batch failed: {e}", 100, details={"error": err}, state=TASK_STATUS_FAILURE
@@ -747,7 +747,7 @@ def run_clustering_task(
         except Exception as e:
             logger.critical("FATAL ERROR in main clustering task", exc_info=True)
             err = error_manager.record(
-                error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e), exc=e
+                error_manager.classify(e, ERR_CLUSTERING_FAILED), str(e)
             )
             _log_and_update(
                 f"Task failed: {e}",

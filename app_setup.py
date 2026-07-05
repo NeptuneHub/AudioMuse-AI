@@ -33,7 +33,11 @@ import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager
 from error.error_manager import AudioMuseError
-from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
+from error.error_dictionary import (
+    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_CONFIG_MEDIASERVER_CREDENTIALS,
+    ERR_DB_QUERY,
+)
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     field for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values() for field in fields
@@ -285,6 +289,10 @@ def _test_media_server_connection(filtered_values):
         }
     except AudioMuseError:
         raise
+    except ValueError as exc:
+        raise AudioMuseError(
+            ERR_CONFIG_MEDIASERVER_CREDENTIALS, str(exc), cause=exc
+        ) from exc
     except Exception as exc:
         raise AudioMuseError(
             error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc
@@ -588,12 +596,11 @@ def setup_api():
             try:
                 existing_admins = count_admin_users()
             except Exception as exc:
-                app.logger.error(
-                    'Failed to count admin users during setup save: %s',
-                    exc,
-                    exc_info=True,
+                app.logger.exception('Failed to count admin users during setup save')
+                err, status = error_manager.error_response(
+                    error_manager.classify(exc, ERR_DB_QUERY)
                 )
-                return jsonify({'error': 'Database error while verifying admin count.'}), 500
+                return jsonify(err), status
             provided_admin = bool(new_admin_user and new_admin_password)
             if existing_admins <= 0 and not provided_admin:
                 return jsonify(

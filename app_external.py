@@ -24,6 +24,8 @@ import logging
 
 # Import ivf_manager functions for track lookups
 from tasks.ivf_manager import search_tracks_unified
+from error import error_manager
+from error.error_dictionary import ERR_DB_QUERY
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -78,9 +80,10 @@ def get_score_endpoint():
             return jsonify(dict(score_data))
         else:
             return jsonify({"error": f"Score not found for id: {item_id}"}), 404
-    except Exception:
+    except Exception as e:
         logger.exception(f"Error fetching score for id {item_id}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
 
 
 @external_bp.route('/get_embedding', methods=['GET'])
@@ -129,9 +132,10 @@ def get_embedding_endpoint():
             return jsonify(embedding_dict)
         else:
             return jsonify({"error": f"Embedding not found for id: {item_id}"}), 404
-    except Exception:
+    except Exception as e:
         logger.exception(f"Error fetching embedding for id {item_id}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
 
 
 @external_bp.route('/search', methods=['GET'])

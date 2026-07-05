@@ -44,11 +44,9 @@ ERR_RESTORE_FAILED = 4103
 
 ERR_LYRICS_FAILED = 5001
 ERR_LYRICS_TRANSCRIPTION = 5002
-ERR_TRANSLATION_FAILED = 5003
 
 ERR_CLUSTERING_FAILED = 6001
 ERR_CLEANING_FAILED = 6002
-ERR_COLLECTION_SYNC_FAILED = 6003
 
 UNKNOWN_ERROR_CODE = 9999
 
@@ -137,10 +135,6 @@ ERROR_REGISTRY = {
         "error_class": "Lyrics Transcription Error",
         "default_message": "Lyrics transcription failed.",
     },
-    ERR_TRANSLATION_FAILED: {
-        "error_class": "Translation Error",
-        "default_message": "Lyrics translation failed.",
-    },
     ERR_CLUSTERING_FAILED: {
         "error_class": "Clustering Error",
         "default_message": "Playlist clustering failed.",
@@ -148,10 +142,6 @@ ERROR_REGISTRY = {
     ERR_CLEANING_FAILED: {
         "error_class": "Cleaning Error",
         "default_message": "Database cleaning failed.",
-    },
-    ERR_COLLECTION_SYNC_FAILED: {
-        "error_class": "Collection Sync Error",
-        "default_message": "Collection synchronization failed.",
     },
     UNKNOWN_ERROR_CODE: {
         "error_class": "Unknown Error",

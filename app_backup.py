@@ -35,7 +35,11 @@ import config
 from config import POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
 import restart_manager
 from error import error_manager
-from error.error_dictionary import ERR_BACKUP_VERSION_MISMATCH, ERR_BACKUP_FAILED
+from error.error_dictionary import (
+    ERR_BACKUP_VERSION_MISMATCH,
+    ERR_BACKUP_FAILED,
+    ERR_RESTORE_FAILED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +523,8 @@ def restore_backup():
                 logger.info(f"Saved chunk {chunk_num}/{total_chunks}")
             except Exception:
                 logger.exception("Failed to save chunk %s", chunk_num)
-                return jsonify({'error': f'Failed to save chunk {chunk_num}.'}), 500
+                err = error_manager.build(ERR_RESTORE_FAILED, f"Failed to save chunk {chunk_num}.")
+                return jsonify({**err, 'error': err['error_message']}), 500
 
             # Rebuild the received set from disk (only chunks belonging to this session)
             received_chunks = set()
@@ -676,13 +681,15 @@ def restore_backup():
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        return jsonify({'error': 'Python executable not found for restore runner.'}), 500
+        err = error_manager.build(ERR_RESTORE_FAILED, "Python executable not found for restore runner.")
+        return jsonify({**err, 'error': err['error_message']}), 500
     except Exception:
         logger.exception("Restore failed")
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        return jsonify({'error': 'Restore failed. Check server logs.'}), 500
+        err = error_manager.build(ERR_RESTORE_FAILED, "Restore failed. Check server logs.")
+        return jsonify({**err, 'error': err['error_message']}), 500
 
 
 if __name__ == '__main__':

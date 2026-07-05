@@ -42,6 +42,8 @@ except ImportError:
 
 from config import MEDIASERVER_TYPE
 from database import get_db
+from error import error_manager
+from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE, UNKNOWN_ERROR_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +300,11 @@ def get_waveform_endpoint():
         logger.info(f"Downloaded track in {download_time:.2f}s")
 
         if not temp_file or not os.path.exists(temp_file):
-            return jsonify({"error": "Failed to download track from media server"}), 500
+            body = {
+                **error_manager.build(ERR_MEDIASERVER_UNREACHABLE),
+                "error": "Failed to download track from media server",
+            }
+            return jsonify(body), error_manager.http_status_for_code(ERR_MEDIASERVER_UNREACHABLE)
 
         # Generate waveform peaks in a thread pool with timeout
         logger.info(f"Generating waveform with librosa for song={title}, item_id={item_id}")
@@ -312,9 +318,11 @@ def get_waveform_endpoint():
             peaks = future.result(timeout=15)
         except FuturesTimeoutError:
             logger.exception(f"Waveform generation timed out for {item_id}")
-            return jsonify(
-                {"error": "Waveform generation timed out (>15s). Try a shorter audio file."}
-            ), 500
+            body = {
+                **error_manager.build(UNKNOWN_ERROR_CODE),
+                "error": "Waveform generation timed out (>15s). Try a shorter audio file.",
+            }
+            return jsonify(body), 500
 
         waveform_time = time.time() - waveform_start
         total_time = time.time() - start_time
@@ -326,12 +334,14 @@ def get_waveform_endpoint():
 
         return jsonify(response), 200
 
-    except RuntimeError:
+    except RuntimeError as e:
         logger.exception(f"Runtime error generating waveform for {item_id}")
-        return jsonify({"error": "An error occurred during waveform generation"}), 500
-    except Exception:
+        err, status = error_manager.error_response(error_manager.classify(e, UNKNOWN_ERROR_CODE))
+        return jsonify(err), status
+    except Exception as e:
         logger.exception(f"Unexpected error generating waveform for {item_id}")
-        return jsonify({"error": "An unexpected error occurred during waveform generation"}), 500
+        err, status = error_manager.error_response(error_manager.classify(e, UNKNOWN_ERROR_CODE))
+        return jsonify(err), status
     finally:
         if temp_dir and os.path.exists(temp_dir):
             # Best-effort: keep removing siblings past a locked file (common on
