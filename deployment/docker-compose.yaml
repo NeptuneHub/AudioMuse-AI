@@ -4,6 +4,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: audiomuse-redis
+    environment:
+      TZ: "${TZ:-UTC}"
     ports:
       - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
     volumes:
@@ -15,6 +17,7 @@ services:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
+      TZ: "${TZ:-UTC}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: "audiomusedb"
