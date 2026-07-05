@@ -14,9 +14,11 @@ How to create an the **jellyfin's API token**:
 
 How to find the Plex **auth token** (X-Plex-Token):
 * Sign in to the Plex Web App in your browser
-* Open any track or album, click the three-dot (...) menu > Get Info > View XML
-* In the URL that opens, copy the value after `X-Plex-Token=`
-* Official guide: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+* Open the browser developer tools (F12) and go to the Network tab
+* Refresh a library (or any action that calls your server)
+* Click a request pointing to your server, for example one ending in `/library/sections`
+* Copy the `X-Plex-Token` value from the request headers or the query string
+* Reference: https://plexapi.dev/authentication
 
 
 The **mandatory** parameter that you need to change from the example are this:
