@@ -14,7 +14,7 @@ by config.MEDIASERVER_TYPE.
 
 Main Features:
 * Lazily imports and dispatches to the active provider backend (jellyfin, emby,
-  navidrome, lyrion), so importing this package does not load inactive backends.
+  navidrome, lyrion, plex), so importing this package does not load inactive backends.
 * Centralizes the provider-agnostic public API; shared HTTP and metadata parsing
   live in http.py and helper.py.
 """
@@ -27,7 +27,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby')
+_PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex')
 _warned_unsupported = set()
 
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."

@@ -12,8 +12,8 @@ Thin, provider-agnostic wrapper over the mediaserver clients used by the
 migration flow to test connectivity, enumerate libraries, and pull tracks.
 
 Main Features:
-* Supports jellyfin, emby, navidrome, and lyrion, rejecting any other provider
-  type early.
+* Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
+  provider type early.
 * Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
   camelCase, and lower-case variants) into one flat track dict, coercing the
   year to an int.
@@ -63,7 +63,7 @@ def _normalize_track(item):
     }
 
 
-_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion'}
+_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion', 'plex'}
 
 
 def _normalize_provider_type(provider_type):

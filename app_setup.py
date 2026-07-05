@@ -23,6 +23,7 @@ Main Features:
 
 import re
 import types
+import requests
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from flask_app import app
@@ -43,6 +44,23 @@ BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
     field for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values() for field in fields
 ]
 
+# Plex account-linking (plex.tv/link) proxy. plex.tv's PIN endpoints send no
+# CORS headers, so the browser can't call them directly; these constants back
+# the two /api/setup/plex/pin routes that proxy the request server-side.
+PLEX_PIN_API_BASE = "https://plex.tv/api/v2/pins"
+PLEX_PIN_PRODUCT = "AudioMuse-AI"
+PLEX_PIN_TIMEOUT = 30
+
+
+def _plex_pin_headers(client_id):
+    return {
+        "Accept": "application/json",
+        "X-Plex-Product": PLEX_PIN_PRODUCT,
+        "X-Plex-Version": str(config.APP_VERSION or ""),
+        "X-Plex-Client-Identifier": client_id,
+        "X-Plex-Device-Name": PLEX_PIN_PRODUCT,
+    }
+
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
 SECRET_FIELDS = {
@@ -51,6 +69,7 @@ SECRET_FIELDS = {
     "JELLYFIN_TOKEN",
     "EMBY_TOKEN",
     "NAVIDROME_PASSWORD",
+    "PLEX_TOKEN",
     "JWT_SECRET",
     "AI_CHAT_DB_USER_PASSWORD",
     "LYRICS_API_1_APIKEY_VALUE",
@@ -751,6 +770,138 @@ def setup_provider_libraries_api():
             'unsupported': bool(result.get('unsupported', False)),
         }
     ), 200
+
+
+@app.route('/api/setup/plex/pin', methods=['POST'])
+def setup_plex_pin_create():
+    """
+    Start Plex account linking (plex.tv/link).
+    ---
+    tags:
+      - Setup
+    summary: Create a Plex PIN so the user can link their account and auto-fill the token.
+    description: |
+      Proxies ``POST https://plex.tv/api/v2/pins`` (plex.tv sends no CORS
+      headers, so the browser cannot call it directly). Returns the short
+      ``code`` the user types at plex.tv/link and the ``id`` used to poll for
+      the resulting token. The browser supplies a stable
+      ``X-Plex-Client-Identifier`` as ``client_id``; the same value must be
+      used when polling.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [client_id]
+            properties:
+              client_id:
+                type: string
+    responses:
+      200:
+        description: PIN created.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                code:
+                  type: string
+      400:
+        description: Missing client_id.
+      502:
+        description: Could not reach plex.tv.
+    """
+    data = request.get_json(silent=True) or {}
+    client_id = str(data.get('client_id') or '').strip()
+    if not client_id:
+        return jsonify({'error': 'client_id is required'}), 400
+
+    try:
+        resp = requests.post(
+            PLEX_PIN_API_BASE,
+            headers=_plex_pin_headers(client_id),
+            data={'strong': 'false'},
+            timeout=PLEX_PIN_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        app.logger.exception('Plex PIN creation failed')
+        return jsonify({'error': 'Unable to reach Plex to start linking. Check the server log.'}), 502
+
+    pin_id = payload.get('id')
+    code = payload.get('code')
+    if not pin_id or not code:
+        return jsonify({'error': 'Plex did not return a linking code.'}), 502
+    return jsonify({'id': pin_id, 'code': code}), 200
+
+
+@app.route('/api/setup/plex/pin/<pin_id>', methods=['GET'])
+def setup_plex_pin_poll(pin_id):
+    """
+    Poll a Plex PIN for the linked account token.
+    ---
+    tags:
+      - Setup
+    summary: Check whether the user has finished linking at plex.tv/link and return the token.
+    description: |
+      Proxies ``GET https://plex.tv/api/v2/pins/<id>`` using the same
+      ``client_id`` (``X-Plex-Client-Identifier``) that created the PIN.
+      ``token`` is ``null`` until the user has entered the code and accepted.
+    parameters:
+      - in: path
+        name: pin_id
+        required: true
+        schema:
+          type: integer
+      - in: query
+        name: client_id
+        required: true
+        schema:
+          type: string
+    responses:
+      200:
+        description: Link status; ``token`` is null until linking completes.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  nullable: true
+      400:
+        description: Missing client_id or non-numeric PIN id.
+      502:
+        description: Could not reach plex.tv.
+    """
+    client_id = str(request.args.get('client_id') or '').strip()
+    if not client_id:
+        return jsonify({'error': 'client_id is required'}), 400
+    # PIN ids are numeric; reject anything else so it can't alter the plex.tv path.
+    if not str(pin_id).isdigit():
+        return jsonify({'error': 'Invalid PIN id'}), 400
+
+    try:
+        resp = requests.get(
+            f'{PLEX_PIN_API_BASE}/{pin_id}',
+            headers=_plex_pin_headers(client_id),
+            timeout=PLEX_PIN_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        app.logger.exception('Plex PIN poll failed')
+        return jsonify({'error': 'Unable to reach Plex while checking link status.'}), 502
+
+    # The browser polls this URL repeatedly; no-store stops it serving a stale
+    # "token is still null" response from cache once linking completes.
+    poll_response = jsonify({'token': payload.get('authToken')})
+    poll_response.headers['Cache-Control'] = 'no-store'
+    return poll_response, 200
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])

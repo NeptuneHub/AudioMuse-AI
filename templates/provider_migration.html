@@ -343,7 +343,7 @@
             <h1>AudioMuse-AI - Provider Migration</h1>
             <p class="subtitle">
                 AudioMuse-AI rewrites every track&rsquo;s internal ID from your <strong>old media provider</strong> to
-                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion&hellip;)
+                the matching ID on a <strong>new one</strong> (Jellyfin, Navidrome, Emby, Lyrion, Plex&hellip;)
                 so your analysis data, embeddings, and local playlists keep pointing at the right songs.
             </p>
             <div class="mig-info-box">
@@ -397,6 +397,7 @@
                     <option value="navidrome">Navidrome</option>
                     <option value="emby">Emby</option>
                     <option value="lyrion">Lyrion (LMS)</option>
+                    <option value="plex">Plex</option>
                 </select>
             </div>
 
@@ -461,6 +462,19 @@
                     <label>Password:</label>
                     <input type="password" data-cred="password" placeholder="(leave blank if no auth)">
                 </div>
+            </div>
+
+            <!-- Plex creds -->
+            <div class="mig-cred-field" data-for="plex">
+                <div class="mig-row">
+                    <label>Server URL:</label>
+                    <input type="text" data-cred="url" placeholder="http://plex.local:32400">
+                </div>
+                <div class="mig-row">
+                    <label>API Token:</label>
+                    <input type="password" data-cred="token" placeholder="your-plex-token">
+                </div>
+                <div class="mig-row" id="mig-plex-pin" style="flex-direction:column; align-items:flex-start;"></div>
             </div>
 
             <div class="mig-row">
@@ -599,6 +613,7 @@
 
 {% block bodyAdditions %}
 <span id="mig-server-data" data-resume-session-id="{{ active_session_id or 0 }}" hidden></span>
+<script src="{{ url_for('static', filename='plex_link.js') }}"></script>
 <script>
 (function() {
     // ---------- State ----------
@@ -882,6 +897,18 @@
         $('mig-test-connection').disabled = false;
         hideMigLibrariesSection();
         resetFromStep(3);
+        if (window.PlexLink) {
+            window.PlexLink.stop();
+            if (targetType === 'plex' && $('mig-plex-pin')) {
+                window.PlexLink.attach($('mig-plex-pin'), {
+                    buttonClass: 'btn btn-primary',
+                    getTokenInput: () => {
+                        const f = document.querySelector('.mig-cred-field[data-for="plex"]');
+                        return f ? f.querySelector('[data-cred="token"]') : null;
+                    }
+                });
+            }
+        }
     });
 
     function collectCreds() {

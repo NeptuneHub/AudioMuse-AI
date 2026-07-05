@@ -31,7 +31,7 @@ TASK_STATUS_FAILURE = 'FAILURE'
 TASK_STATUS_REVOKED = 'REVOKED'
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -94,11 +94,17 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
 
+# --- Plex Constants ---
+# These are used only if MEDIASERVER_TYPE is "plex".
+PLEX_URL = os.environ.get("PLEX_URL", "") # e.g. http://your-plex-server:32400
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "") # X-Plex-Token for the Plex server
+
 MEDIASERVER_FIELDS_BY_TYPE = {
     'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+    'plex': ['PLEX_URL', 'PLEX_TOKEN'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -134,7 +140,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.4.0"
+APP_VERSION = "v2.5.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering

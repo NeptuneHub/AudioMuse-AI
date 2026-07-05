@@ -54,6 +54,17 @@ Find answers to common questions about setting up, configuring, and deploying Au
 
 </details>
 
+<details>
+<summary>How to get the Plex auth token (X-Plex-Token)</summary>
+
+> Plex authenticates with an auth token instead of a username/password.
+>
+> Sign in to the Plex Web App, open the browser developer tools (F12) and go to the Network tab. Refresh a library, click a request pointing to your server (for example one ending in `/library/sections`), then copy the `X-Plex-Token` value from the request headers or the query string.
+>
+> Reference: [plexapi.dev authentication](https://plexapi.dev/authentication). See also [PARAMETERS](PARAMETERS.md).
+
+</details>
+
 ---
 
 ## User Guide FAQs

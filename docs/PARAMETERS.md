@@ -12,6 +12,14 @@ How to find jellyfin **userid**:
 How to create an the **jellyfin's API token**:
 * The API Token, still as admin you can go to Dashboard > “Admin panel” > API Key and create a new one.
 
+How to find the Plex **auth token** (X-Plex-Token):
+* Sign in to the Plex Web App in your browser
+* Open the browser developer tools (F12) and go to the Network tab
+* Refresh a library (or any action that calls your server)
+* Click a request pointing to your server, for example one ending in `/library/sections`
+* Copy the `X-Plex-Token` value from the request headers or the query string
+* Reference: https://plexapi.dev/authentication
+
 
 The **mandatory** parameter that you need to change from the example are this:
 
@@ -28,6 +36,8 @@ The **mandatory** parameter that you need to change from the example are this:
 | `NAVIDROME_USER`     | (Required) Navidrome User ID.                                           | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required) Navidrome user Password.                                     | *(N/A - from Secret)* |
 | `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
+| `PLEX_URL`           | (Required) Your Plex Media Server's full URL                            | `http://YOUR_PLEX_IP:32400`       |
+| `PLEX_TOKEN`         | (Required) Plex API token (X-Plex-Token).                               | *(N/A - from Secret)* |
 | `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
 | `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |
