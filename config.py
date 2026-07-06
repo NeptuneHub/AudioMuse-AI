@@ -703,6 +703,11 @@ PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT"
 PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
 # Concurrency for resolving per-plugin manifests when building the catalog.
 PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
+# How long plugin boot waits for the database to accept connections before giving
+# up (the RQ workers boot plugins before the Postgres pod is guaranteed ready; a
+# transient 'connection refused' would otherwise disable plugins until restart).
+PLUGIN_BOOT_DB_WAIT_SECONDS = int(os.environ.get("PLUGIN_BOOT_DB_WAIT_SECONDS", "60"))
+PLUGIN_BOOT_DB_WAIT_INTERVAL = float(os.environ.get("PLUGIN_BOOT_DB_WAIT_INTERVAL", "2"))
 
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))

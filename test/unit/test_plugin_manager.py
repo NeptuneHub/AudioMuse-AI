@@ -221,6 +221,34 @@ class TestSync:
         assert mgr.records['demo']['load_status'] == 'error'
 
 
+class TestBootDbWait:
+    def test_retries_until_db_ready(self, monkeypatch):
+        monkeypatch.setattr(config, 'PLUGIN_BOOT_DB_WAIT_SECONDS', 60)
+        monkeypatch.setattr(manager.time, 'sleep', lambda _s: None)
+        calls = {'n': 0}
+
+        def _connect():
+            calls['n'] += 1
+            if calls['n'] < 3:
+                raise OSError('connection refused')
+            return _DummyConn()
+
+        monkeypatch.setattr(database, 'connect_raw', _connect)
+        manager._wait_for_db()
+        assert calls['n'] == 3
+
+    def test_gives_up_after_deadline(self, monkeypatch):
+        monkeypatch.setattr(config, 'PLUGIN_BOOT_DB_WAIT_SECONDS', 0)
+        monkeypatch.setattr(manager.time, 'sleep', lambda _s: None)
+
+        def _connect():
+            raise OSError('connection refused')
+
+        monkeypatch.setattr(database, 'connect_raw', _connect)
+        with pytest.raises(OSError):
+            manager._wait_for_db()
+
+
 class TestRequirements:
     def test_reinstall_warning_when_lib_missing(self, monkeypatch, tmp_path, caplog):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))

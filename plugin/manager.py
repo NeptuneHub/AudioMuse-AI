@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import urllib.request
 import zipfile
@@ -541,11 +542,40 @@ def run_plugin_task(dotted, *args, **kwargs):
 _presync_lock = threading.Lock()
 
 
+def _wait_for_db():
+    """Block until the database accepts a connection, bounded by config.
+
+    The RQ worker entrypoints boot the plugin subsystem before the Postgres pod is
+    guaranteed to be up. Without this wait a startup 'connection refused' is caught
+    by boot() and permanently disables plugins on that worker until it restarts. A
+    no-op for the web process, which has already run init_db by the time it boots.
+    """
+    deadline = time.monotonic() + config.PLUGIN_BOOT_DB_WAIT_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            database.connect_raw().close()
+            if attempt > 1:
+                logger.info('Database is ready; loading plugins')
+            return
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise
+            if attempt == 1:
+                logger.warning(
+                    'Database not ready yet; waiting up to %ss before loading plugins',
+                    config.PLUGIN_BOOT_DB_WAIT_SECONDS,
+                )
+            time.sleep(config.PLUGIN_BOOT_DB_WAIT_INTERVAL)
+
+
 def boot(role, flask_app=None):
     """Run the full boot sequence for a process role ('web' or 'worker')."""
     if not plugin_manager.enabled():
         return
     try:
+        _wait_for_db()
         database.ensure_plugins_table()
         plugin_manager.setup_namespace()
         plugin_manager.sync()
