@@ -161,7 +161,13 @@
 
     async function doInstall(btn) {
         if (!window.confirm('Plugins run with full application and database permissions. Only install plugins you trust. Continue?')) { return; }
+        const label = btn.textContent;
         btn.disabled = true;
+        btn.textContent = 'Installing...';
+        message.style.display = 'block';
+        message.style.border = '1px solid #b58900';
+        message.style.background = 'rgba(181,137,0,.12)';
+        message.textContent = 'Installing ' + btn.dataset.id + '. If the plugin has dependencies this can take up to a minute while they are downloaded and installed; please wait and do not reload.';
         try {
             await api('/api/plugins/install', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -169,7 +175,7 @@
             });
             notify('Installed ' + btn.dataset.id + '. Restart to activate.', true);
             showRestart(); loadInstalled();
-        } catch (e) { notify(e.message, false); } finally { btn.disabled = false; }
+        } catch (e) { notify(e.message, false); } finally { btn.disabled = false; btn.textContent = label; }
     }
 
     async function doUninstall(id) {
