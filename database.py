@@ -1131,7 +1131,7 @@ def init_db():
                     name         TEXT,
                     version      TEXT,
                     manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    package      BYTEA,
+                    source_url   TEXT,
                     checksum     TEXT,
                     requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
                     enabled      BOOLEAN NOT NULL DEFAULT TRUE,
@@ -1142,7 +1142,8 @@ def init_db():
                     updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            cur.execute("ALTER TABLE plugins ALTER COLUMN package SET STORAGE EXTERNAL")
+            cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
+            cur.execute("ALTER TABLE plugins DROP COLUMN IF EXISTS package")
 
             db.commit()
         finally:
@@ -1166,7 +1167,7 @@ def connect_raw():
 
 
 _PLUGIN_META_COLUMNS = (
-    "id, name, version, manifest, checksum, requirements, enabled, settings, "
+    "id, name, version, manifest, source_url, checksum, requirements, enabled, settings, "
     "source_repo, load_status, installed_at, updated_at"
 )
 
@@ -1177,6 +1178,7 @@ def _row_to_plugin(row):
         'name': row['name'],
         'version': row['version'],
         'manifest': row['manifest'] or {},
+        'source_url': row['source_url'],
         'checksum': row['checksum'],
         'requirements': row['requirements'] or [],
         'enabled': bool(row['enabled']),
@@ -1211,44 +1213,32 @@ def get_plugin(plugin_id, conn=None):
         cur.close()
 
 
-def get_plugin_package(plugin_id, conn=None):
-    """Return (checksum, package_bytes) for a plugin, or (None, None)."""
-    db = conn or get_db()
-    cur = db.cursor()
-    try:
-        cur.execute("SELECT checksum, package FROM plugins WHERE id = %s", (plugin_id,))
-        row = cur.fetchone()
-        if not row:
-            return None, None
-        checksum, package = row
-        return checksum, (bytes(package) if package is not None else None)
-    finally:
-        cur.close()
-
-
-def upsert_plugin(plugin_id, name, version, manifest, package, checksum, requirements,
+def upsert_plugin(plugin_id, name, version, manifest, source_url, checksum, requirements,
                   source_repo=None, conn=None):
-    """Insert or replace a plugin row (package as BYTEA, manifest/requirements as JSONB)."""
+    """Insert or replace a plugin registry row.
+
+    Stores metadata plus the re-download URL and checksum. The plugin code itself
+    lives on the PLUGINS_DIR volume, not in this table.
+    """
     db = conn or get_db()
     cur = db.cursor()
     try:
         cur.execute(
             """
-            INSERT INTO plugins (id, name, version, manifest, package, checksum,
+            INSERT INTO plugins (id, name, version, manifest, source_url, checksum,
                                  requirements, source_repo, enabled, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 version = EXCLUDED.version,
                 manifest = EXCLUDED.manifest,
-                package = EXCLUDED.package,
+                source_url = EXCLUDED.source_url,
                 checksum = EXCLUDED.checksum,
                 requirements = EXCLUDED.requirements,
                 source_repo = EXCLUDED.source_repo,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (plugin_id, name, version, Json(manifest or {}),
-             psycopg2.Binary(package) if package is not None else None,
+            (plugin_id, name, version, Json(manifest or {}), source_url,
              checksum, Json(requirements or []), source_repo),
         )
         db.commit()

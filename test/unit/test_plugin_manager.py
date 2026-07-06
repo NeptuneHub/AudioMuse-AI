@@ -150,57 +150,94 @@ class TestZipSafety:
         assert (target / '__init__.py').read_text(encoding='utf-8') == 'X = 1\n'
 
 
+def _plugin_row(plugin_id, checksum, source_url='https://example.com/x.zip', enabled=True, requirements=None):
+    return {
+        'id': plugin_id, 'name': plugin_id, 'version': '1.0.0', 'manifest': {'id': plugin_id},
+        'source_url': source_url, 'checksum': checksum, 'requirements': requirements or [],
+        'enabled': enabled, 'settings': {}, 'source_repo': None, 'load_status': None,
+        'installed_at': None, 'updated_at': None,
+    }
+
+
 class TestSync:
-    def test_materializes_enabled_only(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
-        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
-        enabled_pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''})
-        enabled_sum = hashlib.md5(enabled_pkg).hexdigest()
-        rows = [
-            {'id': 'demo', 'name': 'Demo', 'version': '1.0.0', 'manifest': {'id': 'demo'},
-             'checksum': enabled_sum, 'requirements': [], 'enabled': True, 'settings': {},
-             'source_repo': None, 'load_status': None, 'installed_at': None, 'updated_at': None},
-            {'id': 'off', 'name': 'Off', 'version': '1.0.0', 'manifest': {'id': 'off'},
-             'checksum': 'y', 'requirements': [], 'enabled': False, 'settings': {},
-             'source_repo': None, 'load_status': None, 'installed_at': None, 'updated_at': None},
-        ]
-        packages = {'demo': (enabled_sum, enabled_pkg)}
-        monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
-        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: rows)
-        monkeypatch.setattr(database, 'get_plugin_package',
-                            lambda pid, conn=None: packages.get(pid, (None, None)))
-
-        mgr = manager.PluginManager()
-        mgr.sync()
-
-        assert (tmp_path / 'demo' / 'plugin.json').is_file()
-        assert (tmp_path / 'demo' / '.checksum').read_text(encoding='utf-8').strip() == enabled_sum
-        assert not (tmp_path / 'off').exists()
-        assert set(mgr.records) == {'demo', 'off'}
-
-    def test_sync_skips_reextract_when_checksum_matches(self, monkeypatch, tmp_path):
+    def test_downloads_missing_code_from_source_url_with_warning(self, monkeypatch, tmp_path, caplog):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
         pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''})
         checksum = hashlib.md5(pkg).hexdigest()
-        rows = [{'id': 'demo', 'name': 'Demo', 'version': '1.0.0', 'manifest': {'id': 'demo'},
-                 'checksum': checksum, 'requirements': [], 'enabled': True, 'settings': {},
-                 'source_repo': None, 'load_status': None, 'installed_at': None, 'updated_at': None}]
-        calls = {'n': 0}
+        rows = [
+            _plugin_row('demo', checksum, source_url='https://example.com/demo.zip'),
+            _plugin_row('off', 'y', source_url='https://example.com/off.zip', enabled=False),
+        ]
+        downloads = {'n': 0}
 
-        def _get_pkg(pid, conn=None):
-            calls['n'] += 1
-            return checksum, pkg
+        def _fake_download(url, max_bytes):
+            downloads['n'] += 1
+            return pkg
 
         monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
         monkeypatch.setattr(database, 'list_plugins', lambda conn=None: rows)
-        monkeypatch.setattr(database, 'get_plugin_package', _get_pkg)
+        monkeypatch.setattr(manager, '_download_url', _fake_download)
+
+        mgr = manager.PluginManager()
+        with caplog.at_level('WARNING'):
+            mgr.sync()
+
+        assert (tmp_path / 'demo' / 'plugin.json').is_file()
+        assert (tmp_path / 'demo' / '.checksum').read_text(encoding='utf-8').strip() == checksum
+        assert not (tmp_path / 'off').exists()
+        assert downloads['n'] == 1
+        assert any('was not found on disk' in r.message for r in caplog.records)
+
+    def test_does_not_download_when_code_present(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''})
+        checksum = hashlib.md5(pkg).hexdigest()
+        manager._safe_extract(pkg, str(tmp_path / 'demo'))
+        (tmp_path / 'demo' / '.checksum').write_text(checksum, encoding='utf-8')
+
+        def _boom(url, max_bytes):
+            raise AssertionError('should not re-download when code is present')
+
+        monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: [_plugin_row('demo', checksum)])
+        monkeypatch.setattr(manager, '_download_url', _boom)
 
         mgr = manager.PluginManager()
         mgr.sync()
+        assert mgr.records['demo']['load_status'] != 'error'
+
+    def test_missing_code_and_no_source_url_is_error(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
+        monkeypatch.setattr(database, 'list_plugins',
+                            lambda conn=None: [_plugin_row('demo', 'abc', source_url=None)])
+
+        mgr = manager.PluginManager()
         mgr.sync()
-        target = tmp_path / 'demo'
-        assert (target / '.checksum').read_text(encoding='utf-8').strip() == checksum
+        assert mgr.records['demo']['load_status'] == 'error'
+
+
+class TestRequirements:
+    def test_reinstall_warning_when_lib_missing(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        (tmp_path / '_lib').mkdir()
+        installed = {'specs': None}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: installed.__setitem__('specs', specs) or True)
+        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib'])}
+
+        with caplog.at_level('WARNING'):
+            mgr.ensure_requirements()
+
+        assert installed['specs'] == ['matplotlib']
+        assert any('were not found on disk' in r.message and 'withreq' in r.message
+                   for r in caplog.records)
 
 
 class TestLoadIsolation:

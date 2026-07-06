@@ -140,7 +140,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.5.0"
+APP_VERSION = "v2.6.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -674,9 +674,12 @@ ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 # --- Plugin System ---
 # Master switch for the plugin subsystem (discovery, loading, admin UI).
 PLUGINS_ENABLED = os.environ.get("PLUGINS_ENABLED", "true").lower() == "true"
-# Local materialization cache for installed plugin code. The DB `plugins` table is
-# canonical; every process rebuilds this dir from it at boot (no shared volume needed).
-# Native/standalone builds set APP_DATA_DIR; containers fall back to <repo>/plugin/installed.
+# Where installed plugin code and its pip dependencies live. The `plugins` DB table
+# keeps only metadata plus a re-download URL, not the zip, so mount this on a
+# persistent volume to keep plugins across restarts. If it is empty at boot the app
+# re-downloads each plugin from its source URL and reinstalls its deps (logged as a
+# warning). Native/standalone builds set APP_DATA_DIR; containers fall back to
+# <repo>/plugin/installed.
 if APP_DATA_DIR:
     _plugins_dir_default = os.path.join(APP_DATA_DIR, "plugins")
 else:

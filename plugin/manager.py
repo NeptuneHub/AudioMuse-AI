@@ -32,10 +32,12 @@ import subprocess
 import sys
 import tempfile
 import types
+import urllib.request
 import zipfile
 
 import config
 import database
+from ssrf_guard import validate_outbound_url
 from plugin.api import PluginContext, NAMESPACE, valid_plugin_id
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,20 @@ def _safe_extract(package_bytes, target):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _download_url(url, max_bytes):
+    ok, message = validate_outbound_url(url)
+    if not ok:
+        raise ValueError(f'URL rejected: {message}')
+    request = urllib.request.Request(
+        url, headers={'User-Agent': f'AudioMuse-AI/{config.APP_VERSION}'}
+    )
+    with urllib.request.urlopen(request, timeout=60) as resp:  # noqa: S310 - scheme+host validated by validate_outbound_url
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError('Download exceeds the configured size limit')
+    return data
+
+
 class PluginManager:
     def __init__(self):
         self.records = {}
@@ -146,7 +162,7 @@ class PluginManager:
             module.__path__.append(config.PLUGINS_DIR)
         lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
         if os.path.isdir(lib_dir) and lib_dir not in sys.path:
-            sys.path.insert(0, lib_dir)
+            sys.path.append(lib_dir)
 
     def _materialize_one(self, plugin_id, checksum, package_bytes):
         target = os.path.join(config.PLUGINS_DIR, plugin_id)
@@ -176,16 +192,38 @@ class PluginManager:
                 records[row['id']] = record
                 if row['enabled']:
                     try:
-                        checksum, package = database.get_plugin_package(row['id'], connection)
-                        if package is not None:
-                            self._materialize_one(row['id'], checksum, package)
-                    except Exception:
-                        logger.exception('Failed to materialize plugin %s', row['id'])
+                        self._ensure_code(row)
+                    except Exception as exc:
+                        logger.exception('Failed to provide code for plugin %s', row['id'])
                         record['load_status'] = 'error'
+                        record['error'] = str(exc)
             self.records = records
         finally:
             if own:
                 connection.close()
+
+    def _ensure_code(self, row):
+        plugin_id = row['id']
+        checksum = row.get('checksum')
+        target = os.path.join(config.PLUGINS_DIR, plugin_id)
+        marker = os.path.join(target, '.checksum')
+        if os.path.isdir(target) and (not checksum or _read_marker(marker) == checksum):
+            return
+        source_url = row.get('source_url')
+        if not source_url:
+            raise RuntimeError(
+                f'plugin code for "{plugin_id}" is missing and there is no source_url to re-download it'
+            )
+        logger.warning(
+            'Installed plugin "%s" was not found on disk; re-downloading it from %s',
+            plugin_id,
+            source_url,
+        )
+        package = _download_url(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
+        got = hashlib.md5(package).hexdigest()
+        if checksum and got.lower() != str(checksum).lower():
+            raise ValueError(f'plugin "{plugin_id}" re-download checksum mismatch')
+        self._materialize_one(plugin_id, checksum or got, package)
 
     def _pip_install(self, specs):
         if not specs:
@@ -205,14 +243,23 @@ class PluginManager:
             logger.exception('pip install failed for plugin requirements: %s', specs)
             return False
         if lib_dir not in sys.path:
-            sys.path.insert(0, lib_dir)
+            sys.path.append(lib_dir)
         return True
 
     def ensure_requirements(self):
+        """Install plugin pip requirements into PLUGINS_DIR/_lib.
+
+        _lib is appended to the END of sys.path so a plugin dependency can never
+        shadow a core AudioMuse-AI package: the container image's own libraries
+        always take precedence, and _lib only supplies packages the core does not
+        ship. A core upgrade that needs a newer library is therefore never
+        overridden by the persistent _lib on the volume.
+        """
         if not self.enabled():
             return
         frozen = getattr(sys, 'frozen', False)
         specs = []
+        plugins_with_reqs = []
         for plugin_id, record in self.records.items():
             if record['enabled'] and record['requirements']:
                 if frozen or not config.PLUGIN_ALLOW_PIP:
@@ -220,17 +267,22 @@ class PluginManager:
                     self._persist_status(plugin_id, 'incompatible')
                 else:
                     specs.extend(record['requirements'])
+                    plugins_with_reqs.append(plugin_id)
         lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
         if not specs:
             if os.path.isdir(lib_dir) and lib_dir not in sys.path:
-                sys.path.insert(0, lib_dir)
+                sys.path.append(lib_dir)
             return
         marker = os.path.join(lib_dir, '.specs')
         key = '\n'.join(sorted(set(specs)))
         if os.path.isdir(lib_dir) and _read_marker(marker) == key:
             if lib_dir not in sys.path:
-                sys.path.insert(0, lib_dir)
+                sys.path.append(lib_dir)
             return
+        logger.warning(
+            'Dependencies for installed plugin(s) %s were not found on disk; reinstalling them from PyPI',
+            ', '.join(sorted(plugins_with_reqs)),
+        )
         if self._pip_install(sorted(set(specs))):
             try:
                 _write_marker(marker, key)
@@ -311,7 +363,7 @@ class PluginManager:
             except Exception:
                 logger.exception('Plugin %s %s hook failed', plugin_id, label)
 
-    def install_package(self, package_bytes, source_repo=None, expected_checksum=None):
+    def install_package(self, package_bytes, source_url, source_repo=None, expected_checksum=None):
         max_bytes = config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024
         if len(package_bytes) > max_bytes:
             raise ValueError(f'Plugin package exceeds {config.PLUGIN_MAX_DOWNLOAD_MB} MB limit')
@@ -332,7 +384,7 @@ class PluginManager:
             manifest.get('name') or plugin_id,
             manifest.get('version'),
             manifest,
-            package_bytes,
+            source_url,
             checksum,
             requirements,
             source_repo,
