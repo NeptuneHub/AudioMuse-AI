@@ -98,26 +98,6 @@ spec:
       storage: 5Gi # Adjust storage size as needed
   # storageClassName: "your-storage-class" # Uncomment and specify if you have a specific storage class
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: audiomuse-ai-flask-plugins-pvc
-  namespace: playlist
-spec:
-  # Installed plugins (code + pip deps) for the FLASK pod, kept out of the database
-  # (the database only holds the plugin registry plus a re-download URL). Each
-  # component owns its own copy: flask installs into this volume, and every worker
-  # pod installs into its own volume (see the worker StatefulSet volumeClaimTemplates
-  # below). No ReadWriteMany needed. If a volume is fresh/empty the pod just
-  # re-downloads the plugins and reinstalls their pip deps (logged as a warning).
-  # ReadWriteOnce is enough because flask runs a single replica.
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
-  # storageClassName: "your-storage-class"
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -182,8 +162,28 @@ spec:
     targetPort: 5432
   type: ClusterIP # Internal service
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audiomuse-ai-flask-headless
+  namespace: playlist
+  labels:
+    app: audiomuse-ai
+    component: flask
+spec:
+  # Headless governing service required by the flask StatefulSet. External access
+  # still goes through the audiomuse-ai-flask-service LoadBalancer below.
+  clusterIP: None
+  selector:
+    app: audiomuse-ai
+    component: flask
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: audiomuse-ai-flask
   namespace: playlist
@@ -191,6 +191,7 @@ metadata:
     app: audiomuse-ai
     component: flask
 spec:
+  serviceName: audiomuse-ai-flask-headless
   replicas: 1
   selector:
     matchLabels:
@@ -264,9 +265,19 @@ spec:
       volumes:
       - name: app-temp-audio
         emptyDir: {}
-      - name: plugins-storage
-        persistentVolumeClaim:
-          claimName: audiomuse-ai-flask-plugins-pvc
+  volumeClaimTemplates:
+  - metadata:
+      name: plugins-storage
+    spec:
+      # This flask pod's own plugins volume (code + pip deps). The database holds
+      # only the plugin registry plus a re-download URL, so a fresh pod re-downloads
+      # and reinstalls (logged as a warning). ReadWriteOnce per pod, no RWX needed.
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 2Gi
+      # storageClassName: "your-storage-class"
 ---
 apiVersion: v1
 kind: Service

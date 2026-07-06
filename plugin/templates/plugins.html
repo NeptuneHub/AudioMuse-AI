@@ -133,7 +133,7 @@
                 else if (isInstalled) { label = 'Reinstall'; }
                 let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
                 html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
-                html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-url="' + esc(p.source_url) + '" data-checksum="' + esc(p.checksum) + '" data-repo="' + esc(p.source_repo) + '">' + esc(label) + '</button>';
+                html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">' + esc(label) + '</button>';
                 html += '</div>';
                 if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
                 if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
@@ -171,7 +171,7 @@
         try {
             await api('/api/plugins/install', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: btn.dataset.id, source_url: btn.dataset.url, checksum: btn.dataset.checksum, source_repo: btn.dataset.repo })
+                body: JSON.stringify({ id: btn.dataset.id })
             });
             notify('Installed ' + btn.dataset.id + '. Restart to activate.', true);
             showRestart(); loadInstalled();
@@ -250,8 +250,8 @@
             .then(function () { document.getElementById('plugins-repo-url').value = ''; loadRepos(); })
             .catch(function (e) { notify(e.message, false); });
     });
-    document.getElementById('plugins-apply-btn').addEventListener('click', function () {
-        const applyBtn = this;
+    document.getElementById('plugins-apply-btn').addEventListener('click', function (event) {
+        const applyBtn = event.currentTarget;
         const bannerText = banner.querySelector('span');
         applyBtn.disabled = true;
         api('/api/plugins/apply', { method: 'POST' }).then(function () {

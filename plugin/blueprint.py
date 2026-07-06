@@ -222,21 +222,17 @@ def api_catalog():
 @plugins_bp.route('/api/plugins/install', methods=['POST'])
 def api_install():
     data = request.get_json(silent=True) or {}
-    source_url = data.get('source_url')
-    checksum = data.get('checksum')
-    source_repo = data.get('source_repo')
     plugin_id = data.get('id')
-    version = data.get('version')
+    if not plugin_id:
+        return jsonify({'error': 'Missing required field: id'}), 400
     try:
-        if not source_url:
-            catalog, _ = _fetch_catalog()
-            match = next((p for p in catalog if p['id'] == plugin_id), None)
-            if not match:
-                return jsonify({'error': 'Plugin not found in any configured repository'}), 404
-            source_url = match['source_url']
-            checksum = checksum or match['checksum']
-            source_repo = source_repo or match['source_repo']
-            version = version or match['latest_version']
+        catalog, _ = _fetch_catalog()
+        match = next((p for p in catalog if p['id'] == plugin_id), None)
+        if not match:
+            return jsonify({'error': 'Plugin not found in any configured repository'}), 404
+        source_url = match['source_url']
+        checksum = match['checksum']
+        source_repo = match['source_repo']
         package = _download(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
         manifest = plugin_manager.install_package(
             package, source_url=source_url, source_repo=source_repo, expected_checksum=checksum
