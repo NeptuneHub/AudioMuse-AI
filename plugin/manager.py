@@ -637,5 +637,13 @@ def worker_presync():
             plugin_manager.setup_namespace()
             plugin_manager.sync(role='worker')
             plugin_manager.ensure_requirements(role='worker')
+            worker_plugins = sorted(
+                pid for pid, record in plugin_manager.records.items()
+                if record['enabled'] and plugin_manager._runs_here(record, 'worker')
+            )
+            if worker_plugins:
+                logger.info('Worker plugins ready (code + dependencies): %s', ', '.join(worker_plugins))
+            else:
+                logger.info('No installed plugin targets this worker; nothing to install here')
         except Exception:
             logger.exception('Plugin pre-sync on worker failed; continuing')

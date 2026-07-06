@@ -52,11 +52,9 @@ def _dispatch_plugin_sync():
 
     def _run():
         try:
-            logger.info('Pre-installing plugin code and dependencies on this worker...')
             worker_presync()
-            logger.info('Plugin pre-install on this worker completed')
         except Exception:
-            logger.exception('Plugin pre-install on this worker failed')
+            logger.exception('Plugin-sync handling on this worker failed')
 
     threading.Thread(target=_run, name='plugin-sync', daemon=True).start()
 
@@ -112,7 +110,7 @@ def main():
                     else:
                         logger.warning('Worker start failed; will continue listening')
                 elif payload == 'plugin-sync':
-                    logger.info('Plugin sync signal received, pre-installing plugins on this worker...')
+                    logger.info('Plugin sync signal received; syncing plugins for this worker...')
                     _dispatch_plugin_sync()
         except Exception:
             logger.exception('Restart listener connection error, retrying in 5 seconds')
