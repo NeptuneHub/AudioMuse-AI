@@ -202,15 +202,34 @@ def save_cron_entry():
             ),
         )
     else:
+        # No id supplied: update the existing row for this task_type if one exists,
+        # otherwise insert. Prevents duplicate rows when the client cache is stale.
         cur.execute(
-            "INSERT INTO cron (name, task_type, cron_expr, enabled) VALUES (%s,%s,%s,%s)",
-            (
-                data.get('name'),
-                data.get('task_type'),
-                data.get('cron_expr'),
-                bool(data.get('enabled')),
-            ),
+            "SELECT id FROM cron WHERE task_type=%s ORDER BY id LIMIT 1",
+            (data.get('task_type'),),
         )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s WHERE id=%s",
+                (
+                    data.get('name'),
+                    data.get('task_type'),
+                    data.get('cron_expr'),
+                    bool(data.get('enabled')),
+                    existing[0],
+                ),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO cron (name, task_type, cron_expr, enabled) VALUES (%s,%s,%s,%s)",
+                (
+                    data.get('name'),
+                    data.get('task_type'),
+                    data.get('cron_expr'),
+                    bool(data.get('enabled')),
+                ),
+            )
     db.commit()
     cur.close()
     return jsonify({'message': 'saved'}), 200

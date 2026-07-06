@@ -968,6 +968,12 @@ def init_db():
                 "CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
             cur.execute(
+                "DELETE FROM cron a USING cron b WHERE a.task_type = b.task_type AND a.id > b.id"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_task_type ON cron (task_type)"
+            )
+            cur.execute(
                 "CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
             cur.execute(
