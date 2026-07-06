@@ -23,6 +23,7 @@ Main Features:
 
 import hashlib
 import importlib
+import importlib.metadata
 import io
 import logging
 import os
@@ -31,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import urllib.request
 import zipfile
@@ -128,6 +130,15 @@ def _safe_extract(package_bytes, target):
 
 def _valid_requirement(spec):
     return isinstance(spec, str) and bool(spec.strip()) and not spec.strip().startswith('-')
+
+
+def _normalize_dist_name(name):
+    return re.sub(r'[-_.]+', '-', str(name)).strip('-').lower()
+
+
+def _req_dist_name(spec):
+    match = re.match(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)', str(spec))
+    return _normalize_dist_name(match.group(1)) if match else None
 
 
 def _download_url(url, max_bytes):
@@ -253,15 +264,53 @@ class PluginManager:
             sys.path.append(lib_dir)
         return True
 
-    def ensure_requirements(self):
-        """Install plugin pip requirements into PLUGINS_DIR/_lib.
+    def _ensure_lib_on_path(self):
+        lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
+        if os.path.isdir(lib_dir) and lib_dir not in sys.path:
+            sys.path.append(lib_dir)
 
-        _lib is appended to the END of sys.path so a plugin dependency can never
-        shadow a core AudioMuse-AI package: the container image's own libraries
-        always take precedence, and _lib only supplies packages the core does not
-        ship. A core upgrade that needs a newer library is therefore never
-        overridden by the persistent _lib on the volume.
+    def _installed_dep_names(self):
+        lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
+        if not os.path.isdir(lib_dir):
+            return set()
+        names = set()
+        try:
+            for dist in importlib.metadata.distributions(path=[lib_dir]):
+                name = dist.metadata['Name'] if dist.metadata else None
+                if name:
+                    names.add(_normalize_dist_name(name))
+        except Exception:
+            logger.exception('Could not read installed plugin dependencies from _lib')
+        return names
+
+    def _install_specs(self, requirements, plugin_ids=None):
+        """Install the pip specs whose package is not actually present in _lib.
+
+        Presence is checked against the distributions really installed in _lib
+        (not a bookkeeping file), so a dependency is installed when the plugin is
+        installed and reinstalled on a later restart only if it is genuinely
+        missing for any reason. _lib is appended to the END of sys.path so a
+        plugin dependency can never shadow a core AudioMuse-AI package.
         """
+        specs = sorted({str(s) for s in (requirements or []) if _valid_requirement(s)})
+        self._ensure_lib_on_path()
+        if not specs:
+            return True
+        if getattr(sys, 'frozen', False) or not config.PLUGIN_ALLOW_PIP:
+            return False
+        have = self._installed_dep_names()
+        missing = [s for s in specs if _req_dist_name(s) not in have]
+        if not missing:
+            return True
+        logger.warning(
+            'Dependencies for plugin(s) %s were not found on disk; installing them from PyPI: %s',
+            ', '.join(sorted(plugin_ids)) if plugin_ids else '?',
+            missing,
+        )
+        return self._pip_install(missing)
+
+    def ensure_requirements(self):
+        """Install every enabled plugin's pip requirements (only the missing ones)."""
         if not self.enabled():
             return
         frozen = getattr(sys, 'frozen', False)
@@ -275,26 +324,7 @@ class PluginManager:
                 else:
                     specs.extend(record['requirements'])
                     plugins_with_reqs.append(plugin_id)
-        lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
-        if not specs:
-            if os.path.isdir(lib_dir) and lib_dir not in sys.path:
-                sys.path.append(lib_dir)
-            return
-        marker = os.path.join(lib_dir, '.specs')
-        key = '\n'.join(sorted(set(specs)))
-        if os.path.isdir(lib_dir) and _read_marker(marker) == key:
-            if lib_dir not in sys.path:
-                sys.path.append(lib_dir)
-            return
-        logger.warning(
-            'Dependencies for installed plugin(s) %s were not found on disk; reinstalling them from PyPI',
-            ', '.join(sorted(plugins_with_reqs)),
-        )
-        if self._pip_install(sorted(set(specs))):
-            try:
-                _write_marker(marker, key)
-            except OSError:
-                logger.exception('Could not write plugin _lib specs marker')
+        self._install_specs(specs, plugins_with_reqs)
 
     def _persist_status(self, plugin_id, status):
         try:
@@ -402,7 +432,7 @@ class PluginManager:
         self.setup_namespace()
         self._purge_modules(plugin_id)
         self._materialize_one(plugin_id, checksum, package_bytes)
-        self._pip_install(requirements)
+        self._install_specs(requirements, [plugin_id])
         self.run_install_hooks(plugin_id)
         return manifest
 
@@ -508,14 +538,40 @@ def run_plugin_task(dotted, *args, **kwargs):
         return func(*args, **kwargs)
 
 
+_presync_lock = threading.Lock()
+
+
 def boot(role, flask_app=None):
     """Run the full boot sequence for a process role ('web' or 'worker')."""
     if not plugin_manager.enabled():
         return
     try:
+        database.ensure_plugins_table()
         plugin_manager.setup_namespace()
         plugin_manager.sync()
         plugin_manager.ensure_requirements()
         plugin_manager.load(role, flask_app=flask_app)
     except Exception:
         logger.exception('Plugin subsystem boot failed; continuing without plugins')
+
+
+def worker_presync():
+    """Download plugin code and pip-install deps into this worker's own volume.
+
+    Triggered by the Redis 'plugin-sync' broadcast at plugin install time so every
+    worker container populates its PLUGINS_DIR (code) and _lib (dependencies)
+    immediately, in parallel with the web process, instead of only at the next
+    restart. The apply restart then reloads fast because ensure_requirements finds
+    the dependencies already present. Serialized so overlapping broadcasts cannot
+    run two pip installs into _lib at once.
+    """
+    if not plugin_manager.enabled():
+        return
+    with _presync_lock:
+        try:
+            database.ensure_plugins_table()
+            plugin_manager.setup_namespace()
+            plugin_manager.sync()
+            plugin_manager.ensure_requirements()
+        except Exception:
+            logger.exception('Plugin pre-sync on worker failed; continuing')

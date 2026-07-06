@@ -13,7 +13,7 @@ Publishes control requests onto the Redis restart channel that
 that actually stop, start, and restart the managed services.
 
 Main Features:
-* ``publish_*`` helpers broadcast restart/stop/start requests to workers.
+* ``publish_*`` helpers broadcast restart/stop/start and plugin-sync requests to workers.
 * supervisorctl-driven actions over the known Flask and worker service names.
 * On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
 """
@@ -57,6 +57,10 @@ def publish_control_request(action):
 
 def publish_restart_request():
     return publish_control_request('restart')
+
+
+def publish_plugin_sync_request():
+    return publish_control_request('plugin-sync')
 
 
 def publish_stop_request():

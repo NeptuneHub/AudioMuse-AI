@@ -10,15 +10,19 @@
 
 Subscribes to the Redis restart channel and, on worker containers only, drives
 the supervisor actions defined in ``restart_manager`` in response to published
-``restart``/``stop``/``start`` messages, reconnecting on failure.
+``restart``/``stop``/``start`` messages, reconnecting on failure. Also handles a
+``plugin-sync`` signal, pre-installing plugin code and pip dependencies into this
+worker's own volume so the apply restart reloads fast.
 
 Main Features:
 * Redis pub/sub loop with automatic reconnect and health checks.
 * Acts only when ``SERVICE_TYPE`` is ``worker``, ignoring other roles.
+* Pre-installs plugin dependencies on ``plugin-sync`` in a background thread.
 """
 
 import logging
 import os
+import threading
 import time
 
 from redis import Redis
@@ -33,6 +37,28 @@ from restart_manager import (
 
 logger = logging.getLogger(__name__)
 configure_logging()
+
+try:
+    from plugin.manager import worker_presync
+except Exception:
+    worker_presync = None
+    logger.exception('plugin.manager import failed; plugin-sync signals will be ignored')
+
+
+def _dispatch_plugin_sync():
+    if worker_presync is None:
+        logger.warning('plugin-sync received but the plugin subsystem is unavailable; ignoring')
+        return
+
+    def _run():
+        try:
+            logger.info('Pre-installing plugin code and dependencies on this worker...')
+            worker_presync()
+            logger.info('Plugin pre-install on this worker completed')
+        except Exception:
+            logger.exception('Plugin pre-install on this worker failed')
+
+    threading.Thread(target=_run, name='plugin-sync', daemon=True).start()
 
 
 def main():
@@ -85,6 +111,9 @@ def main():
                         logger.info('Worker start completed successfully')
                     else:
                         logger.warning('Worker start failed; will continue listening')
+                elif payload == 'plugin-sync':
+                    logger.info('Plugin sync signal received, pre-installing plugins on this worker...')
+                    _dispatch_plugin_sync()
         except Exception:
             logger.exception('Restart listener connection error, retrying in 5 seconds')
             time.sleep(5)

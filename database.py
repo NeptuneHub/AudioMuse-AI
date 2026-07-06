@@ -736,11 +736,13 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
 
 ARTIST_PROJECTION_CACHE = None
 
+_SCHEMA_ADVISORY_LOCK = 726354821
+
 
 def init_db():
     db = get_db()
     with db.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(726354821)")
+        cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
         try:
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
@@ -1126,29 +1128,11 @@ def init_db():
 
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS plugins (
-                    id           TEXT PRIMARY KEY,
-                    name         TEXT,
-                    version      TEXT,
-                    manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    source_url   TEXT,
-                    checksum     TEXT,
-                    requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
-                    enabled      BOOLEAN NOT NULL DEFAULT TRUE,
-                    settings     JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    source_repo  TEXT,
-                    load_status  TEXT,
-                    installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
-            cur.execute("ALTER TABLE plugins DROP COLUMN IF EXISTS package")
+            _create_plugins_table(cur)
 
             db.commit()
         finally:
-            cur.execute("SELECT pg_advisory_unlock(726354821)")
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
 
 
 def connect_raw():
@@ -1165,6 +1149,57 @@ def connect_raw():
         keepalives_count=3,
         options='-c statement_timeout=600000',
     )
+
+
+def _create_plugins_table(cur):
+    """Run the idempotent DDL that creates/migrates the plugins registry table.
+
+    Kept as one canonical block so ``init_db`` and the boot-time
+    ``ensure_plugins_table`` never drift. The caller owns the transaction.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS plugins (
+            id           TEXT PRIMARY KEY,
+            name         TEXT,
+            version      TEXT,
+            manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_url   TEXT,
+            checksum     TEXT,
+            requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+            enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+            settings     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_repo  TEXT,
+            load_status  TEXT,
+            installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
+    cur.execute("ALTER TABLE plugins DROP COLUMN IF EXISTS package")
+
+
+def ensure_plugins_table(conn=None):
+    """Create the plugins registry table if it does not exist yet.
+
+    The RQ worker entrypoints never run ``init_db``; they rely on the web process
+    for the schema. When a worker boots before that has happened, reading the
+    registry raises ``UndefinedTable``. The plugin subsystem calls this first so
+    it can self-heal its own table. Shares ``init_db``'s advisory lock so a
+    concurrent web-side ``init_db`` can never race the CREATE.
+    """
+    own = conn is None
+    db = conn or connect_raw()
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                _create_plugins_table(cur)
+                db.commit()
+            finally:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+    finally:
+        if own:
+            db.close()
 
 
 _PLUGIN_META_COLUMNS = (

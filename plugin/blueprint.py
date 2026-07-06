@@ -237,6 +237,7 @@ def api_install():
         manifest = plugin_manager.install_package(
             package, source_url=source_url, source_repo=source_repo, expected_checksum=checksum
         )
+        restart_manager.publish_plugin_sync_request()
         return jsonify({'status': 'ok', 'manifest': manifest, 'restart_required': True})
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400

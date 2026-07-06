@@ -240,6 +240,23 @@ class TestRequirements:
         assert any('were not found on disk' in r.message and 'withreq' in r.message
                    for r in caplog.records)
 
+    def test_pip_skipped_when_dep_already_present(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        dist = tmp_path / '_lib' / 'matplotlib-3.8.0.dist-info'
+        dist.mkdir(parents=True)
+        (dist / 'METADATA').write_text('Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.8.0\n', encoding='utf-8')
+        calls = {'n': 0}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: calls.__setitem__('n', calls['n'] + 1) or True)
+        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib'])}
+
+        mgr.ensure_requirements()
+
+        assert calls['n'] == 0
+
 
 class TestLoadIsolation:
     def test_failure_isolated(self, monkeypatch, tmp_path):
