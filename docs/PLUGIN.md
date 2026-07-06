@@ -147,3 +147,24 @@ def register(ctx):
 
 Then open Administration > Scheduled Tasks and add a schedule with the task type
 `plugin.my_plugin.daily` (that is `plugin.<your id>.<task name>`).
+
+### Use an extra pip package
+
+If you need a library that is not built in, list it in `plugin.json`. AudioMuse-AI
+installs it for you at startup, then you import it like normal. The SongCounter
+example uses `matplotlib` to draw a bar chart of the counts.
+
+```json
+{ "id": "my_plugin", "name": "My Plugin", "version": "1.0.0", "min_core_version": "2.5.0", "requirements": ["matplotlib"] }
+```
+
+```python
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+```
+
+This works on Docker and Kubernetes. The Windows and macOS standalone builds
+cannot install extra packages, so a plugin that lists `requirements` there is
+marked as not compatible. Plugins that only use built-in libraries (Flask, numpy,
+psycopg2, onnxruntime, redis, rq, and the standard library) work everywhere.
