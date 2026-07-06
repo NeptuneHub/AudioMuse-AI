@@ -91,6 +91,8 @@ def valid_plugin_id(plugin_id):
 
 def dotted_path(func):
     if isinstance(func, str):
+        if '.' not in func:
+            raise ValueError(f'Invalid dotted path: {func}')
         return func
     return f"{func.__module__}.{func.__name__}"
 

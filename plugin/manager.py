@@ -126,6 +126,10 @@ def _safe_extract(package_bytes, target):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _valid_requirement(spec):
+    return isinstance(spec, str) and bool(spec.strip()) and not spec.strip().startswith('-')
+
+
 def _download_url(url, max_bytes):
     ok, message = validate_outbound_url(url)
     if not ok:
@@ -220,7 +224,7 @@ class PluginManager:
             source_url,
         )
         package = _download_url(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
-        got = hashlib.md5(package).hexdigest()
+        got = hashlib.md5(package, usedforsecurity=False).hexdigest()
         if checksum and got.lower() != str(checksum).lower():
             raise ValueError(f'plugin "{plugin_id}" re-download checksum mismatch')
         self._materialize_one(plugin_id, checksum or got, package)
@@ -229,6 +233,9 @@ class PluginManager:
         if not specs:
             return True
         if not config.PLUGIN_ALLOW_PIP or getattr(sys, 'frozen', False):
+            return False
+        if not all(_valid_requirement(s) for s in specs):
+            logger.error('Refusing pip install: plugin requirements contain unsafe specifiers: %s', specs)
             return False
         lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
         os.makedirs(lib_dir, exist_ok=True)
@@ -367,7 +374,7 @@ class PluginManager:
         max_bytes = config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024
         if len(package_bytes) > max_bytes:
             raise ValueError(f'Plugin package exceeds {config.PLUGIN_MAX_DOWNLOAD_MB} MB limit')
-        checksum = hashlib.md5(package_bytes).hexdigest()
+        checksum = hashlib.md5(package_bytes, usedforsecurity=False).hexdigest()
         if expected_checksum and checksum.lower() != str(expected_checksum).lower():
             raise ValueError('Plugin package checksum mismatch')
         manifest = read_manifest_from_bytes(package_bytes)
@@ -379,6 +386,9 @@ class PluginManager:
                 f"Plugin requires core >= {manifest.get('min_core_version')} (current {config.APP_VERSION})"
             )
         requirements = manifest.get('requirements') or []
+        for spec in requirements:
+            if not _valid_requirement(spec):
+                raise ValueError(f'Invalid or unsafe plugin requirement: {spec!r}')
         database.upsert_plugin(
             plugin_id,
             manifest.get('name') or plugin_id,
@@ -417,12 +427,16 @@ class PluginManager:
                     logger.exception('Plugin %s install hook failed', plugin_id)
 
     def uninstall(self, plugin_id, purge_data=False):
+        if not valid_plugin_id(plugin_id):
+            raise ValueError('Invalid plugin id')
         database.delete_cron_rows_for_plugin(plugin_id)
         if purge_data:
             database.drop_plugin_data_tables(plugin_id)
         database.delete_plugin(plugin_id)
-        target = os.path.join(config.PLUGINS_DIR, plugin_id)
-        shutil.rmtree(target, ignore_errors=True)
+        plugins_root = os.path.realpath(config.PLUGINS_DIR)
+        target = os.path.realpath(os.path.join(plugins_root, plugin_id))
+        if target != plugins_root and os.path.commonpath([plugins_root, target]) == plugins_root:
+            shutil.rmtree(target, ignore_errors=True)
         self._purge_modules(plugin_id)
         self.records.pop(plugin_id, None)
 

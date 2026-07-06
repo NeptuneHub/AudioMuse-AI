@@ -26,6 +26,7 @@ import time
 import numpy as np
 import psycopg2
 from flask import g
+from psycopg2 import sql
 from psycopg2.extras import DictCursor, Json
 
 import config
@@ -1360,7 +1361,7 @@ def drop_plugin_data_tables(plugin_id, conn=None):
         names = [r[0] for r in cur.fetchall()]
         for tn in names:
             if tn.startswith(prefix):
-                cur.execute(f'DROP TABLE IF EXISTS "{tn}" CASCADE')
+                cur.execute(sql.SQL('DROP TABLE IF EXISTS {} CASCADE').format(sql.Identifier(tn)))
                 dropped.append(tn)
         db.commit()
         return dropped

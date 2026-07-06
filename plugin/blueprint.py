@@ -109,6 +109,8 @@ def _resolve_versions(entry, errors):
     try:
         raw = _download(manifest_url, _CATALOG_MAX_BYTES)
         doc = json.loads(raw)
+        if not isinstance(doc, dict):
+            raise TypeError('Manifest is not a JSON object')
     except Exception as exc:
         logger.warning('Failed to fetch plugin manifest %s: %s', manifest_url, exc)
         errors.append({'repo': manifest_url, 'error': str(exc)})
@@ -124,6 +126,8 @@ def _fetch_catalog():
         try:
             raw = _download(repo_url, _CATALOG_MAX_BYTES)
             doc = json.loads(raw)
+            if not isinstance(doc, dict):
+                raise TypeError('Repository catalog is not a JSON object')
         except Exception as exc:
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': str(exc)})
@@ -154,12 +158,12 @@ def _fetch_catalog():
     return list(merged.values()), errors
 
 
-@plugins_bp.route('/plugins')
+@plugins_bp.route('/plugins', methods=['GET'])
 def plugins_page():
     return render_template('plugins.html', title='AudioMuse-AI - Plugins', active='plugins')
 
 
-@plugins_bp.route('/api/plugins/installed')
+@plugins_bp.route('/api/plugins/installed', methods=['GET'])
 def api_installed():
     plugins = database.list_plugins()
     registry = {r['id']: r for r in plugin_manager.registry()}
@@ -178,7 +182,7 @@ def api_installed():
     return jsonify({'plugins': plugins, 'pip_supported': _pip_supported()})
 
 
-@plugins_bp.route('/api/plugins/catalog')
+@plugins_bp.route('/api/plugins/catalog', methods=['GET'])
 def api_catalog():
     try:
         plugins, errors = _fetch_catalog()

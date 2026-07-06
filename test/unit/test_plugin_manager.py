@@ -164,7 +164,7 @@ class TestSync:
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
         pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''})
-        checksum = hashlib.md5(pkg).hexdigest()
+        checksum = hashlib.md5(pkg, usedforsecurity=False).hexdigest()
         rows = [
             _plugin_row('demo', checksum, source_url='https://example.com/demo.zip'),
             _plugin_row('off', 'y', source_url='https://example.com/off.zip', enabled=False),
@@ -193,7 +193,7 @@ class TestSync:
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
         pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''})
-        checksum = hashlib.md5(pkg).hexdigest()
+        checksum = hashlib.md5(pkg, usedforsecurity=False).hexdigest()
         manager._safe_extract(pkg, str(tmp_path / 'demo'))
         (tmp_path / 'demo' / '.checksum').write_text(checksum, encoding='utf-8')
 
