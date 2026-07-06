@@ -671,6 +671,28 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
 ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 
+# --- Plugin System ---
+# Master switch for the plugin subsystem (discovery, loading, admin UI).
+PLUGINS_ENABLED = os.environ.get("PLUGINS_ENABLED", "true").lower() == "true"
+# Local materialization cache for installed plugin code. The DB `plugins` table is
+# canonical; every process rebuilds this dir from it at boot (no shared volume needed).
+# Native/standalone builds set APP_DATA_DIR; containers fall back to <repo>/plugin/installed.
+if APP_DATA_DIR:
+    _plugins_dir_default = os.path.join(APP_DATA_DIR, "plugins")
+else:
+    _plugins_dir_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin", "installed")
+PLUGINS_DIR = os.environ.get("PLUGINS_DIR", "") or _plugins_dir_default
+# Default community catalog (a static Jellyfin-style manifest.json hosted on GitHub raw).
+PLUGIN_DEFAULT_REPO_URL = os.environ.get(
+    "PLUGIN_DEFAULT_REPO_URL",
+    "https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI-plugins/main/manifest.json",
+)
+# Hard cap on a downloaded plugin package (MB) to bound the DB blob and extraction.
+PLUGIN_MAX_DOWNLOAD_MB = int(os.environ.get("PLUGIN_MAX_DOWNLOAD_MB", "50"))
+# Allow pip-installing plugin requirements into PLUGINS_DIR/_lib (Docker/k8s only;
+# auto-disabled on frozen PyInstaller builds which cannot pip into the bundle).
+PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
+
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))

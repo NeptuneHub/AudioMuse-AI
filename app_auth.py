@@ -577,6 +577,14 @@ _ADMIN_PATH_PREFIXES = (
     '/api/clap/cache/refresh',
     '/api/lyrics/cache/refresh',
     '/api/sem_grove/cache/refresh',
+    '/api/plugins',
+)
+
+# Exact paths that are admin-only but must NOT gate their subtree. The plugin
+# manager page lives at /plugins, while installed plugin pages live under
+# /plugins/<id>/ and stay reachable by any authenticated user.
+_ADMIN_EXACT_PATHS = (
+    '/plugins',
 )
 
 
@@ -584,6 +592,8 @@ def is_admin_path(path):
     """Return True if ``path`` should only be accessible to admin users."""
     if not path:
         return False
+    if path in _ADMIN_EXACT_PATHS:
+        return True
     for prefix in _ADMIN_PATH_PREFIXES:
         if path == prefix or path.startswith(prefix + '/'):
             return True

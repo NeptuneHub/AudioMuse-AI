@@ -151,6 +151,11 @@ def inject_globals():
     # pages), is_admin will be True and the full UI is shown.
     auth_role = getattr(g, 'auth_role', 'admin')
     current_user = getattr(g, 'auth_user', None)
+    try:
+        from plugin.manager import plugin_manager
+        plugin_menu_items = plugin_manager.menu_items()
+    except Exception:
+        plugin_menu_items = []
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -159,6 +164,7 @@ def inject_globals():
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
         current_user=current_user,
+        plugin_menu_items=plugin_menu_items,
     )
 
 
@@ -933,8 +939,25 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(users_bp)
     flask_app.register_blueprint(sync_bp)
 
+    try:
+        from plugin.blueprint import plugins_bp
+        flask_app.register_blueprint(plugins_bp)
+    except Exception:
+        logger.exception('Failed to register plugin blueprint')
+
 
 _register_blueprints(app)
+
+# --- Plugin subsystem boot (web) ---
+# Materialize enabled plugins from the DB and register their blueprints/menu on
+# the Flask app. Guarded so a broken plugin can never prevent the app from booting.
+if not _is_worker:
+    try:
+        from plugin.manager import boot as _plugin_boot
+
+        _plugin_boot('web', flask_app=app)
+    except Exception:
+        logger.exception('Plugin subsystem web boot failed; continuing without plugins')
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.

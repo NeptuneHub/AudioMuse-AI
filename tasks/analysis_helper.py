@@ -120,9 +120,22 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
             )
         )
 
+    for provider in _plugin_onnx_providers():
+        name = provider.get('name')
+        if name and name in available and name not in [p[0] for p in chain]:
+            chain.append((name, provider.get('options') or {}))
+
     chain.append(('CPUExecutionProvider', {}))
     logger.info("ONNX provider chain: %s", [p[0] for p in chain])
     return chain
+
+
+def _plugin_onnx_providers():
+    try:
+        from plugin.manager import plugin_manager
+        return plugin_manager.get_onnx_providers()
+    except Exception:
+        return []
 
 
 def get_provider_options(allow_coreml=False, role=None):

@@ -23,7 +23,7 @@ Main Features:
 from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 from database import get_db, save_task_status
-from taskqueue import rq_queue_high
+from taskqueue import rq_queue_high, rq_queue_default
 from config import TASK_STATUS_PENDING
 import uuid
 import time
@@ -466,6 +466,30 @@ def run_due_cron_jobs():
                         )
                     except Exception:
                         logger.exception("Cron: error running radio playlists")
+                elif task_type.startswith('plugin.'):
+                    from plugin.manager import plugin_manager
+
+                    cron_task = plugin_manager.get_cron_task(task_type)
+                    if not cron_task:
+                        logger.warning(
+                            f"Cron: no registered plugin task for {task_type}; skipping"
+                        )
+                    else:
+                        save_task_status(
+                            job_id,
+                            task_type,
+                            TASK_STATUS_PENDING,
+                            details={"message": "Enqueued by cron."},
+                        )
+                        queue = rq_queue_high if cron_task.get('queue') == 'high' else rq_queue_default
+                        queue.enqueue(
+                            'plugin.manager.run_plugin_task',
+                            args=(cron_task['dotted'],),
+                            job_id=job_id,
+                            description=f'Cron {task_type}',
+                            job_timeout=-1,
+                        )
+                        logger.info(f"Cron: enqueued plugin task {task_type} job {job_id}")
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))
