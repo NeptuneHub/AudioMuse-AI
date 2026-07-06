@@ -60,8 +60,7 @@
 
     async function api(url, opts) {
         const res = await fetch(url, opts);
-        let data = {};
-        try { data = await res.json(); } catch (e) { data = {}; }
+        const data = await res.json().catch(function () { return {}; });
         if (!res.ok) { throw new Error(data.error || ('Request failed (' + res.status + ')')); }
         return data;
     }
@@ -73,7 +72,9 @@
     }
 
     function statusBadge(status) {
-        const color = status === 'ok' ? '#2e7d32' : (status === 'incompatible' ? '#b58900' : '#c62828');
+        let color = '#c62828';
+        if (status === 'ok') { color = '#2e7d32'; }
+        else if (status === 'incompatible') { color = '#b58900'; }
         const label = status || 'pending';
         return '<span style="padding:.1rem .5rem;border-radius:10px;color:#fff;background:' + color + ';font-size:.8rem;">' + esc(label) + '</span>';
     }
@@ -127,7 +128,9 @@
                 div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
                 const isInstalled = !!p.installed_version;
                 const isUpdate = isInstalled && String(p.installed_version) !== String(p.latest_version);
-                let label = isUpdate ? ('Update to v' + p.latest_version) : (isInstalled ? 'Reinstall' : 'Install v' + p.latest_version);
+                let label = 'Install v' + p.latest_version;
+                if (isUpdate) { label = 'Update to v' + p.latest_version; }
+                else if (isInstalled) { label = 'Reinstall'; }
                 let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
                 html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
                 html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-url="' + esc(p.source_url) + '" data-checksum="' + esc(p.checksum) + '" data-repo="' + esc(p.source_repo) + '">' + esc(label) + '</button>';
@@ -242,7 +245,26 @@
             .catch(function (e) { notify(e.message, false); });
     });
     document.getElementById('plugins-apply-btn').addEventListener('click', function () {
-        api('/api/plugins/apply', { method: 'POST' }).then(function () { notify('Restart requested. The page will be unavailable briefly.', true); }).catch(function (e) { notify(e.message, false); });
+        const applyBtn = this;
+        const bannerText = banner.querySelector('span');
+        applyBtn.disabled = true;
+        api('/api/plugins/apply', { method: 'POST' }).then(function () {
+            applyBtn.style.display = 'none';
+            let countdown = 20;
+            bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
+            const interval = setInterval(function () {
+                countdown -= 1;
+                if (countdown > 0) {
+                    bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
+                } else {
+                    clearInterval(interval);
+                    window.location.reload();
+                }
+            }, 1000);
+        }).catch(function (e) {
+            applyBtn.disabled = false;
+            notify(e.message, false);
+        });
     });
 
     setActiveTab('installed');

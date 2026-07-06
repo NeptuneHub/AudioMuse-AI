@@ -75,13 +75,13 @@ def _record(plugin_id, enabled=True, requirements=None, manifest=None):
 
 class _DummyConn:
     def close(self):
-        pass
+        """No-op close; the fake connection holds no resources."""
 
 
 @pytest.fixture(autouse=True)
 def _reset_namespace():
     def _clear():
-        for name in [n for n in list(sys.modules)
+        for name in [n for n in sys.modules
                      if n == manager.NAMESPACE or n.startswith(manager.NAMESPACE + '.')]:
             sys.modules.pop(name, None)
     _clear()
@@ -139,8 +139,9 @@ class TestZipSafety:
 
     def test_safe_extract_rejects_zip_slip(self, tmp_path):
         pkg = _make_unsafe_zip('../evil.py')
+        target = str(tmp_path / 'demo')
         with pytest.raises(ValueError):
-            manager._safe_extract(pkg, str(tmp_path / 'demo'))
+            manager._safe_extract(pkg, target)
 
     def test_safe_extract_writes_files(self, tmp_path):
         pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': 'X = 1\n'})
@@ -361,7 +362,7 @@ class TestApiSurface:
 
     def test_dotted_path(self):
         def f():
-            pass
+            """Stub; the test only inspects its __module__ and __name__."""
         f.__module__ = 'audiomuse_plugins.demo.tasks'
         assert api.dotted_path(f) == 'audiomuse_plugins.demo.tasks.f'
         assert api.dotted_path('a.b.c') == 'a.b.c'
@@ -370,7 +371,7 @@ class TestApiSurface:
         ctx = api.PluginContext('demo', 'worker')
 
         def task():
-            pass
+            """Stub; the test only inspects its __module__ and __name__."""
         task.__module__ = 'audiomuse_plugins.demo.tasks'
         task.__name__ = 'task'
 

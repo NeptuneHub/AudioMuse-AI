@@ -70,6 +70,8 @@ from config import (
 
 cron_bp = Blueprint('cron_bp', __name__)
 
+_ENQUEUED_BY_CRON = "Enqueued by cron."
+
 
 @cron_bp.route('/cron')
 def cron_page():
@@ -335,7 +337,7 @@ def run_due_cron_jobs():
                         job_id,
                         f"main_{task_type}",
                         TASK_STATUS_PENDING,
-                        details={"message": "Enqueued by cron."},
+                        details={"message": _ENQUEUED_BY_CRON},
                     )
                     rq_queue_high.enqueue(
                         'tasks.analysis.run_analysis_task',
@@ -351,7 +353,7 @@ def run_due_cron_jobs():
                         job_id,
                         f"main_{task_type}",
                         TASK_STATUS_PENDING,
-                        details={"message": "Enqueued by cron."},
+                        details={"message": _ENQUEUED_BY_CRON},
                     )
                     clustering_kwargs = {
                         "clustering_method": CLUSTER_ALGORITHM,
@@ -479,7 +481,7 @@ def run_due_cron_jobs():
                             job_id,
                             task_type,
                             TASK_STATUS_PENDING,
-                            details={"message": "Enqueued by cron."},
+                            details={"message": _ENQUEUED_BY_CRON},
                         )
                         queue = rq_queue_high if cron_task.get('queue') == 'high' else rq_queue_default
                         queue.enqueue(

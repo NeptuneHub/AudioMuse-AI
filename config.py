@@ -695,6 +695,14 @@ PLUGIN_MAX_DOWNLOAD_MB = int(os.environ.get("PLUGIN_MAX_DOWNLOAD_MB", "50"))
 # Allow pip-installing plugin requirements into PLUGINS_DIR/_lib (Docker/k8s only;
 # auto-disabled on frozen PyInstaller builds which cannot pip into the bundle).
 PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
+# Plugin catalog/manifest HTTP timeouts (seconds). The short CONNECT timeout bounds
+# the stall on hosts whose DNS returns an IPv6 address first but have no working IPv6
+# egress (urllib/requests do not implement Happy Eyeballs, so a broken AAAA otherwise
+# blocks each request until the full timeout before falling back to IPv4).
+PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "2"))
+PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
+# Concurrency for resolving per-plugin manifests when building the catalog.
+PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
 
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))

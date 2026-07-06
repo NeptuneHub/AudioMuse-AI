@@ -22,8 +22,9 @@ Main Features:
 import json
 import logging
 import sys
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
+import requests
 from flask import Blueprint, render_template, jsonify, request, url_for
 
 import config
@@ -40,6 +41,8 @@ _REPOS_KEY = 'PLUGIN_REPOS'
 _CATALOG_MAX_BYTES = 5 * 1024 * 1024
 
 _GENERIC_ERROR = 'Operation failed. Check the container logs for details.'
+
+_HTTP_SESSION = requests.Session()
 
 
 def _pip_supported():
@@ -67,13 +70,15 @@ def _download(url, max_bytes):
     ok, message = validate_outbound_url(url)
     if not ok:
         raise ValueError(f'URL rejected: {message}')
-    req = urllib.request.Request(
-        url, headers={'User-Agent': f'AudioMuse-AI/{config.APP_VERSION}'}
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - scheme+host validated by validate_outbound_url
-        data = resp.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise ValueError('Download exceeds the configured size limit')
+    headers = {'User-Agent': f'AudioMuse-AI/{config.APP_VERSION}'}
+    timeout = (config.PLUGIN_HTTP_CONNECT_TIMEOUT, config.PLUGIN_HTTP_READ_TIMEOUT)
+    with _HTTP_SESSION.get(url, headers=headers, timeout=timeout, stream=True) as resp:
+        resp.raise_for_status()
+        data = b''
+        for chunk in resp.iter_content(chunk_size=65536):
+            data += chunk
+            if len(data) > max_bytes:
+                raise ValueError('Download exceeds the configured size limit')
     return data
 
 
@@ -118,10 +123,44 @@ def _resolve_versions(entry, errors):
     return doc, doc.get('versions')
 
 
+def _build_catalog_entry(repo_url, entry, installed):
+    """Resolve one catalog entry to its best version. Runs in a worker thread.
+
+    Returns ``(plugin_id, merged_dict_or_None, local_errors)``. Never raises: any
+    failure is recorded in ``local_errors`` so one bad plugin cannot abort the fan-out.
+    """
+    plugin_id = entry.get('id')
+    local_errors = []
+    try:
+        detail, versions = _resolve_versions(entry, local_errors)
+        best = _pick_version(versions)
+    except Exception as exc:
+        logger.warning('Failed to resolve plugin %s: %s', plugin_id, exc)
+        local_errors.append({'repo': plugin_id or repo_url, 'error': str(exc)})
+        return plugin_id, None, local_errors
+    if not best:
+        return plugin_id, None, local_errors
+    current = installed.get(plugin_id)
+    return plugin_id, {
+        'id': plugin_id,
+        'name': entry.get('name') or detail.get('name') or plugin_id,
+        'description': entry.get('description') or detail.get('description', ''),
+        'author': entry.get('author') or detail.get('author', ''),
+        'image_url': entry.get('imageUrl') or detail.get('imageUrl', ''),
+        'latest_version': best.get('version'),
+        'source_url': best.get('sourceUrl'),
+        'checksum': best.get('checksum'),
+        'changelog': best.get('changelog', ''),
+        'min_core_version': best.get('min_core_version') or best.get('targetAbi'),
+        'source_repo': repo_url,
+        'installed_version': current.get('version') if current else None,
+    }, local_errors
+
+
 def _fetch_catalog():
     installed = {p['id']: p for p in database.list_plugins()}
-    merged = {}
     errors = []
+    pending = []
     for repo_url in _get_repos():
         try:
             raw = _download(repo_url, _CATALOG_MAX_BYTES)
@@ -132,29 +171,17 @@ def _fetch_catalog():
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': str(exc)})
             continue
-        for entry in doc.get('plugins', []):
-            plugin_id = entry.get('id')
-            if not plugin_id:
-                continue
-            detail, versions = _resolve_versions(entry, errors)
-            best = _pick_version(versions)
-            if not best:
-                continue
-            current = installed.get(plugin_id)
-            merged[plugin_id] = {
-                'id': plugin_id,
-                'name': entry.get('name') or detail.get('name') or plugin_id,
-                'description': entry.get('description') or detail.get('description', ''),
-                'author': entry.get('author') or detail.get('author', ''),
-                'image_url': entry.get('imageUrl') or detail.get('imageUrl', ''),
-                'latest_version': best.get('version'),
-                'source_url': best.get('sourceUrl'),
-                'checksum': best.get('checksum'),
-                'changelog': best.get('changelog', ''),
-                'min_core_version': best.get('min_core_version') or best.get('targetAbi'),
-                'source_repo': repo_url,
-                'installed_version': current.get('version') if current else None,
-            }
+        pending.extend((repo_url, entry) for entry in doc.get('plugins', []) if entry.get('id'))
+
+    merged = {}
+    if pending:
+        workers = max(1, min(config.PLUGIN_CATALOG_FETCH_WORKERS, len(pending)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = pool.map(lambda item: _build_catalog_entry(item[0], item[1], installed), pending)
+        for plugin_id, entry_data, local_errors in results:
+            errors.extend(local_errors)
+            if entry_data:
+                merged[plugin_id] = entry_data
     return list(merged.values()), errors
 
 
