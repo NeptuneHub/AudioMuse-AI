@@ -142,6 +142,27 @@ def _req_dist_name(spec):
     return _normalize_dist_name(match.group(1)) if match else None
 
 
+_PLUGIN_ROLES = ('flask', 'worker')
+
+
+def _plugin_targets(manifest):
+    raw = (manifest or {}).get('targets')
+    if not raw:
+        return set(_PLUGIN_ROLES)
+    targets = set()
+    for value in raw:
+        token = str(value).strip().lower()
+        if token in ('flask', 'web', 'online'):
+            targets.add('flask')
+        elif token in ('worker', 'batch'):
+            targets.add('worker')
+    return targets or set(_PLUGIN_ROLES)
+
+
+def _role_target(role):
+    return 'worker' if role == 'worker' else 'flask'
+
+
 def _download_url(url, max_bytes):
     ok, message = validate_outbound_url(url)
     if not ok:
@@ -188,7 +209,12 @@ class PluginManager:
         _safe_extract(package_bytes, target)
         _write_marker(marker, checksum or '')
 
-    def sync(self, conn=None):
+    def _runs_here(self, record, role):
+        if role is None:
+            return True
+        return _role_target(role) in _plugin_targets(record.get('manifest'))
+
+    def sync(self, conn=None, role=None):
         if not self.enabled():
             self.records = {}
             return
@@ -206,7 +232,7 @@ class PluginManager:
                 record['onnx_providers'] = []
                 record['error'] = None
                 records[row['id']] = record
-                if row['enabled']:
+                if row['enabled'] and self._runs_here(record, role):
                     try:
                         self._ensure_code(row)
                     except Exception as exc:
@@ -310,15 +336,15 @@ class PluginManager:
         )
         return self._pip_install(missing)
 
-    def ensure_requirements(self):
-        """Install every enabled plugin's pip requirements (only the missing ones)."""
+    def ensure_requirements(self, role=None):
+        """Install pip requirements for enabled plugins that run on this role (missing ones only)."""
         if not self.enabled():
             return
         frozen = getattr(sys, 'frozen', False)
         specs = []
         plugins_with_reqs = []
         for plugin_id, record in self.records.items():
-            if record['enabled'] and record['requirements']:
+            if record['enabled'] and record['requirements'] and self._runs_here(record, role):
                 if frozen or not config.PLUGIN_ALLOW_PIP:
                     record['load_status'] = 'incompatible'
                     self._persist_status(plugin_id, 'incompatible')
@@ -361,6 +387,8 @@ class PluginManager:
         for plugin_id, record in self.records.items():
             if not record['enabled']:
                 continue
+            if not self._runs_here(record, role):
+                continue
             if not version_ge(config.APP_VERSION, record['manifest'].get('min_core_version')):
                 record['load_status'] = 'incompatible'
                 self._persist_status(plugin_id, 'incompatible')
@@ -401,7 +429,8 @@ class PluginManager:
             except Exception:
                 logger.exception('Plugin %s %s hook failed', plugin_id, label)
 
-    def install_package(self, package_bytes, source_url, source_repo=None, expected_checksum=None):
+    def install_package(self, package_bytes, source_url, source_repo=None, expected_checksum=None,
+                        on_registered=None):
         max_bytes = config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024
         if len(package_bytes) > max_bytes:
             raise ValueError(f'Plugin package exceeds {config.PLUGIN_MAX_DOWNLOAD_MB} MB limit')
@@ -430,6 +459,11 @@ class PluginManager:
             requirements,
             source_repo,
         )
+        if on_registered:
+            try:
+                on_registered(plugin_id)
+            except Exception:
+                logger.exception('Plugin %s on_registered callback failed', plugin_id)
         self.setup_namespace()
         self._purge_modules(plugin_id)
         self._materialize_one(plugin_id, checksum, package_bytes)
@@ -578,8 +612,8 @@ def boot(role, flask_app=None):
         _wait_for_db()
         database.ensure_plugins_table()
         plugin_manager.setup_namespace()
-        plugin_manager.sync()
-        plugin_manager.ensure_requirements()
+        plugin_manager.sync(role=role)
+        plugin_manager.ensure_requirements(role=role)
         plugin_manager.load(role, flask_app=flask_app)
     except Exception:
         logger.exception('Plugin subsystem boot failed; continuing without plugins')
@@ -601,7 +635,7 @@ def worker_presync():
         try:
             database.ensure_plugins_table()
             plugin_manager.setup_namespace()
-            plugin_manager.sync()
-            plugin_manager.ensure_requirements()
+            plugin_manager.sync(role='worker')
+            plugin_manager.ensure_requirements(role='worker')
         except Exception:
             logger.exception('Plugin pre-sync on worker failed; continuing')

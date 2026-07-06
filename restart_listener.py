@@ -88,7 +88,7 @@ def main():
                 if message.get('type') != 'message':
                     continue
                 payload = message.get('data')
-                logger.info('Restart listener received payload: %s', payload)
+                logger.info('Control listener received signal: %s', payload)
                 service_type = os.environ.get('SERVICE_TYPE', '').lower()
                 if service_type != 'worker':
                     logger.info('Control signal received, but SERVICE_TYPE is not worker; skipping')

@@ -151,9 +151,13 @@ class TestZipSafety:
         assert (target / '__init__.py').read_text(encoding='utf-8') == 'X = 1\n'
 
 
-def _plugin_row(plugin_id, checksum, source_url='https://example.com/x.zip', enabled=True, requirements=None):
+def _plugin_row(plugin_id, checksum, source_url='https://example.com/x.zip', enabled=True,
+                requirements=None, targets=None):
+    manifest = {'id': plugin_id}
+    if targets is not None:
+        manifest['targets'] = targets
     return {
-        'id': plugin_id, 'name': plugin_id, 'version': '1.0.0', 'manifest': {'id': plugin_id},
+        'id': plugin_id, 'name': plugin_id, 'version': '1.0.0', 'manifest': manifest,
         'source_url': source_url, 'checksum': checksum, 'requirements': requirements or [],
         'enabled': enabled, 'settings': {}, 'source_repo': None, 'load_status': None,
         'installed_at': None, 'updated_at': None,
@@ -284,6 +288,106 @@ class TestRequirements:
         mgr.ensure_requirements()
 
         assert calls['n'] == 0
+
+
+class TestTargets:
+    def test_default_targets_are_both(self):
+        assert manager._plugin_targets({}) == {'flask', 'worker'}
+        assert manager._plugin_targets({'targets': []}) == {'flask', 'worker'}
+        assert manager._plugin_targets({'targets': ['garbage']}) == {'flask', 'worker'}
+
+    def test_explicit_targets_are_honored(self):
+        assert manager._plugin_targets({'targets': ['flask']}) == {'flask'}
+        assert manager._plugin_targets({'targets': ['web', 'online']}) == {'flask'}
+        assert manager._plugin_targets({'targets': ['worker', 'batch']}) == {'worker'}
+
+    def test_worker_skips_flask_only_code(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        rows = [_plugin_row('flaskonly', 'abc', source_url='https://example.com/f.zip', targets=['flask'])]
+        monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: rows)
+
+        def _boom(url, max_bytes):
+            raise AssertionError('worker must not download a flask-only plugin')
+
+        monkeypatch.setattr(manager, '_download_url', _boom)
+
+        mgr = manager.PluginManager()
+        mgr.sync(role='worker')
+        assert 'flaskonly' in mgr.records
+        assert mgr.records['flaskonly']['load_status'] != 'error'
+
+    def test_worker_downloads_worker_targeted_code(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        pkg = _make_zip({'plugin.json': '{"id": "job"}', '__init__.py': ''})
+        checksum = hashlib.md5(pkg, usedforsecurity=False).hexdigest()
+        rows = [_plugin_row('job', checksum, source_url='https://example.com/job.zip', targets=['worker'])]
+        downloads = {'n': 0}
+
+        def _fake(url, max_bytes):
+            downloads['n'] += 1
+            return pkg
+
+        monkeypatch.setattr(database, 'connect_raw', lambda: _DummyConn())
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: rows)
+        monkeypatch.setattr(manager, '_download_url', _fake)
+
+        mgr = manager.PluginManager()
+        mgr.sync(role='worker')
+        assert downloads['n'] == 1
+
+    def test_worker_skips_flask_only_requirements(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+
+        mgr = manager.PluginManager()
+        calls = {'specs': None}
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: calls.__setitem__('specs', specs) or True)
+        mgr.records = {'flaskonly': _record('flaskonly', requirements=['matplotlib'],
+                                            manifest={'targets': ['flask']})}
+
+        mgr.ensure_requirements(role='worker')
+
+        assert calls['specs'] is None
+
+    def test_worker_does_not_load_flask_only_plugin(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        _write_plugin(tmp_path, 'flaskonly', 'raise RuntimeError("must not import on worker")\n')
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_persist_status', lambda *a, **k: None)
+        mgr.records = {'flaskonly': _record('flaskonly', manifest={'targets': ['flask']})}
+        mgr.load('worker')
+
+        assert mgr.records['flaskonly']['load_status'] != 'error'
+
+
+class TestInstallOrdering:
+    def test_broadcast_fires_after_db_commit_before_local_pip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        pkg = _make_zip({'plugin.json': '{"id": "demo", "version": "1.0.0"}', '__init__.py': ''})
+        order = []
+        monkeypatch.setattr(database, 'upsert_plugin', lambda *a, **k: order.append('db_commit'))
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, 'setup_namespace', lambda: None)
+        monkeypatch.setattr(mgr, '_purge_modules', lambda pid: None)
+        monkeypatch.setattr(mgr, '_materialize_one', lambda *a, **k: order.append('flask_code'))
+        monkeypatch.setattr(mgr, '_install_specs', lambda *a, **k: order.append('flask_pip') or True)
+        monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: None)
+
+        mgr.install_package(
+            pkg, source_url='https://example.com/demo.zip',
+            on_registered=lambda pid: order.append('broadcast'),
+        )
+
+        assert order.index('db_commit') < order.index('broadcast') < order.index('flask_pip')
 
 
 class TestLoadIsolation:

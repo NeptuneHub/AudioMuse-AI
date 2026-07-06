@@ -168,3 +168,20 @@ This works on Docker and Kubernetes. The Windows and macOS standalone builds
 cannot install extra packages, so a plugin that lists `requirements` there is
 marked as not compatible. Plugins that only use built-in libraries (Flask, numpy,
 psycopg2, onnxruntime, redis, rq, and the standard library) work everywhere.
+
+### Choose where the plugin runs (Flask or Worker)
+
+By default a plugin is installed on both the Flask (web) container and the Worker
+(batch) container. If your plugin only adds pages and menus (Flask) or only adds
+tasks and cron jobs (Worker), say so with a `targets` list in `plugin.json` so the
+other container never downloads the code or installs pip packages it will not use.
+
+```json
+{ "id": "my_plugin", "name": "My Plugin", "version": "1.0.0", "min_core_version": "2.5.0",
+  "targets": ["flask"], "requirements": ["matplotlib"] }
+```
+
+Use `["flask"]` for a page-only plugin (like SongCounter), `["worker"]` for a
+task/cron-only plugin, or leave `targets` out to run on both. This matters most
+when the worker container has no internet access: a Flask-only plugin then does
+not try (and fail) to reach GitHub or PyPI from the worker.
