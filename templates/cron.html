@@ -120,34 +120,24 @@
             const sn = rows.find(r=>r.task_type==='sonic_fingerprint');
             const rn = rows.find(r=>r.task_type==='alchemy_radio');
 
+            const sexpr = document.getElementById('sonic-fingerprint-cron').value;
+            const sen = document.getElementById('sonic-fingerprint-enabled').checked;
+            const rexpr = document.getElementById('alchemy-radio-cron').value;
+            const ren = document.getElementById('alchemy-radio-enabled').checked;
+
             try{
-                if (an) {
-                    saveCron({id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
-                } else {
-                    saveCron({name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
-                }
-
-                if (cn) {
-                    saveCron({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
-                } else {
-                    saveCron({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
-                }
-
-                const sexpr = document.getElementById('sonic-fingerprint-cron').value;
-                const sen = document.getElementById('sonic-fingerprint-enabled').checked;
-                if (sn) {
-                    saveCron({id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
-                } else {
-                    saveCron({name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
-                }
-
-                const rexpr = document.getElementById('alchemy-radio-cron').value;
-                const ren = document.getElementById('alchemy-radio-enabled').checked;
-                if (rn) {
-                    saveCron({id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
-                } else {
-                    saveCron({name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
-                }
+                // Await every save before reloading so a stale cache can't trigger
+                // a duplicate INSERT on the next save (issue #719).
+                await Promise.all([
+                    saveCron(an ? {id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}
+                                : {name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}),
+                    saveCron(cn ? {id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}
+                                : {name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}),
+                    saveCron(sn ? {id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}
+                                : {name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}),
+                    saveCron(rn ? {id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}
+                                : {name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}),
+                ]);
 
                 // refresh cached rows after saving
                 await load();
