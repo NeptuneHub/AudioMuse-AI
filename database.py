@@ -1152,10 +1152,12 @@ def connect_raw():
 
 
 def _create_plugins_table(cur):
-    """Run the idempotent DDL that creates/migrates the plugins registry table.
+    """Run the idempotent DDL that creates the plugins registry table.
 
     Kept as one canonical block so ``init_db`` and the boot-time
-    ``ensure_plugins_table`` never drift. The caller owns the transaction.
+    ``ensure_plugins_table`` never drift. The caller owns the transaction. Plugin
+    code lives on the PLUGINS_DIR volume and is re-downloaded from ``source_url``;
+    the table stores only metadata.
     """
     cur.execute("""
         CREATE TABLE IF NOT EXISTS plugins (
@@ -1175,7 +1177,6 @@ def _create_plugins_table(cur):
         )
     """)
     cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
-    cur.execute("ALTER TABLE plugins DROP COLUMN IF EXISTS package")
 
 
 def ensure_plugins_table(conn=None):

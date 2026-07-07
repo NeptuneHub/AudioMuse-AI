@@ -21,6 +21,7 @@ Main Features:
 * ``run_plugin_task`` runs a plugin task by dotted path inside an app context.
 """
 
+import contextlib
 import hashlib
 import importlib
 import importlib.metadata
@@ -35,13 +36,24 @@ import tempfile
 import threading
 import time
 import types
-import urllib.request
 import zipfile
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 import config
 import database
-from ssrf_guard import validate_outbound_url
+from plugin import net
 from plugin.api import PluginContext, NAMESPACE, valid_plugin_id
+
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +142,13 @@ def _safe_extract(package_bytes, target):
 
 
 def _valid_requirement(spec):
-    return isinstance(spec, str) and bool(spec.strip()) and not spec.strip().startswith('-')
-
-
-def _normalize_dist_name(name):
-    return re.sub(r'[-_.]+', '-', str(name)).strip('-').lower()
-
-
-def _req_dist_name(spec):
-    match = re.match(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)', str(spec))
-    return _normalize_dist_name(match.group(1)) if match else None
+    if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith('-'):
+        return False
+    try:
+        Requirement(spec)
+        return True
+    except Exception:
+        return False
 
 
 _PLUGIN_ROLES = ('flask', 'worker')
@@ -149,6 +158,8 @@ def _plugin_targets(manifest):
     raw = (manifest or {}).get('targets')
     if not raw:
         return set(_PLUGIN_ROLES)
+    if isinstance(raw, str):
+        raw = [raw]
     targets = set()
     for value in raw:
         token = str(value).strip().lower()
@@ -164,17 +175,58 @@ def _role_target(role):
 
 
 def _download_url(url, max_bytes):
-    ok, message = validate_outbound_url(url)
-    if not ok:
-        raise ValueError(f'URL rejected: {message}')
-    request = urllib.request.Request(
-        url, headers={'User-Agent': f'AudioMuse-AI/{config.APP_VERSION}'}
-    )
-    with urllib.request.urlopen(request, timeout=60) as resp:  # noqa: S310 - scheme+host validated by validate_outbound_url
-        data = resp.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise ValueError('Download exceeds the configured size limit')
-    return data
+    return net.download(url, max_bytes)
+
+
+def _acquire_install_lock():
+    """Take an OS-level lock file that serializes plugin writers across processes.
+
+    The web process, both RQ workers, and the restart listener can all share one
+    PLUGINS_DIR volume; a threading.Lock only guards a single interpreter. This
+    file lock (fcntl on POSIX, msvcrt on Windows) serializes concurrent code
+    extraction and pip installs into that shared directory across every process on
+    the host, so two `pip install --target _lib` runs can never interleave.
+    """
+    os.makedirs(config.PLUGINS_DIR, exist_ok=True)
+    fh = open(os.path.join(config.PLUGINS_DIR, '.install.lock'), 'a+')
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+        elif _msvcrt is not None:
+            fh.seek(0)
+            while True:
+                try:
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.2)
+    except Exception:
+        fh.close()
+        raise
+    return fh
+
+
+def _release_install_lock(fh):
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+        elif _msvcrt is not None:
+            fh.seek(0)
+            try:
+                _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+    finally:
+        fh.close()
+
+
+@contextlib.contextmanager
+def _install_lock():
+    fh = _acquire_install_lock()
+    try:
+        yield
+    finally:
+        _release_install_lock(fh)
 
 
 class PluginManager:
@@ -206,8 +258,11 @@ class PluginManager:
         marker = os.path.join(target, '.checksum')
         if os.path.isdir(target) and _read_marker(marker) == checksum:
             return
-        _safe_extract(package_bytes, target)
-        _write_marker(marker, checksum or '')
+        with _install_lock():
+            if os.path.isdir(target) and _read_marker(marker) == checksum:
+                return
+            _safe_extract(package_bytes, target)
+            _write_marker(marker, checksum or '')
 
     def _runs_here(self, record, role):
         if role is None:
@@ -254,12 +309,12 @@ class PluginManager:
         source_url = row.get('source_url')
         if not source_url:
             raise RuntimeError(
-                f'plugin code for "{plugin_id}" is missing and there is no source_url to re-download it'
+                f'plugin code for "{plugin_id}" is missing and it has no source_url to re-download it '
+                '- reinstall it from the Plugins catalog'
             )
         logger.warning(
             'Installed plugin "%s" was not found on disk; re-downloading it from %s',
-            plugin_id,
-            source_url,
+            plugin_id, source_url,
         )
         package = _download_url(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
         got = hashlib.md5(package, usedforsecurity=False).hexdigest()
@@ -289,6 +344,7 @@ class PluginManager:
             return False
         if lib_dir not in sys.path:
             sys.path.append(lib_dir)
+        importlib.invalidate_caches()
         return True
 
     def _ensure_lib_on_path(self):
@@ -296,28 +352,57 @@ class PluginManager:
         if os.path.isdir(lib_dir) and lib_dir not in sys.path:
             sys.path.append(lib_dir)
 
-    def _installed_dep_names(self):
+    def _installed_dist_versions(self):
         lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
         if not os.path.isdir(lib_dir):
-            return set()
-        names = set()
+            return {}
+        versions = {}
         try:
             for dist in importlib.metadata.distributions(path=[lib_dir]):
                 name = dist.metadata['Name'] if dist.metadata else None
                 if name:
-                    names.add(_normalize_dist_name(name))
+                    versions[canonicalize_name(name)] = dist.version
         except Exception:
             logger.exception('Could not read installed plugin dependencies from _lib')
-        return names
+        return versions
+
+    def _missing_specs(self, specs):
+        """Return the specs whose distribution is absent OR whose version pin is unmet in _lib.
+
+        Unlike a name-only presence check, this parses each spec with packaging so a
+        changed pin (matplotlib==3.7 -> matplotlib==3.9) is correctly seen as missing
+        and reinstalled, instead of being silently satisfied by any matplotlib on disk.
+        """
+        have = self._installed_dist_versions()
+        missing = []
+        for spec in specs:
+            try:
+                req = Requirement(spec)
+            except Exception:
+                missing.append(spec)
+                continue
+            installed = have.get(canonicalize_name(req.name))
+            if installed is None:
+                missing.append(spec)
+                continue
+            if req.specifier:
+                try:
+                    satisfied = req.specifier.contains(installed, prereleases=True)
+                except Exception:
+                    satisfied = False
+                if not satisfied:
+                    missing.append(spec)
+        return missing
 
     def _install_specs(self, requirements, plugin_ids=None):
-        """Install the pip specs whose package is not actually present in _lib.
+        """Install the pip specs not already satisfied (by name AND version pin) in _lib.
 
-        Presence is checked against the distributions really installed in _lib
-        (not a bookkeeping file), so a dependency is installed when the plugin is
-        installed and reinstalled on a later restart only if it is genuinely
-        missing for any reason. _lib is appended to the END of sys.path so a
-        plugin dependency can never shadow a core AudioMuse-AI package.
+        Satisfaction is checked against the distributions really installed in _lib,
+        so a dependency is (re)installed only when genuinely missing or version-
+        mismatched. The pip install runs under a cross-process file lock so the two
+        RQ workers and the restart listener sharing one PLUGINS_DIR volume can never
+        run overlapping installs into _lib. _lib is appended to the END of sys.path
+        so a plugin dependency can never shadow a core AudioMuse-AI package.
         """
         specs = sorted({str(s) for s in (requirements or []) if _valid_requirement(s)})
         self._ensure_lib_on_path()
@@ -325,16 +410,18 @@ class PluginManager:
             return True
         if getattr(sys, 'frozen', False) or not config.PLUGIN_ALLOW_PIP:
             return False
-        have = self._installed_dep_names()
-        missing = [s for s in specs if _req_dist_name(s) not in have]
-        if not missing:
+        if not self._missing_specs(specs):
             return True
-        logger.warning(
-            'Dependencies for plugin(s) %s were not found on disk; installing them from PyPI: %s',
-            ', '.join(sorted(plugin_ids)) if plugin_ids else '?',
-            missing,
-        )
-        return self._pip_install(missing)
+        with _install_lock():
+            missing = self._missing_specs(specs)
+            if not missing:
+                return True
+            logger.warning(
+                'Dependencies for plugin(s) %s are missing or version-mismatched; installing from PyPI: %s',
+                ', '.join(sorted(plugin_ids)) if plugin_ids else '?',
+                missing,
+            )
+            return self._pip_install(missing)
 
     def ensure_requirements(self, role=None):
         """Install pip requirements for enabled plugins that run on this role (missing ones only)."""
@@ -409,6 +496,8 @@ class PluginManager:
                         candidate = f'{ctx.blueprint.name}.settings'
                         if candidate in flask_app.view_functions:
                             record['settings_endpoint'] = candidate
+                if role == 'web' and flask_app is not None:
+                    self._warn_unknown_menu_endpoints(record['menu_items'], flask_app, plugin_id)
                 if role == 'web':
                     self._run_hooks(ctx.flask_start, plugin_id, 'flask_start')
                 elif role == 'worker':
@@ -428,6 +517,16 @@ class PluginManager:
                 hook()
             except Exception:
                 logger.exception('Plugin %s %s hook failed', plugin_id, label)
+
+    def _warn_unknown_menu_endpoints(self, menu_items, flask_app, plugin_id):
+        for entry in menu_items or []:
+            endpoint = entry.get('endpoint')
+            if endpoint not in flask_app.view_functions:
+                logger.warning(
+                    'Plugin %s menu item "%s" points at endpoint %r which is not registered; '
+                    'the link stays hidden until the endpoint resolves',
+                    plugin_id, entry.get('label'), endpoint,
+                )
 
     def install_package(self, package_bytes, source_url, source_repo=None, expected_checksum=None,
                         on_registered=None):
@@ -459,16 +558,16 @@ class PluginManager:
             requirements,
             source_repo,
         )
-        if on_registered:
-            try:
-                on_registered(plugin_id)
-            except Exception:
-                logger.exception('Plugin %s on_registered callback failed', plugin_id)
         self.setup_namespace()
         self._purge_modules(plugin_id)
         self._materialize_one(plugin_id, checksum, package_bytes)
         self._install_specs(requirements, [plugin_id])
         self.run_install_hooks(plugin_id)
+        if on_registered:
+            try:
+                on_registered(plugin_id)
+            except Exception:
+                logger.exception('Plugin %s on_registered callback failed', plugin_id)
         return manifest
 
     def run_install_hooks(self, plugin_id):
@@ -524,6 +623,13 @@ class PluginManager:
     def get_settings_endpoint(self, plugin_id):
         record = self.records.get(plugin_id)
         return record.get('settings_endpoint') if record else None
+
+    def settings_endpoints(self):
+        return {
+            record['settings_endpoint']
+            for record in self.records.values()
+            if record.get('settings_endpoint')
+        }
 
     def get_onnx_providers(self):
         providers = []
@@ -633,6 +739,7 @@ def worker_presync():
         return
     with _presync_lock:
         try:
+            _wait_for_db()
             database.ensure_plugins_table()
             plugin_manager.setup_namespace()
             plugin_manager.sync(role='worker')

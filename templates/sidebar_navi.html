@@ -36,7 +36,7 @@
     <ul class="submenu" id="plugins-submenu">
         {% for item in plugin_menu_items %}
         {% if is_admin or not item.admin_only %}
-        <li><a href="{{ url_for(item.endpoint) }}" {% if request.endpoint == item.endpoint %}class="active"{% endif %}>{{ item.label }}</a></li>
+        <li><a href="{{ item.url }}" {% if request.endpoint == item.endpoint %}class="active"{% endif %}>{{ item.label }}</a></li>
         {% endif %}
         {% endfor %}
         {% if is_admin %}

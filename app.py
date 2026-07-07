@@ -151,9 +151,19 @@ def inject_globals():
     # pages), is_admin will be True and the full UI is shown.
     auth_role = getattr(g, 'auth_role', 'admin')
     current_user = getattr(g, 'auth_user', None)
+    # Resolve each plugin menu link here (inside a request context) with per-item
+    # isolation so a plugin whose endpoint does not build can never 500 the layout
+    # that every authenticated page renders.
+    plugin_menu_items = []
     try:
+        from flask import url_for
         from plugin.manager import plugin_manager
-        plugin_menu_items = plugin_manager.menu_items()
+        for item in plugin_manager.menu_items():
+            try:
+                item_url = url_for(item['endpoint'])
+            except Exception:
+                continue
+            plugin_menu_items.append({**item, 'url': item_url})
     except Exception:
         plugin_menu_items = []
     return dict(

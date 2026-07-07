@@ -24,12 +24,12 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
 from flask import Blueprint, render_template, jsonify, request, url_for
 
 import config
 import database
 import restart_manager
+from plugin import net
 from ssrf_guard import validate_outbound_url
 from plugin.manager import plugin_manager, version_ge, _parse_version
 
@@ -41,8 +41,6 @@ _REPOS_KEY = 'PLUGIN_REPOS'
 _CATALOG_MAX_BYTES = 5 * 1024 * 1024
 
 _GENERIC_ERROR = 'Operation failed. Check the container logs for details.'
-
-_HTTP_SESSION = requests.Session()
 
 
 def _pip_supported():
@@ -67,19 +65,7 @@ def _set_repos(repos):
 
 
 def _download(url, max_bytes):
-    ok, message = validate_outbound_url(url)
-    if not ok:
-        raise ValueError(f'URL rejected: {message}')
-    headers = {'User-Agent': f'AudioMuse-AI/{config.APP_VERSION}'}
-    timeout = (config.PLUGIN_HTTP_CONNECT_TIMEOUT, config.PLUGIN_HTTP_READ_TIMEOUT)
-    with _HTTP_SESSION.get(url, headers=headers, timeout=timeout, stream=True) as resp:
-        resp.raise_for_status()
-        data = b''
-        for chunk in resp.iter_content(chunk_size=65536):
-            data += chunk
-            if len(data) > max_bytes:
-                raise ValueError('Download exceeds the configured size limit')
-    return data
+    return net.download(url, max_bytes)
 
 
 def _pick_version(versions, requested=None):
@@ -171,13 +157,21 @@ def _fetch_catalog():
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': str(exc)})
             continue
-        pending.extend((repo_url, entry) for entry in doc.get('plugins', []) if entry.get('id'))
+        entries = doc.get('plugins')
+        if not isinstance(entries, list):
+            logger.warning('Plugin repo %s has no valid "plugins" list; skipping', repo_url)
+            errors.append({'repo': repo_url, 'error': 'Repository catalog "plugins" is not a list'})
+            continue
+        pending.extend(
+            (repo_url, entry) for entry in entries
+            if isinstance(entry, dict) and entry.get('id')
+        )
 
     merged = {}
     if pending:
         workers = max(1, min(config.PLUGIN_CATALOG_FETCH_WORKERS, len(pending)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = pool.map(lambda item: _build_catalog_entry(item[0], item[1], installed), pending)
+            results = list(pool.map(lambda item: _build_catalog_entry(item[0], item[1], installed), pending))
         for plugin_id, entry_data, local_errors in results:
             errors.extend(local_errors)
             if entry_data:
@@ -219,6 +213,31 @@ def api_catalog():
     return jsonify({'plugins': plugins, 'repos': _get_repos(), 'errors': errors})
 
 
+def _resolve_install_source(plugin_id):
+    """Return (source_url, checksum, source_repo) for a plugin to install/reinstall.
+
+    Prefers the live catalog (latest compatible version). If the catalog is
+    unreachable or no longer lists the plugin, falls back to the source_url already
+    stored for an installed plugin so a reinstall still works during an upstream
+    outage. Returns (None, None, None) when neither yields a source.
+    """
+    try:
+        catalog, _ = _fetch_catalog()
+    except Exception:
+        logger.exception('Catalog fetch failed while resolving install source for %s', plugin_id)
+        catalog = []
+    match = next((p for p in catalog if p['id'] == plugin_id), None)
+    if match and match.get('source_url'):
+        return match['source_url'], match.get('checksum'), match.get('source_repo')
+    existing = database.get_plugin(plugin_id)
+    if existing and existing.get('source_url'):
+        logger.warning(
+            'Plugin %s not resolvable from the catalog; reinstalling from its stored source_url', plugin_id
+        )
+        return existing['source_url'], existing.get('checksum'), existing.get('source_repo')
+    return None, None, None
+
+
 @plugins_bp.route('/api/plugins/install', methods=['POST'])
 def api_install():
     data = request.get_json(silent=True) or {}
@@ -226,13 +245,9 @@ def api_install():
     if not plugin_id:
         return jsonify({'error': 'Missing required field: id'}), 400
     try:
-        catalog, _ = _fetch_catalog()
-        match = next((p for p in catalog if p['id'] == plugin_id), None)
-        if not match:
+        source_url, checksum, source_repo = _resolve_install_source(plugin_id)
+        if not source_url:
             return jsonify({'error': 'Plugin not found in any configured repository'}), 404
-        source_url = match['source_url']
-        checksum = match['checksum']
-        source_repo = match['source_repo']
         package = _download(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
         manifest = plugin_manager.install_package(
             package, source_url=source_url, source_repo=source_repo, expected_checksum=checksum,

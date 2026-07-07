@@ -269,7 +269,7 @@ class TestRequirements:
             mgr.ensure_requirements()
 
         assert installed['specs'] == ['matplotlib']
-        assert any('were not found on disk' in r.message and 'withreq' in r.message
+        assert any('missing or version-mismatched' in r.message and 'withreq' in r.message
                    for r in caplog.records)
 
     def test_pip_skipped_when_dep_already_present(self, monkeypatch, tmp_path):
@@ -289,6 +289,23 @@ class TestRequirements:
 
         assert calls['n'] == 0
 
+    def test_pip_runs_when_pinned_version_mismatches(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        dist = tmp_path / '_lib' / 'matplotlib-3.7.0.dist-info'
+        dist.mkdir(parents=True)
+        (dist / 'METADATA').write_text('Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.7.0\n', encoding='utf-8')
+        installed = {'specs': None}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: installed.__setitem__('specs', specs) or True)
+        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib==3.9.0'])}
+
+        mgr.ensure_requirements()
+
+        assert installed['specs'] == ['matplotlib==3.9.0']
+
 
 class TestTargets:
     def test_default_targets_are_both(self):
@@ -300,6 +317,10 @@ class TestTargets:
         assert manager._plugin_targets({'targets': ['flask']}) == {'flask'}
         assert manager._plugin_targets({'targets': ['web', 'online']}) == {'flask'}
         assert manager._plugin_targets({'targets': ['worker', 'batch']}) == {'worker'}
+
+    def test_string_targets_are_treated_as_a_single_token(self):
+        assert manager._plugin_targets({'targets': 'worker'}) == {'worker'}
+        assert manager._plugin_targets({'targets': 'flask'}) == {'flask'}
 
     def test_worker_skips_flask_only_code(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
@@ -368,7 +389,7 @@ class TestTargets:
 
 
 class TestInstallOrdering:
-    def test_broadcast_fires_after_db_commit_before_local_pip(self, monkeypatch, tmp_path):
+    def test_broadcast_fires_only_after_web_install_completes(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
         pkg = _make_zip({'plugin.json': '{"id": "demo", "version": "1.0.0"}', '__init__.py': ''})
@@ -380,14 +401,15 @@ class TestInstallOrdering:
         monkeypatch.setattr(mgr, '_purge_modules', lambda pid: None)
         monkeypatch.setattr(mgr, '_materialize_one', lambda *a, **k: order.append('flask_code'))
         monkeypatch.setattr(mgr, '_install_specs', lambda *a, **k: order.append('flask_pip') or True)
-        monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: None)
+        monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: order.append('flask_hooks'))
 
         mgr.install_package(
             pkg, source_url='https://example.com/demo.zip',
             on_registered=lambda pid: order.append('broadcast'),
         )
 
-        assert order.index('db_commit') < order.index('broadcast') < order.index('flask_pip')
+        assert order.index('db_commit') < order.index('flask_pip') < order.index('broadcast')
+        assert order.index('flask_hooks') < order.index('broadcast')
 
 
 class TestLoadIsolation:
@@ -472,6 +494,32 @@ class TestLoadIsolation:
 
         assert mgr.get_settings_endpoint('conv') == 'conv.settings'
         assert [m['label'] for m in mgr.menu_items()] == ['Conv']
+
+    def test_bad_menu_endpoint_warns_but_still_loads(self, monkeypatch, tmp_path, caplog):
+        from flask import Flask
+
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        code = (
+            "from flask import Blueprint\n"
+            "bp = Blueprint('bad', __name__)\n"
+            "@bp.route('/')\n"
+            "def home():\n    return 'h'\n"
+            "def register(ctx):\n"
+            "    ctx.add_blueprint(bp)\n"
+            "    ctx.add_menu_item('Bad', 'bad.does_not_exist')\n"
+        )
+        _write_plugin(tmp_path, 'bad', code)
+
+        app = Flask('badtest')
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_persist_status', lambda *a, **k: None)
+        mgr.records = {'bad': _record('bad')}
+        with caplog.at_level('WARNING'):
+            mgr.load('web', flask_app=app)
+
+        assert mgr.records['bad']['load_status'] == 'ok'
+        assert any('not registered' in r.message for r in caplog.records)
 
 
 class TestRegistryLookups:
