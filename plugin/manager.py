@@ -114,7 +114,27 @@ def _resolve_extract_root(staging):
     return staging
 
 
+def _plugin_path(plugin_id):
+    """Resolve a plugin's directory under PLUGINS_DIR, rejecting any path escape.
+
+    ``plugin_id`` is already constrained by ``valid_plugin_id`` at install time;
+    this realpath + commonpath check is defense-in-depth so a crafted id can never
+    resolve outside PLUGINS_DIR before the loader extracts or imports community code.
+    """
+    if not valid_plugin_id(plugin_id):
+        raise ValueError(f'Invalid plugin id: {plugin_id!r}')
+    base = os.path.realpath(config.PLUGINS_DIR)
+    target = os.path.realpath(os.path.join(base, plugin_id))
+    if os.path.commonpath([base, target]) != base:
+        raise ValueError(f'Plugin path escapes the plugin directory: {plugin_id!r}')
+    return target
+
+
 def _safe_extract(package_bytes, target):
+    base = os.path.realpath(config.PLUGINS_DIR)
+    target = os.path.realpath(target)
+    if os.path.commonpath([base, target]) != base:
+        raise ValueError('Plugin extraction target escapes the plugin directory')
     parent = os.path.dirname(target)
     os.makedirs(parent, exist_ok=True)
     staging = tempfile.mkdtemp(prefix='.plugin_stage_', dir=parent)
@@ -243,7 +263,7 @@ class PluginManager:
             sys.path.append(lib_dir)
 
     def _materialize_one(self, plugin_id, checksum, package_bytes):
-        target = os.path.join(config.PLUGINS_DIR, plugin_id)
+        target = _plugin_path(plugin_id)
         marker = os.path.join(target, '.checksum')
         if os.path.isdir(target) and _read_marker(marker) == checksum:
             return
@@ -291,7 +311,7 @@ class PluginManager:
     def _ensure_code(self, row):
         plugin_id = row['id']
         checksum = row.get('checksum')
-        target = os.path.join(config.PLUGINS_DIR, plugin_id)
+        target = _plugin_path(plugin_id)
         marker = os.path.join(target, '.checksum')
         if os.path.isdir(target) and (not checksum or _read_marker(marker) == checksum):
             return

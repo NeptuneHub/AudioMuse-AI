@@ -35,6 +35,9 @@ class _FakeSession:
     def __exit__(self, *a):
         return False
 
+    def mount(self, *a, **k):
+        pass
+
     def get(self, *a, **k):
         if self._exc:
             raise self._exc
@@ -108,3 +111,18 @@ class TestDownload:
     def test_success_returns_bytes(self, monkeypatch):
         _wire(monkeypatch, _FakeSession(resp=_Resp(chunks=(b'ab', b'cd'))))
         assert net.download('https://example.com/y.zip', 1000) == b'abcd'
+
+
+class TestRetryPolicy:
+    def test_retry_reads_config(self, monkeypatch):
+        monkeypatch.setattr(net.config, 'PLUGIN_HTTP_RETRIES', 4)
+        monkeypatch.setattr(net.config, 'PLUGIN_HTTP_BACKOFF', 0.5)
+        retry = net._build_retry()
+        assert retry.total == 4
+        assert 429 in retry.status_forcelist
+        assert 503 in retry.status_forcelist
+
+    def test_session_mounts_retry_adapter(self):
+        session = net._session()
+        adapter = session.get_adapter('https://raw.githubusercontent.com/x.zip')
+        assert adapter.max_retries.total == net.config.PLUGIN_HTTP_RETRIES

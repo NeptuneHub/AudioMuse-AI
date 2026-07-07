@@ -117,18 +117,36 @@ class TestZipSafety:
         assert manager._is_safe_member('/etc/passwd') is False
         assert manager._is_safe_member('a/../../b') is False
 
-    def test_safe_extract_rejects_zip_slip(self, tmp_path):
+    def test_safe_extract_rejects_zip_slip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         pkg = _make_unsafe_zip('../evil.py')
         target = str(tmp_path / 'demo')
         with pytest.raises(ValueError):
             manager._safe_extract(pkg, target)
 
-    def test_safe_extract_writes_files(self, tmp_path):
+    def test_safe_extract_rejects_target_escape(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path / 'plugins'))
+        pkg = _make_zip({'plugin.json': '{"id": "demo"}'})
+        with pytest.raises(ValueError):
+            manager._safe_extract(pkg, str(tmp_path / 'outside'))
+
+    def test_safe_extract_writes_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': 'X = 1\n'})
         target = tmp_path / 'demo'
         manager._safe_extract(pkg, str(target))
         assert (target / 'plugin.json').is_file()
         assert (target / '__init__.py').read_text(encoding='utf-8') == 'X = 1\n'
+
+    def test_plugin_path_rejects_invalid_ids(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        for bad in ['../evil', 'a/b', '', 'Upper', '.hidden', 'x/../..']:
+            with pytest.raises(ValueError):
+                manager._plugin_path(bad)
+
+    def test_plugin_path_accepts_valid_id(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        assert manager._plugin_path('song_counter').endswith('song_counter')
 
 
 def _plugin_row(plugin_id, checksum, source_url='https://example.com/x.zip', enabled=True,

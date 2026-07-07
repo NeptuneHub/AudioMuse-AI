@@ -701,6 +701,17 @@ PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
 # blocks each request until the full timeout before falling back to IPv4).
 PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "2"))
 PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
+# Plugin downloads retry transient failures with exponential backoff before giving up.
+# GitHub's raw/Fastly and release CDNs drop connections, rate-limit with 429, and are
+# flaky over IPv6, so one click should not fail on the first hiccup. backoff_factor 0.5
+# with 4 retries waits ~0, 0.5, 1, 2, 4s between attempts.
+PLUGIN_HTTP_RETRIES = int(os.environ.get("PLUGIN_HTTP_RETRIES", "4"))
+PLUGIN_HTTP_BACKOFF = float(os.environ.get("PLUGIN_HTTP_BACKOFF", "0.5"))
+# raw.githubusercontent.com is often unreachable over IPv6 from a container whose pod
+# has an IPv6 address but no IPv6 egress (Errno 101 Network is unreachable). Default true
+# pins all outbound HTTP to IPv4 so the broken AAAA path is never tried; set this to false
+# only on an IPv6-only host.
+PLUGIN_HTTP_FORCE_IPV4 = os.environ.get("PLUGIN_HTTP_FORCE_IPV4", "true").lower() == "true"
 # Concurrency for resolving per-plugin manifests when building the catalog.
 PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
 # How long plugin boot waits for the database to accept connections before giving
