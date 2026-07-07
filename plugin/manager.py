@@ -90,17 +90,6 @@ def _validate_zip_safe(zip_file):
             raise ValueError(f'Unsafe path in plugin package: {member}')
 
 
-def read_manifest_from_bytes(package_bytes):
-    with zipfile.ZipFile(io.BytesIO(package_bytes)) as zf:
-        _validate_zip_safe(zf)
-        candidates = [n for n in zf.namelist() if n.rsplit('/', 1)[-1] == _MANIFEST_NAME]
-        candidates.sort(key=lambda n: n.count('/'))
-        if not candidates:
-            raise ValueError('plugin.json not found in package')
-        import json
-        return json.loads(zf.read(candidates[0]))
-
-
 def _read_marker(path):
     try:
         with open(path, 'r', encoding='utf-8') as fh:
@@ -528,15 +517,23 @@ class PluginManager:
                     plugin_id, entry.get('label'), endpoint,
                 )
 
-    def install_package(self, package_bytes, source_url, source_repo=None, expected_checksum=None,
-                        on_registered=None):
+    def install_package(self, package_bytes, manifest, source_url, source_repo=None,
+                        expected_checksum=None, on_registered=None):
+        """Install a code-only plugin zip using the manifest resolved from the catalog.
+
+        The package holds only code; its metadata (id, name, version,
+        min_core_version, requirements, targets) comes from ``manifest`` - the
+        plugin.json the catalog pointed at - not from a file inside the zip. The
+        download is size-capped and its md5 verified against ``expected_checksum``
+        before anything is written.
+        """
         max_bytes = config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024
         if len(package_bytes) > max_bytes:
             raise ValueError(f'Plugin package exceeds {config.PLUGIN_MAX_DOWNLOAD_MB} MB limit')
         checksum = hashlib.md5(package_bytes, usedforsecurity=False).hexdigest()
         if expected_checksum and checksum.lower() != str(expected_checksum).lower():
             raise ValueError('Plugin package checksum mismatch')
-        manifest = read_manifest_from_bytes(package_bytes)
+        manifest = manifest or {}
         plugin_id = manifest.get('id')
         if not valid_plugin_id(plugin_id):
             raise ValueError('Invalid or missing plugin id (expected ^[a-z][a-z0-9_]{1,63}$)')

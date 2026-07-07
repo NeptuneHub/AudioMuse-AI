@@ -83,30 +83,57 @@ def _pick_version(versions, requested=None):
     return compatible[0]
 
 
+def _versions_from_doc(doc):
+    """Return the version list offered by a fetched ``plugin.json``.
+
+    The current format is a ``plugin.json`` whose ``versions`` list holds every
+    release (each entry carries ``version``/``min_core_version``/``changelog``/
+    ``imageUrl``/``sourceUrl``/``checksum``), returned as-is. A ``plugin.json`` that
+    instead describes a single release with flat top-level fields is wrapped into a
+    one-item list for backward compatibility.
+    """
+    versions = doc.get('versions')
+    if versions:
+        return versions
+    source_url = doc.get('sourceUrl') or doc.get('source_url')
+    if source_url:
+        return [{
+            'version': doc.get('version'),
+            'changelog': doc.get('changelog', ''),
+            'min_core_version': doc.get('min_core_version') or doc.get('targetAbi'),
+            'sourceUrl': source_url,
+            'checksum': doc.get('checksum'),
+        }]
+    return None
+
+
 def _resolve_versions(entry, errors):
     """Return (detail, versions) for a catalog entry.
 
-    A catalog entry either carries an inline ``versions`` list (legacy single-file
-    catalog) or a ``manifestUrl`` pointing at the plugin's own manifest, which is
-    fetched (SSRF-guarded) and holds the detailed version history. The per-plugin
-    manifest keeps the catalog static across plugin updates.
+    A catalog entry carries the stable identity (``id``/``name``/``author``/
+    ``description``) plus a ``pluginUrl`` pointing at the plugin's own
+    ``plugin.json`` (``manifestUrl`` and an inline ``versions`` list are still
+    accepted). That file is fetched (SSRF-guarded) and holds the full ``versions``
+    list with each release's download url, checksum, min_core_version and image,
+    so there is no separate per-plugin manifest to keep in sync.
     """
     versions = entry.get('versions')
     if versions:
         return entry, versions
-    manifest_url = entry.get('manifestUrl') or entry.get('manifest_url')
-    if not manifest_url:
+    detail_url = (entry.get('pluginUrl') or entry.get('plugin_url')
+                  or entry.get('manifestUrl') or entry.get('manifest_url'))
+    if not detail_url:
         return entry, None
     try:
-        raw = _download(manifest_url, _CATALOG_MAX_BYTES)
+        raw = _download(detail_url, _CATALOG_MAX_BYTES)
         doc = json.loads(raw)
         if not isinstance(doc, dict):
-            raise TypeError('Manifest is not a JSON object')
+            raise TypeError('plugin.json is not a JSON object')
     except Exception as exc:
-        logger.warning('Failed to fetch plugin manifest %s: %s', manifest_url, exc)
-        errors.append({'repo': manifest_url, 'error': str(exc)})
+        logger.warning('Failed to fetch plugin.json %s: %s', detail_url, exc)
+        errors.append({'repo': detail_url, 'error': str(exc)})
         return entry, None
-    return doc, doc.get('versions')
+    return doc, _versions_from_doc(doc)
 
 
 def _build_catalog_entry(repo_url, entry, installed):
@@ -132,12 +159,14 @@ def _build_catalog_entry(repo_url, entry, installed):
         'name': entry.get('name') or detail.get('name') or plugin_id,
         'description': entry.get('description') or detail.get('description', ''),
         'author': entry.get('author') or detail.get('author', ''),
-        'image_url': entry.get('imageUrl') or detail.get('imageUrl', ''),
+        'image_url': best.get('imageUrl') or entry.get('imageUrl') or detail.get('imageUrl', ''),
         'latest_version': best.get('version'),
         'source_url': best.get('sourceUrl'),
         'checksum': best.get('checksum'),
         'changelog': best.get('changelog', ''),
         'min_core_version': best.get('min_core_version') or best.get('targetAbi'),
+        'targets': detail.get('targets') or [],
+        'requirements': detail.get('requirements') or [],
         'source_repo': repo_url,
         'installed_version': current.get('version') if current else None,
     }, local_errors
@@ -153,6 +182,10 @@ def _fetch_catalog():
             doc = json.loads(raw)
             if not isinstance(doc, dict):
                 raise TypeError('Repository catalog is not a JSON object')
+        except net.DownloadError as exc:
+            logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
+            errors.append({'repo': repo_url, 'error': str(exc)})
+            continue
         except Exception as exc:
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': 'Failed to fetch repository catalog'})
@@ -213,13 +246,34 @@ def api_catalog():
     return jsonify({'plugins': plugins, 'repos': _get_repos(), 'errors': errors})
 
 
-def _resolve_install_source(plugin_id):
-    """Return (source_url, checksum, source_repo) for a plugin to install/reinstall.
+def _install_manifest(match):
+    """Build the manifest stored for an install from a resolved catalog entry.
 
-    Prefers the live catalog (latest compatible version). If the catalog is
-    unreachable or no longer lists the plugin, falls back to the source_url already
-    stored for an installed plugin so a reinstall still works during an upstream
-    outage. Returns (None, None, None) when neither yields a source.
+    The zip is code-only, so this is the sole source of the plugin's metadata: the
+    plugin.json top-level identity plus the fields of the chosen release.
+    """
+    return {
+        'id': match['id'],
+        'name': match.get('name') or match['id'],
+        'author': match.get('author', ''),
+        'description': match.get('description', ''),
+        'version': match.get('latest_version'),
+        'min_core_version': match.get('min_core_version'),
+        'changelog': match.get('changelog', ''),
+        'imageUrl': match.get('image_url', ''),
+        'targets': match.get('targets') or [],
+        'requirements': match.get('requirements') or [],
+    }
+
+
+def _resolve_install_source(plugin_id):
+    """Return (source_url, checksum, source_repo, manifest) for a plugin to install.
+
+    Prefers the live catalog (latest compatible version) and builds the manifest
+    from it. If the catalog is unreachable or no longer lists the plugin, falls back
+    to the source_url and manifest already stored for an installed plugin so a
+    reinstall still works during an upstream outage. Returns all-None when neither
+    yields a source.
     """
     try:
         catalog, _ = _fetch_catalog()
@@ -228,14 +282,15 @@ def _resolve_install_source(plugin_id):
         catalog = []
     match = next((p for p in catalog if p['id'] == plugin_id), None)
     if match and match.get('source_url'):
-        return match['source_url'], match.get('checksum'), match.get('source_repo')
+        return match['source_url'], match.get('checksum'), match.get('source_repo'), _install_manifest(match)
     existing = database.get_plugin(plugin_id)
     if existing and existing.get('source_url'):
         logger.warning(
             'Plugin %s not resolvable from the catalog; reinstalling from its stored source_url', plugin_id
         )
-        return existing['source_url'], existing.get('checksum'), existing.get('source_repo')
-    return None, None, None
+        return (existing['source_url'], existing.get('checksum'), existing.get('source_repo'),
+                existing.get('manifest') or {'id': plugin_id})
+    return None, None, None, None
 
 
 @plugins_bp.route('/api/plugins/install', methods=['POST'])
@@ -245,15 +300,19 @@ def api_install():
     if not plugin_id:
         return jsonify({'error': 'Missing required field: id'}), 400
     try:
-        source_url, checksum, source_repo = _resolve_install_source(plugin_id)
+        source_url, checksum, source_repo, install_meta = _resolve_install_source(plugin_id)
         if not source_url:
             return jsonify({'error': 'Plugin not found in any configured repository'}), 404
         package = _download(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
         manifest = plugin_manager.install_package(
-            package, source_url=source_url, source_repo=source_repo, expected_checksum=checksum,
+            package, install_meta, source_url=source_url, source_repo=source_repo,
+            expected_checksum=checksum,
             on_registered=lambda _pid: restart_manager.publish_plugin_sync_request(),
         )
         return jsonify({'status': 'ok', 'manifest': manifest, 'restart_required': True})
+    except net.DownloadError as exc:
+        logger.warning('Plugin download failed for %s: %s', plugin_id, exc)
+        return jsonify({'error': str(exc)}), 502
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception:

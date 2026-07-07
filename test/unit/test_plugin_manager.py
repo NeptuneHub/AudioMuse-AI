@@ -117,26 +117,6 @@ class TestZipSafety:
         assert manager._is_safe_member('/etc/passwd') is False
         assert manager._is_safe_member('a/../../b') is False
 
-    def test_read_manifest_ok(self):
-        pkg = _make_zip({'plugin.json': '{"id": "demo", "version": "1.0.0"}'})
-        manifest = manager.read_manifest_from_bytes(pkg)
-        assert manifest['id'] == 'demo'
-
-    def test_read_manifest_wrapped_dir(self):
-        pkg = _make_zip({'plugin.json': '{"id": "demo"}', '__init__.py': ''}, wrap_dir='demo')
-        manifest = manager.read_manifest_from_bytes(pkg)
-        assert manifest['id'] == 'demo'
-
-    def test_read_manifest_missing(self):
-        pkg = _make_zip({'__init__.py': ''})
-        with pytest.raises(ValueError):
-            manager.read_manifest_from_bytes(pkg)
-
-    def test_read_manifest_rejects_zip_slip(self):
-        pkg = _make_unsafe_zip('../evil.py')
-        with pytest.raises(ValueError):
-            manager.read_manifest_from_bytes(pkg)
-
     def test_safe_extract_rejects_zip_slip(self, tmp_path):
         pkg = _make_unsafe_zip('../evil.py')
         target = str(tmp_path / 'demo')
@@ -392,7 +372,7 @@ class TestInstallOrdering:
     def test_broadcast_fires_only_after_web_install_completes(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
-        pkg = _make_zip({'plugin.json': '{"id": "demo", "version": "1.0.0"}', '__init__.py': ''})
+        pkg = _make_zip({'__init__.py': ''})
         order = []
         monkeypatch.setattr(database, 'upsert_plugin', lambda *a, **k: order.append('db_commit'))
 
@@ -404,12 +384,60 @@ class TestInstallOrdering:
         monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: order.append('flask_hooks'))
 
         mgr.install_package(
-            pkg, source_url='https://example.com/demo.zip',
+            pkg, {'id': 'demo', 'version': '1.0.0'}, source_url='https://example.com/demo.zip',
             on_registered=lambda pid: order.append('broadcast'),
         )
 
         assert order.index('db_commit') < order.index('flask_pip') < order.index('broadcast')
         assert order.index('flask_hooks') < order.index('broadcast')
+
+
+class TestInstallFromManifest:
+    def _mgr(self, monkeypatch, tmp_path, stored):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        monkeypatch.setattr(database, 'upsert_plugin',
+                            lambda *a, **k: stored.update({'args': a}))
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, 'setup_namespace', lambda: None)
+        monkeypatch.setattr(mgr, '_purge_modules', lambda pid: None)
+        monkeypatch.setattr(mgr, '_materialize_one', lambda *a, **k: None)
+        monkeypatch.setattr(mgr, '_install_specs', lambda *a, **k: True)
+        monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: None)
+        return mgr
+
+    def test_stores_manifest_from_catalog_not_zip(self, monkeypatch, tmp_path):
+        stored = {}
+        mgr = self._mgr(monkeypatch, tmp_path, stored)
+        pkg = _make_zip({'__init__.py': ''})
+        manifest = {'id': 'demo', 'name': 'Demo', 'version': '2.0.0',
+                    'min_core_version': '2.5.0', 'requirements': []}
+        mgr.install_package(pkg, manifest, source_url='https://e/demo.zip')
+        # upsert_plugin(plugin_id, name, version, manifest, ...)
+        assert stored['args'][0] == 'demo'
+        assert stored['args'][2] == '2.0.0'
+        assert stored['args'][3] is manifest
+
+    def test_rejects_checksum_mismatch(self, monkeypatch, tmp_path):
+        mgr = self._mgr(monkeypatch, tmp_path, {})
+        pkg = _make_zip({'__init__.py': ''})
+        with pytest.raises(ValueError):
+            mgr.install_package(pkg, {'id': 'demo'}, source_url='https://e/demo.zip',
+                                expected_checksum='deadbeef')
+
+    def test_rejects_incompatible_min_core(self, monkeypatch, tmp_path):
+        mgr = self._mgr(monkeypatch, tmp_path, {})
+        pkg = _make_zip({'__init__.py': ''})
+        with pytest.raises(ValueError):
+            mgr.install_package(pkg, {'id': 'demo', 'min_core_version': '9.9.9'},
+                                source_url='https://e/demo.zip')
+
+    def test_rejects_invalid_id(self, monkeypatch, tmp_path):
+        mgr = self._mgr(monkeypatch, tmp_path, {})
+        pkg = _make_zip({'__init__.py': ''})
+        with pytest.raises(ValueError):
+            mgr.install_package(pkg, {'id': 'Bad Id'}, source_url='https://e/demo.zip')
 
 
 class TestLoadIsolation:
