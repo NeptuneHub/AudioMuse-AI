@@ -155,7 +155,7 @@ def _fetch_catalog():
                 raise TypeError('Repository catalog is not a JSON object')
         except Exception as exc:
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
-            errors.append({'repo': repo_url, 'error': str(exc)})
+            errors.append({'repo': repo_url, 'error': 'Failed to fetch repository catalog'})
             continue
         entries = doc.get('plugins')
         if not isinstance(entries, list):
