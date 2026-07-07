@@ -44,7 +44,9 @@ def register(ctx):
 
 If you want a settings page, add a route called `settings`. AudioMuse-AI opens it
 from the Settings button on the Manage Plugins page, so it does not add a menu
-entry for it.
+entry for it. If your settings route has a different name, point to it with
+`ctx.set_settings_page("my_plugin.my_settings")`. The settings page is always
+admin only.
 
 To share your plugin, add it to the public repository, or host your own
 `manifest.json` and add its link under Plugins > Repositories. You do not write
@@ -164,10 +166,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 ```
 
-This works on Docker and Kubernetes. The Windows and macOS standalone builds
-cannot install extra packages, so a plugin that lists `requirements` there is
-marked as not compatible. Plugins that only use built-in libraries (Flask, numpy,
-psycopg2, onnxruntime, redis, rq, and the standard library) work everywhere.
+This works on Docker and Kubernetes when pip installs are allowed, which is the
+default. An admin can turn them off with the `PLUGIN_ALLOW_PIP=false` environment
+variable. The Windows and macOS standalone builds cannot install extra packages,
+so a plugin that lists `requirements` there is marked as not compatible. Plugins
+that only use built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq,
+and the standard library) work everywhere.
 
 ### Choose where the plugin runs (Flask or Worker)
 
@@ -185,3 +189,48 @@ Use `["flask"]` for a page-only plugin (like SongCounter), `["worker"]` for a
 task/cron-only plugin, or leave `targets` out to run on both. This matters most
 when the worker container has no internet access: a Flask-only plugin then does
 not try (and fail) to reach GitHub or PyPI from the worker.
+
+## Who can see and manage plugins
+
+AudioMuse-AI keeps a clear line between managing plugins and using them.
+
+* The Manage Plugins page and every install, update, uninstall, enable, disable,
+  settings and apply action are admin only. A normal user cannot reach them.
+* An installed plugin's own pages (under `/plugins/<your id>/`) are open to any
+  logged-in user, so a plugin page is a normal feature of the app.
+* A plugin's settings page is admin only, even though it lives under the same
+  `/plugins/<your id>/` path. AudioMuse-AI recognises it by its endpoint, not by
+  its URL.
+
+If your plugin has a menu item that only admins should see, pass `admin_only=True`
+when you add it. Non-admin users never see the link.
+
+```python
+def register(ctx):
+    ctx.add_blueprint(bp)
+    ctx.add_menu_item("Admin Report", "my_plugin.report", admin_only=True)
+```
+
+Keep in mind that `admin_only` hides the menu link only. The page URL under
+`/plugins/<your id>/` stays reachable by any logged-in user. The one page that
+AudioMuse-AI gates to admins for you is the settings page.
+
+## What works on each build
+
+Nearly everything a plugin can do works the same on Docker, Kubernetes and the
+Windows and macOS standalone builds. The only real difference is extra pip
+packages.
+
+| Capability | Docker / Kubernetes | Windows / macOS standalone |
+|---|---|---|
+| Pages, menu items, settings page | Yes | Yes |
+| Read and write the database, own tables | Yes | Yes |
+| Per-plugin settings | Yes | Yes |
+| Create playlists on the media server | Yes | Yes |
+| Cron tasks and worker tasks | Yes | Yes |
+| Built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq, standard library) | Yes | Yes |
+| Extra pip packages (`requirements`) | Yes, when `PLUGIN_ALLOW_PIP` is true (the default) | No, the plugin is marked "incompatible" |
+
+If your plugin only uses built-in libraries, it runs everywhere. If it needs an
+extra pip package, it runs on Docker and Kubernetes but is skipped on the
+standalone builds.
