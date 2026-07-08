@@ -187,7 +187,7 @@ Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
 > **Tested on:** Debian GNU/Linux 12 (bookworm) with glibc 2.36. RPMs are expected to work on current Fedora/RHEL systems but may not support older distributions.
 
 > [!NOTE]
-> When `systemctl` is used with the `--user` flag, the process is shutdown whenever the user logs out. To keep the process alive after loging out, run `loginctl enable-linger yourusername`
+> When `systemctl` is used with the `--user` flag, the process is shut down whenever the user logs out. To keep the process alive after logging out, run `loginctl enable-linger yourusername`.
 
 ## Local Deployment Windows
 
