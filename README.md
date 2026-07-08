@@ -177,7 +177,7 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 </details>
 
 > [!IMPORTANT]
-> Before update a native version, first stop any running instance.
+> Before updating a native version, first stop any running instance.
 
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
