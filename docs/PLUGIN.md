@@ -276,7 +276,7 @@ def register(ctx):
 
 The listener runs inside the analysis loop, so keep it quick. If the work is heavy (a second model over the whole audio), hand it to `enqueue` instead and copy `audio_path` first, or re-download the audio by `item_id` in the background job, because the temp file is gone once your listener returns. If your listener raises, AudioMuse-AI logs it and moves on - it never breaks the analysis.
 
-SongCounter uses this exact hook. Its listener keeps a running count and the last song's payload in a small table, and its page renders, under the chart, "Songs analyzed so far" plus a table with every field the hook passed for the most recent song. Because the hook runs on the worker and the page runs on Flask, that plugin leaves `targets` out so it loads on both containers.
+SongCounter uses this exact hook. Its listener stores the current `run_id`, a per-run count and the last song's payload in a small table: when the `run_id` changes it resets the count to 1, otherwise it adds one. Its page renders, under the chart, "Songs analyzed in the latest run" plus a table with every field the hook passed for the most recent song. Because the hook runs on the worker and the page runs on Flask, that plugin leaves `targets` out so it loads on both containers.
 
 ### Use an extra pip package
 
