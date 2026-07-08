@@ -340,6 +340,7 @@ def _fetch_catalog():
         )
 
     merged = {}
+    failed_ids = set()
     if pending:
         workers = max(1, min(config.PLUGIN_CATALOG_FETCH_WORKERS, len(pending)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -348,11 +349,16 @@ def _fetch_catalog():
             errors.extend(local_errors)
             if entry_data:
                 merged[plugin_id] = entry_data
-    if failed_repos:
+            elif local_errors and plugin_id:
+                failed_ids.add(plugin_id)
+    if failed_repos or failed_ids:
         previous, _prev_errors, _prev_at = _load_catalog_cache()
         for entry in previous:
-            if entry.get('source_repo') in failed_repos and entry.get('id') not in merged:
-                merged[entry['id']] = entry
+            entry_id = entry.get('id')
+            if entry_id in merged:
+                continue
+            if entry.get('source_repo') in failed_repos or entry_id in failed_ids:
+                merged[entry_id] = entry
     result = list(merged.values())
     _store_catalog_cache(result, errors)
     return result, errors

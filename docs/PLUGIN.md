@@ -14,7 +14,7 @@ You manage plugins from inside AudioMuse-AI. Open the **Plugins** page from the 
 
 ### Install a plugin
 
-Go to the Catalog tab and click **Install**. You must confirm a warning first: plugins run with full application and database permissions, so only install plugins you trust. If the plugin has extra pip dependencies the install can take up to a minute. Do not reload the page while it runs.
+Go to the Catalog tab and click **Install**. You must confirm a warning first: plugins run with full application and database permissions, so only install plugins you trust. If the plugin has extra pip dependencies the install can take up to a minute. Do not reload the page while it runs. The worker containers download the plugin and its dependencies at the same time, so the restart afterwards is fast.
 
 ### Apply your changes (restart)
 
@@ -51,7 +51,7 @@ https://github.com/NeptuneHub/AudioMuse-AI-plugins/tree/main/plugins/SongCounter
 
 A plugin needs two files: `plugin.json` says what the plugin is, and `__init__.py` says what it does (it can add more, such as a `tasks.py` or a `templates/` folder). The examples below come from SongCounter, the reference plugin, so the easiest way to start is to copy it.
 
-`plugin.json` is the plugin's whole description. This is SongCounter's:
+`plugin.json` is the plugin's whole description. This is a simplified version of SongCounter's (the real one has more releases, and no `targets` because its worker hook needs both containers):
 
 ```json
 {
@@ -59,7 +59,6 @@ A plugin needs two files: `plugin.json` says what the plugin is, and `__init__.p
   "name": "SongCounter",
   "author": "NeptuneHub",
   "description": "Counts analyzed songs and shows them as a bar chart.",
-  "targets": ["flask"],
   "requirements": ["matplotlib"],
   "versions": [
     {
@@ -72,7 +71,7 @@ A plugin needs two files: `plugin.json` says what the plugin is, and `__init__.p
 }
 ```
 
-The top level is the plugin's identity: `id` (lowercase, matching `^[a-z][a-z0-9_]+$`, used in its URL and table names), `name`, `author`, `description`, `targets` (which container runs it), and `requirements` (extra pip packages). The `versions` list has one entry per release, each with its own `version`, `min_core_version` (the core version that release needs), `changelog`, and `imageUrl`. You add a new entry to the top for each release; the build workflow fills in that release's `sourceUrl` (the code zip) and `checksum` (its md5), so you never write those by hand.
+The top level is the plugin's identity: `id` (lowercase, matching `^[a-z][a-z0-9_]{1,63}$`, used in its URL and table names), `name`, `author`, `description`, `targets` (which container runs it - optional, see "Choose where the plugin runs"), and `requirements` (extra pip packages). The `versions` list has one entry per release, each with its own `version`, `min_core_version` (the core version that release needs), `changelog`, and `imageUrl`. You add a new entry to the top for each release; the build workflow fills in that release's `sourceUrl` (the code zip) and `checksum` (its md5), so you never write those by hand.
 
 `__init__.py` holds the code. It must define `register(ctx)`, which tells AudioMuse-AI what to add. SongCounter adds one page and a menu item that opens it:
 
@@ -165,8 +164,11 @@ def make_fast_playlist():
     cur.execute("SELECT item_id FROM score WHERE tempo > 120 LIMIT 50")
     track_ids = [row[0] for row in cur.fetchall()]
     cur.close()
-    create_or_replace_playlist("Fast Songs", track_ids)
+    if track_ids:
+        create_or_replace_playlist("Fast Songs", track_ids)
 ```
+
+The call raises an error when the list is empty, so check that you found songs first.
 
 ### Save and read settings
 
@@ -192,7 +194,7 @@ def migrate(db):
     db.commit()
 
 def register(ctx):
-    ctx.on_install(migrate)   # runs once when the plugin is installed
+    ctx.on_install(migrate)   # runs at install and again on every update
 ```
 
 ### Run a job on a schedule
@@ -209,7 +211,7 @@ def register(ctx):
     ctx.add_cron_task("daily", daily_job)
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an installed plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox, and a **Run now** button that starts the task immediately on the worker. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`).
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox, and a **Run now** button that starts the task immediately on the worker. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
 
 ### Run a job in the background
 
@@ -231,13 +233,13 @@ def rebuild():
     return render_page("<p>Rebuild started. Check the worker logs.</p>", title="My Plugin")
 ```
 
-Use `enqueue(func, ..., queue='high')` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
 
-One important rule: the job runs on the worker, so the worker must have your plugin's code. Do not set `targets` to `["flask"]` if your plugin calls `enqueue` - leave `targets` out (the default is both containers).
+One important rule: the job runs on the worker, so the worker must have your plugin's code - do not set `targets` to `["flask"]` (see "Choose where the plugin runs").
 
 ### React to a song after analysis
 
-Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it on the worker right after each song finishes analysis (all models run and results saved). This is where you run another model on the audio or store extra information about the song. It only runs on the worker, so leave `targets` out or set it to `["worker"]`.
+Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it on the worker right after each song finishes analysis (all models run and results saved). This is where you run another model on the audio or store extra information about the song.
 
 Your function receives one dict:
 
@@ -276,7 +278,7 @@ def register(ctx):
 
 The listener runs inside the analysis loop, so keep it quick. If the work is heavy (a second model over the whole audio), hand it to `enqueue` instead and copy `audio_path` first, or re-download the audio by `item_id` in the background job, because the temp file is gone once your listener returns. If your listener raises, AudioMuse-AI logs it and moves on - it never breaks the analysis.
 
-SongCounter uses this exact hook. Its listener stores the current `run_id`, a per-run count and the last song's payload in a small table: when the `run_id` changes it resets the count to 1, otherwise it adds one. Its page renders, under the chart, "Songs analyzed in the latest run" plus a table with every field the hook passed for the most recent song. Because the hook runs on the worker and the page runs on Flask, that plugin leaves `targets` out so it loads on both containers.
+SongCounter uses this exact hook to count the songs of the latest analysis run and show the last song's full payload on its page.
 
 ### Use an extra pip package
 
@@ -294,13 +296,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 ```
 
-This works on Docker and Kubernetes when pip installs are allowed, which is the default (an admin can turn them off with `PLUGIN_ALLOW_PIP=false`). The Windows and macOS standalone builds cannot install extra packages, so a plugin that lists `requirements` there is marked as not compatible. Plugins that use only built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq, and the standard library) work everywhere.
+This works on Docker and Kubernetes when pip installs are allowed, which is the default (an admin can turn them off with `PLUGIN_ALLOW_PIP=false`). The standalone builds cannot install extra packages - see "What works on each build".
 
 ### Choose where the plugin runs (Flask or Worker)
 
 By default a plugin is installed on both the Flask (web) container and the Worker (batch) container. If your plugin only adds pages and menus (Flask) or only adds tasks and cron jobs (Worker), set a top-level `targets` list in `plugin.json` so the other container never downloads the code or installs pip packages it will not use.
 
-Use `["flask"]` for a page-only plugin (like SongCounter), `["worker"]` for a task or cron-only plugin, or leave `targets` out to run on both. This matters most when the worker container has no internet access: a Flask-only plugin then does not try (and fail) to reach GitHub or PyPI from the worker.
+Use `["flask"]` for a page-only plugin, `["worker"]` for a task or cron-only plugin, or leave `targets` out to run on both - SongCounter leaves it out, because its page runs on Flask and its analysis hook runs on the worker. This matters most when the worker container has no internet access: a Flask-only plugin then does not try (and fail) to reach GitHub or PyPI from the worker.
 
 ## The plugin lifecycle
 
@@ -375,7 +377,7 @@ What survives an update: the plugin's settings, its data tables, its Scheduled T
 
 ## API reference
 
-Everything a plugin may use comes from `plugin.api`. This is the whole surface.
+Everything below comes from `plugin.api`. The one exception is the media-server helper shown earlier, which you import from `tasks.mediaserver`.
 
 | Import | What it does |
 |---|---|
@@ -399,7 +401,7 @@ And the methods on the `ctx` object in `register(ctx)`:
 | `add_menu_item(label, endpoint, admin_only=False)` | Add a link to the app menu. |
 | `set_settings_page(endpoint)` | Point the Settings button at your own page (only needed when the route is not called `settings`). |
 | `add_cron_task(name, func, queue='default')` | Register a task the admin can schedule as `plugin.<your id>.<name>`. |
-| `add_task(name, func, queue='default')` | Register a named worker task you can enqueue later. |
+| `add_task(name, func, queue='default')` | Register a named worker task. It appears on the Scheduled Tasks page like a cron task, so the admin can schedule it or run it now. |
 | `on_install(func)` | Run once at install and on every update. Gets the database connection. |
 | `on_flask_start(func)` / `on_worker_start(func)` | Run at every start of that container, after the plugin loads. |
 | `register_onnx_provider(name, options, position)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. |
@@ -436,8 +438,6 @@ Nearly everything a plugin can do works the same on Docker, Kubernetes and the W
 | Built-in libraries (Flask, numpy, psycopg2, onnxruntime, redis, rq, standard library) | Yes | Yes |
 | Extra pip packages (`requirements`) | Yes, when `PLUGIN_ALLOW_PIP` is true (the default) | No, the plugin is marked "incompatible" |
 
-If your plugin uses only built-in libraries, it runs everywhere. If it needs an extra pip package, it runs on Docker and Kubernetes but is skipped on the standalone builds.
-
 ## Configuration for admins
 
 The plugin system works out of the box. These environment variables let an admin change its behavior:
@@ -451,6 +451,8 @@ The plugin system works out of the box. These environment variables let an admin
 | `PLUGIN_MAX_DOWNLOAD_MB` | `50` | Maximum size of one plugin download. |
 | `PLUGIN_CATALOG_REFRESH_INTERVAL` | `3600` | How often (seconds) the catalog is checked for new versions in the background. |
 | `PLUGIN_HTTP_FORCE_IPV4` | `true` | Use IPv4 for plugin downloads. Set `false` only on an IPv6-only host. |
+| `PLUGIN_HTTP_CONNECT_TIMEOUT` / `PLUGIN_HTTP_READ_TIMEOUT` | `10` / `20` | Seconds to wait when connecting to and reading from a plugin repository. Raise them on a very slow network. |
+| `PLUGIN_HTTP_RETRIES` / `PLUGIN_HTTP_BACKOFF` | `4` / `0.5` | How many times a failed download is retried and how fast the wait between tries grows. |
 
 On Kubernetes and Docker the Flask and worker containers each keep their own plugins volume; there is nothing to share between them.
 
@@ -462,7 +464,7 @@ Each plugin on the Installed tab has a status badge:
 
 * **ok** - the plugin loaded and is running.
 * **error** - the plugin failed to load. A short message shows under the plugin and tells you which container failed (for example "failed on worker: ..."); the full error is in that container's logs. The rest of AudioMuse-AI keeps working.
-* **incompatible** - this version needs a newer AudioMuse-AI core, or it needs extra pip packages on a standalone build that cannot install them.
+* **incompatible** - this version needs a newer AudioMuse-AI core, or it needs extra pip packages on a build that cannot install them (a standalone build, or `PLUGIN_ALLOW_PIP=false`).
 * **deps_failed** - the plugin code is installed but its pip dependencies could not be installed. The message under the plugin shows the pip error.
 * **pending** - the plugin has not been loaded yet. Apply the restart.
 
@@ -484,4 +486,4 @@ Plugin code lives on a volume, but the database remembers every installed plugin
 
 ### A plugin page gives 404 right after install
 
-You have not applied the restart yet. Click **Apply now (restart)** on the Plugins page.
+You have not applied the restart yet (see "Apply your changes").

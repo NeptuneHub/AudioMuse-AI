@@ -580,7 +580,7 @@ class PluginManager:
                     ctx = self._build_context(plugin_id, role)
                     record['menu_items'] = ctx.menu_items
                     record['settings_endpoint'] = ctx.settings_endpoint
-                    record['cron_tasks'] = ctx.cron_tasks
+                    record['cron_tasks'] = {**(ctx.tasks or {}), **(ctx.cron_tasks or {})}
                     record['onnx_providers'] = ctx.onnx_providers
                     record['song_analyzed_hooks'] = ctx.song_analyzed_hooks
                     if role == 'web' and flask_app is not None and ctx.blueprint is not None:
@@ -696,6 +696,14 @@ class PluginManager:
             self._persist_status(plugin_id, 'deps_failed', role='flask', error=deps_error)
         elif pip_possible:
             self._persist_status(plugin_id, None, role='flask', error=None)
+            try:
+                connection = database.connect_raw()
+                try:
+                    database.clear_plugin_deps_failed(plugin_id, connection)
+                finally:
+                    connection.close()
+            except Exception:
+                logger.exception('Failed to clear deps_failed status for plugin %s', plugin_id)
         self.run_install_hooks(plugin_id)
         self._runtime_dirty = True
         return manifest, deps_ok, deps_error
@@ -711,7 +719,9 @@ class PluginManager:
             logger.exception('Plugin %s import failed during install hooks', plugin_id)
             return
         try:
-            database.set_plugin_cron_tasks(plugin_id, ctx.cron_tasks or {})
+            database.set_plugin_cron_tasks(
+                plugin_id, {**(ctx.tasks or {}), **(ctx.cron_tasks or {})}
+            )
         except Exception:
             logger.exception('Failed to persist cron task declarations for plugin %s', plugin_id)
         if not ctx.install_hooks:
@@ -876,7 +886,10 @@ def run_plugin_task(dotted, *args, **kwargs):
     """RQ entrypoint: import a plugin task by dotted path and run it in an app context.
 
     When the plugin code is missing on this worker's volume (fresh pod, plugin-sync
-    missed), it re-materializes every enabled plugin once and retries the import.
+    missed), a throwaway manager re-materializes the enabled plugins once and the
+    import is retried - the global manager's in-memory registrations (hooks, ONNX
+    providers, cron tasks) are never touched, which matters on Windows where
+    SimpleWorker runs jobs inside the long-lived worker process.
     Cron-enqueued jobs have a task_status row (created by the dispatcher); that row
     is transitioned to SUCCESS/FAILURE here so it can never sit PENDING forever.
     """
@@ -896,8 +909,10 @@ def run_plugin_task(dotted, *args, **kwargs):
             try:
                 module = importlib.import_module(module_path)
             except ModuleNotFoundError:
-                plugin_manager.sync(role=None)
-                plugin_manager.ensure_requirements(role=None)
+                recovery = PluginManager()
+                recovery.setup_namespace()
+                recovery.sync(role=None)
+                recovery.ensure_requirements(role=None)
                 importlib.invalidate_caches()
                 module = importlib.import_module(module_path)
             func = getattr(module, fn_name)

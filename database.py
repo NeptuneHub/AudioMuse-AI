@@ -1367,6 +1367,24 @@ def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
         cur.close()
 
 
+def clear_plugin_deps_failed(plugin_id, conn=None):
+    """Reset a stale deps_failed badge once a later install got the dependencies in.
+
+    load_status goes back to NULL (shown as 'pending' until the restart) instead of
+    keeping a failure the plugin no longer has.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET load_status = NULL WHERE id = %s AND load_status = 'deps_failed'",
+            (plugin_id,),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
 def get_plugin_settings(plugin_id, conn=None):
     """Return the settings JSONB dict for a plugin (empty dict if none)."""
     db = conn or get_db()
@@ -1452,7 +1470,13 @@ def delete_cron_rows_for_plugin(plugin_id, conn=None):
 
 
 def drop_plugin_data_tables(plugin_id, conn=None):
-    """Drop every table a plugin created under the ``plugin_<id>__`` namespace."""
+    """Drop every table a plugin created under the ``plugin_<id>__`` namespace.
+
+    The character after the prefix must not be an underscore: sanctioned table
+    names (``api.table``) always start with a letter, and skipping underscore
+    continuations keeps a sibling id like ``foo_`` (tables ``plugin_foo___x``)
+    safe when ``foo`` is purged.
+    """
     db = conn or get_db()
     cur = db.cursor()
     dropped = []
@@ -1463,7 +1487,7 @@ def drop_plugin_data_tables(plugin_id, conn=None):
         )
         names = [r[0] for r in cur.fetchall()]
         for tn in names:
-            if tn.startswith(prefix):
+            if tn.startswith(prefix) and not tn[len(prefix):].startswith('_'):
                 cur.execute(sql.SQL('DROP TABLE IF EXISTS {} CASCADE').format(sql.Identifier(tn)))
                 dropped.append(tn)
         db.commit()

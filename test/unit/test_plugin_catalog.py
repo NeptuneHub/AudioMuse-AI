@@ -318,6 +318,42 @@ class TestCatalogCache:
         assert blueprint._load_catalog_cache() == ([], [], 0.0)
 
 
+class TestPerPluginCarryForward:
+    def test_transient_plugin_json_failure_keeps_cached_entry(self, monkeypatch):
+        store = {}
+        previous = json.dumps({
+            'at': 1.0,
+            'plugins': [
+                {'id': 'flaky', 'name': 'Flaky', 'latest_version': '1.0.0',
+                 'source_url': 'https://e/flaky.zip', 'checksum': 'c',
+                 'source_repo': 'https://example.com/manifest.json'},
+            ],
+            'errors': [],
+        })
+        store['PLUGIN_CATALOG_CACHE'] = previous
+        monkeypatch.setattr(database, 'set_app_config_value', lambda k, v: store.__setitem__(k, v))
+        monkeypatch.setattr(database, 'get_app_config_value', lambda k: store.get(k))
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: [])
+        monkeypatch.setattr(blueprint, '_get_repos', lambda: ['https://example.com/manifest.json'])
+        catalog = {'plugins': [
+            {'id': 'flaky', 'pluginUrl': 'https://example.com/dist/flaky/plugin.json'},
+            {'id': 'healthy', 'pluginUrl': 'https://example.com/dist/healthy/plugin.json'},
+        ]}
+        healthy = {'id': 'healthy', 'name': 'Healthy', 'version': '2.0.0', 'min_core_version': '2.5.0',
+                   'sourceUrl': 'https://e/h.zip', 'checksum': 'h'}
+
+        def download(url, _max):
+            if 'flaky' in url.rsplit('/', 2)[-2]:
+                raise net.DownloadError('Timed out reaching example.com')
+            return json.dumps(healthy if '/dist/' in url else catalog).encode()
+
+        monkeypatch.setattr(blueprint, '_download', download)
+        plugins, errors = blueprint._fetch_catalog()
+        ids = sorted(p['id'] for p in plugins)
+        assert ids == ['flaky', 'healthy']
+        assert errors
+
+
 class TestVersionHelpers:
     def test_pick_version_skips_entries_without_source_url(self, monkeypatch):
         monkeypatch.setattr(blueprint.config, 'APP_VERSION', 'v2.5.0')

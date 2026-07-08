@@ -94,9 +94,16 @@
 
         document.addEventListener('DOMContentLoaded', load);
         async function load(){
+            // Save stays disabled until the current rows are loaded: saving over a
+            // failed load would overwrite the real schedules with blank values.
+            const saveBtn = document.getElementById('save-btn');
+            saveBtn.disabled = true;
             try{
                 const res = await fetch("{{ url_for('cron_bp.get_cron_entries') }}");
-                if(!res.ok) return;
+                if(!res.ok){
+                    alert('Could not load the current schedules. Reload the page before saving.');
+                    return;
+                }
                 const rows = await res.json();
                 // cache rows to avoid refetching on save
                 window.cronRows = rows;
@@ -114,7 +121,11 @@
                 if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled }
                 else { document.getElementById('alchemy-radio-cron').value = '0 3 * * 6'; document.getElementById('alchemy-radio-enabled').checked = false }
                 await loadPluginTasks(rows);
-            }catch(e){ console.error(e) }
+                saveBtn.disabled = false;
+            }catch(e){
+                console.error(e);
+                alert('Could not load the current schedules. Reload the page before saving.');
+            }
         }
 
         async function loadPluginTasks(rows){

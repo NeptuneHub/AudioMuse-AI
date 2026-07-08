@@ -103,3 +103,26 @@ class TestEnsurePluginsTable:
         database.ensure_plugins_table(fresh_db)
         database.ensure_plugins_table(fresh_db)
         assert database.list_plugins(fresh_db) == []
+
+
+class TestDropPluginDataTables:
+    def test_purge_never_touches_a_sibling_plugin_with_trailing_underscore(self, fresh_db):
+        import database
+
+        with fresh_db.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS plugin_foo__data, plugin_foo___data CASCADE")
+            cur.execute("CREATE TABLE plugin_foo__data (x INT)")
+            cur.execute("CREATE TABLE plugin_foo___data (x INT)")
+        fresh_db.commit()
+        try:
+            dropped = database.drop_plugin_data_tables('foo', fresh_db)
+            assert dropped == ['plugin_foo__data']
+            with fresh_db.cursor() as cur:
+                cur.execute("SELECT to_regclass('plugin_foo__data'), to_regclass('plugin_foo___data')")
+                own, sibling = cur.fetchone()
+            assert own is None
+            assert sibling is not None
+        finally:
+            with fresh_db.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS plugin_foo__data, plugin_foo___data CASCADE")
+            fresh_db.commit()

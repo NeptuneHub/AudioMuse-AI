@@ -187,6 +187,22 @@
             if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
             if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
             div.innerHTML = html;
+            const sel = div.querySelector('select[data-versions]');
+            if (sel) {
+                const installBtn = div.querySelector('button[data-act="install"]');
+                const updateLabel = function () {
+                    const v = sel.value;
+                    if (isInstalled && String(v) === String(p.installed_version)) {
+                        installBtn.textContent = 'Reinstall';
+                    } else if (isUpdate && String(v) === String(p.latest_version)) {
+                        installBtn.textContent = 'Update to v' + v;
+                    } else {
+                        installBtn.textContent = 'Install v' + v;
+                    }
+                };
+                sel.addEventListener('change', updateLabel);
+                updateLabel();
+            }
             box.appendChild(div);
         });
     }
