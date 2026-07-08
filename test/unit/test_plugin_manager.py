@@ -878,7 +878,7 @@ class TestRunSongAnalyzedHookHelper:
         import tasks.analysis_helper as ah
         pm = self._PM([])
         monkeypatch.setattr('plugin.manager.plugin_manager', pm)
-        ah.run_song_analyzed_hook({'Id': '1'}, '/tmp/a.mp3', None, None, None, None, 'alb', 'Album')
+        ah.run_song_analyzed_hook({'Id': '1'}, '/tmp/a.mp3', None, None, None, None, 'alb', 'Album', 'run-7')
         assert pm.received is None
 
     def test_builds_and_forwards_payload(self, monkeypatch):
@@ -887,9 +887,10 @@ class TestRunSongAnalyzedHookHelper:
         monkeypatch.setattr('plugin.manager.plugin_manager', pm)
         ah.run_song_analyzed_hook(
             {'Id': 42, 'Name': 'Song', 'AlbumArtist': 'Artist', 'Album': 'Alb'},
-            '/tmp/a.mp3', {'tempo': 120}, None, None, {'happy': 0.9}, 'alb-id', 'Album',
+            '/tmp/a.mp3', {'tempo': 120}, None, None, {'happy': 0.9}, 'alb-id', 'Album', 'run-7',
         )
         assert pm.received['item_id'] == '42'
+        assert pm.received['run_id'] == 'run-7'
         assert pm.received['audio_path'] == '/tmp/a.mp3'
         assert pm.received['metadata']['title'] == 'Song'
         assert pm.received['metadata']['artist'] == 'Artist'
