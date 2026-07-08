@@ -69,7 +69,7 @@ And now just some **NEWS:**
 ## Disclaimer
 
 > [!IMPORTANT]
->  Despite the similar name, this project (**AudioMuse-AI**) is an independent, community-driven effort. It has no official connection to the website audiomuse.ai.
+> Despite the similar name, this project (**AudioMuse-AI**) is an independent, community-driven effort. It has no official connection to the website audiomuse.ai.
 
 We are **not affiliated with, endorsed by, or sponsored by** the owners of `audiomuse.ai`.
 
