@@ -235,6 +235,46 @@ Use `enqueue(func, ..., queue='high')` if the job should skip the analysis queue
 
 One important rule: the job runs on the worker, so the worker must have your plugin's code. Do not set `targets` to `["flask"]` if your plugin calls `enqueue` - leave `targets` out (the default is both containers).
 
+### React to a song after analysis
+
+Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it on the worker right after each song finishes analysis (all models run and results saved). This is where you run another model on the audio or store extra information about the song. It only runs on the worker, so leave `targets` out or set it to `["worker"]`.
+
+Your function receives one dict:
+
+* `item_id` - the media-server id (string).
+* `audio_path` - the temporary audio file on disk. It is deleted right after your listener returns, so read it now if you need it.
+* `metadata` - `title`, `artist`, `album`, `album_artist`, `year`, `rating`, `file_path`, `album_id`, `album_name`.
+* `media_item` - the full raw track object from the media server.
+* `analysis` - `{tempo, key, scale, moods, energy}`, or `None` if MusiCNN was skipped for this song.
+* `top_moods` - the top moods as `{name: score}`.
+* `musicnn_embedding`, `clap_embedding` - numpy arrays, or `None` when that model did not run.
+
+```python
+from plugin.api import get_db, table, logger
+
+def on_analyzed(song):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO " + table("seen") + " (item_id, tempo) VALUES (%s, %s) "
+        "ON CONFLICT DO NOTHING",
+        (song["item_id"], (song["analysis"] or {}).get("tempo")),
+    )
+    db.commit()
+    cur.close()
+
+def migrate(db):
+    cur = db.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS " + table("seen") + " (item_id TEXT PRIMARY KEY, tempo REAL)")
+    db.commit()
+
+def register(ctx):
+    ctx.on_install(migrate)
+    ctx.on_song_analyzed(on_analyzed)
+```
+
+The listener runs inside the analysis loop, so keep it quick. If the work is heavy (a second model over the whole audio), hand it to `enqueue` instead and copy `audio_path` first, or re-download the audio by `item_id` in the background job, because the temp file is gone once your listener returns. If your listener raises, AudioMuse-AI logs it and moves on - it never breaks the analysis.
+
 ### Use an extra pip package
 
 If you need a library that is not built in, add it to the top-level `requirements` list in `plugin.json` (this is where SongCounter lists `matplotlib`). AudioMuse-AI installs it for you at install time, then you import it like normal. You can pin an exact version or a range, using the normal pip syntax:

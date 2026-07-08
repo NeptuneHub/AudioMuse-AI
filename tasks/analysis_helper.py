@@ -138,6 +138,42 @@ def _plugin_onnx_providers():
         return []
 
 
+def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding,
+                           clap_embedding, top_moods, album_id, album_name):
+    """Fire plugin on_song_analyzed hooks for a finished song; guarded no-op when no plugin listens.
+
+    Fully wrapped so it can never raise into the analysis loop, and it builds the
+    payload only when a worker plugin actually registered a listener.
+    """
+    try:
+        from plugin.manager import plugin_manager
+        if not plugin_manager.enabled() or not plugin_manager.song_analyzed_hooks():
+            return
+        payload = {
+            'item_id': str(item.get('Id')),
+            'audio_path': audio_path,
+            'metadata': {
+                'title': item.get('Name'),
+                'artist': item.get('AlbumArtist'),
+                'album': item.get('Album'),
+                'album_artist': item.get('OriginalAlbumArtist') or item.get('AlbumArtist'),
+                'year': item.get('Year'),
+                'rating': item.get('Rating'),
+                'file_path': item.get('FilePath'),
+                'album_id': album_id,
+                'album_name': album_name,
+            },
+            'media_item': item,
+            'analysis': musicnn_analysis,
+            'top_moods': top_moods,
+            'musicnn_embedding': musicnn_embedding,
+            'clap_embedding': clap_embedding,
+        }
+        plugin_manager.run_song_analyzed(payload)
+    except Exception:
+        logger.exception('Plugin song-analyzed hook dispatch failed')
+
+
 def get_provider_options(allow_coreml=False, role=None):
     return resolve_providers(allow_coreml=allow_coreml, role=role)
 

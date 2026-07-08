@@ -786,10 +786,12 @@ class TestApiSurface:
         ctx.add_menu_item('Hello', 'demo.home')
         ctx.add_cron_task('daily', task)
         ctx.register_onnx_provider('X', {'a': 1})
+        ctx.on_song_analyzed(task)
 
         assert ctx.menu_items[0]['endpoint'] == 'demo.home'
         assert ctx.cron_tasks['daily']['dotted'] == 'audiomuse_plugins.demo.tasks.task'
         assert ctx.onnx_providers[0]['options'] == {'a': 1}
+        assert ctx.song_analyzed_hooks == [task]
 
     def test_table_namespacing_infers_plugin(self):
         namespace = {'__name__': 'audiomuse_plugins.demo.tasks', 'table': api.table}
@@ -813,3 +815,84 @@ class TestApiSurface:
         namespace = {'__name__': 'audiomuse_plugins.demo', 'get_setting': api.get_setting}
         exec('def call():\n    return get_setting("missing", "default")', namespace)
         assert namespace['call']() == 'default'
+
+
+class TestSongAnalyzedHooks:
+    def _mgr(self, hooks_by_plugin):
+        mgr = manager.PluginManager()
+        mgr.records = {
+            pid: {'load_status': 'ok', 'song_analyzed_hooks': hooks}
+            for pid, hooks in hooks_by_plugin.items()
+        }
+        return mgr
+
+    def test_aggregates_ok_records_only(self):
+        def a(payload):
+            """Stub listener."""
+
+        def b(payload):
+            """Stub listener."""
+
+        mgr = self._mgr({'a': [a], 'b': [b]})
+        mgr.records['b']['load_status'] = 'error'
+        assert mgr.song_analyzed_hooks() == [a]
+
+    def test_run_calls_all_and_isolates_failures(self):
+        seen = []
+
+        def good(payload):
+            seen.append('good')
+
+        def bad(payload):
+            raise RuntimeError('boom')
+
+        def good2(payload):
+            seen.append('good2')
+
+        mgr = self._mgr({'p': [good, bad, good2]})
+        mgr.run_song_analyzed({'item_id': 'x'})
+        assert seen == ['good', 'good2']
+
+    def test_run_is_noop_when_no_hooks(self):
+        mgr = manager.PluginManager()
+        mgr.records = {}
+        mgr.run_song_analyzed({'item_id': 'x'})
+
+
+class TestRunSongAnalyzedHookHelper:
+    class _PM:
+        def __init__(self, listeners):
+            self._listeners = listeners
+            self.received = None
+
+        def enabled(self):
+            return True
+
+        def song_analyzed_hooks(self):
+            return self._listeners
+
+        def run_song_analyzed(self, payload):
+            self.received = payload
+
+    def test_noop_when_no_listeners(self, monkeypatch):
+        import tasks.analysis_helper as ah
+        pm = self._PM([])
+        monkeypatch.setattr('plugin.manager.plugin_manager', pm)
+        ah.run_song_analyzed_hook({'Id': '1'}, '/tmp/a.mp3', None, None, None, None, 'alb', 'Album')
+        assert pm.received is None
+
+    def test_builds_and_forwards_payload(self, monkeypatch):
+        import tasks.analysis_helper as ah
+        pm = self._PM([lambda payload: None])
+        monkeypatch.setattr('plugin.manager.plugin_manager', pm)
+        ah.run_song_analyzed_hook(
+            {'Id': 42, 'Name': 'Song', 'AlbumArtist': 'Artist', 'Album': 'Alb'},
+            '/tmp/a.mp3', {'tempo': 120}, None, None, {'happy': 0.9}, 'alb-id', 'Album',
+        )
+        assert pm.received['item_id'] == '42'
+        assert pm.received['audio_path'] == '/tmp/a.mp3'
+        assert pm.received['metadata']['title'] == 'Song'
+        assert pm.received['metadata']['artist'] == 'Artist'
+        assert pm.received['metadata']['album_id'] == 'alb-id'
+        assert pm.received['analysis'] == {'tempo': 120}
+        assert pm.received['top_moods'] == {'happy': 0.9}

@@ -322,6 +322,7 @@ class PluginManager:
                 record['settings_endpoint'] = None
                 record['cron_tasks'] = {}
                 record['onnx_providers'] = []
+                record['song_analyzed_hooks'] = []
                 record['error'] = None
                 records[row['id']] = record
                 if row['enabled'] and self._runs_here(record, role):
@@ -581,6 +582,7 @@ class PluginManager:
                     record['settings_endpoint'] = ctx.settings_endpoint
                     record['cron_tasks'] = ctx.cron_tasks
                     record['onnx_providers'] = ctx.onnx_providers
+                    record['song_analyzed_hooks'] = ctx.song_analyzed_hooks
                     if role == 'web' and flask_app is not None and ctx.blueprint is not None:
                         flask_app.register_blueprint(ctx.blueprint, url_prefix=f'/plugins/{plugin_id}')
                         if not record['settings_endpoint']:
@@ -806,6 +808,21 @@ class PluginManager:
             if record.get('load_status') == 'ok':
                 providers.extend(record.get('onnx_providers', []))
         return providers
+
+    def song_analyzed_hooks(self):
+        hooks = []
+        for record in self.records.values():
+            if record.get('load_status') == 'ok':
+                hooks.extend(record.get('song_analyzed_hooks', []))
+        return hooks
+
+    def run_song_analyzed(self, payload):
+        """Call every registered on_song_analyzed hook with per-plugin isolation; a no-op when none."""
+        for hook in self.song_analyzed_hooks():
+            try:
+                hook(payload)
+            except Exception:
+                logger.exception('Plugin song-analyzed hook %s failed', getattr(hook, '__module__', '?'))
 
     def menu_items(self):
         items = []

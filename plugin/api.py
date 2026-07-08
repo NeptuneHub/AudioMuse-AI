@@ -156,8 +156,8 @@ class PluginContext:
     A plugin declares where each component runs by which method it calls: the
     ``add_blueprint``/``add_menu_item``/``on_flask_start`` group activates on the
     Flask (online) container, while ``add_task``/``add_cron_task``/
-    ``register_onnx_provider``/``on_worker_start`` activate on the worker (batch)
-    container. ``on_install`` runs once at install for schema setup.
+    ``register_onnx_provider``/``on_worker_start``/``on_song_analyzed`` activate on
+    the worker (batch) container. ``on_install`` runs once at install for schema setup.
     """
 
     def __init__(self, plugin_id, role):
@@ -171,6 +171,7 @@ class PluginContext:
         self.onnx_providers = []
         self.flask_start = []
         self.worker_start = []
+        self.song_analyzed_hooks = []
         self.install_hooks = []
 
     def add_blueprint(self, blueprint):
@@ -201,6 +202,17 @@ class PluginContext:
 
     def on_worker_start(self, func):
         self.worker_start.append(func)
+
+    def on_song_analyzed(self, func):
+        """Register a worker hook fired after a song finishes analysis and its results are saved.
+
+        The hook receives one dict: ``item_id``, ``audio_path`` (the temp file, valid
+        only during the call), ``metadata`` (title/artist/album/...), ``media_item``
+        (the raw media-server track), ``analysis`` (tempo/key/scale/moods/energy or
+        None), ``top_moods``, and ``musicnn_embedding``/``clap_embedding`` (or None).
+        It runs on the worker inside an app context, so ``get_db``/``table`` work.
+        """
+        self.song_analyzed_hooks.append(func)
 
     def on_install(self, func):
         self.install_hooks.append(func)
