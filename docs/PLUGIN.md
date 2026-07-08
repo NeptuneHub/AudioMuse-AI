@@ -4,6 +4,28 @@
 
 AudioMuse-AI plugins let you add features without touching the core app. A plugin is a small Python package that can add a page, read and write the database, talk to your media server, save settings, and run scheduled jobs. You install and update them from inside AudioMuse-AI.
 
+## Capability
+
+Everything a plugin can do, at a glance. The last column tells you where to find working code: most capabilities are shown live in the SongCounter reference plugin, and the rest have a complete example in this guide.
+
+| # | Capability | How | In the SongCounter example |
+|---|---|---|---|
+| 1 | Web page + menu entry | `add_blueprint`, `add_menu_item` | Yes: the chart page and its menu link |
+| 2 | Settings page (opened from Manage Plugins) | a route called `settings` | Yes: pick which indexes to count |
+| 3 | Per-plugin settings storage | `get_setting` / `set_setting` | Yes: saves the chosen indexes |
+| 4 | Read the core database | `get_db` | Yes: counts songs and index sizes |
+| 5 | Own data tables | `table()` + `on_install` | Yes: `hook_stats` and `index_log` tables |
+| 6 | React to each analyzed song | `on_song_analyzed` | Yes: live per-run counter + last song payload |
+| 7 | Scheduled (cron) tasks with Run now | `add_cron_task` | Yes: the hourly `index_log` snapshot |
+| 8 | Extra pip packages, with version pins - **works only on the container image (Docker / Kubernetes), never on the standalone builds** | `requirements` in plugin.json | Yes: matplotlib |
+| 9 | Choose the container it runs on | `targets` in plugin.json | Yes: left out, so it runs on both |
+| 10 | Publishing, updates and rollback | catalog + `versions` list | Yes: released through the community repo |
+| 11 | Background jobs from a page | `enqueue` | No - see "Run a job in the background" |
+| 12 | Named worker tasks | `add_task` | No - see "API reference" |
+| 13 | Startup hooks | `on_flask_start` / `on_worker_start` | No - see "The plugin lifecycle" |
+| 14 | Create media-server playlists | `tasks.mediaserver` | No - see "Create a playlist on your media server" |
+| 15 | Extra ONNX execution provider | `register_onnx_provider` | No - see "API reference" (advanced) |
+
 ## Installing and managing plugins
 
 You manage plugins from inside AudioMuse-AI. Open the **Plugins** page from the menu. Only an admin can see and use it. The page has three tabs:
@@ -43,7 +65,7 @@ The plugin's settings and its entries in Scheduled Tasks are always removed. If 
 
 ## Working example
 
-The best way to learn is to read a real plugin. SongCounter is a small, complete example with a page, a settings page, per-plugin settings, and a worker hook that shows a live count of analyzed songs plus the last song's full hook payload:
+The best way to learn is to read a real plugin. SongCounter is a small, complete example with a page, a settings page, per-plugin settings, a worker hook that shows a live count of analyzed songs plus the last song's full hook payload, and an hourly cron task that logs the index sizes:
 
 https://github.com/NeptuneHub/AudioMuse-AI-plugins/tree/main/plugins/SongCounter
 
@@ -213,6 +235,19 @@ def register(ctx):
 
 Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox, and a **Run now** button that starts the task immediately on the worker. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
 
+You can also ship a default schedule (disabled, so the admin stays in control) by inserting the cron row in your `on_install` hook. SongCounter does this for its `index_log` task: every hour it stores a timestamped snapshot of the index sizes in its own table, keeps only the last 10 rows, and shows them as a small log on its page.
+
+```python
+def migrate(db):
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO cron (name, task_type, cron_expr, enabled) VALUES (%s, %s, %s, FALSE) "
+        "ON CONFLICT (task_type) DO NOTHING",
+        ('plugin.my_plugin.daily', 'plugin.my_plugin.daily', '0 * * * *'),
+    )
+    db.commit()
+```
+
 ### Run a job in the background
 
 A page must answer fast. For heavy work, put the job in a function and hand it to the worker with `enqueue`. The route returns right away and the job runs on the worker container.
@@ -281,6 +316,8 @@ The listener runs inside the analysis loop, so keep it quick. If the work is hea
 SongCounter uses this exact hook to count the songs of the latest analysis run and show the last song's full payload on its page.
 
 ### Use an extra pip package
+
+**Extra pip packages work only on the container image (Docker / Kubernetes). The Windows, macOS and Linux standalone builds cannot install them: there a plugin with `requirements` is marked "incompatible".**
 
 If you need a library that is not built in, add it to the top-level `requirements` list in `plugin.json` (this is where SongCounter lists `matplotlib`). AudioMuse-AI installs it for you at install time, then you import it like normal. You can pin an exact version or a range, using the normal pip syntax:
 
