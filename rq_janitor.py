@@ -17,6 +17,9 @@ the dashboard's Queue Workers table); a sibling to the worker entrypoints.
 Main Features:
 * Periodic cleanup of started/finished/failed registries every 10 seconds.
 * Dead worker registrations removed via clean_worker_registry per queue.
+* Zombie worker hashes reaped: a job-count increment landing after the worker
+  key expired recreates it without a TTL, leaving a permanent ghost row with no
+  heartbeat - any registration without a last_heartbeat is deregistered.
 * Logs only when something is actually reaped, and survives per-iteration errors.
 """
 
@@ -28,6 +31,7 @@ import logging
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
+    from rq import Worker
     from rq.worker_registration import clean_worker_registry
     from app_helper import rq_queue_high, rq_queue_default, redis_conn
     from app_logging import configure_logging
@@ -88,6 +92,32 @@ if __name__ == '__main__':
             if workers_removed > 0:
                 logger.info(
                     "Janitor removed %d dead worker registrations.", workers_removed
+                )
+
+            zombies_removed = 0
+            for worker in Worker.all(connection=redis_conn):
+                try:
+                    heartbeat = worker.last_heartbeat
+                except Exception:
+                    heartbeat = None
+                if heartbeat is not None:
+                    continue
+                try:
+                    worker.register_death()
+                except Exception:
+                    try:
+                        redis_conn.srem('rq:workers', worker.key)
+                        redis_conn.delete(worker.key)
+                    except Exception:
+                        logger.exception(
+                            "Janitor could not remove zombie worker %s", worker.key
+                        )
+                        continue
+                zombies_removed += 1
+            if zombies_removed > 0:
+                logger.info(
+                    "Janitor removed %d zombie worker entries (hash without heartbeat).",
+                    zombies_removed,
                 )
         except Exception:
             logger.exception("Error in RQ Janitor loop")
