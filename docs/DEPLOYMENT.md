@@ -138,9 +138,9 @@ The native MacOS package is shipped as a release asset for Apple Silicon only. I
 * Go to System Settings → Privacy & Security → Open Anyway for AudioMuse-AI.
 * Launch the app again.
 
-**Important:**
-* The app is unsigned, so macOS will require an explicit trust step on first run.
-* The native MacOS build is Apple Silicon only.
+> [!IMPORTANT]
+> * The app is unsigned, so macOS will require an explicit trust step on first run.
+> * The native MacOS build is Apple Silicon only.
 
 **Data and logs:**
 * Data: `~/Library/AudioMuse-AI`
@@ -186,6 +186,9 @@ Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
 
 > **Tested on:** Debian GNU/Linux 12 (bookworm) with glibc 2.36. RPMs are expected to work on current Fedora/RHEL systems but may not support older distributions.
 
+> [!NOTE]
+> When `systemctl` is used with the `--user` flag, the process is shutdown whenever the user logs out. To keep the process alive after loging out, run `loginctl enable-linger yourusername`
+
 ## Local Deployment Windows
 
 The native Windows package is shipped as a release asset for x86_64 only: a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). It bundles the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
@@ -213,9 +216,9 @@ The native Windows package is shipped as a release asset for x86_64 only: a port
   AudioMuse-AI.exe stop
   ```
 
-**Important:**
-* The app is unsigned, so Windows SmartScreen may warn on first run - choose "More info" then "Run anyway".
-* The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
+> [!IMPORTANT]
+> * The app is unsigned, so Windows SmartScreen may warn on first run - choose "More info" then "Run anyway".
+> * The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
 
 **Data and logs:**
 * Data: `%LOCALAPPDATA%\AudioMuse-AI`
