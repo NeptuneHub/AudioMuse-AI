@@ -21,6 +21,7 @@ Main Features:
 
 import json
 import time
+from urllib.parse import urlparse
 
 import flask
 
@@ -193,7 +194,7 @@ class TestInstallErrorResponse:
         monkeypatch.setattr(blueprint, '_download', boom)
         resp = self._client().post('/api/plugins/install', json={'id': 'demo'})
         assert resp.status_code == 502
-        assert 'raw.githubusercontent.com' in resp.get_json()['error']
+        assert resp.get_json()['error'] == 'Could not reach raw.githubusercontent.com for the plugin download'
 
 
 class TestJsdelivrMirrorFallback:
@@ -212,7 +213,7 @@ class TestJsdelivrMirrorFallback:
 
         def fake_once(url, _max):
             calls.append(url)
-            if 'raw.githubusercontent.com' in url:
+            if urlparse(url).hostname == 'raw.githubusercontent.com':
                 raise net.DownloadError('Timed out reaching raw.githubusercontent.com')
             return b'mirrored'
 
@@ -233,8 +234,10 @@ class TestJsdelivrMirrorFallback:
             net.download('https://raw.githubusercontent.com/u/r/main/manifest.json', 1024)
             raise AssertionError('expected DownloadError')
         except net.DownloadError as exc:
-            assert 'raw.githubusercontent.com' in str(exc)
-            assert 'jsDelivr' in str(exc)
+            assert str(exc) == (
+                'Timed out reaching raw.githubusercontent.com '
+                '(the jsDelivr mirror also failed: Timed out reaching cdn.jsdelivr.net)'
+            )
 
     def test_no_fallback_for_non_github_hosts(self, monkeypatch):
         calls = []
