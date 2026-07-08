@@ -43,7 +43,7 @@ The plugin's settings and its entries in Scheduled Tasks are always removed. If 
 
 ## Working example
 
-The best way to learn is to read a real plugin. SongCounter is a small, complete example with a page, a settings page, and per-plugin settings:
+The best way to learn is to read a real plugin. SongCounter is a small, complete example with a page, a settings page, per-plugin settings, and a worker hook that shows a live count of analyzed songs plus the last song's full hook payload:
 
 https://github.com/NeptuneHub/AudioMuse-AI-plugins/tree/main/plugins/SongCounter
 
@@ -242,6 +242,7 @@ Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it 
 Your function receives one dict:
 
 * `item_id` - the media-server id (string).
+* `run_id` - the analysis run's task id. Every song of one "Start Analysis" shares the same `run_id`, so you can count or group per run (reset when it changes).
 * `audio_path` - the temporary audio file on disk. It is deleted right after your listener returns, so read it now if you need it.
 * `metadata` - `title`, `artist`, `album`, `album_artist`, `year`, `rating`, `file_path`, `album_id`, `album_name`.
 * `media_item` - the full raw track object from the media server.
@@ -274,6 +275,8 @@ def register(ctx):
 ```
 
 The listener runs inside the analysis loop, so keep it quick. If the work is heavy (a second model over the whole audio), hand it to `enqueue` instead and copy `audio_path` first, or re-download the audio by `item_id` in the background job, because the temp file is gone once your listener returns. If your listener raises, AudioMuse-AI logs it and moves on - it never breaks the analysis.
+
+SongCounter uses this exact hook. Its listener keeps a running count and the last song's payload in a small table, and its page renders, under the chart, "Songs analyzed so far" plus a table with every field the hook passed for the most recent song. Because the hook runs on the worker and the page runs on Flask, that plugin leaves `targets` out so it loads on both containers.
 
 ### Use an extra pip package
 

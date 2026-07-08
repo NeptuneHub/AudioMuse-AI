@@ -206,7 +206,8 @@ class PluginContext:
     def on_song_analyzed(self, func):
         """Register a worker hook fired after a song finishes analysis and its results are saved.
 
-        The hook receives one dict: ``item_id``, ``audio_path`` (the temp file, valid
+        The hook receives one dict: ``item_id``, ``run_id`` (the analysis run's task
+        id, shared by every song of one run), ``audio_path`` (the temp file, valid
         only during the call), ``metadata`` (title/artist/album/...), ``media_item``
         (the raw media-server track), ``analysis`` (tempo/key/scale/moods/energy or
         None), ``top_moods``, and ``musicnn_embedding``/``clap_embedding`` (or None).

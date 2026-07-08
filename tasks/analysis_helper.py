@@ -139,11 +139,13 @@ def _plugin_onnx_providers():
 
 
 def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding,
-                           clap_embedding, top_moods, album_id, album_name):
+                           clap_embedding, top_moods, album_id, album_name, run_id):
     """Fire plugin on_song_analyzed hooks for a finished song; guarded no-op when no plugin listens.
 
     Fully wrapped so it can never raise into the analysis loop, and it builds the
-    payload only when a worker plugin actually registered a listener.
+    payload only when a worker plugin actually registered a listener. ``run_id`` is
+    the analysis run's task id, shared by every song of one run, so a listener can
+    count or group per run.
     """
     try:
         from plugin.manager import plugin_manager
@@ -151,6 +153,7 @@ def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding
             return
         payload = {
             'item_id': str(item.get('Id')),
+            'run_id': run_id,
             'audio_path': audio_path,
             'metadata': {
                 'title': item.get('Name'),
