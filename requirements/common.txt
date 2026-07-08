@@ -21,7 +21,7 @@ mistralai==1.12.4
 umap-learn==0.5.12
 av==13.1.0
 psutil==7.2.2
-onnx==1.21.0
+onnx==1.22.0
 resampy==0.4.3
 librosa==0.11.0
 flatbuffers==25.12.19

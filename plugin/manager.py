@@ -130,6 +130,33 @@ def _plugin_path(plugin_id):
     return target
 
 
+def _replace_dir(root, target):
+    """Swap a freshly extracted directory into place without deleting the live target first.
+
+    The old directory is renamed aside (with a short retry, because on Windows an
+    antivirus or indexer handle can briefly block the rename) and removed only after
+    the swap succeeds, so a locked file can never leave a half-deleted plugin behind.
+    """
+    if not os.path.isdir(target):
+        os.replace(root, target)
+        return
+    parent = os.path.dirname(target)
+    aside = os.path.join(parent, f'.plugin_old_{os.getpid()}_{os.urandom(4).hex()}')
+    last_error = None
+    for _attempt in range(5):
+        try:
+            os.replace(target, aside)
+            last_error = None
+            break
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.3)
+    if last_error is not None:
+        raise last_error
+    os.replace(root, target)
+    shutil.rmtree(aside, ignore_errors=True)
+
+
 def _safe_extract(package_bytes, target):
     base = os.path.realpath(config.PLUGINS_DIR)
     target = os.path.realpath(target)
@@ -143,9 +170,7 @@ def _safe_extract(package_bytes, target):
             _validate_zip_safe(zf)
             zf.extractall(staging)
         root = _resolve_extract_root(staging)
-        if os.path.isdir(target):
-            shutil.rmtree(target, ignore_errors=True)
-        os.replace(root, target)
+        _replace_dir(root, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -242,6 +267,9 @@ class PluginManager:
     def __init__(self):
         self.records = {}
         self._loaded_role = None
+        self._boot_snapshot = None
+        self._runtime_dirty = False
+        self.last_pip_error = None
 
     def enabled(self):
         return bool(config.PLUGINS_ENABLED)
@@ -331,6 +359,31 @@ class PluginManager:
             raise ValueError(f'plugin "{plugin_id}" re-download checksum mismatch')
         self._materialize_one(plugin_id, checksum or got, package)
 
+    def _prune_stale_dist_info(self, lib_dir, specs):
+        """Remove old .dist-info dirs for the distributions about to be (re)installed.
+
+        pip --target has no uninstall step: --upgrade replaces the package dir but
+        leaves the previous version's differently-named dist-info behind, which
+        would make the installed-version scan nondeterministic and re-trigger pip
+        on every boot.
+        """
+        names = set()
+        for spec in specs:
+            try:
+                names.add(canonicalize_name(Requirement(spec).name))
+            except Exception:
+                continue
+        try:
+            entries = os.listdir(lib_dir)
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.endswith('.dist-info'):
+                continue
+            dist_name = entry[: -len('.dist-info')].rsplit('-', 1)[0]
+            if canonicalize_name(dist_name) in names:
+                shutil.rmtree(os.path.join(lib_dir, entry), ignore_errors=True)
+
     def _pip_install(self, specs):
         if not specs:
             return True
@@ -341,16 +394,23 @@ class PluginManager:
             return False
         lib_dir = os.path.join(config.PLUGINS_DIR, '_lib')
         os.makedirs(lib_dir, exist_ok=True)
+        self._prune_stale_dist_info(lib_dir, specs)
         try:
             subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '--target', lib_dir, '--no-input', *specs],
+                [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', lib_dir,
+                 '--no-input', *specs],
                 check=True,
                 capture_output=True,
                 timeout=600,
             )
-        except Exception:
+        except Exception as exc:
+            stderr = getattr(exc, 'stderr', None) or b''
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode('utf-8', errors='replace')
+            self.last_pip_error = (stderr.strip() or str(exc))[-400:]
             logger.exception('pip install failed for plugin requirements: %s', specs)
             return False
+        self.last_pip_error = None
         if lib_dir not in sys.path:
             sys.path.append(lib_dir)
         importlib.invalidate_caches()
@@ -390,6 +450,11 @@ class PluginManager:
             except Exception:
                 missing.append(spec)
                 continue
+            try:
+                if req.marker is not None and not req.marker.evaluate():
+                    continue
+            except Exception:
+                pass
             installed = have.get(canonicalize_name(req.name))
             if installed is None:
                 missing.append(spec)
@@ -447,13 +512,22 @@ class PluginManager:
                 else:
                     specs.extend(record['requirements'])
                     plugins_with_reqs.append(plugin_id)
-        self._install_specs(specs, plugins_with_reqs)
+        if not self._install_specs(specs, plugins_with_reqs) and len(plugins_with_reqs) > 1:
+            for plugin_id in plugins_with_reqs:
+                record = self.records[plugin_id]
+                if not self._install_specs(record['requirements'], [plugin_id]):
+                    logger.error(
+                        'Dependency install failed for plugin %s: %s',
+                        plugin_id, record['requirements'],
+                    )
 
-    def _persist_status(self, plugin_id, status):
+    def _persist_status(self, plugin_id, status, role=None, error=None):
+        if role is None and self._loaded_role is not None:
+            role = _role_target(self._loaded_role)
         try:
             connection = database.connect_raw()
             try:
-                database.set_plugin_load_status(plugin_id, status, connection)
+                database.set_plugin_load_status(plugin_id, status, connection, role=role, error=error)
             finally:
                 connection.close()
         except Exception:
@@ -480,10 +554,17 @@ class PluginManager:
             return
         self.setup_namespace()
         self._loaded_role = role
+        app_obj = flask_app
+        if app_obj is None:
+            from flask_app import app as app_obj
         for plugin_id, record in self.records.items():
             if not record['enabled']:
                 continue
             if not self._runs_here(record, role):
+                self._persist_status(plugin_id, None, error=None)
+                continue
+            if record.get('error'):
+                self._persist_status(plugin_id, 'error', error=record.get('error'))
                 continue
             if not version_ge(config.APP_VERSION, record['manifest'].get('min_core_version')):
                 record['load_status'] = 'incompatible'
@@ -494,23 +575,24 @@ class PluginManager:
                 self._persist_status(plugin_id, 'incompatible')
                 continue
             try:
-                ctx = self._build_context(plugin_id, role)
-                record['menu_items'] = ctx.menu_items
-                record['settings_endpoint'] = ctx.settings_endpoint
-                record['cron_tasks'] = ctx.cron_tasks
-                record['onnx_providers'] = ctx.onnx_providers
-                if role == 'web' and flask_app is not None and ctx.blueprint is not None:
-                    flask_app.register_blueprint(ctx.blueprint, url_prefix=f'/plugins/{plugin_id}')
-                    if not record['settings_endpoint']:
-                        candidate = f'{ctx.blueprint.name}.settings'
-                        if candidate in flask_app.view_functions:
-                            record['settings_endpoint'] = candidate
-                if role == 'web' and flask_app is not None:
-                    self._warn_unknown_menu_endpoints(record['menu_items'], flask_app, plugin_id)
-                if role == 'web':
-                    self._run_hooks(ctx.flask_start, plugin_id, 'flask_start')
-                elif role == 'worker':
-                    self._run_hooks(ctx.worker_start, plugin_id, 'worker_start')
+                with app_obj.app_context():
+                    ctx = self._build_context(plugin_id, role)
+                    record['menu_items'] = ctx.menu_items
+                    record['settings_endpoint'] = ctx.settings_endpoint
+                    record['cron_tasks'] = ctx.cron_tasks
+                    record['onnx_providers'] = ctx.onnx_providers
+                    if role == 'web' and flask_app is not None and ctx.blueprint is not None:
+                        flask_app.register_blueprint(ctx.blueprint, url_prefix=f'/plugins/{plugin_id}')
+                        if not record['settings_endpoint']:
+                            candidate = f'{ctx.blueprint.name}.settings'
+                            if candidate in flask_app.view_functions:
+                                record['settings_endpoint'] = candidate
+                    if role == 'web' and flask_app is not None:
+                        self._warn_unknown_menu_endpoints(record['menu_items'], flask_app, plugin_id)
+                    if role == 'web':
+                        self._run_hooks(ctx.flask_start, plugin_id, 'flask_start')
+                    elif role == 'worker':
+                        self._run_hooks(ctx.worker_start, plugin_id, 'worker_start')
                 record['load_status'] = 'ok'
                 record['error'] = None
                 self._persist_status(plugin_id, 'ok')
@@ -518,7 +600,11 @@ class PluginManager:
                 logger.exception('Failed to load plugin %s', plugin_id)
                 record['load_status'] = 'error'
                 record['error'] = str(exc)
-                self._persist_status(plugin_id, 'error')
+                self._persist_status(plugin_id, 'error', error=str(exc))
+        self._boot_snapshot = {
+            pid: (rec.get('checksum'), bool(rec.get('enabled')))
+            for pid, rec in self.records.items()
+        }
 
     def _run_hooks(self, hooks, plugin_id, label):
         for hook in hooks or []:
@@ -553,6 +639,11 @@ class PluginManager:
         checksum = hashlib.md5(package_bytes, usedforsecurity=False).hexdigest()
         if expected_checksum and checksum.lower() != str(expected_checksum).lower():
             raise ValueError('Plugin package checksum mismatch')
+        try:
+            with zipfile.ZipFile(io.BytesIO(package_bytes)) as zf:
+                _validate_zip_safe(zf)
+        except zipfile.BadZipFile as exc:
+            raise ValueError('Invalid plugin package: not a valid zip archive') from exc
         manifest = manifest or {}
         plugin_id = manifest.get('id')
         if not valid_plugin_id(plugin_id):
@@ -565,6 +656,13 @@ class PluginManager:
         for spec in requirements:
             if not _valid_requirement(spec):
                 raise ValueError(f'Invalid or unsafe plugin requirement: {spec!r}')
+        previous_cron_tasks = None
+        try:
+            existing = database.get_plugin(plugin_id)
+            if existing:
+                previous_cron_tasks = (existing.get('manifest') or {}).get('cron_tasks')
+        except Exception:
+            previous_cron_tasks = None
         database.upsert_plugin(
             plugin_id,
             manifest.get('name') or plugin_id,
@@ -575,17 +673,30 @@ class PluginManager:
             requirements,
             source_repo,
         )
+        if previous_cron_tasks:
+            try:
+                database.set_plugin_cron_tasks(plugin_id, previous_cron_tasks)
+            except Exception:
+                logger.exception('Failed to carry over cron task declarations for plugin %s', plugin_id)
         self.setup_namespace()
         self._purge_modules(plugin_id)
         self._materialize_one(plugin_id, checksum, package_bytes)
-        self._install_specs(requirements, [plugin_id])
-        self.run_install_hooks(plugin_id)
         if on_registered:
             try:
                 on_registered(plugin_id)
             except Exception:
                 logger.exception('Plugin %s on_registered callback failed', plugin_id)
-        return manifest
+        deps_ok = self._install_specs(requirements, [plugin_id])
+        deps_error = None
+        pip_possible = config.PLUGIN_ALLOW_PIP and not getattr(sys, 'frozen', False)
+        if not deps_ok and pip_possible:
+            deps_error = self.last_pip_error or 'dependency install failed; check the container logs'
+            self._persist_status(plugin_id, 'deps_failed', role='flask', error=deps_error)
+        elif pip_possible:
+            self._persist_status(plugin_id, None, role='flask', error=None)
+        self.run_install_hooks(plugin_id)
+        self._runtime_dirty = True
+        return manifest, deps_ok, deps_error
 
     def run_install_hooks(self, plugin_id):
         from flask_app import app
@@ -597,6 +708,10 @@ class PluginManager:
         except Exception:
             logger.exception('Plugin %s import failed during install hooks', plugin_id)
             return
+        try:
+            database.set_plugin_cron_tasks(plugin_id, ctx.cron_tasks or {})
+        except Exception:
+            logger.exception('Failed to persist cron task declarations for plugin %s', plugin_id)
         if not ctx.install_hooks:
             return
         with app.app_context():
@@ -620,6 +735,7 @@ class PluginManager:
             shutil.rmtree(target, ignore_errors=True)
         self._purge_modules(plugin_id)
         self.records.pop(plugin_id, None)
+        self._runtime_dirty = True
 
     def set_enabled(self, plugin_id, enabled):
         database.set_plugin_enabled(plugin_id, enabled)
@@ -628,14 +744,50 @@ class PluginManager:
             record['enabled'] = bool(enabled)
 
     def get_cron_task(self, task_type):
+        """Resolve a plugin cron task, falling back to the declarations persisted at install.
+
+        The web process dispatches cron but never imports a worker-only plugin, so its
+        in-memory cron_tasks stay empty for those; the mapping stored in the manifest
+        by run_install_hooks keeps them dispatchable.
+        """
         if not task_type or not task_type.startswith('plugin.'):
             return None
         remainder = task_type[len('plugin.'):]
         plugin_id, _, name = remainder.partition('.')
         record = self.records.get(plugin_id)
-        if not record:
+        if not record or not record.get('enabled'):
             return None
-        return record.get('cron_tasks', {}).get(name)
+        task = record.get('cron_tasks', {}).get(name)
+        if task:
+            return task
+        persisted = (record.get('manifest') or {}).get('cron_tasks') or {}
+        task = persisted.get(name)
+        return task if isinstance(task, dict) and task.get('dotted') else None
+
+    def available_cron_tasks(self):
+        """Return every schedulable plugin cron task for the Scheduled Tasks page.
+
+        Merges the in-memory registrations with the declarations persisted in the
+        manifest at install time, so worker-only plugins are listed on the web
+        process too.
+        """
+        items = []
+        for plugin_id, record in self.records.items():
+            if not record.get('enabled'):
+                continue
+            names = set(record.get('cron_tasks') or {})
+            persisted = (record.get('manifest') or {}).get('cron_tasks') or {}
+            names.update(
+                name for name, task in persisted.items()
+                if isinstance(task, dict) and task.get('dotted')
+            )
+            for name in sorted(names):
+                items.append({
+                    'task_type': f'plugin.{plugin_id}.{name}',
+                    'plugin': plugin_id,
+                    'task': name,
+                })
+        return sorted(items, key=lambda e: e['task_type'])
 
     def get_settings_endpoint(self, plugin_id):
         record = self.records.get(plugin_id)
@@ -680,20 +832,71 @@ class PluginManager:
             })
         return summary
 
+    def restart_pending(self, db_plugins):
+        """True when this process no longer matches the DB registry it booted with.
+
+        Compares the (checksum, enabled) snapshot captured at load time against the
+        current rows, so the restart-required state survives page reloads and shows
+        for every admin, not only the one who clicked. The dirty flag covers changes
+        the snapshot cannot see, like uninstall + reinstall of the same version.
+        None (unknown) before load().
+        """
+        if self._boot_snapshot is None:
+            return None
+        if self._runtime_dirty:
+            return True
+        current = {
+            p['id']: (p.get('checksum'), bool(p.get('enabled')))
+            for p in db_plugins
+        }
+        return current != self._boot_snapshot
+
 
 plugin_manager = PluginManager()
 
 
 def run_plugin_task(dotted, *args, **kwargs):
-    """RQ entrypoint: import a plugin task by dotted path and run it in an app context."""
+    """RQ entrypoint: import a plugin task by dotted path and run it in an app context.
+
+    When the plugin code is missing on this worker's volume (fresh pod, plugin-sync
+    missed), it re-materializes every enabled plugin once and retries the import.
+    Cron-enqueued jobs have a task_status row (created by the dispatcher); that row
+    is transitioned to SUCCESS/FAILURE here so it can never sit PENDING forever.
+    """
     from flask_app import app
+    from rq import get_current_job
 
     plugin_manager.setup_namespace()
     module_path, _, fn_name = dotted.rpartition('.')
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    task_id = job.id if job is not None else None
     with app.app_context():
-        module = importlib.import_module(module_path)
-        func = getattr(module, fn_name)
-        return func(*args, **kwargs)
+        row = database.get_task_info_from_db(task_id) if task_id else None
+        try:
+            try:
+                module = importlib.import_module(module_path)
+            except ModuleNotFoundError:
+                plugin_manager.sync(role=None)
+                plugin_manager.ensure_requirements(role=None)
+                importlib.invalidate_caches()
+                module = importlib.import_module(module_path)
+            func = getattr(module, fn_name)
+            result = func(*args, **kwargs)
+            if row:
+                database.save_task_status(
+                    task_id, row['task_type'], config.TASK_STATUS_SUCCESS, progress=100
+                )
+            return result
+        except Exception as exc:
+            if row:
+                database.save_task_status(
+                    task_id, row['task_type'], config.TASK_STATUS_FAILURE,
+                    details={'error': str(exc)},
+                )
+            raise
 
 
 _presync_lock = threading.Lock()

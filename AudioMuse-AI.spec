@@ -30,6 +30,9 @@ datas = [
     (os.path.join(ROOT, "static"), "static"),
     (os.path.join(ROOT, "model"), "model"),
     (os.path.join(ROOT, "mood_centroids_real_080_clap.json"), "."),
+    # The plugins admin page lives in the blueprint's own template folder; without
+    # this entry every native build 500s with TemplateNotFound on /plugins.
+    (os.path.join(ROOT, "plugin", "templates"), os.path.join("plugin", "templates")),
 ]
 for _src, _dst in cfg["extra_datas"]:
     datas.append((os.path.join(ROOT, _src), _dst))

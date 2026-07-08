@@ -4,6 +4,43 @@
 
 AudioMuse-AI plugins let you add features without touching the core app. A plugin is a small Python package that can add a page, read and write the database, talk to your media server, save settings, and run scheduled jobs. You install and update them from inside AudioMuse-AI.
 
+## Installing and managing plugins
+
+You manage plugins from inside AudioMuse-AI. Open the **Plugins** page from the menu. Only an admin can see and use it. The page has three tabs:
+
+* **Installed** shows the plugins you have, their status, and an update button when a newer version exists.
+* **Catalog** shows every plugin available from your repositories, with an Install button.
+* **Repositories** lets you add or remove plugin catalogs (the default community catalog is always there).
+
+### Install a plugin
+
+Go to the Catalog tab and click **Install**. You must confirm a warning first: plugins run with full application and database permissions, so only install plugins you trust. If the plugin has extra pip dependencies the install can take up to a minute. Do not reload the page while it runs.
+
+### Apply your changes (restart)
+
+Install, update, enable, disable and uninstall all need a restart to take effect. After any of these actions a yellow banner appears: "A restart is required to apply your changes". The banner is remembered on the server, so it stays after a page reload and every admin sees it until the restart happens. You can do several changes in a row and then click **Apply now (restart)** once. AudioMuse-AI restarts and the page reloads by itself after about 20 seconds.
+
+### Update a plugin
+
+AudioMuse-AI checks your repositories for new versions in the background (about once per hour, and every time you open the Catalog tab). When a newer compatible version exists, the Installed tab shows an **Update to vX** button. Click it, then apply the restart. Your plugin settings, its data tables and its scheduled jobs are kept.
+
+### Install an older version (rollback)
+
+When a plugin publishes more than one compatible version, the Catalog tab shows a small version selector next to the Install button. Pick the version you want and click the button: this is how you roll back after a bad update. Rolling back replaces the code only; your settings and data tables stay.
+
+### Enable and disable
+
+Disable turns a plugin off without removing anything. Its pages, menu items and scheduled jobs stop working after the restart, but its code, settings and data stay. Enable it again at any time.
+
+### Uninstall
+
+When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself. Then it asks one more question: do you also want to delete the plugin's data tables?
+
+* Choose **OK** to drop every table the plugin created. This cannot be undone.
+* Choose **Cancel** to keep the tables for later.
+
+The plugin's settings and its entries in Scheduled Tasks are always removed. If you kept the data tables, reinstalling the plugin later finds them again.
+
 ## Working example
 
 The best way to learn is to read a real plugin. SongCounter is a small, complete example with a page, a settings page, and per-plugin settings:
@@ -172,11 +209,41 @@ def register(ctx):
     ctx.add_cron_task("daily", daily_job)
 ```
 
-Then open Administration > Scheduled Tasks and add a schedule with the task type `plugin.my_plugin.daily` (that is `plugin.<your id>.<task name>`).
+Then open Administration > Scheduled Tasks. Every cron task of an installed plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox, and a **Run now** button that starts the task immediately on the worker. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`).
+
+### Run a job in the background
+
+A page must answer fast. For heavy work, put the job in a function and hand it to the worker with `enqueue`. The route returns right away and the job runs on the worker container.
+
+```python
+from flask import Blueprint
+from plugin.api import enqueue, render_page, logger
+
+bp = Blueprint("my_plugin", __name__)
+
+def rebuild_report(days):
+    logger.info("rebuilding the report for %s days", days)
+    # slow work here
+
+@bp.route("/rebuild")
+def rebuild():
+    enqueue(rebuild_report, 30)
+    return render_page("<p>Rebuild started. Check the worker logs.</p>", title="My Plugin")
+```
+
+Use `enqueue(func, ..., queue='high')` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+
+One important rule: the job runs on the worker, so the worker must have your plugin's code. Do not set `targets` to `["flask"]` if your plugin calls `enqueue` - leave `targets` out (the default is both containers).
 
 ### Use an extra pip package
 
-If you need a library that is not built in, add it to the top-level `requirements` list in `plugin.json` (this is where SongCounter lists `matplotlib`). AudioMuse-AI installs it for you at startup, then you import it like normal.
+If you need a library that is not built in, add it to the top-level `requirements` list in `plugin.json` (this is where SongCounter lists `matplotlib`). AudioMuse-AI installs it for you at install time, then you import it like normal. You can pin an exact version or a range, using the normal pip syntax:
+
+```json
+"requirements": ["matplotlib==3.9.2", "requests>=2.31,<3"]
+```
+
+When you change a pin in a new release, the update installs the new version. If a dependency fails to install, the install still completes but tells you right away in the response, and the plugin shows a `deps_failed` status until it works.
 
 ```python
 import matplotlib
@@ -191,6 +258,108 @@ This works on Docker and Kubernetes when pip installs are allowed, which is the 
 By default a plugin is installed on both the Flask (web) container and the Worker (batch) container. If your plugin only adds pages and menus (Flask) or only adds tasks and cron jobs (Worker), set a top-level `targets` list in `plugin.json` so the other container never downloads the code or installs pip packages it will not use.
 
 Use `["flask"]` for a page-only plugin (like SongCounter), `["worker"]` for a task or cron-only plugin, or leave `targets` out to run on both. This matters most when the worker container has no internet access: a Flask-only plugin then does not try (and fail) to reach GitHub or PyPI from the worker.
+
+## The plugin lifecycle
+
+Understanding when your code runs helps you put it in the right place.
+
+* At every start of AudioMuse-AI, each container the plugin targets imports your `__init__.py` and calls `register(ctx)`. Keep both fast: do not query the database or the network at import time. Register things, nothing more.
+* `ctx.on_install(func)` runs at install time and again on every update. Use it for tables (see "Store your own data in a table").
+* `ctx.on_flask_start(func)` and `ctx.on_worker_start(func)` run once per start, on the web or worker container, after your plugin has loaded. Use them for warm-up work such as filling a cache or starting a background thread.
+
+If a hook raises an error, it is logged and the start continues.
+
+### When something goes wrong
+
+A plugin can never stop AudioMuse-AI from starting. If your module fails to import, or `register(ctx)` raises, the plugin is marked **error** on the Installed tab with a short message, and the full trace goes to the container log. Every other plugin and the core app keep working. Fix the code, publish or reinstall, and restart.
+
+Two smaller safety nets: a menu item that points at an endpoint that does not exist is hidden (with a warning in the log), and a cron entry for a plugin that was uninstalled or disabled is skipped with a warning instead of failing.
+
+## Test your plugin locally
+
+You do not need the community repository or the build workflow to try your plugin. You can serve a small catalog from your own machine.
+
+1. Zip your plugin's files (code only: `__init__.py` and anything else, but no `plugin.json` inside the zip).
+2. Put the zip, your `plugin.json`, and a `manifest.json` in one folder.
+3. In `plugin.json`, add `sourceUrl` to the version entry yourself, pointing at the zip. Leave `checksum` out - it is optional, and without it the download is accepted as-is.
+4. Serve the folder: `python -m http.server 8000`.
+5. In AudioMuse-AI, open Plugins > Repositories and add `http://<your-ip>:8000/manifest.json`. Use an address the container can reach, not `localhost`.
+6. Install your plugin from the Catalog tab and apply the restart.
+
+A minimal `manifest.json` looks like this:
+
+```json
+{
+  "plugins": [
+    {
+      "id": "my_plugin",
+      "name": "MyPlugin",
+      "author": "me",
+      "description": "Testing.",
+      "pluginUrl": "http://<your-ip>:8000/plugin.json"
+    }
+  ]
+}
+```
+
+And the version entry in your `plugin.json`:
+
+```json
+"versions": [
+  {
+    "version": "0.1.0",
+    "min_core_version": "2.5.0",
+    "changelog": "Local test.",
+    "sourceUrl": "http://<your-ip>:8000/my_plugin.zip"
+  }
+]
+```
+
+To test a code change, rebuild the zip and click **Reinstall** on the Catalog tab, then apply the restart. You do not need to bump the version while testing. If you edit `plugin.json` itself, click **Refresh catalog** so the change is picked up. Keep `min_core_version` at or below the version you are running, or the plugin will not appear in the catalog.
+
+## How updates work
+
+To release a new version, add a new entry at the top of the `versions` list in your `plugin.json`, with a higher `version`, its `min_core_version` and a `changelog`. The build workflow fills in the zip and checksum, as always. Never change the code of a version that is already published: the workflow refuses to rebuild it, because installed copies re-download it by checksum. Always add a new entry with a bumped version.
+
+Some rules to keep in mind:
+
+* Versions are compared as numbers, part by part: `1.10.0` is newer than `1.9.0`. A leading `v` is ignored.
+* Each AudioMuse-AI instance picks the newest release its own core version supports. Users on an older core keep getting your last release that still supports them, so you can raise `min_core_version` without breaking them.
+* An update is a fresh install of the new version: the old code is replaced completely.
+* Your `on_install` hooks run again on every update (and on a reinstall). Write them so they can run twice without harm - use `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, and so on.
+
+What survives an update: the plugin's settings, its data tables, its Scheduled Tasks entries, and its enabled or disabled state (a disabled plugin stays disabled after an update). Only the code and the manifest are replaced.
+
+## API reference
+
+Everything a plugin may use comes from `plugin.api`. This is the whole surface.
+
+| Import | What it does |
+|---|---|
+| `get_db()` | A normal database connection. Run any query. |
+| `get_score_data_by_ids(ids)` | Song details (title, author, tempo, key, mood, energy, ...) for a list of song ids. |
+| `get_tracks_by_ids(ids)` | The same details plus each song's analysis embedding. |
+| `get_setting(key, default)` / `set_setting(key, value)` | Read and write your plugin's settings. Values must be JSON-friendly. |
+| `table(name)` | Your safe table name, `plugin_<your id>__<name>`. |
+| `enqueue(func, *args, queue='default')` | Run a function on the worker in the background. |
+| `save_task_status(...)` and the `TASK_STATUS_*` constants | Report progress of a long job so it shows under Active Tasks. |
+| `render_page(body, title)` | Wrap your HTML in the AudioMuse-AI layout with the app menu. |
+| `manage_plugins_url()` | URL of the Manage Plugins page. Good redirect target after saving settings. |
+| `logger` | Your log channel. Output goes to the container logs. |
+| `config` | Read-only access to the app configuration values. |
+
+And the methods on the `ctx` object in `register(ctx)`:
+
+| Method | What it does |
+|---|---|
+| `add_blueprint(bp)` | Mount your Flask blueprint at `/plugins/<your id>/`. One blueprint per plugin. |
+| `add_menu_item(label, endpoint, admin_only=False)` | Add a link to the app menu. |
+| `set_settings_page(endpoint)` | Point the Settings button at your own page (only needed when the route is not called `settings`). |
+| `add_cron_task(name, func, queue='default')` | Register a task the admin can schedule as `plugin.<your id>.<name>`. |
+| `add_task(name, func, queue='default')` | Register a named worker task you can enqueue later. |
+| `on_install(func)` | Run once at install and on every update. Gets the database connection. |
+| `on_flask_start(func)` / `on_worker_start(func)` | Run at every start of that container, after the plugin loads. |
+| `register_onnx_provider(name, options, position)` | Advanced: offer an extra ONNX Runtime execution provider (for example a GPU) for analysis. |
 
 ## Who can see and manage plugins
 
@@ -225,3 +394,51 @@ Nearly everything a plugin can do works the same on Docker, Kubernetes and the W
 | Extra pip packages (`requirements`) | Yes, when `PLUGIN_ALLOW_PIP` is true (the default) | No, the plugin is marked "incompatible" |
 
 If your plugin uses only built-in libraries, it runs everywhere. If it needs an extra pip package, it runs on Docker and Kubernetes but is skipped on the standalone builds.
+
+## Configuration for admins
+
+The plugin system works out of the box. These environment variables let an admin change its behavior:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PLUGINS_ENABLED` | `true` | Master switch. Set `false` to turn the whole plugin system off, including the Plugins page. |
+| `PLUGIN_ALLOW_PIP` | `true` | Allow plugins to install their extra pip packages. Set `false` to only allow plugins that use built-in libraries. |
+| `PLUGINS_DIR` | build-specific | Where plugin code and its pip packages live. Mount a persistent volume here. If it is empty at start, plugins are re-downloaded automatically. |
+| `PLUGIN_DEFAULT_REPO_URL` | community catalog | The catalog that is always present. Point it at your own `manifest.json` to replace the community one. |
+| `PLUGIN_MAX_DOWNLOAD_MB` | `50` | Maximum size of one plugin download. |
+| `PLUGIN_CATALOG_REFRESH_INTERVAL` | `3600` | How often (seconds) the catalog is checked for new versions in the background. |
+| `PLUGIN_HTTP_FORCE_IPV4` | `true` | Use IPv4 for plugin downloads. Set `false` only on an IPv6-only host. |
+
+On Kubernetes and Docker the Flask and worker containers each keep their own plugins volume; there is nothing to share between them.
+
+## Troubleshooting
+
+### What the status badge means
+
+Each plugin on the Installed tab has a status badge:
+
+* **ok** - the plugin loaded and is running.
+* **error** - the plugin failed to load. A short message shows under the plugin and tells you which container failed (for example "failed on worker: ..."); the full error is in that container's logs. The rest of AudioMuse-AI keeps working.
+* **incompatible** - this version needs a newer AudioMuse-AI core, or it needs extra pip packages on a standalone build that cannot install them.
+* **deps_failed** - the plugin code is installed but its pip dependencies could not be installed. The message under the plugin shows the pip error.
+* **pending** - the plugin has not been loaded yet. Apply the restart.
+
+### Where the logs are
+
+Plugin errors never show a full trace in the browser. Look in the container logs instead: the Flask (web) container for pages and installs, the worker container for tasks and cron jobs. On Docker use `docker logs <container>`, on Kubernetes use `kubectl logs <pod>`.
+
+### A plugin is missing from the Catalog
+
+The catalog only shows versions your core can run. If every release of a plugin needs a newer core than yours, the plugin does not appear at all. Update AudioMuse-AI and refresh the catalog.
+
+### Repository or download errors
+
+Downloads retry by themselves with backoff, and GitHub files are also tried from a second CDN (jsDelivr) when GitHub does not answer. The catalog keeps the last good copy, so a short outage does not empty the page. If downloads keep failing, check that the container can reach the internet. By default outbound plugin traffic uses IPv4 only, because many containers have a broken IPv6 path; on an IPv6-only host set `PLUGIN_HTTP_FORCE_IPV4=false`.
+
+### The plugins volume was wiped
+
+Plugin code lives on a volume, but the database remembers every installed plugin and where it came from. If the volume is empty at start, AudioMuse-AI re-downloads each plugin by itself and logs a warning. If a plugin cannot be re-downloaded, reinstall it from the Catalog.
+
+### A plugin page gives 404 right after install
+
+You have not applied the restart yet. Click **Apply now (restart)** on the Plugins page.

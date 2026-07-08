@@ -51,10 +51,12 @@ _catalog_refresh_lock = threading.Lock()
 def _store_catalog_cache(plugins, errors):
     """Persist the resolved catalog so the UI is served from the DB, never from a live fetch.
 
-    An empty/failed resolution keeps the previously cached plugins and only bumps the
-    timestamp, so a transient GitHub outage never wipes the last known-good catalog.
+    A resolution that came back empty WITH fetch errors keeps the previously cached
+    plugins (a transient outage never wipes the last known-good catalog); an empty
+    result with no errors means every repo answered and truly lists nothing, so the
+    cache clears and delisted plugins disappear.
     """
-    if not plugins:
+    if not plugins and errors:
         plugins = _load_catalog_cache()[0]
     payload = {'at': time.time(), 'plugins': plugins or [], 'errors': errors or []}
     try:
@@ -83,6 +85,16 @@ def _cached_latest_versions():
     return {p['id']: p.get('latest_version') for p in plugins if p.get('id')}, at
 
 
+def _is_newer_version(latest, installed):
+    """True when ``latest`` is numerically newer than ``installed`` (1.0 == 1.0.0)."""
+    if not latest:
+        return False
+    latest_v = _parse_version(latest)
+    installed_v = _parse_version(installed)
+    width = max(len(latest_v), len(installed_v))
+    return latest_v + (0,) * (width - len(latest_v)) > installed_v + (0,) * (width - len(installed_v))
+
+
 def _refresh_catalog_cache_async(force=False):
     """Refresh the catalog cache in a background daemon thread.
 
@@ -98,8 +110,8 @@ def _refresh_catalog_cache_async(force=False):
         return True
 
     def _run():
-        from flask_app import app
         try:
+            from flask_app import app
             with app.app_context():
                 try:
                     plugins, errors = _fetch_catalog()
@@ -110,7 +122,12 @@ def _refresh_catalog_cache_async(force=False):
         finally:
             _catalog_refresh_lock.release()
 
-    threading.Thread(target=_run, name='plugin-catalog-refresh', daemon=True).start()
+    try:
+        threading.Thread(target=_run, name='plugin-catalog-refresh', daemon=True).start()
+    except Exception:
+        _catalog_refresh_lock.release()
+        logger.exception('Could not start the plugin catalog refresh thread')
+        return False
     return True
 
 
@@ -170,6 +187,8 @@ def _pick_version(versions, requested=None):
     for entry in versions or []:
         min_core = entry.get('min_core_version') or entry.get('targetAbi')
         if not version_ge(config.APP_VERSION, min_core):
+            continue
+        if not (entry.get('sourceUrl') or entry.get('source_url')):
             continue
         if requested and str(entry.get('version')) != str(requested):
             continue
@@ -251,6 +270,24 @@ def _build_catalog_entry(repo_url, entry, installed):
     if not best:
         return plugin_id, None, local_errors
     current = installed.get(plugin_id)
+    compatible_versions = sorted(
+        (
+            {
+                'version': e.get('version'),
+                'min_core_version': e.get('min_core_version') or e.get('targetAbi'),
+                'changelog': e.get('changelog', ''),
+                'sourceUrl': e.get('sourceUrl') or e.get('source_url'),
+                'checksum': e.get('checksum'),
+                'requirements': e.get('requirements'),
+                'targets': e.get('targets'),
+            }
+            for e in (versions or [])
+            if version_ge(config.APP_VERSION, e.get('min_core_version') or e.get('targetAbi'))
+            and (e.get('sourceUrl') or e.get('source_url'))
+        ),
+        key=lambda e: _parse_version(e.get('version')),
+        reverse=True,
+    )
     return plugin_id, {
         'id': plugin_id,
         'name': entry.get('name') or detail.get('name') or plugin_id,
@@ -264,6 +301,7 @@ def _build_catalog_entry(repo_url, entry, installed):
         'min_core_version': best.get('min_core_version') or best.get('targetAbi'),
         'targets': detail.get('targets') or [],
         'requirements': detail.get('requirements') or [],
+        'versions': compatible_versions,
         'source_repo': repo_url,
         'installed_version': current.get('version') if current else None,
     }, local_errors
@@ -272,6 +310,7 @@ def _build_catalog_entry(repo_url, entry, installed):
 def _fetch_catalog():
     installed = {p['id']: p for p in database.list_plugins()}
     errors = []
+    failed_repos = set()
     pending = []
     for repo_url in _get_repos():
         try:
@@ -282,15 +321,18 @@ def _fetch_catalog():
         except net.DownloadError as exc:
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': str(exc)})
+            failed_repos.add(repo_url)
             continue
         except Exception as exc:
             logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
             errors.append({'repo': repo_url, 'error': 'Failed to fetch repository catalog'})
+            failed_repos.add(repo_url)
             continue
         entries = doc.get('plugins')
         if not isinstance(entries, list):
             logger.warning('Plugin repo %s has no valid "plugins" list; skipping', repo_url)
             errors.append({'repo': repo_url, 'error': 'Repository catalog "plugins" is not a list'})
+            failed_repos.add(repo_url)
             continue
         pending.extend(
             (repo_url, entry) for entry in entries
@@ -306,6 +348,11 @@ def _fetch_catalog():
             errors.extend(local_errors)
             if entry_data:
                 merged[plugin_id] = entry_data
+    if failed_repos:
+        previous, _prev_errors, _prev_at = _load_catalog_cache()
+        for entry in previous:
+            if entry.get('source_repo') in failed_repos and entry.get('id') not in merged:
+                merged[entry['id']] = entry
     result = list(merged.values())
     _store_catalog_cache(result, errors)
     return result, errors
@@ -327,7 +374,7 @@ def api_installed():
         plugin['requirements'] = plugin.get('requirements') or []
         latest_version = latest.get(plugin['id'])
         plugin['latest_version'] = latest_version
-        plugin['update_available'] = bool(latest_version and str(latest_version) != str(plugin.get('version')))
+        plugin['update_available'] = _is_newer_version(latest_version, plugin.get('version'))
         endpoint = plugin_manager.get_settings_endpoint(plugin['id'])
         settings_url = None
         if endpoint:
@@ -337,7 +384,11 @@ def api_installed():
                 settings_url = None
         plugin['settings_url'] = settings_url
     _refresh_catalog_cache_async()
-    return jsonify({'plugins': plugins, 'pip_supported': _pip_supported()})
+    return jsonify({
+        'plugins': plugins,
+        'pip_supported': _pip_supported(),
+        'restart_pending': plugin_manager.restart_pending(plugins),
+    })
 
 
 @plugins_bp.route('/api/plugins/catalog', methods=['GET'])
@@ -387,7 +438,11 @@ def _install_manifest(match):
     }
 
 
-def _resolve_install_source(plugin_id):
+class VersionUnavailableError(Exception):
+    """The specific plugin version an install requested cannot be resolved right now."""
+
+
+def _resolve_install_source(plugin_id, requested_version=None):
     """Return (source_url, checksum, source_repo, manifest) for a plugin to install.
 
     Resolves from the cached catalog first (instant - the user typically clicks
@@ -395,7 +450,9 @@ def _resolve_install_source(plugin_id):
     the cache does not know the plugin. If neither works, falls back to the
     source_url and manifest already stored for an installed plugin so a reinstall
     still works during an upstream outage. Returns all-None when nothing yields a
-    source.
+    source. With ``requested_version`` the matching release is resolved from the
+    entry's compatible versions list (install a specific version / rollback);
+    raises VersionUnavailableError when that exact release cannot be served.
     """
     catalog, _errors, _at = _load_catalog_cache()
     match = next((p for p in catalog if p.get('id') == plugin_id), None)
@@ -407,9 +464,41 @@ def _resolve_install_source(plugin_id):
             catalog = []
         match = next((p for p in catalog if p.get('id') == plugin_id), None)
     if match and match.get('source_url'):
-        return match['source_url'], match.get('checksum'), match.get('source_repo'), _install_manifest(match)
+        meta = _install_manifest(match)
+        source_url = match['source_url']
+        checksum = match.get('checksum')
+        if requested_version is not None and str(meta.get('version')) != str(requested_version):
+            release = next(
+                (e for e in (match.get('versions') or [])
+                 if str(e.get('version')) == str(requested_version)
+                 and (e.get('sourceUrl') or e.get('source_url'))),
+                None,
+            )
+            if release is None:
+                raise VersionUnavailableError(
+                    f'Version {requested_version} of {plugin_id} is not currently available '
+                    'from any configured repository; nothing was changed'
+                )
+            source_url = release.get('sourceUrl') or release.get('source_url')
+            checksum = release.get('checksum')
+            meta = {
+                **meta,
+                'version': release.get('version'),
+                'min_core_version': release.get('min_core_version') or meta.get('min_core_version'),
+                'changelog': release.get('changelog', ''),
+            }
+            if release.get('requirements') is not None:
+                meta['requirements'] = release['requirements']
+            if release.get('targets') is not None:
+                meta['targets'] = release['targets']
+        return source_url, checksum, match.get('source_repo'), meta
     existing = database.get_plugin(plugin_id)
     if existing and existing.get('source_url'):
+        if requested_version is not None and str(existing.get('version')) != str(requested_version):
+            raise VersionUnavailableError(
+                f'Version {requested_version} of {plugin_id} is not currently available '
+                'from any configured repository; nothing was changed'
+            )
         logger.warning(
             'Plugin %s not resolvable from the catalog; reinstalling from its stored source_url', plugin_id
         )
@@ -424,17 +513,30 @@ def api_install():
     plugin_id = data.get('id')
     if not plugin_id:
         return jsonify({'error': 'Missing required field: id'}), 400
+    requested_version = data.get('version')
     try:
-        source_url, checksum, source_repo, install_meta = _resolve_install_source(plugin_id)
+        source_url, checksum, source_repo, install_meta = _resolve_install_source(
+            plugin_id, requested_version
+        )
         if not source_url:
             return jsonify({'error': 'Plugin not found in any configured repository'}), 404
         package = _download(source_url, config.PLUGIN_MAX_DOWNLOAD_MB * 1024 * 1024)
-        manifest = plugin_manager.install_package(
+        manifest, deps_ok, deps_error = plugin_manager.install_package(
             package, install_meta, source_url=source_url, source_repo=source_repo,
             expected_checksum=checksum,
             on_registered=lambda _pid: restart_manager.publish_plugin_sync_request(),
         )
-        return jsonify({'status': 'ok', 'manifest': manifest, 'restart_required': True})
+        response = {
+            'status': 'ok',
+            'manifest': manifest,
+            'restart_required': True,
+            'deps_ok': bool(deps_ok),
+        }
+        if deps_error:
+            response['deps_error'] = deps_error
+        return jsonify(response)
+    except VersionUnavailableError as exc:
+        return jsonify({'error': str(exc)}), 409
     except net.DownloadError as exc:
         logger.warning('Plugin download failed for %s: %s', plugin_id, exc)
         return jsonify({'error': str(exc)}), 502
@@ -526,9 +628,15 @@ def api_repos():
 @plugins_bp.route('/api/plugins/apply', methods=['POST'])
 def api_apply():
     try:
-        restart_manager.publish_restart_request()
-        restart_manager.schedule_flask_restart()
-        return jsonify({'status': 'ok'})
+        workers_published = restart_manager.publish_restart_request()
+        flask_scheduled = restart_manager.schedule_flask_restart()
+        if workers_published and flask_scheduled:
+            return jsonify({'status': 'ok'})
+        return jsonify({
+            'status': 'partial',
+            'workers_restart_published': bool(workers_published),
+            'flask_restart_scheduled': bool(flask_scheduled),
+        })
     except Exception:
         logger.exception('Failed to trigger plugin apply restart')
         return jsonify({'error': _GENERIC_ERROR}), 500

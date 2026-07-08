@@ -50,12 +50,15 @@
 
     function showRestart() { banner.style.display = 'flex'; }
 
+    let notifyTimer = null;
+
     function notify(text, ok) {
+        clearTimeout(notifyTimer);
         message.textContent = text;
         message.style.display = 'block';
         message.style.border = '1px solid ' + (ok ? '#2e7d32' : '#c62828');
         message.style.background = ok ? 'rgba(46,125,50,.12)' : 'rgba(198,40,40,.12)';
-        setTimeout(function () { message.style.display = 'none'; }, 6000);
+        notifyTimer = setTimeout(function () { message.style.display = 'none'; }, 6000);
     }
 
     async function api(url, opts) {
@@ -93,10 +96,13 @@
         const box = document.getElementById('plugins-installed-list');
         try {
             const data = await api('/api/plugins/installed');
-            if (!data.plugins.length) { box.innerHTML = '<p>No plugins installed yet. Browse the Catalog to add one.</p>'; return; }
-            if (!data.pip_supported) {
-                box.innerHTML = '<p style="color:#b58900;">This build cannot install plugin pip dependencies (frozen/standalone). Pure-Python plugins still work.</p>';
-            } else { box.innerHTML = ''; }
+            if (data.restart_pending) { showRestart(); }
+            const pipWarning = data.pip_supported ? '' : '<p style="color:#b58900;">This build cannot install plugin pip dependencies (frozen/standalone). Pure-Python plugins still work.</p>';
+            if (!data.plugins.length) {
+                box.innerHTML = pipWarning + '<p>No plugins installed yet. Browse the Catalog to add one.</p>';
+                return;
+            }
+            box.innerHTML = pipWarning;
             data.plugins.forEach(function (p) {
                 const div = document.createElement('div');
                 div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
@@ -104,14 +110,19 @@
                 html += '<div><strong>' + esc(p.name || p.id) + '</strong> <span style="opacity:.7;">v' + esc(p.version) + '</span> ' + statusBadge(p.load_status) + (p.enabled ? '' : ' <span style="opacity:.6;">(disabled)</span>') + '</div>';
                 html += '<div style="display:flex;gap:.4rem;flex-wrap:wrap;">';
                 if (p.update_available) {
-                    html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">Update to v' + esc(p.latest_version) + '</button>';
+                    html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-version="' + esc(p.latest_version) + '">Update to v' + esc(p.latest_version) + '</button>';
                 }
                 html += '<button type="button" class="btn btn-ghost btn-sm" data-act="' + (p.enabled ? 'disable' : 'enable') + '" data-id="' + esc(p.id) + '">' + (p.enabled ? 'Disable' : 'Enable') + '</button>';
                 html += '<button type="button" class="btn btn-ghost btn-sm" data-act="settings" data-id="' + esc(p.id) + '"' + (p.settings_url ? ' data-settings-url="' + esc(p.settings_url) + '"' : '') + '>Settings</button>';
                 html += '<button type="button" class="btn btn-danger btn-sm" data-act="uninstall" data-id="' + esc(p.id) + '">Uninstall</button>';
                 html += '</div></div>';
                 if (p.manifest && p.manifest.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.manifest.description) + '</p>'; }
-                if (p.error) { html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">' + esc(p.error) + '</pre>'; }
+                const roleErrors = p.load_errors || {};
+                const roles = Object.keys(roleErrors);
+                roles.forEach(function (role) {
+                    html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">failed on ' + esc(role) + ': ' + esc(roleErrors[role]) + '</pre>';
+                });
+                if (p.error && !roles.length) { html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">' + esc(p.error) + '</pre>'; }
                 div.innerHTML = html;
                 box.appendChild(div);
             });
@@ -121,8 +132,15 @@
     let catalogPollTimer = null;
     let catalogPollsLeft = 0;
 
+    let installInFlight = false;
+
     function renderCatalog(data, refreshingNote) {
         const box = document.getElementById('plugins-catalog-list');
+        if (installInFlight) { return; }
+        const chosenVersions = {};
+        box.querySelectorAll('select[data-versions]').forEach(function (sel) {
+            if (sel.selectedIndex > 0) { chosenVersions[sel.getAttribute('data-plugin')] = sel.value; }
+        });
         box.innerHTML = '';
         if (refreshingNote) {
             const note = document.createElement('p');
@@ -130,8 +148,18 @@
             note.textContent = 'Checking the repositories for new versions in the background...';
             box.appendChild(note);
         }
+        (data.errors || []).forEach(function (er) {
+            const err = document.createElement('p');
+            err.style.color = '#c62828';
+            err.textContent = 'Repo error: ' + er.repo + ' - ' + er.error;
+            box.appendChild(err);
+        });
         if (!data.plugins.length) {
-            if (!refreshingNote) { box.innerHTML = '<p>No plugins available from the configured repositories.</p>'; }
+            if (!refreshingNote) {
+                const empty = document.createElement('p');
+                empty.textContent = 'No plugins available from the configured repositories.';
+                box.appendChild(empty);
+            }
             return;
         }
         data.plugins.forEach(function (p) {
@@ -144,8 +172,18 @@
             else if (isInstalled) { label = 'Reinstall'; }
             let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
             html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
-            html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">' + esc(label) + '</button>';
-            html += '</div>';
+            html += '<div style="display:flex;gap:.4rem;align-items:center;">';
+            if ((p.versions || []).length > 1) {
+                const chosen = chosenVersions[p.id];
+                html += '<select data-versions data-plugin="' + esc(p.id) + '" class="btn btn-ghost btn-sm" aria-label="Version to install" style="max-width:9rem;">';
+                p.versions.forEach(function (v) {
+                    const selected = chosen && String(chosen) === String(v.version) ? ' selected' : '';
+                    html += '<option value="' + esc(v.version) + '"' + selected + '>v' + esc(v.version) + '</option>';
+                });
+                html += '</select>';
+            }
+            html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-version="' + esc(p.latest_version) + '">' + esc(label) + '</button>';
+            html += '</div></div>';
             if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
             if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
             div.innerHTML = html;
@@ -153,13 +191,17 @@
         });
     }
 
+    function stopCatalogPolling() {
+        if (catalogPollTimer) { clearTimeout(catalogPollTimer); catalogPollTimer = null; }
+        catalogPollsLeft = 0;
+    }
+
     async function loadCatalog(force) {
         const box = document.getElementById('plugins-catalog-list');
         if (catalogPollTimer) { clearTimeout(catalogPollTimer); catalogPollTimer = null; }
-        if (force || catalogPollsLeft <= 0) { catalogPollsLeft = 40; }
+        if (force) { catalogPollsLeft = 40; }
         try {
             const data = await api('/api/plugins/catalog' + (force ? '?refresh=1' : ''));
-            (data.errors || []).forEach(function (er) { notify('Repo error: ' + er.repo + ' - ' + er.error, false); });
             renderCatalog(data, data.refreshing);
             if (data.refreshing && catalogPollsLeft > 0) {
                 catalogPollsLeft -= 1;
@@ -189,25 +231,35 @@
     async function doInstall(btn) {
         if (!window.confirm('Plugins run with full application and database permissions. Only install plugins you trust. Continue?')) { return; }
         const label = btn.textContent;
+        installInFlight = true;
         btn.disabled = true;
         btn.textContent = 'Installing...';
         message.style.display = 'block';
         message.style.border = '1px solid #b58900';
         message.style.background = 'rgba(181,137,0,.12)';
+        clearTimeout(notifyTimer);
         message.textContent = 'Installing ' + btn.dataset.id + '. If the plugin has dependencies this can take up to a minute while they are downloaded and installed; please wait and do not reload.';
         try {
-            await api('/api/plugins/install', {
+            const body = { id: btn.dataset.id };
+            const sel = btn.parentElement ? btn.parentElement.querySelector('select[data-versions]') : null;
+            const version = (sel && sel.value) || btn.dataset.version;
+            if (version) { body.version = version; }
+            const resp = await api('/api/plugins/install', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id: btn.dataset.id })
+                body: JSON.stringify(body)
             });
-            notify('Installed ' + btn.dataset.id + '. Restart to activate.', true);
+            if (resp.deps_error) {
+                notify('Installed ' + btn.dataset.id + ', but its dependencies failed to install: ' + resp.deps_error, false);
+            } else {
+                notify('Installed ' + btn.dataset.id + '. Restart to activate.', true);
+            }
             showRestart(); loadInstalled();
-        } catch (e) { notify(e.message, false); } finally { btn.disabled = false; btn.textContent = label; }
+        } catch (e) { notify(e.message, false); } finally { installInFlight = false; btn.disabled = false; btn.textContent = label; }
     }
 
     async function doUninstall(id) {
-        const purge = window.confirm('Uninstall ' + id + '?\n\nOK = also delete this plugin\'s data tables.\nCancel this dialog to keep data (you will confirm removal next).');
-        if (!purge && !window.confirm('Uninstall ' + id + ' but keep its data tables?')) { return; }
+        if (!window.confirm('Uninstall ' + id + '?')) { return; }
+        const purge = window.confirm('Also delete the data tables of ' + id + '? This cannot be undone.\n\nOK = delete data tables.\nCancel = keep data tables.');
         try {
             await api('/api/plugins/uninstall', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -250,6 +302,7 @@
         if (!t || !root.contains(t)) { return; }
         if (t.classList.contains('plugins-tab-btn')) {
             setActiveTab(t.dataset.tab);
+            if (t.dataset.tab !== 'catalog') { stopCatalogPolling(); }
             if (t.dataset.tab === 'installed') { loadInstalled(); }
             if (t.dataset.tab === 'catalog') { loadCatalog(true); }
             if (t.dataset.tab === 'repos') { loadRepos(); }
@@ -282,7 +335,12 @@
         const applyBtn = event.currentTarget;
         const bannerText = banner.querySelector('span');
         applyBtn.disabled = true;
-        api('/api/plugins/apply', { method: 'POST' }).then(function () {
+        api('/api/plugins/apply', { method: 'POST' }).then(function (resp) {
+            if (resp.status !== 'ok') {
+                applyBtn.disabled = false;
+                bannerText.textContent = 'The automatic restart could not be fully triggered. Restart the AudioMuse-AI containers manually to apply the changes.';
+                return;
+            }
             applyBtn.style.display = 'none';
             let countdown = 20;
             bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';

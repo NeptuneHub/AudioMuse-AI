@@ -159,6 +159,8 @@ def inject_globals():
         from flask import url_for
         from plugin.manager import plugin_manager
         for item in plugin_manager.menu_items():
+            if item.get('admin_only') and auth_role != 'admin':
+                continue
             try:
                 item_url = url_for(item['endpoint'])
             except Exception:

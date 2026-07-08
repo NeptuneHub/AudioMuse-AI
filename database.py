@@ -1132,7 +1132,11 @@ def init_db():
 
             db.commit()
         finally:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                db.rollback()
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            except Exception:
+                logger.exception("Failed to release the schema advisory lock")
 
 
 def connect_raw():
@@ -1172,11 +1176,15 @@ def _create_plugins_table(cur):
             settings     JSONB NOT NULL DEFAULT '{}'::jsonb,
             source_repo  TEXT,
             load_status  TEXT,
+            load_errors  JSONB NOT NULL DEFAULT '{}'::jsonb,
             installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
+    cur.execute(
+        "ALTER TABLE plugins ADD COLUMN IF NOT EXISTS load_errors JSONB NOT NULL DEFAULT '{}'::jsonb"
+    )
 
 
 def ensure_plugins_table(conn=None):
@@ -1197,7 +1205,11 @@ def ensure_plugins_table(conn=None):
                 _create_plugins_table(cur)
                 db.commit()
             finally:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                try:
+                    db.rollback()
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                except Exception:
+                    logger.exception("Failed to release the schema advisory lock")
     finally:
         if own:
             db.close()
@@ -1205,7 +1217,7 @@ def ensure_plugins_table(conn=None):
 
 _PLUGIN_META_COLUMNS = (
     "id, name, version, manifest, source_url, checksum, requirements, enabled, settings, "
-    "source_repo, load_status, installed_at, updated_at"
+    "source_repo, load_status, load_errors, installed_at, updated_at"
 )
 
 
@@ -1222,6 +1234,7 @@ def _row_to_plugin(row):
         'settings': row['settings'] or {},
         'source_repo': row['source_repo'],
         'load_status': row['load_status'],
+        'load_errors': row['load_errors'] or {},
         'installed_at': row['installed_at'],
         'updated_at': row['updated_at'],
     }
@@ -1308,12 +1321,47 @@ def set_plugin_enabled(plugin_id, enabled, conn=None):
         cur.close()
 
 
-def set_plugin_load_status(plugin_id, status, conn=None):
-    """Persist the last-boot load result ('ok' | 'error' | 'incompatible')."""
+def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
+    """Persist the last-boot load result plus the per-role error text.
+
+    ``load_errors`` maps 'flask'/'worker' to the failing role's message, so a
+    plugin that only breaks on the worker still shows a useful error in the web
+    UI. A success for a role clears that role's entry. With ``status=None`` only
+    the role's error entry is written/cleared and load_status stays untouched.
+    """
     db = conn or get_db()
     cur = db.cursor()
     try:
-        cur.execute("UPDATE plugins SET load_status = %s WHERE id = %s", (status, plugin_id))
+        if role and error:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    ([role], json.dumps(str(error)), plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    (status, [role], json.dumps(str(error)), plugin_id),
+                )
+        elif role:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (role, plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (status, role, plugin_id),
+                )
+        elif status is not None:
+            cur.execute("UPDATE plugins SET load_status = %s WHERE id = %s", (status, plugin_id))
         db.commit()
     finally:
         cur.close()
@@ -1339,6 +1387,25 @@ def set_plugin_settings(plugin_id, settings, conn=None):
         cur.execute(
             "UPDATE plugins SET settings = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
             (Json(settings or {}), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_cron_tasks(plugin_id, cron_tasks, conn=None):
+    """Store the cron tasks a plugin declared in register() inside its manifest JSONB.
+
+    Captured at install time so the web process, which never imports a
+    worker-only plugin, can still resolve and dispatch its scheduled tasks.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET manifest = jsonb_set(manifest, '{cron_tasks}', %s::jsonb, true), "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (json.dumps(cron_tasks or {}), plugin_id),
         )
         db.commit()
     finally:

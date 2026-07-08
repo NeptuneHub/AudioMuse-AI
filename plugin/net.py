@@ -30,12 +30,10 @@ Main Features:
 """
 
 import logging
-import socket
 from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util import connection as urllib3_connection
 from urllib3.util.retry import Retry
 
 import config
@@ -43,8 +41,36 @@ from ssrf_guard import validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
-if config.PLUGIN_HTTP_FORCE_IPV4:
-    urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+_RETRY_AFTER_CAP = 60.0
+
+
+class _CappedRetry(Retry):
+    """Retry that honors Retry-After headers only up to a small cap.
+
+    Without the cap a repository server sending 'Retry-After: 86400' on a 429
+    would wedge the single-flight catalog refresh (or an install request) for a
+    day. Retry.new() copies via type(self), so the subclass survives increments.
+    """
+
+    def get_retry_after(self, response):
+        value = super().get_retry_after(response)
+        if value is None:
+            return None
+        return min(value, _RETRY_AFTER_CAP)
+
+
+class _IPv4Adapter(HTTPAdapter):
+    """HTTPAdapter that pins this session's outbound sockets to IPv4.
+
+    Binding the IPv4 wildcard as the source address makes IPv6 candidates fail
+    at bind() and fall through to A records. Scoped to the plugin downloader's
+    own session so the rest of the app (mediaserver, AI providers) keeps normal
+    dual-stack behavior on IPv6-capable hosts.
+    """
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs['source_address'] = ('0.0.0.0', 0)
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
 
 
 class DownloadError(Exception):
@@ -64,7 +90,7 @@ def _host(url):
 
 
 def _build_retry():
-    return Retry(
+    return _CappedRetry(
         total=config.PLUGIN_HTTP_RETRIES,
         backoff_factor=config.PLUGIN_HTTP_BACKOFF,
         status_forcelist=(429, 500, 502, 503, 504),
@@ -75,7 +101,8 @@ def _build_retry():
 
 def _session():
     session = requests.Session()
-    adapter = HTTPAdapter(max_retries=_build_retry())
+    adapter_class = _IPv4Adapter if config.PLUGIN_HTTP_FORCE_IPV4 else HTTPAdapter
+    adapter = adapter_class(max_retries=_build_retry())
     session.mount('https://', adapter)
     session.mount('http://', adapter)
     return session
@@ -98,13 +125,18 @@ def _jsdelivr_mirror(url):
         parts = urlparse(url)
     except Exception:
         return None
-    if parts.hostname != _RAW_GITHUB_HOST:
+    if parts.hostname != _RAW_GITHUB_HOST or parts.query:
         return None
     segments = [s for s in parts.path.split('/') if s]
     if len(segments) < 4:
         return None
-    user, repo, ref = segments[0], segments[1], segments[2]
-    path = '/'.join(segments[3:])
+    user, repo = segments[0], segments[1]
+    if segments[2] == 'refs' and len(segments) >= 6 and segments[3] in ('heads', 'tags'):
+        ref = segments[4]
+        path = '/'.join(segments[5:])
+    else:
+        ref = segments[2]
+        path = '/'.join(segments[3:])
     return f'https://cdn.jsdelivr.net/gh/{user}/{repo}@{ref}/{path}'
 
 

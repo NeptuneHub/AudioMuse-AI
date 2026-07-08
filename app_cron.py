@@ -24,7 +24,7 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 from database import get_db, save_task_status
 from taskqueue import rq_queue_high, rq_queue_default
-from config import TASK_STATUS_PENDING
+from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 import uuid
 import time
 import logging
@@ -69,6 +69,8 @@ from config import (
 )
 
 cron_bp = Blueprint('cron_bp', __name__)
+
+logger = logging.getLogger(__name__)
 
 _ENQUEUED_BY_CRON = "Enqueued by cron."
 
@@ -235,6 +237,105 @@ def save_cron_entry():
     db.commit()
     cur.close()
     return jsonify({'message': 'saved'}), 200
+
+
+@cron_bp.route('/api/cron/plugin_tasks', methods=['GET'])
+def get_plugin_cron_tasks():
+    """
+    List the schedulable plugin cron tasks.
+    ---
+    tags:
+      - Cron
+    summary: Return every cron task registered by an enabled plugin.
+    responses:
+      200:
+        description: List of plugin cron tasks.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  task_type:
+                    type: string
+                    description: The schedulable task type, plugin.<id>.<name>.
+                  plugin:
+                    type: string
+                  task:
+                    type: string
+    """
+    try:
+        from plugin.manager import plugin_manager
+
+        return jsonify(plugin_manager.available_cron_tasks()), 200
+    except Exception:
+        logger.exception("Failed to list plugin cron tasks")
+        return jsonify([]), 200
+
+
+@cron_bp.route('/api/cron/run_now', methods=['POST'])
+def run_plugin_task_now():
+    """
+    Run a plugin cron task immediately.
+    ---
+    tags:
+      - Cron
+    summary: Enqueue one plugin cron task right away, without waiting for its schedule.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              task_type:
+                type: string
+                description: plugin.<id>.<name>
+    responses:
+      200:
+        description: Enqueued.
+      404:
+        description: No such plugin task.
+    """
+    data = request.json or {}
+    task_type = str(data.get('task_type') or '')
+    if not task_type.startswith('plugin.'):
+        return jsonify({'error': 'task_type must be plugin.<id>.<name>'}), 400
+    try:
+        from plugin.manager import plugin_manager
+
+        cron_task = plugin_manager.get_cron_task(task_type)
+        if not cron_task:
+            return jsonify({'error': 'No such plugin task (is the plugin enabled?)'}), 404
+        job_id = str(uuid.uuid4())
+        save_task_status(
+            job_id,
+            task_type,
+            TASK_STATUS_PENDING,
+            details={"message": "Run now from the Scheduled Tasks page."},
+        )
+        queue = rq_queue_high if cron_task.get('queue') == 'high' else rq_queue_default
+        try:
+            queue.enqueue(
+                'plugin.manager.run_plugin_task',
+                args=(cron_task['dotted'],),
+                job_id=job_id,
+                description=f'Run now {task_type}',
+                job_timeout=-1,
+            )
+        except Exception:
+            logger.exception("Run now: enqueue failed for %s", task_type)
+            save_task_status(
+                job_id, task_type, TASK_STATUS_FAILURE,
+                details={"error": "Could not enqueue the task (is Redis reachable?)"},
+            )
+            return jsonify({'error': 'Could not enqueue the task. Check the container logs.'}), 500
+        logger.info("Run now: enqueued plugin task %s job %s", task_type, job_id)
+        return jsonify({'message': 'enqueued', 'job_id': job_id}), 200
+    except Exception:
+        logger.exception("Failed to run plugin task now: %s", task_type)
+        return jsonify({'error': 'Could not enqueue the task. Check the container logs.'}), 500
 
 
 def _field_matches(field_expr, value, field_min=0):
@@ -484,14 +585,21 @@ def run_due_cron_jobs():
                             details={"message": _ENQUEUED_BY_CRON},
                         )
                         queue = rq_queue_high if cron_task.get('queue') == 'high' else rq_queue_default
-                        queue.enqueue(
-                            'plugin.manager.run_plugin_task',
-                            args=(cron_task['dotted'],),
-                            job_id=job_id,
-                            description=f'Cron {task_type}',
-                            job_timeout=-1,
-                        )
-                        logger.info(f"Cron: enqueued plugin task {task_type} job {job_id}")
+                        try:
+                            queue.enqueue(
+                                'plugin.manager.run_plugin_task',
+                                args=(cron_task['dotted'],),
+                                job_id=job_id,
+                                description=f'Cron {task_type}',
+                                job_timeout=-1,
+                            )
+                            logger.info(f"Cron: enqueued plugin task {task_type} job {job_id}")
+                        except Exception:
+                            logger.exception(f"Cron: enqueue failed for {task_type}")
+                            save_task_status(
+                                job_id, task_type, TASK_STATUS_FAILURE,
+                                details={"error": "Could not enqueue the task (is Redis reachable?)"},
+                            )
                 # update last_run
                 cur2 = db.cursor()
                 cur2.execute("UPDATE cron SET last_run=%s WHERE id=%s", (now_ts, r['id']))

@@ -107,6 +107,117 @@ class TestVersionCompare:
         assert manager.version_ge('2.5.0', '2.4') is True
 
 
+class TestCronTaskFallback:
+    def test_worker_only_plugin_resolves_from_persisted_manifest(self):
+        mgr = manager.PluginManager()
+        mgr.records = {'jobber': _record('jobber', manifest={
+            'targets': ['worker'],
+            'cron_tasks': {'daily': {'dotted': 'audiomuse_plugins.jobber.tasks.daily', 'queue': 'default'}},
+        })}
+        task = mgr.get_cron_task('plugin.jobber.daily')
+        assert task == {'dotted': 'audiomuse_plugins.jobber.tasks.daily', 'queue': 'default'}
+
+    def test_loaded_registration_wins_over_manifest(self):
+        mgr = manager.PluginManager()
+        record = _record('jobber', manifest={
+            'cron_tasks': {'daily': {'dotted': 'stale.path', 'queue': 'default'}},
+        })
+        record['cron_tasks'] = {'daily': {'dotted': 'audiomuse_plugins.jobber.tasks.daily', 'queue': 'high'}}
+        mgr.records = {'jobber': record}
+        assert mgr.get_cron_task('plugin.jobber.daily')['queue'] == 'high'
+
+    def test_disabled_plugin_never_dispatches(self):
+        mgr = manager.PluginManager()
+        mgr.records = {'jobber': _record('jobber', enabled=False, manifest={
+            'cron_tasks': {'daily': {'dotted': 'audiomuse_plugins.jobber.tasks.daily', 'queue': 'default'}},
+        })}
+        assert mgr.get_cron_task('plugin.jobber.daily') is None
+
+    def test_malformed_persisted_entry_is_ignored(self):
+        mgr = manager.PluginManager()
+        mgr.records = {'jobber': _record('jobber', manifest={'cron_tasks': {'daily': 'not-a-dict'}})}
+        assert mgr.get_cron_task('plugin.jobber.daily') is None
+
+
+class TestRequirementPinning:
+    def _lib_with(self, tmp_path, name, version):
+        dist = tmp_path / '_lib' / f'{name}-{version}.dist-info'
+        dist.mkdir(parents=True)
+        (dist / 'METADATA').write_text(
+            f'Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n', encoding='utf-8'
+        )
+
+    def test_changed_pin_triggers_reinstall(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        self._lib_with(tmp_path, 'matplotlib', '3.7.0')
+        installed = {'specs': None}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: installed.__setitem__('specs', specs) or True)
+        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib==3.9.0'])}
+
+        mgr.ensure_requirements()
+
+        assert installed['specs'] == ['matplotlib==3.9.0']
+
+    def test_satisfied_pin_skips_pip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        self._lib_with(tmp_path, 'matplotlib', '3.9.0')
+        calls = {'n': 0}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: calls.__setitem__('n', calls['n'] + 1) or True)
+        mgr.records = {'withreq': _record('withreq', requirements=['matplotlib==3.9.0'])}
+
+        mgr.ensure_requirements()
+
+        assert calls['n'] == 0
+
+    def test_range_pin_is_validated(self):
+        assert manager._valid_requirement('matplotlib==3.9.0') is True
+        assert manager._valid_requirement('matplotlib>=3.8,<4') is True
+        assert manager._valid_requirement('-r requirements.txt') is False
+
+
+class TestPipInstallArgs:
+    def test_pip_argv_includes_upgrade_and_prunes_stale_dist_info(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        stale = tmp_path / '_lib' / 'matplotlib-3.7.0.dist-info'
+        stale.mkdir(parents=True)
+        (stale / 'METADATA').write_text('Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.7.0\n', encoding='utf-8')
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen['argv'] = argv
+            return None
+
+        monkeypatch.setattr(manager.subprocess, 'run', fake_run)
+        mgr = manager.PluginManager()
+        assert mgr._pip_install(['matplotlib==3.9']) is True
+        assert '--upgrade' in seen['argv']
+        assert not stale.exists()
+
+
+class TestReplaceDir:
+    def test_replaces_existing_target(self, tmp_path):
+        old = tmp_path / 'plug'
+        old.mkdir()
+        (old / 'stale.py').write_text('OLD = 1\n', encoding='utf-8')
+        fresh = tmp_path / 'incoming'
+        fresh.mkdir()
+        (fresh / '__init__.py').write_text('NEW = 1\n', encoding='utf-8')
+        manager._replace_dir(str(fresh), str(old))
+        assert (old / '__init__.py').is_file()
+        assert not (old / 'stale.py').exists()
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith('.plugin_old_')]
+        assert leftovers == []
+
+
 class TestZipSafety:
     def test_safe_members(self):
         assert manager._is_safe_member('a/b.py') is True
@@ -387,7 +498,7 @@ class TestTargets:
 
 
 class TestInstallOrdering:
-    def test_broadcast_fires_only_after_web_install_completes(self, monkeypatch, tmp_path):
+    def test_broadcast_fires_after_db_commit_before_local_pip(self, monkeypatch, tmp_path):
         monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
         monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
         pkg = _make_zip({'__init__.py': ''})
@@ -401,13 +512,67 @@ class TestInstallOrdering:
         monkeypatch.setattr(mgr, '_install_specs', lambda *a, **k: order.append('flask_pip') or True)
         monkeypatch.setattr(mgr, 'run_install_hooks', lambda pid: order.append('flask_hooks'))
 
-        mgr.install_package(
+        _manifest, deps_ok, deps_error = mgr.install_package(
             pkg, {'id': 'demo', 'version': '1.0.0'}, source_url='https://example.com/demo.zip',
             on_registered=lambda pid: order.append('broadcast'),
         )
 
-        assert order.index('db_commit') < order.index('flask_pip') < order.index('broadcast')
-        assert order.index('flask_hooks') < order.index('broadcast')
+        assert order.index('db_commit') < order.index('flask_code') < order.index('broadcast')
+        assert order.index('broadcast') < order.index('flask_pip') < order.index('flask_hooks')
+        assert deps_ok is True
+        assert deps_error is None
+        assert mgr._runtime_dirty is True
+
+
+class TestRestartPending:
+    def _snapshot_mgr(self):
+        mgr = manager.PluginManager()
+        mgr.records = {'demo': _record('demo')}
+        mgr.records['demo']['checksum'] = 'abc'
+        mgr._boot_snapshot = {'demo': ('abc', True)}
+        return mgr
+
+    def test_unknown_before_load(self):
+        mgr = manager.PluginManager()
+        assert mgr.restart_pending([]) is None
+
+    def test_false_when_db_matches_snapshot(self):
+        mgr = self._snapshot_mgr()
+        assert mgr.restart_pending([{'id': 'demo', 'checksum': 'abc', 'enabled': True}]) is False
+
+    def test_true_on_checksum_change(self):
+        mgr = self._snapshot_mgr()
+        assert mgr.restart_pending([{'id': 'demo', 'checksum': 'NEW', 'enabled': True}]) is True
+
+    def test_true_on_enable_flip_and_new_plugin(self):
+        mgr = self._snapshot_mgr()
+        assert mgr.restart_pending([{'id': 'demo', 'checksum': 'abc', 'enabled': False}]) is True
+        assert mgr.restart_pending([
+            {'id': 'demo', 'checksum': 'abc', 'enabled': True},
+            {'id': 'other', 'checksum': 'x', 'enabled': True},
+        ]) is True
+
+    def test_true_after_uninstall_reinstall_same_version(self):
+        mgr = self._snapshot_mgr()
+        mgr._runtime_dirty = True
+        assert mgr.restart_pending([{'id': 'demo', 'checksum': 'abc', 'enabled': True}]) is True
+
+
+class TestAvailableCronTasks:
+    def test_merges_memory_and_manifest_and_skips_disabled(self):
+        mgr = manager.PluginManager()
+        loaded = _record('loaded')
+        loaded['cron_tasks'] = {'live': {'dotted': 'audiomuse_plugins.loaded.t.live', 'queue': 'default'}}
+        persisted = _record('persisted', manifest={
+            'targets': ['worker'],
+            'cron_tasks': {'nightly': {'dotted': 'audiomuse_plugins.persisted.t.nightly', 'queue': 'high'}},
+        })
+        off = _record('off', enabled=False, manifest={
+            'cron_tasks': {'never': {'dotted': 'audiomuse_plugins.off.t.never', 'queue': 'default'}},
+        })
+        mgr.records = {'loaded': loaded, 'persisted': persisted, 'off': off}
+        tasks = mgr.available_cron_tasks()
+        assert [t['task_type'] for t in tasks] == ['plugin.loaded.live', 'plugin.persisted.nightly']
 
 
 class TestInstallFromManifest:
