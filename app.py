@@ -961,7 +961,9 @@ _register_blueprints(app)
 # --- Plugin subsystem boot (web) ---
 # Materialize enabled plugins from the DB and register their blueprints/menu on
 # the Flask app. Guarded so a broken plugin can never prevent the app from booting.
-if not _is_worker:
+# The plugin imports stay inside this function (not module scope) so app.py does not
+# eagerly pull the plugin.blueprint -> manager -> api -> database chain at import time.
+def _boot_plugins_web():
     try:
         from plugin.manager import boot as _plugin_boot
 
@@ -974,6 +976,10 @@ if not _is_worker:
         start_catalog_auto_refresh()
     except Exception:
         logger.exception('Plugin catalog auto-refresh failed to start')
+
+
+if not _is_worker:
+    _boot_plugins_web()
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
