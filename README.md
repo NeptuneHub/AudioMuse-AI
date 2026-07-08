@@ -133,7 +133,7 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
 docker compose -f deployment/docker-compose.yaml down
 ```
 > [!IMPORTANT]
-> AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
+> AudioMuse-AI is designed to work with PostgreSQL v15 as in the deployment example. Different versions could cause errors.
 
 ## Native Deployment
 
