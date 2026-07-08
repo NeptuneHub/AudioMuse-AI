@@ -6,15 +6,18 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Standalone process that reaps stale RQ job registries.
+"""Standalone process that reaps stale RQ job and worker registries.
 
 Runs an infinite loop cleaning the started, finished, and failed job registries
 of the high and default queues so orphaned jobs (from crashed or restarted
-workers) do not accumulate; a sibling to the worker entrypoints.
+workers) do not accumulate, and prunes dead worker registrations whose Redis
+keys expired (hard-killed containers never deregister, leaving ghost rows in
+the dashboard's Queue Workers table); a sibling to the worker entrypoints.
 
 Main Features:
 * Periodic cleanup of started/finished/failed registries every 10 seconds.
-* Logs only when jobs are actually reaped, and survives per-iteration errors.
+* Dead worker registrations removed via clean_worker_registry per queue.
+* Logs only when something is actually reaped, and survives per-iteration errors.
 """
 
 import os
@@ -25,7 +28,8 @@ import logging
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from app_helper import rq_queue_high, rq_queue_default
+    from rq.worker_registration import clean_worker_registry
+    from app_helper import rq_queue_high, rq_queue_default, redis_conn
     from app_logging import configure_logging
 except ImportError as e:
     print(f"Error importing from app.py: {e}")
@@ -76,6 +80,15 @@ if __name__ == '__main__':
                         failed_cleaned,
                         queue.name,
                     )
+
+            workers_before = redis_conn.scard('rq:workers')
+            for queue in queues_to_clean:
+                clean_worker_registry(queue)
+            workers_removed = workers_before - redis_conn.scard('rq:workers')
+            if workers_removed > 0:
+                logger.info(
+                    "Janitor removed %d dead worker registrations.", workers_removed
+                )
         except Exception:
             logger.exception("Error in RQ Janitor loop")
 
