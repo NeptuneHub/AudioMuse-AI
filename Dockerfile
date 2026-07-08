@@ -428,7 +428,9 @@ COPY requirements/ /app/requirements/
 # GPU builds: cupy, cuml, onnxruntime-gpu, torch (CUDA)
 # CPU builds: onnxruntime (CPU only), torch (CPU)
 # Note: --index-strategy unsafe-best-match resolves conflicts between pypi.nvidia.com and pypi.org
-RUN if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
+RUN rm -f /usr/lib/python3.*/EXTERNALLY-MANAGED; \
+    export UV_BREAK_SYSTEM_PACKAGES=1; \
+    if [[ "$BASE_IMAGE" =~ ^nvidia/cuda: ]]; then \
         echo "NVIDIA base image detected: installing GPU packages (cupy, cuml, onnxruntime-gpu, torch+cuda)"; \
         uv pip install --system --no-cache --index-strategy unsafe-best-match -r /app/requirements/gpu.txt -r /app/requirements/common.txt || exit 1; \
     else \

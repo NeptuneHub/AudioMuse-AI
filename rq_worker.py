@@ -71,6 +71,13 @@ if __name__ == '__main__':
     )
     logger.info(f"Using Redis connection: {redis_conn.connection_pool.connection_kwargs}")
 
+    try:
+        from plugin.manager import boot as plugin_boot
+
+        plugin_boot('worker')
+    except Exception:
+        logger.exception('Plugin subsystem worker boot failed; continuing without plugins')
+
     worker = WorkerClass(
         queues_to_listen, connection=redis_conn, worker_ttl=120, job_monitoring_interval=30
     )

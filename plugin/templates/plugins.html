@@ -1,0 +1,386 @@
+{% extends "includes/layout.html" %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        <div id="config-header">
+            <div class="config-title-group">
+                <h1>AudioMuse-AI - Plugins</h1>
+                <p class="subtitle">Install, update, and manage community plugins. Plugins run with full application and database permissions - only install plugins you trust.</p>
+            </div>
+        </div>
+
+        <div id="plugins-restart-banner" style="display:none; margin-top:1rem; padding:.75rem 1rem; border:1px solid #b58900; background:rgba(181,137,0,.12); border-radius:6px; align-items:center; gap:.75rem; flex-wrap:wrap;">
+            <span>A restart is required to apply your changes.</span>
+            <button id="plugins-apply-btn" type="button" class="btn btn-primary btn-sm">Apply now (restart)</button>
+        </div>
+
+        <div id="plugins-message" style="display:none; margin-top:1rem; padding:.6rem 1rem; border-radius:6px;"></div>
+
+        <div class="plugins-tabs" style="margin-top:1rem; display:flex; gap:.5rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost btn-sm plugins-tab-btn" data-tab="installed">Installed</button>
+            <button type="button" class="btn btn-ghost btn-sm plugins-tab-btn" data-tab="catalog">Catalog</button>
+            <button type="button" class="btn btn-ghost btn-sm plugins-tab-btn" data-tab="repos">Repositories</button>
+        </div>
+
+        <div id="plugins-tab-installed" class="plugins-tab" style="margin-top:1rem;">
+            <div id="plugins-installed-list">Loading...</div>
+        </div>
+
+        <div id="plugins-tab-catalog" class="plugins-tab" style="margin-top:1rem; display:none;">
+            <button id="plugins-catalog-refresh" type="button" class="btn btn-ghost btn-sm">Refresh catalog</button>
+            <div id="plugins-catalog-list" style="margin-top:1rem;">Loading...</div>
+        </div>
+
+        <div id="plugins-tab-repos" class="plugins-tab" style="margin-top:1rem; display:none;">
+            <div style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:center;">
+                <input id="plugins-repo-url" type="text" aria-label="Plugin repository manifest URL" style="flex:1; min-width:16rem;" placeholder="https://.../manifest.json">
+                <button id="plugins-repo-add" type="button" class="btn btn-primary btn-sm">Add repository</button>
+            </div>
+            <div id="plugins-repos-list" style="margin-top:1rem;">Loading...</div>
+        </div>
+    </section>
+</div>
+
+<script>
+(function () {
+    const root = document.getElementById('main-content-inner');
+    const banner = document.getElementById('plugins-restart-banner');
+    const message = document.getElementById('plugins-message');
+
+    function showRestart() { banner.style.display = 'flex'; }
+
+    let notifyTimer = null;
+
+    function notify(text, ok) {
+        clearTimeout(notifyTimer);
+        message.textContent = text;
+        message.style.display = 'block';
+        message.style.border = '1px solid ' + (ok ? '#2e7d32' : '#c62828');
+        message.style.background = ok ? 'rgba(46,125,50,.12)' : 'rgba(198,40,40,.12)';
+        notifyTimer = setTimeout(function () { message.style.display = 'none'; }, 6000);
+    }
+
+    async function api(url, opts) {
+        const res = await fetch(url, opts);
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { throw new Error(data.error || ('Request failed (' + res.status + ')')); }
+        return data;
+    }
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function statusBadge(status) {
+        let color = '#c62828';
+        if (status === 'ok') { color = '#2e7d32'; }
+        else if (status === 'incompatible') { color = '#b58900'; }
+        const label = status || 'pending';
+        return '<span style="padding:.1rem .5rem;border-radius:10px;color:#fff;background:' + color + ';font-size:.8rem;">' + esc(label) + '</span>';
+    }
+
+    function setActiveTab(name) {
+        document.querySelectorAll('.plugins-tab-btn').forEach(function (b) {
+            const on = b.dataset.tab === name;
+            b.classList.toggle('btn-primary', on);
+            b.classList.toggle('btn-ghost', !on);
+        });
+        document.querySelectorAll('.plugins-tab').forEach(function (el) { el.style.display = 'none'; });
+        document.getElementById('plugins-tab-' + name).style.display = 'block';
+    }
+
+    async function loadInstalled() {
+        const box = document.getElementById('plugins-installed-list');
+        try {
+            const data = await api('/api/plugins/installed');
+            if (data.restart_pending) { showRestart(); }
+            const pipWarning = data.pip_supported ? '' : '<p style="color:#b58900;">This build cannot install plugin pip dependencies (frozen/standalone). Pure-Python plugins still work.</p>';
+            if (!data.plugins.length) {
+                box.innerHTML = pipWarning + '<p>No plugins installed yet. Browse the Catalog to add one.</p>';
+                return;
+            }
+            box.innerHTML = pipWarning;
+            data.plugins.forEach(function (p) {
+                const div = document.createElement('div');
+                div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
+                let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
+                html += '<div><strong>' + esc(p.name || p.id) + '</strong> <span style="opacity:.7;">v' + esc(p.version) + '</span> ' + statusBadge(p.load_status) + (p.enabled ? '' : ' <span style="opacity:.6;">(disabled)</span>') + '</div>';
+                html += '<div style="display:flex;gap:.4rem;flex-wrap:wrap;">';
+                if (p.update_available) {
+                    html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-version="' + esc(p.latest_version) + '">Update to v' + esc(p.latest_version) + '</button>';
+                }
+                html += '<button type="button" class="btn btn-ghost btn-sm" data-act="' + (p.enabled ? 'disable' : 'enable') + '" data-id="' + esc(p.id) + '">' + (p.enabled ? 'Disable' : 'Enable') + '</button>';
+                html += '<button type="button" class="btn btn-ghost btn-sm" data-act="settings" data-id="' + esc(p.id) + '"' + (p.settings_url ? ' data-settings-url="' + esc(p.settings_url) + '"' : '') + '>Settings</button>';
+                html += '<button type="button" class="btn btn-danger btn-sm" data-act="uninstall" data-id="' + esc(p.id) + '">Uninstall</button>';
+                html += '</div></div>';
+                if (p.manifest && p.manifest.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.manifest.description) + '</p>'; }
+                const roleErrors = p.load_errors || {};
+                const roles = Object.keys(roleErrors);
+                roles.forEach(function (role) {
+                    html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">failed on ' + esc(role) + ': ' + esc(roleErrors[role]) + '</pre>';
+                });
+                if (p.error && !roles.length) { html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">' + esc(p.error) + '</pre>'; }
+                div.innerHTML = html;
+                box.appendChild(div);
+            });
+        } catch (e) { box.innerHTML = '<p style="color:#c62828;">' + esc(e.message) + '</p>'; }
+    }
+
+    let catalogPollTimer = null;
+    let catalogPollsLeft = 0;
+
+    let installInFlight = false;
+
+    function renderCatalog(data, refreshingNote) {
+        const box = document.getElementById('plugins-catalog-list');
+        if (installInFlight) { return; }
+        const chosenVersions = {};
+        box.querySelectorAll('select[data-versions]').forEach(function (sel) {
+            if (sel.selectedIndex > 0) { chosenVersions[sel.getAttribute('data-plugin')] = sel.value; }
+        });
+        box.innerHTML = '';
+        if (refreshingNote) {
+            const note = document.createElement('p');
+            note.style.opacity = '.7';
+            note.textContent = 'Checking the repositories for new versions in the background...';
+            box.appendChild(note);
+        }
+        (data.errors || []).forEach(function (er) {
+            const err = document.createElement('p');
+            err.style.color = '#c62828';
+            err.textContent = 'Repo error: ' + er.repo + ' - ' + er.error;
+            box.appendChild(err);
+        });
+        if (!data.plugins.length) {
+            if (!refreshingNote) {
+                const empty = document.createElement('p');
+                empty.textContent = 'No plugins available from the configured repositories.';
+                box.appendChild(empty);
+            }
+            return;
+        }
+        data.plugins.forEach(function (p) {
+            const div = document.createElement('div');
+            div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
+            const isInstalled = !!p.installed_version;
+            const isUpdate = isInstalled && String(p.installed_version) !== String(p.latest_version);
+            let label = 'Install v' + p.latest_version;
+            if (isUpdate) { label = 'Update to v' + p.latest_version; }
+            else if (isInstalled) { label = 'Reinstall'; }
+            let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
+            html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
+            html += '<div style="display:flex;gap:.4rem;align-items:center;">';
+            if ((p.versions || []).length > 1) {
+                const chosen = chosenVersions[p.id];
+                html += '<select data-versions data-plugin="' + esc(p.id) + '" class="btn btn-ghost btn-sm" aria-label="Version to install" style="max-width:9rem;">';
+                p.versions.forEach(function (v) {
+                    const selected = chosen && String(chosen) === String(v.version) ? ' selected' : '';
+                    html += '<option value="' + esc(v.version) + '"' + selected + '>v' + esc(v.version) + '</option>';
+                });
+                html += '</select>';
+            }
+            html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-version="' + esc(p.latest_version) + '">' + esc(label) + '</button>';
+            html += '</div></div>';
+            if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
+            if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
+            div.innerHTML = html;
+            const sel = div.querySelector('select[data-versions]');
+            if (sel) {
+                const installBtn = div.querySelector('button[data-act="install"]');
+                const updateLabel = function () {
+                    const v = sel.value;
+                    if (isInstalled && String(v) === String(p.installed_version)) {
+                        installBtn.textContent = 'Reinstall';
+                    } else if (isUpdate && String(v) === String(p.latest_version)) {
+                        installBtn.textContent = 'Update to v' + v;
+                    } else {
+                        installBtn.textContent = 'Install v' + v;
+                    }
+                };
+                sel.addEventListener('change', updateLabel);
+                updateLabel();
+            }
+            box.appendChild(div);
+        });
+    }
+
+    function stopCatalogPolling() {
+        if (catalogPollTimer) { clearTimeout(catalogPollTimer); catalogPollTimer = null; }
+        catalogPollsLeft = 0;
+    }
+
+    async function loadCatalog(force) {
+        const box = document.getElementById('plugins-catalog-list');
+        if (catalogPollTimer) { clearTimeout(catalogPollTimer); catalogPollTimer = null; }
+        if (force) { catalogPollsLeft = 40; }
+        try {
+            const data = await api('/api/plugins/catalog' + (force ? '?refresh=1' : ''));
+            renderCatalog(data, data.refreshing);
+            if (data.refreshing && catalogPollsLeft > 0) {
+                catalogPollsLeft -= 1;
+                catalogPollTimer = setTimeout(function () { loadCatalog(false); }, 3000);
+            } else {
+                catalogPollsLeft = 0;
+            }
+        } catch (e) { box.innerHTML = '<p style="color:#c62828;">' + esc(e.message) + '</p>'; }
+    }
+
+    async function loadRepos() {
+        const box = document.getElementById('plugins-repos-list');
+        try {
+            const data = await api('/api/plugins/repos');
+            box.innerHTML = '';
+            data.repos.forEach(function (url) {
+                const isDefault = url === data.default;
+                const div = document.createElement('div');
+                div.style.cssText = 'display:flex;justify-content:space-between;gap:.5rem;align-items:center;border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.5rem .75rem;margin-bottom:.5rem;';
+                div.innerHTML = '<span style="word-break:break-all;">' + esc(url) + (isDefault ? ' <em style="opacity:.6;">(default)</em>' : '') + '</span>' +
+                    (isDefault ? '' : '<button type="button" class="btn btn-danger btn-sm" data-act="repo-remove" data-url="' + esc(url) + '">Remove</button>');
+                box.appendChild(div);
+            });
+        } catch (e) { box.innerHTML = '<p style="color:#c62828;">' + esc(e.message) + '</p>'; }
+    }
+
+    async function doInstall(btn) {
+        if (!window.confirm('Plugins run with full application and database permissions. Only install plugins you trust. Continue?')) { return; }
+        const label = btn.textContent;
+        installInFlight = true;
+        btn.disabled = true;
+        btn.textContent = 'Installing...';
+        message.style.display = 'block';
+        message.style.border = '1px solid #b58900';
+        message.style.background = 'rgba(181,137,0,.12)';
+        clearTimeout(notifyTimer);
+        message.textContent = 'Installing ' + btn.dataset.id + '. If the plugin has dependencies this can take up to a minute while they are downloaded and installed; please wait and do not reload.';
+        try {
+            const body = { id: btn.dataset.id };
+            const sel = btn.parentElement ? btn.parentElement.querySelector('select[data-versions]') : null;
+            const version = (sel && sel.value) || btn.dataset.version;
+            if (version) { body.version = version; }
+            const resp = await api('/api/plugins/install', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (resp.deps_error) {
+                notify('Installed ' + btn.dataset.id + ', but its dependencies failed to install: ' + resp.deps_error, false);
+            } else {
+                notify('Installed ' + btn.dataset.id + '. Restart to activate.', true);
+            }
+            showRestart(); loadInstalled();
+        } catch (e) { notify(e.message, false); } finally { installInFlight = false; btn.disabled = false; btn.textContent = label; }
+    }
+
+    async function doUninstall(id) {
+        if (!window.confirm('Uninstall ' + id + '?')) { return; }
+        const purge = window.confirm('Also delete the data tables of ' + id + '? This cannot be undone.\n\nOK = delete data tables.\nCancel = keep data tables.');
+        try {
+            await api('/api/plugins/uninstall', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id, purge_data: purge })
+            });
+            notify('Uninstalled ' + id + '. Restart to finish.', true);
+            showRestart(); loadInstalled();
+        } catch (e) { notify(e.message, false); }
+    }
+
+    async function toggleEnabled(id, act) {
+        try {
+            await api('/api/plugins/' + act, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id })
+            });
+            notify(id + ' ' + act + 'd. Restart to apply.', true);
+            showRestart(); loadInstalled();
+        } catch (e) { notify(e.message, false); }
+    }
+
+    async function editSettings(id) {
+        try {
+            const data = await api('/api/plugins/settings/' + encodeURIComponent(id));
+            const current = JSON.stringify(data.settings || {}, null, 2);
+            const next = window.prompt('Settings for ' + id + ' (JSON). Plugins with their own settings page manage this from the Plugins menu.', current);
+            if (next === null) { return; }
+            let parsed;
+            try { parsed = JSON.parse(next); } catch (e) { notify('Invalid JSON', false); return; }
+            await api('/api/plugins/settings/' + encodeURIComponent(id), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ settings: parsed })
+            });
+            notify('Settings saved for ' + id, true);
+        } catch (e) { notify(e.message, false); }
+    }
+
+    root.addEventListener('click', function (ev) {
+        const t = ev.target.closest('button');
+        if (!t || !root.contains(t)) { return; }
+        if (t.classList.contains('plugins-tab-btn')) {
+            setActiveTab(t.dataset.tab);
+            if (t.dataset.tab !== 'catalog') { stopCatalogPolling(); }
+            if (t.dataset.tab === 'installed') { loadInstalled(); }
+            if (t.dataset.tab === 'catalog') { loadCatalog(true); }
+            if (t.dataset.tab === 'repos') { loadRepos(); }
+            return;
+        }
+        const act = t.dataset.act;
+        if (!act) { return; }
+        if (act === 'install') { doInstall(t); }
+        else if (act === 'uninstall') { doUninstall(t.dataset.id); }
+        else if (act === 'enable' || act === 'disable') { toggleEnabled(t.dataset.id, act); }
+        else if (act === 'settings') {
+            if (t.dataset.settingsUrl) { window.location.href = t.dataset.settingsUrl; }
+            else { editSettings(t.dataset.id); }
+        }
+        else if (act === 'repo-remove') {
+            api('/api/plugins/repos', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: t.dataset.url }) })
+                .then(function () { loadRepos(); }).catch(function (e) { notify(e.message, false); });
+        }
+    });
+
+    document.getElementById('plugins-catalog-refresh').addEventListener('click', function () { loadCatalog(true); });
+    document.getElementById('plugins-repo-add').addEventListener('click', function () {
+        const url = document.getElementById('plugins-repo-url').value.trim();
+        if (!url) { return; }
+        api('/api/plugins/repos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url }) })
+            .then(function () { document.getElementById('plugins-repo-url').value = ''; loadRepos(); })
+            .catch(function (e) { notify(e.message, false); });
+    });
+    document.getElementById('plugins-apply-btn').addEventListener('click', function (event) {
+        const applyBtn = event.currentTarget;
+        const bannerText = banner.querySelector('span');
+        applyBtn.disabled = true;
+        api('/api/plugins/apply', { method: 'POST' }).then(function (resp) {
+            if (resp.status !== 'ok') {
+                applyBtn.disabled = false;
+                bannerText.textContent = 'The automatic restart could not be fully triggered. Restart the AudioMuse-AI containers manually to apply the changes.';
+                return;
+            }
+            applyBtn.style.display = 'none';
+            let countdown = 20;
+            bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
+            const interval = setInterval(function () {
+                countdown -= 1;
+                if (countdown > 0) {
+                    bannerText.textContent = 'Restarting AudioMuse-AI. Reloading in ' + countdown + ' seconds...';
+                } else {
+                    clearInterval(interval);
+                    window.location.reload();
+                }
+            }, 1000);
+        }).catch(function (e) {
+            applyBtn.disabled = false;
+            notify(e.message, false);
+        });
+    });
+
+    setActiveTab('installed');
+    loadInstalled();
+})();
+</script>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}
