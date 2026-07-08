@@ -68,7 +68,8 @@ And now just some **NEWS:**
 
 ## Disclaimer
 
-**Important:** Despite the similar name, this project (**AudioMuse-AI**) is an independent, community-driven effort. It has no official connection to the website audiomuse.ai.
+> [!IMPORTANT]
+>  Despite the similar name, this project (**AudioMuse-AI**) is an independent, community-driven effort. It has no official connection to the website audiomuse.ai.
 
 We are **not affiliated with, endorsed by, or sponsored by** the owners of `audiomuse.ai`.
 
@@ -131,7 +132,8 @@ From `v1.0.0`, only PostgreSQL, Redis, and `TZ` configuration must still be conf
 ```bash
 docker compose -f deployment/docker-compose.yaml down
 ```
-> **Important:** AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
+> [!IMPORTANT]
+> AudioMuse-AI is designed to work with PostgreSql v15 as in the deployment example. Different version could create error.
 
 ## Native Deployment
 
@@ -174,7 +176,8 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 **Files:** data (database, Redis, temp audio) in `%LOCALAPPDATA%\AudioMuse-AI`, log at `%LOCALAPPDATA%\AudioMuse-AI\logs\audiomuse.log` (newest entries first)
 </details>
 
-> **IMPORTANT** Before update a native version, first stop any running instance.
+> [!IMPORTANT]
+> Before update a native version, first stop any running instance.
 
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
@@ -188,7 +191,8 @@ AudioMuse-AI has been tested on:
 
 For more information about the GPU deployment requirements have a look to the [GPU](docs/GPU.md) page.
 
-> **IMPORTANT**: If you use virtualization (e.g. Proxmox), make sure to pass through the host CPU. QEMU's virtual CPU lacks AVX2 support, which will prevent AudioMuse-AI from starting.
+> [!IMPORTANT]
+> If you use virtualization (e.g. Proxmox), make sure to pass through the host CPU. QEMU's virtual CPU lacks AVX2 support, which will prevent AudioMuse-AI from starting.
 
 ## **Docker Image Tagging Strategy**
 
