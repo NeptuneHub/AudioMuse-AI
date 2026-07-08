@@ -695,11 +695,11 @@ PLUGIN_MAX_DOWNLOAD_MB = int(os.environ.get("PLUGIN_MAX_DOWNLOAD_MB", "50"))
 # Allow pip-installing plugin requirements into PLUGINS_DIR/_lib (Docker/k8s only;
 # auto-disabled on frozen PyInstaller builds which cannot pip into the bundle).
 PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
-# Plugin catalog/manifest HTTP timeouts (seconds). The short CONNECT timeout bounds
-# the stall on hosts whose DNS returns an IPv6 address first but have no working IPv6
-# egress (urllib/requests do not implement Happy Eyeballs, so a broken AAAA otherwise
-# blocks each request until the full timeout before falling back to IPv4).
-PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "2"))
+# Plugin catalog/manifest HTTP timeouts (seconds). PLUGIN_HTTP_FORCE_IPV4 (default true)
+# already avoids the broken-IPv6 stall, so CONNECT no longer needs to be tiny: a container's
+# egress to GitHub's CDN often needs several seconds to complete the TCP handshake even when
+# a browser on the same LAN connects instantly, so a 2s bound was rejecting working hosts.
+PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "10"))
 PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
 # Plugin downloads retry transient failures with exponential backoff before giving up.
 # GitHub's raw/Fastly and release CDNs drop connections, rate-limit with 429, and are
@@ -714,6 +714,14 @@ PLUGIN_HTTP_BACKOFF = float(os.environ.get("PLUGIN_HTTP_BACKOFF", "0.5"))
 PLUGIN_HTTP_FORCE_IPV4 = os.environ.get("PLUGIN_HTTP_FORCE_IPV4", "true").lower() == "true"
 # Concurrency for resolving per-plugin manifests when building the catalog.
 PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
+# How long (seconds) the catalog's latest-version map is reused to flag "update available"
+# on the Installed tab before a background refresh re-checks the repos. This is what lets
+# the Installed list show updates instantly instead of blocking on a live GitHub fetch.
+PLUGIN_CATALOG_CACHE_TTL = int(os.environ.get("PLUGIN_CATALOG_CACHE_TTL", "900"))
+# The web process also refreshes the catalog cache on its own: once at startup and then
+# every this many seconds (default 1 hour), so update buttons appear even when nobody
+# opens the Catalog tab. Opening the Catalog tab or clicking Refresh also triggers it.
+PLUGIN_CATALOG_REFRESH_INTERVAL = int(os.environ.get("PLUGIN_CATALOG_REFRESH_INTERVAL", "3600"))
 # How long plugin boot waits for the database to accept connections before giving
 # up (the RQ workers boot plugins before the Postgres pod is guaranteed ready; a
 # transient 'connection refused' would otherwise disable plugins until restart).

@@ -20,6 +20,7 @@ Main Features:
 """
 
 import json
+import time
 
 import flask
 
@@ -193,3 +194,197 @@ class TestInstallErrorResponse:
         resp = self._client().post('/api/plugins/install', json={'id': 'demo'})
         assert resp.status_code == 502
         assert 'raw.githubusercontent.com' in resp.get_json()['error']
+
+
+class TestJsdelivrMirrorFallback:
+    def test_raw_github_url_maps_to_jsdelivr(self):
+        url = 'https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI-plugins/main/dist/song_counter/song_counter_1.5.1.zip'
+        assert net._jsdelivr_mirror(url) == (
+            'https://cdn.jsdelivr.net/gh/NeptuneHub/AudioMuse-AI-plugins@main/dist/song_counter/song_counter_1.5.1.zip'
+        )
+
+    def test_non_github_url_has_no_mirror(self):
+        assert net._jsdelivr_mirror('https://example.com/manifest.json') is None
+        assert net._jsdelivr_mirror('https://raw.githubusercontent.com/too/short') is None
+
+    def test_fallback_used_when_raw_github_fails(self, monkeypatch):
+        calls = []
+
+        def fake_once(url, _max):
+            calls.append(url)
+            if 'raw.githubusercontent.com' in url:
+                raise net.DownloadError('Timed out reaching raw.githubusercontent.com')
+            return b'mirrored'
+
+        monkeypatch.setattr(net, '_download_once', fake_once)
+        data = net.download('https://raw.githubusercontent.com/u/r/main/manifest.json', 1024)
+        assert data == b'mirrored'
+        assert calls == [
+            'https://raw.githubusercontent.com/u/r/main/manifest.json',
+            'https://cdn.jsdelivr.net/gh/u/r@main/manifest.json',
+        ]
+
+    def test_error_mentions_both_hosts_when_mirror_also_fails(self, monkeypatch):
+        def fake_once(url, _max):
+            raise net.DownloadError('Timed out reaching ' + net._host(url))
+
+        monkeypatch.setattr(net, '_download_once', fake_once)
+        try:
+            net.download('https://raw.githubusercontent.com/u/r/main/manifest.json', 1024)
+            raise AssertionError('expected DownloadError')
+        except net.DownloadError as exc:
+            assert 'raw.githubusercontent.com' in str(exc)
+            assert 'jsDelivr' in str(exc)
+
+    def test_no_fallback_for_non_github_hosts(self, monkeypatch):
+        calls = []
+
+        def fake_once(url, _max):
+            calls.append(url)
+            raise net.DownloadError('down')
+
+        monkeypatch.setattr(net, '_download_once', fake_once)
+        try:
+            net.download('https://example.com/manifest.json', 1024)
+            raise AssertionError('expected DownloadError')
+        except net.DownloadError:
+            pass
+        assert calls == ['https://example.com/manifest.json']
+
+
+class TestCatalogAutoRefresh:
+    def test_starts_once(self, monkeypatch):
+        import threading as _threading
+        started = []
+        monkeypatch.setattr(blueprint, '_auto_refresh_started', False)
+        monkeypatch.setattr(
+            _threading, 'Thread',
+            lambda **kw: started.append(kw.get('name')) or type('T', (), {'start': lambda self: None})(),
+        )
+        blueprint.start_catalog_auto_refresh()
+        blueprint.start_catalog_auto_refresh()
+        assert started == ['plugin-catalog-auto-refresh']
+
+
+class TestCatalogCache:
+    def _mock_store(self, monkeypatch):
+        store = {}
+        monkeypatch.setattr(database, 'set_app_config_value', lambda k, v: store.__setitem__(k, v))
+        monkeypatch.setattr(database, 'get_app_config_value', lambda k: store.get(k))
+        return store
+
+    def test_store_and_load_roundtrip(self, monkeypatch):
+        self._mock_store(monkeypatch)
+        blueprint._store_catalog_cache([{'id': 'a', 'latest_version': '2.0.0'}], [])
+        plugins, errors, at = blueprint._load_catalog_cache()
+        assert plugins == [{'id': 'a', 'latest_version': '2.0.0'}]
+        assert errors == []
+        assert at > 0
+        versions, _ = blueprint._cached_latest_versions()
+        assert versions == {'a': '2.0.0'}
+
+    def test_empty_store_preserves_previous_plugins(self, monkeypatch):
+        self._mock_store(monkeypatch)
+        blueprint._store_catalog_cache([{'id': 'a', 'latest_version': '2.0.0'}], [])
+        blueprint._store_catalog_cache([], [{'repo': 'r', 'error': 'down'}])
+        plugins, errors, _ = blueprint._load_catalog_cache()
+        assert plugins == [{'id': 'a', 'latest_version': '2.0.0'}]
+        assert errors == [{'repo': 'r', 'error': 'down'}]
+
+    def test_load_survives_db_error(self, monkeypatch):
+        def boom(_k):
+            raise RuntimeError('no app context')
+        monkeypatch.setattr(database, 'get_app_config_value', boom)
+        assert blueprint._load_catalog_cache() == ([], [], 0.0)
+
+
+def _cache_payload(cached_version, at=None):
+    return json.dumps({
+        'at': time.time() if at is None else at,
+        'plugins': [{'id': 'song_counter', 'name': 'SongCounter', 'latest_version': cached_version,
+                     'source_url': 'https://e/sc.zip', 'checksum': 'c', 'installed_version': 'stale'}],
+        'errors': [],
+    })
+
+
+class TestInstalledUpdateFlag:
+    def _client(self):
+        app = flask.Flask(__name__)
+        app.register_blueprint(blueprint.plugins_bp)
+        return app.test_client()
+
+    def _wire(self, monkeypatch, installed_version, cached_version):
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: [{
+            'id': 'song_counter', 'name': 'SongCounter', 'version': installed_version,
+            'manifest': {}, 'settings': {}, 'enabled': True, 'requirements': [], 'load_status': 'ok',
+        }])
+        monkeypatch.setattr(blueprint.plugin_manager, 'registry', lambda: [])
+        monkeypatch.setattr(blueprint.plugin_manager, 'get_settings_endpoint', lambda pid: None)
+        monkeypatch.setattr(database, 'get_app_config_value', lambda k: _cache_payload(cached_version))
+
+    def test_update_available_from_cache(self, monkeypatch):
+        self._wire(monkeypatch, installed_version='1.5.0', cached_version='1.5.1')
+        plugin = self._client().get('/api/plugins/installed').get_json()['plugins'][0]
+        assert plugin['update_available'] is True
+        assert plugin['latest_version'] == '1.5.1'
+
+    def test_no_update_when_versions_match(self, monkeypatch):
+        self._wire(monkeypatch, installed_version='1.5.1', cached_version='1.5.1')
+        plugin = self._client().get('/api/plugins/installed').get_json()['plugins'][0]
+        assert plugin['update_available'] is False
+
+    def test_installed_never_fetches_the_catalog_inline(self, monkeypatch):
+        self._wire(monkeypatch, installed_version='1.5.0', cached_version='1.5.1')
+        monkeypatch.setattr(database, 'get_app_config_value', lambda k: None)
+
+        def boom(*_a, **_k):
+            raise AssertionError('api_installed must never fetch the catalog synchronously')
+
+        monkeypatch.setattr(blueprint, '_fetch_catalog', boom)
+        monkeypatch.setattr(blueprint, '_refresh_catalog_cache_async', lambda force=False: True)
+        resp = self._client().get('/api/plugins/installed')
+        assert resp.status_code == 200
+        assert resp.get_json()['plugins'][0]['update_available'] is False
+
+
+class TestCatalogEndpointServesCache:
+    def _client(self):
+        app = flask.Flask(__name__)
+        app.register_blueprint(blueprint.plugins_bp)
+        return app.test_client()
+
+    def _wire(self, monkeypatch):
+        monkeypatch.setattr(database, 'list_plugins', lambda conn=None: [{
+            'id': 'song_counter', 'name': 'SongCounter', 'version': '1.5.0',
+            'manifest': {}, 'settings': {}, 'enabled': True, 'requirements': [], 'load_status': 'ok',
+        }])
+        monkeypatch.setattr(database, 'get_app_config_value', lambda k: _cache_payload('1.5.1'))
+        monkeypatch.setattr(blueprint, '_get_repos', lambda: ['https://example.com/manifest.json'])
+
+        def boom(*_a, **_k):
+            raise AssertionError('api_catalog must never download synchronously')
+
+        monkeypatch.setattr(blueprint, '_download', boom)
+
+    def test_catalog_served_from_cache_without_network(self, monkeypatch):
+        self._wire(monkeypatch)
+        data = self._client().get('/api/plugins/catalog').get_json()
+        assert data['plugins'][0]['latest_version'] == '1.5.1'
+        assert data['plugins'][0]['installed_version'] == '1.5.0'
+        assert data['refreshing'] is False
+        assert data['cached_at'] > 0
+
+    def test_stale_installed_version_overwritten_from_db(self, monkeypatch):
+        self._wire(monkeypatch)
+        data = self._client().get('/api/plugins/catalog').get_json()
+        assert data['plugins'][0]['installed_version'] == '1.5.0'
+
+    def test_force_refresh_spawns_background_and_still_serves_cache(self, monkeypatch):
+        self._wire(monkeypatch)
+        called = {'force': None}
+        monkeypatch.setattr(blueprint, '_refresh_catalog_cache_async',
+                            lambda force=False: called.__setitem__('force', force) or True)
+        data = self._client().get('/api/plugins/catalog?refresh=1').get_json()
+        assert called['force'] is True
+        assert data['refreshing'] is True
+        assert data['plugins'][0]['latest_version'] == '1.5.1'

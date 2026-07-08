@@ -22,6 +22,8 @@ Main Features:
 import json
 import logging
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from flask import Blueprint, render_template, jsonify, request, url_for
@@ -38,9 +40,104 @@ logger = logging.getLogger(__name__)
 plugins_bp = Blueprint('plugins_bp', __name__, template_folder='templates')
 
 _REPOS_KEY = 'PLUGIN_REPOS'
+_CATALOG_CACHE_KEY = 'PLUGIN_CATALOG_CACHE'
 _CATALOG_MAX_BYTES = 5 * 1024 * 1024
 
 _GENERIC_ERROR = 'Operation failed. Check the container logs for details.'
+
+_catalog_refresh_lock = threading.Lock()
+
+
+def _store_catalog_cache(plugins, errors):
+    """Persist the resolved catalog so the UI is served from the DB, never from a live fetch.
+
+    An empty/failed resolution keeps the previously cached plugins and only bumps the
+    timestamp, so a transient GitHub outage never wipes the last known-good catalog.
+    """
+    if not plugins:
+        plugins = _load_catalog_cache()[0]
+    payload = {'at': time.time(), 'plugins': plugins or [], 'errors': errors or []}
+    try:
+        database.set_app_config_value(_CATALOG_CACHE_KEY, json.dumps(payload))
+    except Exception:
+        logger.warning('Could not persist the plugin catalog cache')
+
+
+def _load_catalog_cache():
+    try:
+        raw = database.get_app_config_value(_CATALOG_CACHE_KEY)
+    except Exception:
+        return [], [], 0.0
+    if not raw:
+        return [], [], 0.0
+    try:
+        payload = json.loads(raw)
+        return (payload.get('plugins') or [], payload.get('errors') or [],
+                float(payload.get('at') or 0.0))
+    except (ValueError, TypeError):
+        return [], [], 0.0
+
+
+def _cached_latest_versions():
+    plugins, _errors, at = _load_catalog_cache()
+    return {p['id']: p.get('latest_version') for p in plugins if p.get('id')}, at
+
+
+def _refresh_catalog_cache_async(force=False):
+    """Refresh the catalog cache in a background daemon thread.
+
+    Every user-facing endpoint serves the cached catalog instantly and calls this;
+    the actual GitHub fetches (which can be slow on clusters with broken pod DNS or
+    filtered CDN routes) never block a request. Returns True when a refresh thread
+    is running (freshly started or already in flight).
+    """
+    _plugins, _errors, cached_at = _load_catalog_cache()
+    if not force and time.time() - cached_at < config.PLUGIN_CATALOG_CACHE_TTL:
+        return _catalog_refresh_lock.locked()
+    if not _catalog_refresh_lock.acquire(blocking=False):
+        return True
+
+    def _run():
+        from flask_app import app
+        try:
+            with app.app_context():
+                try:
+                    plugins, errors = _fetch_catalog()
+                    logger.info('Plugin catalog cache refreshed: %d plugins, %d repository errors',
+                                len(plugins), len(errors))
+                except Exception:
+                    logger.warning('Background plugin catalog refresh failed')
+        finally:
+            _catalog_refresh_lock.release()
+
+    threading.Thread(target=_run, name='plugin-catalog-refresh', daemon=True).start()
+    return True
+
+
+_auto_refresh_started = False
+
+
+def start_catalog_auto_refresh():
+    """Refresh the catalog cache at web startup and then every
+    PLUGIN_CATALOG_REFRESH_INTERVAL seconds (default hourly), so new plugin
+    versions surface on the Installed tab even if nobody opens the Catalog tab.
+    """
+    global _auto_refresh_started
+    if _auto_refresh_started or not config.PLUGINS_ENABLED:
+        return
+    _auto_refresh_started = True
+
+    def _loop():
+        while True:
+            try:
+                _refresh_catalog_cache_async(force=True)
+            except Exception:
+                logger.exception('Scheduled plugin catalog refresh failed to start')
+            time.sleep(config.PLUGIN_CATALOG_REFRESH_INTERVAL)
+
+    threading.Thread(target=_loop, name='plugin-catalog-auto-refresh', daemon=True).start()
+    logger.info('Plugin catalog auto-refresh scheduled: now and then every %s seconds',
+                config.PLUGIN_CATALOG_REFRESH_INTERVAL)
 
 
 def _pip_supported():
@@ -209,7 +306,9 @@ def _fetch_catalog():
             errors.extend(local_errors)
             if entry_data:
                 merged[plugin_id] = entry_data
-    return list(merged.values()), errors
+    result = list(merged.values())
+    _store_catalog_cache(result, errors)
+    return result, errors
 
 
 @plugins_bp.route('/plugins', methods=['GET'])
@@ -221,10 +320,14 @@ def plugins_page():
 def api_installed():
     plugins = database.list_plugins()
     registry = {r['id']: r for r in plugin_manager.registry()}
+    latest, _cached_at = _cached_latest_versions()
     for plugin in plugins:
         entry = registry.get(plugin['id'])
         plugin['error'] = entry.get('error') if entry else None
         plugin['requirements'] = plugin.get('requirements') or []
+        latest_version = latest.get(plugin['id'])
+        plugin['latest_version'] = latest_version
+        plugin['update_available'] = bool(latest_version and str(latest_version) != str(plugin.get('version')))
         endpoint = plugin_manager.get_settings_endpoint(plugin['id'])
         settings_url = None
         if endpoint:
@@ -233,17 +336,35 @@ def api_installed():
             except Exception:
                 settings_url = None
         plugin['settings_url'] = settings_url
+    _refresh_catalog_cache_async()
     return jsonify({'plugins': plugins, 'pip_supported': _pip_supported()})
 
 
 @plugins_bp.route('/api/plugins/catalog', methods=['GET'])
 def api_catalog():
+    """Serve the cached catalog instantly; the network refresh always runs in background.
+
+    ``?refresh=1`` (the Refresh button) forces a background refresh regardless of the
+    cache age. The response carries ``refreshing`` so the UI can poll until the
+    background fetch lands, and ``cached_at`` for transparency.
+    """
+    force = request.args.get('refresh') in ('1', 'true')
     try:
-        plugins, errors = _fetch_catalog()
+        refreshing = _refresh_catalog_cache_async(force=force)
+        plugins, errors, cached_at = _load_catalog_cache()
+        installed = {p['id']: p.get('version') for p in database.list_plugins()}
+        for entry in plugins:
+            entry['installed_version'] = installed.get(entry.get('id'))
     except Exception:
-        logger.exception('Failed to build plugin catalog')
+        logger.exception('Failed to serve plugin catalog')
         return jsonify({'error': _GENERIC_ERROR}), 500
-    return jsonify({'plugins': plugins, 'repos': _get_repos(), 'errors': errors})
+    return jsonify({
+        'plugins': plugins,
+        'repos': _get_repos(),
+        'errors': errors,
+        'cached_at': cached_at,
+        'refreshing': bool(refreshing),
+    })
 
 
 def _install_manifest(match):
@@ -269,18 +390,22 @@ def _install_manifest(match):
 def _resolve_install_source(plugin_id):
     """Return (source_url, checksum, source_repo, manifest) for a plugin to install.
 
-    Prefers the live catalog (latest compatible version) and builds the manifest
-    from it. If the catalog is unreachable or no longer lists the plugin, falls back
-    to the source_url and manifest already stored for an installed plugin so a
-    reinstall still works during an upstream outage. Returns all-None when neither
-    yields a source.
+    Resolves from the cached catalog first (instant - the user typically clicks
+    Install right after seeing the catalog), falling back to a live fetch only when
+    the cache does not know the plugin. If neither works, falls back to the
+    source_url and manifest already stored for an installed plugin so a reinstall
+    still works during an upstream outage. Returns all-None when nothing yields a
+    source.
     """
-    try:
-        catalog, _ = _fetch_catalog()
-    except Exception:
-        logger.exception('Catalog fetch failed while resolving install source for %s', plugin_id)
-        catalog = []
-    match = next((p for p in catalog if p['id'] == plugin_id), None)
+    catalog, _errors, _at = _load_catalog_cache()
+    match = next((p for p in catalog if p.get('id') == plugin_id), None)
+    if not match or not match.get('source_url'):
+        try:
+            catalog, _ = _fetch_catalog()
+        except Exception:
+            logger.exception('Catalog fetch failed while resolving install source for %s', plugin_id)
+            catalog = []
+        match = next((p for p in catalog if p.get('id') == plugin_id), None)
     if match and match.get('source_url'):
         return match['source_url'], match.get('checksum'), match.get('source_repo'), _install_manifest(match)
     existing = database.get_plugin(plugin_id)

@@ -103,6 +103,9 @@
                 let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
                 html += '<div><strong>' + esc(p.name || p.id) + '</strong> <span style="opacity:.7;">v' + esc(p.version) + '</span> ' + statusBadge(p.load_status) + (p.enabled ? '' : ' <span style="opacity:.6;">(disabled)</span>') + '</div>';
                 html += '<div style="display:flex;gap:.4rem;flex-wrap:wrap;">';
+                if (p.update_available) {
+                    html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">Update to v' + esc(p.latest_version) + '</button>';
+                }
                 html += '<button type="button" class="btn btn-ghost btn-sm" data-act="' + (p.enabled ? 'disable' : 'enable') + '" data-id="' + esc(p.id) + '">' + (p.enabled ? 'Disable' : 'Enable') + '</button>';
                 html += '<button type="button" class="btn btn-ghost btn-sm" data-act="settings" data-id="' + esc(p.id) + '"' + (p.settings_url ? ' data-settings-url="' + esc(p.settings_url) + '"' : '') + '>Settings</button>';
                 html += '<button type="button" class="btn btn-danger btn-sm" data-act="uninstall" data-id="' + esc(p.id) + '">Uninstall</button>';
@@ -115,31 +118,55 @@
         } catch (e) { box.innerHTML = '<p style="color:#c62828;">' + esc(e.message) + '</p>'; }
     }
 
-    async function loadCatalog() {
+    let catalogPollTimer = null;
+    let catalogPollsLeft = 0;
+
+    function renderCatalog(data, refreshingNote) {
         const box = document.getElementById('plugins-catalog-list');
-        box.innerHTML = 'Loading...';
+        box.innerHTML = '';
+        if (refreshingNote) {
+            const note = document.createElement('p');
+            note.style.opacity = '.7';
+            note.textContent = 'Checking the repositories for new versions in the background...';
+            box.appendChild(note);
+        }
+        if (!data.plugins.length) {
+            if (!refreshingNote) { box.innerHTML = '<p>No plugins available from the configured repositories.</p>'; }
+            return;
+        }
+        data.plugins.forEach(function (p) {
+            const div = document.createElement('div');
+            div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
+            const isInstalled = !!p.installed_version;
+            const isUpdate = isInstalled && String(p.installed_version) !== String(p.latest_version);
+            let label = 'Install v' + p.latest_version;
+            if (isUpdate) { label = 'Update to v' + p.latest_version; }
+            else if (isInstalled) { label = 'Reinstall'; }
+            let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
+            html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
+            html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">' + esc(label) + '</button>';
+            html += '</div>';
+            if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
+            if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
+            div.innerHTML = html;
+            box.appendChild(div);
+        });
+    }
+
+    async function loadCatalog(force) {
+        const box = document.getElementById('plugins-catalog-list');
+        if (catalogPollTimer) { clearTimeout(catalogPollTimer); catalogPollTimer = null; }
+        if (force || catalogPollsLeft <= 0) { catalogPollsLeft = 40; }
         try {
-            const data = await api('/api/plugins/catalog');
+            const data = await api('/api/plugins/catalog' + (force ? '?refresh=1' : ''));
             (data.errors || []).forEach(function (er) { notify('Repo error: ' + er.repo + ' - ' + er.error, false); });
-            if (!data.plugins.length) { box.innerHTML = '<p>No plugins available from the configured repositories.</p>'; return; }
-            box.innerHTML = '';
-            data.plugins.forEach(function (p) {
-                const div = document.createElement('div');
-                div.style.cssText = 'border:1px solid rgba(127,127,127,.35);border-radius:6px;padding:.75rem;margin-bottom:.75rem;';
-                const isInstalled = !!p.installed_version;
-                const isUpdate = isInstalled && String(p.installed_version) !== String(p.latest_version);
-                let label = 'Install v' + p.latest_version;
-                if (isUpdate) { label = 'Update to v' + p.latest_version; }
-                else if (isInstalled) { label = 'Reinstall'; }
-                let html = '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem;align-items:center;">';
-                html += '<div><strong>' + esc(p.name) + '</strong> <span style="opacity:.7;">v' + esc(p.latest_version) + '</span>' + (isInstalled ? ' <span style="opacity:.6;">(installed v' + esc(p.installed_version) + ')</span>' : '') + '</div>';
-                html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '">' + esc(label) + '</button>';
-                html += '</div>';
-                if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
-                if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
-                div.innerHTML = html;
-                box.appendChild(div);
-            });
+            renderCatalog(data, data.refreshing);
+            if (data.refreshing && catalogPollsLeft > 0) {
+                catalogPollsLeft -= 1;
+                catalogPollTimer = setTimeout(function () { loadCatalog(false); }, 3000);
+            } else {
+                catalogPollsLeft = 0;
+            }
         } catch (e) { box.innerHTML = '<p style="color:#c62828;">' + esc(e.message) + '</p>'; }
     }
 
@@ -223,7 +250,8 @@
         if (!t || !root.contains(t)) { return; }
         if (t.classList.contains('plugins-tab-btn')) {
             setActiveTab(t.dataset.tab);
-            if (t.dataset.tab === 'catalog') { loadCatalog(); }
+            if (t.dataset.tab === 'installed') { loadInstalled(); }
+            if (t.dataset.tab === 'catalog') { loadCatalog(true); }
             if (t.dataset.tab === 'repos') { loadRepos(); }
             return;
         }
@@ -242,7 +270,7 @@
         }
     });
 
-    document.getElementById('plugins-catalog-refresh').addEventListener('click', loadCatalog);
+    document.getElementById('plugins-catalog-refresh').addEventListener('click', function () { loadCatalog(true); });
     document.getElementById('plugins-repo-add').addEventListener('click', function () {
         const url = document.getElementById('plugins-repo-url').value.trim();
         if (!url) { return; }

@@ -968,6 +968,12 @@ if not _is_worker:
         _plugin_boot('web', flask_app=app)
     except Exception:
         logger.exception('Plugin subsystem web boot failed; continuing without plugins')
+    try:
+        from plugin.blueprint import start_catalog_auto_refresh
+
+        start_catalog_auto_refresh()
+    except Exception:
+        logger.exception('Plugin catalog auto-refresh failed to start')
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
