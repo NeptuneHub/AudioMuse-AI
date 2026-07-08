@@ -16,7 +16,7 @@ Everything a plugin can do, at a glance. The last column tells you where to find
 | 4 | Read the core database | `get_db` | Yes: counts songs and index sizes |
 | 5 | Own data tables | `table()` + `on_install` | Yes: `hook_stats` and `index_log` tables |
 | 6 | React to each analyzed song | `on_song_analyzed` | Yes: live per-run counter + last song payload |
-| 7 | Scheduled (cron) tasks with Run now | `add_cron_task` | Yes: the hourly `index_log` snapshot |
+| 7 | Scheduled (cron) tasks | `add_cron_task` | Yes: the hourly `index_log` snapshot |
 | 8 | Extra pip packages, with version pins - **works only on the container image (Docker / Kubernetes), never on the standalone builds** | `requirements` in plugin.json | Yes: matplotlib |
 | 9 | Choose the container it runs on | `targets` in plugin.json | Yes: left out, so it runs on both |
 | 10 | Publishing, updates and rollback | catalog + `versions` list | Yes: released through the community repo |
@@ -233,7 +233,7 @@ def register(ctx):
     ctx.add_cron_task("daily", daily_job)
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox, and a **Run now** button that starts the task immediately on the worker. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
 
 You can also ship a default schedule (disabled, so the admin stays in control) by inserting the cron row in your `on_install` hook. SongCounter does this for its `index_log` task: every hour it stores a timestamped snapshot of the index sizes in its own table, keeps only the last 10 rows, and shows them as a small log on its page.
 

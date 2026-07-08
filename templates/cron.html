@@ -66,7 +66,7 @@
                     Plugin tasks
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Scheduled tasks registered by installed plugins. Same cron notation as above. Run now enqueues the task immediately on the worker without waiting for its schedule.</span>
+                        <span class="tooltip-text">Scheduled tasks registered by installed plugins. Same cron notation as above.</span>
                     </span>
                 </label>
                 <div id="plugin-cron-list"></div>
@@ -161,38 +161,13 @@
                     enableWrap.appendChild(enable);
                     enableWrap.appendChild(document.createTextNode(' Enable'));
                     window.pluginCronFields.set(t.task_type, {input: input, enable: enable});
-                    const runBtn = document.createElement('button');
-                    runBtn.type = 'button';
-                    runBtn.className = 'btn btn-ghost btn-sm';
-                    runBtn.textContent = 'Run now';
-                    runBtn.addEventListener('click', ()=>runPluginTaskNow(t.task_type, runBtn));
                     controls.appendChild(enableWrap);
-                    controls.appendChild(runBtn);
                     div.appendChild(label);
                     div.appendChild(input);
                     div.appendChild(controls);
                     list.appendChild(div);
                 });
             }catch(e){ console.error(e); section.style.display='none'; }
-        }
-
-        async function runPluginTaskNow(taskType, btn){
-            btn.disabled = true;
-            try{
-                const res = await fetch("{{ url_for('cron_bp.run_plugin_task_now') }}", {
-                    method: 'POST',
-                    headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({task_type: taskType})
-                });
-                const data = await res.json().catch(()=>({}));
-                if(res.ok){ alert('Task enqueued. Check Active Tasks or the worker logs.'); }
-                else { alert(data.error || 'Could not enqueue the task.'); }
-            }catch(e){
-                console.error(e);
-                alert('Could not enqueue the task.');
-            }finally{
-                btn.disabled = false;
-            }
         }
 
         document.getElementById('save-btn').addEventListener('click', async ()=>{
