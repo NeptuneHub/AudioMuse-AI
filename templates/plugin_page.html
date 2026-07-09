@@ -1,0 +1,20 @@
+{% extends "includes/layout.html" %}
+
+{% block content %}
+<div id="main-content-inner">
+    <section>
+        {% if plugin_title %}
+        <div id="config-header">
+            <div class="config-title-group">
+                <h1>{{ plugin_title }}</h1>
+            </div>
+        </div>
+        {% endif %}
+        <div style="margin-top:1rem;">{{ plugin_body|safe }}</div>
+    </section>
+</div>
+{% endblock %}
+
+{% block bodyAdditions %}
+<script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

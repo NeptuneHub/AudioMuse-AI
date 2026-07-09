@@ -26,7 +26,8 @@ import time
 import numpy as np
 import psycopg2
 from flask import g
-from psycopg2.extras import DictCursor
+from psycopg2 import sql
+from psycopg2.extras import DictCursor, Json
 
 import config
 
@@ -735,11 +736,13 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
 
 ARTIST_PROJECTION_CACHE = None
 
+_SCHEMA_ADVISORY_LOCK = 726354821
+
 
 def init_db():
     db = get_db()
     with db.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(726354821)")
+        cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
         try:
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
@@ -1125,9 +1128,372 @@ def init_db():
 
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
+            _create_plugins_table(cur)
+
             db.commit()
         finally:
-            cur.execute("SELECT pg_advisory_unlock(726354821)")
+            try:
+                db.rollback()
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            except Exception:
+                logger.exception("Failed to release the schema advisory lock")
+
+
+def connect_raw():
+    """Open a standalone psycopg2 connection (no Flask ``g``).
+
+    For boot-time callers that run before an app/request context exists, such as
+    plugin materialization in the web and worker entrypoints.
+    """
+    return psycopg2.connect(
+        config.DATABASE_URL,
+        connect_timeout=30,
+        keepalives_idle=600,
+        keepalives_interval=30,
+        keepalives_count=3,
+        options='-c statement_timeout=600000',
+    )
+
+
+def _create_plugins_table(cur):
+    """Run the idempotent DDL that creates the plugins registry table.
+
+    Kept as one canonical block so ``init_db`` and the boot-time
+    ``ensure_plugins_table`` never drift. The caller owns the transaction. Plugin
+    code lives on the PLUGINS_DIR volume and is re-downloaded from ``source_url``;
+    the table stores only metadata.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS plugins (
+            id           TEXT PRIMARY KEY,
+            name         TEXT,
+            version      TEXT,
+            manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_url   TEXT,
+            checksum     TEXT,
+            requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+            enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+            settings     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_repo  TEXT,
+            load_status  TEXT,
+            load_errors  JSONB NOT NULL DEFAULT '{}'::jsonb,
+            installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
+    cur.execute(
+        "ALTER TABLE plugins ADD COLUMN IF NOT EXISTS load_errors JSONB NOT NULL DEFAULT '{}'::jsonb"
+    )
+
+
+def ensure_plugins_table(conn=None):
+    """Create the plugins registry table if it does not exist yet.
+
+    The RQ worker entrypoints never run ``init_db``; they rely on the web process
+    for the schema. When a worker boots before that has happened, reading the
+    registry raises ``UndefinedTable``. The plugin subsystem calls this first so
+    it can self-heal its own table. Shares ``init_db``'s advisory lock so a
+    concurrent web-side ``init_db`` can never race the CREATE.
+    """
+    own = conn is None
+    db = conn or connect_raw()
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                _create_plugins_table(cur)
+                db.commit()
+            finally:
+                try:
+                    db.rollback()
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                except Exception:
+                    logger.exception("Failed to release the schema advisory lock")
+    finally:
+        if own:
+            db.close()
+
+
+_PLUGIN_META_COLUMNS = (
+    "id, name, version, manifest, source_url, checksum, requirements, enabled, settings, "
+    "source_repo, load_status, load_errors, installed_at, updated_at"
+)
+
+
+def _row_to_plugin(row):
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'version': row['version'],
+        'manifest': row['manifest'] or {},
+        'source_url': row['source_url'],
+        'checksum': row['checksum'],
+        'requirements': row['requirements'] or [],
+        'enabled': bool(row['enabled']),
+        'settings': row['settings'] or {},
+        'source_repo': row['source_repo'],
+        'load_status': row['load_status'],
+        'load_errors': row['load_errors'] or {},
+        'installed_at': row['installed_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
+def list_plugins(conn=None):
+    """Return every installed plugin as a dict (without the package bytes)."""
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(f"SELECT {_PLUGIN_META_COLUMNS} FROM plugins ORDER BY id")
+        return [_row_to_plugin(r) for r in cur.fetchall()]
+    finally:
+        cur.close()
+
+
+def get_plugin(plugin_id, conn=None):
+    """Return a single plugin dict (without package bytes) or None."""
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(f"SELECT {_PLUGIN_META_COLUMNS} FROM plugins WHERE id = %s", (plugin_id,))
+        row = cur.fetchone()
+        return _row_to_plugin(row) if row else None
+    finally:
+        cur.close()
+
+
+def upsert_plugin(plugin_id, name, version, manifest, source_url, checksum, requirements,
+                  source_repo=None, conn=None):
+    """Insert or replace a plugin registry row.
+
+    Stores metadata plus the re-download URL and checksum. The plugin code itself
+    lives on the PLUGINS_DIR volume, not in this table.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO plugins (id, name, version, manifest, source_url, checksum,
+                                 requirements, source_repo, enabled, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                version = EXCLUDED.version,
+                manifest = EXCLUDED.manifest,
+                source_url = EXCLUDED.source_url,
+                checksum = EXCLUDED.checksum,
+                requirements = EXCLUDED.requirements,
+                source_repo = EXCLUDED.source_repo,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (plugin_id, name, version, Json(manifest or {}), source_url,
+             checksum, Json(requirements or []), source_repo),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def delete_plugin(plugin_id, conn=None):
+    """Remove a plugin row from the registry."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("DELETE FROM plugins WHERE id = %s", (plugin_id,))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_enabled(plugin_id, enabled, conn=None):
+    """Flip a plugin's enabled flag."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET enabled = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (bool(enabled), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
+    """Persist the last-boot load result plus the per-role error text.
+
+    ``load_errors`` maps 'flask'/'worker' to the failing role's message, so a
+    plugin that only breaks on the worker still shows a useful error in the web
+    UI. A success for a role clears that role's entry. With ``status=None`` only
+    the role's error entry is written/cleared and load_status stays untouched.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        if role and error:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    ([role], json.dumps(str(error)), plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    (status, [role], json.dumps(str(error)), plugin_id),
+                )
+        elif role:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (role, plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (status, role, plugin_id),
+                )
+        elif status is not None:
+            cur.execute("UPDATE plugins SET load_status = %s WHERE id = %s", (status, plugin_id))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def clear_plugin_deps_failed(plugin_id, conn=None):
+    """Reset a stale deps_failed badge once a later install got the dependencies in.
+
+    load_status goes back to NULL (shown as 'pending' until the restart) instead of
+    keeping a failure the plugin no longer has.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET load_status = NULL WHERE id = %s AND load_status = 'deps_failed'",
+            (plugin_id,),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def get_plugin_settings(plugin_id, conn=None):
+    """Return the settings JSONB dict for a plugin (empty dict if none)."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT settings FROM plugins WHERE id = %s", (plugin_id,))
+        row = cur.fetchone()
+        return (row[0] or {}) if row else {}
+    finally:
+        cur.close()
+
+
+def set_plugin_settings(plugin_id, settings, conn=None):
+    """Replace the whole settings JSONB dict for a plugin."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET settings = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (Json(settings or {}), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_cron_tasks(plugin_id, cron_tasks, conn=None):
+    """Store the cron tasks a plugin declared in register() inside its manifest JSONB.
+
+    Captured at install time so the web process, which never imports a
+    worker-only plugin, can still resolve and dispatch its scheduled tasks.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET manifest = jsonb_set(manifest, '{cron_tasks}', %s::jsonb, true), "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (json.dumps(cron_tasks or {}), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def get_app_config_value(key, default=None, conn=None):
+    """Return a single app_config value by key, or ``default`` if absent."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+    finally:
+        cur.close()
+
+
+def set_app_config_value(key, value, conn=None):
+    """Upsert a single app_config key/value pair."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
+            (key, value),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def delete_cron_rows_for_plugin(plugin_id, conn=None):
+    """Delete cron rows whose task_type is ``plugin.<id>.<name>`` for this plugin."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        pattern = 'plugin.' + plugin_id.replace('!', '!!').replace('_', '!_') + '.%'
+        cur.execute("DELETE FROM cron WHERE task_type LIKE %s ESCAPE '!'", (pattern,))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def drop_plugin_data_tables(plugin_id, conn=None):
+    """Drop every table a plugin created under the ``plugin_<id>__`` namespace.
+
+    The character after the prefix must not be an underscore: sanctioned table
+    names (``api.table``) always start with a letter, and skipping underscore
+    continuations keeps a sibling id like ``foo_`` (tables ``plugin_foo___x``)
+    safe when ``foo`` is purged.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    dropped = []
+    try:
+        prefix = f"plugin_{plugin_id}__"
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+        )
+        names = [r[0] for r in cur.fetchall()]
+        for tn in names:
+            if tn.startswith(prefix) and not tn[len(prefix):].startswith('_'):
+                cur.execute(sql.SQL('DROP TABLE IF EXISTS {} CASCADE').format(sql.Identifier(tn)))
+                dropped.append(tn)
+        db.commit()
+        return dropped
+    finally:
+        cur.close()
 
 
 def clean_up_previous_main_tasks():

@@ -120,9 +120,61 @@ def resolve_providers(allow_coreml=False, role=None, cuda_options=None):
             )
         )
 
+    for provider in _plugin_onnx_providers():
+        name = provider.get('name')
+        if name and name in available and name not in [p[0] for p in chain]:
+            chain.append((name, provider.get('options') or {}))
+
     chain.append(('CPUExecutionProvider', {}))
     logger.info("ONNX provider chain: %s", [p[0] for p in chain])
     return chain
+
+
+def _plugin_onnx_providers():
+    try:
+        from plugin.manager import plugin_manager
+        return plugin_manager.get_onnx_providers()
+    except Exception:
+        return []
+
+
+def run_song_analyzed_hook(item, audio_path, musicnn_analysis, musicnn_embedding,
+                           clap_embedding, top_moods, album_id, album_name, run_id):
+    """Fire plugin on_song_analyzed hooks for a finished song; guarded no-op when no plugin listens.
+
+    Fully wrapped so it can never raise into the analysis loop, and it builds the
+    payload only when a worker plugin actually registered a listener. ``run_id`` is
+    the analysis run's task id, shared by every song of one run, so a listener can
+    count or group per run.
+    """
+    try:
+        from plugin.manager import plugin_manager
+        if not plugin_manager.enabled() or not plugin_manager.song_analyzed_hooks():
+            return
+        payload = {
+            'item_id': str(item.get('Id')),
+            'run_id': run_id,
+            'audio_path': audio_path,
+            'metadata': {
+                'title': item.get('Name'),
+                'artist': item.get('AlbumArtist'),
+                'album': item.get('Album'),
+                'album_artist': item.get('OriginalAlbumArtist') or item.get('AlbumArtist'),
+                'year': item.get('Year'),
+                'rating': item.get('Rating'),
+                'file_path': item.get('FilePath'),
+                'album_id': album_id,
+                'album_name': album_name,
+            },
+            'media_item': item,
+            'analysis': musicnn_analysis,
+            'top_moods': top_moods,
+            'musicnn_embedding': musicnn_embedding,
+            'clap_embedding': clap_embedding,
+        }
+        plugin_manager.run_song_analyzed(payload)
+    except Exception:
+        logger.exception('Plugin song-analyzed hook dispatch failed')
 
 
 def get_provider_options(allow_coreml=False, role=None):

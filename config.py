@@ -140,7 +140,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.5.0"
+APP_VERSION = "v2.6.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -670,6 +670,63 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 # --- Energy Normalization Range ---
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
 ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
+
+# --- Plugin System ---
+# Master switch for the plugin subsystem (discovery, loading, admin UI).
+PLUGINS_ENABLED = os.environ.get("PLUGINS_ENABLED", "true").lower() == "true"
+# Where installed plugin code and its pip dependencies live. The `plugins` DB table
+# keeps only metadata plus a re-download URL, not the zip, so mount this on a
+# persistent volume to keep plugins across restarts. If it is empty at boot the app
+# re-downloads each plugin from its source URL and reinstalls its deps (logged as a
+# warning). Native/standalone builds set APP_DATA_DIR; containers fall back to
+# <repo>/plugin/installed.
+if APP_DATA_DIR:
+    _plugins_dir_default = os.path.join(APP_DATA_DIR, "plugins")
+else:
+    _plugins_dir_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin", "installed")
+PLUGINS_DIR = os.environ.get("PLUGINS_DIR", "") or _plugins_dir_default
+# Default community catalog (a static Jellyfin-style manifest.json hosted on GitHub raw).
+PLUGIN_DEFAULT_REPO_URL = os.environ.get(
+    "PLUGIN_DEFAULT_REPO_URL",
+    "https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI-plugins/main/manifest.json",
+)
+# Hard cap on a downloaded plugin package (MB) to bound the DB blob and extraction.
+PLUGIN_MAX_DOWNLOAD_MB = int(os.environ.get("PLUGIN_MAX_DOWNLOAD_MB", "50"))
+# Allow pip-installing plugin requirements into PLUGINS_DIR/_lib (Docker/k8s only;
+# auto-disabled on frozen PyInstaller builds which cannot pip into the bundle).
+PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
+# Plugin catalog/manifest HTTP timeouts (seconds). PLUGIN_HTTP_FORCE_IPV4 (default true)
+# already avoids the broken-IPv6 stall, so CONNECT no longer needs to be tiny: a container's
+# egress to GitHub's CDN often needs several seconds to complete the TCP handshake even when
+# a browser on the same LAN connects instantly, so a 2s bound was rejecting working hosts.
+PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "10"))
+PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
+# Plugin downloads retry transient failures with exponential backoff before giving up.
+# GitHub's raw/Fastly and release CDNs drop connections, rate-limit with 429, and are
+# flaky over IPv6, so one click should not fail on the first hiccup. backoff_factor 0.5
+# with 4 retries waits ~0, 0.5, 1, 2, 4s between attempts.
+PLUGIN_HTTP_RETRIES = int(os.environ.get("PLUGIN_HTTP_RETRIES", "4"))
+PLUGIN_HTTP_BACKOFF = float(os.environ.get("PLUGIN_HTTP_BACKOFF", "0.5"))
+# raw.githubusercontent.com is often unreachable over IPv6 from a container whose pod
+# has an IPv6 address but no IPv6 egress (Errno 101 Network is unreachable). Default true
+# pins all outbound HTTP to IPv4 so the broken AAAA path is never tried; set this to false
+# only on an IPv6-only host.
+PLUGIN_HTTP_FORCE_IPV4 = os.environ.get("PLUGIN_HTTP_FORCE_IPV4", "true").lower() == "true"
+# Concurrency for resolving per-plugin manifests when building the catalog.
+PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
+# How long (seconds) the catalog's latest-version map is reused to flag "update available"
+# on the Installed tab before a background refresh re-checks the repos. This is what lets
+# the Installed list show updates instantly instead of blocking on a live GitHub fetch.
+PLUGIN_CATALOG_CACHE_TTL = int(os.environ.get("PLUGIN_CATALOG_CACHE_TTL", "900"))
+# The web process also refreshes the catalog cache on its own: once at startup and then
+# every this many seconds (default 1 hour), so update buttons appear even when nobody
+# opens the Catalog tab. Opening the Catalog tab or clicking Refresh also triggers it.
+PLUGIN_CATALOG_REFRESH_INTERVAL = int(os.environ.get("PLUGIN_CATALOG_REFRESH_INTERVAL", "3600"))
+# How long plugin boot waits for the database to accept connections before giving
+# up (the RQ workers boot plugins before the Postgres pod is guaranteed ready; a
+# transient 'connection refused' would otherwise disable plugins until restart).
+PLUGIN_BOOT_DB_WAIT_SECONDS = int(os.environ.get("PLUGIN_BOOT_DB_WAIT_SECONDS", "60"))
+PLUGIN_BOOT_DB_WAIT_INTERVAL = float(os.environ.get("PLUGIN_BOOT_DB_WAIT_INTERVAL", "2"))
 
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))

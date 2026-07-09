@@ -151,6 +151,23 @@ def inject_globals():
     # pages), is_admin will be True and the full UI is shown.
     auth_role = getattr(g, 'auth_role', 'admin')
     current_user = getattr(g, 'auth_user', None)
+    # Resolve each plugin menu link here (inside a request context) with per-item
+    # isolation so a plugin whose endpoint does not build can never 500 the layout
+    # that every authenticated page renders.
+    plugin_menu_items = []
+    try:
+        from flask import url_for
+        from plugin.manager import plugin_manager
+        for item in plugin_manager.menu_items():
+            if item.get('admin_only') and auth_role != 'admin':
+                continue
+            try:
+                item_url = url_for(item['endpoint'])
+            except Exception:
+                continue
+            plugin_menu_items.append({**item, 'url': item_url})
+    except Exception:
+        plugin_menu_items = []
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -159,6 +176,7 @@ def inject_globals():
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
         current_user=current_user,
+        plugin_menu_items=plugin_menu_items,
     )
 
 
@@ -933,8 +951,37 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(users_bp)
     flask_app.register_blueprint(sync_bp)
 
+    try:
+        from plugin.blueprint import plugins_bp
+        flask_app.register_blueprint(plugins_bp)
+    except Exception:
+        logger.exception('Failed to register plugin blueprint')
+
 
 _register_blueprints(app)
+
+# --- Plugin subsystem boot (web) ---
+# Materialize enabled plugins from the DB and register their blueprints/menu on
+# the Flask app. Guarded so a broken plugin can never prevent the app from booting.
+# The plugin imports stay inside this function (not module scope) so app.py does not
+# eagerly pull the plugin.blueprint -> manager -> api -> database chain at import time.
+def _boot_plugins_web():
+    try:
+        from plugin.manager import boot as _plugin_boot
+
+        _plugin_boot('web', flask_app=app)
+    except Exception:
+        logger.exception('Plugin subsystem web boot failed; continuing without plugins')
+    try:
+        from plugin.blueprint import start_catalog_auto_refresh
+
+        start_catalog_auto_refresh()
+    except Exception:
+        logger.exception('Plugin catalog auto-refresh failed to start')
+
+
+if not _is_worker:
+    _boot_plugins_web()
 
 # --- Startup: Load indexes and caches (Flask server only, NOT RQ workers) ---
 # RQ workers import app.py but should NOT load indexes or start background threads.
