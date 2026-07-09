@@ -540,11 +540,14 @@ function renderSelectionPanel() {
             row.className = 'selection-list-item';
             const left = document.createElement('div');
             const genre = document.createElement('span');
+            const genreName = p.genre || 'unknown';
+            const title = p.title || '(unknown)';
+            const artist = p.artist || '(unknown)';
             genre.style.color = 'var(--text-muted)';
             genre.style.marginRight = '6px';
-            genre.textContent = '[' + p.genre + ']';
+            genre.textContent = '[' + genreName + ']';
             left.appendChild(genre);
-            left.appendChild(document.createTextNode(' ' + p.title + ' - ' + p.artist));
+            left.appendChild(document.createTextNode(' ' + title + ' - ' + artist));
             const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
                 return function() { removeFromSelection(id); };
             })();

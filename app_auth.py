@@ -321,6 +321,7 @@ def verify_additional_user(username, password):
 def _session_role_for_user(username):
     if not isinstance(username, str) or not username:
         return None
+    db = None
     try:
         db = _get_db()
         with db.cursor() as cur:
@@ -331,6 +332,11 @@ def _session_role_for_user(username):
             row = cur.fetchone()
     except Exception:
         logger.exception("Failed to validate session user %r", username)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return None
     if not row:
         return None
