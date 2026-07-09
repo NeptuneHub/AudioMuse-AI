@@ -858,6 +858,143 @@ class TestSongAnalyzedHooks:
         mgr.records = {}
         mgr.run_song_analyzed({'item_id': 'x'})
 
+    def test_multiple_plugins_run_in_sequence_and_isolated(self):
+        seen = []
+
+        def a1(payload):
+            seen.append('a1')
+
+        def a2(payload):
+            seen.append('a2')
+
+        def b_bad(payload):
+            raise RuntimeError('boom')
+
+        def c1(payload):
+            seen.append('c1')
+
+        mgr = self._mgr({'a': [a1, a2], 'b': [b_bad], 'c': [c1]})
+        mgr.run_song_analyzed({'item_id': 'x'})
+        assert seen == ['a1', 'a2', 'c1']
+
+    def test_deps_failed_plugin_hooks_stay_active(self):
+        def a(payload):
+            """Stub listener."""
+
+        mgr = self._mgr({'a': [a]})
+        mgr.records['a']['load_status'] = 'deps_failed'
+        assert mgr.song_analyzed_hooks() == [a]
+
+
+class TestMultiPluginConflicts:
+    def test_conflicting_pin_surfaces_deps_error_on_the_unmet_plugin(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'PLUGIN_ALLOW_PIP', True)
+        dist = tmp_path / '_lib' / 'matplotlib-3.9.0.dist-info'
+        dist.mkdir(parents=True)
+        (dist / 'METADATA').write_text(
+            'Metadata-Version: 2.1\nName: matplotlib\nVersion: 3.9.0\n', encoding='utf-8'
+        )
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_pip_install', lambda specs: True)
+        mgr.records = {
+            'wants39': _record('wants39', requirements=['matplotlib==3.9.0']),
+            'wants37': _record('wants37', requirements=['matplotlib==3.7.0']),
+        }
+
+        mgr.ensure_requirements()
+
+        assert 'deps_error' not in mgr.records['wants39']
+        assert 'matplotlib==3.7.0' in mgr.records['wants37']['deps_error']
+        assert 'conflicting version' in mgr.records['wants37']['deps_error']
+
+    def test_load_persists_deps_failed_but_plugin_still_loads(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        _write_plugin(tmp_path, 'conflicted', 'def register(ctx):\n    pass\n')
+        persisted = {}
+
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(
+            mgr, '_persist_status',
+            lambda pid, status, role=None, error=None: persisted.__setitem__(pid, (status, error)),
+        )
+        record = _record('conflicted')
+        record['deps_error'] = 'unsatisfied requirement(s) after install: matplotlib==3.7.0'
+        mgr.records = {'conflicted': record}
+        mgr.load('worker')
+
+        assert record['load_status'] == 'deps_failed'
+        assert 'matplotlib==3.7.0' in record['error']
+        assert persisted['conflicted'][0] == 'deps_failed'
+
+    def test_blueprint_named_after_plugin_id_loads_without_warning(self, monkeypatch, tmp_path, caplog):
+        import flask
+
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        _write_plugin(tmp_path, 'goodname', (
+            "from flask import Blueprint\n"
+            "bp = Blueprint('goodname', __name__)\n"
+            "def register(ctx):\n"
+            "    ctx.add_blueprint(bp)\n"
+        ))
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_persist_status', lambda *a, **k: None)
+        mgr.records = {'goodname': _record('goodname')}
+        with caplog.at_level('WARNING'):
+            mgr.load('web', flask_app=flask.Flask(__name__))
+        assert mgr.records['goodname']['load_status'] == 'ok'
+        assert not any('names its Blueprint' in r.message for r in caplog.records)
+
+    def test_blueprint_not_named_after_plugin_id_warns_but_loads(self, monkeypatch, tmp_path, caplog):
+        import flask
+
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        _write_plugin(tmp_path, 'oddname', (
+            "from flask import Blueprint\n"
+            "bp = Blueprint('something_else', __name__)\n"
+            "def register(ctx):\n"
+            "    ctx.add_blueprint(bp)\n"
+        ))
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_persist_status', lambda *a, **k: None)
+        mgr.records = {'oddname': _record('oddname')}
+        with caplog.at_level('WARNING'):
+            mgr.load('web', flask_app=flask.Flask(__name__))
+        assert mgr.records['oddname']['load_status'] == 'ok'
+        assert any('names its Blueprint' in r.message for r in caplog.records)
+
+    def test_duplicate_blueprint_name_fails_with_clear_error_and_isolates(self, monkeypatch, tmp_path):
+        import flask
+
+        monkeypatch.setattr(config, 'PLUGINS_DIR', str(tmp_path))
+        monkeypatch.setattr(config, 'PLUGINS_ENABLED', True)
+        monkeypatch.setattr(config, 'APP_VERSION', 'v2.5.0')
+        body = (
+            "from flask import Blueprint\n"
+            "bp = Blueprint('dup', __name__)\n"
+            "def register(ctx):\n"
+            "    ctx.add_blueprint(bp)\n"
+        )
+        _write_plugin(tmp_path, 'firstp', body)
+        _write_plugin(tmp_path, 'secondp', body)
+
+        app = flask.Flask(__name__)
+        mgr = manager.PluginManager()
+        monkeypatch.setattr(mgr, '_persist_status', lambda *a, **k: None)
+        mgr.records = {'firstp': _record('firstp'), 'secondp': _record('secondp')}
+        mgr.load('web', flask_app=app)
+
+        assert mgr.records['firstp']['load_status'] == 'ok'
+        assert mgr.records['secondp']['load_status'] == 'error'
+        assert 'rename the Blueprint' in mgr.records['secondp']['error']
+
 
 class TestRunSongAnalyzedHookHelper:
     class _PM:
