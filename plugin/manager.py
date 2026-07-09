@@ -438,14 +438,17 @@ class PluginManager:
             logger.exception('Could not read installed plugin dependencies from _lib')
         return versions
 
-    def _missing_specs(self, specs):
+    def _missing_specs(self, specs, have=None):
         """Return the specs whose distribution is absent OR whose version pin is unmet in _lib.
 
         Unlike a name-only presence check, this parses each spec with packaging so a
         changed pin (matplotlib==3.7 -> matplotlib==3.9) is correctly seen as missing
         and reinstalled, instead of being silently satisfied by any matplotlib on disk.
+        ``have`` lets a caller share one _lib scan across several checks; when omitted
+        the directory is re-read, which the in-lock re-check relies on.
         """
-        have = self._installed_dist_versions()
+        if have is None:
+            have = self._installed_dist_versions()
         missing = []
         for spec in specs:
             try:
@@ -523,10 +526,12 @@ class PluginManager:
                         'Dependency install failed for plugin %s: %s',
                         plugin_id, record['requirements'],
                     )
+        have = self._installed_dist_versions() if plugins_with_reqs else {}
         for plugin_id in plugins_with_reqs:
             record = self.records[plugin_id]
             unmet = self._missing_specs(
-                sorted({str(s) for s in record['requirements'] if _valid_requirement(s)})
+                sorted({str(s) for s in record['requirements'] if _valid_requirement(s)}),
+                have=have,
             )
             if unmet:
                 record['deps_error'] = (
