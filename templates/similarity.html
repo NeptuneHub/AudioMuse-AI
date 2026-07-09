@@ -370,6 +370,25 @@
                 }
             };
 
+            const makeTrackOption = (track) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'autocomplete-item';
+                itemDiv.setAttribute('role', 'option');
+                itemDiv.id = 'ac-opt-' + (acSeq++);
+                itemDiv._track = track;
+                [
+                    ['title', track.title || 'N/A'],
+                    ['artist', track.author || 'N/A'],
+                    ['album', 'Album: ' + (track.album || 'Unknown')],
+                ].forEach(([className, text]) => {
+                    const row = document.createElement('div');
+                    row.className = className;
+                    row.textContent = text;
+                    itemDiv.appendChild(row);
+                });
+                return itemDiv;
+            };
+
             const showAutocomplete = (tracks, append) => {
                 if (!append) { autocompleteResults.innerHTML = ''; activeIndex = -1; acSeq = 0; searchInput.removeAttribute('aria-activedescendant'); }
                 // Remove existing sentinel if any
@@ -380,12 +399,7 @@
                     autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
                 } else {
                     tracks.forEach(track => {
-                        const itemDiv = document.createElement('div');
-                        itemDiv.className = 'autocomplete-item';
-                        itemDiv.setAttribute('role', 'option');
-                        itemDiv.id = 'ac-opt-' + (acSeq++);
-                        itemDiv._track = track;
-                        itemDiv.innerHTML = '<div class="title">' + (track.title || 'N/A') + '</div><div class="artist">' + (track.author || 'N/A') + '</div><div class="album">Album: ' + (track.album || 'Unknown') + '</div>';
+                        const itemDiv = makeTrackOption(track);
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });

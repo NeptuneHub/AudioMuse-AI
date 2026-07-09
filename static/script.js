@@ -1,10 +1,3 @@
-// Escape user/library-derived strings before inserting them into innerHTML.
-// Playlist names and track title/author come from media-server metadata, which
-// is attacker-influenceable, so they must be HTML-escaped to prevent stored XSS.
-const escapeHtml = (str) => String(str ?? '').replace(/[&<>"']/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-));
-
 // --- DOM Element References ---
 const mainContent = document.getElementById('main-content');
 
@@ -479,7 +472,11 @@ async function fetchPlaylists() {
         renderPlaylists(playlistsData);
     } catch (error) {
         console.error('Error fetching playlists:', error);
-        playlistsContainer.innerHTML = `<p class="status-failure">Error fetching playlists: ${error.message}</p>`;
+        playlistsContainer.innerHTML = '';
+        const message = document.createElement('p');
+        message.className = 'status-failure';
+        message.textContent = 'Error fetching playlists: ' + error.message;
+        playlistsContainer.appendChild(message);
     }
 }
 
@@ -492,21 +489,35 @@ function renderPlaylists(playlistsData) {
     for (const [playlistName, songs] of Object.entries(playlistsData)) {
         const playlistDiv = document.createElement('div');
         playlistDiv.className = 'playlist-item';
-        playlistDiv.innerHTML = `
-            <div class="playlist-header">
-                <strong class="playlist-name">${escapeHtml(playlistName)}</strong>
-                <span class="playlist-song-count">(${songs.length} songs)</span>
-                <button class="show-songs-btn">SHOW</button>
-            </div>
-            <ul class="song-list" style="display: none;">
-                ${songs.map(song => `<li>${escapeHtml(song.title)} by ${escapeHtml(song.author)}</li>`).join('')}
-            </ul>`;
-        playlistDiv.querySelector('.show-songs-btn').addEventListener('click', e => {
+        const header = document.createElement('div');
+        header.className = 'playlist-header';
+        const name = document.createElement('strong');
+        name.className = 'playlist-name';
+        name.textContent = playlistName;
+        const count = document.createElement('span');
+        count.className = 'playlist-song-count';
+        count.textContent = `(${songs.length} songs)`;
+        const toggle = document.createElement('button');
+        toggle.className = 'show-songs-btn';
+        toggle.textContent = 'SHOW';
+        header.appendChild(name);
+        header.appendChild(count);
+        header.appendChild(toggle);
+        const list = document.createElement('ul');
+        list.className = 'song-list';
+        list.style.display = 'none';
+        songs.forEach(song => {
+            const item = document.createElement('li');
+            item.textContent = `${song.title} by ${song.author}`;
+            list.appendChild(item);
+        });
+        toggle.addEventListener('click', e => {
             const btn = e.target;
-            const list = btn.closest('.playlist-item').querySelector('.song-list');
             list.style.display = list.style.display === 'none' ? 'block' : 'none';
             btn.textContent = list.style.display === 'none' ? 'SHOW' : 'HIDE';
         });
+        playlistDiv.appendChild(header);
+        playlistDiv.appendChild(list);
         playlistsContainer.appendChild(playlistDiv);
     }
 }
@@ -517,7 +528,20 @@ function showMessageBox(title, message) {
     const messageBox = document.createElement('div');
     messageBox.id = boxId;
     messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
-    messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${escapeHtml(title)}</h3><p style="margin:0;">${escapeHtml(message)}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+    const heading = document.createElement('h3');
+    heading.style.cssText = 'font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;';
+    heading.textContent = title;
+    const body = document.createElement('p');
+    body.style.margin = '0';
+    body.textContent = message;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;';
+    closeBtn.textContent = 'X';
+    closeBtn.addEventListener('click', () => messageBox.remove());
+    messageBox.appendChild(heading);
+    messageBox.appendChild(body);
+    messageBox.appendChild(closeBtn);
     
     setTimeout(() => {
         messageBox.remove();

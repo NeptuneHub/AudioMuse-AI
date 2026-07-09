@@ -398,6 +398,22 @@ document.addEventListener('DOMContentLoaded', function () {
             sgHide();
         };
 
+        const sgTrackNode = (track) => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            [
+                ['title', track.title || 'N/A'],
+                ['artist', track.author || 'N/A'],
+                ['album', 'Album: ' + (track.album || 'Unknown')],
+            ].forEach(([className, text]) => {
+                const row = document.createElement('div');
+                row.className = className;
+                row.textContent = text;
+                item.appendChild(row);
+            });
+            return item;
+        };
+
         const sgShow = (tracks, append) => {
             if (!append) sgResults.innerHTML = '';
             const sentinel = sgResults.querySelector('.autocomplete-load-more');
@@ -407,9 +423,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 sgResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
             } else {
                 tracks.forEach(t => {
-                    const d = document.createElement('div');
-                    d.className = 'autocomplete-item';
-                    d.innerHTML = `<div class="title">${escapeHtml(t.title||'N/A')}</div><div class="artist">${escapeHtml(t.author||'N/A')}</div><div class="album">Album: ${escapeHtml(t.album||'Unknown')}</div>`;
+                    const d = sgTrackNode(t);
                     d.addEventListener('click', () => sgSelect(t));
                     sgResults.appendChild(d);
                 });
@@ -502,7 +516,11 @@ document.addEventListener('DOMContentLoaded', function () {
             currentResults = data.results || [];
             displayResults(currentResults, queryLabel);
         } catch (err) {
-            resultsList.innerHTML = `<div class="error-message">❌ ${err.message}</div>`;
+            resultsList.innerHTML = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = 'Error: ' + err.message;
+            resultsList.appendChild(errorDiv);
         }
     }
 

@@ -349,6 +349,30 @@
     }
     function fmtTime(iso) { return iso ? iso.replace('T', ' ').substring(0, 19) : '–'; }
     function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+    function appendTextCell(row, value) {
+        const td = row.insertCell();
+        td.textContent = value == null || value === '' ? '–' : String(value);
+        return td;
+    }
+    function appendCodeCell(row, value) {
+        const td = row.insertCell();
+        if (value == null || value === '') {
+            td.textContent = '–';
+        } else {
+            const code = document.createElement('code');
+            code.textContent = String(value);
+            td.appendChild(code);
+        }
+        return td;
+    }
+    function appendBadgeCell(row, label, className) {
+        const td = row.insertCell();
+        const span = document.createElement('span');
+        span.className = 'badge ' + className;
+        span.textContent = label == null || label === '' ? '?' : String(label);
+        td.appendChild(span);
+        return td;
+    }
 
     // Custom plugin: draws the label name + percentage inside each slice
     // of a pie/doughnut chart, so we can hide the side legend entirely.
@@ -489,22 +513,21 @@
             return;
         }
         workers.forEach(w => {
-            const stateBadge = w.state === 'busy'
-                ? '<span class="badge badge-progress">busy</span>'
-                : w.state === 'idle'
-                    ? '<span class="badge badge-ok">idle</span>'
-                    : `<span class="badge badge-unknown">${w.state || 'unknown'}</span>`;
+            const state = w.state || 'unknown';
+            const stateClass = state === 'busy'
+                ? 'badge-progress'
+                : state === 'idle'
+                    ? 'badge-ok'
+                    : 'badge-unknown';
             const queues = (w.queues || []).join(', ') || '–';
-            const job = w.current_job_id ? '<code>' + w.current_job_id + '</code>' : '–';
 
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td>${w.hostname || '–'}</td>
-                <td>${stateBadge}</td>
-                <td>${queues}</td>
-                <td>${w.successful_jobs ?? 0}</td>
-                <td>${w.failed_jobs ?? 0}</td>
-                <td>${job}</td>`;
+            appendTextCell(tr, w.hostname);
+            appendBadgeCell(tr, state, stateClass);
+            appendTextCell(tr, queues);
+            appendTextCell(tr, w.successful_jobs ?? 0);
+            appendTextCell(tr, w.failed_jobs ?? 0);
+            appendCodeCell(tr, w.current_job_id);
             tbody.appendChild(tr);
         });
     }
@@ -518,12 +541,11 @@
         }
         tasks.forEach(t => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td>${t.task_type || '–'}</td>
-                <td><span class="badge ${statusBadgeClass(t.status)}">${t.status || '?'}</span></td>
-                <td>${fmtDuration(t.duration_seconds)}</td>
-                <td>${fmtTime(t.timestamp)}</td>
-                <td>${t.note || ''}</td>`;
+            appendTextCell(tr, t.task_type);
+            appendBadgeCell(tr, t.status, statusBadgeClass(t.status));
+            appendTextCell(tr, fmtDuration(t.duration_seconds));
+            appendTextCell(tr, fmtTime(t.timestamp));
+            appendTextCell(tr, t.note || '');
             tbody.appendChild(tr);
         });
     }
@@ -553,7 +575,9 @@
         }
         rows.forEach(r => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${r.task_type}</td><td>${r.runs}</td><td>${fmtDuration(r.avg_seconds)}</td>`;
+            appendTextCell(tr, r.task_type);
+            appendTextCell(tr, r.runs);
+            appendTextCell(tr, fmtDuration(r.avg_seconds));
             tbody.appendChild(tr);
         });
     }
@@ -648,15 +672,11 @@
         }
         rows.forEach(c => {
             const tr = document.createElement('tr');
-            const enabled = c.enabled
-                ? '<span class="badge badge-ok">enabled</span>'
-                : '<span class="badge badge-unknown">disabled</span>';
-            tr.innerHTML = `
-                <td>${c.name || '–'}</td>
-                <td>${c.task_type || '–'}</td>
-                <td><code>${c.cron_expr || '–'}</code></td>
-                <td>${enabled}</td>
-                <td>${c.last_run || '–'}</td>`;
+            appendTextCell(tr, c.name);
+            appendTextCell(tr, c.task_type);
+            appendCodeCell(tr, c.cron_expr);
+            appendBadgeCell(tr, c.enabled ? 'enabled' : 'disabled', c.enabled ? 'badge-ok' : 'badge-unknown');
+            appendTextCell(tr, c.last_run);
             tbody.appendChild(tr);
         });
     }

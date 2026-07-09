@@ -328,13 +328,22 @@
                     }
                 };
 
+                const writeTrackLine = (container, className, text) => {
+                    const row = document.createElement('div');
+                    row.className = className;
+                    row.textContent = text || '';
+                    container.appendChild(row);
+                };
+
                 const appendResults = (tracks) => {
                     const existingSentinel = resultsEl.querySelector('.autocomplete-load-more');
                     if (existingSentinel) existingSentinel.remove();
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
+                        writeTrackLine(itemDiv, 'title', track.title);
+                        writeTrackLine(itemDiv, 'artist', track.author);
+                        writeTrackLine(itemDiv, 'album', track.album);
                         itemDiv.addEventListener('click', () => {
                             displayTitleEl.textContent = 'Title: ' + track.title;
                             displayArtistEl.textContent = 'Artist: ' + track.author;
