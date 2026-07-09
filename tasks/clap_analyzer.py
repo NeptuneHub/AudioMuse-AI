@@ -48,9 +48,14 @@ _tokenizer = None
 _label_text_embeddings_cache = None
 
 _SEGMENT_LENGTH_SAMPLES = 480000
+_HOP_LENGTH_SAMPLES = 240000
 
 
-def _split_audio_segments(audio_data, segment_length=_SEGMENT_LENGTH_SAMPLES, hop_length=240000):
+def _split_audio_segments(
+    audio_data: np.ndarray,
+    segment_length: int = _SEGMENT_LENGTH_SAMPLES,
+    hop_length: int = _HOP_LENGTH_SAMPLES,
+) -> list[np.ndarray]:
     total_length = len(audio_data)
     if total_length <= segment_length:
         padded = np.pad(audio_data, (0, segment_length - total_length), mode='constant')
@@ -447,9 +452,6 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         session = get_clap_audio_model()
 
         SAMPLE_RATE = 48000
-        SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES
-        HOP_LENGTH = 240000
-
         from tasks.analysis import robust_load_audio_with_fallback
 
         audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
@@ -464,7 +466,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
         duration_sec = len(audio_data) / SAMPLE_RATE
 
-        segments = _split_audio_segments(audio_data, SEGMENT_LENGTH, HOP_LENGTH)
+        segments = _split_audio_segments(audio_data)
 
         num_segments = len(segments)
         logger.info(f"CLAP: Processing {num_segments} segments ({duration_sec:.1f}s audio)")
