@@ -15,4 +15,4 @@ nav:
   - Parameters: PARAMETERS.md
   - Authentication: AUTH.md
 
-theme: material
+theme: readthedocs
