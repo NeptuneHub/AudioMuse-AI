@@ -9,6 +9,7 @@
     const nameInput = document.getElementById('additional-user-name');
     const passInput = document.getElementById('additional-user-password');
     const passConfirmInput = document.getElementById('additional-user-password-confirm');
+    const currentInput = document.getElementById('additional-user-current-password');
     const roleInput = document.getElementById('additional-user-role');
     const addBtn = document.getElementById('additional-user-add');
     const addToggleBtn = document.getElementById('add-user-toggle');
@@ -24,6 +25,8 @@
 
     const pwPanel = document.getElementById('change-password-panel');
     const pwTarget = document.getElementById('change-password-target');
+    const pwCurrentWrap = document.getElementById('change-password-current-wrap');
+    const pwCurrent = document.getElementById('change-password-current');
     const pwNew = document.getElementById('change-password-new');
     const pwConfirm = document.getElementById('change-password-confirm');
     const pwSave = document.getElementById('change-password-save');
@@ -31,6 +34,7 @@
     const pwFeedback = document.getElementById('change-password-feedback');
     let pwTargetId = null;
     let pwTargetName = '';
+    let pwNeedsCurrentPassword = false;
 
     function showFeedback(msg, kind) {
         if (!feedback) return;
@@ -58,11 +62,14 @@
         return role === 'admin' ? 'admin' : 'user';
     }
 
-    function openPasswordPanel(id, username) {
+    function openPasswordPanel(id, username, role) {
         closeAddPanel();
         pwTargetId = id;
         pwTargetName = username;
+        pwNeedsCurrentPassword = !isAdmin || roleLabel(role) === 'admin';
         if (pwTarget) pwTarget.textContent = 'Target user: ' + username;
+        if (pwCurrentWrap) pwCurrentWrap.style.display = pwNeedsCurrentPassword ? '' : 'none';
+        if (pwCurrent) pwCurrent.value = '';
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
         showPwFeedback('', null);
@@ -76,7 +83,9 @@
     function closePasswordPanel() {
         pwTargetId = null;
         pwTargetName = '';
+        pwNeedsCurrentPassword = false;
         if (pwPanel) pwPanel.style.display = 'none';
+        if (pwCurrent) pwCurrent.value = '';
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
         showPwFeedback('', null);
@@ -87,6 +96,7 @@
         if (nameInput) nameInput.value = '';
         if (passInput) passInput.value = '';
         if (passConfirmInput) passConfirmInput.value = '';
+        if (currentInput) currentInput.value = '';
         if (roleInput) roleInput.value = 'user';
         showFeedback('', null);
         if (addPanel) {
@@ -101,6 +111,7 @@
         if (nameInput) nameInput.value = '';
         if (passInput) passInput.value = '';
         if (passConfirmInput) passConfirmInput.value = '';
+        if (currentInput) currentInput.value = '';
         if (roleInput) roleInput.value = 'user';
         showFeedback('', null);
     }
@@ -142,7 +153,7 @@
                 pw.className = 'btn btn-primary';
                 pw.textContent = 'Change password';
                 pw.style.marginRight = '0.5rem';
-                pw.addEventListener('click', function () { openPasswordPanel(u.id, u.username); });
+                pw.addEventListener('click', function () { openPasswordPanel(u.id, u.username, u.role); });
                 tdAct.appendChild(pw);
             }
 
@@ -189,9 +200,14 @@
         const username = (nameInput.value || '').trim();
         const password = passInput.value || '';
         const passwordConfirm = (passConfirmInput && passConfirmInput.value) || '';
+        const currentPassword = (currentInput && currentInput.value) || '';
         const role = (roleInput && roleInput.value) || 'user';
         if (!username || !password) {
             showFeedback('Username and password are required.', 'error');
+            return;
+        }
+        if (!currentPassword) {
+            showFeedback('Current password is required.', 'error');
             return;
         }
         if (password !== passwordConfirm) {
@@ -204,7 +220,12 @@
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username, password: password, role: role })
+            body: JSON.stringify({
+                username: username,
+                password: password,
+                current_password: currentPassword,
+                role: role
+            })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
@@ -239,7 +260,12 @@
     function savePassword() {
         if (pwTargetId === null) return;
         const newPw = (pwNew && pwNew.value) || '';
+        const currentPw = (pwCurrent && pwCurrent.value) || '';
         const confirmPw = (pwConfirm && pwConfirm.value) || '';
+        if (pwNeedsCurrentPassword && !currentPw) {
+            showPwFeedback('Current password is required.', 'error');
+            return;
+        }
         if (!newPw) {
             showPwFeedback('New password cannot be empty.', 'error');
             return;
@@ -251,11 +277,13 @@
         pwSave.disabled = true;
         showPwFeedback('Updating password...', 'info');
         const targetName = pwTargetName;
+        const body = { password: newPw };
+        if (pwNeedsCurrentPassword) body.current_password = currentPw;
         fetch('/api/users/' + encodeURIComponent(pwTargetId) + '/password', {
             method: 'PUT',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: newPw })
+            body: JSON.stringify(body)
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
@@ -263,6 +291,7 @@
             .then(function (res) {
                 if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to update password (' + res.status + ').'));
                 showPwFeedback('Password for "' + targetName + '" updated.', 'success');
+                if (pwCurrent) pwCurrent.value = '';
                 if (pwNew) pwNew.value = '';
                 if (pwConfirm) pwConfirm.value = '';
                 closePasswordPanel();

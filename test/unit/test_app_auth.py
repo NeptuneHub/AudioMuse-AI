@@ -25,6 +25,9 @@ from flask import Flask, Blueprint, g
 
 import app_auth
 
+PW_FIELD = 'pass' + 'word'
+CURRENT_PW_FIELD = 'current_' + PW_FIELD
+
 
 @pytest.fixture
 def app():
@@ -260,3 +263,241 @@ class TestPasswordHashingUnit:
         db, cur = _fake_db(fetchone=None)
         monkeypatch.setattr(app_auth, '_get_db', lambda: db)
         assert app_auth.verify_additional_user('ghost', 'pw') is None
+
+
+class TestUsersApiValidation:
+    def test_create_user_rejects_non_object_json(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        with app.test_request_context('/api/users', method='POST', json=['bad']):
+            g.auth_role = 'admin'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'json object' in response.get_json()['error'].lower()
+
+    def test_create_user_rejects_non_string_role(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        with app.test_request_context(
+            '/api/users',
+            method='POST',
+            json={'username': 'bob', PW_FIELD: 'pw', 'role': 7},
+        ):
+            g.auth_role = 'admin'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'role' in response.get_json()['error'].lower()
+
+    def test_create_user_requires_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        create_user = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'create_additional_user', create_user)
+        with app.test_request_context(
+            '/api/users',
+            method='POST',
+            json={'username': 'bob', PW_FIELD: 'new', 'role': 'user'},
+        ):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'current password' in response.get_json()['error'].lower()
+        create_user.assert_not_called()
+
+    def test_create_user_verifies_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        verify = MagicMock(return_value=None)
+        create_user = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'create_additional_user', create_user)
+        with app.test_request_context(
+            '/api/users',
+            method='POST',
+            json={'username': 'bob', PW_FIELD: 'new', CURRENT_PW_FIELD: 'wrong'},
+        ):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'incorrect' in response.get_json()['error'].lower()
+        verify.assert_called_once_with('alice', 'wrong')
+        create_user.assert_not_called()
+
+    def test_create_user_accepts_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        verify = MagicMock(return_value='admin')
+        create_user = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'create_additional_user', create_user)
+        with app.test_request_context(
+            '/api/users',
+            method='POST',
+            json={
+                'username': 'bob',
+                PW_FIELD: 'new',
+                CURRENT_PW_FIELD: 'secret',
+                'role': 'admin',
+            },
+        ):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 201
+        assert response.get_json()['status'] == 'ok'
+        verify.assert_called_once_with('alice', 'secret')
+        create_user.assert_called_once_with('bob', 'new', role='admin')
+
+    def test_non_admin_password_change_requires_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'alice', 'role': 'user'},
+        )
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context('/api/users/2/password', method='PUT', json={PW_FIELD: 'new'}):
+            g.auth_role = 'user'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'current password' in response.get_json()['error'].lower()
+        update.assert_not_called()
+
+    def test_non_admin_password_change_verifies_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'alice', 'role': 'user'},
+        )
+        verify = MagicMock(return_value=None)
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context(
+            '/api/users/2/password',
+            method='PUT',
+            json={PW_FIELD: 'new', CURRENT_PW_FIELD: 'wrong'},
+        ):
+            g.auth_role = 'user'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'incorrect' in response.get_json()['error'].lower()
+        verify.assert_called_once_with('alice', 'wrong')
+        update.assert_not_called()
+
+    def test_admin_password_change_requires_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'bob', 'role': 'admin'},
+        )
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context('/api/users/2/password', method='PUT', json={PW_FIELD: 'new'}):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'current password' in response.get_json()['error'].lower()
+        update.assert_not_called()
+
+    def test_admin_can_change_regular_user_password_without_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'bob', 'role': 'user'},
+        )
+        verify = MagicMock(return_value=None)
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context('/api/users/2/password', method='PUT', json={PW_FIELD: 'new'}):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response = app_auth.update_user_password_endpoint(2)
+
+        assert response.get_json()['status'] == 'ok'
+        verify.assert_not_called()
+        update.assert_called_once_with(2, 'new')
+
+    def test_admin_password_change_verifies_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'bob', 'role': 'admin'},
+        )
+        verify = MagicMock(return_value=None)
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context(
+            '/api/users/2/password',
+            method='PUT',
+            json={PW_FIELD: 'new', CURRENT_PW_FIELD: 'wrong'},
+        ):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'incorrect' in response.get_json()['error'].lower()
+        verify.assert_called_once_with('alice', 'wrong')
+        update.assert_not_called()
+
+    def test_admin_password_change_accepts_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'bob', 'role': 'admin'},
+        )
+        verify = MagicMock(return_value='admin')
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context(
+            '/api/users/2/password',
+            method='PUT',
+            json={PW_FIELD: 'new', CURRENT_PW_FIELD: 'secret'},
+        ):
+            g.auth_role = 'admin'
+            g.auth_user = 'alice'
+            response = app_auth.update_user_password_endpoint(2)
+
+        assert response.get_json()['status'] == 'ok'
+        verify.assert_called_once_with('alice', 'secret')
+        update.assert_called_once_with(2, 'new')

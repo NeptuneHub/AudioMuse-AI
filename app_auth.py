@@ -318,6 +318,21 @@ def verify_additional_user(username, password):
     return _normalize_role(role) or USER_ROLE_USER
 
 
+def _current_password_error(data):
+    current_username = getattr(g, 'auth_user', None)
+    current_password = data.get('current_password') if isinstance(data, dict) else None
+    if (
+        not isinstance(current_username, str)
+        or not current_username
+        or not isinstance(current_password, str)
+        or not current_password
+    ):
+        return "Current password is required."
+    if verify_additional_user(current_username, current_password) is None:
+        return "Current password is incorrect."
+    return None
+
+
 def upsert_admin_user(username, password):
     """Create an admin row, or update the password and force admin role when
     the username already exists. Returns ``(ok, error_message)``.
@@ -964,12 +979,15 @@ def create_user_endpoint():
         application/json:
           schema:
             type: object
-            required: [username, password]
+            required: [username, password, current_password]
             properties:
               username:
                 type: string
               password:
                 type: string
+              current_password:
+                type: string
+                description: Current password for the authenticated admin account.
               role:
                 type: string
                 enum: [user, admin]
@@ -990,14 +1008,21 @@ def create_user_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     if getattr(g, 'auth_role', None) != 'admin':
         return jsonify({"error": "Forbidden"}), 403
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    role = (data.get('role') or USER_ROLE_USER).strip().lower()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object payload is required."}), 400
+    raw_username = data.get('username') or ''
+    username = raw_username.strip() if isinstance(raw_username, str) else ''
+    password = data.get('password') if isinstance(data.get('password'), str) else ''
+    raw_role = data.get('role') or USER_ROLE_USER
+    role = raw_role.strip().lower() if isinstance(raw_role, str) else ''
     if role not in (USER_ROLE_USER, USER_ROLE_ADMIN):
         return jsonify({"error": "Role must be 'user' or 'admin'."}), 400
     if not username or not password:
         return jsonify({"error": "Username and password are required."}), 400
+    current_password_error = _current_password_error(data)
+    if current_password_error:
+        return jsonify({"error": current_password_error}), 400
     ok, err = create_additional_user(username, password, role=role)
     if not ok:
         return jsonify({"error": err or "Failed to create user."}), 400
@@ -1077,7 +1102,7 @@ def update_user_password_endpoint(user_id):
                 type: string
               current_password:
                 type: string
-                description: Required when a non-admin updates their own password.
+                description: Required for self-service changes and admin account password changes.
     responses:
       200:
         description: Password updated.
@@ -1099,10 +1124,17 @@ def update_user_password_endpoint(user_id):
     current_username = getattr(g, 'auth_user', None)
     if role != 'admin' and target['username'] != current_username:
         return jsonify({"error": "Forbidden"}), 403
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object payload is required."}), 400
     new_password = data.get('password') or ''
     if not isinstance(new_password, str) or not new_password:
         return jsonify({"error": "Password is required."}), 400
+    target_role = _normalize_role(target.get('role'))
+    if role != 'admin' or target_role == USER_ROLE_ADMIN:
+        current_password_error = _current_password_error(data)
+        if current_password_error:
+            return jsonify({"error": current_password_error}), 400
     ok, err = update_additional_user_password(user_id, new_password)
     if not ok:
         return jsonify({"error": err or "Failed to update password."}), 400
