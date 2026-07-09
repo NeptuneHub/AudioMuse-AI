@@ -46,6 +46,7 @@ services:
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+      - plugins-flask:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
       - redis
       - postgres
@@ -78,6 +79,7 @@ services:
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+      - plugins-worker:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
       - redis
       - postgres
@@ -96,3 +98,7 @@ volumes:
   postgres-data:
   temp-audio-flask: # Volume for Flask app's temporary audio
   temp-audio-worker: # Volume for Worker's temporary audio
+  # Installed plugins live here (not in the database). Flask and worker each keep
+  # their own copy and install into it, so plugins are reused across restarts.
+  plugins-flask:
+  plugins-worker:

@@ -62,6 +62,7 @@ More information like [ARCHITECTURE](docs/ARCHITECTURE.md), [ALGORITHM DESCRIPTI
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 2.6.0** add support for third party plugin. Give a look to [plugin documentation](docs/PLUGIN.md) to how to develop it and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins).
 > * **Version 2.5.0** added Plex Music Server support.
 > * **Version 2.3.3** added the support to Jellyfin 12.0 authentication method.
 > * **Version 2.3.0** added [donate button](https://liberapay.com/NeptuneHub/donate) to support the project. Added new index technology to save ram when in idle, rebuild the index analyzing one new album. Added Playlist as input of alchemy.

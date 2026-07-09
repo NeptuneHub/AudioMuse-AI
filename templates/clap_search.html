@@ -233,7 +233,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     tag.textContent = query;
                     tag.addEventListener('click', function() {
                         searchQuery.value = query;
-                        searchForm.dispatchEvent(new Event('submit'));
+                        searchForm.requestSubmit();
                     });
                     topQueriesContainer.appendChild(tag);
                 });
@@ -256,7 +256,7 @@ document.addEventListener('DOMContentLoaded', function() {
         tag.addEventListener('click', function() {
             const query = this.getAttribute('data-query');
             searchQuery.value = query;
-            searchForm.dispatchEvent(new Event('submit'));
+            searchForm.requestSubmit();
         });
     });
     

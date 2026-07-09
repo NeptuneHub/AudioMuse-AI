@@ -4,7 +4,7 @@
 # IMPORTANT: Versions aligned with requirements/common.txt and Dockerfile
 # Updated: 2026-01-08 - Aligned with Ubuntu 24.04/Python 3.12 dependencies:
 #   - scipy: 1.15.3 → 1.16.3
-#   - onnx: 1.16.0 → 1.21.0 (CVE fixes; aligned with common.txt)
+#   - onnx: 1.16.0 → 1.22.0 (CVE fixes incl. CVE-2026-44512; aligned with common.txt)
 #   - scikit-learn: 1.7.2 → 1.8.0
 #   - transformers: unversioned → 4.57.6
 #   - sentencepiece: unversioned → 0.2.1
@@ -18,7 +18,7 @@ numba==0.60.0
 numkong==7.7.0
 soundfile==0.13.1
 resampy==0.4.3
-onnx==1.21.0
+onnx==1.22.0
 onnxruntime==1.19.2
 pydub==0.25.1
 scikit-learn==1.8.0

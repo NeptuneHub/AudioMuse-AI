@@ -30,6 +30,21 @@
     </ul>
 </li>
 {% endif %}
+{% if is_admin or plugin_menu_items %}
+<li class="has-submenu{% if active == 'plugins' %} open{% endif %}">
+    <button type="button" class="submenu-toggle" aria-controls="plugins-submenu" aria-expanded="{% if active == 'plugins' %}true{% else %}false{% endif %}">Plugins <span class="submenu-arrow" aria-hidden="true">›</span></button>
+    <ul class="submenu" id="plugins-submenu">
+        {% for item in plugin_menu_items %}
+        {% if is_admin or not item.admin_only %}
+        <li><a href="{{ item.url }}" {% if request.endpoint == item.endpoint %}class="active"{% endif %}>{{ item.label }}</a></li>
+        {% endif %}
+        {% endfor %}
+        {% if is_admin %}
+        <li><a href="{{ url_for('plugins_bp.plugins_page') }}" {% if request.endpoint == 'plugins_bp.plugins_page' %}class="active"{% endif %}>Manage Plugins</a></li>
+        {% endif %}
+    </ul>
+</li>
+{% endif %}
 {% else %}
 <li><a href="{{ url_for('setup_page') }}" class="active">Setup Wizard</a></li>
 {% endif %}

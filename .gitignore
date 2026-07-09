@@ -38,6 +38,10 @@ env/
 # This directory is used to download audio files from Jellyfin
 /temp_audio/
 
+# Plugin runtime cache: installed plugins are materialized here from the DB at boot
+/plugin/installed/*
+!/plugin/installed/.gitkeep
+
 # Log files
 *.log
 

@@ -728,6 +728,11 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         track_processed = True
 
                     if track_processed:
+                        _ah.run_song_analyzed_hook(
+                            item, path, musicnn_analysis, musicnn_embedding,
+                            clap_embedding_for_track, top_moods, album_id, album_name,
+                            parent_task_id,
+                        )
                         tracks_analyzed_count += 1
                 finally:
                     if path and os.path.exists(path):

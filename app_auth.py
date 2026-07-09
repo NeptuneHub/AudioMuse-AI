@@ -577,6 +577,16 @@ _ADMIN_PATH_PREFIXES = (
     '/api/clap/cache/refresh',
     '/api/lyrics/cache/refresh',
     '/api/sem_grove/cache/refresh',
+    '/api/plugins',
+)
+
+# Exact paths that are admin-only but must NOT gate their subtree. The plugin
+# manager page lives at /plugins, while installed plugin pages live under
+# /plugins/<id>/ and stay reachable by any authenticated user - except a
+# plugin's own settings page, which is admin-only and gated by matched endpoint
+# in check_admin_needed (its URL is plugin-defined, so it can't be a fixed path).
+_ADMIN_EXACT_PATHS = (
+    '/plugins',
 )
 
 
@@ -584,10 +594,32 @@ def is_admin_path(path):
     """Return True if ``path`` should only be accessible to admin users."""
     if not path:
         return False
+    if path in _ADMIN_EXACT_PATHS:
+        return True
     for prefix in _ADMIN_PATH_PREFIXES:
         if path == prefix or path.startswith(prefix + '/'):
             return True
     return False
+
+
+def _is_plugin_settings_endpoint():
+    """True when the matched endpoint is a plugin's own settings page.
+
+    Installed plugin pages under ``/plugins/<id>/`` are reachable by any
+    authenticated user, but a plugin's settings page is admin-only. It is
+    matched by Flask endpoint rather than URL path because the settings URL is
+    chosen by the plugin, not the core.
+    """
+    if not request.path.startswith('/plugins/'):
+        return False
+    endpoint = request.endpoint
+    if not endpoint:
+        return False
+    try:
+        from plugin.manager import plugin_manager
+        return endpoint in plugin_manager.settings_endpoints()
+    except Exception:
+        return False
 
 
 def check_admin_needed():
@@ -599,7 +631,7 @@ def check_admin_needed():
 
     if not _cfg.AUTH_ENABLED:
         return None
-    if not is_admin_path(request.path):
+    if not (is_admin_path(request.path) or _is_plugin_settings_endpoint()):
         return None
     role = getattr(g, 'auth_role', None)
     if role == 'admin':
