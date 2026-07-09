@@ -479,7 +479,11 @@ async function fetchPlaylists() {
         renderPlaylists(playlistsData);
     } catch (error) {
         console.error('Error fetching playlists:', error);
-        playlistsContainer.innerHTML = `<p class="status-failure">Error fetching playlists: ${error.message}</p>`;
+        playlistsContainer.innerHTML = '';
+        const message = document.createElement('p');
+        message.className = 'status-failure';
+        message.textContent = 'Error fetching playlists: ' + error.message;
+        playlistsContainer.appendChild(message);
     }
 }
 

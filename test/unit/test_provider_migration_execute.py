@@ -281,6 +281,25 @@ class TestExecuteProviderMigration:
         update_score_idx = next(i for i, s in enumerate(upper) if s.startswith('UPDATE SCORE'))
         assert delete_idx < update_score_idx, "orphan delete must precede score rewrite"
 
+    def test_playlist_orphans_are_deleted_before_score_orphans(self, mig):
+        session_row = _make_session_row(
+            state=_session_state({'old_1': 'new_1'}),
+        )
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        upper = [s.upper() for s in executed]
+        delete_playlist_idx = next(
+            i for i, s in enumerate(upper) if s.startswith('DELETE FROM PLAYLIST')
+        )
+        delete_score_idx = next(i for i, s in enumerate(upper) if s.startswith('DELETE FROM SCORE'))
+        update_playlist_idx = next(
+            i for i, s in enumerate(upper) if s.startswith('UPDATE PLAYLIST')
+        )
+        assert 'NOT EXISTS' in upper[delete_playlist_idx]
+        assert delete_playlist_idx < delete_score_idx < update_playlist_idx
+
     def test_fk_drop_before_update_then_readd_after(self, mig):
         session_row = _make_session_row(state=_session_state({'a': 'b'}))
         _, _, executed = _install_fake_psycopg2(mig, session_row)

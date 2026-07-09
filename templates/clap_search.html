@@ -294,7 +294,11 @@ document.addEventListener('DOMContentLoaded', function() {
             displayResults(currentResults, query);
             
         } catch (error) {
-            resultsList.innerHTML = `<div class="error-message">❌ ${error.message}</div>`;
+            resultsList.innerHTML = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = 'Error: ' + error.message;
+            resultsList.appendChild(errorDiv);
         }
     });
     

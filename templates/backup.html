@@ -178,6 +178,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const file = fileInput.files[0];
         const fileSize = file.size;
+        if (fileSize === 0) {
+            restoreStatus.textContent = 'Selected backup file is empty.';
+            restoreStatus.style.color = 'var(--color-danger, red)';
+            restoreBtn.disabled = false;
+            return;
+        }
         const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
         const chunkSize = 1024 * 1024 * 1024; // 1GB chunks
         const totalChunks = Math.ceil(fileSize / chunkSize);

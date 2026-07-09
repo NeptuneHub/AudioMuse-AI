@@ -318,6 +318,25 @@ def verify_additional_user(username, password):
     return _normalize_role(role) or USER_ROLE_USER
 
 
+def _session_role_for_user(username):
+    if not isinstance(username, str) or not username:
+        return None
+    try:
+        db = _get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT role FROM audiomuse_users WHERE username = %s",
+                (username,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        logger.exception("Failed to validate session user %r", username)
+        return None
+    if not row:
+        return None
+    return _normalize_role(row[0])
+
+
 def upsert_admin_user(username, password):
     """Create an admin row, or update the password and force admin role when
     the username already exists. Returns ``(ok, error_message)``.
@@ -526,10 +545,18 @@ def check_auth_needed(jwt_secret):
     if token and jwt_secret:
         try:
             payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
-            # Backward-compat: tokens issued before the multi-user feature
-            # have no 'role' claim; treat them as admin.
-            g.auth_role = payload.get('role', 'admin')
-            g.auth_user = payload.get('sub')
+            username = payload.get('sub')
+            if username:
+                role = _session_role_for_user(username)
+                if role is None:
+                    raise pyjwt.InvalidTokenError("session user no longer exists")
+                g.auth_role = role
+                g.auth_user = username
+            else:
+                # Backward-compat: tokens issued before the multi-user feature
+                # have no 'sub' claim; treat them as admin.
+                g.auth_role = payload.get('role', 'admin')
+                g.auth_user = None
             return None
         except pyjwt.InvalidTokenError:
             pass
@@ -990,10 +1017,14 @@ def create_user_endpoint():
         return jsonify({"error": "Auth not configured"}), 404
     if getattr(g, 'auth_role', None) != 'admin':
         return jsonify({"error": "Forbidden"}), 403
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    role = (data.get('role') or USER_ROLE_USER).strip().lower()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object payload is required."}), 400
+    raw_username = data.get('username') or ''
+    username = raw_username.strip() if isinstance(raw_username, str) else ''
+    password = data.get('password') if isinstance(data.get('password'), str) else ''
+    raw_role = data.get('role') or USER_ROLE_USER
+    role = raw_role.strip().lower() if isinstance(raw_role, str) else ''
     if role not in (USER_ROLE_USER, USER_ROLE_ADMIN):
         return jsonify({"error": "Role must be 'user' or 'admin'."}), 400
     if not username or not password:
@@ -1099,10 +1130,18 @@ def update_user_password_endpoint(user_id):
     current_username = getattr(g, 'auth_user', None)
     if role != 'admin' and target['username'] != current_username:
         return jsonify({"error": "Forbidden"}), 403
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object payload is required."}), 400
     new_password = data.get('password') or ''
     if not isinstance(new_password, str) or not new_password:
         return jsonify({"error": "Password is required."}), 400
+    if role != 'admin':
+        current_password = data.get('current_password') or ''
+        if not isinstance(current_password, str) or not current_password:
+            return jsonify({"error": "Current password is required."}), 400
+        if verify_additional_user(current_username, current_password) is None:
+            return jsonify({"error": "Current password is incorrect."}), 400
     ok, err = update_additional_user_password(user_id, new_password)
     if not ok:
         return jsonify({"error": err or "Failed to update password."}), 400

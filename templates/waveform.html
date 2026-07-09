@@ -180,10 +180,23 @@
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML =
-                            '<div class="title">' + track.title + '</div>' +
-                            '<div class="artist">' + track.author + '</div>' +
-                            (track.album ? '<div class="album">Album: <span>' + track.album + '</span></div>' : '');
+                        const titleDiv = document.createElement('div');
+                        titleDiv.className = 'title';
+                        titleDiv.textContent = track.title || '';
+                        const artistDiv = document.createElement('div');
+                        artistDiv.className = 'artist';
+                        artistDiv.textContent = track.author || '';
+                        itemDiv.appendChild(titleDiv);
+                        itemDiv.appendChild(artistDiv);
+                        if (track.album) {
+                            const albumDiv = document.createElement('div');
+                            albumDiv.className = 'album';
+                            const albumText = document.createElement('span');
+                            albumText.textContent = track.album;
+                            albumDiv.appendChild(document.createTextNode('Album: '));
+                            albumDiv.appendChild(albumText);
+                            itemDiv.appendChild(albumDiv);
+                        }
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });

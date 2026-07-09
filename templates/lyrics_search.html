@@ -502,7 +502,11 @@ document.addEventListener('DOMContentLoaded', function () {
             currentResults = data.results || [];
             displayResults(currentResults, queryLabel);
         } catch (err) {
-            resultsList.innerHTML = `<div class="error-message">❌ ${err.message}</div>`;
+            resultsList.innerHTML = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error-message';
+            errorDiv.textContent = 'Error: ' + err.message;
+            resultsList.appendChild(errorDiv);
         }
     }
 

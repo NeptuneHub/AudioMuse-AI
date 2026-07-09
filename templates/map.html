@@ -172,6 +172,60 @@ function applyPlotlyTheme() {
     Plotly.relayout(gd, update).catch(() => {});
 }
 
+function renderGenreLegend(legendDiv, genreList, colorMap) {
+    legendDiv.innerHTML = '';
+    const controls = document.createElement('span');
+    controls.style.marginRight = '12px';
+    controls.style.fontSize = '14px';
+    controls.style.color = 'var(--text-muted)';
+    const hideLink = document.createElement('a');
+    hideLink.href = '#';
+    hideLink.style.color = 'var(--color-primary)';
+    hideLink.textContent = 'Hide all';
+    hideLink.addEventListener('click', event => {
+        event.preventDefault();
+        hideAllGenres();
+    });
+    const showLink = document.createElement('a');
+    showLink.href = '#';
+    showLink.style.color = 'var(--color-primary)';
+    showLink.textContent = 'Show all';
+    showLink.addEventListener('click', event => {
+        event.preventDefault();
+        showAllGenres();
+    });
+    controls.appendChild(hideLink);
+    controls.appendChild(document.createTextNode('  |  '));
+    controls.appendChild(showLink);
+    legendDiv.appendChild(controls);
+
+    const hiddenGenres = window._hiddenGenres || new Set();
+    genreList.slice(0, 50).forEach(g => {
+        const encoded = encodeURIComponent(g);
+        const item = document.createElement('span');
+        item.className = 'genre-item';
+        item.dataset.genre = encoded;
+        item.style.marginRight = '8px';
+        item.style.cursor = 'pointer';
+        item.style.color = 'var(--text-main)';
+        if (hiddenGenres.has(g)) item.style.textDecoration = 'line-through';
+        item.addEventListener('click', () => toggleGenre(encoded));
+
+        const swatch = document.createElement('span');
+        swatch.style.display = 'inline-block';
+        swatch.style.width = '12px';
+        swatch.style.height = '12px';
+        swatch.style.background = colorMap[g];
+        swatch.style.marginRight = '6px';
+        swatch.style.verticalAlign = 'middle';
+        swatch.style.borderRadius = '2px';
+        item.appendChild(swatch);
+        item.appendChild(document.createTextNode(g));
+        legendDiv.appendChild(item);
+    });
+    applyLegendStyles();
+}
+
 // Watch for dark mode class changes to update Plotly theme and legend palette dynamically
 (function() {
     const observer = new MutationObserver(function(mutations) {
@@ -186,15 +240,7 @@ function applyPlotlyTheme() {
                     if (legendDiv) {
                         var colorMap = window._colorMap;
                         var genreList = window._genreList;
-                        var controlsHtml = '<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>';
-                        var genreHtml = genreList.slice(0,50).map(function(g) {
-                            var enc = encodeURIComponent(g);
-                            var swatch = '<span style="display:inline-block;width:12px;height:12px;background:' + colorMap[g] + ';margin-right:6px;vertical-align:middle;border-radius:2px"></span>';
-                            var hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
-                            return '<span class="genre-item" data-genre="' + enc + '" onclick="toggleGenre(\'' + enc + '\')" style="margin-right:8px;cursor:pointer;color:var(--text-main);' + hidden + '">' + swatch + g + '</span>';
-                        }).join('');
-                        legendDiv.innerHTML = controlsHtml + genreHtml;
-                        applyLegendStyles();
+                        renderGenreLegend(legendDiv, genreList, colorMap);
                     }
                     applyGenreFilterAndRerender();
                 }
@@ -271,19 +317,7 @@ async function loadAndPlot(n_or_pct) {
 
     // render a compact, clickable legend manually (click genre to hide/show)
     const legendDiv = document.getElementById('map-projection-label');
-    // Build a small control set (Hide all / Show all) and the genre items. Each genre span includes a data-genre attribute
-    // so we can update its style when hidden.
-    const controlsHtml = `<span style="margin-right:12px;font-size:14px;color:var(--text-muted)"><a href="#" onclick="hideAllGenres();return false;" style="color:var(--color-primary)">Hide all</a> &nbsp;|&nbsp; <a href="#" onclick="showAllGenres();return false;" style="color:var(--color-primary)">Show all</a></span>`;
-    const genreHtml = genreList.slice(0,50).map(g => {
-        const enc = encodeURIComponent(g);
-        const swatch = `<span style=\"display:inline-block;width:12px;height:12px;background:${colorMap[g]};margin-right:6px;vertical-align:middle;border-radius:2px\"></span>`;
-        // allow initial hidden state styling
-        const hidden = (window._hiddenGenres && window._hiddenGenres.has(g)) ? 'text-decoration:line-through' : '';
-        return `<span class=\"genre-item\" data-genre=\"${enc}\" onclick=\"toggleGenre('${enc}')\" style=\"margin-right:8px;cursor:pointer;color:var(--text-main);${hidden}\">${swatch}${g}</span>`;
-    }).join('');
-    legendDiv.innerHTML = controlsHtml + genreHtml;
-    // Apply final legend styles in case window._hiddenGenres was set
-    applyLegendStyles();
+    renderGenreLegend(legendDiv, genreList, colorMap);
 
         const layout = {
             hovermode: 'closest',
@@ -505,7 +539,12 @@ function renderSelectionPanel() {
             const row = document.createElement('div');
             row.className = 'selection-list-item';
             const left = document.createElement('div');
-            left.innerHTML = `<span style="color:var(--text-muted);margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
+            const genre = document.createElement('span');
+            genre.style.color = 'var(--text-muted)';
+            genre.style.marginRight = '6px';
+            genre.textContent = '[' + p.genre + ']';
+            left.appendChild(genre);
+            left.appendChild(document.createTextNode(' ' + p.title + ' - ' + p.artist));
             const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
                 return function() { removeFromSelection(id); };
             })();
@@ -672,7 +711,20 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             div.id = 'map-ac-opt-' + (acIdSeq++);
             div._track = t;
             div.style.padding = '6px'; div.style.cursor = 'pointer'; div.style.borderBottom = '1px solid var(--border-color)';
-            div.innerHTML = `<div style="font-weight:600">${t.title || '(unknown)'}</div><div style="font-size:12px;color:var(--text-muted)">${t.author || ''}</div><div style="font-size:12px;color:var(--text-muted)">${t.album ? t.album : ''}</div>`;
+            const title = document.createElement('div');
+            title.style.fontWeight = '600';
+            title.textContent = t.title || '(unknown)';
+            const author = document.createElement('div');
+            author.style.fontSize = '12px';
+            author.style.color = 'var(--text-muted)';
+            author.textContent = t.author || '';
+            const album = document.createElement('div');
+            album.style.fontSize = '12px';
+            album.style.color = 'var(--text-muted)';
+            album.textContent = t.album || '';
+            div.appendChild(title);
+            div.appendChild(author);
+            div.appendChild(album);
             div.addEventListener('click', ()=> selectMapTrack(t));
             c.appendChild(div);
         }

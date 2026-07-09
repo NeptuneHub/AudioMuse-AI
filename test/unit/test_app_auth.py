@@ -61,13 +61,30 @@ class TestCheckAuthNeededJwt:
 
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
+        db, cur = _fake_db(fetchone=('user',))
+        monkeypatch.setattr(app_auth, '_get_db', lambda: db)
         secret = 'unit-secret'
-        token = pyjwt.encode({'sub': 'alice', 'role': 'user'}, secret, algorithm='HS256')
+        token = pyjwt.encode({'sub': 'alice', 'role': 'admin'}, secret, algorithm='HS256')
         with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
             result = app_auth.check_auth_needed(secret)
             assert result is None
             assert g.auth_role == 'user'
             assert g.auth_user == 'alice'
+        assert cur.execute.call_args[0][1] == ('alice',)
+
+    def test_deleted_user_token_is_unauthorized(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(config, 'API_TOKEN', '')
+        db, cur = _fake_db(fetchone=None)
+        monkeypatch.setattr(app_auth, '_get_db', lambda: db)
+        secret = 'unit-secret'
+        token = pyjwt.encode({'sub': 'alice', 'role': 'admin'}, secret, algorithm='HS256')
+        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
+            result = app_auth.check_auth_needed(secret)
+            assert result is not None
+            assert result[1] == 401
 
     def test_empty_secret_rejects_present_cookie(self, app, monkeypatch):
         import config
@@ -260,3 +277,78 @@ class TestPasswordHashingUnit:
         db, cur = _fake_db(fetchone=None)
         monkeypatch.setattr(app_auth, '_get_db', lambda: db)
         assert app_auth.verify_additional_user('ghost', 'pw') is None
+
+
+class TestUsersApiValidation:
+    def test_create_user_rejects_non_object_json(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        with app.test_request_context('/api/users', method='POST', json=['bad']):
+            g.auth_role = 'admin'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'json object' in response.get_json()['error'].lower()
+
+    def test_create_user_rejects_non_string_role(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        with app.test_request_context(
+            '/api/users',
+            method='POST',
+            json={'username': 'bob', 'password': 'pw', 'role': 7},
+        ):
+            g.auth_role = 'admin'
+            response, status = app_auth.create_user_endpoint()
+
+        assert status == 400
+        assert 'role' in response.get_json()['error'].lower()
+
+    def test_non_admin_password_change_requires_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'alice', 'role': 'user'},
+        )
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context('/api/users/2/password', method='PUT', json={'password': 'new'}):
+            g.auth_role = 'user'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'current password' in response.get_json()['error'].lower()
+        update.assert_not_called()
+
+    def test_non_admin_password_change_verifies_current_password(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(
+            app_auth,
+            'get_additional_user_by_id',
+            lambda _user_id: {'id': 2, 'username': 'alice', 'role': 'user'},
+        )
+        verify = MagicMock(return_value=None)
+        update = MagicMock(return_value=(True, None))
+        monkeypatch.setattr(app_auth, 'verify_additional_user', verify)
+        monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
+        with app.test_request_context(
+            '/api/users/2/password',
+            method='PUT',
+            json={'password': 'new', 'current_password': 'wrong'},
+        ):
+            g.auth_role = 'user'
+            g.auth_user = 'alice'
+            response, status = app_auth.update_user_password_endpoint(2)
+
+        assert status == 400
+        assert 'incorrect' in response.get_json()['error'].lower()
+        verify.assert_called_once_with('alice', 'wrong')
+        update.assert_not_called()

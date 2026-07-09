@@ -292,13 +292,21 @@
                     anchorsTable.innerHTML = '';
                     _alchemyAnchorsCache.forEach(anchor => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${anchor.name}</td>
-                            <td>
-                                <button type="button" class="btn btn-sm btn-ghost btn-rename-anchor" data-id="${anchor.id}">Rename</button>
-                                <button type="button" class="btn btn-sm btn-danger btn-delete-anchor" data-id="${anchor.id}">Delete</button>
-                            </td>
-                        `;
+                        const nameTd = tr.insertCell();
+                        nameTd.textContent = anchor.name || '';
+                        const actionsTd = tr.insertCell();
+                        const renameBtn = document.createElement('button');
+                        renameBtn.type = 'button';
+                        renameBtn.className = 'btn btn-sm btn-ghost btn-rename-anchor';
+                        renameBtn.dataset.id = anchor.id;
+                        renameBtn.textContent = 'Rename';
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.type = 'button';
+                        deleteBtn.className = 'btn btn-sm btn-danger btn-delete-anchor';
+                        deleteBtn.dataset.id = anchor.id;
+                        deleteBtn.textContent = 'Delete';
+                        actionsTd.appendChild(renameBtn);
+                        actionsTd.appendChild(deleteBtn);
                         anchorsTable.appendChild(tr);
                     });
                 }
@@ -523,7 +531,18 @@
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
+                        const titleDiv = document.createElement('div');
+                        titleDiv.className = 'title';
+                        titleDiv.textContent = track.title || '';
+                        const artistDiv = document.createElement('div');
+                        artistDiv.className = 'artist';
+                        artistDiv.textContent = track.author || '';
+                        const albumDiv = document.createElement('div');
+                        albumDiv.className = 'album';
+                        albumDiv.textContent = track.album || '';
+                        itemDiv.appendChild(titleDiv);
+                        itemDiv.appendChild(artistDiv);
+                        itemDiv.appendChild(albumDiv);
                         itemDiv.addEventListener('click', () => {
                             const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
                             if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
@@ -607,7 +626,14 @@
                 artists.forEach(artist => {
                     const itemDiv = document.createElement('div');
                     itemDiv.className = 'autocomplete-item';
-                    itemDiv.innerHTML = `<div class="title">${artist.artist}</div><div class="artist">${artist.track_count} tracks</div>`;
+                    const titleDiv = document.createElement('div');
+                    titleDiv.className = 'title';
+                    titleDiv.textContent = artist.artist || '';
+                    const countDiv = document.createElement('div');
+                    countDiv.className = 'artist';
+                    countDiv.textContent = `${artist.track_count || 0} tracks`;
+                    itemDiv.appendChild(titleDiv);
+                    itemDiv.appendChild(countDiv);
                     itemDiv.addEventListener('click', () => {
                         idEl.value = artist.artist_id || artist.artist;
                         selectedSongNameEl.textContent = artist.artist;
@@ -1196,7 +1222,20 @@
             messageBox.id = boxId;
             // Using styles from style.css for consistency where possible, with inline for positioning
             messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: var(--bg-card); color: var(--text-main); padding: 20px; border-radius: 8px; box-shadow: var(--shadow-card); z-index: 1000; border: 1px solid var(--border-color); max-width: 400px; text-align: left;';
-            messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: var(--text-title);">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+            const heading = document.createElement('h3');
+            heading.style.cssText = 'font-weight: 600; margin-top:0; margin-bottom: 10px; color: var(--text-title);';
+            heading.textContent = title;
+            const body = document.createElement('p');
+            body.style.margin = '0';
+            body.textContent = message;
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;';
+            closeBtn.innerHTML = '&times;';
+            closeBtn.addEventListener('click', () => messageBox.remove());
+            messageBox.appendChild(heading);
+            messageBox.appendChild(body);
+            messageBox.appendChild(closeBtn);
             document.body.appendChild(messageBox);
             setTimeout(() => messageBox.remove(), 5000);
         }
@@ -1237,14 +1276,46 @@
         const buildRadioRow = (radio) => {
             const tr = document.createElement('tr');
             tr.dataset.id = radio.id;
-            tr.innerHTML = `
-                <td style="text-align:center;"><input type="checkbox" class="radio-enabled" ${radio.enabled ? 'checked' : ''}></td>
-                <td class="radio-name"></td>
-                <td><input type="number" class="radio-temperature" step="0.1" min="0" max="10" value="${radio.temperature}"></td>
-                <td><input type="number" class="radio-n-results" min="1" max="${maxN}" value="${radio.n_results}"></td>
-                <td style="text-align:right;"><button type="button" class="btn btn-sm btn-danger btn-delete-radio" title="Delete radio">✕</button></td>
-            `;
-            tr.querySelector('.radio-name').textContent = radio.name;
+
+            const enabledTd = tr.insertCell();
+            enabledTd.style.textAlign = 'center';
+            const enabledInput = document.createElement('input');
+            enabledInput.type = 'checkbox';
+            enabledInput.className = 'radio-enabled';
+            enabledInput.checked = !!radio.enabled;
+            enabledTd.appendChild(enabledInput);
+
+            const nameTd = tr.insertCell();
+            nameTd.className = 'radio-name';
+            nameTd.textContent = radio.name || '';
+
+            const tempTd = tr.insertCell();
+            const tempInput = document.createElement('input');
+            tempInput.type = 'number';
+            tempInput.className = 'radio-temperature';
+            tempInput.step = '0.1';
+            tempInput.min = '0';
+            tempInput.max = '10';
+            tempInput.value = radio.temperature;
+            tempTd.appendChild(tempInput);
+
+            const countTd = tr.insertCell();
+            const countInput = document.createElement('input');
+            countInput.type = 'number';
+            countInput.className = 'radio-n-results';
+            countInput.min = '1';
+            countInput.max = String(maxN);
+            countInput.value = radio.n_results;
+            countTd.appendChild(countInput);
+
+            const actionsTd = tr.insertCell();
+            actionsTd.style.textAlign = 'right';
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'btn btn-sm btn-danger btn-delete-radio';
+            deleteBtn.title = 'Delete radio';
+            deleteBtn.textContent = 'X';
+            actionsTd.appendChild(deleteBtn);
             return tr;
         };
 

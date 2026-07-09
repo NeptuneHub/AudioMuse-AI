@@ -241,7 +241,11 @@ const SunburstChart = (() => {
                 path.unshift(nd.name.charAt(0).toUpperCase() + nd.name.slice(1));
                 nd = findParent(tree, nd);
             }
-            selDiv.innerHTML = '<strong>\u2713 Selected:</strong> ' + path.join(' \u2014 ');
+            selDiv.innerHTML = '';
+            const label = document.createElement('strong');
+            label.textContent = '\u2713 Selected:';
+            selDiv.appendChild(label);
+            selDiv.appendChild(document.createTextNode(' ' + path.join(' \u2014 ')));
             if (onSelect) onSelect(node, best);
         }
 

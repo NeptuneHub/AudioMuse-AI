@@ -24,6 +24,8 @@
 
     const pwPanel = document.getElementById('change-password-panel');
     const pwTarget = document.getElementById('change-password-target');
+    const pwCurrentWrap = document.getElementById('change-password-current-wrap');
+    const pwCurrent = document.getElementById('change-password-current');
     const pwNew = document.getElementById('change-password-new');
     const pwConfirm = document.getElementById('change-password-confirm');
     const pwSave = document.getElementById('change-password-save');
@@ -63,6 +65,8 @@
         pwTargetId = id;
         pwTargetName = username;
         if (pwTarget) pwTarget.textContent = 'Target user: ' + username;
+        if (pwCurrentWrap) pwCurrentWrap.style.display = isAdmin ? 'none' : '';
+        if (pwCurrent) pwCurrent.value = '';
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
         showPwFeedback('', null);
@@ -77,6 +81,7 @@
         pwTargetId = null;
         pwTargetName = '';
         if (pwPanel) pwPanel.style.display = 'none';
+        if (pwCurrent) pwCurrent.value = '';
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
         showPwFeedback('', null);
@@ -239,7 +244,12 @@
     function savePassword() {
         if (pwTargetId === null) return;
         const newPw = (pwNew && pwNew.value) || '';
+        const currentPw = (pwCurrent && pwCurrent.value) || '';
         const confirmPw = (pwConfirm && pwConfirm.value) || '';
+        if (!isAdmin && !currentPw) {
+            showPwFeedback('Current password is required.', 'error');
+            return;
+        }
         if (!newPw) {
             showPwFeedback('New password cannot be empty.', 'error');
             return;
@@ -255,7 +265,7 @@
             method: 'PUT',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: newPw })
+            body: JSON.stringify({ password: newPw, current_password: currentPw })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
@@ -263,6 +273,7 @@
             .then(function (res) {
                 if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to update password (' + res.status + ').'));
                 showPwFeedback('Password for "' + targetName + '" updated.', 'success');
+                if (pwCurrent) pwCurrent.value = '';
                 if (pwNew) pwNew.value = '';
                 if (pwConfirm) pwConfirm.value = '';
                 closePasswordPanel();
