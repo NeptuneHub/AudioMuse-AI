@@ -85,6 +85,21 @@ def _restore_lock_held():
         return True
 
 
+def _uploaded_file_is_empty(uploaded):
+    stream = getattr(uploaded, 'stream', None)
+    if stream is None:
+        return False
+    try:
+        pos = stream.tell()
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(pos)
+        return size == 0
+    except (AttributeError, OSError):
+        content_length = getattr(uploaded, 'content_length', None)
+        return content_length == 0
+
+
 def _pg_env():
     """Return a copy of os.environ with PGPASSWORD set."""
     env = os.environ.copy()
@@ -453,10 +468,14 @@ def restore_backup():
     uploaded = request.files.get('file')
     if not uploaded or not uploaded.filename:
         return jsonify({'error': 'No file uploaded.'}), 400
+    if _uploaded_file_is_empty(uploaded):
+        return jsonify({'error': 'Uploaded backup file is empty.'}), 400
 
     # Check if this is a chunked upload
     chunk_num = request.form.get('chunk_num')
     total_chunks = request.form.get('total_chunks')
+    if bool(chunk_num) != bool(total_chunks):
+        return jsonify({'error': 'chunk_num and total_chunks must be provided together.'}), 400
 
     restore_file = None
     restore_log = None

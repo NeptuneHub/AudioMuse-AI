@@ -36,14 +36,20 @@ def client():
     return app.test_client()
 
 
-def _form(confirmation=CONFIRMATION, chunk_num=None, total_chunks=None, with_file=True):
+def _form(
+    confirmation=CONFIRMATION,
+    chunk_num=None,
+    total_chunks=None,
+    with_file=True,
+    file_bytes=b'SELECT 1;\n',
+):
     data = {'confirmation': confirmation}
     if chunk_num is not None:
         data['chunk_num'] = str(chunk_num)
     if total_chunks is not None:
         data['total_chunks'] = str(total_chunks)
     if with_file:
-        data['file'] = (io.BytesIO(b'SELECT 1;\n'), 'backup.sql')
+        data['file'] = (io.BytesIO(file_bytes), 'backup.sql')
     return data
 
 
@@ -69,6 +75,29 @@ class TestRestoreValidation:
         resp = _post(client, with_file=False)
         assert resp.status_code == 400
         assert resp.get_json()['error'] == 'No file uploaded.'
+
+    @pytest.mark.parametrize(
+        'fields',
+        [
+            {'chunk_num': 1},
+            {'total_chunks': 2},
+        ],
+    )
+    def test_partial_chunk_metadata_is_400_before_lock(self, client, monkeypatch, fields):
+        acquire = MagicMock(return_value=True)
+        monkeypatch.setattr(app_backup, '_acquire_restore_lock', acquire)
+        resp = _post(client, **fields)
+        assert resp.status_code == 400
+        assert 'provided together' in resp.get_json()['error']
+        acquire.assert_not_called()
+
+    def test_empty_upload_is_400_before_lock(self, client, monkeypatch):
+        acquire = MagicMock(return_value=True)
+        monkeypatch.setattr(app_backup, '_acquire_restore_lock', acquire)
+        resp = _post(client, file_bytes=b'')
+        assert resp.status_code == 400
+        assert 'empty' in resp.get_json()['error']
+        acquire.assert_not_called()
 
     def test_non_integer_chunk_fields_are_400(self, client):
         resp = _post(client, chunk_num='abc', total_chunks='3')
