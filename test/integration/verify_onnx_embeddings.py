@@ -26,6 +26,8 @@ import librosa.feature
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from tasks.clap_analyzer import _split_audio_segments
+
 
 def compare_pytorch_vs_onnx():
     print("=" * 80)
@@ -248,26 +250,7 @@ def compare_pytorch_vs_onnx():
 
                 print(f"Loaded: {len(audio_data) / sr:.2f}s at {sr}Hz")
 
-                SEGMENT_LENGTH = 480000
-                HOP_LENGTH = 240000
-
-                segments = []
-                total_length = len(audio_data)
-
-                if total_length <= SEGMENT_LENGTH:
-                    padded_audio = np.pad(
-                        audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant'
-                    )
-                    segments.append(padded_audio)
-                else:
-                    for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                        segment = audio_data[start : start + SEGMENT_LENGTH]
-                        segments.append(segment)
-
-                    last_start = len(segments) * HOP_LENGTH
-                    if last_start < total_length:
-                        last_segment = audio_data[-SEGMENT_LENGTH:]
-                        segments.append(last_segment)
+                segments = _split_audio_segments(audio_data)
 
                 print(f"Split into {len(segments)} segments (10s with 5s overlap)")
 

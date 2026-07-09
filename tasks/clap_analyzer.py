@@ -50,6 +50,20 @@ _label_text_embeddings_cache = None
 _SEGMENT_LENGTH_SAMPLES = 480000
 
 
+def _split_audio_segments(audio_data, segment_length=_SEGMENT_LENGTH_SAMPLES, hop_length=240000):
+    total_length = len(audio_data)
+    if total_length <= segment_length:
+        padded = np.pad(audio_data, (0, segment_length - total_length), mode='constant')
+        return [padded]
+
+    starts = list(range(0, total_length - segment_length + 1, hop_length))
+    tail_start = total_length - segment_length
+    if starts[-1] != tail_start:
+        starts.append(tail_start)
+
+    return [audio_data[start : start + segment_length] for start in starts]
+
+
 def _static_shape_model_bytes(model_path):
     import onnx
     from onnxruntime.tools.onnx_model_utils import make_dim_param_fixed
@@ -450,18 +464,7 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
         duration_sec = len(audio_data) / SAMPLE_RATE
 
-        segments = []
-        total_length = len(audio_data)
-
-        if total_length <= SEGMENT_LENGTH:
-            padded = np.pad(audio_data, (0, SEGMENT_LENGTH - total_length), mode='constant')
-            segments.append(padded)
-        else:
-            for start in range(0, total_length - SEGMENT_LENGTH + 1, HOP_LENGTH):
-                segments.append(audio_data[start : start + SEGMENT_LENGTH])
-            last_start = len(segments) * HOP_LENGTH
-            if last_start < total_length:
-                segments.append(audio_data[-SEGMENT_LENGTH:])
+        segments = _split_audio_segments(audio_data, SEGMENT_LENGTH, HOP_LENGTH)
 
         num_segments = len(segments)
         logger.info(f"CLAP: Processing {num_segments} segments ({duration_sec:.1f}s audio)")
