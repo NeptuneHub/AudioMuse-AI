@@ -134,6 +134,8 @@ def register(ctx):
 
 The full SongCounter draws its counts as a bar chart with matplotlib, which is why its `plugin.json` lists `matplotlib` under `requirements`.
 
+One naming rule: **the Blueprint name must be your plugin id**, like SongCounter does with `Blueprint("song_counter", __name__)`. The plugin id is unique by definition, so your routes (`song_counter.home`, `song_counter.settings`) can never collide with another plugin. Blueprint names are unique across the whole app: if two plugins use the same name, the second one fails to load with a clear error, and a plugin using any other name gets a warning in the log.
+
 If you want a settings page, add a route called `settings`. AudioMuse-AI opens it from the Settings button on the Manage Plugins page, so it does not add a menu entry for it. If your settings route has a different name, point to it with `ctx.set_settings_page("song_counter.my_settings")`. The settings page is always admin only.
 
 To publish, one more file lists the plugin: the catalog `manifest.json`. It has one small entry per plugin, holding `id`, `name`, `author`, `description`, and a `pluginUrl` that points at that plugin's `plugin.json`. AudioMuse-AI reads the catalog, follows `pluginUrl` to your `plugin.json`, picks the newest version the running core supports, downloads its `sourceUrl` zip (code only, with no `plugin.json` inside), and verifies the `checksum`. You never write the catalog or the `sourceUrl`/`checksum`; the build workflow generates them from your `plugin.json`.
@@ -502,7 +504,7 @@ Each plugin on the Installed tab has a status badge:
 * **ok** - the plugin loaded and is running.
 * **error** - the plugin failed to load. A short message shows under the plugin and tells you which container failed (for example "failed on worker: ..."); the full error is in that container's logs. The rest of AudioMuse-AI keeps working.
 * **incompatible** - this version needs a newer AudioMuse-AI core, or it needs extra pip packages on a build that cannot install them (a standalone build, or `PLUGIN_ALLOW_PIP=false`).
-* **deps_failed** - the plugin code is installed but its pip dependencies could not be installed. The message under the plugin shows the pip error.
+* **deps_failed** - the plugin code is installed but its pip dependencies could not be satisfied. The message under the plugin shows the reason. This can also happen when two plugins pin conflicting versions of the same package: they share one library folder, so only one pin can win. The plugin still runs, but check that it behaves correctly.
 * **pending** - the plugin has not been loaded yet. Apply the restart.
 
 ### Where the logs are
