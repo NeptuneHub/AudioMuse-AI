@@ -61,13 +61,30 @@ class TestCheckAuthNeededJwt:
 
         monkeypatch.setattr(config, 'AUTH_ENABLED', True)
         monkeypatch.setattr(config, 'API_TOKEN', '')
+        db, cur = _fake_db(fetchone=('user',))
+        monkeypatch.setattr(app_auth, '_get_db', lambda: db)
         secret = 'unit-secret'
-        token = pyjwt.encode({'sub': 'alice', 'role': 'user'}, secret, algorithm='HS256')
+        token = pyjwt.encode({'sub': 'alice', 'role': 'admin'}, secret, algorithm='HS256')
         with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
             result = app_auth.check_auth_needed(secret)
             assert result is None
             assert g.auth_role == 'user'
             assert g.auth_user == 'alice'
+        assert cur.execute.call_args[0][1] == ('alice',)
+
+    def test_deleted_user_token_is_unauthorized(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(config, 'API_TOKEN', '')
+        db, _cur = _fake_db(fetchone=None)
+        monkeypatch.setattr(app_auth, '_get_db', lambda: db)
+        secret = 'unit-secret'
+        token = pyjwt.encode({'sub': 'alice', 'role': 'admin'}, secret, algorithm='HS256')
+        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
+            result = app_auth.check_auth_needed(secret)
+            assert result is not None
+            assert result[1] == 401
 
     def test_empty_secret_rejects_present_cookie(self, app, monkeypatch):
         import config

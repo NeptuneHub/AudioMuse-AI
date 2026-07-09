@@ -318,6 +318,31 @@ def verify_additional_user(username, password):
     return _normalize_role(role) or USER_ROLE_USER
 
 
+def _session_role_for_user(username):
+    if not isinstance(username, str) or not username:
+        return None
+    db = None
+    try:
+        db = _get_db()
+        with db.cursor() as cur:
+            cur.execute(
+                "SELECT role FROM audiomuse_users WHERE username = %s",
+                (username,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        logger.exception("Failed to validate session user %r", username)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return None
+    if not row:
+        return None
+    return _normalize_role(row[0])
+
+
 def upsert_admin_user(username, password):
     """Create an admin row, or update the password and force admin role when
     the username already exists. Returns ``(ok, error_message)``.
@@ -526,10 +551,18 @@ def check_auth_needed(jwt_secret):
     if token and jwt_secret:
         try:
             payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
-            # Backward-compat: tokens issued before the multi-user feature
-            # have no 'role' claim; treat them as admin.
-            g.auth_role = payload.get('role', 'admin')
-            g.auth_user = payload.get('sub')
+            username = payload.get('sub')
+            if username:
+                role = _session_role_for_user(username)
+                if role is None:
+                    raise pyjwt.InvalidTokenError("session user no longer exists")
+                g.auth_role = role
+                g.auth_user = username
+            else:
+                # Backward-compat: tokens issued before the multi-user feature
+                # have no 'sub' claim; treat them as admin.
+                g.auth_role = payload.get('role', 'admin')
+                g.auth_user = None
             return None
         except pyjwt.InvalidTokenError:
             pass
