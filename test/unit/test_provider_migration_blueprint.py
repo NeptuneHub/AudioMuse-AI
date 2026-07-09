@@ -378,7 +378,7 @@ class TestExecuteGate:
 
     def test_rejects_wrong_confirmation_text(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', {'final_counts': {'matched': 1}}))
         p = self._base_payload()
         p['confirmation_text'] = 'LGTM ship it'
         resp = client.post('/api/migration/execute', json=p)
@@ -387,15 +387,22 @@ class TestExecuteGate:
 
     def test_rejects_session_not_in_dry_run_ready(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'in_progress'))
+        cur._fetchone_queue.append(('navidrome', 'in_progress', {}))
         resp = client.post('/api/migration/execute', json=self._base_payload())
         assert resp.status_code == 400
         err = resp.get_json().get('error', '').lower()
         assert 'dry' in err or 'status' in err
 
+    def test_rejects_ready_session_without_final_counts(self, bp_mod, client, fake_db):
+        db, cur = fake_db
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', {'dry_run': {'matches': {}}}))
+        resp = client.post('/api/migration/execute', json=self._base_payload())
+        assert resp.status_code == 400
+        assert 're-finalize' in resp.get_json().get('error', '').lower()
+
     def test_happy_path_enqueues_job(self, bp_mod, client, fake_db):
         db, cur = fake_db
-        cur._fetchone_queue.append(('navidrome', 'dry_run_ready'))
+        cur._fetchone_queue.append(('navidrome', 'dry_run_ready', {'final_counts': {'matched': 1}}))
         fake_queue = MagicMock()
         fake_job = MagicMock()
         fake_job.id = 'job-xyz'
@@ -408,6 +415,41 @@ class TestExecuteGate:
         data = resp.get_json()
         assert data['task_id'] == 'job-xyz'
         assert fake_queue.enqueue.called
+
+
+class TestFinalizeDryRunGate:
+    def test_rejects_missing_dry_run_state(self, bp_mod, client):
+        with (
+            patch.object(bp_mod, '_load_state', return_value={}),
+            patch('importlib.import_module') as mock_import,
+        ):
+            resp = client.post('/api/migration/finalize-dry-run', json={'session_id': 1})
+
+        assert resp.status_code == 400
+        assert 'dry run' in resp.get_json().get('error', '').lower()
+        mock_import.assert_not_called()
+
+
+class TestManualChangesInvalidateFinalize:
+    def test_merge_manual_matches_sets_in_progress(self, bp_mod):
+        with (
+            patch.object(bp_mod, '_read_state_key', return_value=(True, {})),
+            patch.object(bp_mod, '_patch_state_keys') as patch_state,
+        ):
+            bp_mod._merge_manual_matches(1, {'old': 'new'})
+
+        assert patch_state.call_args.kwargs['_set_status'] == 'in_progress'
+        assert patch_state.call_args.kwargs['final_counts'] is None
+
+    def test_mark_album_skipped_sets_in_progress(self, bp_mod):
+        with (
+            patch.object(bp_mod, '_read_state_key', return_value=(True, [])),
+            patch.object(bp_mod, '_patch_state_keys') as patch_state,
+        ):
+            bp_mod._mark_album_skipped(1, 'album-key')
+
+        assert patch_state.call_args.kwargs['_set_status'] == 'in_progress'
+        assert patch_state.call_args.kwargs['final_counts'] is None
 
 
 class TestProbeUrlValidation:

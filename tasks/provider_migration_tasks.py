@@ -482,6 +482,12 @@ def _run_migration_transaction(
     _populate_migration_map_table(cur, mapping)
 
     cur.execute(
+        "DELETE FROM playlist p WHERE EXISTS "
+        "(SELECT 1 FROM score s WHERE s.item_id = p.item_id) "
+        "AND NOT EXISTS "
+        "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = p.item_id)"
+    )
+    cur.execute(
         "DELETE FROM score s WHERE NOT EXISTS "
         "(SELECT 1 FROM item_id_migration_map m WHERE m.old_id = s.item_id)"
     )

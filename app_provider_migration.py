@@ -1214,7 +1214,9 @@ def finalize_dry_run():
     if state is None:
         return jsonify({'error': 'session not found'}), 404
 
-    dry = state.get('dry_run') or {}
+    dry = state.get('dry_run')
+    if not isinstance(dry, dict) or 'matches' not in dry:
+        return jsonify({'error': 'Run and complete a dry run before finalizing.'}), 400
 
     import importlib
 
@@ -1352,13 +1354,20 @@ def execute():
     db = get_db()
     with db.cursor() as cur:
         cur.execute(
-            "SELECT target_type, status FROM migration_session WHERE id = %s",
+            "SELECT target_type, status, state FROM migration_session WHERE id = %s",
             (session_id,),
         )
         row = cur.fetchone()
     if not row:
         return jsonify({'error': 'session not found'}), 404
     target_type, status = row[0], row[1]
+    state = row[2] if len(row) > 2 else {}
+    if isinstance(state, str):
+        try:
+            state = json.loads(state)
+        except (TypeError, ValueError):
+            state = {}
+    final_counts = state.get('final_counts') if isinstance(state, dict) else None
 
     expected = f"I want to migrate to {target_type} and delete unmatched tracks"
     if confirmation_text != expected:
@@ -1372,6 +1381,8 @@ def execute():
                 f'expected "dry_run_ready".'
             }
         ), 400
+    if not isinstance(final_counts, dict):
+        return jsonify({'error': 'Dry run results changed. Re-finalize before executing.'}), 400
 
     # Enqueue the execute job
     from rq.job import Job  # noqa: F401  (used by enqueue internals)
@@ -2005,7 +2016,7 @@ def _merge_manual_matches(session_id, new_matches):
     manual = dict(manual or {})
     manual.update(new_matches)
     # Invalidate final_counts so the user must re-finalize
-    _patch_state_keys(session_id, manual_matches=manual, final_counts=None)
+    _patch_state_keys(session_id, _set_status='in_progress', manual_matches=manual, final_counts=None)
 
 
 def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
@@ -2031,6 +2042,7 @@ def _rematch_album_rows(session_id, newly_matched, newly_unmatched):
         unmatches.add(old_id)
     _patch_state_keys(
         session_id,
+        _set_status='in_progress',
         manual_matches=manual,
         manual_unmatches=sorted(unmatches),
         final_counts=None,
@@ -2042,7 +2054,7 @@ def _mark_album_skipped(session_id, old_album_key):
     skipped = list(skipped or [])
     if old_album_key and old_album_key not in skipped:
         skipped.append(old_album_key)
-    _patch_state_keys(session_id, skipped_albums=skipped, final_counts=None)
+    _patch_state_keys(session_id, _set_status='in_progress', skipped_albums=skipped, final_counts=None)
 
 
 def _count_score_rows():
