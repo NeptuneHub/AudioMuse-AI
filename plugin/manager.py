@@ -187,6 +187,8 @@ def _valid_requirement(spec):
 
 _PLUGIN_ROLES = ('flask', 'worker')
 
+_LOADED_STATUSES = ('ok', 'deps_failed')
+
 
 def _plugin_targets(manifest):
     raw = (manifest or {}).get('targets')
@@ -521,6 +523,17 @@ class PluginManager:
                         'Dependency install failed for plugin %s: %s',
                         plugin_id, record['requirements'],
                     )
+        for plugin_id in plugins_with_reqs:
+            record = self.records[plugin_id]
+            unmet = self._missing_specs(
+                sorted({str(s) for s in record['requirements'] if _valid_requirement(s)})
+            )
+            if unmet:
+                record['deps_error'] = (
+                    'unsatisfied requirement(s) after install: ' + ', '.join(unmet) +
+                    ' (another plugin may pin a conflicting version of the same package)'
+                )
+                logger.error('Plugin %s has %s', plugin_id, record['deps_error'])
 
     def _persist_status(self, plugin_id, status, role=None, error=None):
         if role is None and self._loaded_role is not None:
@@ -584,6 +597,17 @@ class PluginManager:
                     record['onnx_providers'] = ctx.onnx_providers
                     record['song_analyzed_hooks'] = ctx.song_analyzed_hooks
                     if role == 'web' and flask_app is not None and ctx.blueprint is not None:
+                        if ctx.blueprint.name != plugin_id:
+                            logger.warning(
+                                'Plugin %s names its Blueprint %r; the convention is to name it '
+                                'after the plugin id, otherwise it can collide with another plugin',
+                                plugin_id, ctx.blueprint.name,
+                            )
+                        if ctx.blueprint.name in flask_app.blueprints:
+                            raise ValueError(
+                                f'blueprint name "{ctx.blueprint.name}" is already registered by '
+                                'another plugin or by the app; rename the Blueprint (use your plugin id)'
+                            )
                         flask_app.register_blueprint(ctx.blueprint, url_prefix=f'/plugins/{plugin_id}')
                         if not record['settings_endpoint']:
                             candidate = f'{ctx.blueprint.name}.settings'
@@ -595,9 +619,15 @@ class PluginManager:
                         self._run_hooks(ctx.flask_start, plugin_id, 'flask_start')
                     elif role == 'worker':
                         self._run_hooks(ctx.worker_start, plugin_id, 'worker_start')
-                record['load_status'] = 'ok'
-                record['error'] = None
-                self._persist_status(plugin_id, 'ok')
+                deps_error = record.get('deps_error')
+                if deps_error:
+                    record['load_status'] = 'deps_failed'
+                    record['error'] = deps_error
+                    self._persist_status(plugin_id, 'deps_failed', error=deps_error)
+                else:
+                    record['load_status'] = 'ok'
+                    record['error'] = None
+                    self._persist_status(plugin_id, 'ok')
             except Exception as exc:
                 logger.exception('Failed to load plugin %s', plugin_id)
                 record['load_status'] = 'error'
@@ -815,14 +845,14 @@ class PluginManager:
     def get_onnx_providers(self):
         providers = []
         for record in self.records.values():
-            if record.get('load_status') == 'ok':
+            if record.get('load_status') in _LOADED_STATUSES:
                 providers.extend(record.get('onnx_providers', []))
         return providers
 
     def song_analyzed_hooks(self):
         hooks = []
         for record in self.records.values():
-            if record.get('load_status') == 'ok':
+            if record.get('load_status') in _LOADED_STATUSES:
                 hooks.extend(record.get('song_analyzed_hooks', []))
         return hooks
 
@@ -837,7 +867,7 @@ class PluginManager:
     def menu_items(self):
         items = []
         for record in self.records.values():
-            if record.get('load_status') != 'ok':
+            if record.get('load_status') not in _LOADED_STATUSES:
                 continue
             settings_ep = record.get('settings_endpoint')
             for entry in record.get('menu_items', []):
