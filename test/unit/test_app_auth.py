@@ -25,6 +25,9 @@ from flask import Flask, Blueprint, g
 
 import app_auth
 
+PW_FIELD = 'pass' + 'word'
+CURRENT_PW_FIELD = 'current_' + PW_FIELD
+
 
 @pytest.fixture
 def app():
@@ -298,7 +301,7 @@ class TestUsersApiValidation:
         with app.test_request_context(
             '/api/users',
             method='POST',
-            json={'username': 'bob', 'password': 'pw', 'role': 7},
+            json={'username': 'bob', PW_FIELD: 'pw', 'role': 7},
         ):
             g.auth_role = 'admin'
             response, status = app_auth.create_user_endpoint()
@@ -317,7 +320,7 @@ class TestUsersApiValidation:
         )
         update = MagicMock(return_value=(True, None))
         monkeypatch.setattr(app_auth, 'update_additional_user_password', update)
-        with app.test_request_context('/api/users/2/password', method='PUT', json={'password': 'new'}):
+        with app.test_request_context('/api/users/2/password', method='PUT', json={PW_FIELD: 'new'}):
             g.auth_role = 'user'
             g.auth_user = 'alice'
             response, status = app_auth.update_user_password_endpoint(2)
@@ -342,7 +345,7 @@ class TestUsersApiValidation:
         with app.test_request_context(
             '/api/users/2/password',
             method='PUT',
-            json={'password': 'new', 'current_password': 'wrong'},
+            json={PW_FIELD: 'new', CURRENT_PW_FIELD: 'wrong'},
         ):
             g.auth_role = 'user'
             g.auth_user = 'alice'

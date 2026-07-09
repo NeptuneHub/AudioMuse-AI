@@ -525,24 +525,22 @@
                     finally { acLoading = false; }
                 };
 
+                const addResultText = (parent, className, value) => {
+                    const node = document.createElement('div');
+                    node.className = className;
+                    node.textContent = value || '';
+                    parent.appendChild(node);
+                };
+
                 const appendTrackResults = (tracks) => {
                     const existingSentinel = resultsEl.querySelector('.autocomplete-load-more');
                     if (existingSentinel) existingSentinel.remove();
                     tracks.forEach(track => {
                         const itemDiv = document.createElement('div');
                         itemDiv.className = 'autocomplete-item';
-                        const titleDiv = document.createElement('div');
-                        titleDiv.className = 'title';
-                        titleDiv.textContent = track.title || '';
-                        const artistDiv = document.createElement('div');
-                        artistDiv.className = 'artist';
-                        artistDiv.textContent = track.author || '';
-                        const albumDiv = document.createElement('div');
-                        albumDiv.className = 'album';
-                        albumDiv.textContent = track.album || '';
-                        itemDiv.appendChild(titleDiv);
-                        itemDiv.appendChild(artistDiv);
-                        itemDiv.appendChild(albumDiv);
+                        addResultText(itemDiv, 'title', track.title);
+                        addResultText(itemDiv, 'artist', track.author);
+                        addResultText(itemDiv, 'album', track.album);
                         itemDiv.addEventListener('click', () => {
                             const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
                             if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {

@@ -169,6 +169,29 @@
                 }
             };
 
+            const createTrackResult = (track) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'autocomplete-item';
+                const title = document.createElement('div');
+                title.className = 'title';
+                title.textContent = track.title || '';
+                const artist = document.createElement('div');
+                artist.className = 'artist';
+                artist.textContent = track.author || '';
+                itemDiv.appendChild(title);
+                itemDiv.appendChild(artist);
+                if (track.album) {
+                    const album = document.createElement('div');
+                    album.className = 'album';
+                    album.appendChild(document.createTextNode('Album: '));
+                    const name = document.createElement('span');
+                    name.textContent = track.album;
+                    album.appendChild(name);
+                    itemDiv.appendChild(album);
+                }
+                return itemDiv;
+            };
+
             const showAutocomplete = (tracks, append) => {
                 if (!append) autocompleteResults.innerHTML = '';
                 const existingSentinel = autocompleteResults.querySelector('.autocomplete-load-more');
@@ -178,25 +201,7 @@
                     autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
                 } else {
                     tracks.forEach(track => {
-                        const itemDiv = document.createElement('div');
-                        itemDiv.className = 'autocomplete-item';
-                        const titleDiv = document.createElement('div');
-                        titleDiv.className = 'title';
-                        titleDiv.textContent = track.title || '';
-                        const artistDiv = document.createElement('div');
-                        artistDiv.className = 'artist';
-                        artistDiv.textContent = track.author || '';
-                        itemDiv.appendChild(titleDiv);
-                        itemDiv.appendChild(artistDiv);
-                        if (track.album) {
-                            const albumDiv = document.createElement('div');
-                            albumDiv.className = 'album';
-                            const albumText = document.createElement('span');
-                            albumText.textContent = track.album;
-                            albumDiv.appendChild(document.createTextNode('Album: '));
-                            albumDiv.appendChild(albumText);
-                            itemDiv.appendChild(albumDiv);
-                        }
+                        const itemDiv = createTrackResult(track);
                         itemDiv.addEventListener('click', () => selectTrack(track));
                         autocompleteResults.appendChild(itemDiv);
                     });
