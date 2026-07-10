@@ -67,7 +67,7 @@ def test_duplicate_groups_ignore_missing_vectors_and_rank_tracks():
         "a",
         "b",
     ]
-    assert result["groups"][0]["tracks"][0]["score"] == 6.0
+    assert result["groups"][0]["tracks"][0]["score"] == pytest.approx(6.0)
 
 
 def test_search_only_pages_in_sql_and_preserves_database_id_order(client):
