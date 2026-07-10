@@ -31,6 +31,7 @@
         {% endif %}
 
         <div class="field-row" style="flex-direction:column; align-items:stretch; margin-top:1rem;">
+            <p id="users-page-feedback" class="inline-feedback" style="display:none; margin:0 0 0.75rem; width:100%;"></p>
             <div class="responsive-table-wrapper">
                 <table id="additional-users-table"
                        data-current-user="{{ current_user or '' }}"
@@ -77,12 +78,43 @@
                     </select>
                 </div>
             </div>
+            <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border-color, #ccc);">
+                <p class="subtitle" style="margin:0 0 0.5rem;">Enter your admin password to confirm this operation.</p>
+                <div class="field-grid">
+                    <div class="field">
+                        <label for="additional-user-current-password">Your admin password</label>
+                        <input id="additional-user-current-password" type="password" autocomplete="current-password" placeholder="your admin password">
+                    </div>
+                </div>
+            </div>
             <div class="field-row" style="margin-top:1rem;">
                 <button id="additional-user-add" type="button" class="btn btn-primary">Save user</button>
                 <button id="add-user-cancel" type="button" class="btn btn-danger" style="margin-left:0.5rem;">Cancel</button>
             </div>
             <div class="field-row">
                 <p id="additional-user-feedback" class="inline-feedback" style="display:none; margin:0.75rem 0 0; width:100%;"></p>
+            </div>
+        </section>
+
+        <section id="delete-user-panel" style="display:none; margin-top:1.5rem; padding:1rem; border:1px solid var(--border-color, #ccc); border-radius:4px;">
+            <h2 style="margin-top:0;">Delete user</h2>
+            <p id="delete-user-target" class="subtitle" style="margin-top:0;"></p>
+            <p style="margin:0.25rem 0 0;">This cannot be undone. Any active session of this user is terminated immediately.</p>
+            <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border-color, #ccc);">
+                <p class="subtitle" style="margin:0 0 0.5rem;">Enter your admin password to confirm this operation.</p>
+                <div class="field-grid">
+                    <div class="field">
+                        <label for="delete-user-current">Your admin password</label>
+                        <input id="delete-user-current" type="password" autocomplete="current-password" placeholder="your admin password">
+                    </div>
+                </div>
+            </div>
+            <div class="field-row" style="margin-top:1rem;">
+                <button id="delete-user-confirm" type="button" class="btn btn-danger">Delete user</button>
+                <button id="delete-user-cancel" type="button" class="btn btn-primary" style="margin-left:0.5rem;">Cancel</button>
+            </div>
+            <div class="field-row">
+                <p id="delete-user-feedback" class="inline-feedback" style="display:none; margin:0.75rem 0 0; width:100%;"></p>
             </div>
         </section>
         {% endif %}
@@ -98,6 +130,15 @@
                 <div class="field">
                     <label for="change-password-confirm">Confirm password</label>
                     <input id="change-password-confirm" type="password" autocomplete="new-password" placeholder="confirm password">
+                </div>
+            </div>
+            <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--border-color, #ccc);">
+                <p id="change-password-confirm-hint" class="subtitle" style="margin:0 0 0.5rem;"></p>
+                <div class="field-grid">
+                    <div class="field">
+                        <label id="change-password-current-label" for="change-password-current">Current password</label>
+                        <input id="change-password-current" type="password" autocomplete="current-password" placeholder="your current password">
+                    </div>
                 </div>
             </div>
             <div class="field-row" style="margin-top:1rem;">

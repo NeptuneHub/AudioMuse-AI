@@ -231,6 +231,39 @@ def _run_restore_runner(dump_file, log_file):
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
+        if ret == 0:
+            try:
+                from database import USERS_PASSWORD_CHANGED_AT_DDL
+
+                ensure_cmd = _pg_cmd(
+                    'psql', '-d', POSTGRES_DB, '-v', 'ON_ERROR_STOP=1',
+                    '-c', USERS_PASSWORD_CHANGED_AT_DDL,
+                )
+                ensure_ret = -1
+                for attempt in (1, 2):
+                    ensure_ret = subprocess.run(
+                        ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120
+                    ).returncode
+                    if ensure_ret == 0:
+                        log.write("Ensured users session schema after restore.\n")
+                        break
+                    log.write(f"Users session schema ensure attempt {attempt} failed (rc={ensure_ret}).\n")
+                    log.flush()
+                    if attempt == 1:
+                        time.sleep(5)
+                if ensure_ret != 0:
+                    log.write(
+                        "WARNING: users session schema was not ensured; if logins fail "
+                        "after this restore, restart the container to re-run schema init.\n"
+                    )
+                log.flush()
+            except Exception as exc:
+                log.write(
+                    f"Could not ensure users session schema after restore: {exc}; "
+                    f"restart the container if logins fail.\n"
+                )
+                log.flush()
+
         try:
             try:
                 restart_manager.publish_start_request()

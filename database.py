@@ -49,6 +49,11 @@ from config import (
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+USERS_PASSWORD_CHANGED_AT_DDL = (
+    "ALTER TABLE IF EXISTS audiomuse_users "
+    "ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP"
+)
+
 MAP_PROJECTION_CACHE = None
 
 _embedded_server = None
@@ -982,6 +987,7 @@ def init_db():
             cur.execute(
                 "ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"
             )
+            cur.execute(USERS_PASSWORD_CHANGED_AT_DDL)
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS dashboard_stats ("
                 "id INTEGER PRIMARY KEY, "

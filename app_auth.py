@@ -17,6 +17,12 @@ Main Features:
 * Role constants, password hashing, and CRUD helpers for user accounts.
 * The ``check_setup_needed`` / ``check_auth_needed`` / ``check_admin_needed``
   barrier guards and the ``/login``, ``/auth``, ``/logout``, ``/api/users`` routes.
+* Sessions validated against the users table on every request: deleting a
+  user or changing a password revokes that user's live JWT sessions, and the
+  row's role is authoritative over token claims.
+* User creation, password changes, and user deletion require the acting
+  session user to confirm with their own password (bearer-token callers
+  exempt).
 * One-shot legacy env -> users-table seed and the startup JWT-secret resolution.
 """
 
@@ -168,6 +174,19 @@ def get_additional_user_by_id(user_id):
     }
 
 
+def _password_stamp():
+    """App-clock UTC timestamp for ``password_changed_at``, floored to the
+    whole second so it compares exactly against integer JWT ``iat`` values.
+    Stamped on every row that gets a (new) password hash - insert, upsert,
+    and update - so tokens minted before the hash existed never validate,
+    including tokens for a previously deleted user whose username was
+    re-created.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    )
+
+
 def create_additional_user(username, password, role=USER_ROLE_USER):
     """Create a new user. Returns ``(ok, error_message)``."""
     if not isinstance(username, str) or not username.strip():
@@ -191,10 +210,10 @@ def create_additional_user(username, password, role=USER_ROLE_USER):
     db = _get_db()
     with db.cursor() as cur:
         cur.execute(
-            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
-            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
+            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at, password_changed_at) "
+            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}, %s) "
             f"ON CONFLICT (username) DO NOTHING RETURNING id",
-            (username, password_hash, normalized_role),
+            (username, password_hash, normalized_role, _password_stamp()),
         )
         row = cur.fetchone()
     db.commit()
@@ -261,7 +280,10 @@ def delete_additional_user_safe(user_id):
 
 
 def update_additional_user_password(user_id, new_password):
-    """Update a user's password. Returns ``(ok, error_message)``."""
+    """Update a user's password and stamp ``password_changed_at`` so that
+    session tokens issued before the change stop validating.
+    Returns ``(ok, error_message)``.
+    """
     try:
         user_id = int(user_id)
     except (TypeError, ValueError):
@@ -276,8 +298,8 @@ def update_additional_user_password(user_id, new_password):
     db = _get_db()
     with db.cursor() as cur:
         cur.execute(
-            "UPDATE audiomuse_users SET password_hash = %s WHERE id = %s",
-            (password_hash, user_id),
+            "UPDATE audiomuse_users SET password_hash = %s, password_changed_at = %s WHERE id = %s",
+            (password_hash, _password_stamp(), user_id),
         )
         updated = cur.rowcount
     db.commit()
@@ -318,6 +340,50 @@ def verify_additional_user(username, password):
     return _normalize_role(role) or USER_ROLE_USER
 
 
+def get_session_user(username):
+    """Return ``{username, role, password_changed_at}`` for a username, or None."""
+    if not isinstance(username, str) or not username:
+        return None
+    db = _get_db()
+    with db.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            "SELECT username, role, password_changed_at FROM audiomuse_users WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'username': row['username'],
+        'role': _normalize_role(row['role']) or USER_ROLE_USER,
+        'password_changed_at': row['password_changed_at'],
+    }
+
+
+def _confirm_password_error(data):
+    """Gate for sensitive user-management actions: the acting user must
+    re-enter their own password as ``current_password``.
+
+    Bearer-token (M2M) callers are exempt: the API token itself is the
+    credential and there is no account password to confirm with.
+    Returns an error message, or None when the action is confirmed.
+    """
+    if getattr(g, 'auth_method', None) == 'bearer':
+        return None
+    username = getattr(g, 'auth_user', None)
+    password = data.get('current_password') if isinstance(data, dict) else None
+    if (
+        not isinstance(username, str)
+        or not username
+        or not isinstance(password, str)
+        or not password
+    ):
+        return "Current password is required."
+    if verify_additional_user(username, password) is None:
+        return "Current password is incorrect."
+    return None
+
+
 def upsert_admin_user(username, password):
     """Create an admin row, or update the password and force admin role when
     the username already exists. Returns ``(ok, error_message)``.
@@ -338,10 +404,11 @@ def upsert_admin_user(username, password):
     db = _get_db()
     with db.cursor() as cur:
         cur.execute(
-            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
-            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
-            f"ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'",
-            (username, password_hash, USER_ROLE_ADMIN),
+            f"INSERT INTO audiomuse_users (username, password_hash, role, created_at, password_changed_at) "
+            f"VALUES (%s, %s, %s, {UTC_NOW_SQL}, %s) "
+            f"ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, "
+            f"role = 'admin', password_changed_at = EXCLUDED.password_changed_at",
+            (username, password_hash, USER_ROLE_ADMIN, _password_stamp()),
         )
     db.commit()
     return True, None
@@ -397,10 +464,10 @@ def seed_admin_from_env():
     try:
         with db.cursor() as cur:
             cur.execute(
-                f"INSERT INTO audiomuse_users (username, password_hash, role, created_at) "
-                f"VALUES (%s, %s, %s, {UTC_NOW_SQL}) "
+                f"INSERT INTO audiomuse_users (username, password_hash, role, created_at, password_changed_at) "
+                f"VALUES (%s, %s, %s, {UTC_NOW_SQL}, %s) "
                 f"ON CONFLICT (username) DO NOTHING",
-                (user.strip(), password_hash, USER_ROLE_ADMIN),
+                (user.strip(), password_hash, USER_ROLE_ADMIN, _password_stamp()),
             )
         db.commit()
         if source == 'app_config':
@@ -502,18 +569,91 @@ def check_setup_needed():
         return True
 
 
+def _session_from_token(token, jwt_secret):
+    """Fully validate a session cookie: JWT signature/expiry, then the user
+    row in the database. A session is only valid while its user still exists
+    and the token was issued at or after the user's last password change, so
+    deleting a user or changing a password revokes their live sessions.
+
+    Returns ``(username, role)`` from the database (authoritative over the
+    token claims), or None. Fails closed on malformed claims and DB errors.
+    """
+    if not token or not jwt_secret:
+        return None
+    try:
+        payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
+    except pyjwt.InvalidTokenError:
+        return None
+    username = payload.get('sub')
+    iat = payload.get('iat')
+    if not isinstance(username, str) or not username or not isinstance(iat, (int, float)):
+        return None
+    try:
+        row = get_session_user(username)
+    except Exception:
+        logger.exception("Failed to load session user for token validation")
+        return None
+    if row is None:
+        return None
+    changed_at = row['password_changed_at']
+    if changed_at is not None:
+        # Normalize a tz-aware stamp (hand-migrated TIMESTAMPTZ column) to
+        # the naive-UTC convention our own DDL produces.
+        if changed_at.tzinfo is not None:
+            changed_at = changed_at.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        # A signed token can still carry an absurd iat (PyJWT only rejects
+        # future values); fail closed instead of letting the conversion
+        # error escape the auth barrier as a 500.
+        try:
+            issued_at = datetime.datetime.fromtimestamp(
+                int(iat), datetime.timezone.utc
+            ).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
+        if issued_at < changed_at:
+            return None
+    return row['username'], row['role']
+
+
+def _issue_session_token(username, role, secret):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    payload = {
+        'sub': username,
+        'role': role,
+        'iat': now,
+        'exp': now + datetime.timedelta(hours=8),
+    }
+    return pyjwt.encode(payload, secret, algorithm='HS256')
+
+
+def _set_session_cookie(resp, token):
+    resp.set_cookie(
+        'audiomuse_jwt',
+        token,
+        path='/',
+        httponly=True,
+        samesite='Strict',
+        # Secure when the original request was HTTPS, including via a reverse
+        # proxy (X-Forwarded-Proto) even when ProxyFix is disabled.
+        secure=_original_request_is_https(),
+        max_age=8 * 3600,
+    )
+
+
 def check_auth_needed(jwt_secret):
     """Check if the current request requires authentication.
 
     Returns None when the request is authenticated or auth is disabled.
     Returns a Response (redirect or JSON 401) otherwise.
-    Populates ``flask.g.auth_role`` and ``flask.g.auth_user``.
+    Populates ``flask.g.auth_role``, ``flask.g.auth_user`` and
+    ``flask.g.auth_method`` ('session' or 'bearer').
     """
     import config as _cfg
 
     # Default: when auth is disabled every request behaves as an admin.
     g.auth_role = 'admin'
     g.auth_user = None
+    g.auth_method = None
 
     if not _cfg.AUTH_ENABLED:
         return None
@@ -522,17 +662,11 @@ def check_auth_needed(jwt_secret):
     # secret: PyJWT validates HS256 tokens signed with an empty key (it only
     # warns), so a blank secret would let anyone forge an admin token. Fail
     # closed by treating a missing secret as "no valid session".
-    token = request.cookies.get('audiomuse_jwt')
-    if token and jwt_secret:
-        try:
-            payload = pyjwt.decode(token, jwt_secret, algorithms=['HS256'])
-            # Backward-compat: tokens issued before the multi-user feature
-            # have no 'role' claim; treat them as admin.
-            g.auth_role = payload.get('role', 'admin')
-            g.auth_user = payload.get('sub')
-            return None
-        except pyjwt.InvalidTokenError:
-            pass
+    session = _session_from_token(request.cookies.get('audiomuse_jwt'), jwt_secret)
+    if session is not None:
+        g.auth_user, g.auth_role = session
+        g.auth_method = 'session'
+        return None
 
     # Check valid Bearer token (M2M callers) - always admin-equivalent.
     # Use secrets.compare_digest to avoid leaking token contents via timing.
@@ -544,6 +678,7 @@ def check_auth_needed(jwt_secret):
     ):
         g.auth_role = 'admin'
         g.auth_user = None
+        g.auth_method = 'bearer'
         return None
 
     # Not authenticated
@@ -733,14 +868,8 @@ def login_page():
 
     if not _cfg.AUTH_ENABLED:
         return redirect(url_for('dashboard_bp.dashboard_page'))
-    token = request.cookies.get('audiomuse_jwt')
-    secret = _jwt_secret()
-    if token and secret:
-        try:
-            pyjwt.decode(token, secret, algorithms=['HS256'])
-            return redirect(url_for('dashboard_bp.dashboard_page'))
-        except pyjwt.InvalidTokenError:
-            pass
+    if _session_from_token(request.cookies.get('audiomuse_jwt'), _jwt_secret()) is not None:
+        return redirect(url_for('dashboard_bp.dashboard_page'))
     return render_template('login.html', title='Login - AudioMuse-AI')
 
 
@@ -840,30 +969,13 @@ def auth_endpoint():
         current_app.logger.error("Cannot issue session token: JWT secret is not configured.")
         return jsonify({"error": "Server authentication is misconfigured."}), 500
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    payload = {
-        'sub': user,
-        'role': role,
-        'iat': now,
-        'exp': now + datetime.timedelta(hours=8),
-    }
-    token = pyjwt.encode(payload, secret, algorithm='HS256')
+    token = _issue_session_token(user, role, secret)
 
     if is_ajax:
         resp = make_response(jsonify({"status": "ok"}), 200)
     else:
         resp = make_response(redirect(url_for('dashboard_bp.dashboard_page')))
-    resp.set_cookie(
-        'audiomuse_jwt',
-        token,
-        path='/',
-        httponly=True,
-        samesite='Strict',
-        # Secure when the original request was HTTPS, including via a reverse
-        # proxy (X-Forwarded-Proto) even when ProxyFix is disabled.
-        secure=_original_request_is_https(),
-        max_age=8 * 3600,
-    )
+    _set_session_cookie(resp, token)
     return resp
 
 
@@ -958,18 +1070,24 @@ def create_user_endpoint():
     tags:
       - Users
     summary: Admin-only. Create a new user with role `user` or `admin`.
+    description: |
+      Session (cookie) callers must confirm the operation with their own
+      password in `current_password`; bearer-token callers are exempt.
     requestBody:
       required: true
       content:
         application/json:
           schema:
             type: object
-            required: [username, password]
+            required: [username, password, current_password]
             properties:
               username:
                 type: string
               password:
                 type: string
+              current_password:
+                type: string
+                description: The acting admin's own password. Required for session callers.
               role:
                 type: string
                 enum: [user, admin]
@@ -978,7 +1096,7 @@ def create_user_endpoint():
       201:
         description: User created.
       400:
-        description: Invalid role / missing fields / username conflict.
+        description: Invalid role / missing fields / missing or wrong current_password / username conflict.
       403:
         description: Caller is not an admin.
       404:
@@ -998,6 +1116,9 @@ def create_user_endpoint():
         return jsonify({"error": "Role must be 'user' or 'admin'."}), 400
     if not username or not password:
         return jsonify({"error": "Username and password are required."}), 400
+    confirm_error = _confirm_password_error(data)
+    if confirm_error:
+        return jsonify({"error": confirm_error}), 400
     ok, err = create_additional_user(username, password, role=role)
     if not ok:
         return jsonify({"error": err or "Failed to create user."}), 400
@@ -1011,16 +1132,30 @@ def delete_user_endpoint(user_id):
     tags:
       - Users
     summary: Admin-only. Refuses self-deletion and refuses to remove the last admin.
+    description: |
+      Deleting a user immediately invalidates that user's active sessions.
+      Session (cookie) callers must confirm the operation with their own
+      password in `current_password`; bearer-token callers are exempt.
     parameters:
       - name: user_id
         in: path
         required: true
         schema: { type: integer }
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              current_password:
+                type: string
+                description: The acting admin's own password. Required for session callers.
     responses:
       200:
         description: User deleted.
       400:
-        description: Invalid id, or attempt to delete self / the last admin.
+        description: Invalid id, missing/wrong current_password, or attempt to delete self / the last admin.
       403:
         description: Caller is not an admin.
       404:
@@ -1040,6 +1175,9 @@ def delete_user_endpoint(user_id):
     current_username = getattr(g, 'auth_user', None)
     if current_username and target['username'] == current_username:
         return jsonify({"error": "You cannot delete your own account."}), 400
+    confirm_error = _confirm_password_error(request.get_json(silent=True))
+    if confirm_error:
+        return jsonify({"error": confirm_error}), 400
     status, err = delete_additional_user_safe(user_id)
     if status == "deleted":
         return jsonify({"status": "ok"})
@@ -1060,6 +1198,13 @@ def update_user_password_endpoint(user_id):
     tags:
       - Users
     summary: Admin can change anyone's password; non-admin can only change their own.
+    description: |
+      Changing a password immediately invalidates the target user's active
+      sessions. Session (cookie) callers must confirm the operation with
+      their own password in `current_password` - both for self-service
+      changes and for admins changing someone else's password; bearer-token
+      callers are exempt. When users change their own password, the response
+      sets a fresh session cookie so their current session stays valid.
     parameters:
       - name: user_id
         in: path
@@ -1071,20 +1216,21 @@ def update_user_password_endpoint(user_id):
         application/json:
           schema:
             type: object
-            required: [password]
+            required: [password, current_password]
             properties:
               password:
                 type: string
               current_password:
                 type: string
-                description: Required when a non-admin updates their own password.
+                description: The acting user's own password. Required for session callers.
     responses:
       200:
         description: Password updated.
       400:
-        description: Validation error (weak password, wrong current_password, etc.).
+        description: Validation error (missing password, missing/wrong current_password, etc.).
       403:
-        description: Forbidden (non-admin updating someone else).
+        description: Forbidden. Non-admins get this for any id other than their
+          own row, including unknown ids, so they cannot probe which ids exist.
       404:
         description: Auth disabled or user not found.
     """
@@ -1092,21 +1238,31 @@ def update_user_password_endpoint(user_id):
 
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
-    target = get_additional_user_by_id(user_id)
-    if not target:
-        return jsonify({"error": "User not found."}), 404
     role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
-    if role != 'admin' and target['username'] != current_username:
+    target = get_additional_user_by_id(user_id)
+    if role != 'admin' and (target is None or target['username'] != current_username):
         return jsonify({"error": "Forbidden"}), 403
+    if not target:
+        return jsonify({"error": "User not found."}), 404
     data = request.get_json(silent=True) or {}
     new_password = data.get('password') or ''
     if not isinstance(new_password, str) or not new_password:
         return jsonify({"error": "Password is required."}), 400
+    confirm_error = _confirm_password_error(data)
+    if confirm_error:
+        return jsonify({"error": confirm_error}), 400
     ok, err = update_additional_user_password(user_id, new_password)
     if not ok:
         return jsonify({"error": err or "Failed to update password."}), 400
-    return jsonify({"status": "ok"})
+    resp = jsonify({"status": "ok"})
+    if current_username and target['username'] == current_username:
+        secret = _jwt_secret()
+        if secret:
+            _set_session_cookie(
+                resp, _issue_session_token(current_username, role or USER_ROLE_USER, secret)
+            )
+    return resp
 
 
 # --- Flask registration -----------------------------------------------------
