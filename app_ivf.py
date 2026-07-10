@@ -24,6 +24,8 @@ import json
 import threading
 import numpy as np
 
+import app_server_context
+
 # Import the new config option
 from config import (
     SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
@@ -86,8 +88,9 @@ def _vector_neighbors_or_error(vector, num_neighbors, eliminate_duplicates, ctx,
 
 
 # Build similar-tracks JSON list from neighbor results (shared serializer)
-def _serialize_neighbor_results(neighbor_results):
-    return serialize_neighbor_results(neighbor_results)
+def _serialize_neighbor_results(neighbor_results, requested_n=None):
+    rows = serialize_neighbor_results(neighbor_results)
+    return app_server_context.scope_results(rows, requested_n, id_key='item_id')
 
 
 _MOOD_CENTROIDS_DATA = {}  # mood_name -> list of centroid dicts (with vectors)
@@ -252,7 +255,10 @@ def search_tracks_endpoint():
 
     try:
         raw_results = search_tracks_unified(
-            search_query, limit=limit, offset=offset, item_id_filter=item_id_filter
+            search_query,
+            limit=app_server_context.overfetch_limit(limit),
+            offset=offset,
+            item_id_filter=item_id_filter,
         )
         results = []
         for r in raw_results:
@@ -270,6 +276,7 @@ def search_tracks_endpoint():
                 )
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify(results)
     except Exception:
         logger.exception("Error during track search")
@@ -428,14 +435,14 @@ def get_similar_tracks_endpoint():
         centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
             centroid_vector,
-            num_neighbors,
+            app_server_context.overfetch_limit(num_neighbors),
             eliminate_duplicates,
             "mood centroid",
             "No similar tracks found for this mood centroid.",
         )
         if err:
             return err
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
 
     # --- Anchor mode: use anchor's centroid vector ---
     if anchor_id_param is not None:
@@ -450,14 +457,14 @@ def get_similar_tracks_endpoint():
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
             anchor_vector,
-            num_neighbors,
+            app_server_context.overfetch_limit(num_neighbors),
             eliminate_duplicates,
             f"anchor {anchor_id_param}",
             "No similar tracks found for this anchor.",
         )
         if err:
             return err
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
 
     # --- Standard song-based mode ---
     target_item_id = None
@@ -481,7 +488,7 @@ def get_similar_tracks_endpoint():
     try:
         neighbor_results = find_nearest_neighbors_by_id(
             target_item_id,
-            n=num_neighbors,
+            n=app_server_context.overfetch_limit(num_neighbors),
             eliminate_duplicates=eliminate_duplicates,
             mood_similarity=mood_similarity,
             radius_similarity=radius_similarity,
@@ -491,7 +498,7 @@ def get_similar_tracks_endpoint():
                 {"error": "Target track not found in index or no similar tracks found."}
             ), 404
 
-        return jsonify(_serialize_neighbor_results(neighbor_results))
+        return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
     except RuntimeError as e:
         return _neighbor_search_error_response(target_item_id, e, is_runtime=True)
     except Exception as e:
@@ -681,7 +688,37 @@ def create_media_server_playlist():
     # Optional user credentials may be provided by the client (e.g., from the Sonic Fingerprint UI)
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
 
+    from app_server_context import (
+        resolve_request_server_id,
+        create_instant_playlist_for_server,
+        needs_translation,
+    )
     try:
+        server_id = resolve_request_server_id(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        if needs_translation(server_id):
+            try:
+                info = create_instant_playlist_for_server(playlist_name, final_track_ids, server_id)
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            result = info['result']
+            new_playlist_id = result.get('Id') if isinstance(result, dict) else result
+            logger.info(
+                f"Created playlist '{playlist_name}' on server {server_id} "
+                f"({info['mapped']} mapped, {info['skipped']} unavailable)."
+            )
+            return jsonify(
+                {
+                    "message": f"Playlist '{playlist_name}' created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
+                    "playlist_id": new_playlist_id,
+                    "mapped": info['mapped'],
+                    "skipped": info['skipped'],
+                }
+            ), 201
+
         new_playlist_id = create_playlist_from_ids(
             playlist_name, final_track_ids, user_creds=user_creds
         )

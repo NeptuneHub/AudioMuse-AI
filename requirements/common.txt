@@ -40,3 +40,4 @@ argon2-cffi==25.1.0
 gunicorn==25.3.0
 zstandard==0.25.0
 wn==0.13.0
+pyacoustid==1.3.0

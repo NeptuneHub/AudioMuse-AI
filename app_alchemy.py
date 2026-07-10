@@ -27,6 +27,7 @@ import time
 
 from tasks.song_alchemy import song_alchemy
 from app_helper import attach_song_features
+import app_server_context
 import config
 
 logger = logging.getLogger(__name__)
@@ -242,11 +243,14 @@ def alchemy_api():
         results = song_alchemy(
             add_items=add_items,
             subtract_items=subtract_items,
-            n_results=n,
+            n_results=app_server_context.overfetch_limit(n),
             subtract_distance=subtract_distance,
             temperature=temperature,
         )
         attach_song_features(results.get('results'))
+        results['results'] = app_server_context.scope_results(
+            results.get('results'), n, id_key='item_id'
+        )
         # Keep full centroid in response for client-side save action, but not in anchor list endpoint.
         return jsonify(results)
     except ValueError:

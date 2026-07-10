@@ -27,6 +27,7 @@ import logging
 import os
 import config
 
+from . import context
 from .helper import detect_path_format, detect_download_extension, is_auth_error
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,15 @@ _MACHINE_ID_CACHE = {}
 
 
 def _base_url(user_creds=None):
+    creds = context.active_creds(user_creds)
     return (
-        user_creds.get('url') if user_creds and user_creds.get('url') else config.PLEX_URL
+        creds.get('url') if creds and creds.get('url') else config.PLEX_URL
     ).rstrip('/')
 
 
 def _headers(user_creds=None):
-    token = (user_creds.get('token') if user_creds else None) or config.PLEX_TOKEN
+    creds = context.active_creds(user_creds)
+    token = (creds.get('token') if creds else None) or config.PLEX_TOKEN
     headers = {'Accept': 'application/json'}
     if token:
         headers['X-Plex-Token'] = token
@@ -110,6 +113,7 @@ def _normalize_album(item):
 
 
 def _music_sections(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/library/sections"
     try:
         r = requests.get(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)
@@ -129,14 +133,16 @@ def _music_sections(user_creds=None):
 
 
 def list_libraries(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     return _music_sections(user_creds)
 
 
 def _target_sections(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     sections = _music_sections(user_creds)
     if user_creds:
         return sections
-    names_str = config.MUSIC_LIBRARIES
+    names_str = context.active_libraries(config.MUSIC_LIBRARIES)
     if not names_str or not names_str.strip():
         return sections
 
@@ -150,6 +156,7 @@ def _target_sections(user_creds=None):
 
 
 def _paged_metadata(path, params, user_creds=None, page_size=PLEX_PAGE_SIZE, max_items=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}{path}"
     collected = []
     start = 0
@@ -207,6 +214,7 @@ def get_recent_albums(limit):
 
 
 def get_tracks_from_album(album_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/library/metadata/{album_id}/children"
     try:
         r = requests.get(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)
@@ -219,6 +227,7 @@ def get_tracks_from_album(album_id, user_creds=None):
 
 
 def _resolve_part(track_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/library/metadata/{track_id}"
     r = requests.get(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)
     r.raise_for_status()
@@ -270,6 +279,7 @@ def download_track(temp_dir, item):
 
 
 def get_all_songs(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     sections = _target_sections(user_creds)
     all_items = []
     for section in sections:
@@ -287,6 +297,7 @@ def get_all_songs(user_creds=None):
 
 
 def search_albums(query, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     results = []
     for section in _target_sections(user_creds):
         url = f"{_base_url(user_creds)}/library/sections/{section['id']}/all"
@@ -316,6 +327,7 @@ def search_albums(query, user_creds=None):
 
 
 def test_connection(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     try:
         base = _base_url(user_creds)
         r = requests.get(
@@ -383,6 +395,7 @@ def test_connection(user_creds=None):
 
 
 def _list_playlists(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/playlists"
     try:
         r = requests.get(
@@ -408,6 +421,7 @@ def get_all_playlists():
 
 
 def _find_playlist(playlist_name, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     for playlist in _list_playlists(user_creds):
         if playlist.get('Name') == playlist_name:
             return playlist
@@ -419,6 +433,7 @@ def get_playlist_by_name(playlist_name):
 
 
 def _delete_playlist(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/playlists/{playlist_id}"
     try:
         r = requests.delete(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)
@@ -434,6 +449,7 @@ def delete_playlist(playlist_id):
 
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/playlists/{playlist_id}/items"
     try:
         r = requests.get(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)
@@ -446,6 +462,7 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
 
 
 def _machine_identifier(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     base = _base_url(user_creds)
     cached = _MACHINE_ID_CACHE.get(base)
     if cached:
@@ -464,6 +481,7 @@ def _metadata_uri(machine_id, item_ids):
 
 
 def _add_items(playlist_id, item_ids, machine_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     base = _base_url(user_creds)
     for i in range(0, len(item_ids), PLEX_PLAYLIST_BATCH_SIZE):
         batch = item_ids[i : i + PLEX_PLAYLIST_BATCH_SIZE]
@@ -485,6 +503,7 @@ def _add_items(playlist_id, item_ids, machine_id, user_creds=None):
 
 
 def _create_playlist_batched(title, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return None
 
@@ -524,6 +543,7 @@ def create_playlist(base_name, item_ids):
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     try:
         return _create_playlist_batched(
             f"{playlist_name.strip()}_instant", list(item_ids), user_creds
@@ -534,6 +554,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return None
 
@@ -557,6 +578,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
 
 
 def get_top_played_songs(limit, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     sections = _target_sections(user_creds)
     page_size = str(limit) if limit and limit > 0 else str(PLEX_PAGE_SIZE)
 
@@ -589,6 +611,7 @@ def get_top_played_songs(limit, user_creds=None):
 
 
 def get_last_played_time(item_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     url = f"{_base_url(user_creds)}/library/metadata/{item_id}"
     try:
         r = requests.get(url, headers=_headers(user_creds), timeout=REQUESTS_TIMEOUT)

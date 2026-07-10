@@ -254,6 +254,14 @@ if not _is_worker:
         except Exception as _seed_exc:
             app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
 
+        # Keep the default media-server registry row in sync with the config the
+        # setup wizard edits, so single-server installs have one source of truth.
+        try:
+            from tasks.mediaserver import registry as _mediaserver_registry
+            _mediaserver_registry.sync_default_from_config()
+        except Exception as _sync_exc:
+            app.logger.warning("Default media-server registry sync failed at startup: %s", _sync_exc)
+
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.
         _jwt_secret = resolve_jwt_secret(setup_manager)
@@ -929,6 +937,7 @@ def _register_blueprints(flask_app):
     from app_dashboard import dashboard_bp
     from app_users import users_bp
     from app_sync import sync_bp
+    from app_music_servers import music_servers_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
     flask_app.register_blueprint(clustering_bp)
@@ -950,6 +959,7 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(dashboard_bp)
     flask_app.register_blueprint(users_bp)
     flask_app.register_blueprint(sync_bp)
+    flask_app.register_blueprint(music_servers_bp)
 
     try:
         from plugin.blueprint import plugins_bp

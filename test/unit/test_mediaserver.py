@@ -372,7 +372,7 @@ class TestJellyfinDeletePlaylist:
         from tasks.mediaserver.jellyfin import delete_playlist
 
         mock_config.JELLYFIN_URL = 'http://jellyfin:8096'
-        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="test-token"'}
+        mock_config.JELLYFIN_TOKEN = 'test-token'
 
         mock_response = Mock()
         mock_response.raise_for_status = Mock()

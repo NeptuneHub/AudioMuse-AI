@@ -117,6 +117,47 @@ MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
     for media_type in MEDIASERVER_FIELDS_BY_TYPE
 }
 
+# Maps each media-server config field to the key its provider backend reads out
+# of the per-server ``user_creds`` dict. Lets the multi-server registry build a
+# creds dict for the default server straight from these config globals, and lets
+# secondary servers store creds under the exact keys the backends expect. Note
+# navidrome/lyrion use 'user'/'password' while jellyfin/emby use 'user_id'/'token'.
+MEDIASERVER_CRED_KEY_BY_FIELD = {
+    'JELLYFIN_URL': 'url', 'JELLYFIN_USER_ID': 'user_id', 'JELLYFIN_TOKEN': 'token',
+    'EMBY_URL': 'url', 'EMBY_USER_ID': 'user_id', 'EMBY_TOKEN': 'token',
+    'NAVIDROME_URL': 'url', 'NAVIDROME_USER': 'user', 'NAVIDROME_PASSWORD': 'password',
+    'LYRION_URL': 'url',
+    'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+}
+
+# Master switch for the multi-server registry (concurrent Navidrome/Jellyfin/etc).
+# When false the app behaves exactly as the historical single-server build: the
+# global config credentials are the only server and the management UI is hidden.
+MULTI_SERVER_ENABLED = os.environ.get("MULTI_SERVER_ENABLED", "true").lower() == "true"
+
+# Compute a content-based catalogue fingerprint (Chromaprint-or-chroma -> 64-bit
+# SimHash BIGINT) for each analyzed track. The same recording collapses to the
+# same id across media servers, so cross-server matching can be exact. Real
+# Chromaprint is used when its library is present, otherwise a librosa chroma
+# fingerprint (always available) with the identical SimHash pipeline.
+CATALOG_FINGERPRINT_ENABLED = os.environ.get("CATALOG_FINGERPRINT_ENABLED", "true").lower() == "true"
+# Max tracks to backfill a fingerprint for at the end of each analysis run (legacy
+# rows with no fingerprint). Bounded so a huge legacy library catches up over
+# several runs instead of blocking one. 0 disables the backfill.
+CATALOG_FINGERPRINT_BACKFILL_PER_RUN = int(os.environ.get("CATALOG_FINGERPRINT_BACKFILL_PER_RUN", "0"))
+# When true, the catalogue item_id becomes the content fingerprint itself: after
+# analysis the fingerprinted rows are relabelled from the media-server id to the
+# canonical fingerprint id (indexes rebuilt, default server's real ids kept in
+# track_server_map and translated back on output). Server-independent and
+# content-deduplicated, but it rewrites the primary key and rebuilds every index,
+# so it is opt-in. Off = item_id stays the default server's id (fingerprint is
+# only the cross-server match key).
+CATALOG_FINGERPRINT_AS_ID = os.environ.get("CATALOG_FINGERPRINT_AS_ID", "false").lower() == "true"
+# When true, the cross-server matching sweep downloads and fingerprints each
+# secondary server's tracks so matching is exact-by-content. Expensive (one
+# download per track), so off by default; matching falls back to path/metadata.
+MULTISERVER_SWEEP_FINGERPRINT = os.environ.get("MULTISERVER_SWEEP_FINGERPRINT", "false").lower() == "true"
+
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'DATABASE_URL',
     'POSTGRES_USER',
@@ -127,6 +168,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'MEDIASERVER_CRED_KEY_BY_FIELD',
     'APP_VERSION',
     # Admin identity lives in audiomuse_users only. Never mirror it into
     # app_config - stale rows there cause deleted admins to resurrect.

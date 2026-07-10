@@ -24,6 +24,7 @@ import logging
 
 from flask import Blueprint, jsonify, render_template, request
 
+import app_server_context
 from app_helper import attach_song_features
 from error import error_manager
 from error.error_dictionary import ERR_LYRICS_FAILED
@@ -150,10 +151,11 @@ def lyrics_search_axes_api():
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
-        results = search_by_axes(targets, limit=limit)
+        results = search_by_axes(targets, limit=app_server_context.overfetch_limit(limit))
         if not results:
             return jsonify({'error': 'No lyrics found.', 'results': []}), 404
         attach_song_features(results)
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
@@ -228,10 +230,11 @@ def lyrics_search_text_api():
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
-        results = search_by_text(query, limit=limit)
+        results = search_by_text(query, limit=app_server_context.overfetch_limit(limit))
         if not results:
             return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
         attach_song_features(results)
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")

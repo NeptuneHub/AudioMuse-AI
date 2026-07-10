@@ -33,6 +33,7 @@ from config import (
     DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
 )
 from app_helper import top_stratified_genre
+import app_server_context
 import numpy as np
 import math  # Import the math module
 
@@ -387,6 +388,8 @@ def find_path_endpoint():
             if total_distance is not None and math.isfinite(total_distance)
             else 0.0
         )
+
+        path = app_server_context.scope_results(path, None, id_key='item_id')
 
         return jsonify({"path": path, "total_distance": final_distance})
 

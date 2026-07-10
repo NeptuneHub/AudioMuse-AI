@@ -21,6 +21,7 @@ from . import http as requests
 import logging
 import os
 import config
+from . import context
 
 from .helper import detect_path_format, detect_download_extension, is_auth_error
 from .helper import select_best_artist as _select_best_artist
@@ -33,7 +34,7 @@ _TRACK_FIELDS = "Path,ProductionYear,IndexNumber,ParentIndexNumber,AlbumArtist,A
 
 
 def _get_target_library_ids():
-    library_names_str = config.MUSIC_LIBRARIES
+    library_names_str = context.active_libraries(config.MUSIC_LIBRARIES)
 
     if not library_names_str.strip():
         return None
@@ -42,9 +43,9 @@ def _get_target_library_ids():
         name.strip().lower() for name in library_names_str.split(',') if name.strip()
     }
 
-    url = f"{config.EMBY_URL}/emby/Library/VirtualFolders"
+    url = f"{_emby_base_url()}/emby/Library/VirtualFolders"
     try:
-        r = requests.get(url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_emby_headers_from_creds(), timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
 
         all_libraries = r.json()
@@ -98,6 +99,7 @@ def _get_target_library_ids():
 
 
 def list_libraries(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     base_url = (
         user_creds.get('url') if user_creds and user_creds.get('url') else config.EMBY_URL
     ).rstrip('/')
@@ -124,21 +126,32 @@ def list_libraries(user_creds=None):
 
 
 def _emby_base_url(user_creds=None):
+    creds = context.active_creds(user_creds)
     return (
-        user_creds.get('url') if user_creds and user_creds.get('url') else config.EMBY_URL
+        creds.get('url') if creds and creds.get('url') else config.EMBY_URL
     ).rstrip('/')
+
+
+def _emby_token(user_creds=None):
+    creds = context.active_creds(user_creds)
+    return creds.get('token') if creds else config.EMBY_TOKEN
+
+
+def _emby_user_id(user_creds=None):
+    creds = context.active_creds(user_creds)
+    return creds.get('user_id') if creds else config.EMBY_USER_ID
 
 
 def _emby_headers_from_creds(user_creds=None):
     headers = dict(config.HEADERS or {})
-    token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
+    token = _emby_token(user_creds)
     if token:
         headers['X-Emby-Token'] = token
     return headers
 
 
 def _emby_get_users(token):
-    url = f"{config.EMBY_URL}/emby/Users"
+    url = f"{_emby_base_url()}/emby/Users"
     headers = {"X-Emby-Token": token}
     try:
         r = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
@@ -173,6 +186,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
     Fetches recent standalone audio tracks that are not properly organized in albums.
     This captures orphaned tracks, loose files, and tracks with missing album metadata.
     """
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if (
         target_library_ids is not None
@@ -192,7 +206,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
         start_index = 0
         page_size = 500
         while True:
-            url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+            url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
             params = {
                 "IncludeItemTypes": "Audio",
                 "SortBy": "DateCreated",
@@ -204,7 +218,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
             }
             try:
                 r = requests.get(
-                    url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                    url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT
                 )
                 r.raise_for_status()
                 response_data = r.json()
@@ -220,9 +234,9 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                         standalone_tracks.append(track)
                     else:
                         try:
-                            parent_url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{parent_id}"
+                            parent_url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{parent_id}"
                             parent_r = requests.get(
-                                parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT
+                                parent_url, headers=_emby_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT
                             )
                             if parent_r.ok:
                                 parent_info = parent_r.json()
@@ -252,7 +266,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
             start_index = 0
             page_size = 500
             while True:
-                url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+                url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
                 params = {
                     "IncludeItemTypes": "Audio",
                     "SortBy": "DateCreated",
@@ -265,7 +279,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                 }
                 try:
                     r = requests.get(
-                        url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                        url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT
                     )
                     r.raise_for_status()
                     response_data = r.json()
@@ -282,10 +296,10 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
                         else:
                             try:
                                 parent_url = (
-                                    f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{parent_id}"
+                                    f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{parent_id}"
                                 )
                                 parent_r = requests.get(
-                                    parent_url, headers=config.HEADERS, timeout=REQUESTS_TIMEOUT
+                                    parent_url, headers=_emby_headers_from_creds(user_creds), timeout=REQUESTS_TIMEOUT
                                 )
                                 if parent_r.ok:
                                     parent_info = parent_r.json()
@@ -323,6 +337,7 @@ def _get_recent_standalone_tracks(limit, target_library_ids=None, user_creds=Non
 
 
 def _get_recent_albums_only(limit, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     target_library_ids = _get_target_library_ids()
 
@@ -340,7 +355,7 @@ def _get_recent_albums_only(limit, user_creds=None):
         start_index = 0
         page_size = 500
         while True:
-            url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+            url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
             params = {
                 "IncludeItemTypes": "MusicAlbum",
                 "SortBy": "DateCreated",
@@ -351,7 +366,7 @@ def _get_recent_albums_only(limit, user_creds=None):
             }
             try:
                 r = requests.get(
-                    url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                    url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT
                 )
                 r.raise_for_status()
                 response_data = r.json()
@@ -379,7 +394,7 @@ def _get_recent_albums_only(limit, user_creds=None):
             start_index = 0
             page_size = 500
             while True:
-                url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+                url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
                 params = {
                     "IncludeItemTypes": "MusicAlbum",
                     "SortBy": "DateCreated",
@@ -391,7 +406,7 @@ def _get_recent_albums_only(limit, user_creds=None):
                 }
                 try:
                     r = requests.get(
-                        url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT
+                        url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT
                     )
                     r.raise_for_status()
                     response_data = r.json()
@@ -457,6 +472,7 @@ def get_recent_music_items(limit):
 
 
 def get_tracks_from_album(album_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     if str(album_id).startswith('standalone_'):
         real_track_id = album_id.replace('standalone_', '')
@@ -525,10 +541,10 @@ def download_track(temp_dir, item):
     try:
         track_id = item['Id']
         file_extension = detect_download_extension(item)
-        download_url = f"{config.EMBY_URL}/emby/Items/{track_id}/Download"
+        download_url = f"{_emby_base_url()}/emby/Items/{track_id}/Download"
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
         with requests.get(
-            download_url, headers=config.HEADERS, stream=True, timeout=REQUESTS_TIMEOUT
+            download_url, headers=_emby_headers_from_creds(), stream=True, timeout=REQUESTS_TIMEOUT
         ) as r:
             r.raise_for_status()
             with open(local_filename, 'wb') as f:
@@ -542,6 +558,7 @@ def download_track(temp_dir, item):
 
 
 def get_all_songs(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     all_items = []
@@ -589,6 +606,7 @@ def get_all_songs(user_creds=None):
 
 
 def search_albums(query, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     params = {
@@ -623,6 +641,7 @@ def search_albums(query, user_creds=None):
 
 
 def test_connection(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     try:
         user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
         url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
@@ -673,11 +692,12 @@ def test_connection(user_creds=None):
 
 
 def get_playlist_by_name(playlist_name, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         playlists = r.json().get("Items") or []
 
@@ -693,6 +713,7 @@ def get_playlist_by_name(playlist_name, user_creds=None):
 
 
 def create_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
     if not token:
@@ -707,7 +728,7 @@ def create_playlist(playlist_name, item_ids, user_creds=None):
             ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         )
         url = (
-            f"{config.EMBY_URL}/emby/Playlists"
+            f"{_emby_base_url(user_creds)}/emby/Playlists"
             f"?Name={requests.utils.quote(final_playlist_name)}"
             f"&Ids={requests.utils.quote(ids_param)}"
             f"&UserId={user_id}"
@@ -740,11 +761,12 @@ def create_playlist(playlist_name, item_ids, user_creds=None):
 
 
 def get_all_playlists(user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     params = {"IncludeItemTypes": "Playlist", "Recursive": True}
     try:
-        r = requests.get(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return r.json().get("Items") or []
     except Exception:
@@ -753,10 +775,10 @@ def get_all_playlists(user_creds=None):
 
 
 def delete_playlist(playlist_id):
-    url = f"{config.EMBY_URL}/emby/Items/Delete"
+    url = f"{_emby_base_url()}/emby/Items/Delete"
     params = {"Ids": playlist_id}
     try:
-        r = requests.post(url, headers=config.HEADERS, params=params, timeout=REQUESTS_TIMEOUT)
+        r = requests.post(url, headers=_emby_headers_from_creds(), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
         return True
     except Exception:
@@ -765,12 +787,13 @@ def delete_playlist(playlist_id):
 
 
 def get_top_played_songs(limit, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
     if not user_id or not token:
         raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items"
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
     headers = {"X-Emby-Token": token}
     params = {
         "IncludeItemTypes": "Audio",
@@ -801,12 +824,13 @@ def get_top_played_songs(limit, user_creds=None):
 
 
 def get_last_played_time(item_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = user_creds.get('token') if user_creds else config.EMBY_TOKEN
     if not user_id or not token:
         raise ValueError("Emby User ID and Token are required.")
 
-    url = f"{config.EMBY_URL}/emby/Users/{user_id}/Items/{item_id}"
+    url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items/{item_id}"
     headers = {"X-Emby-Token": token}
     params = {"Fields": "UserData"}
     try:
@@ -822,8 +846,8 @@ def get_last_played_time(item_id, user_creds=None):
 
 def get_lyrics(track_id: str, timeout: float = 2.5):
     try:
-        url = f"{config.EMBY_URL}/emby/Items/{track_id}/Lyrics"
-        r = requests.get(url, headers=config.HEADERS, timeout=timeout)
+        url = f"{_emby_base_url()}/emby/Items/{track_id}/Lyrics"
+        r = requests.get(url, headers=_emby_headers_from_creds(), timeout=timeout)
         r.raise_for_status()
         data = r.json()
         lyrics_lines = data.get('Lyrics') or []
@@ -837,6 +861,7 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
     if not token:
@@ -851,7 +876,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
             ",".join(item_ids) if isinstance(item_ids, (list, set, tuple)) else str(item_ids)
         )
         url = (
-            f"{config.EMBY_URL}/emby/Playlists"
+            f"{_emby_base_url(user_creds)}/emby/Playlists"
             f"?Name={requests.utils.quote(final_playlist_name)}"
             f"&Ids={requests.utils.quote(ids_param)}"
             f"&UserId={user_id}"
@@ -884,7 +909,7 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
 
 
 def _fetch_playlist_items(playlist_id, user_id, headers):
-    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    url = f"{_emby_base_url()}/emby/Playlists/{playlist_id}/Items"
     params = {"UserId": user_id}
     try:
         r = requests.get(url, headers=headers, params=params, timeout=REQUESTS_TIMEOUT)
@@ -909,6 +934,7 @@ def _get_playlist_entry_ids(playlist_id, user_id, headers):
 
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
     items = _fetch_playlist_items(playlist_id, user_id, headers)
@@ -920,7 +946,7 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
 def _remove_playlist_entries(playlist_id, entry_ids, headers):
     if not entry_ids:
         return True
-    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    url = f"{_emby_base_url()}/emby/Playlists/{playlist_id}/Items"
     for i in range(0, len(entry_ids), EMBY_PLAYLIST_BATCH_SIZE):
         batch = entry_ids[i : i + EMBY_PLAYLIST_BATCH_SIZE]
         params = {"EntryIds": ",".join(batch)}
@@ -938,7 +964,7 @@ def _remove_playlist_entries(playlist_id, entry_ids, headers):
 def _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
     if not item_ids:
         return True
-    url = f"{config.EMBY_URL}/emby/Playlists/{playlist_id}/Items"
+    url = f"{_emby_base_url()}/emby/Playlists/{playlist_id}/Items"
     for i in range(0, len(item_ids), EMBY_PLAYLIST_BATCH_SIZE):
         batch = item_ids[i : i + EMBY_PLAYLIST_BATCH_SIZE]
         params = {"Ids": ",".join(batch), "UserId": user_id}
@@ -954,6 +980,7 @@ def _add_items_to_playlist(playlist_id, item_ids, user_id, headers):
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     if not item_ids:
         return None
 
@@ -970,7 +997,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         rest = item_ids[EMBY_PLAYLIST_BATCH_SIZE:]
         ids_param = ",".join(first_batch)
         url = (
-            f"{config.EMBY_URL}/emby/Playlists"
+            f"{_emby_base_url(user_creds)}/emby/Playlists"
             f"?Name={requests.utils.quote(playlist_name)}"
             f"&Ids={requests.utils.quote(ids_param)}"
             f"&UserId={user_id}"

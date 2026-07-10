@@ -22,6 +22,7 @@ import json
 import logging
 import sys
 import time
+import uuid
 
 import numpy as np
 import psycopg2
@@ -580,6 +581,7 @@ def save_track_analysis_and_embedding(
     year=None,
     rating=None,
     file_path=None,
+    fingerprint=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -600,8 +602,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path, fingerprint)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -615,7 +617,8 @@ def save_track_analysis_and_embedding(
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path
+                file_path = EXCLUDED.file_path,
+                fingerprint = COALESCE(EXCLUDED.fingerprint, score.fingerprint)
         """,
             (
                 item_id,
@@ -632,6 +635,7 @@ def save_track_analysis_and_embedding(
                 year,
                 rating,
                 file_path,
+                fingerprint,
             ),
         )
 
@@ -806,6 +810,21 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'mbid')"
+            )
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'mbid' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN mbid TEXT")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'fingerprint')"
+            )
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'fingerprint' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN fingerprint BIGINT")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_fingerprint ON score (fingerprint) WHERE fingerprint IS NOT NULL"
+            )
 
             cur.execute(
                 "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"
@@ -1134,6 +1153,54 @@ def init_db():
 
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS music_servers (
+                    server_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    server_type TEXT NOT NULL,
+                    creds JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    music_libraries TEXT NOT NULL DEFAULT '',
+                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_single_default "
+                "ON music_servers (is_default) WHERE is_default"
+            )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS track_server_map (
+                    item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE,
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_track_id TEXT NOT NULL,
+                    match_tier TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (item_id, server_id)
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_track_server_map_reverse "
+                "ON track_server_map (server_id, provider_track_id)"
+            )
+            cur.execute("SELECT COUNT(*) FROM music_servers")
+            if cur.fetchone()[0] == 0:
+                _seed_type = config.MEDIASERVER_TYPE
+                _seed_creds = {}
+                for _field in config.MEDIASERVER_FIELDS_BY_TYPE.get(_seed_type, []):
+                    _key = config.MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
+                    if _key:
+                        _seed_creds[_key] = getattr(config, _field, "") or ""
+                cur.execute(
+                    "INSERT INTO music_servers "
+                    "(server_id, name, server_type, creds, music_libraries, is_default, enabled) "
+                    "VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)",
+                    (uuid.uuid4().hex, (_seed_type or 'media server').capitalize(),
+                     _seed_type, Json(_seed_creds), config.MUSIC_LIBRARIES or ""),
+                )
+                logger.info("Seeded default media server '%s' into music_servers registry", _seed_type)
+
             _create_plugins_table(cur)
 
             db.commit()
@@ -1444,6 +1511,20 @@ def get_app_config_value(key, default=None, conn=None):
         cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
         row = cur.fetchone()
         return row[0] if row else default
+    finally:
+        cur.close()
+
+
+def set_track_fingerprint(item_id, fingerprint, conn=None):
+    """Store the content fingerprint (signed BIGINT) for a track."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE score SET fingerprint = %s WHERE item_id = %s",
+            (fingerprint, item_id),
+        )
+        db.commit()
     finally:
         cur.close()
 

@@ -23,6 +23,8 @@ Main Features:
 from flask import Blueprint, render_template, request, jsonify
 import logging
 
+import app_server_context
+
 logger = logging.getLogger(__name__)
 
 clap_search_bp = Blueprint('clap_search_bp', __name__, template_folder='../templates')
@@ -150,8 +152,10 @@ def clap_search_api():
             ), 503
 
         # Perform search
-        results = search_by_text(query, limit=limit)
+        results = search_by_text(query, limit=app_server_context.overfetch_limit(limit))
         attach_song_features(results)
+
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
 
         return jsonify({'query': query, 'results': results, 'count': len(results)})
 

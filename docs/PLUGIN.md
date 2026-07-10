@@ -280,7 +280,7 @@ Register a listener with `ctx.on_song_analyzed(func)` and AudioMuse-AI calls it 
 
 Your function receives one dict:
 
-* `item_id` - the media-server id (string).
+* `item_id` - the media-server id (string). In a multi-server install this is always the **default** server's id (the canonical id used across the database). To reach the same track on another configured server, translate it with `from tasks.mediaserver import registry; registry.translate_ids([item_id], other_server_id)`. See [MULTI_SERVER.md](MULTI_SERVER.md).
 * `run_id` - the analysis run's task id. Every song of one "Start Analysis" shares the same `run_id`, so you can count or group per run (reset when it changes).
 * `audio_path` - the temporary audio file on disk. It is deleted right after your listener returns, so read it now if you need it.
 * `metadata` - `title`, `artist`, `album`, `album_artist`, `year`, `rating`, `file_path`, `album_id`, `album_name`.

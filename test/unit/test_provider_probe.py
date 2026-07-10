@@ -59,6 +59,7 @@ class TestNormalizeTrack:
         'year',
         'track_number',
         'disc_number',
+        'mbid',
     }
 
     def test_none_item_returns_empty_shape(self, probe):

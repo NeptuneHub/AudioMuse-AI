@@ -21,6 +21,7 @@ Main Features:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 
+import app_server_context
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
 from tasks.artist_gmm_manager import find_similar_artists, search_artists_by_name, get_artist_tracks
@@ -267,6 +268,7 @@ def get_artist_tracks_endpoint():
 
     try:
         tracks = get_artist_tracks(query_artist)
+        tracks = app_server_context.scope_results(tracks, None, id_key='item_id')
         return jsonify(tracks)
     except Exception:
         logger.exception(f"Error getting tracks for artist '{query_artist}'")

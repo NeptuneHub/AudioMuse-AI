@@ -868,8 +868,25 @@ def create_media_server_playlist_api():
     if not item_ids:
         return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
 
+    from app_server_context import (
+        resolve_request_server_id,
+        create_instant_playlist_for_server,
+        needs_translation,
+    )
     try:
-        created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
+        server_id = resolve_request_server_id(data)
+    except ValueError as exc:
+        return jsonify({"message": f"Error: {exc}"}), 400
+
+    try:
+        if needs_translation(server_id):
+            try:
+                info = create_instant_playlist_for_server(user_playlist_name, item_ids, server_id)
+            except ValueError as exc:
+                return jsonify({"message": f"Error: {exc}"}), 400
+            created_playlist_info = info['result']
+        else:
+            created_playlist_info = create_instant_playlist(user_playlist_name, item_ids)
 
         if not created_playlist_info:
             raise Exception("Media server did not return playlist information after creation.")
