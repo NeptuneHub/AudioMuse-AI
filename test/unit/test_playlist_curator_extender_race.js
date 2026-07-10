@@ -146,7 +146,7 @@ async function createHarness() {
     };
 
     const source = fs.readFileSync(EXTENDER_JS, 'utf8');
-    vm.runInNewContext(source, context, { filename: EXTENDER_JS });
+    vm.runInNewContext(source, context, { filename: EXTENDER_JS }); // NOSONAR -- Executes a checked-in script in an isolated test VM.
 
     const initialize = documentListeners.get('DOMContentLoaded');
     assert.equal(typeof initialize, 'function');

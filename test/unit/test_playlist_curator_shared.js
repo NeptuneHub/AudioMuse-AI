@@ -180,7 +180,7 @@ function createHarness() {
     };
 
     const source = fs.readFileSync(SHARED_JS, 'utf8');
-    vm.runInNewContext(source, context, { filename: SHARED_JS });
+    vm.runInNewContext(source, context, { filename: SHARED_JS }); // NOSONAR -- Executes a checked-in script in an isolated test VM.
 
     return {
         buttons: [

@@ -11,7 +11,7 @@ import app_playlist_curator
 @pytest.fixture
 def client():
     app = Flask(__name__)
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True)  # NOSONAR -- Isolated Flask unit app; no live CSRF surface.
     app.register_blueprint(app_playlist_curator.playlist_curator_bp)
     return app.test_client()
 

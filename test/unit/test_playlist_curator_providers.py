@@ -11,7 +11,7 @@ import app_playlist_curator
 @pytest.fixture
 def client():
     app = Flask(__name__)
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True)  # NOSONAR -- Isolated Flask unit app; no live CSRF surface.
     app.register_blueprint(app_playlist_curator.playlist_curator_bp)
     return app.test_client()
 
@@ -86,7 +86,7 @@ def test_plex_stream_resolves_media_part_and_proxies_range(client):
 
     with (
         patch.object(app_playlist_curator.config, "MEDIASERVER_TYPE", "plex"),
-        patch.object(app_playlist_curator.config, "PLEX_URL", "http://plex:32400"),
+        patch.object(app_playlist_curator.config, "PLEX_URL", "https://plex:32400"),
         patch.object(app_playlist_curator.config, "PLEX_TOKEN", "plex-token"),
         patch(
             "tasks.mediaserver.plex._resolve_part",
@@ -108,7 +108,7 @@ def test_plex_stream_resolves_media_part_and_proxies_range(client):
     assert response.headers["Content-Type"] == "audio/flac"
     resolve_part.assert_called_once_with("plex-track-1")
     get_stream.assert_called_once_with(
-        "http://plex:32400/library/parts/7/file.flac",
+        "https://plex:32400/library/parts/7/file.flac",
         params=None,
         headers={"X-Plex-Token": "plex-token", "Range": "bytes=0-4"},
         stream=True,
