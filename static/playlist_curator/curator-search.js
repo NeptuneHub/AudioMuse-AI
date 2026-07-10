@@ -1,5 +1,5 @@
 /* ============================================================
-   Playlist Curator — Smart Search page
+   Playlist Curator - Smart Search page
    - Filter builder UI (add/remove rules, dynamic field/op/value)
    - Run search via POST /api/curator/search
    - Render results (table on desktop, cards on mobile)
@@ -56,7 +56,7 @@
     let skippedIds = new Set();
     let renderToken = 0;
 
-    // Pagination state — Smart Search returns pages of `per_page`. lastResults
+    // Pagination state - Smart Search returns pages of `per_page`. lastResults
     // is the union of all pages currently loaded (single page after Run search;
     // grows when "Load all" walks remaining pages).
     let lastPayload = null;

@@ -1,5 +1,5 @@
 /* ============================================================
-   Playlist Curator — page-specific design system
+   Playlist Curator - page-specific design system
    Matches the "Playlist Curator redesign" prototype (Option B):
    two pages (Smart Search + Playlist Extender) bound by a shared
    right-rail Workbench on desktop / bottom-sheet on mobile.
@@ -485,7 +485,7 @@ html.dark-mode .curator-select {
     width: 100%;
     border-collapse: collapse;
     /* Fixed layout means column widths come from the col-* rules below
-       instead of being recomputed against each row's content — so adding a
+       instead of being recomputed against each row's content - so adding a
        track (which swaps the action cell to a wider pill) no longer pushes
        the actions column off-screen. */
     table-layout: fixed;
@@ -720,7 +720,7 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 .curator-dup-row .curator-select { width: 90px; flex: 0 0 auto; }
 .curator-dup-row .curator-field { flex: 1; min-width: 140px; }
 
-/* Year-range dual slider — re-uses tokens from style.css */
+/* Year-range dual slider - re-uses tokens from style.css */
 .curator-dual-range-container {
     position: relative;
     height: 30px;

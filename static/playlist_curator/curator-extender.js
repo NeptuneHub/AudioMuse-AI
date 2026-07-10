@@ -1,5 +1,5 @@
 /* ============================================================
-   Playlist Curator — Playlist Extender page
+   Playlist Curator - Playlist Extender page
    - Seed dropdown: Workbench (default if non-empty) + AudioMuse
      cluster playlists + media-server playlists.
    - Tune-the-search panel (collapsible): similarity, min rating,
@@ -464,7 +464,7 @@
             : '';
         const influenceCell = inWb
             ? `<button type="button" class="curator-influence-btn" data-level="${inf}" data-influence-id="${m.id}" title="${escHtml(infInfo.tip)}">${escHtml(infInfo.label)}</button>`
-            : `<span style="color:var(--text-muted);font-size:11px;">—</span>`;
+            : `<span style="color:var(--text-muted);font-size:11px;">-</span>`;
         const actionHtml = inWb ? `
             <div class="curator-row-actions">
                 <span class="curator-pill" data-tone="success" title="In Workbench">${ICONS.check} Added</span>
@@ -668,7 +668,7 @@
             }
         });
 
-        // Re-render on workbench changes — surgical when possible.
+        // Re-render on workbench changes - surgical when possible.
         document.addEventListener('curator:workbench:changed', (e) => {
             refreshWorkbenchOption();
             if (lastResults.length === 0) return;

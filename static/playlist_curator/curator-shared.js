@@ -1,5 +1,5 @@
 /* ============================================================
-   Playlist Curator — shared client logic
+   Playlist Curator - shared client logic
    Loaded on BOTH the Smart Search and Playlist Extender pages.
    Owns:
      - Workbench state (in-memory + localStorage), DOM rendering
@@ -42,9 +42,9 @@
 
     const INFLUENCE = [
         { level: 0, label: 'Normal', tip: 'Same influence as all other tracks' },
-        { level: 1, label: 'Boost',  tip: '~5% influence — nudges results toward this track' },
-        { level: 2, label: 'Strong', tip: '~15% influence — noticeably shapes results' },
-        { level: 3, label: 'Focus',  tip: '~30% influence — dominates the search direction' },
+        { level: 1, label: 'Boost',  tip: '~5% influence - nudges results toward this track' },
+        { level: 2, label: 'Strong', tip: '~15% influence - noticeably shapes results' },
+        { level: 3, label: 'Focus',  tip: '~30% influence - dominates the search direction' },
     ];
     function getInfluenceInfo(level) { return INFLUENCE[level] || INFLUENCE[0]; }
     window.CURATOR_INFLUENCE = INFLUENCE;
@@ -91,7 +91,7 @@
 
     function getWorkbench() { return workbench; }
 
-    // Public mutators — page scripts call these
+    // Public mutators - page scripts call these
     function workbenchAdd(track, source) {
         if (!track || !track.item_id) return;
         if (workbench.tracks.some(t => t.item_id === track.item_id)) return;
@@ -202,7 +202,7 @@
         if (total === 0) {
             const onSearchPage = document.body.dataset.curatorPage === 'search';
             const msg = onSearchPage
-                ? "Add tracks from your search results — they'll show up here."
+                ? "Add tracks from your search results - they'll show up here."
                 : "No seed yet. Switch to Smart Search to find tracks first.";
             list.innerHTML = '<div class="curator-wb-empty">' + escHtml(msg) + '</div>';
         } else {
@@ -466,7 +466,7 @@
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Save failed');
-            toast(`Saved "${name.trim()}" — ${trackIds.length} tracks`, 'success');
+            toast(`Saved "${name.trim()}" - ${trackIds.length} tracks`, 'success');
             workbenchClear();
             return true;
         } catch (e) {
@@ -500,7 +500,7 @@
                     <span class="curator-dedup-badge ${stateClass}">${badgeText}</span>
                     <div class="curator-dedup-track-info">
                         <div class="curator-dedup-track-title">${title}</div>
-                        <div class="curator-dedup-track-meta">${artist} — ${album}${year}${rating}</div>
+                        <div class="curator-dedup-track-meta">${artist} - ${album}${year}${rating}</div>
                     </div>
                     <span style="font-size:11px;color:var(--text-muted);">score: ${escHtml(track.score)}</span>
                 </div>`;

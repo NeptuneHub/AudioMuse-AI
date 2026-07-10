@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 
 def get_score_data_lite_by_ids(item_ids_list):
     """
-    Slim version of get_score_data_by_ids — drops the large text columns
+    Slim version of get_score_data_by_ids - drops the large text columns
     (mood_vector, other_features) and unused fields (key, scale, energy,
     file_path) so list-style responses (e.g. paginated Smart Search) stay small.
     """

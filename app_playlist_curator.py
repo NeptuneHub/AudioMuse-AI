@@ -1,3 +1,23 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for playlist curation and smart-search workflows.
+
+Provides pages and API endpoints for searching analyzed tracks, extending
+playlists from embedding centroids, reviewing duplicates, and saving playlists
+through supported media servers.
+
+Main Features:
+* Smart-search filters over score metadata and analysis features.
+* Weighted embedding-centroid playlist extension and duplicate detection.
+* Media-server playlist loading, preview, and persistence routes.
+"""
+
 from flask import Blueprint, jsonify, request, render_template, Response, stream_with_context, redirect, url_for
 import logging
 import re
@@ -15,10 +35,10 @@ playlist_curator_bp = Blueprint('playlist_curator_bp', __name__, template_folder
 INTERNAL_ERROR_MESSAGE = "Internal error"
 
 INFLUENCE_LEVELS = {
-    0: 0.0,    # x1 — equal weight
-    1: 0.05,   # Boost — ~5% of centroid
-    2: 0.15,   # Strong — ~15% of centroid
-    3: 0.30,   # Focus — ~30% of centroid
+    0: 0.0,    # x1 - equal weight
+    1: 0.05,   # Boost - ~5% of centroid
+    2: 0.15,   # Strong - ~15% of centroid
+    3: 0.30,   # Focus - ~30% of centroid
 }
 
 VALID_LEVELS = set(INFLUENCE_LEVELS.keys())
@@ -572,7 +592,7 @@ def search_api():
 
         # Find similar songs. The previous formula `source_count * 3` asked
         # Voyager for 4 000+ candidates on big seeds, which (with the library's
-        # internal 5× expansion for eliminate_duplicates) forced HNSW into a
+        # internal 5x expansion for eliminate_duplicates) forced HNSW into a
         # linear scan and burned ~30 s of wallclock. We only ever keep
         # max_songs (default 50) results, so this needs a fraction of that:
         #   - max_songs * 10 covers rating/year/dup attrition
@@ -597,7 +617,7 @@ def search_api():
 
         # NOTE: don't pre-fetch candidate vectors here. The filter loop below
         # breaks at max_songs (default 50, max 500) and the dup-annotation
-        # block only needs vectors for the ~max_songs filtered_results — not all
+        # block only needs vectors for the ~max_songs filtered_results - not all
         # n_candidates (which can be 4000+ for large source playlists).
 
         filtered_results = []
@@ -673,7 +693,7 @@ def search_api():
 
         if source_vectors:
             # Now (and only now) batch-fetch the small surviving filtered_results
-            # set — bounded by max_songs, not by n_candidates.
+            # set - bounded by max_songs, not by n_candidates.
             result_ids_for_dup = [str(r['item_id']) for r in filtered_results]
             result_vectors = get_vectors_by_ids(result_ids_for_dup) if result_ids_for_dup else {}
             source_meta_map = {m['item_id']: m for m in source_tracks_meta}
