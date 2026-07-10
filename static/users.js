@@ -3,18 +3,22 @@
 // - only admins can create/delete accounts or change another user's password
 // - non-admins only see themselves in /api/users and can only change their
 //   own password
+// - user creation, password changes, and deletions require the acting user
+//   to confirm with their own password (sent as current_password)
 // Mirrored in the UI so admins see everyone plus create/delete controls,
 // and non-admins only see their own row with a "Change password" button.
 (function () {
     const nameInput = document.getElementById('additional-user-name');
     const passInput = document.getElementById('additional-user-password');
     const passConfirmInput = document.getElementById('additional-user-password-confirm');
+    const currentInput = document.getElementById('additional-user-current-password');
     const roleInput = document.getElementById('additional-user-role');
     const addBtn = document.getElementById('additional-user-add');
     const addToggleBtn = document.getElementById('add-user-toggle');
     const addCancelBtn = document.getElementById('add-user-cancel');
     const addPanel = document.getElementById('add-user-panel');
     const feedback = document.getElementById('additional-user-feedback');
+    const pageFeedback = document.getElementById('users-page-feedback');
     const tbody = document.getElementById('additional-users-tbody');
     const table = document.getElementById('additional-users-table');
     if (!tbody || !table) return;
@@ -26,11 +30,23 @@
     const pwTarget = document.getElementById('change-password-target');
     const pwNew = document.getElementById('change-password-new');
     const pwConfirm = document.getElementById('change-password-confirm');
+    const pwCurrent = document.getElementById('change-password-current');
+    const pwCurrentLabel = document.getElementById('change-password-current-label');
+    const pwConfirmHint = document.getElementById('change-password-confirm-hint');
     const pwSave = document.getElementById('change-password-save');
     const pwCancel = document.getElementById('change-password-cancel');
     const pwFeedback = document.getElementById('change-password-feedback');
     let pwTargetId = null;
     let pwTargetName = '';
+
+    const delPanel = document.getElementById('delete-user-panel');
+    const delTarget = document.getElementById('delete-user-target');
+    const delCurrent = document.getElementById('delete-user-current');
+    const delConfirmBtn = document.getElementById('delete-user-confirm');
+    const delCancelBtn = document.getElementById('delete-user-cancel');
+    const delFeedback = document.getElementById('delete-user-feedback');
+    let delTargetId = null;
+    let delTargetName = '';
 
     function showFeedback(msg, kind) {
         if (!feedback) return;
@@ -40,12 +56,28 @@
         feedback.style.display = msg ? '' : 'none';
     }
 
+    function showPageFeedback(msg, kind) {
+        if (!pageFeedback) return;
+        pageFeedback.textContent = msg || '';
+        pageFeedback.className = 'inline-feedback';
+        if (kind) pageFeedback.classList.add('status-' + kind);
+        pageFeedback.style.display = msg ? '' : 'none';
+    }
+
     function showPwFeedback(msg, kind) {
         if (!pwFeedback) return;
         pwFeedback.textContent = msg || '';
         pwFeedback.className = 'inline-feedback';
         if (kind) pwFeedback.classList.add('status-' + kind);
         pwFeedback.style.display = msg ? '' : 'none';
+    }
+
+    function showDelFeedback(msg, kind) {
+        if (!delFeedback) return;
+        delFeedback.textContent = msg || '';
+        delFeedback.className = 'inline-feedback';
+        if (kind) delFeedback.classList.add('status-' + kind);
+        delFeedback.style.display = msg ? '' : 'none';
     }
 
     function formatDate(iso) {
@@ -60,11 +92,23 @@
 
     function openPasswordPanel(id, username) {
         closeAddPanel();
+        closeDeletePanel();
         pwTargetId = id;
         pwTargetName = username;
         if (pwTarget) pwTarget.textContent = 'Target user: ' + username;
+        const isSelf = currentUser && username === currentUser;
+        if (isSelf) {
+            if (pwConfirmHint) pwConfirmHint.textContent = 'Confirm this change with your current password.';
+            if (pwCurrentLabel) pwCurrentLabel.textContent = 'Current password';
+            if (pwCurrent) pwCurrent.placeholder = 'your current password';
+        } else {
+            if (pwConfirmHint) pwConfirmHint.textContent = 'You are changing the password of "' + username + '". Enter your admin password to confirm this operation.';
+            if (pwCurrentLabel) pwCurrentLabel.textContent = 'Your admin password';
+            if (pwCurrent) pwCurrent.placeholder = 'your admin password';
+        }
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
+        if (pwCurrent) pwCurrent.value = '';
         showPwFeedback('', null);
         if (pwPanel) {
             pwPanel.style.display = '';
@@ -79,14 +123,40 @@
         if (pwPanel) pwPanel.style.display = 'none';
         if (pwNew) pwNew.value = '';
         if (pwConfirm) pwConfirm.value = '';
+        if (pwCurrent) pwCurrent.value = '';
         showPwFeedback('', null);
+    }
+
+    function openDeletePanel(id, username) {
+        closeAddPanel();
+        closePasswordPanel();
+        delTargetId = id;
+        delTargetName = username;
+        if (delTarget) delTarget.textContent = 'Target user: ' + username;
+        if (delCurrent) delCurrent.value = '';
+        showDelFeedback('', null);
+        if (delPanel) {
+            delPanel.style.display = '';
+            delPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        if (delCurrent) delCurrent.focus();
+    }
+
+    function closeDeletePanel() {
+        delTargetId = null;
+        delTargetName = '';
+        if (delPanel) delPanel.style.display = 'none';
+        if (delCurrent) delCurrent.value = '';
+        showDelFeedback('', null);
     }
 
     function openAddPanel() {
         closePasswordPanel();
+        closeDeletePanel();
         if (nameInput) nameInput.value = '';
         if (passInput) passInput.value = '';
         if (passConfirmInput) passConfirmInput.value = '';
+        if (currentInput) currentInput.value = '';
         if (roleInput) roleInput.value = 'user';
         showFeedback('', null);
         if (addPanel) {
@@ -101,6 +171,7 @@
         if (nameInput) nameInput.value = '';
         if (passInput) passInput.value = '';
         if (passConfirmInput) passConfirmInput.value = '';
+        if (currentInput) currentInput.value = '';
         if (roleInput) roleInput.value = 'user';
         showFeedback('', null);
     }
@@ -157,7 +228,7 @@
                     del.type = 'button';
                     del.className = 'btn btn-danger';
                     del.textContent = 'Delete';
-                    del.addEventListener('click', function () { deleteUser(u.id, u.username); });
+                    del.addEventListener('click', function () { openDeletePanel(u.id, u.username); });
                     tdAct.appendChild(del);
                 }
             } else if (isSelf) {
@@ -182,13 +253,14 @@
                 return r.json();
             })
             .then(function (data) { renderUsers((data && data.users) || []); })
-            .catch(function (err) { showFeedback(err.message || 'Failed to load users.', 'error'); });
+            .catch(function (err) { showPageFeedback(err.message || 'Failed to load users.', 'error'); });
     }
 
     function addUser() {
         const username = (nameInput.value || '').trim();
         const password = passInput.value || '';
         const passwordConfirm = (passConfirmInput && passConfirmInput.value) || '';
+        const currentPw = (currentInput && currentInput.value) || '';
         const role = (roleInput && roleInput.value) || 'user';
         if (!username || !password) {
             showFeedback('Username and password are required.', 'error');
@@ -198,54 +270,86 @@
             showFeedback('Passwords do not match.', 'error');
             return;
         }
+        if (!currentPw) {
+            showFeedback('Your admin password is required to confirm.', 'error');
+            return;
+        }
         addBtn.disabled = true;
         showFeedback('Creating user...', 'info');
         fetch('/api/users', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username, password: password, role: role })
+            body: JSON.stringify({
+                username: username,
+                password: password,
+                current_password: currentPw,
+                role: role
+            })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
             })
             .then(function (res) {
                 if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to create user (' + res.status + ').'));
-                showFeedback('User "' + username + '" created.', 'success');
-                loadUsers();
                 closeAddPanel();
+                showPageFeedback('User "' + username + '" created.', 'success');
+                loadUsers();
             })
-            .catch(function (err) { showFeedback(err.message || 'Failed to create user.', 'error'); })
+            .catch(function (err) {
+                if (currentInput) currentInput.value = '';
+                showFeedback(err.message || 'Failed to create user.', 'error');
+            })
             .finally(function () { addBtn.disabled = false; });
     }
 
-    function deleteUser(id, username) {
-        if (!window.confirm('Delete user "' + username + '"? This cannot be undone.')) return;
-        fetch('/api/users/' + encodeURIComponent(id), {
+    function deleteUser() {
+        if (delTargetId === null) return;
+        const currentPw = (delCurrent && delCurrent.value) || '';
+        if (!currentPw) {
+            showDelFeedback('Your admin password is required to confirm.', 'error');
+            return;
+        }
+        delConfirmBtn.disabled = true;
+        showDelFeedback('Deleting user...', 'info');
+        const targetName = delTargetName;
+        fetch('/api/users/' + encodeURIComponent(delTargetId), {
             method: 'DELETE',
-            credentials: 'same-origin'
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ current_password: currentPw })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
             })
             .then(function (res) {
                 if (!res.ok) throw new Error((res.data && res.data.error) || ('Failed to delete user (' + res.status + ').'));
-                showFeedback('User "' + username + '" deleted.', 'success');
+                closeDeletePanel();
+                showPageFeedback('User "' + targetName + '" deleted.', 'success');
                 loadUsers();
             })
-            .catch(function (err) { showFeedback(err.message || 'Failed to delete user.', 'error'); });
+            .catch(function (err) {
+                if (delCurrent) delCurrent.value = '';
+                showDelFeedback(err.message || 'Failed to delete user.', 'error');
+            })
+            .finally(function () { delConfirmBtn.disabled = false; });
     }
 
     function savePassword() {
         if (pwTargetId === null) return;
         const newPw = (pwNew && pwNew.value) || '';
         const confirmPw = (pwConfirm && pwConfirm.value) || '';
+        const currentPw = (pwCurrent && pwCurrent.value) || '';
         if (!newPw) {
             showPwFeedback('New password cannot be empty.', 'error');
             return;
         }
         if (newPw !== confirmPw) {
             showPwFeedback('Passwords do not match.', 'error');
+            return;
+        }
+        if (!currentPw) {
+            showPwFeedback('Your password is required to confirm this change.', 'error');
             return;
         }
         pwSave.disabled = true;
@@ -255,7 +359,7 @@
             method: 'PUT',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: newPw })
+            body: JSON.stringify({ password: newPw, current_password: currentPw })
         })
             .then(function (r) {
                 return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
@@ -265,9 +369,13 @@
                 showPwFeedback('Password for "' + targetName + '" updated.', 'success');
                 if (pwNew) pwNew.value = '';
                 if (pwConfirm) pwConfirm.value = '';
+                if (pwCurrent) pwCurrent.value = '';
                 closePasswordPanel();
             })
-            .catch(function (err) { showPwFeedback(err.message || 'Failed to update password.', 'error'); })
+            .catch(function (err) {
+                if (pwCurrent) pwCurrent.value = '';
+                showPwFeedback(err.message || 'Failed to update password.', 'error');
+            })
             .finally(function () { pwSave.disabled = false; });
     }
 
@@ -276,5 +384,7 @@
     if (addCancelBtn) addCancelBtn.addEventListener('click', closeAddPanel);
     if (pwSave) pwSave.addEventListener('click', savePassword);
     if (pwCancel) pwCancel.addEventListener('click', closePasswordPanel);
+    if (delConfirmBtn) delConfirmBtn.addEventListener('click', deleteUser);
+    if (delCancelBtn) delCancelBtn.addEventListener('click', closeDeletePanel);
     loadUsers();
 })();

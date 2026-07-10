@@ -10,12 +10,16 @@
 
 Exercises the before-request auth guard end to end: unauthenticated
 requests, real logins issuing working sessions, JWT and bearer tokens,
-and admin-path role enforcement against a live database.
+session revocation, and admin-path role enforcement against a live database.
 
 Main Features:
 * Unauthenticated API 401 / page redirect and open health endpoint.
-* Rejects alg=none, wrong-secret, expired, and wrong-bearer tokens.
-* Enforces admin vs user roles on admin and normal paths.
+* Rejects alg=none, wrong-secret, expired, unknown-user, and wrong-bearer tokens.
+* Enforces admin vs user roles on admin and normal paths; the database row's
+  role is authoritative over the token's role claim.
+* User creation, password changes, and deletions require current_password
+  confirmation, and changes/deletions revoke the target user's older
+  sessions (bearer callers stay exempt).
 """
 
 import base64
@@ -50,7 +54,8 @@ _USERS_DDL = (
     "CREATE TABLE audiomuse_users (id SERIAL PRIMARY KEY, "
     "username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, "
     "role TEXT NOT NULL DEFAULT 'user', "
-    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "password_changed_at TIMESTAMP)"
 )
 
 
@@ -84,8 +89,12 @@ def pg_dsn():
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
-def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub='tester'):
-    now = datetime.datetime.now(datetime.timezone.utc)
+def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub=None, iat_offset_seconds=0):
+    if sub is None:
+        sub = 'root' if role == 'admin' else 'plainuser'
+    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+        seconds=iat_offset_seconds
+    )
     exp = now - datetime.timedelta(hours=1) if expired else now + datetime.timedelta(hours=1)
     payload = {'sub': sub, 'role': role, 'iat': now, 'exp': exp}
     return pyjwt.encode(payload, secret, algorithm='HS256')
@@ -132,6 +141,8 @@ def barrier_client(pg_dsn, monkeypatch):
         monkeypatch.setattr(config, field, 'configured', raising=False)
 
     ok, err = app_auth.create_additional_user('root', 'rootpw', 'admin')
+    assert ok, err
+    ok, err = app_auth.create_additional_user('plainuser', 'plainpw', 'user')
     assert ok, err
 
     app = Flask(__name__, template_folder=os.path.join(_REPO_ROOT, 'templates'))
@@ -250,3 +261,185 @@ class TestAuthBarrierInvariants:
         client, _ = barrier_client
         resp = client.get('/api/protected', headers={'Authorization': 'Bearer not-the-token'})
         assert resp.status_code == 401
+
+    def test_token_for_unknown_user_rejected(self, barrier_client):
+        client, _ = barrier_client
+        _set_cookie(client, _hs256_token('admin', sub='ghost'))
+        resp = client.get('/api/protected')
+        assert resp.status_code == 401
+
+    def test_token_role_claim_cannot_escalate_beyond_db_row(self, barrier_client):
+        client, _ = barrier_client
+        _set_cookie(client, _hs256_token('admin', sub='plainuser'))
+        resp = client.get('/api/cron')
+        assert resp.status_code == 403
+
+
+def _row_id(conn, username):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM audiomuse_users WHERE username = %s", (username,))
+        return cur.fetchone()[0]
+
+
+def _age_password_stamp(conn, username, seconds=60):
+    aged = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    ) - datetime.timedelta(seconds=seconds)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE audiomuse_users SET password_changed_at = %s WHERE username = %s",
+            (aged, username),
+        )
+    conn.commit()
+
+
+@pytest.mark.integration
+class TestSessionRevocation:
+    def test_create_user_needs_admin_password(self, barrier_client):
+        client, conn = barrier_client
+        _set_cookie(client, _hs256_token('admin'))
+        resp = client.post('/api/users', json={'username': 'newbie', 'password': 'pw'})
+        assert resp.status_code == 400
+        assert 'required' in resp.get_json()['error'].lower()
+        resp = client.post(
+            '/api/users',
+            json={'username': 'newbie', 'password': 'pw', 'current_password': 'wrong'},
+        )
+        assert resp.status_code == 400
+        assert 'incorrect' in resp.get_json()['error'].lower()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM audiomuse_users WHERE username = %s", ('newbie',))
+            assert cur.fetchone()[0] == 0
+        resp = client.post(
+            '/api/users',
+            json={'username': 'newbie', 'password': 'pw', 'current_password': 'rootpw'},
+        )
+        assert resp.status_code == 201
+        login = client.post(
+            '/auth',
+            data={'user': 'newbie', 'password': 'pw'},
+            headers={'X-Requested-With': 'XMLHttpRequest'},
+        )
+        assert login.status_code == 200
+
+    def test_password_change_needs_current_password(self, barrier_client):
+        client, conn = barrier_client
+        uid = _row_id(conn, 'plainuser')
+        _set_cookie(client, _hs256_token('user'))
+        resp = client.put(f'/api/users/{uid}/password', json={'password': 'new-pw'})
+        assert resp.status_code == 400
+        assert 'required' in resp.get_json()['error'].lower()
+        resp = client.put(
+            f'/api/users/{uid}/password',
+            json={'password': 'new-pw', 'current_password': 'wrong'},
+        )
+        assert resp.status_code == 400
+        assert 'incorrect' in resp.get_json()['error'].lower()
+
+    def test_admin_reset_of_other_user_needs_admin_password(self, barrier_client):
+        client, conn = barrier_client
+        uid = _row_id(conn, 'plainuser')
+        _age_password_stamp(conn, 'plainuser')
+        victim_token = _hs256_token('user', iat_offset_seconds=-5)
+        _set_cookie(client, victim_token)
+        assert client.get('/api/protected').status_code == 200
+        _set_cookie(client, _hs256_token('admin'))
+        resp = client.put(f'/api/users/{uid}/password', json={'password': 'new-pw'})
+        assert resp.status_code == 400
+        resp = client.put(
+            f'/api/users/{uid}/password',
+            json={'password': 'new-pw', 'current_password': 'rootpw'},
+        )
+        assert resp.status_code == 200
+        _set_cookie(client, victim_token)
+        assert client.get('/api/protected').status_code == 401
+        login = client.post(
+            '/auth',
+            data={'user': 'plainuser', 'password': 'new-pw'},
+            headers={'X-Requested-With': 'XMLHttpRequest'},
+        )
+        assert login.status_code == 200
+
+    def test_password_change_revokes_old_sessions_and_reissues_cookie(self, barrier_client):
+        client, conn = barrier_client
+        uid = _row_id(conn, 'plainuser')
+        _age_password_stamp(conn, 'plainuser')
+        old_token = _hs256_token('user', iat_offset_seconds=-5)
+        _set_cookie(client, old_token)
+        assert client.get('/api/protected').status_code == 200
+        resp = client.put(
+            f'/api/users/{uid}/password',
+            json={'password': 'brand-new-pw', 'current_password': 'plainpw'},
+        )
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get('Set-Cookie', '')
+        assert 'audiomuse_jwt=' in set_cookie
+        fresh_token = set_cookie.split('audiomuse_jwt=', 1)[1].split(';', 1)[0]
+        _set_cookie(client, old_token)
+        assert client.get('/api/protected').status_code == 401
+        _set_cookie(client, fresh_token)
+        assert client.get('/api/protected').status_code == 200
+
+    def test_delete_needs_admin_password_and_revokes_session(self, barrier_client):
+        client, conn = barrier_client
+        import app_auth
+
+        ok, err = app_auth.create_additional_user('doomed', 'doomedpw', 'user')
+        assert ok, err
+        uid = _row_id(conn, 'doomed')
+        victim_token = _hs256_token('user', sub='doomed')
+        _set_cookie(client, victim_token)
+        assert client.get('/api/protected').status_code == 200
+        _set_cookie(client, _hs256_token('admin'))
+        resp = client.delete(f'/api/users/{uid}')
+        assert resp.status_code == 400
+        resp = client.delete(f'/api/users/{uid}', json={'current_password': 'wrong'})
+        assert resp.status_code == 400
+        resp = client.delete(f'/api/users/{uid}', json={'current_password': 'rootpw'})
+        assert resp.status_code == 200
+        _set_cookie(client, victim_token)
+        assert client.get('/api/protected').status_code == 401
+
+    def test_bearer_caller_is_exempt_from_current_password(self, barrier_client):
+        client, conn = barrier_client
+        import app_auth
+
+        ok, err = app_auth.create_additional_user('m2mtarget', 'm2mpw', 'user')
+        assert ok, err
+        uid = _row_id(conn, 'm2mtarget')
+        headers = {'Authorization': f'Bearer {_BEARER_TOKEN}'}
+        resp = client.post(
+            '/api/users', json={'username': 'm2mspawn', 'password': 'pw'}, headers=headers
+        )
+        assert resp.status_code == 201
+        resp = client.put(f'/api/users/{uid}/password', json={'password': 'np'}, headers=headers)
+        assert resp.status_code == 200
+        resp = client.delete(f'/api/users/{uid}', headers=headers)
+        assert resp.status_code == 200
+
+    def test_recreated_username_does_not_resurrect_revoked_session(self, barrier_client):
+        client, conn = barrier_client
+        import app_auth
+
+        ok, err = app_auth.create_additional_user('phoenix', 'first-pw', 'user')
+        assert ok, err
+        uid = _row_id(conn, 'phoenix')
+        _age_password_stamp(conn, 'phoenix')
+        old_token = _hs256_token('user', sub='phoenix', iat_offset_seconds=-5)
+        _set_cookie(client, old_token)
+        assert client.get('/api/protected').status_code == 200
+        _set_cookie(client, _hs256_token('admin'))
+        resp = client.delete(f'/api/users/{uid}', json={'current_password': 'rootpw'})
+        assert resp.status_code == 200
+        _set_cookie(client, old_token)
+        assert client.get('/api/protected').status_code == 401
+        ok, err = app_auth.create_additional_user('phoenix', 'second-pw', 'user')
+        assert ok, err
+        _set_cookie(client, old_token)
+        assert client.get('/api/protected').status_code == 401
+
+    def test_login_page_renders_for_revoked_session(self, barrier_client):
+        client, _ = barrier_client
+        _set_cookie(client, _hs256_token('user', sub='ghost'))
+        resp = client.get('/login')
+        assert resp.status_code == 200

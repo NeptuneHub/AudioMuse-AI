@@ -15,8 +15,10 @@ gate behave against real SQL.
 Main Features:
 * Argon2 create/verify roundtrip and duplicate-username rejection.
 * Admin-user counting and refusing to delete the last admin.
+* Password updates stamping ``password_changed_at`` for session revocation.
 """
 
+import datetime
 import os
 import sys
 import tempfile
@@ -37,7 +39,8 @@ _USERS_DDL = (
     "CREATE TABLE audiomuse_users (id SERIAL PRIMARY KEY, "
     "username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, "
     "role TEXT NOT NULL DEFAULT 'user', "
-    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "password_changed_at TIMESTAMP)"
 )
 
 
@@ -144,3 +147,58 @@ class TestDeleteLastAdminGateRealDb:
         status, err = app_auth.delete_additional_user_safe(uid)
         assert status == 'deleted'
         assert app_auth.count_admin_users() == 1
+
+
+def _age_stamp(conn, username, seconds=60):
+    aged = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    ) - datetime.timedelta(seconds=seconds)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE audiomuse_users SET password_changed_at = %s WHERE username = %s",
+            (aged, username),
+        )
+    conn.commit()
+    return aged
+
+
+@pytest.mark.integration
+class TestPasswordChangeStampRealDb:
+    def test_create_stamps_password_changed_at(self, users_db):
+        conn, app_auth = users_db
+        app_auth.create_additional_user('dave', 'pw', 'user')
+        row = app_auth.get_session_user('dave')
+        assert row is not None
+        assert row['password_changed_at'] is not None
+
+    def test_update_password_advances_changed_at(self, users_db):
+        conn, app_auth = users_db
+        app_auth.create_additional_user('carol', 'old-pw', 'user')
+        uid = _user_id(conn, 'carol')
+        aged = _age_stamp(conn, 'carol')
+        ok, err = app_auth.update_additional_user_password(uid, 'new-pw')
+        assert ok is True
+        assert err is None
+        after = app_auth.get_session_user('carol')
+        assert after['password_changed_at'] is not None
+        assert after['password_changed_at'] > aged
+        assert app_auth.verify_additional_user('carol', 'new-pw') == 'user'
+        assert app_auth.verify_additional_user('carol', 'old-pw') is None
+
+    def test_upsert_admin_advances_changed_at(self, users_db):
+        conn, app_auth = users_db
+        ok, err = app_auth.upsert_admin_user('wizard', 'pw-1')
+        assert ok is True
+        first = app_auth.get_session_user('wizard')
+        assert first['password_changed_at'] is not None
+        aged = _age_stamp(conn, 'wizard')
+        ok, err = app_auth.upsert_admin_user('wizard', 'pw-2')
+        assert ok is True
+        second = app_auth.get_session_user('wizard')
+        assert second['password_changed_at'] > aged
+        assert app_auth.verify_additional_user('wizard', 'pw-2') == 'admin'
+        assert app_auth.verify_additional_user('wizard', 'pw-1') is None
+
+    def test_get_session_user_unknown_returns_none(self, users_db):
+        conn, app_auth = users_db
+        assert app_auth.get_session_user('ghost') is None

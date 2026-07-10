@@ -231,6 +231,20 @@ def _run_restore_runner(dump_file, log_file):
         log.write(f"Restore command finished with return code {ret}\n")
         log.flush()
 
+        if ret == 0:
+            try:
+                from database import USERS_PASSWORD_CHANGED_AT_DDL
+
+                ensure_cmd = _pg_cmd('psql', '-d', POSTGRES_DB, '-c', USERS_PASSWORD_CHANGED_AT_DDL)
+                ensure_ret = subprocess.run(
+                    ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120
+                ).returncode
+                log.write(f"Ensured users session schema after restore (rc={ensure_ret}).\n")
+                log.flush()
+            except Exception as exc:
+                log.write(f"Could not ensure users session schema after restore: {exc}\n")
+                log.flush()
+
         try:
             try:
                 restart_manager.publish_start_request()
