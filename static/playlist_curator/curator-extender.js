@@ -24,6 +24,7 @@
     let yearMax = null;
     let serverPlaylistsLoaded = false;
     let renderToken = 0;
+    let seedLoadGeneration = 0;
 
     // Cache cluster-playlist tracks fetched on init so we can populate the
     // Workbench when the user picks one as a seed (avoids a second round trip).
@@ -215,6 +216,7 @@
     // Workbench so per-track influence controls become available in the rail.
     async function loadSeedIntoWorkbench(seedValue) {
         if (!seedValue || seedValue === SEED_WORKBENCH) return;
+        const loadGeneration = ++seedLoadGeneration;
         const statusId = 'curator-extender-status';
         const select = document.getElementById('curator-seed-select');
         const selectedOption = select ? select.options[select.selectedIndex] : null;
@@ -226,6 +228,7 @@
         if (isServerSeed) {
             window.curatorSetStatus(statusId, 'Loading playlist tracks…', 'loading');
             const data = await fetchServerPlaylistTracks(seedValue);
+            if (loadGeneration !== seedLoadGeneration) return;
             if (!data) return;
             tracks = data.tracks || [];
             const playlistId = seedValue.replace('__server__', '');
@@ -597,6 +600,7 @@
             const v = seedSelect.value;
             if (!v) window.curatorSetSeededPlaylistTarget(null);
             if (v && v !== SEED_WORKBENCH) loadSeedIntoWorkbench(v);
+            else seedLoadGeneration += 1;
         });
 
         // Tune toggle
