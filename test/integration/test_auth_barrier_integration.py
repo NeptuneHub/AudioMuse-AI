@@ -100,12 +100,13 @@ def _hs256_token(role, secret=_TEST_SECRET, expired=False, sub=None, iat_offset_
     return pyjwt.encode(payload, secret, algorithm='HS256')
 
 
-def _alg_none_token(role, sub='tester'):
+def _alg_none_token(role, sub='root'):
     def _b64(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b'=').decode()
 
     header = _b64({'alg': 'none', 'typ': 'JWT'})
-    payload = _b64({'sub': sub, 'role': role, 'exp': 9999999999})
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    payload = _b64({'sub': sub, 'role': role, 'iat': now, 'exp': 9999999999})
     return f"{header}.{payload}."
 
 

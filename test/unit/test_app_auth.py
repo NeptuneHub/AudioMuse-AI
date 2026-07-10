@@ -191,6 +191,31 @@ class TestCheckAuthNeededJwt:
             assert result is not None
             assert result[1] == 401
 
+    def test_absurd_iat_fails_closed_not_500(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(config, 'API_TOKEN', '')
+        changed_at = (
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60)
+        ).replace(microsecond=0, tzinfo=None)
+        monkeypatch.setattr(
+            app_auth,
+            'get_session_user',
+            lambda u: _session_row(username=u, password_changed_at=changed_at),
+        )
+        secret = 'unit-secret'
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        token = pyjwt.encode(
+            {'sub': 'alice', 'role': 'user', 'iat': -(10 ** 25), 'exp': now + 3600},
+            secret,
+            algorithm='HS256',
+        )
+        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
+            result = app_auth.check_auth_needed(secret)
+            assert result is not None
+            assert result[1] == 401
+
     def test_iat_equal_to_changed_at_is_accepted_one_second_earlier_rejected(
         self, app, monkeypatch
     ):
@@ -226,6 +251,29 @@ class TestCheckAuthNeededJwt:
         with app.test_request_context(
             '/api/foo', headers={'Cookie': f'audiomuse_jwt={one_before}'}
         ):
+            result = app_auth.check_auth_needed(secret)
+            assert result is not None
+            assert result[1] == 401
+
+    def test_empty_secret_rejects_present_cookie(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(config, 'API_TOKEN', '')
+        token = pyjwt.encode({'sub': 'x', 'role': 'admin'}, 'whatever', algorithm='HS256')
+        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
+            result = app_auth.check_auth_needed('')
+            assert result is not None
+            assert result[1] == 401
+
+    def test_tampered_token_is_unauthorized(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        monkeypatch.setattr(config, 'API_TOKEN', '')
+        secret = 'unit-secret'
+        token = pyjwt.encode({'sub': 'alice', 'role': 'user'}, secret, algorithm='HS256') + 'tamper'
+        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
             result = app_auth.check_auth_needed(secret)
             assert result is not None
             assert result[1] == 401
@@ -278,29 +326,6 @@ class TestConfirmPasswordErrorUnit:
         with app.test_request_context('/api/users/5'):
             g.auth_user, g.auth_method = None, 'bearer'
             assert app_auth._confirm_password_error({}) is None
-
-    def test_empty_secret_rejects_present_cookie(self, app, monkeypatch):
-        import config
-
-        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
-        monkeypatch.setattr(config, 'API_TOKEN', '')
-        token = pyjwt.encode({'sub': 'x', 'role': 'admin'}, 'whatever', algorithm='HS256')
-        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
-            result = app_auth.check_auth_needed('')
-            assert result is not None
-            assert result[1] == 401
-
-    def test_tampered_token_is_unauthorized(self, app, monkeypatch):
-        import config
-
-        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
-        monkeypatch.setattr(config, 'API_TOKEN', '')
-        secret = 'unit-secret'
-        token = pyjwt.encode({'sub': 'alice', 'role': 'user'}, secret, algorithm='HS256') + 'tamper'
-        with app.test_request_context('/api/foo', headers={'Cookie': f'audiomuse_jwt={token}'}):
-            result = app_auth.check_auth_needed(secret)
-            assert result is not None
-            assert result[1] == 401
 
 
 class TestCheckAuthNeededBearer:
@@ -591,6 +616,30 @@ class TestPasswordChangeConfirmation:
             g.auth_role, g.auth_user, g.auth_method = 'user', 'mallory', 'session'
             result = app_auth.update_user_password_endpoint(5)
         assert _status(result) == 403
+
+    def test_non_admin_gets_403_not_404_for_unknown_id(self, app, monkeypatch):
+        _install_endpoint_mocks(monkeypatch)
+        monkeypatch.setattr(app_auth, 'get_additional_user_by_id', lambda user_id: None)
+        with app.test_request_context(
+            '/api/users/999/password',
+            method='PUT',
+            json={'password': 'new', 'current_password': 'right-pw'},
+        ):
+            g.auth_role, g.auth_user, g.auth_method = 'user', 'mallory', 'session'
+            result = app_auth.update_user_password_endpoint(999)
+        assert _status(result) == 403
+
+    def test_admin_gets_404_for_unknown_id(self, app, monkeypatch):
+        _install_endpoint_mocks(monkeypatch)
+        monkeypatch.setattr(app_auth, 'get_additional_user_by_id', lambda user_id: None)
+        with app.test_request_context(
+            '/api/users/999/password',
+            method='PUT',
+            json={'password': 'new', 'current_password': 'right-pw'},
+        ):
+            g.auth_role, g.auth_user, g.auth_method = 'admin', 'root', 'session'
+            result = app_auth.update_user_password_endpoint(999)
+        assert _status(result) == 404
 
     def test_bearer_caller_exempt_from_current_password(self, app, monkeypatch):
         _install_endpoint_mocks(monkeypatch)

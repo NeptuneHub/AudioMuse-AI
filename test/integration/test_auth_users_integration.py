@@ -165,7 +165,7 @@ def _age_stamp(conn, username, seconds=60):
 @pytest.mark.integration
 class TestPasswordChangeStampRealDb:
     def test_create_stamps_password_changed_at(self, users_db):
-        conn, app_auth = users_db
+        _, app_auth = users_db
         app_auth.create_additional_user('dave', 'pw', 'user')
         row = app_auth.get_session_user('dave')
         assert row is not None
@@ -187,12 +187,12 @@ class TestPasswordChangeStampRealDb:
 
     def test_upsert_admin_advances_changed_at(self, users_db):
         conn, app_auth = users_db
-        ok, err = app_auth.upsert_admin_user('wizard', 'pw-1')
+        ok, _ = app_auth.upsert_admin_user('wizard', 'pw-1')
         assert ok is True
         first = app_auth.get_session_user('wizard')
         assert first['password_changed_at'] is not None
         aged = _age_stamp(conn, 'wizard')
-        ok, err = app_auth.upsert_admin_user('wizard', 'pw-2')
+        ok, _ = app_auth.upsert_admin_user('wizard', 'pw-2')
         assert ok is True
         second = app_auth.get_session_user('wizard')
         assert second['password_changed_at'] > aged
@@ -200,5 +200,5 @@ class TestPasswordChangeStampRealDb:
         assert app_auth.verify_additional_user('wizard', 'pw-1') is None
 
     def test_get_session_user_unknown_returns_none(self, users_db):
-        conn, app_auth = users_db
+        _, app_auth = users_db
         assert app_auth.get_session_user('ghost') is None

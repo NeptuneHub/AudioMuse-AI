@@ -1,12 +1,3 @@
-// Users management for the Users page. Supports normal users and admins.
-// Server enforces:
-// - only admins can create/delete accounts or change another user's password
-// - non-admins only see themselves in /api/users and can only change their
-//   own password
-// - user creation, password changes, and deletions require the acting user
-//   to confirm with their own password (sent as current_password)
-// Mirrored in the UI so admins see everyone plus create/delete controls,
-// and non-admins only see their own row with a "Change password" button.
 (function () {
     const nameInput = document.getElementById('additional-user-name');
     const passInput = document.getElementById('additional-user-password');
@@ -48,41 +39,22 @@
     let delTargetId = null;
     let delTargetName = '';
 
-    function showFeedback(msg, kind) {
-        if (!feedback) return;
-        feedback.textContent = msg || '';
-        feedback.className = 'inline-feedback';
-        if (kind) feedback.classList.add('status-' + kind);
-        feedback.style.display = msg ? '' : 'none';
+    function feedbackRenderer(el) {
+        return function (msg, kind) {
+            if (!el) return;
+            el.textContent = msg || '';
+            el.className = 'inline-feedback';
+            if (kind) el.classList.add('status-' + kind);
+            el.style.display = msg ? '' : 'none';
+        };
     }
 
-    function showPageFeedback(msg, kind) {
-        if (!pageFeedback) return;
-        pageFeedback.textContent = msg || '';
-        pageFeedback.className = 'inline-feedback';
-        if (kind) pageFeedback.classList.add('status-' + kind);
-        pageFeedback.style.display = msg ? '' : 'none';
-    }
-
-    function showPwFeedback(msg, kind) {
-        if (!pwFeedback) return;
-        pwFeedback.textContent = msg || '';
-        pwFeedback.className = 'inline-feedback';
-        if (kind) pwFeedback.classList.add('status-' + kind);
-        pwFeedback.style.display = msg ? '' : 'none';
-    }
-
-    function showDelFeedback(msg, kind) {
-        if (!delFeedback) return;
-        delFeedback.textContent = msg || '';
-        delFeedback.className = 'inline-feedback';
-        if (kind) delFeedback.classList.add('status-' + kind);
-        delFeedback.style.display = msg ? '' : 'none';
-    }
+    const showFeedback = feedbackRenderer(feedback);
+    const showPageFeedback = feedbackRenderer(pageFeedback);
+    const showPwFeedback = feedbackRenderer(pwFeedback);
+    const showDelFeedback = feedbackRenderer(delFeedback);
 
     function formatDate(iso) {
-        // Backend already converts to the container's local TZ (issue #499);
-        // render raw, mirroring fmtTime() in templates/dashboard.html.
         return iso ? iso.replace('T', ' ').substring(0, 19) : '';
     }
 
@@ -206,7 +178,6 @@
 
             const isSelf = currentUser && u.username === currentUser;
 
-            // Admin can change any password; non-admin can change their own.
             if (isAdmin || isSelf) {
                 const pw = document.createElement('button');
                 pw.type = 'button';
@@ -379,6 +350,16 @@
             .finally(function () { pwSave.disabled = false; });
     }
 
+    function submitOnEnter(el, action) {
+        if (!el) return;
+        el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                action();
+            }
+        });
+    }
+
     if (addBtn) addBtn.addEventListener('click', addUser);
     if (addToggleBtn) addToggleBtn.addEventListener('click', openAddPanel);
     if (addCancelBtn) addCancelBtn.addEventListener('click', closeAddPanel);
@@ -386,5 +367,12 @@
     if (pwCancel) pwCancel.addEventListener('click', closePasswordPanel);
     if (delConfirmBtn) delConfirmBtn.addEventListener('click', deleteUser);
     if (delCancelBtn) delCancelBtn.addEventListener('click', closeDeletePanel);
+    [nameInput, passInput, passConfirmInput, currentInput].forEach(function (el) {
+        submitOnEnter(el, addUser);
+    });
+    [pwNew, pwConfirm, pwCurrent].forEach(function (el) {
+        submitOnEnter(el, savePassword);
+    });
+    submitOnEnter(delCurrent, deleteUser);
     loadUsers();
 })();

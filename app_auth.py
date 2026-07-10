@@ -597,9 +597,19 @@ def _session_from_token(token, jwt_secret):
         return None
     changed_at = row['password_changed_at']
     if changed_at is not None:
-        issued_at = datetime.datetime.fromtimestamp(
-            int(iat), datetime.timezone.utc
-        ).replace(tzinfo=None)
+        # Normalize a tz-aware stamp (hand-migrated TIMESTAMPTZ column) to
+        # the naive-UTC convention our own DDL produces.
+        if changed_at.tzinfo is not None:
+            changed_at = changed_at.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        # A signed token can still carry an absurd iat (PyJWT only rejects
+        # future values); fail closed instead of letting the conversion
+        # error escape the auth barrier as a 500.
+        try:
+            issued_at = datetime.datetime.fromtimestamp(
+                int(iat), datetime.timezone.utc
+            ).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            return None
         if issued_at < changed_at:
             return None
     return row['username'], row['role']
@@ -654,7 +664,7 @@ def check_auth_needed(jwt_secret):
     # closed by treating a missing secret as "no valid session".
     session = _session_from_token(request.cookies.get('audiomuse_jwt'), jwt_secret)
     if session is not None:
-        g.auth_user, g.auth_role = session[0], session[1]
+        g.auth_user, g.auth_role = session
         g.auth_method = 'session'
         return None
 
@@ -1219,7 +1229,8 @@ def update_user_password_endpoint(user_id):
       400:
         description: Validation error (missing password, missing/wrong current_password, etc.).
       403:
-        description: Forbidden (non-admin updating someone else).
+        description: Forbidden. Non-admins get this for any id other than their
+          own row, including unknown ids, so they cannot probe which ids exist.
       404:
         description: Auth disabled or user not found.
     """
@@ -1227,13 +1238,13 @@ def update_user_password_endpoint(user_id):
 
     if not _cfg.AUTH_ENABLED:
         return jsonify({"error": "Auth not configured"}), 404
-    target = get_additional_user_by_id(user_id)
-    if not target:
-        return jsonify({"error": "User not found."}), 404
     role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
-    if role != 'admin' and target['username'] != current_username:
+    target = get_additional_user_by_id(user_id)
+    if role != 'admin' and (target is None or target['username'] != current_username):
         return jsonify({"error": "Forbidden"}), 403
+    if not target:
+        return jsonify({"error": "User not found."}), 404
     data = request.get_json(silent=True) or {}
     new_password = data.get('password') or ''
     if not isinstance(new_password, str) or not new_password:
@@ -1248,8 +1259,9 @@ def update_user_password_endpoint(user_id):
     if current_username and target['username'] == current_username:
         secret = _jwt_secret()
         if secret:
-            role_now = _normalize_role(target.get('role')) or USER_ROLE_USER
-            _set_session_cookie(resp, _issue_session_token(current_username, role_now, secret))
+            _set_session_cookie(
+                resp, _issue_session_token(current_username, role or USER_ROLE_USER, secret)
+            )
     return resp
 
 
