@@ -742,37 +742,69 @@ def search_api():
 
 @playlist_curator_bp.route('/api/curator/save_playlist', methods=['POST'])
 def save_playlist_api():
-    """Save an extended/curated playlist to the configured media server."""
+    """Create a new curator playlist or replace the named server-playlist seed."""
     from tasks.ivf_manager import create_playlist_from_ids
+    from tasks.mediaserver import create_or_replace_playlist
 
-    payload = request.get_json() or {}
-    new_playlist_name = payload.get('new_playlist_name')
-    track_ids = payload.get('track_ids', [])
+    payload = request.get_json(silent=True) or {}
+    has_new_name = 'new_playlist_name' in payload
+    has_replace_name = 'replace_playlist_name' in payload
+    if has_new_name == has_replace_name:
+        return jsonify({"error": "Provide exactly one playlist save action"}), 400
 
-    if not new_playlist_name:
-        return jsonify({"error": "Missing 'new_playlist_name'"}), 400
-    if not track_ids:
-        return jsonify({"error": "No tracks to save"}), 400
+    action = 'replaced' if has_replace_name else 'created'
+    raw_name = payload.get('replace_playlist_name' if has_replace_name else 'new_playlist_name')
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return jsonify({"error": "Playlist name must be a non-empty string"}), 400
+    playlist_name = raw_name.strip()
+
+    track_ids = payload.get('track_ids')
+    if not isinstance(track_ids, list) or not track_ids:
+        return jsonify({"error": "Track IDs must be a non-empty list"}), 400
+
+    seen = set()
+    final_ids = []
+    for track_id in track_ids:
+        normalized = str(track_id)
+        if normalized not in seen:
+            seen.add(normalized)
+            final_ids.append(normalized)
 
     try:
-        str_ids = [str(tid) for tid in track_ids]
-
-        # Deduplicate preserving order
-        seen = set()
-        final_ids = []
-        for tid in str_ids:
-            if tid not in seen:
-                seen.add(tid)
-                final_ids.append(tid)
-
-        playlist_id = create_playlist_from_ids(new_playlist_name, final_ids)
+        if has_replace_name:
+            existing_names = {
+                str(playlist.get('Name') or playlist.get('name') or '').strip()
+                for playlist in (_fetch_server_playlists() or [])
+            }
+            if playlist_name not in existing_names:
+                return jsonify({
+                    "error": f"Playlist '{playlist_name}' no longer exists"
+                }), 404
+            try:
+                replaced = create_or_replace_playlist(playlist_name, final_ids)
+            except NotImplementedError:
+                return jsonify({
+                    "error": "Replacing playlists is not supported by this media server"
+                }), 501
+            if not replaced:
+                return jsonify({"error": "Media server failed to replace playlist"}), 502
+            playlist_id = replaced.get('Id') or replaced.get('id')
+            if not playlist_id:
+                return jsonify({"error": "Media server replacement returned no playlist ID"}), 502
+            status = 200
+            message = f"Playlist '{playlist_name}' replaced with {len(final_ids)} songs!"
+        else:
+            playlist_id = create_playlist_from_ids(playlist_name, final_ids)
+            status = 201
+            message = f"Playlist '{playlist_name}' created with {len(final_ids)} songs!"
 
         return jsonify({
-            "message": f"Playlist '{new_playlist_name}' created with {len(final_ids)} songs!",
+            "action": action,
+            "message": message,
             "playlist_id": playlist_id,
-            "total_songs": len(final_ids)
-        }), 201
-
+            "playlist_name": playlist_name,
+            "total_songs": len(final_ids),
+        }), status
     except Exception:
         logger.exception("Save curator playlist failed")
         return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
