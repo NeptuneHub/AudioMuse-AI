@@ -20,8 +20,8 @@ def test_intentional_test_harness_sonar_exceptions_are_narrow_and_documented():
         REPO_ROOT / "test/unit/test_playlist_curator_extender_race.js"
     ).read_text(encoding="utf-8")
 
-    assert "app.config.update(TESTING=True)  # NOSONAR" in save_tests
-    assert "app.config.update(TESTING=True)  # NOSONAR" in provider_tests
+    assert "TESTING=True" not in save_tests
+    assert "TESTING=True" not in provider_tests
     assert "vm.runInNewContext(source, context, { filename: SHARED_JS }); // NOSONAR" in shared_tests
     assert (
         "vm.runInNewContext(source, context, { filename: EXTENDER_JS }); // NOSONAR"
