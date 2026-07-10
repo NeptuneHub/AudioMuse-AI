@@ -54,6 +54,22 @@
     const STORAGE_KEY = 'audiomuse:curator:workbench';
     let workbench = { tracks: [] };
 
+    let seededServerPlaylist = null;
+
+    function setSeededPlaylistTarget(target) {
+        if (!target || !target.playlistName) {
+            seededServerPlaylist = null;
+        } else {
+            seededServerPlaylist = {
+                playlistId: String(target.playlistId || ''),
+                playlistName: String(target.playlistName),
+                unresolvedTracks: Math.max(0, Number(target.unresolvedTracks) || 0),
+            };
+        }
+        renderWorkbench();
+    }
+    window.curatorSetSeededPlaylistTarget = setSeededPlaylistTarget;
+
     function loadWorkbench() {
         try {
             const raw = localStorage.getItem(STORAGE_KEY);
@@ -129,6 +145,7 @@
     }
 
     function workbenchClear() {
+        setSeededPlaylistTarget(null);
         if (workbench.tracks.length === 0) return;
         workbench = { tracks: [] };
         commit({ changedIds: null });
@@ -186,6 +203,7 @@
         const searchEl = document.getElementById('curator-wb-from-search');
         const extendEl = document.getElementById('curator-wb-from-extend');
         const saveBtn = document.getElementById('curator-wb-save-btn');
+        const replaceBtn = document.getElementById('curator-wb-replace-btn');
         const findDupsBtn = document.getElementById('curator-wb-finddups-btn');
         const clearBtn = document.getElementById('curator-wb-clear-btn');
         const nameInput = document.getElementById('curator-wb-name');
@@ -231,6 +249,14 @@
             const lbl = `Save ${total} ${total === 1 ? 'track' : 'tracks'}`;
             saveBtn.innerHTML = `${ICONS.save} <span>${escHtml(lbl)}</span>`;
         }
+        if (replaceBtn) {
+            const hasReplaceTarget = Boolean(seededServerPlaylist);
+            replaceBtn.classList.toggle('hidden', !hasReplaceTarget);
+            replaceBtn.disabled = !hasReplaceTarget || total === 0;
+            if (hasReplaceTarget) {
+                replaceBtn.textContent = `Replace “${seededServerPlaylist.playlistName}”`;
+            }
+        }
         if (findDupsBtn) findDupsBtn.disabled = total < 2;
         if (clearBtn) clearBtn.disabled = total === 0;
     }
@@ -246,6 +272,7 @@
         const sub = document.getElementById('curator-sheet-sub');
         const list = document.getElementById('curator-sheet-list');
         const saveBtn = document.getElementById('curator-sheet-save-btn');
+        const replaceBtn = document.getElementById('curator-sheet-replace-btn');
         const findDupsBtn = document.getElementById('curator-sheet-finddups-btn');
         const clearBtn = document.getElementById('curator-sheet-clear-btn');
         const nameInput = document.getElementById('curator-sheet-name');
@@ -280,6 +307,14 @@
         if (saveBtn) {
             saveBtn.disabled = !canSave;
             saveBtn.innerHTML = `${ICONS.save} <span>Save</span>`;
+        }
+        if (replaceBtn) {
+            const hasReplaceTarget = Boolean(seededServerPlaylist);
+            replaceBtn.classList.toggle('hidden', !hasReplaceTarget);
+            replaceBtn.disabled = !hasReplaceTarget || total === 0;
+            if (hasReplaceTarget) {
+                replaceBtn.textContent = `Replace “${seededServerPlaylist.playlistName}”`;
+            }
         }
         if (findDupsBtn) findDupsBtn.disabled = total < 2;
         if (clearBtn) clearBtn.disabled = total === 0;
@@ -451,13 +486,7 @@
     window.curatorSetStatus = setStatus;
 
     // ---------- Save playlist ----------
-    async function savePlaylist(name, sourceId) {
-        const wb = getWorkbench();
-        if (!name || !name.trim()) { toast('Please enter a playlist name.', 'error'); return false; }
-        if (wb.tracks.length === 0) { toast('Workbench is empty.', 'error'); return false; }
-
-        const trackIds = wb.tracks.map(t => t.item_id);
-        const payload = { new_playlist_name: name.trim(), track_ids: trackIds };
+    async function submitPlaylistSave(payload, successMessage) {
         try {
             const res = await fetch('/api/curator/save_playlist', {
                 method: 'POST',
@@ -466,7 +495,7 @@
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Save failed');
-            toast(`Saved "${name.trim()}" - ${trackIds.length} tracks`, 'success');
+            toast(successMessage, 'success');
             workbenchClear();
             return true;
         } catch (e) {
@@ -474,7 +503,55 @@
             return false;
         }
     }
+
+    async function savePlaylist(name) {
+        const wb = getWorkbench();
+        if (!name || !name.trim()) {
+            toast('Please enter a playlist name.', 'error');
+            return false;
+        }
+        if (wb.tracks.length === 0) {
+            toast('Workbench is empty.', 'error');
+            return false;
+        }
+        const trimmedName = name.trim();
+        const trackIds = wb.tracks.map(track => track.item_id);
+        return submitPlaylistSave(
+            { new_playlist_name: trimmedName, track_ids: trackIds },
+            `Saved "${trimmedName}" - ${trackIds.length} tracks`
+        );
+    }
+
+    async function replaceSeededPlaylist() {
+        const wb = getWorkbench();
+        if (!seededServerPlaylist) {
+            toast('Choose a media-server playlist seed first.', 'error');
+            return false;
+        }
+        if (wb.tracks.length === 0) {
+            toast('Workbench is empty.', 'error');
+            return false;
+        }
+
+        const count = wb.tracks.length;
+        const name = seededServerPlaylist.playlistName;
+        let message = `Replace all tracks in "${name}" with ${count} Workbench ${count === 1 ? 'track' : 'tracks'}?`;
+        if (seededServerPlaylist.unresolvedTracks > 0) {
+            const unresolved = seededServerPlaylist.unresolvedTracks;
+            message += `\n\n${unresolved} ${unresolved === 1 ? 'track was' : 'tracks were'} not analyzed and will be removed.`;
+        }
+        message += '\n\nThis cannot be undone.';
+        if (!confirm(message)) return false;
+
+        const trackIds = wb.tracks.map(track => track.item_id);
+        return submitPlaylistSave(
+            { replace_playlist_name: seededServerPlaylist.playlistName, track_ids: trackIds },
+            `Replaced "${name}" - ${trackIds.length} tracks`
+        );
+    }
+
     window.curatorSavePlaylist = savePlaylist;
+    window.curatorReplaceSeededPlaylist = replaceSeededPlaylist;
 
     // ---------- Find duplicates panel ----------
     let dedupGroups = [];
@@ -627,6 +704,11 @@
                 if (e.key === 'Enter') { e.preventDefault(); railSaveBtn.click(); }
             });
         }
+        const railReplaceBtn = document.getElementById('curator-wb-replace-btn');
+        if (railReplaceBtn) {
+            railReplaceBtn.addEventListener('click', replaceSeededPlaylist);
+        }
+
         const sheetSaveBtn = document.getElementById('curator-sheet-save-btn');
         const sheetNameInput = document.getElementById('curator-sheet-name');
         if (sheetSaveBtn && sheetNameInput) {
@@ -641,6 +723,13 @@
             sheetNameInput.addEventListener('input', renderSheet);
             sheetNameInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') { e.preventDefault(); sheetSaveBtn.click(); }
+            });
+        }
+        const sheetReplaceBtn = document.getElementById('curator-sheet-replace-btn');
+        if (sheetReplaceBtn) {
+            sheetReplaceBtn.addEventListener('click', async () => {
+                const ok = await replaceSeededPlaylist();
+                if (ok) closeSheet();
             });
         }
 

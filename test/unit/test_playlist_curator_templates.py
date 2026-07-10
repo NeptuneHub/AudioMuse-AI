@@ -18,6 +18,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKBENCH_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_workbench.html"
+CURATOR_SHARED_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-shared.js"
 CURATOR_TEMPLATE_PATHS = [
     REPO_ROOT / "templates" / "playlist_curator_search.html",
     REPO_ROOT / "templates" / "playlist_curator_extender.html",
@@ -66,3 +68,29 @@ def test_sidebar_nav_partial_owns_its_list_container():
 
     assert '<ul class="sidebar-nav">' in sidebar
     assert '<ul class="sidebar-nav">' not in layout
+
+
+def test_workbench_keeps_create_new_and_adds_contextual_replace_controls():
+    template = WORKBENCH_TEMPLATE.read_text(encoding="utf-8")
+
+    assert 'id="curator-wb-name"' in template
+    assert 'id="curator-wb-save-btn"' in template
+    assert 'id="curator-sheet-name"' in template
+    assert 'id="curator-sheet-save-btn"' in template
+    assert 'id="curator-wb-replace-btn"' in template
+    assert 'id="curator-sheet-replace-btn"' in template
+    assert template.count('Replace seeded playlist') == 2
+
+
+def test_shared_workbench_owns_nonpersistent_seed_target_and_replace_payload():
+    source = CURATOR_SHARED_JS.read_text(encoding="utf-8")
+
+    assert "let seededServerPlaylist = null;" in source
+    assert "window.curatorSetSeededPlaylistTarget = setSeededPlaylistTarget;" in source
+    assert "replace_playlist_name: seededServerPlaylist.playlistName" in source
+    assert "unresolvedTracks" in source
+    assert "replaceBtn.textContent = `Replace \u201c${seededServerPlaylist.playlistName}\u201d`;" in source
+    assert "confirm(message)" in source
+    assert "window.curatorReplaceSeededPlaylist = replaceSeededPlaylist;" in source
+    assert "localStorage.setItem(STORAGE_KEY, JSON.stringify(workbench))" in source
+    assert "JSON.stringify(seededServerPlaylist)" not in source

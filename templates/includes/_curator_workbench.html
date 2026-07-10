@@ -39,6 +39,10 @@
         <label for="curator-wb-name" class="curator-wb-save-label">Save as playlist</label>
         <input type="text" id="curator-wb-name" class="curator-input" placeholder="Playlist name" autocomplete="off">
         <button type="button" id="curator-wb-save-btn" class="curator-btn" data-kind="success" data-full="true" disabled></button>
+        <button type="button" id="curator-wb-replace-btn"
+                class="curator-btn hidden" data-kind="secondary" data-full="true" disabled>
+            Replace seeded playlist
+        </button>
     </div>
 
     <div class="curator-wb-actions">
@@ -70,6 +74,10 @@
             <label for="curator-sheet-name" class="curator-sr-only">Playlist name</label>
             <input type="text" id="curator-sheet-name" class="curator-input" placeholder="Playlist name" autocomplete="off">
             <button type="button" id="curator-sheet-save-btn" class="curator-btn" data-kind="success" disabled></button>
+            <button type="button" id="curator-sheet-replace-btn"
+                    class="curator-btn hidden" data-kind="secondary" data-full="true" disabled>
+                Replace seeded playlist
+            </button>
         </div>
         <div class="curator-wb-actions">
             <button type="button" id="curator-sheet-finddups-btn" class="curator-btn" data-kind="secondary" data-size="sm" disabled>

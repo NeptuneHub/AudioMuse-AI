@@ -893,6 +893,7 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
     margin-bottom: 8px;
 }
 .curator-wb-save-card .curator-input { margin-bottom: 8px; }
+.curator-wb-save-card .curator-btn + .curator-btn { margin-top: 8px; }
 
 .curator-wb-actions {
     display: flex;
@@ -984,12 +985,14 @@ html.dark-mode .curator-track-card.dup-warn { background: #422006; }
 
 .curator-sheet-save {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
     padding-top: 8px;
     border-top: 1px solid var(--border-color);
 }
 .curator-sheet-save .curator-input { flex: 1; }
+.curator-sheet-save .curator-btn[data-full="true"] { flex-basis: 100%; }
 
 .curator-sheet-backdrop {
     position: fixed;
