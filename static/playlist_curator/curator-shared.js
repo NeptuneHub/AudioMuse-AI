@@ -53,6 +53,8 @@
     // ---------- Workbench state ----------
     const STORAGE_KEY = 'audiomuse:curator:workbench';
     let workbench = { tracks: [] };
+    let workbenchRevision = 0;
+    let saveInFlight = false;
 
     let seededServerPlaylist = null;
 
@@ -161,6 +163,7 @@
     }
 
     function commit(detail) {
+        workbenchRevision += 1;
         scheduleSave();
         renderWorkbench();
         // Let pages react (e.g. re-paint result rows that should turn green).
@@ -173,7 +176,9 @@
     // Cross-tab sync
     window.addEventListener('storage', (e) => {
         if (e.key !== STORAGE_KEY) return;
+        seededServerPlaylist = null;
         workbench = loadWorkbench();
+        workbenchRevision += 1;
         renderWorkbench();
         document.dispatchEvent(new CustomEvent('curator:workbench:changed', {
             detail: { changedIds: null }
@@ -244,7 +249,7 @@
 
         // Save / actions enable
         const canSave = total > 0 && nameInput && nameInput.value.trim().length > 0;
-        if (saveBtn) saveBtn.disabled = !canSave;
+        if (saveBtn) saveBtn.disabled = saveInFlight || !canSave;
         if (saveBtn) {
             const lbl = `Save ${total} ${total === 1 ? 'track' : 'tracks'}`;
             saveBtn.innerHTML = `${ICONS.save} <span>${escHtml(lbl)}</span>`;
@@ -252,7 +257,7 @@
         if (replaceBtn) {
             const hasReplaceTarget = Boolean(seededServerPlaylist);
             replaceBtn.classList.toggle('hidden', !hasReplaceTarget);
-            replaceBtn.disabled = !hasReplaceTarget || total === 0;
+            replaceBtn.disabled = saveInFlight || !hasReplaceTarget || total === 0;
             if (hasReplaceTarget) {
                 replaceBtn.textContent = `Replace “${seededServerPlaylist.playlistName}”`;
             }
@@ -305,13 +310,13 @@
         }
         const canSave = total > 0 && nameInput && nameInput.value.trim().length > 0;
         if (saveBtn) {
-            saveBtn.disabled = !canSave;
+            saveBtn.disabled = saveInFlight || !canSave;
             saveBtn.innerHTML = `${ICONS.save} <span>Save</span>`;
         }
         if (replaceBtn) {
             const hasReplaceTarget = Boolean(seededServerPlaylist);
             replaceBtn.classList.toggle('hidden', !hasReplaceTarget);
-            replaceBtn.disabled = !hasReplaceTarget || total === 0;
+            replaceBtn.disabled = saveInFlight || !hasReplaceTarget || total === 0;
             if (hasReplaceTarget) {
                 replaceBtn.textContent = `Replace “${seededServerPlaylist.playlistName}”`;
             }
@@ -486,7 +491,10 @@
     window.curatorSetStatus = setStatus;
 
     // ---------- Save playlist ----------
-    async function submitPlaylistSave(payload, successMessage) {
+    async function submitPlaylistSave(payload, successMessage, submittedRevision) {
+        if (saveInFlight) return false;
+        saveInFlight = true;
+        renderWorkbench();
         try {
             const res = await fetch('/api/curator/save_playlist', {
                 method: 'POST',
@@ -496,15 +504,21 @@
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Save failed');
             toast(successMessage, 'success');
-            workbenchClear();
+            if (workbenchRevision === submittedRevision) {
+                workbenchClear();
+            }
             return true;
         } catch (e) {
             toast(e.message || 'Save failed', 'error');
             return false;
+        } finally {
+            saveInFlight = false;
+            renderWorkbench();
         }
     }
 
     async function savePlaylist(name) {
+        if (saveInFlight) return false;
         const wb = getWorkbench();
         if (!name || !name.trim()) {
             toast('Please enter a playlist name.', 'error');
@@ -515,14 +529,17 @@
             return false;
         }
         const trimmedName = name.trim();
+        const submittedRevision = workbenchRevision;
         const trackIds = wb.tracks.map(track => track.item_id);
         return submitPlaylistSave(
             { new_playlist_name: trimmedName, track_ids: trackIds },
-            `Saved "${trimmedName}" - ${trackIds.length} tracks`
+            `Saved "${trimmedName}" - ${trackIds.length} tracks`,
+            submittedRevision
         );
     }
 
     async function replaceSeededPlaylist() {
+        if (saveInFlight) return false;
         const wb = getWorkbench();
         if (!seededServerPlaylist) {
             toast('Choose a media-server playlist seed first.', 'error');
@@ -543,10 +560,12 @@
         message += '\n\nThis cannot be undone.';
         if (!confirm(message)) return false;
 
+        const submittedRevision = workbenchRevision;
         const trackIds = wb.tracks.map(track => track.item_id);
         return submitPlaylistSave(
             { replace_playlist_name: seededServerPlaylist.playlistName, track_ids: trackIds },
-            `Replaced "${name}" - ${trackIds.length} tracks`
+            `Replaced "${name}" - ${trackIds.length} tracks`,
+            submittedRevision
         );
     }
 

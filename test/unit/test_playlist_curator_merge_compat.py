@@ -19,7 +19,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_playlist_curator_uses_renamed_mediaserver_package_imports():
+def test_playlist_curator_uses_central_mediaserver_playlist_dispatchers():
     source = (REPO_ROOT / "app_playlist_curator.py").read_text(encoding="utf-8")
 
     legacy_imports = [
@@ -32,10 +32,8 @@ def test_playlist_curator_uses_renamed_mediaserver_package_imports():
     for legacy_import in legacy_imports:
         assert legacy_import not in source
 
-    assert "tasks.mediaserver.jellyfin" in source
-    assert "tasks.mediaserver.emby" in source
-    assert "tasks.mediaserver.navidrome" in source
-    assert "tasks.mediaserver.lyrion" in source
+    assert "from tasks.mediaserver import get_all_playlists" in source
+    assert "from tasks.mediaserver import get_playlist_track_ids" in source
 
 
 def test_ivf_manager_no_longer_references_removed_voyager_index_global():

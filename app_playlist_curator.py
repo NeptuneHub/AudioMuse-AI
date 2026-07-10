@@ -746,7 +746,9 @@ def save_playlist_api():
     from tasks.ivf_manager import create_playlist_from_ids
     from tasks.mediaserver import create_or_replace_playlist
 
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "JSON body must be an object"}), 400
     has_new_name = 'new_playlist_name' in payload
     has_replace_name = 'replace_playlist_name' in payload
     if has_new_name == has_replace_name:
@@ -834,23 +836,10 @@ def server_playlists_api():
 def _fetch_server_playlists():
     """Fetch playlists from the single configured media server."""
     try:
-        mstype = config.MEDIASERVER_TYPE
-        if mstype == 'jellyfin':
-            from tasks.mediaserver.jellyfin import get_all_playlists
-            return get_all_playlists()
-        elif mstype == 'emby':
-            from tasks.mediaserver.emby import get_all_playlists
-            return get_all_playlists()
-        elif mstype == 'navidrome':
-            from tasks.mediaserver.navidrome import get_all_playlists
-            raw = get_all_playlists() or []
-            return [{'Id': p.get('id'), 'Name': p.get('name'), 'songCount': p.get('songCount', 0)} for p in raw]
-        elif mstype == 'lyrion':
-            from tasks.mediaserver.lyrion import get_all_playlists
-            return get_all_playlists()
-        elif mstype == 'mpd':
+        if config.MEDIASERVER_TYPE == 'mpd':
             return []  # MPD intentionally unsupported
-        return []
+        from tasks.mediaserver import get_all_playlists
+        return get_all_playlists()
     except Exception as e:
         logger.warning(f"_fetch_server_playlists failed for {config.MEDIASERVER_TYPE}: {e}")
         return []
@@ -908,48 +897,8 @@ def _fetch_server_playlist_item_ids(playlist_id):
     Returns list[str] on success, None on error.
     """
     try:
-        mstype = config.MEDIASERVER_TYPE
-
-        if mstype == 'jellyfin':
-            base_url = config.JELLYFIN_URL.rstrip('/')
-            url = f"{base_url}/Users/{config.JELLYFIN_USER_ID}/Items?ParentId={playlist_id}&IncludeItemTypes=Audio&Fields=Path"
-            resp = http_requests.get(url, headers=config.HEADERS, timeout=30)
-            if resp.status_code == 200:
-                return [str(item['Id']) for item in resp.json().get('Items', [])]
-
-        elif mstype == 'emby':
-            base_url = config.EMBY_URL.rstrip('/')
-            url = f"{base_url}/Users/{config.EMBY_USER_ID}/Items?ParentId={playlist_id}&IncludeItemTypes=Audio"
-            headers = {'X-Emby-Token': config.EMBY_TOKEN}
-            resp = http_requests.get(url, headers=headers, timeout=30)
-            if resp.status_code == 200:
-                return [str(item['Id']) for item in resp.json().get('Items', [])]
-
-        elif mstype == 'navidrome':
-            base_url = config.NAVIDROME_URL.rstrip('/')
-            hex_pass = config.NAVIDROME_PASSWORD.encode('utf-8').hex() if config.NAVIDROME_PASSWORD else ''
-            params = {
-                "u": config.NAVIDROME_USER, "p": f"enc:{hex_pass}",
-                "v": "1.16.1", "c": "AudioMuse-AI", "f": "json", "id": playlist_id
-            }
-            resp = http_requests.get(f"{base_url}/rest/getPlaylist.view", params=params, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json().get('subsonic-response', {})
-                if data.get('status') == 'ok' and 'playlist' in data:
-                    entries = data['playlist'].get('entry', [])
-                    return [str(e.get('id')) for e in entries if e.get('id')]
-
-        elif mstype == 'lyrion':
-            base_url = config.LYRION_URL.rstrip('/')
-            payload = {"id": 1, "method": "slim.request",
-                       "params": ["", ["playlists", "tracks", "0", "999999", f"playlist_id:{playlist_id}"]]}
-            resp = http_requests.post(f"{base_url}/jsonrpc.js", json=payload, timeout=30)
-            if resp.status_code == 200:
-                result = resp.json().get('result', {})
-                if result and "playlisttracks_loop" in result:
-                    return [str(t.get('id')) for t in result["playlisttracks_loop"] if t.get('id')]
-
-        return None
+        from tasks.mediaserver import get_playlist_track_ids
+        return get_playlist_track_ids(playlist_id)
     except Exception as e:
         logger.warning(f"Failed to fetch playlist tracks for {config.MEDIASERVER_TYPE}: {e}")
         return None
@@ -976,6 +925,14 @@ def stream_track(item_id):
         elif mstype == 'emby':
             upstream_url = f"{config.EMBY_URL.rstrip('/')}/Items/{item_id}/Download"
             upstream_headers = {"X-Emby-Token": config.EMBY_TOKEN}
+
+        elif mstype == 'plex':
+            from tasks.mediaserver.plex import _resolve_part
+            part_key, _ = _resolve_part(item_id)
+            if not part_key:
+                return jsonify({"error": "Track stream not found"}), 404
+            upstream_url = f"{config.PLEX_URL.rstrip('/')}{part_key}"
+            upstream_headers = {"X-Plex-Token": config.PLEX_TOKEN}
 
         elif mstype == 'navidrome':
             from tasks.mediaserver.navidrome import get_navidrome_auth_params

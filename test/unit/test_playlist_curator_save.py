@@ -158,3 +158,11 @@ def test_save_playlist_treats_falsey_provider_result_as_failure(client):
 
     assert response.status_code == 502
     assert response.get_json() == {"error": "Media server failed to replace playlist"}
+
+
+@pytest.mark.parametrize("payload", [7, "not-an-object", ["not", "an", "object"]])
+def test_save_playlist_rejects_non_object_json(client, payload):
+    response = client.post("/api/curator/save_playlist", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "JSON body must be an object"}
