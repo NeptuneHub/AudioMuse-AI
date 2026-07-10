@@ -593,6 +593,39 @@ class TestToolCallsSchema:
         pr.build_tool_calls_schema(tools)
         assert 'additionalProperties' not in tools[0]['inputSchema']
 
+    def test_unique_items_are_added_only_to_derived_argument_arrays(self):
+        pr = _prompts()
+        tools = _tools_fixture()
+
+        schema = pr.build_tool_calls_schema(tools)
+        branches = schema['properties']['tool_calls']['items']['oneOf']
+        argument_schemas = [branch['properties']['arguments'] for branch in branches]
+
+        def array_schemas(value):
+            if isinstance(value, dict):
+                if value.get('type') == 'array':
+                    yield value
+                for child in value.values():
+                    yield from array_schemas(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from array_schemas(child)
+
+        derived_arrays = [
+            array_schema
+            for argument_schema in argument_schemas
+            for array_schema in array_schemas(argument_schema)
+        ]
+        source_arrays = [
+            array_schema
+            for tool in tools
+            for array_schema in array_schemas(tool['inputSchema'])
+        ]
+
+        assert derived_arrays
+        assert all(array_schema['uniqueItems'] is True for array_schema in derived_arrays)
+        assert all('uniqueItems' not in array_schema for array_schema in source_arrays)
+
 
 class TestPromptRendering:
     def test_system_prompt_derives_tools_and_rules(self):
