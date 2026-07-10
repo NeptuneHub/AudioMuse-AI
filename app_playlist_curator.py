@@ -501,17 +501,19 @@ def search_api():
 
         elif filters:
             where_clause, params = _build_filter_query(filters, match_mode)
+            # _build_filter_query emits only allowlisted SQL identifiers and operators;
+            # every request value remains in the psycopg2 params tuple below.
             if search_only:
                 offset = (page - 1) * per_page
-                cur.execute(f"SELECT COUNT(*) AS total FROM score WHERE {where_clause}", tuple(params))
+                count_query = f"SELECT COUNT(*) AS total FROM score WHERE {where_clause}"  # nosec B608
+                cur.execute(count_query, tuple(params))
                 count_row = cur.fetchone()
                 filter_total = int(count_row['total'] if count_row else 0)
-                cur.execute(
-                    f"SELECT item_id FROM score WHERE {where_clause} ORDER BY item_id LIMIT %s OFFSET %s",
-                    tuple(params + [per_page, offset])
-                )
+                page_query = f"SELECT item_id FROM score WHERE {where_clause} ORDER BY item_id LIMIT %s OFFSET %s"  # nosec B608
+                cur.execute(page_query, tuple(params + [per_page, offset]))
             else:
-                cur.execute(f"SELECT item_id FROM score WHERE {where_clause}", tuple(params))
+                filter_query = f"SELECT item_id FROM score WHERE {where_clause}"  # nosec B608
+                cur.execute(filter_query, tuple(params))
             rows = cur.fetchall()
             playlist_ids = [row['item_id'] for row in rows]
             if not playlist_ids and (filter_total is None or filter_total == 0):
