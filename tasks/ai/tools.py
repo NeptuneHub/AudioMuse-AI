@@ -16,7 +16,7 @@ emitted call to the grounded implementations in ``tool_impl``. Sits between
 Main Features:
 * get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled; tool descriptions carry the routing rules (when to use each tool and when to use a sibling instead) so they work as the primary routing signal for small models, with genre/voice/mood enums from the canonical vocab.
 * execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database, expands female/male voice spelling variants deterministically, passes exclude_artists/exclude_genres through as hard SQL cuts, and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
-* Array args carry maxItems/uniqueItems caps so small-model structured output cannot loop a value forever; exclusion fields document that excluded names never go in seeds or positive filters.
+* Array args carry maxItems caps so small-model structured output cannot loop a value forever; the Ollama structured-output path in prompts.py adds uniqueItems dynamically. Exclusion fields document that excluded names never go in seeds or positive filters.
 """
 
 import logging
@@ -493,14 +493,12 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "array",
                         "items": {"type": "string", "enum": list(GENRE_VOCAB)},
                         "maxItems": 5,
-                        "uniqueItems": True,
                         "description": "Music genres the user WANTS, e.g. ['jazz'] or ['rock', 'blues'].",
                     },
                     "voices": {
                         "type": "array",
                         "items": {"type": "string", "enum": list(VOICE_ENUM)},
                         "maxItems": 2,
-                        "uniqueItems": True,
                         "description": (
                             "Vocal type: 'female vocalists' for any female-voice request, "
                             "'male vocalists' for any male-voice request."
@@ -510,7 +508,6 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "array",
                         "items": {"type": "string", "enum": list(config.OTHER_FEATURE_LABELS)},
                         "maxItems": 3,
-                        "uniqueItems": True,
                         "description": "How it feels, e.g. ['sad'] or ['danceable', 'party'].",
                     },
                     "tempo_min": {"type": "number", "description": "Min BPM 40-200, e.g. 120"},
@@ -552,7 +549,6 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "array",
                         "items": {"type": "string"},
                         "maxItems": 10,
-                        "uniqueItems": True,
                         "description": (
                             "Artists the user does NOT want ('no 50 Cent' -> ['50 Cent']). "
                             "Hard-removed from the results; never put these in artist or seeds."
@@ -562,7 +558,6 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "array",
                         "items": {"type": "string", "enum": list(GENRE_VOCAB)},
                         "maxItems": 5,
-                        "uniqueItems": True,
                         "description": (
                             "Genres the user does NOT want ('no rap' -> ['Hip-Hop']). "
                             "Hard-removed from the results; never put these in genres."

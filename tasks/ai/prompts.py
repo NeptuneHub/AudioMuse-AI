@@ -284,13 +284,39 @@ Request: "{user_message}"
 Fill only fields the user asked for. Return ONLY the JSON object."""
 
 
+def _inject_unique_items(schema: Dict) -> Dict:
+    """Add ``uniqueItems: True`` to every array-typed property recursively.
+
+    Small Ollama models can loop the same value forever in structured-output
+    mode; ``uniqueItems`` prevents that.  Injected here rather than in the
+    shared ``tools.py`` schema so that only the Ollama structured-output path
+    is affected — Gemini, Mistral, and native OpenAI tool-calling use the
+    schema as-is.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    # Snapshot keys so we can safely mutate the dict while walking it.
+    for key, value in list(schema.items()):
+        if key == 'type' and value == 'array':
+            schema.setdefault('uniqueItems', True)
+        elif isinstance(value, dict):
+            _inject_unique_items(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _inject_unique_items(item)
+    return schema
+
+
 def build_tool_calls_schema(tools: List[Dict]) -> Dict:
     branches: List[Dict] = []
     for t in tools:
         name = t.get('name')
         if not name:
             continue
-        arg_schema = copy.deepcopy(t.get('inputSchema') or {"type": "object"})
+        arg_schema = _inject_unique_items(
+            copy.deepcopy(t.get('inputSchema') or {"type": "object"})
+        )
         arg_schema['additionalProperties'] = False
         branches.append(
             {
