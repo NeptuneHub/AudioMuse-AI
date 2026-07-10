@@ -176,6 +176,7 @@
                 playlists.forEach(pl => {
                     const opt = document.createElement('option');
                     opt.value = '__server__' + pl.playlist_id;
+                    opt.dataset.playlistName = pl.playlist_name;
                     opt.textContent = `${pl.playlist_name} (${pl.song_count} songs)`;
                     group.appendChild(opt);
                 });
@@ -215,13 +216,25 @@
     async function loadSeedIntoWorkbench(seedValue) {
         if (!seedValue || seedValue === SEED_WORKBENCH) return;
         const statusId = 'curator-extender-status';
+        const select = document.getElementById('curator-seed-select');
+        const selectedOption = select ? select.options[select.selectedIndex] : null;
+        const isServerSeed = seedValue.startsWith('__server__');
+        window.curatorSetSeededPlaylistTarget(null);
 
         let tracks = null;
-        if (seedValue.startsWith('__server__')) {
+        let serverSeed = null;
+        if (isServerSeed) {
             window.curatorSetStatus(statusId, 'Loading playlist tracks…', 'loading');
             const data = await fetchServerPlaylistTracks(seedValue);
             if (!data) return;
             tracks = data.tracks || [];
+            const playlistId = seedValue.replace('__server__', '');
+            const playlistName = selectedOption ? selectedOption.dataset.playlistName : '';
+            serverSeed = {
+                playlistId,
+                playlistName,
+                unresolvedTracks: data.unresolved_tracks || 0,
+            };
         } else if (clusterPlaylistsCache[seedValue]) {
             tracks = clusterPlaylistsCache[seedValue];
         }
@@ -230,9 +243,11 @@
             window.curatorSetStatus(statusId, 'Playlist is empty.', 'error');
             return;
         }
+        if (serverSeed && serverSeed.playlistName) {
+            window.curatorSetSeededPlaylistTarget(serverSeed);
+        }
 
         const added = window.workbenchAddBulk(tracks, 'extend');
-        const select = document.getElementById('curator-seed-select');
         if (select) {
             refreshWorkbenchOption();
             select.value = SEED_WORKBENCH;
@@ -580,6 +595,7 @@
             if (section) section.classList.add('hidden');
             window.curatorSetStatus('curator-extender-status', '', '');
             const v = seedSelect.value;
+            if (!v) window.curatorSetSeededPlaylistTarget(null);
             if (v && v !== SEED_WORKBENCH) loadSeedIntoWorkbench(v);
         });
 

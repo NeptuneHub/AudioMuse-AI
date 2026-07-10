@@ -20,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKBENCH_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_workbench.html"
 CURATOR_SHARED_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-shared.js"
+CURATOR_EXTENDER_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-extender.js"
 CURATOR_TEMPLATE_PATHS = [
     REPO_ROOT / "templates" / "playlist_curator_search.html",
     REPO_ROOT / "templates" / "playlist_curator_extender.html",
@@ -94,3 +95,24 @@ def test_shared_workbench_owns_nonpersistent_seed_target_and_replace_payload():
     assert "window.curatorReplaceSeededPlaylist = replaceSeededPlaylist;" in source
     assert "localStorage.setItem(STORAGE_KEY, JSON.stringify(workbench))" in source
     assert "JSON.stringify(seededServerPlaylist)" not in source
+
+
+def test_extender_retains_server_seed_name_and_unresolved_count_for_replacement():
+    source = CURATOR_EXTENDER_JS.read_text(encoding="utf-8")
+
+    assert "opt.dataset.playlistName = pl.playlist_name;" in source
+    assert "serverSeed = {" in source
+    assert "playlistId," in source
+    assert "playlistName," in source
+    assert "unresolvedTracks: data.unresolved_tracks || 0" in source
+    assert "window.curatorSetSeededPlaylistTarget(serverSeed);" in source
+    assert source.index("window.curatorSetSeededPlaylistTarget(serverSeed);") < source.index(
+        "select.value = SEED_WORKBENCH;"
+    )
+
+
+def test_extender_clears_replacement_target_for_non_server_seed():
+    source = CURATOR_EXTENDER_JS.read_text(encoding="utf-8")
+
+    assert "window.curatorSetSeededPlaylistTarget(null);" in source
+    assert "seedValue.startsWith('__server__')" in source
