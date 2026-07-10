@@ -290,7 +290,7 @@ def _inject_unique_items(schema: Dict) -> Dict:
     Small Ollama models can loop the same value forever in structured-output
     mode; ``uniqueItems`` prevents that.  Injected here rather than in the
     shared ``tools.py`` schema so that only the Ollama structured-output path
-    is affected — Gemini, Mistral, and native OpenAI tool-calling use the
+    is affected -- Gemini, Mistral, and native OpenAI tool-calling use the
     schema as-is.
     """
     if not isinstance(schema, dict):
