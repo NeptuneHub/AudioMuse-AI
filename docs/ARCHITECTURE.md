@@ -16,7 +16,7 @@ graph TB
     Redis ---|Dequeue Tasks| Worker[Worker Container<br/>Analysis + Clustering]
     PostgreSQL ---|Read/Write| Worker
     
-    MediaServer[Media Server<br/>Jellyfin/Navidrome<br/>Lyrion/Emby] -.-|Fetch Music| Flask
+    MediaServer[Media Server<br/>Navidrome/Jellyfin<br/>Lyrion/Emby] -.-|Fetch Music| Flask
     MediaServer -.-|Fetch Audio Files| Worker
     
     style User fill:#607D8B
@@ -56,7 +56,7 @@ graph TB
 
 ### Media Server
 - **Music Source**: Provides access to audio library
-- **API Integration**: Jellyfin, Navidrome, Lyrion, or Emby APIs
+- **API Integration**: Navidrome, Jellyfin, Lyrion, or Emby APIs
 - **Audio Streaming**: Streams audio files for analysis
 - **Playlist Sync**: Target for generated playlists
 
@@ -88,8 +88,8 @@ graph TB
 | Flask (Web UI + API) | 8000 | HTTP |
 | Redis | 6379 | TCP |
 | PostgreSQL | 5432 | TCP |
-| Jellyfin | 8096 | HTTP |
 | Navidrome | 4533 | HTTP |
+| Jellyfin | 8096 | HTTP |
 | Lyrion | 9000 | HTTP |
 | Emby | 8096 | HTTP |
 

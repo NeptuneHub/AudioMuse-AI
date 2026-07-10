@@ -1,18 +1,23 @@
-"""Unit tests for tasks.provider_probe.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-The probe module is a thin shim: it normalizes the provider type, delegates
-to :mod:`tasks.mediaserver` (passing ``user_creds`` / ``provider_type``
-explicitly so it never reads ``config.py``), and normalizes the per-track
-dicts returned by the mediaserver layer into a unified shape.
+"""Provider probe that normalizes tracks and delegates to media servers.
 
-Tests exercise the shim's actual behavior:
-  * delegation to ``tasks.mediaserver`` with the right arguments,
-  * provider-type validation (normalize + reject unsupported),
-  * unified track shape produced by ``_normalize_track``.
+Covers the probe layer used by migration to fetch and normalize catalog data
+from any supported provider through a uniform track shape.
 
-Uses the ``importlib.util`` bypass so ``tasks/__init__.py`` (which pulls in
-heavy ML deps like librosa) isn't imported.
+Main Features:
+* normalize_track coerces Jellyfin/lowercase items and invalid years to None
+* Provider-type normalization lowercases supported and raises on unsupported
+* fetch_all_tracks/search_albums/get_album_tracks delegate then normalize
+* test_connection delegates and unsupported providers raise before any call
 """
+
 import importlib.util
 import os
 import sys
@@ -28,8 +33,6 @@ def _load_probe():
     repo_root = os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
     )
-    # Ensure `tasks.mediaserver` and friends are importable as a real package
-    # when provider_probe does `from tasks import mediaserver`.
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     mod_path = os.path.join(repo_root, 'tasks', 'provider_probe.py')
@@ -45,14 +48,17 @@ def probe():
     return _load_probe()
 
 
-# ---------------------------------------------------------------------------
-# _normalize_track — unified track shape
-# ---------------------------------------------------------------------------
-
 class TestNormalizeTrack:
     REQUIRED_KEYS = {
-        'id', 'path', 'title', 'artist', 'album_artist', 'album',
-        'year', 'track_number', 'disc_number',
+        'id',
+        'path',
+        'title',
+        'artist',
+        'album_artist',
+        'album',
+        'year',
+        'track_number',
+        'disc_number',
     }
 
     def test_none_item_returns_empty_shape(self, probe):
@@ -62,9 +68,14 @@ class TestNormalizeTrack:
 
     def test_jellyfin_style_item(self, probe):
         item = {
-            'Id': 'j1', 'Name': 'Song One', 'Album': 'Album A',
-            'AlbumArtist': 'Artist A', 'Path': '/m/a/song1.flac',
-            'Year': 2020, 'IndexNumber': 3, 'ParentIndexNumber': 1,
+            'Id': 'j1',
+            'Name': 'Song One',
+            'Album': 'Album A',
+            'AlbumArtist': 'Artist A',
+            'Path': '/m/a/song1.flac',
+            'Year': 2020,
+            'IndexNumber': 3,
+            'ParentIndexNumber': 1,
         }
         t = probe._normalize_track(item)
         assert t['id'] == 'j1'
@@ -78,9 +89,14 @@ class TestNormalizeTrack:
 
     def test_lowercase_style_item(self, probe):
         item = {
-            'id': 'n1', 'title': 'Song', 'album': 'Album',
-            'artist': 'Artist', 'path': '/m/song.flac',
-            'year': 2019, 'track_number': 5, 'disc_number': 2,
+            'id': 'n1',
+            'title': 'Song',
+            'album': 'Album',
+            'artist': 'Artist',
+            'path': '/m/song.flac',
+            'year': 2019,
+            'track_number': 5,
+            'disc_number': 2,
         }
         t = probe._normalize_track(item)
         assert t['id'] == 'n1'
@@ -105,18 +121,14 @@ class TestNormalizeTrack:
         assert set(t.keys()) == self.REQUIRED_KEYS
 
 
-# ---------------------------------------------------------------------------
-# _normalize_provider_type — validation
-# ---------------------------------------------------------------------------
-
 class TestNormalizeProviderType:
     def test_supported_providers_normalized_lowercase(self, probe):
-        for t in ('jellyfin', 'Jellyfin', 'EMBY', 'Navidrome', 'LYRION'):
+        for t in ('jellyfin', 'Jellyfin', 'EMBY', 'Navidrome', 'LYRION', 'Plex'):
             assert probe._normalize_provider_type(t) == t.lower()
 
     def test_unsupported_provider_raises(self, probe):
         with pytest.raises(ValueError) as ei:
-            probe._normalize_provider_type('plex')
+            probe._normalize_provider_type('spotify')
         assert 'not supported' in str(ei.value)
 
     def test_empty_or_none_raises(self, probe):
@@ -125,10 +137,6 @@ class TestNormalizeProviderType:
         with pytest.raises(ValueError):
             probe._normalize_provider_type('')
 
-
-# ---------------------------------------------------------------------------
-# fetch_all_tracks — delegation + normalization
-# ---------------------------------------------------------------------------
 
 class TestFetchAllTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -140,10 +148,9 @@ class TestFetchAllTracks:
         ]
         with patch.object(probe.mediaserver, 'get_all_songs', return_value=fake_items) as m:
             tracks = probe.fetch_all_tracks('jellyfin', self.CREDS)
-        # apply_filter=False: source provider's MUSIC_LIBRARIES filter must
-        # not be applied to the migration target during dry-run (it would
-        # zero out the target catalog whenever folder names differ).
-        m.assert_called_once_with(user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False)
+        m.assert_called_once_with(
+            user_creds=self.CREDS, provider_type='jellyfin', apply_filter=False
+        )
         assert len(tracks) == 2
         assert tracks[0]['id'] == 'a'
         assert tracks[1]['id'] == 'b'
@@ -158,13 +165,9 @@ class TestFetchAllTracks:
     def test_unsupported_provider_raises_before_call(self, probe):
         with patch.object(probe.mediaserver, 'get_all_songs') as m:
             with pytest.raises(ValueError):
-                probe.fetch_all_tracks('plex', self.CREDS)
+                probe.fetch_all_tracks('spotify', self.CREDS)
         m.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# search_albums — delegation (raw pass-through)
-# ---------------------------------------------------------------------------
 
 class TestSearchAlbums:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -179,13 +182,9 @@ class TestSearchAlbums:
     def test_unsupported_provider_raises(self, probe):
         with patch.object(probe.mediaserver, 'search_albums') as m:
             with pytest.raises(ValueError):
-                probe.search_albums('plex', self.CREDS, 'q')
+                probe.search_albums('spotify', self.CREDS, 'q')
         m.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# get_album_tracks — delegation + normalization
-# ---------------------------------------------------------------------------
 
 class TestGetAlbumTracks:
     CREDS = {'url': 'http://host', 'token': 'tok'}
@@ -204,17 +203,16 @@ class TestGetAlbumTracks:
             assert probe.get_album_tracks('lyrion', self.CREDS, 'album-1') == []
 
 
-# ---------------------------------------------------------------------------
-# test_connection — delegation (raw pass-through)
-# ---------------------------------------------------------------------------
-
 class TestTestConnection:
     CREDS = {'url': 'http://host'}
 
     def test_delegates_to_mediaserver(self, probe):
         fake_result = {
-            'ok': True, 'error': None, 'sample_count': 10,
-            'path_format': 'absolute', 'warnings': [],
+            'ok': True,
+            'error': None,
+            'sample_count': 10,
+            'path_format': 'absolute',
+            'warnings': [],
         }
         with patch.object(probe.mediaserver, 'test_connection', return_value=fake_result) as m:
             result = probe.test_connection('navidrome', self.CREDS)
@@ -224,5 +222,5 @@ class TestTestConnection:
     def test_unsupported_provider_raises(self, probe):
         with patch.object(probe.mediaserver, 'test_connection') as m:
             with pytest.raises(ValueError):
-                probe.test_connection('plex', self.CREDS)
+                probe.test_connection('spotify', self.CREDS)
         m.assert_not_called()

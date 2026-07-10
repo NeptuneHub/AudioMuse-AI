@@ -1,11 +1,23 @@
-"""
-Lyrics Search Blueprint
-Provides web interface and API for lyrics-based song search.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Two modes:
-  * Axis search: target sliders over MUSIC_ANALYSIS_AXES labels (0..1).
-  * Free-text search: gte-multilingual-base embedding nearest-neighbor on the
-    lyrics ivf index built from per-song lyrics embeddings.
+"""Lyrics-search Flask blueprint (lyrics_search_bp).
+
+Serves the ``/lyrics_search`` UI and the lyrics REST API, backed by the
+per-song lyrics embeddings and the lyrics IVF index built by
+``tasks.lyrics_manager``.
+
+Main Features:
+* Two search modes: axis search (target sliders over MUSIC_ANALYSIS_AXES
+  labels) and free-text search (gte-multilingual-base embedding nearest
+  neighbor on the lyrics IVF index).
+* Cache warmup / status / refresh, index stats, and axis-definition endpoints
+  for the search page.
 """
 
 import logging
@@ -13,8 +25,17 @@ import logging
 from flask import Blueprint, jsonify, render_template, request
 
 from app_helper import attach_song_features
+from error import error_manager
+from error.error_dictionary import ERR_LYRICS_FAILED
 
 logger = logging.getLogger(__name__)
+
+
+def _lyrics_error_body(message, **extra):
+    payload = error_manager.build(ERR_LYRICS_FAILED)
+    payload["error"] = message
+    payload.update(extra)
+    return payload
 
 lyrics_search_bp = Blueprint('lyrics_search_bp', __name__, template_folder='../templates')
 
@@ -35,9 +56,9 @@ def lyrics_search_page():
     from tasks.lyrics_manager import get_axes_definition, get_cache_stats
     from tasks.sem_grove_manager import get_sem_grove_stats
 
-    cache_stats      = get_cache_stats()
-    axes             = get_axes_definition() if LYRICS_ENABLED else {}
-    sem_grove_stats  = get_sem_grove_stats()
+    cache_stats = get_cache_stats()
+    axes = get_axes_definition() if LYRICS_ENABLED else {}
+    sem_grove_stats = get_sem_grove_stats()
 
     return render_template(
         'lyrics_search.html',
@@ -136,7 +157,7 @@ def lyrics_search_axes_api():
         return jsonify({'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics axis search failed")
-        return jsonify({'error': 'An internal error occurred.'}), 500
+        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/search/text', methods=['POST'])
@@ -214,7 +235,7 @@ def lyrics_search_text_api():
         return jsonify({'query': query, 'results': results, 'count': len(results)})
     except Exception:
         logger.exception("Lyrics text search failed")
-        return jsonify({'error': 'An internal error occurred.'}), 500
+        return jsonify(_lyrics_error_body('An internal error occurred.')), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup', methods=['POST'])
@@ -241,10 +262,11 @@ def lyrics_warmup_api():
 
     try:
         from tasks.gte_warm_cache import warmup_gte_model
+
         return jsonify(warmup_gte_model())
     except Exception:
         logger.exception("Lyrics model warmup failed")
-        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
+        return jsonify(_lyrics_error_body('Warmup failed.', loaded=False)), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/warmup/status', methods=['GET'])
@@ -266,6 +288,7 @@ def lyrics_warmup_status_api():
 
     try:
         from tasks.gte_warm_cache import get_gte_warm_status
+
         return jsonify(get_gte_warm_status())
     except Exception:
         logger.exception("Failed to get lyrics warmup status")
@@ -308,7 +331,7 @@ def lyrics_refresh_cache_api():
         return jsonify({'success': success, 'stats': get_cache_stats()})
     except Exception:
         logger.exception("Lyrics cache refresh failed")
-        return jsonify({'success': False, 'error': 'Internal error.'}), 500
+        return jsonify(_lyrics_error_body('Internal error.', success=False)), 500
 
 
 @lyrics_search_bp.route('/api/lyrics/stats', methods=['GET'])

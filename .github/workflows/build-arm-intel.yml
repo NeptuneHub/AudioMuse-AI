@@ -4,13 +4,15 @@
 # After both builds complete, a manifest is created to combine them into a single multi-arch tag.
 #
 # Tags are automatically generated based on the triggering event:
-# - devel branch -> 'devel'
+# - push to main (e.g. a merged PR) -> 'devel'
 # - version tags (e.g., v1.2.3) -> 'latest' + version number (e.g., '1.2.3')
 
 name: Build, Test, and Push AudioMuse AI Docker Image INTEL and ARM
 
 on:
   push:
+    branches:
+      - main          # Trigger on merge/push to main -> 'devel' tag
     tags:
       - 'v*.*.*'      # Trigger for version tags like v1.0.0
   pull_request:
@@ -21,7 +23,7 @@ on:
   # Allow manual runs for debugging or manual pushes
   workflow_dispatch:
 
-# Prevent concurrent builds for the same branch/tag — a new push cancels the in-progress build.
+# Prevent concurrent builds for the same branch/tag - a new push cancels the in-progress build.
 # This avoids race conditions where two builds overwrite each other's temporary tags.
 concurrency:
   group: build-${{ github.ref }}
@@ -43,6 +45,7 @@ jobs:
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       image: ${{ steps.repo_name.outputs.image }}
       tags: ${{ steps.tags.outputs.tags }}
@@ -62,7 +65,7 @@ jobs:
             VERSION="${VERSION#v}"
             TAGS="latest ${VERSION}"
             SUFFIX="release"
-          elif [[ "${{ github.ref }}" == refs/heads/devel ]]; then
+          elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
             TAGS="devel"
             SUFFIX="devel"
           elif [[ "${{ github.event_name }}" == "pull_request" && "${{ github.event.pull_request.draft }}" == "false" ]]; then
@@ -122,7 +125,7 @@ jobs:
 
   build-arm64:
     needs: prepare
-    runs-on: ubuntu-24.04-arm  # Native ARM64 runner — no QEMU emulation
+    runs-on: ubuntu-24.04-arm  # Native ARM64 runner - no QEMU emulation
     permissions:
       contents: read
       packages: write
@@ -192,7 +195,7 @@ jobs:
               --tag "${IMAGE}:${TAG}" \
               "${AMD64}" \
               "${ARM64}"
-            echo "✓ Pushed ${IMAGE}:${TAG}"
+            echo "OK: Pushed ${IMAGE}:${TAG}"
           done
 
       - name: Verify multi-arch manifest

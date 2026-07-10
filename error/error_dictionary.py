@@ -1,21 +1,20 @@
-"""Central registry of AudioMuse-AI error codes, classes and default messages.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module is pure data: it imports nothing from the rest of the application so
-it stays cheap to import and trivial to unit test. Every error surfaced to a user
-is identified by a numeric code that maps here to a short generic class label and a
-human-readable default message. Call sites pick the code (and may append a more
-specific one-line message) when they raise or record an error.
+"""Canonical registry of numeric error codes and their default text.
 
-Numeric ranges:
-    1000-1099  Configuration / Setup
-    1100-1199  Music Server Connection
-    2000-2099  Analysis / Model
-    3000-3099  Index / IVF
-    4000-4099  Database
-    4100-4199  Backup / Restore
-    5000-5099  Lyrics / Translation
-    6000-6099  Task Operations (clustering, cleaning, collection)
-    9000-9999  Generic / Unknown
+Defines the stable integer error codes grouped by domain (config, media
+server, analysis, index, database, backup, lyrics, clustering) and maps each to
+a human-readable class and default message consumed by ``error_manager``.
+
+Main Features:
+* ``ERROR_REGISTRY`` maps every code to its error class and default message.
+* Lookup helpers resolve unknown codes to ``UNKNOWN_ERROR_CODE`` safely.
 """
 
 ERR_CONFIG_INVALID = 1001
@@ -45,11 +44,9 @@ ERR_RESTORE_FAILED = 4103
 
 ERR_LYRICS_FAILED = 5001
 ERR_LYRICS_TRANSCRIPTION = 5002
-ERR_TRANSLATION_FAILED = 5003
 
 ERR_CLUSTERING_FAILED = 6001
 ERR_CLEANING_FAILED = 6002
-ERR_COLLECTION_SYNC_FAILED = 6003
 
 UNKNOWN_ERROR_CODE = 9999
 
@@ -138,10 +135,6 @@ ERROR_REGISTRY = {
         "error_class": "Lyrics Transcription Error",
         "default_message": "Lyrics transcription failed.",
     },
-    ERR_TRANSLATION_FAILED: {
-        "error_class": "Translation Error",
-        "default_message": "Lyrics translation failed.",
-    },
     ERR_CLUSTERING_FAILED: {
         "error_class": "Clustering Error",
         "default_message": "Playlist clustering failed.",
@@ -149,10 +142,6 @@ ERROR_REGISTRY = {
     ERR_CLEANING_FAILED: {
         "error_class": "Cleaning Error",
         "default_message": "Database cleaning failed.",
-    },
-    ERR_COLLECTION_SYNC_FAILED: {
-        "error_class": "Collection Sync Error",
-        "default_message": "Collection synchronization failed.",
     },
     UNKNOWN_ERROR_CODE: {
         "error_class": "Unknown Error",
@@ -162,12 +151,10 @@ ERROR_REGISTRY = {
 
 
 def get_error_class(code):
-    """Return the generic class label for a code, falling back to Unknown Error."""
     entry = ERROR_REGISTRY.get(code) or ERROR_REGISTRY[UNKNOWN_ERROR_CODE]
     return entry["error_class"]
 
 
 def get_default_message(code):
-    """Return the default message for a code, falling back to Unknown Error."""
     entry = ERROR_REGISTRY.get(code) or ERROR_REGISTRY[UNKNOWN_ERROR_CODE]
     return entry["default_message"]

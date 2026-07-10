@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Standalone research script for the GMM-based brainstorm/similarity experiment.
+
+Offline experiment (not part of the app runtime) that connects directly to a
+Postgres AudioMuse-AI database, loads the mood/MSD ONNX label models, and fits
+per-item Gaussian Mixture Models to prototype the "real GMM" brainstorm ranking.
+
+Main Features:
+* Reads embeddings and labels straight from the database via a hardcoded DB_CONFIG.
+* Fits scikit-learn GaussianMixture models to evaluate GMM-based candidate scoring.
+"""
+
 import onnx
 import numpy as np
 import psycopg2
@@ -151,7 +170,8 @@ def fit_gmm_bic(X, k_range=GMM_K_RANGE):
     best_k = -1
     bic_values = {}
 
-    for k in k_range:
+    max_k = min(k_range.stop - 1, len(X))
+    for k in range(k_range.start, max_k + 1):
         gmm = GaussianMixture(n_components=k, covariance_type='diag',
                                n_init=3, max_iter=300, reg_covar=1e-5,
                                random_state=42)
@@ -196,11 +216,11 @@ def main():
             mask = scores >= SCORE_THRESHOLD
             above_idx = np.where(mask)[0]
             n_musicnn = len(above_idx)
-            print(f"  Stage 1 — MusiCNN > {SCORE_THRESHOLD}: {n_musicnn} songs "
+            print(f"  Stage 1 - MusiCNN > {SCORE_THRESHOLD}: {n_musicnn} songs "
                   f"({100*n_musicnn/len(all_X):.1f}% of library)")
         else:
             above_idx = np.arange(len(all_X))
-            print(f"  Stage 1 — MusiCNN OFF: keeping all {len(above_idx)} songs")
+            print(f"  Stage 1 - MusiCNN OFF: keeping all {len(above_idx)} songs")
 
         if USE_CLAP:
             clap_label = MOOD_CLAP_LABEL[mood]
@@ -213,11 +233,11 @@ def main():
                         clap_pass.append(idx)
             clap_pass = np.array(clap_pass)
             n_pass = len(clap_pass)
-            print(f"  Stage 2 — CLAP '{clap_label}' > {CLAP_THRESHOLD}: {n_pass} songs remain")
+            print(f"  Stage 2 - CLAP '{clap_label}' > {CLAP_THRESHOLD}: {n_pass} songs remain")
         else:
             clap_pass = above_idx
             n_pass = len(clap_pass)
-            print(f"  Stage 2 — CLAP OFF: keeping {n_pass} songs")
+            print(f"  Stage 2 - CLAP OFF: keeping {n_pass} songs")
 
         if n_pass > MAX_SONGS_PER_MOOD:
             top_idx = clap_pass[np.argsort(scores[clap_pass])[-MAX_SONGS_PER_MOOD:]]
@@ -242,14 +262,14 @@ def main():
         print(f"  Best K by BIC: {best_k}")
 
         sorted_bic = sorted(bic_values.items(), key=lambda x: x[1])
-        print(f"  Top-5 K by BIC:")
+        print("  Top-5 K by BIC:")
         for k, bic in sorted_bic[:5]:
             print(f"    K={k:2d}  BIC={bic:,.0f}")
 
         labels = best_gmm.predict(sel_X.astype(np.float64))
         centroids = best_gmm.means_
 
-        print(f"\n  Cluster sizes:")
+        print("\n  Cluster sizes:")
         for c in range(best_k):
             cmask = labels == c
             count = cmask.sum()
@@ -257,7 +277,7 @@ def main():
             print(f"    Cluster {c:2d}: {count:5d} songs, "
                   f"mean {mood} score: {mean_score:.4f}")
 
-        print(f"\n  Centroid MSD tag profiles (top-8 tags):")
+        print("\n  Centroid MSD tag profiles (top-8 tags):")
         print(f"  {'#':>3}  {'songs':>5}  {'mood_score':>10}  top MSD tags")
         print(f"  {'─'*75}")
 

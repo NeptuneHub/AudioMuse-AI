@@ -1,9 +1,28 @@
-"""Unit tests for tasks/setup_manager.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Tests pure validation / transformation logic — no database mocks needed.
+"""Setup-manager config value parsing, validation and placeholder detection.
+
+Covers the helpers that read stored setup values: placeholder/validity checks,
+argon2 hash detection and the cast/format round trip used by the config store.
+
+Main Features:
+* Placeholder and empty/whitespace strings are detected while real values pass
+* Argon2id/argon2i hashes are recognized and bcrypt/plain are not
+* cast_value coerces bool/int/float/list/dict and falls back on invalid JSON
+* cast and format round-trip preserves the original value; DATABASE_URL env honored
+* Importing tasks.setup_manager before config keeps the DB-override init working
 """
+
 import json
 import os
+import subprocess
+import sys
 import types
 import pytest
 from unittest.mock import MagicMock, patch
@@ -11,26 +30,15 @@ from unittest.mock import MagicMock, patch
 from tasks.setup_manager import SetupManager
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _mgr(database_url="postgresql://test:test@localhost:5432/testdb"):
-    """Create a SetupManager with a fake database URL (no real DB needed)."""
     return SetupManager(database_url=database_url)
 
 
 def _cfg(**attrs):
-    """Return a SimpleNamespace that behaves like a config module."""
     return types.SimpleNamespace(**attrs)
 
 
-# ============================================================================
-# _looks_like_placeholder
-# ============================================================================
-
 class TestLooksLikePlaceholder:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -74,12 +82,7 @@ class TestLooksLikePlaceholder:
         assert self.mgr._looks_like_placeholder("No-Key-Needed") is True
 
 
-# ============================================================================
-# _is_valid_string
-# ============================================================================
-
 class TestIsValidString:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -102,12 +105,7 @@ class TestIsValidString:
         assert self.mgr._is_valid_string([]) is False
 
 
-# ============================================================================
-# _is_argon2_password_hash
-# ============================================================================
-
 class TestIsArgon2PasswordHash:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -128,16 +126,10 @@ class TestIsArgon2PasswordHash:
         assert self.mgr._is_argon2_password_hash(123) is False
 
 
-# ============================================================================
-# cast_value — type coercion from stored DB strings
-# ============================================================================
-
 class TestCastValue:
-
     def setup_method(self):
         self.mgr = _mgr()
 
-    # --- bool ---
     @pytest.mark.parametrize("stored", ["true", "True", "TRUE", "1", "yes", "on"])
     def test_bool_truthy(self, stored):
         assert self.mgr.cast_value(True, stored) is True
@@ -146,7 +138,6 @@ class TestCastValue:
     def test_bool_falsy(self, stored):
         assert self.mgr.cast_value(False, stored) is False
 
-    # --- int ---
     def test_int_valid(self):
         assert self.mgr.cast_value(0, "42") == 42
 
@@ -156,14 +147,12 @@ class TestCastValue:
     def test_int_invalid_returns_default(self):
         assert self.mgr.cast_value(10, "not_a_number") == 10
 
-    # --- float ---
     def test_float_valid(self):
         assert self.mgr.cast_value(0.0, "3.14") == pytest.approx(3.14)
 
     def test_float_invalid_returns_default(self):
         assert self.mgr.cast_value(1.5, "xyz") == 1.5
 
-    # --- list / dict ---
     def test_list(self):
         assert self.mgr.cast_value([], '[1, 2, 3]') == [1, 2, 3]
 
@@ -176,7 +165,6 @@ class TestCastValue:
     def test_nested_json(self):
         assert self.mgr.cast_value({}, '{"a": {"b": [1]}}') == {"a": {"b": [1]}}
 
-    # --- string passthrough ---
     def test_string_passthrough(self):
         assert self.mgr.cast_value("default", "override") == "override"
 
@@ -184,12 +172,7 @@ class TestCastValue:
         assert self.mgr.cast_value("default", "") == ""
 
 
-# ============================================================================
-# format_value — serialization for DB storage
-# ============================================================================
-
 class TestFormatValue:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -218,29 +201,18 @@ class TestFormatValue:
         assert self.mgr.format_value({}) == "{}"
 
 
-# ============================================================================
-# cast_value ↔ format_value round-trip
-# ============================================================================
-
 class TestCastFormatRoundTrip:
-
     def setup_method(self):
         self.mgr = _mgr()
 
     @pytest.mark.parametrize("original", [42, 3.14, True, False, "hello", [1, 2], {"k": "v"}])
     def test_roundtrip(self, original):
-        """format then cast should recover the original value."""
         formatted = self.mgr.format_value(original)
         recovered = self.mgr.cast_value(original, formatted)
         assert recovered == original
 
 
-# ============================================================================
-# _get_database_url
-# ============================================================================
-
 class TestGetDatabaseUrl:
-
     def test_uses_database_url_env(self):
         with patch.dict("os.environ", {"DATABASE_URL": "postgresql://u:p@h:5/d"}, clear=False):
             url = _mgr(database_url=None)._get_database_url()
@@ -288,12 +260,7 @@ class TestGetDatabaseUrl:
                 os.environ["DATABASE_URL"] = old
 
 
-# ============================================================================
-# _is_valid_server_config — all four media server types
-# ============================================================================
-
 class TestIsValidServerConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -344,9 +311,7 @@ class TestIsValidServerConfig:
         assert self.mgr._is_valid_server_config(cfg) is False
 
     def test_missing_required_field_absent(self):
-        """Field not set at all on the config module (getattr returns '')."""
         cfg = _cfg(MEDIASERVER_TYPE="navidrome", NAVIDROME_URL="http://localhost:4533")
-        # NAVIDROME_USER and NAVIDROME_PASSWORD are missing
         assert self.mgr._is_valid_server_config(cfg) is False
 
     def test_placeholder_in_required_field(self):
@@ -384,12 +349,7 @@ class TestIsValidServerConfig:
         assert self.mgr._is_valid_server_config(cfg) is False
 
 
-# ============================================================================
-# _is_valid_auth_config
-# ============================================================================
-
 class TestIsValidAuthConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -420,26 +380,21 @@ class TestIsValidAuthConfig:
         assert self.mgr._is_valid_auth_config(cfg) is True
 
     def test_auth_enabled_placeholder_user(self):
-        cfg = _cfg(AUTH_ENABLED=True, AUDIOMUSE_USER="your_default_user", AUDIOMUSE_PASSWORD="secret")
+        cfg = _cfg(
+            AUTH_ENABLED=True, AUDIOMUSE_USER="your_default_user", AUDIOMUSE_PASSWORD="secret"
+        )
         assert self.mgr._is_valid_auth_config(cfg) is False
 
     def test_api_token_not_required(self):
-        """API_TOKEN is optional — setup is valid without it."""
         cfg = _cfg(AUTH_ENABLED=True, AUDIOMUSE_USER="admin", AUDIOMUSE_PASSWORD="secret")
         assert self.mgr._is_valid_auth_config(cfg) is True
 
     def test_auth_not_set_defaults_to_enabled(self):
-        """If AUTH_ENABLED is absent, defaults to True → needs credentials."""
         cfg = _cfg(AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
         assert self.mgr._is_valid_auth_config(cfg) is False
 
 
-# ============================================================================
-# is_valid_env_config — combined server + auth
-# ============================================================================
-
 class TestIsValidEnvConfig:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -489,17 +444,11 @@ class TestIsValidEnvConfig:
         assert self.mgr.is_valid_env_config(cfg) is False
 
     def test_lyrion_minimal(self):
-        """Lyrion only needs URL + auth disabled — smallest valid config."""
         cfg = _cfg(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000", AUTH_ENABLED=False)
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-# ============================================================================
-# is_setup_complete (alias for is_valid_env_config)
-# ============================================================================
-
 class TestIsSetupComplete:
-
     def test_delegates_to_is_valid_env_config(self):
         mgr = _mgr()
         good = _cfg(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000", AUTH_ENABLED=False)
@@ -509,12 +458,7 @@ class TestIsSetupComplete:
         assert mgr.is_setup_complete(bad) is False
 
 
-# ============================================================================
-# _get_env_config_values — config extraction
-# ============================================================================
-
 class TestGetEnvConfigValues:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -552,18 +496,12 @@ class TestGetEnvConfigValues:
         assert self.mgr._get_env_config_values(cfg) == {}
 
     def test_no_excluded_keys_attr(self):
-        """Works when config has no SETUP_BOOTSTRAP_EXCLUDED_KEYS at all."""
         cfg = _cfg(MY_KEY="val")
         values = self.mgr._get_env_config_values(cfg)
         assert "MY_KEY" in values
 
 
-# ============================================================================
-# get_connection — RuntimeError guard
-# ============================================================================
-
 class TestGetConnection:
-
     def test_raises_if_no_database_url(self):
         mgr = SetupManager.__new__(SetupManager)
         mgr.database_url = None
@@ -572,47 +510,31 @@ class TestGetConnection:
             mgr.get_connection()
 
 
-# ============================================================================
-# save_config_values — input validation (no DB needed)
-# ============================================================================
-
 class TestSaveConfigValuesValidation:
-
     def test_rejects_non_dict(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values("not a dict")
 
     def test_rejects_list(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values([("key", "val")])
 
     def test_rejects_none(self):
         mgr = _mgr()
-        with pytest.raises(ValueError, match="Expected a dictionary"):
+        with pytest.raises(TypeError, match="Expected a dictionary"):
             mgr.save_config_values(None)
 
 
-# ============================================================================
-# delete_config_values — noop guard (no DB needed)
-# ============================================================================
-
 class TestDeleteConfigValuesNoop:
-
     @patch("tasks.setup_manager.SetupManager.get_connection")
     def test_noop_for_empty_keys(self, mock_get_conn):
         _mgr().delete_config_values([])
         mock_get_conn.assert_not_called()
 
 
-# ============================================================================
-# Scenario: every media server with placeholder fields should fail validation
-# ============================================================================
-
 class TestPlaceholderFieldsRejectAllServers:
-    """Ensure default env placeholders never pass validation for any type."""
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -648,12 +570,7 @@ class TestPlaceholderFieldsRejectAllServers:
         assert self.mgr.is_valid_env_config(cfg) is False
 
 
-# ============================================================================
-# Scenario: switching server type — only the new type's fields matter
-# ============================================================================
-
 class TestServerTypeSwitching:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -663,7 +580,6 @@ class TestServerTypeSwitching:
             NAVIDROME_URL="http://localhost:4533",
             NAVIDROME_USER="admin",
             NAVIDROME_PASSWORD="secret",
-            # Leftover jellyfin fields — should not matter
             JELLYFIN_URL="",
             JELLYFIN_USER_ID="",
             JELLYFIN_TOKEN="",
@@ -683,12 +599,7 @@ class TestServerTypeSwitching:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-# ============================================================================
-# Scenario: auth transitions
-# ============================================================================
-
 class TestAuthTransitions:
-
     def setup_method(self):
         self.mgr = _mgr()
 
@@ -696,15 +607,18 @@ class TestAuthTransitions:
         return dict(MEDIASERVER_TYPE="lyrion", LYRION_URL="http://x:9000")
 
     def test_enable_auth_requires_credentials(self):
-        cfg = _cfg(**self._valid_server(), AUTH_ENABLED=True, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
+        cfg = _cfg(
+            **self._valid_server(), AUTH_ENABLED=True, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD=""
+        )
         assert self.mgr.is_valid_env_config(cfg) is False
 
     def test_disable_auth_clears_requirement(self):
-        cfg = _cfg(**self._valid_server(), AUTH_ENABLED=False, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD="")
+        cfg = _cfg(
+            **self._valid_server(), AUTH_ENABLED=False, AUDIOMUSE_USER="", AUDIOMUSE_PASSWORD=""
+        )
         assert self.mgr.is_valid_env_config(cfg) is True
 
     def test_argon2_hash_is_valid_password(self):
-        """An already-hashed password still passes _is_valid_string."""
         cfg = _cfg(
             **self._valid_server(),
             AUTH_ENABLED=True,
@@ -714,20 +628,17 @@ class TestAuthTransitions:
         assert self.mgr.is_valid_env_config(cfg) is True
 
 
-# ============================================================================
-# MODULE-LEVEL CONSTANTS
-# ============================================================================
-
 class TestModuleConstants:
-
     def test_basic_server_fields_is_set(self):
         from tasks.setup_manager import BASIC_SERVER_FIELDS
+
         assert isinstance(BASIC_SERVER_FIELDS, set)
         assert 'MEDIASERVER_TYPE' in BASIC_SERVER_FIELDS
         assert 'JELLYFIN_URL' in BASIC_SERVER_FIELDS
 
     def test_auth_fields_is_set(self):
         from tasks.setup_manager import AUTH_FIELDS
+
         assert isinstance(AUTH_FIELDS, set)
         assert 'AUTH_ENABLED' in AUTH_FIELDS
         assert 'AUDIOMUSE_USER' in AUTH_FIELDS
@@ -735,7 +646,34 @@ class TestModuleConstants:
         assert 'API_TOKEN' in AUTH_FIELDS
 
     def test_server_required_fields_matches_config(self):
-        """SetupManager.SERVER_REQUIRED_FIELDS should equal config.MEDIASERVER_FIELDS_BY_TYPE."""
         import config
+
         mgr = _mgr()
-        assert mgr.SERVER_REQUIRED_FIELDS == config.MEDIASERVER_FIELDS_BY_TYPE
+        assert mgr.server_required_fields == config.MEDIASERVER_FIELDS_BY_TYPE
+
+
+class TestImportOrderIndependence:
+    def test_setup_manager_imports_before_config_without_breaking_overrides(self):
+        code = (
+            "import sys\n"
+            "import tasks.setup_manager\n"
+            "assert 'config' not in sys.modules, "
+            "'tasks.setup_manager must not import config at module level'\n"
+            "import config\n"
+            "assert config.refresh_config.__doc__, "
+            "'DB-override init was skipped: circular import regression'\n"
+        )
+        repo_root = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+        )
+        env = dict(os.environ)
+        env['DATABASE_URL'] = 'postgresql://u:p@127.0.0.1:1/db'
+        proc = subprocess.run(
+            [sys.executable, '-c', code],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, proc.stderr

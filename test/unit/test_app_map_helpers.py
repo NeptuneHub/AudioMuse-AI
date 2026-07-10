@@ -1,3 +1,22 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Coordinate and mood helpers for the song map in app_map.
+
+Covers _pick_top_mood, _round_coord, and _sample_items used to build the
+2D projection payload sent to the map view.
+
+Main Features:
+* _pick_top_mood returns the highest-scoring label or "unknown" on bad input
+* _round_coord rounds to three decimals and zeroes out malformed coordinates
+* _sample_items samples a deterministic fraction, returning a fresh list
+"""
+
 from app_map import _pick_top_mood, _round_coord, _sample_items
 
 

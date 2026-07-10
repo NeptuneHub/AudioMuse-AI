@@ -1,18 +1,25 @@
-"""App-layer helpers that compose the data (``database``) and queue
-(``taskqueue``) layers for the web and task tiers.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This is NOT the database layer -- all SQL lives in ``database.py``. What remains
-here is orchestration and presentation glue:
+"""App-layer helpers composing the data and queue layers for the web/task tiers.
 
-- ``cancel_job_and_children_recursive`` -- recursively cancel an RQ job tree.
-- ``build_and_store_map_projection`` / ``build_and_store_artist_projection`` --
-  compute a 2D projection and persist it via ``database``.
-- ``attach_song_features`` / ``top_stratified_genre`` -- enrich API result rows.
+Orchestration and presentation glue on top of ``database`` and ``taskqueue``.
+This is NOT the database layer: all SQL lives in ``database.py``. It also
+re-exports the most-used ``database`` / ``taskqueue`` handles so the many
+modules doing ``from app_helper import get_db, redis_conn, ...`` stay untouched.
 
-It also re-exports the most commonly used ``database`` / ``taskqueue`` handles so
-the many modules doing ``from app_helper import get_db, redis_conn, ...`` are
-untouched.
+Main Features:
+* ``cancel_job_and_children_recursive`` recursively cancels an RQ job tree.
+* ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
+  compute a 2D projection and persist it; ``attach_song_features`` /
+  ``top_stratified_genre`` enrich API result rows.
 """
+
 import json
 import logging
 import time
@@ -22,11 +29,19 @@ import numpy as np
 
 import database
 from database import (  # noqa: F401
-    get_db, close_db, save_task_status, record_task_history, _build_task_note,
-    get_score_data_by_ids, load_map_projection, get_task_info_from_db, get_tracks_by_ids,
+    get_db,
+    close_db,
+    save_task_status,
+    record_task_history,
+    _build_task_note,
+    get_score_data_by_ids,
+    load_map_projection,
+    get_task_info_from_db,
+    get_tracks_by_ids,
     save_track_analysis_and_embedding,
     # Used internally by the build_and_store_* projection orchestration below.
-    save_map_projection, save_artist_projection,
+    save_map_projection,
+    save_artist_projection,
 )
 from taskqueue import (
     redis_conn,
@@ -39,9 +54,16 @@ from taskqueue import (
 
 from config import (  # noqa: F401
     STRATIFIED_GENRES,
-    TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
-    TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+    TASK_STATUS_PENDING,
+    TASK_STATUS_STARTED,
+    TASK_STATUS_PROGRESS,
+    TASK_STATUS_SUCCESS,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_REVOKED,
 )
+
+from error import error_manager
+from error.error_dictionary import UNKNOWN_ERROR_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +99,64 @@ def get_score_data_lite_by_ids(item_ids_list):
     finally:
         cur.close()
     return [dict(row) for row in rows]
+
+
+def coerce_db_details(raw_details):
+    """Normalize a task_status.details DB value to a dict without double-parsing.
+
+    psycopg2 hands back a TEXT details column as a JSON string (needs json.loads)
+    but a JSONB column as an already-parsed dict (must NOT be re-parsed). NULL or
+    unparseable values collapse to {}.
+    """
+    if isinstance(raw_details, dict):
+        return raw_details
+    if raw_details:
+        try:
+            return json.loads(raw_details)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def sanitize_task_details(details, state, task_type=None):
+    """Normalize a persisted task ``details`` dict for any task-status endpoint.
+
+    Applies the same safety pass to every endpoint that surfaces task details:
+    drops the internal traceback and the heavyweight analysis-only
+    ``checked_album_ids`` key, truncates the log to the last 10 entries, and
+    guarantees a well-formed structured ``error`` (plus ``error_message``) on
+    failed tasks so the frontend renderer always receives a consistent, safe
+    shape whether it hit ``/api/status``, ``/api/last_task`` or ``/api/active_tasks``.
+    """
+    if not isinstance(details, dict):
+        return details
+
+    if task_type and 'analysis' in task_type:
+        details.pop('checked_album_ids', None)
+    details.pop('traceback', None)
+
+    log_entries = details.get('log')
+    if isinstance(log_entries, list) and len(log_entries) > 10:
+        details['log'] = [
+            f"... ({len(log_entries) - 10} earlier log entries truncated)",
+            *log_entries[-10:],
+        ]
+
+    if str(state or '').upper() in ('FAILED', 'FAILURE'):
+        existing_error = details.get('error')
+        has_full_error = (
+            isinstance(existing_error, dict)
+            and 'error_code' in existing_error
+            and 'error_message' in existing_error
+        )
+        if not has_full_error:
+            if isinstance(existing_error, dict) and 'error_code' in existing_error:
+                details['error'] = error_manager.build(existing_error['error_code'])
+            else:
+                details['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
+        details.setdefault('error_message', details['error']['error_message'])
+
+    return details
 
 
 def top_stratified_genre(mood_vector):
@@ -128,24 +208,44 @@ def attach_song_features(rows, id_key='item_id'):
     return rows
 
 
+def serialize_neighbor_results(
+    neighbor_results, missing_album='unknown', include_album_artist=True
+):
+    """Build the similar-tracks JSON list from neighbor dicts carrying item_id + distance.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    Shared by the IVF similarity endpoints and the sonic-fingerprint endpoint so the
+    response shape lives in one place. missing_album / include_album_artist keep each
+    caller's existing output shape.
+    """
+    if not neighbor_results:
+        return []
+    ids = [n['item_id'] for n in neighbor_results]
+    details_map = {d['item_id']: d for d in get_score_data_by_ids(ids)}
+    distance_map = {n['item_id']: n['distance'] for n in neighbor_results}
+    out = []
+    for nid in ids:
+        info = details_map.get(nid)
+        if not info:
+            continue
+        # missing_album=None means "no substitution" (sonic fingerprint keeps the
+        # raw album, incl. '') -- only fall back when a sentinel is supplied.
+        album = info.get('album')
+        if missing_album is not None:
+            album = album or missing_album
+        row = {
+            "item_id": info['item_id'],
+            "title": info['title'],
+            "author": info['author'],
+            "album": album,
+            "distance": distance_map[nid],
+            "mood_vector": info.get('mood_vector'),
+            "other_features": info.get('other_features'),
+            "top_genre": top_stratified_genre(info.get('mood_vector')),
+        }
+        if include_album_artist:
+            row["album_artist"] = info.get('album_artist') or 'unknown'
+        out.append(row)
+    return out
 
 
 def build_and_store_map_projection(index_name='main_map'):
@@ -169,8 +269,8 @@ def build_and_store_map_projection(index_name='main_map'):
             dim=EMBEDDING_DIMENSION,
             where_clause="embedding IS NOT NULL",
         )
-    except Exception as e:
-        logger.error(f"Failed to stream embeddings for map projection: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Failed to stream embeddings for map projection")
         return False
 
     if mat.shape[0] == 0:
@@ -204,16 +304,16 @@ def build_and_store_map_projection(index_name='main_map'):
     try:
         save_map_projection(index_name, ids, projections)
         # Update the canonical in-memory cache (read by database.load_map_projection).
-        database.MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': ids, 'projection': projections}
+        database.MAP_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'id_map': ids,
+            'projection': projections,
+        }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
-    except Exception as e:
-        logger.error(f"Failed to build and store map projection: {e}")
+    except Exception:
+        logger.exception("Failed to build and store map projection")
         return False
-
-
-
-
 
 
 def build_and_store_artist_projection(index_name='artist_map'):
@@ -223,13 +323,13 @@ def build_and_store_artist_projection(index_name='artist_map'):
     """
     from tasks.artist_gmm_manager import load_artist_index_for_querying
     from tasks.alchemy_projections import _project_with_umap, _project_to_2d
-    
+
     # Always reload artist GMM params from database (force reload to ensure fresh data)
     load_artist_index_for_querying(force_reload=True)
-    
+
     # Re-import after loading to get the updated global variable
     from tasks.artist_gmm_manager import artist_gmm_params as loaded_params
-    
+
     if not loaded_params:
         logger.warning("No artist GMM params available to build artist projection.")
         return False
@@ -265,16 +365,18 @@ def build_and_store_artist_projection(index_name='artist_map'):
         artist_id = get_artist_id_by_name(artist_name) or artist_name
         for comp_idx in range(len(means)):
             mat[row_i] = np.asarray(means[comp_idx], dtype=np.float32)
-            component_map.append({
-                'artist_id': artist_id,
-                'artist_name': artist_name,
-                'component_idx': comp_idx,
-                'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
-            })
+            component_map.append(
+                {
+                    'artist_id': artist_id,
+                    'artist_name': artist_name,
+                    'component_idx': comp_idx,
+                    'weight': float(weights[comp_idx]) if comp_idx < len(weights) else 0.0,
+                }
+            )
             row_i += 1
 
     projections = None
-    
+
     try:
         logger.info(f"Starting to build artist projection: {mat.shape[0]} component vectors found.")
         # Try UMAP first
@@ -283,7 +385,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
     except Exception as e:
         logger.warning(f"UMAP projection failed for artist components: {e}")
         projections = None
-    
+
     # Fallback to PCA
     if projections is None:
         try:
@@ -292,33 +394,36 @@ def build_and_store_artist_projection(index_name='artist_map'):
         except Exception as e:
             logger.warning(f"PCA projection failed for artist components: {e}")
             projections = None
-    
+
     if projections is None:
         projections = np.zeros((mat.shape[0], 2), dtype=np.float32)
     else:
         projections = np.array(projections, dtype=np.float32)
-    
+
     logger.info(f"Computed artist projection shape: {projections.shape}")
-    
+
     try:
         save_artist_projection(index_name, component_map, projections)
         # Update the canonical in-memory cache (read by database.load_artist_projection).
-        database.ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': projections}
+        database.ARTIST_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'component_map': component_map,
+            'projection': projections,
+        }
         # Note: Caller (analysis task) is responsible for publishing reload message after all builds complete
         return True
-    except Exception as e:
-        logger.error(f"Failed to build and store artist projection: {e}")
+    except Exception:
+        logger.exception("Failed to build and store artist projection")
         return False
 
 
-
-def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Task cancellation processed by API."):
+def cancel_job_and_children_recursive(job_id, reason="Task cancellation processed by API."):
     """Helper to cancel a job and its children based on DB records.
 
-    NOTE: Minimal global behavior — when invoked from the API cancel endpoint we clear RQ queues,
+    NOTE: Minimal global behavior - when invoked from the API cancel endpoint we clear RQ queues,
     attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
     REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
-    This keeps the function signature unchanged and is intentionally simple and destructive (as requested).
+    This is intentionally simple and destructive (as requested).
     """
     cancelled_count = 0
 
@@ -361,8 +466,8 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
                     logger.info(f"Sent stop/cancel for job {jid} during global cancel")
             except NoSuchJobError:
                 logger.debug(f"Job {jid} not found in RQ during global cancel")
-        except Exception as e_j:
-            logger.error(f"Error cancelling job {jid} during global cancel: {e_j}")
+        except Exception:
+            logger.exception(f"Error cancelling job {jid} during global cancel")
 
     # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
     try:
@@ -370,13 +475,19 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
             try:
                 if hasattr(q, 'empty'):
                     q.empty()
-                    logger.info(f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel")
+                    logger.info(
+                        f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel"
+                    )
                 else:
                     key = f"rq:queue:{getattr(q, 'name', '')}"
                     redis_conn.delete(key)
-                    logger.info(f"Deleted Redis key fallback for queue: {key} as part of global cancel")
+                    logger.info(
+                        f"Deleted Redis key fallback for queue: {key} as part of global cancel"
+                    )
             except Exception as e_q:
-                logger.warning(f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}")
+                logger.warning(
+                    f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}"
+                )
     except Exception as e_qdel:
         logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
 
@@ -407,30 +518,44 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
                             details_obj = None
                     # If the task was already in a terminal status, keep that one;
                     # otherwise mark it REVOKED.
-                    final_status = r['status'] if r['status'] in (
-                        TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED
-                    ) else TASK_STATUS_REVOKED
+                    final_status = (
+                        r['status']
+                        if r['status']
+                        in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+                        else TASK_STATUS_REVOKED
+                    )
                     record_task_history(
-                        r['task_id'], r['task_type'], final_status,
-                        duration_s, details=details_obj,
+                        r['task_id'],
+                        r['task_type'],
+                        final_status,
+                        duration_s,
+                        details=details_obj,
                     )
         except Exception as e_snap:
-            logger.warning(f"Global cancel: failed snapshotting task_status into task_history: {e_snap}")
+            logger.warning(
+                f"Global cancel: failed snapshotting task_status into task_history: {e_snap}"
+            )
 
         cur.execute("DELETE FROM task_status")
         deleted = cur.rowcount
         db.commit()
         logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
-    except Exception as e_dbdel:
+    except Exception:
         db.rollback()
-        logger.error(f"Error deleting task_status rows during global cancel: {e_dbdel}")
+        logger.exception("Error deleting task_status rows during global cancel")
     finally:
         cur.close()
 
     try:
         # Ensure a single REVOKED row exists for job_id
-        save_task_status(job_id, 'unknown', TASK_STATUS_REVOKED, progress=100, details={"message": reason, "origin": "global_cancel"})
-    except Exception as e_save:
-        logger.error(f"Failed to insert REVOKED recap row for {job_id}: {e_save}")
+        save_task_status(
+            job_id,
+            'unknown',
+            TASK_STATUS_REVOKED,
+            progress=100,
+            details={"message": reason, "origin": "global_cancel"},
+        )
+    except Exception:
+        logger.exception(f"Failed to insert REVOKED recap row for {job_id}")
 
     return cancelled_count

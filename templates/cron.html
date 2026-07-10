@@ -60,6 +60,18 @@
             <input id="alchemy-radio-cron" type="text" style="width:100%;" placeholder="cron expression (e.g. 0 3 * * 6)">
             <div style="margin-top:.5rem;"><input id="alchemy-radio-enabled" type="checkbox"> Enable</div>
 
+            <div id="plugin-cron-section" style="display:none;">
+                <hr style="margin:1rem 0;">
+                <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
+                    Plugin tasks
+                    <span class="info-tooltip" tabindex="0">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text">Scheduled tasks registered by installed plugins. Same cron notation as above.</span>
+                    </span>
+                </label>
+                <div id="plugin-cron-list"></div>
+            </div>
+
             <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00. Radio Playlists default: Saturday at 3:00.</p>
 
             <div style="margin-top:1rem;">
@@ -82,9 +94,16 @@
 
         document.addEventListener('DOMContentLoaded', load);
         async function load(){
+            // Save stays disabled until the current rows are loaded: saving over a
+            // failed load would overwrite the real schedules with blank values.
+            const saveBtn = document.getElementById('save-btn');
+            saveBtn.disabled = true;
             try{
                 const res = await fetch("{{ url_for('cron_bp.get_cron_entries') }}");
-                if(!res.ok) return;
+                if(!res.ok){
+                    alert('Could not load the current schedules. Reload the page before saving.');
+                    return;
+                }
                 const rows = await res.json();
                 // cache rows to avoid refetching on save
                 window.cronRows = rows;
@@ -101,7 +120,54 @@
                 else { document.getElementById('sonic-fingerprint-cron').value = '0 1 * * 6'; document.getElementById('sonic-fingerprint-enabled').checked = false }
                 if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled }
                 else { document.getElementById('alchemy-radio-cron').value = '0 3 * * 6'; document.getElementById('alchemy-radio-enabled').checked = false }
-            }catch(e){ console.error(e) }
+                await loadPluginTasks(rows);
+                saveBtn.disabled = false;
+            }catch(e){
+                console.error(e);
+                alert('Could not load the current schedules. Reload the page before saving.');
+            }
+        }
+
+        async function loadPluginTasks(rows){
+            const section = document.getElementById('plugin-cron-section');
+            const list = document.getElementById('plugin-cron-list');
+            try{
+                const res = await fetch("{{ url_for('cron_bp.get_plugin_cron_tasks') }}");
+                if(!res.ok){ section.style.display='none'; return; }
+                const tasks = await res.json();
+                window.pluginCronTasks = tasks;
+                window.pluginCronFields = new Map();
+                if(!tasks.length){ section.style.display='none'; return; }
+                section.style.display='block';
+                list.innerHTML = '';
+                tasks.forEach(t=>{
+                    const row = rows.find(r=>r.task_type===t.task_type);
+                    const div = document.createElement('div');
+                    div.style.marginBottom = '1rem';
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display:block;margin-bottom:.5rem;';
+                    label.textContent = t.plugin + ' - ' + t.task + ' (' + t.task_type + ')';
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.style.width = '100%';
+                    input.placeholder = 'cron expression (e.g. 30 2 * * *)';
+                    input.value = row ? row.cron_expr : '';
+                    const controls = document.createElement('div');
+                    controls.style.cssText = 'margin-top:.5rem;display:flex;gap:1rem;align-items:center;';
+                    const enableWrap = document.createElement('span');
+                    const enable = document.createElement('input');
+                    enable.type = 'checkbox';
+                    enable.checked = !!(row && row.enabled);
+                    enableWrap.appendChild(enable);
+                    enableWrap.appendChild(document.createTextNode(' Enable'));
+                    window.pluginCronFields.set(t.task_type, {input: input, enable: enable});
+                    controls.appendChild(enableWrap);
+                    div.appendChild(label);
+                    div.appendChild(input);
+                    div.appendChild(controls);
+                    list.appendChild(div);
+                });
+            }catch(e){ console.error(e); section.style.display='none'; }
         }
 
         document.getElementById('save-btn').addEventListener('click', async ()=>{
@@ -120,34 +186,46 @@
             const sn = rows.find(r=>r.task_type==='sonic_fingerprint');
             const rn = rows.find(r=>r.task_type==='alchemy_radio');
 
+            const sexpr = document.getElementById('sonic-fingerprint-cron').value;
+            const sen = document.getElementById('sonic-fingerprint-enabled').checked;
+            const rexpr = document.getElementById('alchemy-radio-cron').value;
+            const ren = document.getElementById('alchemy-radio-enabled').checked;
+
             try{
-                if (an) {
-                    saveCron({id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
-                } else {
-                    saveCron({name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen})
+                for (const t of (window.pluginCronTasks || [])) {
+                    const fields = (window.pluginCronFields || new Map()).get(t.task_type);
+                    if(!fields) continue;
+                    const expr = fields.input.value.trim();
+                    if(fields.enable.checked && expr.split(/\s+/).filter(Boolean).length !== 5){
+                        alert('The schedule for ' + t.task_type + ' needs a 5-field cron expression (minute hour day month weekday).');
+                        saveBtn.disabled = false;
+                        return;
+                    }
                 }
-
-                if (cn) {
-                    saveCron({id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
-                } else {
-                    saveCron({name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen})
+                // Await every save before reloading so a stale cache can't trigger
+                // a duplicate INSERT on the next save (issue #719).
+                const saves = [
+                    saveCron(an ? {id:an.id, name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}
+                                : {name:'Analysis', task_type:'analysis', cron_expr:aexpr, enabled:aen}),
+                    saveCron(cn ? {id:cn.id, name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}
+                                : {name:'Clustering', task_type:'clustering', cron_expr:cexpr, enabled:cen}),
+                    saveCron(sn ? {id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}
+                                : {name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen}),
+                    saveCron(rn ? {id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}
+                                : {name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren}),
+                ];
+                for (const t of (window.pluginCronTasks || [])) {
+                    const fields = (window.pluginCronFields || new Map()).get(t.task_type);
+                    if(!fields) continue;
+                    const expr = fields.input.value.trim();
+                    const existing = rows.find(r=>r.task_type===t.task_type);
+                    if(!expr && !existing) continue;
+                    saves.push(saveCron(existing
+                        ? {id:existing.id, name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked}
+                        : {name:t.task_type, task_type:t.task_type, cron_expr:expr, enabled:fields.enable.checked}));
                 }
-
-                const sexpr = document.getElementById('sonic-fingerprint-cron').value;
-                const sen = document.getElementById('sonic-fingerprint-enabled').checked;
-                if (sn) {
-                    saveCron({id:sn.id, name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
-                } else {
-                    saveCron({name:'Sonic Fingerprint', task_type:'sonic_fingerprint', cron_expr:sexpr, enabled:sen})
-                }
-
-                const rexpr = document.getElementById('alchemy-radio-cron').value;
-                const ren = document.getElementById('alchemy-radio-enabled').checked;
-                if (rn) {
-                    saveCron({id:rn.id, name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
-                } else {
-                    saveCron({name:'Radio Playlists', task_type:'alchemy_radio', cron_expr:rexpr, enabled:ren})
-                }
+                const results = await Promise.all(saves);
+                if(results.some(r=>!r.ok)){ throw new Error('One or more schedules failed to save'); }
 
                 // refresh cached rows after saving
                 await load();

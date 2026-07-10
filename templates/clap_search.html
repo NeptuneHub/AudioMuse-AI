@@ -72,36 +72,6 @@
         border-color: var(--color-primary);
     }
 
-    #search-form button {
-        width: 100%;
-        padding: 0.75rem 1.5rem;
-        font-size: 1rem;
-        font-weight: 600;
-        background-color: var(--color-primary);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        transition: background-color 0.2s;
-    }
-
-    #search-form button:hover {
-        background-color: var(--color-primary-hover);
-    }
-
-    #search-form button:disabled {
-        background-color: var(--text-muted);
-        cursor: not-allowed;
-    }
-
-    #playlist-form button {
-        background-color: var(--color-success) !important;
-    }
-
-    #playlist-form button:hover {
-        background-color: var(--color-success-hover) !important;
-    }
-    
     .loading-spinner {
         text-align: center;
         padding: 2rem;
@@ -179,7 +149,7 @@
                 <input type="number" id="limit" name="limit" value="50" min="1" max="500">
             </div>
             
-            <button type="submit" {% if not cache_stats.loaded %}disabled{% endif %}>
+            <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                 🔍 Search
             </button>
         </form>
@@ -208,7 +178,7 @@
             <label for="playlist_name">Playlist Name:</label>
             <input type="text" id="playlist_name" name="playlist_name" placeholder="My DCLAP Search Playlist" required>
         </div>
-        <button type="submit">Create Playlist on Media Server</button>
+        <button type="submit" class="btn btn-success btn-block">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>
@@ -263,7 +233,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     tag.textContent = query;
                     tag.addEventListener('click', function() {
                         searchQuery.value = query;
-                        searchForm.dispatchEvent(new Event('submit'));
+                        searchForm.requestSubmit();
                     });
                     topQueriesContainer.appendChild(tag);
                 });
@@ -286,7 +256,7 @@ document.addEventListener('DOMContentLoaded', function() {
         tag.addEventListener('click', function() {
             const query = this.getAttribute('data-query');
             searchQuery.value = query;
-            searchForm.dispatchEvent(new Event('submit'));
+            searchForm.requestSubmit();
         });
     });
     

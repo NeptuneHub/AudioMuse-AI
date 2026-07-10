@@ -1,3 +1,24 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Task-note summary strings built by app_helper._build_task_note.
+
+Covers the per-task-type note produced for analysis, cleaning, and clustering,
+including subtask aggregation from the DB and fallbacks to detail fields.
+
+Main Features:
+* Analysis: sums tracks_analyzed across subtasks, falls back to album counts,
+  survives DB errors and invalid subtask JSON
+* Cleaning: first recognized numeric key wins, floats truncated, zero reported
+* Clustering: sampled/cluster counts from best_params with graceful fallbacks;
+  unknown task types and non-dict details yield an empty string
+"""
+
 import json
 from unittest.mock import MagicMock
 
@@ -16,10 +37,12 @@ def make_db(rows):
 
 class TestAnalysisNote:
     def test_sums_tracks_analyzed_from_subtasks(self):
-        db, cur = make_db([
-            (json.dumps({'tracks_analyzed': 10}),),
-            (json.dumps({'tracks_analyzed': 5}),),
-        ])
+        db, cur = make_db(
+            [
+                (json.dumps({'tracks_analyzed': 10}),),
+                (json.dumps({'tracks_analyzed': 5}),),
+            ]
+        )
         result = _build_task_note('main_analysis', {'_task_id': 'task-1'}, db)
         assert result == 'Songs analyzed: 15'
         assert cur.execute.call_args[0][1] == ('task-1',)
@@ -30,20 +53,24 @@ class TestAnalysisNote:
         assert cur.execute.call_args[0][1] == ('',)
 
     def test_skips_invalid_subtask_details(self):
-        db, _ = make_db([
-            (None,),
-            ('not json',),
-            (json.dumps({'tracks_analyzed': '3'}),),
-            (json.dumps([1, 2]),),
-            (json.dumps({'tracks_analyzed': 4}),),
-        ])
+        db, _ = make_db(
+            [
+                (None,),
+                ('not json',),
+                (json.dumps({'tracks_analyzed': '3'}),),
+                (json.dumps([1, 2]),),
+                (json.dumps({'tracks_analyzed': 4}),),
+            ]
+        )
         assert _build_task_note('main_analysis', {}, db) == 'Songs analyzed: 4'
 
     def test_float_track_counts_are_truncated_per_row(self):
-        db, _ = make_db([
-            (json.dumps({'tracks_analyzed': 2.0}),),
-            (json.dumps({'tracks_analyzed': 3.5}),),
-        ])
+        db, _ = make_db(
+            [
+                (json.dumps({'tracks_analyzed': 2.0}),),
+                (json.dumps({'tracks_analyzed': 3.5}),),
+            ]
+        )
         assert _build_task_note('main_analysis', {}, db) == 'Songs analyzed: 5'
 
     def test_falls_back_to_albums_completed(self):
@@ -73,10 +100,17 @@ class TestAnalysisNote:
 
 
 class TestCleanNote:
-    @pytest.mark.parametrize('key', [
-        'tracks_deleted', 'orphans_removed', 'songs_cleaned',
-        'tracks_removed', 'deleted_count', 'cleaned_tracks',
-    ])
+    @pytest.mark.parametrize(
+        'key',
+        [
+            'tracks_deleted',
+            'orphans_removed',
+            'songs_cleaned',
+            'tracks_removed',
+            'deleted_count',
+            'cleaned_tracks',
+        ],
+    )
     def test_each_recognized_key(self, key):
         result = _build_task_note('main_cleaning', {key: 6}, MagicMock())
         assert result == 'Songs cleaned: 6'
@@ -120,7 +154,9 @@ class TestClusterNote:
         assert _build_task_note('main_clustering', details, MagicMock()) == 'sampled: 50'
 
     def test_clusters_only(self):
-        assert _build_task_note('main_clustering', {'num_clusters': 4}, MagicMock()) == 'clusters: 4'
+        assert (
+            _build_task_note('main_clustering', {'num_clusters': 4}, MagicMock()) == 'clusters: 4'
+        )
 
     def test_zero_sampled_is_omitted(self):
         details = {'sampled_songs': 0, 'num_clusters': 3}

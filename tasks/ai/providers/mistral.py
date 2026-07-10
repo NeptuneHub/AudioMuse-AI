@@ -1,14 +1,35 @@
-"""Mistral transport (uses mistralai SDK)."""
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Mistral client for the playlist AI.
+
+One of the per-provider backends dispatched from ``tasks.ai.api``, using the
+mistralai SDK. Exposes generate_text and single-turn call_with_tools with
+tool_choice="any", returning the shared {"name","arguments"} tool-call shape.
+
+Main Features:
+* Probes for the mistralai SDK at import (is_available) since the package has been quarantined on PyPI; when missing, every call returns a clear "pick another provider" message instead of raising.
+* Honors a pre-call delay (env MISTRAL_API_CALL_DELAY_SECONDS, default 7s) and config.AI_REQUEST_TIMEOUT_SECONDS; errors collapse to a generic unavailable message, never a traceback.
+"""
+
 import json
 import logging
 import os
 import time
 from typing import Dict, List, Optional
 
+import config
+
 logger = logging.getLogger(__name__)
 
 try:
     import mistralai as _mistralai_probe  # noqa: F401
+
     _MISTRAL_AVAILABLE = True
     _MISTRAL_IMPORT_ERROR = None
 except ImportError as _exc:
@@ -17,7 +38,7 @@ except ImportError as _exc:
 
 _MISTRAL_UNAVAILABLE_MSG = (
     "Error: mistralai SDK is not installed. The package is currently "
-    "quarantined on PyPI — pick a different AI provider (Gemini / OpenAI / "
+    "quarantined on PyPI - pick a different AI provider (Gemini / OpenAI / "
     "Ollama) until the SDK is reinstallable."
 )
 
@@ -35,10 +56,10 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Single-prompt completion via Mistral chat.complete."""
     if not _MISTRAL_AVAILABLE:
-        logger.error("Mistral provider selected but SDK is not installed: %s",
-                     _MISTRAL_IMPORT_ERROR)
+        logger.error(
+            "Mistral provider selected but SDK is not installed: %s", _MISTRAL_IMPORT_ERROR
+        )
         return _MISTRAL_UNAVAILABLE_MSG
     if not api_key or api_key == "YOUR-MISTRAL-API-KEY-HERE":
         return "Error: Mistral API key is missing or empty. Please provide a valid API key."
@@ -61,7 +82,7 @@ def generate_text(
         complete_kwargs = {
             "model": model_name,
             "temperature": 0.9 if temperature is None else float(temperature),
-            "timeout_ms": 960,
+            "timeout_ms": config.AI_REQUEST_TIMEOUT_SECONDS * 1000,
             "messages": [{"role": "user", "content": full_prompt}],
         }
         if max_tokens is not None:
@@ -75,8 +96,8 @@ def generate_text(
         logger.warning("Mistral returned no content. Raw response: %s", response)
         return "Error: mistral returned no content."
 
-    except Exception as e:
-        logger.error("Error calling Mistral API: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Error calling Mistral API")
         return "Error: AI service is currently unavailable."
 
 
@@ -88,10 +109,10 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call Mistral with native function calling. Returns ``{"tool_calls": [...]}`` or ``{"error": ...}``."""
     if not _MISTRAL_AVAILABLE:
-        logger.error("Mistral provider selected but SDK is not installed: %s",
-                     _MISTRAL_IMPORT_ERROR)
+        logger.error(
+            "Mistral provider selected but SDK is not installed: %s", _MISTRAL_IMPORT_ERROR
+        )
         return {"error": _MISTRAL_UNAVAILABLE_MSG}
     try:
         from mistralai import Mistral
@@ -122,8 +143,6 @@ def call_with_tools(
             tools=mistral_tools,
             tool_choice="any",
             temperature=0,
-            # Bound generation so a model can't run on forever. Matches the
-            # Ollama num_predict / OpenAI max_tokens chat cap (1024).
             max_tokens=1024,
         )
 

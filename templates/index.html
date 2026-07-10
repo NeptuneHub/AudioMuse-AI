@@ -420,11 +420,11 @@
     <section>
         <h2>Run Tasks</h2>
         <div class="task-buttons">
-            <button id="start-analysis-btn">Start Analysis</button>
-            <button id="start-clustering-btn">Start Clustering</button>
-            <button id="fetch-playlists-btn">Fetch Playlists</button>
+            <button id="start-analysis-btn" class="btn btn-primary btn-block">Start Analysis</button>
+            <button id="start-clustering-btn" class="btn btn-primary btn-block">Start Clustering</button>
+            <button id="fetch-playlists-btn" class="btn btn-primary btn-block">Fetch Playlists</button>
         </div>
-        <button id="cancel-task-btn">Cancel Current Task</button>
+        <button id="cancel-task-btn" class="btn btn-danger btn-block">Cancel Current Task</button>
     </section>
 
     <section>
@@ -433,8 +433,8 @@
             <p><span class="status-label">Task ID:</span> <span id="status-task-id">N/A</span></p>
             <p><span class="status-label">Running Time:</span> <span id="status-running-time">-- : -- : --</span></p>
             <p><span class="status-label">Type:</span> <span id="status-task-type">N/A</span></p>
-            <p><span class="status-label">Status:</span> <span id="status-status">IDLE</span></p>
-            <p><span class="status-label">Status Message:</span> <span id="status-log">N/A</span></p>
+            <p><span class="status-label">Status:</span> <span id="status-status" role="status" aria-live="polite">IDLE</span></p>
+            <p><span class="status-label">Status Message:</span> <span id="status-log" aria-live="polite">N/A</span></p>
             <div id="status-error-block" class="status-error-block status-failure" style="display:none;">
                 <p><span class="status-label">Error Code:</span> <span id="status-error-code">N/A</span></p>
                 <p><span class="status-label">Error Class:</span> <span id="status-error-class">N/A</span></p>
@@ -442,7 +442,7 @@
             </div>
             <p><span class="status-label">Progress:</span> <span id="status-progress">0</span>%</p>
             <div class="progress-bar-container">
-                <div id="progress-bar"></div>
+                <div id="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Task progress"></div>
             </div>
             <div style="margin-top: 1rem;">
                 <h3>Details / Log:</h3>

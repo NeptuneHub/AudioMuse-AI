@@ -1,20 +1,21 @@
-"""Real-Postgres integration test for the grounded AI brainstorm (#643).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Drives ``_ai_brainstorm_sync`` against a live ``score`` table. Only the LLM
-transport is stubbed (it returns a fixed recipe); the retrieval + fusion runs for
-real, so this proves the recipe -> SQL filter channel -> fused pool path surfaces
-the correct real rows and excludes the non-matching ones (wrong genre, wrong year,
-or genre confidence below threshold).
+"""Grounded brainstorm retrieval test against a real Postgres database.
 
-Database selection mirrors test_app_endpoints_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL -- a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
+Seeds the score table and runs the brainstorm recipe filter channel
+through tasks.ai.tool_impl to confirm grounding happens inside the tool
+against the real library.
 
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_brainstorm_integration.py -m integration -s -v --tb=short
+Main Features:
+* Filter channel surfaces only rows matching the recipe filters.
 """
+
 import importlib.util
 import json
 import os
@@ -42,8 +43,6 @@ _SCORE_DDL = (
     "rating INTEGER, file_path TEXT)"
 )
 
-# (item_id, title, author, mood_vector, year). Only r1/r2 satisfy genre rock>=0.3
-# AND year in 1990..1999.
 _SEED_ROWS = [
     ('r1', 'Rock One', 'Band A', 'rock:0.82,pop:0.20', 1995),
     ('r2', 'Rock Two', 'Band B', 'rock:0.55,indie:0.30', 1992),
@@ -54,7 +53,6 @@ _SEED_ROWS = [
 
 
 def _import_module(mod_name, relative_path):
-    """Load a module by file path, bypassing tasks/__init__.py (mirrors unit conftest)."""
     mod_path = os.path.normpath(os.path.join(_REPO_ROOT, relative_path))
     if mod_name not in sys.modules:
         spec = importlib.util.spec_from_file_location(mod_name, mod_path)
@@ -129,13 +127,13 @@ class TestBrainstormGroundedRetrievalRealDb:
             "lyric_themes": [],
         }
 
-        # Floor of 1 keeps the relax pass from firing so the assertion isolates the
-        # primary filter channel against the real rows.
         monkeypatch.setattr(cfg, 'AI_BRAINSTORM_POOL_FLOOR', 1)
         monkeypatch.setattr(tool_impl, 'get_db_connection', lambda: psycopg2.connect(brainstorm_db))
 
         with patch.dict(sys.modules, {'tasks.ai.api': _fake_ai_module(recipe)}):
-            result = tool_impl._ai_brainstorm_sync("best rock of the 90s", {"provider": "OLLAMA"}, 50)
+            result = tool_impl._ai_brainstorm_sync(
+                "best rock of the 90s", {"provider": "OLLAMA"}, 50
+            )
 
         ids = {s["item_id"] for s in result["songs"]}
         assert ids == {"r1", "r2"}

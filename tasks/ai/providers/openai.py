@@ -1,13 +1,25 @@
-"""OpenAI-compatible transport (OpenAI, OpenRouter, Ollama, anything speaking /v1/chat/completions or /api/generate).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Three public functions:
-    generate_text(...)          -- single-prompt streaming completion (all providers)
-    call_with_tools(...)        -- native function/tool calling (OpenAI, OpenRouter, etc.)
-    call_with_tools_ollama(...) -- prompt-based JSON tool calling (Ollama, no native support)
+"""OpenAI-compatible client (OpenAI, OpenRouter, Ollama) for the playlist AI.
 
-These transports only handle HTTP plumbing. All business prompts come from
-`tasks/ai/prompts.py`.
+The HTTP backend dispatched from ``tasks.ai.api`` for every non-SDK provider.
+generate_text streams SSE completions; call_with_tools does single-turn
+function-calling; call_with_tools_ollama tries native /api/chat tool-calling
+first (Hermes template), falling back to structured JSON output on
+/api/generate when native calls fail.
+
+Main Features:
+* Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output.
+* Robust 400 fallbacks: retries without reasoning_effort (caching rejecting models), swaps max_tokens->max_completion_tokens, and cycles DeepSeek thinking-off forms; tool-call count is capped to 4 and all failures return a generic error, never a traceback.
+* Ollama dual-path: native /api/chat tool-calling (enable_thinking=false for Qwen) with structured-output format=schema fallback; tool names are validated against the registry and invalid names trigger a feedback retry.
 """
+
 import json
 import logging
 import os
@@ -24,11 +36,30 @@ logger = logging.getLogger(__name__)
 
 THINK_END_TAG = "</think>"
 
+_OLLAMA_GENERATE_PATH = "/api/generate"
+_OLLAMA_CHAT_PATH = "/api/chat"
+_ZEROABLE_ARGS = ("tempo_min", "tempo_max", "energy_min", "min_rating")
+
+_MODELS_REJECTING_REASONING = set()
+
+
+def _tool_function_specs(tools: List[Dict]) -> List[Dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["inputSchema"],
+            },
+        }
+        for t in tools
+    ]
+
 
 def _is_ollama_format_url(server_url: str) -> bool:
-    """Detect Ollama endpoints from the URL path (issue #467 fix preserved)."""
     s = server_url.lower()
-    return "/api/generate" in s or "/api/chat" in s
+    return _OLLAMA_GENERATE_PATH in s or _OLLAMA_CHAT_PATH in s
 
 
 def _build_openai_headers(api_key: str, server_url: str) -> Dict[str, str]:
@@ -51,16 +82,6 @@ def generate_text(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """Generate freeform text from an OpenAI-compatible streaming endpoint.
-
-    Handles 429 retries (exponential backoff), 400 ``unsupported_parameter`` /
-    ``unsupported_value`` fallback (drop temperature, switch to
-    max_completion_tokens, then drop max_completion_tokens), and content
-    extraction-before-finish-reason ordering for OpenRouter compatibility.
-
-    NOTE: Detects Ollama vs OpenAI from the URL; the Ollama branch in
-    tasks/ai/api.py calls this directly (Ollama has no separate transport).
-    """
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format
     provider_label = "Ollama" if is_ollama_format else "OpenAI/OpenRouter"
@@ -79,8 +100,9 @@ def generate_text(
             "stream": True,
             "temperature": temp,
             "max_tokens": out_tokens,
-            "reasoning_effort": "low" if is_deepseek else "none",
         }
+        if model_name not in _MODELS_REJECTING_REASONING:
+            payload["reasoning_effort"] = "low" if is_deepseek else "none"
     else:
         payload = {
             "model": model_name,
@@ -138,8 +160,6 @@ def generate_text(
                     if is_openai_format:
                         if "choices" in chunk and len(chunk["choices"]) > 0:
                             choice = chunk["choices"][0]
-                            # Extract content FIRST (OpenRouter may bundle delta.content
-                            # with finish_reason='stop' in a single chunk).
                             delta = choice.get("delta")
                             if isinstance(delta, dict):
                                 content = delta.get("content")
@@ -171,23 +191,23 @@ def generate_text(
                     extracted_text = extracted_text.split(end_tag, 1)[-1].strip()
 
             if extracted_text:
-                # SECURITY: log only length, not content (model output may
-                # echo back sensitive data from prompts/tool results).
                 logger.info(
                     "%s API returned non-empty content (length=%d chars).",
-                    provider_label, len(extracted_text),
+                    provider_label,
+                    len(extracted_text),
                 )
                 return extracted_text
             logger.warning(
                 "%s returned empty content (raw response length: %d chars).",
-                provider_label, len(full_raw_response_content),
+                provider_label,
+                len(full_raw_response_content),
             )
             logger.debug(
                 "Raw SSE stream metadata: %d lines received; preview suppressed to avoid sensitive data logging.",
                 len(raw_sse_lines),
             )
             if attempt < max_retries:
-                sleep_time = base_delay * (2 ** attempt)
+                sleep_time = base_delay * (2**attempt)
                 logger.info("Retrying in %s seconds due to empty content...", sleep_time)
                 time.sleep(sleep_time)
                 continue
@@ -199,7 +219,7 @@ def generate_text(
                     "Rate limit exceeded (429). Attempt %d/%d", attempt + 1, max_retries + 1
                 )
                 if attempt < max_retries:
-                    sleep_time = base_delay * (2 ** attempt)
+                    sleep_time = base_delay * (2**attempt)
                     logger.info("Retrying in %s seconds...", sleep_time)
                     time.sleep(sleep_time)
                     continue
@@ -207,7 +227,19 @@ def generate_text(
             if e.response.status_code == 400 and is_openai_format:
                 try:
                     error_body = e.response.json()
-                    error_code = error_body.get("error", {}).get("code", "")
+                    error_obj = error_body.get("error", {})
+                    if not isinstance(error_obj, dict):
+                        error_obj = {}
+                    error_code = error_obj.get("code", "") or ""
+                    error_param = error_obj.get("param", "") or ""
+                    error_message = (error_obj.get("message", "") or "").lower()
+                    if "reasoning_effort" in payload and (
+                        error_param == "reasoning_effort" or "reasoning_effort" in error_message
+                    ):
+                        logger.info("reasoning_effort rejected (400); retrying without it")
+                        payload.pop("reasoning_effort", None)
+                        _MODELS_REJECTING_REASONING.add(model_name)
+                        continue
                     if error_code in ("unsupported_parameter", "unsupported_value"):
                         if not tried_aggressive_fallback:
                             logger.info(
@@ -233,22 +265,20 @@ def generate_text(
 
             try:
                 error_detail = e.response.text
-                logger.error(
-                    "Error calling OpenAI-compatible API: %s. Response body: %s",
-                    e,
+                logger.exception(
+                    "Error calling OpenAI-compatible API. Response body: %s",
                     error_detail,
-                    exc_info=True,
                 )
             except Exception:
-                logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+                logger.exception("Error calling OpenAI-compatible API")
             return "Error: AI service is currently unavailable."
 
-        except requests.exceptions.RequestException as e:
-            logger.error("Error calling OpenAI-compatible API: %s", e, exc_info=True)
+        except requests.exceptions.RequestException:
+            logger.exception("Error calling OpenAI-compatible API")
             return "Error: AI service is currently unavailable."
         except Exception:
-            logger.error(
-                "An unexpected error occurred in ai_api_openai.generate_text", exc_info=True
+            logger.exception(
+                "An unexpected error occurred in ai_api_openai.generate_text"
             )
             return "Error: AI service is currently unavailable."
 
@@ -264,22 +294,8 @@ def call_with_tools(
     tools: List[Dict],
     log_messages: List[str],
 ) -> Dict:
-    """Call an OpenAI-compatible /chat/completions endpoint with native tool calling.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on failure.
-    """
     try:
-        functions = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["inputSchema"],
-                },
-            }
-            for tool in tools
-        ]
+        functions = _tool_function_specs(tools)
 
         headers = _build_openai_headers(api_key, server_url)
         payload = {
@@ -291,10 +307,6 @@ def call_with_tools(
             "tools": functions,
             "tool_choice": "required",
             "temperature": 0,
-            # Bound generation so a model that won't stop (e.g. a reasoning model
-            # that thinks unbounded) can't run forever. Generic OpenAI param,
-            # works on any OpenAI-compatible provider (OpenRouter, vLLM, ...).
-            # Matches the local Ollama num_predict cap (1024) for consistency.
             "max_tokens": 1024,
         }
 
@@ -306,7 +318,7 @@ def call_with_tools(
         ]
         if is_deepseek:
             payload.update(deepseek_thinking_off_forms[0])
-        else:
+        elif model_name not in _MODELS_REJECTING_REASONING:
             payload["reasoning_effort"] = "none"
 
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
@@ -329,7 +341,9 @@ def call_with_tools(
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
                     payload.update(shape)
-                    log_messages.append("DeepSeek rejected the thinking-disable parameter; retrying with an alternate form")
+                    log_messages.append(
+                        "DeepSeek rejected the thinking-disable parameter; retrying with an alternate form"
+                    )
                     try:
                         result = _post(payload)
                         break
@@ -339,11 +353,16 @@ def call_with_tools(
                 if result is None:
                     payload.pop("thinking", None)
                     payload.pop("thinking_mode", None)
-                    log_messages.append("DeepSeek rejected all thinking-disable forms; retrying without them")
+                    log_messages.append(
+                        "DeepSeek rejected all thinking-disable forms; retrying without them"
+                    )
                     result = _post(payload)
             elif "reasoning_effort" in payload:
-                log_messages.append("reasoning_effort unsupported by this model; retrying without it")
+                log_messages.append(
+                    "reasoning_effort unsupported by this model; retrying without it"
+                )
                 payload.pop("reasoning_effort", None)
+                _MODELS_REJECTING_REASONING.add(model_name)
                 result = _post(payload)
             else:
                 raise
@@ -361,19 +380,13 @@ def call_with_tools(
                             }
                         )
 
-        # Max-items cap: never process a runaway list of tool calls (a tool plan
-        # needs only a few). Mirrors the Ollama schema maxItems; generic here.
         if len(tool_calls) > 4:
             log_messages.append(f"OpenAI returned {len(tool_calls)} tool calls; capping to first 4")
             tool_calls = tool_calls[:4]
 
         if not tool_calls:
-            text_response = (
-                result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            )
-            log_messages.append(
-                f"OpenAI did not call tools. Response: {text_response[:200]}"
-            )
+            text_response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            log_messages.append(f"OpenAI did not call tools. Response: {text_response[:200]}")
             return {"error": "AI did not call any tools", "ai_response": text_response}
 
         log_messages.append(f"OpenAI called {len(tool_calls)} tools")
@@ -383,7 +396,7 @@ def call_with_tools(
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning(f"OpenAI request timed out after {timeout} seconds")
         log_messages.append(
-            f"\u23f1\ufe0f Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable."
+            f"Request timed out after {timeout} seconds. Consider increasing AI_REQUEST_TIMEOUT_SECONDS environment variable."
         )
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
@@ -391,7 +404,7 @@ def call_with_tools(
     except httpx.TimeoutException:
         timeout = config.AI_REQUEST_TIMEOUT_SECONDS
         logger.warning("OpenAI request timed out", exc_info=True)
-        log_messages.append(f"\u23f1\ufe0f Request timed out after {timeout} seconds.")
+        log_messages.append(f"Request timed out after {timeout} seconds.")
         return {
             "error": f"Request timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
@@ -400,9 +413,287 @@ def call_with_tools(
         return {"error": "OpenAI service is currently unavailable."}
 
 
-# ---------------------------------------------------------------------------
-# Ollama prompt-based tool calling (Ollama lacks native function calling)
-# ---------------------------------------------------------------------------
+def _is_droppable_arg(key: str, value) -> bool:
+    if value is None or value == "" or value == [] or value == {}:
+        return True
+    return key in _ZEROABLE_ARGS and value == 0
+
+
+def _clean_call_arguments(tc: Dict, name: str, log_messages: List[str]) -> None:
+    if "arguments" not in tc:
+        tc["arguments"] = {}
+    elif not isinstance(tc["arguments"], dict):
+        log_messages.append(f"Coerced non-dict arguments for tool '{name}' to empty dict")
+        tc["arguments"] = {}
+    args = tc["arguments"]
+    for k in [k for k, v in args.items() if _is_droppable_arg(k, v)]:
+        log_messages.append(f"   Stripped empty/default arg '{k}={args[k]}' from {name}")
+        del args[k]
+
+
+def _validate_tool_calls(
+    tool_calls: List[Dict],
+    known_names: set,
+    log_messages: List[str],
+) -> Dict:
+    """Validate and clean a list of raw tool-call dicts against the tool registry.
+
+    Returns ``{"tool_calls": [...], "reasoning": "..."}`` on success or
+    ``{"error": "..."}`` with a specific reason.
+    """
+    valid_calls: List[Dict] = []
+    unknown_names: List[str] = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict) or "name" not in tc:
+            log_messages.append(f"WARN: Skipping invalid tool call: {tc}")
+            continue
+        name = tc.get("name", "")
+        if name not in known_names:
+            unknown_names.append(name)
+            log_messages.append(
+                f"WARN: Unknown tool '{name}' (known: {sorted(known_names)}); dropped"
+            )
+            continue
+        _clean_call_arguments(tc, name, log_messages)
+        valid_calls.append(tc)
+
+    if unknown_names:
+        msg = (
+            f"Unknown tool(s) requested: {', '.join(unknown_names)}. "
+            f"Use only: {', '.join(sorted(known_names))}."
+        )
+        log_messages.append(f"ERROR: {msg}")
+        return {"error": msg}
+
+    if not valid_calls:
+        return {"error": "No valid tool calls found in Ollama response"}
+
+    log_messages.append(f"OK: Ollama returned {len(valid_calls)} valid tool calls")
+    return {"tool_calls": valid_calls}
+
+
+def _strip_thinking(cleaned: str) -> str:
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    if "<think>" in cleaned:
+        cleaned = (
+            cleaned.split(THINK_END_TAG)[-1].strip()
+            if THINK_END_TAG in cleaned
+            else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
+        )
+    return cleaned
+
+
+def _extract_json_fence(cleaned: str) -> str:
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json")[1].split("```")[0]
+    elif "```" in cleaned:
+        cleaned = cleaned.split("```")[1].split("```")[0]
+    return cleaned.strip()
+
+
+def _tool_calls_from_parsed(parsed, log_messages: List[str]):
+    """Return (tool_calls, error): exactly one is non-None."""
+    if isinstance(parsed, dict) and "tool_calls" in parsed:
+        return parsed["tool_calls"], None
+    if isinstance(parsed, list):
+        log_messages.append("WARN: Got array directly (expected object with tool_calls field)")
+        return parsed, None
+    if isinstance(parsed, dict) and "name" in parsed:
+        log_messages.append("WARN: Got single tool call object (expected tool_calls array)")
+        return [parsed], None
+    if isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
+        log_messages.append("WARN: Remapped {'tool','arguments'} -> {'name','arguments'} format")
+        return [{"name": parsed["tool"], "arguments": parsed["arguments"]}], None
+    keys = list(parsed.keys()) if isinstance(parsed, dict) else "N/A"
+    log_messages.append(f"WARN: Unexpected JSON structure: {type(parsed)}, keys: {keys}")
+    return None, {"error": "Ollama response missing 'tool_calls' field"}
+
+
+def _parse_ollama_tool_response(
+    response_text: str,
+    log_messages: List[str],
+    tools: List[Dict],
+) -> Dict:
+    """Parse Ollama's structured JSON response, validate tool names, and clean args.
+
+    Returns ``{"tool_calls": [...], "reasoning": "..."}`` on success or
+    ``{"error": "..."}`` with an exact failure reason for the retry feedback loop.
+    """
+    cleaned = ""
+    known_names = {t.get("name") for t in tools if t.get("name")}
+    try:
+        cleaned = _strip_thinking(response_text.strip())
+        log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
+        cleaned = _extract_json_fence(cleaned)
+
+        if (
+            cleaned.startswith("{")
+            and '"tool_calls"' not in cleaned
+            and '"properties"' in cleaned
+        ):
+            log_messages.append("WARN: Ollama returned the schema instead of tool calls")
+            return {"error": "Ollama returned schema definition instead of tool calls"}
+
+        parsed = json.loads(cleaned)
+
+        reasoning = None
+        if isinstance(parsed, dict):
+            r = parsed.get("reasoning")
+            if isinstance(r, str) and r.strip():
+                reasoning = r.strip()
+
+        tool_calls, error = _tool_calls_from_parsed(parsed, log_messages)
+        if error:
+            return error
+        if not isinstance(tool_calls, list):
+            tool_calls = [tool_calls]
+
+        result = _validate_tool_calls(tool_calls, known_names, log_messages)
+        if "tool_calls" in result and reasoning:
+            result["reasoning"] = reasoning
+        return result
+
+    except json.JSONDecodeError:
+        logger.exception("JSON decode error while parsing Ollama tool response")
+        log_messages.append("X: Failed to parse Ollama JSON response.")
+        log_messages.append(f"Attempted to parse: {cleaned[:300]}")
+        return {
+            "error": "Failed to parse Ollama JSON response.",
+            "raw_response": response_text[:200],
+        }
+    except Exception:
+        logger.exception("Failed to parse Ollama response")
+        log_messages.append("Failed to parse Ollama response.")
+        log_messages.append(f"Response was: {response_text[:200]}")
+        return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
+
+
+def _coerce_ollama_tool_args(raw_args, name: str, log_messages: List[str]) -> Dict:
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            args = json.loads(raw_args or "{}")
+        except json.JSONDecodeError:
+            log_messages.append(
+                f"WARN: Could not parse arguments for tool '{name}', using empty dict"
+            )
+            return {}
+        return args if isinstance(args, dict) else {}
+    return {}
+
+
+def _try_native_ollama_tool_call(
+    chat_url: str,
+    model_name: str,
+    user_message: str,
+    tools: List[Dict],
+    log_messages: List[str],
+    library_context: Optional[Dict],
+    timeout: int,
+) -> Optional[Dict]:
+    """Attempt native Ollama /api/chat tool-calling (Hermes template path).
+
+    Returns ``{"tool_calls": [...]}`` on success, or ``None`` when the model
+    emitted no tool calls (caller should fall back to structured output).
+    """
+    from tasks.ai.prompts import build_mcp_system_prompt  # noqa: E402
+
+    system_prompt = build_mcp_system_prompt(tools, library_context)
+    ollama_tools = _tool_function_specs(tools)
+
+    payload = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "tools": ollama_tools,
+        "stream": False,
+        "options": {
+            "temperature": config.AI_TOOLCALL_TEMPERATURE,
+            "top_p": 0.8,
+            "top_k": 20,
+            "num_predict": 1536,
+        },
+    }
+    if "qwen" in (model_name or "").lower():
+        payload["think"] = False
+
+    log_messages.append("Attempting native Ollama /api/chat tool-calling...")
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(chat_url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+    message = result.get("message", {})
+    raw_tool_calls = message.get("tool_calls") or []
+
+    if not raw_tool_calls:
+        content = message.get("content", "")
+        log_messages.append(
+            f"Native tool-calling returned 0 tool calls; "
+            f"model responded with text (first 150 chars): {content[:150]}"
+        )
+        return None
+
+    tool_calls: List[Dict] = []
+    for tc in raw_tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name", "")
+        tool_calls.append(
+            {"name": name, "arguments": _coerce_ollama_tool_args(fn.get("arguments"), name, log_messages)}
+        )
+
+    known_names = {t.get("name") for t in tools if t.get("name")}
+    validated = _validate_tool_calls(tool_calls, known_names, log_messages)
+    if "tool_calls" in validated:
+        log_messages.append(
+            f"OK: Native tool-calling returned {len(validated['tool_calls'])} tool(s)"
+        )
+        return validated
+    log_messages.append(
+        f"Native tool-calling validation failed: {validated.get('error', 'unknown')}"
+    )
+    return None
+
+
+def _try_structured_ollama_call(
+    generate_url: str,
+    model_name: str,
+    prompt: str,
+    tools: List[Dict],
+    log_messages: List[str],
+    timeout: int,
+) -> Dict:
+    """Fallback: prompt-based JSON emission constrained by format=<schema>."""
+    from tasks.ai.prompts import build_tool_calls_schema  # noqa: E402
+
+    schema = build_tool_calls_schema(tools)
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "format": schema,
+        "think": False,
+        "options": {
+            "temperature": config.AI_TOOLCALL_TEMPERATURE,
+            "top_p": 0.8,
+            "top_k": 20,
+            "min_p": 0.0,
+            "num_predict": 1536,
+        },
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(generate_url, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+    if "response" not in result:
+        return {"error": "Invalid Ollama response"}
+
+    return _parse_ollama_tool_response(result["response"], log_messages, tools)
+
 
 def call_with_tools_ollama(
     ollama_url: str,
@@ -412,167 +703,88 @@ def call_with_tools_ollama(
     log_messages: List[str],
     library_context: Optional[Dict] = None,
 ) -> Dict:
-    """Prompt-based tool calling for Ollama via /api/generate with structured output.
+    """Single-turn tool-calling for Ollama with native API first, structured fallback.
 
-    Ollama has no native function/tool calling. We build a JSON-output prompt
-    (via ``tasks.ai.prompts.build_ollama_tool_calling_prompt``) and set
-    ``format`` to the tool-calls JSON Schema so the model is forced to emit
-    valid JSON that we parse into ``{"tool_calls": [...]}``.
-
-    Returns ``{"tool_calls": [...]}`` on success, ``{"error": "..."}`` on failure.
+    Strategy (two paths, one feedback retry each):
+    1. PRIMARY: Native /api/chat with ``tools`` parameter (Hermes template Qwen
+       was trained on). Disables thinking via ``enable_thinking=false``.
+    2. FALLBACK: Prompt-based JSON emission on /api/generate constrained by
+       ``format=<schema>``, used when native path returns no tool calls or when
+       the user's URL is already a /api/generate endpoint.
     """
-    from tasks.ai.prompts import build_ollama_tool_calling_prompt, build_tool_calls_schema  # noqa: E402
+    from tasks.ai.prompts import build_ollama_tool_calling_prompt  # noqa: E402
 
-    try:
-        prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
+    is_chat_url = "/api/chat" in ollama_url.lower()
+    is_generate_url = "/api/generate" in ollama_url.lower()
 
-        schema = build_tool_calls_schema(tools)
-        payload = {
-            "model": model_name,
-            "prompt": prompt,
-            "stream": False,
-            "format": schema,
-            "think": False,
-            # Cap generation so a model can't run forever. A tool call needs
-            # only a few hundred tokens.
-            "options": {"temperature": 0, "num_predict": 1024},
-        }
+    # Determine the actual endpoints for each path
+    if is_chat_url:
+        chat_url = ollama_url
+        generate_url = re.sub(r"/api/chat", "/api/generate", ollama_url, flags=re.IGNORECASE)
+    elif is_generate_url:
+        chat_url = re.sub(r"/api/generate", "/api/chat", ollama_url, flags=re.IGNORECASE)
+        generate_url = ollama_url
+    else:
+        chat_url = ollama_url.rstrip("/") + "/api/chat"
+        generate_url = ollama_url.rstrip("/") + "/api/generate"
 
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
-        # Single bounded call: the httpx read timeout aborts it at `timeout`
-        # seconds so it can never run forever. NO retry -- if the model returns
-        # nothing usable, we error out and the chat pipeline falls back (the user
-        # still gets a playlist) rather than making a second multi-minute call.
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(ollama_url, json=payload)
-            response.raise_for_status()
-            result = response.json()
+    timeout = config.AI_REQUEST_TIMEOUT_SECONDS
+    log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
 
-        if "response" not in result:
-            return {"error": "Invalid Ollama response"}
-
-        response_text = result["response"]
-
-        cleaned = ""
+    # -- Primary path: native tool-calling via /api/chat --
+    if not is_generate_url:
         try:
-            cleaned = response_text.strip()
-            cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-            if "<think>" in cleaned:
-                cleaned = (
-                    cleaned.split(THINK_END_TAG)[-1].strip()
-                    if THINK_END_TAG in cleaned
-                    else re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL).strip()
-                )
-
-            log_messages.append(f"Ollama raw response (first 300 chars): {cleaned[:300]}")
-
-            if "```json" in cleaned:
-                cleaned = cleaned.split("```json")[1].split("```")[0]
-            elif "```" in cleaned:
-                cleaned = cleaned.split("```")[1].split("```")[0]
-            cleaned = cleaned.strip()
-
-            if cleaned.startswith("{") and '"type"' in cleaned and '"array"' in cleaned:
-                log_messages.append(
-                    "\u26a0\ufe0f Ollama returned schema instead of tool calls, using fallback"
-                )
-                return {"error": "Ollama returned schema definition instead of tool calls"}
-
-            log_messages.append(f"Attempting to parse: {cleaned[:200]}")
-            parsed = json.loads(cleaned)
-
-            if isinstance(parsed, dict) and "tool_calls" in parsed:
-                tool_calls = parsed["tool_calls"]
-                log_messages.append(
-                    f"\u2713 Extracted tool_calls array with {len(tool_calls) if isinstance(tool_calls, list) else 1} items"
-                )
-            elif isinstance(parsed, list):
-                tool_calls = parsed
-                log_messages.append("\u26a0\ufe0f Got array directly (expected object with tool_calls field)")
-            elif isinstance(parsed, dict) and "name" in parsed:
-                tool_calls = [parsed]
-                log_messages.append(
-                    "\u26a0\ufe0f Got single tool call object (expected object with tool_calls array)"
-                )
-            elif isinstance(parsed, dict) and "tool" in parsed and "arguments" in parsed:
-                tool_calls = [{"name": parsed["tool"], "arguments": parsed["arguments"]}]
-                log_messages.append(
-                    "\u26a0\ufe0f Remapped {'tool','arguments'} -> {'name','arguments'} format"
-                )
-            else:
-                log_messages.append(
-                    f"\u26a0\ufe0f Unexpected JSON structure: {type(parsed)}, keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}"
-                )
-                return {"error": "Ollama response missing 'tool_calls' field"}
-
-            if not isinstance(tool_calls, list):
-                tool_calls = [tool_calls]
-
-            valid_calls = []
-            for tc in tool_calls:
-                if isinstance(tc, dict) and "name" in tc:
-                    if "arguments" not in tc:
-                        tc["arguments"] = {}
-                    elif not isinstance(tc["arguments"], dict):
-                        log_messages.append(
-                            f"Coerced non-dict arguments for tool '{tc['name']}' to empty dict"
-                        )
-                        tc["arguments"] = {}
-                    args = tc["arguments"]
-                    keys_to_remove = []
-                    for k, v in args.items():
-                        if (v is None or v == "" or v == [] or v == {}) or (
-                            k in ("tempo_min", "tempo_max", "energy_min", "min_rating") and v == 0
-                        ):
-                            keys_to_remove.append(k)
-                    for k in keys_to_remove:
-                        log_messages.append(
-                            f"   \U0001f9f9 Stripped empty/default arg '{k}={args[k]}' from {tc['name']}"
-                        )
-                        del args[k]
-                    valid_calls.append(tc)
-                else:
-                    log_messages.append(f"\u26a0\ufe0f Skipping invalid tool call: {tc}")
-
-            if not valid_calls:
-                return {"error": "No valid tool calls found in Ollama response"}
-
-            log_messages.append(f"\u2705 Ollama returned {len(valid_calls)} valid tool calls")
-            return {"tool_calls": valid_calls}
-
-        except json.JSONDecodeError:
-            logger.exception("JSON decode error while parsing Ollama tool response")
-            log_messages.append("\u274c Failed to parse Ollama JSON response.")
-            log_messages.append(f"Attempted to parse: {cleaned[:300]}")
-            return {
-                "error": "Failed to parse Ollama JSON response.",
-                "raw_response": response_text[:200],
-            }
+            result = _try_native_ollama_tool_call(
+                chat_url, model_name, user_message, tools,
+                log_messages, library_context, timeout,
+            )
+            if result is not None and "tool_calls" in result:
+                return result
+            log_messages.append("Native path returned no tool calls; falling back to format=schema")
         except Exception:
-            logger.exception("Failed to parse Ollama response")
-            log_messages.append("Failed to parse Ollama response.")
-            log_messages.append(f"Response was: {response_text[:200]}")
-            return {"error": "Failed to parse Ollama tool calls", "raw_response": response_text}
+            logger.warning(
+                "Native Ollama tool-calling failed; falling back to structured output", exc_info=True
+            )
+            log_messages.append("Native /api/chat tool-calling failed; falling back to format=schema")
+
+    # -- Fallback path: prompt-based JSON with format=<schema> --
+    log_messages.append("Using Ollama structured-output (format=schema) path")
+    try:
+        base_prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)
+        prompt = base_prompt
+        last_result: Dict = {"error": "Ollama returned no usable tool calls"}
+        for attempt in range(2):
+            last_result = _try_structured_ollama_call(
+                generate_url, model_name, prompt, tools,
+                log_messages, timeout,
+            )
+            if "tool_calls" in last_result:
+                if attempt > 0:
+                    log_messages.append("OK: structured retry with feedback produced a valid plan")
+                return last_result
+            if attempt == 0:
+                err = last_result.get("error", "invalid output")
+                log_messages.append(f"Retrying once with feedback: {err}")
+                prompt = (
+                    f"{base_prompt}\n\nYour previous reply was invalid ({err}). "
+                    "Return ONLY the JSON object in the required shape."
+                )
+        return last_result
 
     except httpx.ReadTimeout:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning(f"Ollama request timed out after {timeout} seconds")
         log_messages.append(
-            f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow."
+            f"Ollama request timed out after {timeout} seconds. Your model or hardware may be too slow."
         )
         log_messages.append(
-            "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value (e.g., 600 for 10 minutes)"
+            "TIP: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value (e.g., 600 for 10 minutes)"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."
         }
     except httpx.TimeoutException:
-        timeout = config.AI_REQUEST_TIMEOUT_SECONDS
-        logger.warning("Ollama request timed out", exc_info=True)
-        log_messages.append(f"\u23f1\ufe0f Ollama request timed out after {timeout} seconds.")
+        log_messages.append(f"Ollama request timed out after {timeout} seconds.")
         log_messages.append(
-            "\U0001f4a1 Solution: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
+            "TIP: Set AI_REQUEST_TIMEOUT_SECONDS environment variable to a higher value"
         )
         return {
             "error": f"Ollama timed out after {timeout} seconds. Increase AI_REQUEST_TIMEOUT_SECONDS for slower hardware or larger models."

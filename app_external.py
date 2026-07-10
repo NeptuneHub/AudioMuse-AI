@@ -1,4 +1,21 @@
-# app_external.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Flask blueprint for the external track-lookup API (mounted at `/external`).
+
+Read-only endpoints that expose stored analysis for third-party integrations,
+returning per-track scores/embeddings and running unified similarity search via
+`tasks.ivf_manager.search_tracks_unified`.
+
+Main Features:
+* Routes: `/get_score`, `/get_embedding` (by item id) and `/search` (similarity).
+* Imports `get_db` lazily inside each handler to avoid a circular import.
+"""
 
 from flask import Blueprint, jsonify, request
 from psycopg2.extras import DictCursor
@@ -7,12 +24,15 @@ import logging
 
 # Import ivf_manager functions for track lookups
 from tasks.ivf_manager import search_tracks_unified
+from error import error_manager
+from error.error_dictionary import ERR_DB_QUERY
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
 
 # Create a Blueprint for external API routes
 external_bp = Blueprint('external_bp', __name__)
+
 
 @external_bp.route('/get_score', methods=['GET'])
 def get_score_endpoint():
@@ -51,10 +71,9 @@ def get_score_endpoint():
 
     try:
         db = get_db()
-        cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
-        score_data = cur.fetchone()
-        cur.close()
+        with db.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
+            score_data = cur.fetchone()
 
         if score_data:
             # Convert DictRow to a standard dictionary for consistent JSON output
@@ -62,8 +81,9 @@ def get_score_endpoint():
         else:
             return jsonify({"error": f"Score not found for id: {item_id}"}), 404
     except Exception as e:
-        logger.error(f"Error fetching score for id {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred"}), 500
+        logger.exception(f"Error fetching score for id {item_id}")
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
 
 
 @external_bp.route('/get_embedding', methods=['GET'])
@@ -96,13 +116,12 @@ def get_embedding_endpoint():
     item_id = request.args.get('id')
     if not item_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
-    
+
     try:
         db = get_db()
-        cur = db.cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
-        embedding_data = cur.fetchone()
-        cur.close()
+        with db.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
+            embedding_data = cur.fetchone()
 
         if embedding_data:
             embedding_dict = dict(embedding_data)
@@ -114,8 +133,9 @@ def get_embedding_endpoint():
         else:
             return jsonify({"error": f"Embedding not found for id: {item_id}"}), 404
     except Exception as e:
-        logger.error(f"Error fetching embedding for id {item_id}: {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred"}), 500
+        logger.exception(f"Error fetching embedding for id {item_id}")
+        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
+        return jsonify(err), status
 
 
 @external_bp.route('/search', methods=['GET'])
@@ -171,6 +191,6 @@ def search_tracks_endpoint():
     try:
         results = search_tracks_unified(search_query)
         return jsonify(results)
-    except Exception as e:
-        logger.error(f"Error during external track search: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error during external track search")
         return jsonify({"error": "An error occurred during search."}), 500

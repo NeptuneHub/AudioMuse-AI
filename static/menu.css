@@ -112,6 +112,15 @@ html.sidebar-open .sidebar {
     background-color: #2563EB;
 }
 
+/* Keyboard focus ring inside the dark sidebar: white reads better than blue,
+   and a negative offset keeps it from being clipped by the sidebar's overflow. */
+.sidebar-nav li a:focus-visible,
+.sidebar-nav li button:focus-visible,
+.submenu li a:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: -2px;
+}
+
 /* Dark mode toggle button styling */
 #dark-mode-toggle,
 #logout-btn {
@@ -263,7 +272,7 @@ html.dark-mode .sidebar.open + .main-content .menu-toggle {
     background-color: #2563EB;
 }
 
-/* Submenu — dark mode */
+/* Submenu - dark mode */
 body.dark-mode .submenu li a,
 html.dark-mode .submenu li a {
     color: var(--text-sub);

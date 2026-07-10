@@ -1,0 +1,61 @@
+# Ruff config: formatter + linter (modern replacement for the standalone flake8 gate).
+line-length = 100
+target-version = "py311"
+extend-exclude = ["query", "dist", "model", "native-build/**/_vendor"]
+
+[format]
+# Keep the codebase's existing single quotes - do not restyle string literals.
+quote-style = "preserve"
+
+[lint]
+# Enforced gate (kept green): the flake8 rule set plus TRY400, which flake8 cannot
+# do - logging.error inside an except block must be logging.exception. The N rules
+# enforce snake_case (functions/args/locals), PascalCase classes, and self/cls.
+# Line length (E501) and blank-line spacing are still NOT gated: long strings can't
+# be auto-wrapped; run `ruff format` / `ruff check` ad hoc to see those.
+#
+# Correctness rules added on top of the flake8 set (all measured green on this repo):
+# B (flake8-bugbear real-bug catchers: mutable defaults, loop-variable closures,
+#   bare except-raises without `from`, blind pytest.raises(Exception), ...) except
+#   B007 (unused loop var - cosmetic, widely considered noisy) and B905 (zip without
+#   strict= - a behavior change, not a lint fix, left for a dedicated follow-up);
+# PLE (pylint errors: things that crash or misbehave at runtime);
+# G010/G101/G201/G202 (logging misuse; G201: logging.error(..., exc_info=True)
+#   must be logging.exception - the companion of TRY400. NOT G004, which is
+#   style/perf with hundreds of pre-existing hits in this repo);
+# TRY004 (type-check failure must raise TypeError, not a generic exception);
+# TRY401 (no redundant {e} inside logger.exception messages - the traceback
+#   already prints the exception, so interpolating it double-logs and can
+#   re-leak text a redacting handler deliberately masked);
+# RUF001-RUF003 (ambiguous/confusable unicode in strings - enforces this repo's
+#   hard ASCII/no-em-dash/no-emoji policy at the .py level);
+# RUF013 (implicit Optional - `x: int = None` without `| None`/Optional[int]);
+# E721 (type(x) == type(y) instead of is/isinstance);
+# A001 (shadowing a builtin name - A002/A003 excluded, too many idiomatic Flask
+#   route args like `id`/`type`);
+# YTT (sys.version/version_info misuse);
+# ISC002 (implicit string concatenation - the classic missing-comma bug; ISC001
+#   is excluded, it conflicts with the ruff formatter);
+# T100 (leftover breakpoint()/pdb.set_trace() calls);
+# PGH003 (bare `# type: ignore` without a specific error code).
+select = [
+  "F", "E9", "E401", "E711", "E712", "E713", "E714", "E722", "W605", "TRY400",
+  "E731", "E741", "W291", "W293", "W292",
+  "N801", "N802", "N803", "N804", "N805", "N806",
+  "B", "PLE", "G010", "G101", "G201", "G202", "TRY004", "TRY401",
+  "RUF001", "RUF002", "RUF003", "RUF013",
+  "E721", "A001", "YTT", "ISC002", "T100", "PGH003",
+]
+ignore = ["B007", "B905"]
+
+[lint.pep8-naming]
+# Naming policy: a name starting with an UPPERCASE letter or an underscore is
+# exempt (PascalCase classes/types, SCREAMING_CASE constants declared inside a
+# function, ML feature matrices X / X_train / N, GPU aliases). A name that starts
+# with a lowercase letter must be valid snake_case, so camelCase (getFooBar) fails.
+extend-ignore-names = ["[A-Z_]*"]
+
+[lint.per-file-ignores]
+# Test method names are intentionally descriptive and reference real API fields
+# (test_calls_getAlbum_endpoint, ..._lastPlayed_field), so do not force snake_case.
+"test/**" = ["N802"]

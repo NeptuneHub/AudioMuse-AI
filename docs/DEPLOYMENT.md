@@ -20,7 +20,7 @@ The easiest way to install AudioMuse-AI on K3S is with the [AudioMuse-AI Helm Ch
   * A running K3S cluster
   * `kubectl` configured for your cluster
   * `helm` installed
-  * A media server already installed: Jellyfin, Emby, Navidrome, or Lyrion
+  * A media server already installed: Navidrome, Jellyfin, Emby, or Lyrion
   * See the hardware requirements in the documentation
 
 Use the Helm chart for the simplest, most production-ready K3S deploy.
@@ -32,7 +32,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
 * **Prerequisites:**
   * A running K3S cluster
   * `kubectl` configured for your cluster
-  * A media server already installed: Jellyfin, Emby, Navidrome, or Lyrion
+  * A media server already installed: Navidrome, Jellyfin, Emby, or Lyrion
   * See the hardware requirements in the documentation
 
 * **Get manifest example:**
@@ -54,7 +54,7 @@ This section covers direct deployment with the `deployment/*.yaml` manifests.
   * Web UI: `http://<EXTERNAL-IP>:8000`
 
 **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
 
 ## Local Deployment with Docker Compose
 
@@ -65,7 +65,7 @@ AudioMuse-AI provides Docker Compose files example:
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A media server already installed: Jellyfin, Navidrome, Lyrion, or Emby
+* A media server already installed: Navidrome, Jellyfin, Lyrion, or Emby
 * See the [hardware requirements](../README.md#hardware-requirements)
 
 **Steps:**
@@ -103,7 +103,7 @@ AudioMuse-AI provides Docker Compose files example:
    Open `http://localhost:8000` in your browser.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
 
 6. **Stop the services:**
    ```bash
@@ -138,9 +138,9 @@ The native MacOS package is shipped as a release asset for Apple Silicon only. I
 * Go to System Settings → Privacy & Security → Open Anyway for AudioMuse-AI.
 * Launch the app again.
 
-**Important:**
-* The app is unsigned, so macOS will require an explicit trust step on first run.
-* The native MacOS build is Apple Silicon only.
+> [!IMPORTANT]
+> * The app is unsigned, so macOS will require an explicit trust step on first run.
+> * The native MacOS build is Apple Silicon only.
 
 **Data and logs:**
 * Data: `~/Library/AudioMuse-AI`
@@ -186,6 +186,9 @@ Replace `<arch>` with the release artifact for your CPU (`x86_64` or `aarch64`).
 
 > **Tested on:** Debian GNU/Linux 12 (bookworm) with glibc 2.36. RPMs are expected to work on current Fedora/RHEL systems but may not support older distributions.
 
+> [!NOTE]
+> When `systemctl` is used with the `--user` flag, the process is shut down whenever the user logs out. To keep the process alive after logging out, run `loginctl enable-linger yourusername`.
+
 ## Local Deployment Windows
 
 The native Windows package is shipped as a release asset for x86_64 only: a portable ZIP archive (`AudioMuse-AI-amd64-windows.zip`). It bundles the full app, embedded PostgreSQL, Redis, and the web UI, so you do not need Docker or an external database for local use.
@@ -213,9 +216,9 @@ The native Windows package is shipped as a release asset for x86_64 only: a port
   AudioMuse-AI.exe stop
   ```
 
-**Important:**
-* The app is unsigned, so Windows SmartScreen may warn on first run — choose "More info" then "Run anyway".
-* The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
+> [!IMPORTANT]
+> * The app is unsigned, so Windows SmartScreen may warn on first run - choose "More info" then "Run anyway".
+> * The native Windows build is x86_64 only; ARM64 Windows is not supported yet.
 
 **Data and logs:**
 * Data: `%LOCALAPPDATA%\AudioMuse-AI`
@@ -255,7 +258,7 @@ These files are configured to automatically update AudioMuse-AI using the [lates
     Once the containers are up, you can access the web UI at `http://localhost:8000`.
 
 5. **Setup Wizard:**
-   The first startup a wizard setup will show where you add to configure the Music server authentication, AudioMsue-AI atuhentication and other optional paramter. They will be saved directly in the database.
+   The first startup a wizard setup will show where you need to configure the Music server authentication, AudioMuse-AI authentication and other optional parameters. They will be saved directly in the database.
    
 6.  **Stopping the Services:**
     ```bash

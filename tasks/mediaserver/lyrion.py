@@ -1,4 +1,21 @@
-# tasks/mediaserver/lyrion.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Lyrion (Logitech Media Server) backend for the AudioMuse-AI media-server abstraction.
+
+Implements the provider interface via Lyrion's JSON-RPC API. Dispatched by
+tasks/mediaserver/__init__.py when config.MEDIASERVER_TYPE == 'lyrion'.
+
+Main Features:
+* Fetches albums/tracks, downloads, and manages playlists over JSON-RPC.
+* Resolves file:// URIs to filesystem paths and raises LyrionAPIError on
+  failures so callers can decide how to handle them.
+"""
 
 from . import http as requests
 import logging
@@ -6,18 +23,18 @@ import os
 from urllib.parse import unquote, urlparse
 import config
 
-from .helper import detect_path_format
+from .helper import detect_path_format, is_auth_error
 
 logger = logging.getLogger(__name__)
 
 REQUESTS_TIMEOUT = 300
 
-# Custom exception for Lyrion API failures so callers can decide how to handle them
+
 class LyrionAPIError(Exception):
     pass
 
+
 def _decode_lyrion_url(url):
-    """Decode Lyrion file:// URI to a plain filesystem path."""
     if not url:
         return None
     if url.startswith('file://'):
@@ -29,19 +46,8 @@ _LYRION_REMOTE_SERVICES = ('spotify', 'qobuz', 'tidal', 'wimp', 'youtube', 'deez
 
 
 def _lyrion_is_remote(item):
-    """Detect remote/stream-only tracks in Lyrion data.
-
-    Catches Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer (and similar
-    streaming services). Uses a substring match across every field a
-    Lyrion plugin might tag a track with — `url` / `path` / `Path`
-    (custom-protocol URLs like ``spotify:track:...`` or HTTPS API URLs
-    like ``https://api.spotify.com/...``) plus the metadata fields
-    ``genre`` / ``type`` / ``service`` / ``source`` (case-insensitive).
-    """
     if not isinstance(item, dict):
         return False
-    # URL / path: catches both ``spotify:track:...`` style scheme URIs and
-    # ``https://api.spotify.com/...`` HTTPS URLs that some plugins emit.
     for key in ('url', 'path', 'Path'):
         val = item.get(key)
         if isinstance(val, str) and val:
@@ -49,7 +55,6 @@ def _lyrion_is_remote(item):
             for svc in _LYRION_REMOTE_SERVICES:
                 if svc in lower:
                     return True
-    # Plain metadata tags some plugins set instead of a scheme URI.
     for key in ('genre', 'type', 'service', 'source'):
         val = item.get(key)
         if isinstance(val, str) and val:
@@ -61,7 +66,6 @@ def _lyrion_is_remote(item):
 
 
 def _lyrion_track(item):
-    """Normalize a raw Lyrion title entry into the sample track shape."""
     if not isinstance(item, dict):
         return {
             'id': None,
@@ -103,7 +107,6 @@ def _lyrion_track(item):
 
 
 def _lyrion_titles_response(response):
-    """Normalize Lyrion JSON-RPC titles results into a list of title dicts."""
     if not response:
         return []
     if isinstance(response, dict):
@@ -118,17 +121,9 @@ def _lyrion_titles_response(response):
         return response
     return []
 
-# ##############################################################################
-# LYRION (JSON-RPC) IMPLEMENTATION
-# ##############################################################################
-# Lyrion uses a JSON-RPC API. This section contains functions to interact with it.
 
 def _get_target_paths_for_filtering():
-    """
-    Gets the target paths from config for path-based filtering.
-    Returns a set of lowercase paths to match against, or None if no filtering.
-    """
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    folder_names_str = config.MUSIC_LIBRARIES
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
     if not folder_names_str.strip():
@@ -139,12 +134,9 @@ def _get_target_paths_for_filtering():
     logger.info(f"DEBUG: Target paths for filtering: {list(target_paths)}")
     return target_paths
 
+
 def _get_target_music_folder_ids():
-    """
-    Parses config for music folder names and returns their IDs for filtering using a robust,
-    case-insensitive matching against the server's actual folder configuration.
-    """
-    folder_names_str = getattr(config, 'MUSIC_LIBRARIES', '')
+    folder_names_str = config.MUSIC_LIBRARIES
 
     logger.info(f"DEBUG: MUSIC_LIBRARIES config value: '{folder_names_str}'")
 
@@ -152,20 +144,22 @@ def _get_target_music_folder_ids():
         logger.info("DEBUG: MUSIC_LIBRARIES is empty, scanning all folders")
         return None
 
-    target_names_lower = {name.strip().lower() for name in folder_names_str.split(',') if name.strip()}
+    target_names_lower = {
+        name.strip().lower() for name in folder_names_str.split(',') if name.strip()
+    }
     logger.info(f"DEBUG: Target names/paths to match: {list(target_names_lower)}")
 
-    # Use the musicfolders command to get the available music folders.
     response = _jsonrpc_request("musicfolders", [0, 999999])
-    
+
     logger.info(f"DEBUG: Lyrion musicfolders response: {response}")
-    
+
     if not response:
         logger.error("Failed to fetch music folders from Lyrion or response was empty.")
-        logger.warning("Since MUSIC_LIBRARIES is configured but folder detection failed, returning empty set to prevent scanning everything.")
+        logger.warning(
+            "Since MUSIC_LIBRARIES is configured but folder detection failed, returning empty set to prevent scanning everything."
+        )
         return set()
 
-    # Extract folder list from response
     all_folders = []
     if isinstance(response, dict) and "folder_loop" in response:
         all_folders = response["folder_loop"]
@@ -174,7 +168,6 @@ def _get_target_music_folder_ids():
     elif isinstance(response, list):
         all_folders = response
     else:
-        # Try to find the first list in the response dict
         if isinstance(response, dict):
             for v in response.values():
                 if isinstance(v, list):
@@ -185,30 +178,34 @@ def _get_target_music_folder_ids():
         logger.error("No music folders found in Lyrion response.")
         return set()
 
-    # Build a case-insensitive map: lowercase_name_or_path -> {'name': OriginalCaseName, 'id': FolderId, 'path': FolderPath}
     folder_map = {}
     for folder in all_folders:
         if isinstance(folder, dict):
             folder_name = folder.get('name') or folder.get('folder')
-            folder_path = folder.get('path') or folder.get('url')  # Lyrion may use 'url' for the path
+            folder_path = folder.get('path') or folder.get('url')
             folder_id = folder.get('id') or folder.get('folder_id')
-            logger.info(f"DEBUG: Processing folder - name: '{folder_name}', path: '{folder_path}', id: '{folder_id}', raw: {folder}")
+            logger.info(
+                f"DEBUG: Processing folder - name: '{folder_name}', path: '{folder_path}', id: '{folder_id}', raw: {folder}"
+            )
             if folder_name and folder_id:
-                folder_info = {'name': folder_name, 'id': folder_id, 'path': folder_path or folder_name}
-                # Map both name and path (if different) to the same folder info
+                folder_info = {
+                    'name': folder_name,
+                    'id': folder_id,
+                    'path': folder_path or folder_name,
+                }
                 folder_map[folder_name.lower()] = folder_info
                 if folder_path and folder_path.lower() != folder_name.lower():
                     folder_map[folder_path.lower()] = folder_info
-                logger.info(f"DEBUG: Added to folder_map - name key: '{folder_name.lower()}', path key: '{folder_path.lower() if folder_path else 'N/A'}'")
+                logger.info(
+                    f"DEBUG: Added to folder_map - name key: '{folder_name.lower()}', path key: '{folder_path.lower() if folder_path else 'N/A'}'"
+                )
 
-    # --- DIAGNOSTIC LOGGING ---
-    # Get unique folder info (since we may have duplicates from name/path mapping)
     unique_folders = {folder['id']: folder for folder in folder_map.values()}
-    available_info = [f"{folder['name']} (path: {folder['path']})" for folder in unique_folders.values()]
+    available_info = [
+        f"{folder['name']} (path: {folder['path']})" for folder in unique_folders.values()
+    ]
     logger.info(f"Available Lyrion music folders found: {available_info}")
-    # --- END DIAGNOSTIC LOGGING ---
 
-    # Match user's config against the map to find IDs and original names
     found_folders = []
     unfound_names = []
     logger.info(f"DEBUG: Available folder_map keys: {list(folder_map.keys())}")
@@ -222,10 +219,14 @@ def _get_target_music_folder_ids():
             logger.info(f"DEBUG: NO MATCH found for '{target_name}'")
 
     if unfound_names:
-        logger.warning(f"Lyrion config specified folder names that were not found: {list(unfound_names)}")
+        logger.warning(
+            f"Lyrion config specified folder names that were not found: {list(unfound_names)}"
+        )
 
     if not found_folders:
-        logger.warning(f"No matching music folders found for configured names: {list(target_names_lower)}. No albums will be analyzed.")
+        logger.warning(
+            f"No matching music folders found for configured names: {list(target_names_lower)}. No albums will be analyzed."
+        )
         return set()
 
     music_folder_ids = {folder['id'] for folder in found_folders}
@@ -235,28 +236,8 @@ def _get_target_music_folder_ids():
     logger.info(f"DEBUG: Returning folder IDs: {music_folder_ids}")
     return music_folder_ids
 
+
 def list_libraries(user_creds=None):
-    """List all music folders exposed by a Lyrion (LMS) server.
-
-    Unlike `_get_target_music_folder_ids()`, this does NOT read
-    `config.MUSIC_LIBRARIES` and does NOT filter. Uses the ``musicfolder``
-    JSON-RPC command. ``_jsonrpc_request`` already forwards ``user_creds``.
-
-    The persisted ``name`` is the folder's filesystem **path** when the
-    server reports one, otherwise the folder's display name. Lyrion's
-    scan-time filter (``_get_target_paths_for_filtering``) treats
-    ``MUSIC_LIBRARIES`` as paths and substring-matches them against album
-    file URLs — so the UI must persist a value the filter can match
-    against. A bare folder name like ``Library_A`` works when the file
-    paths under that folder contain it (the typical Lyrion setup).
-
-    Notes on the Lyrion CLI:
-      * The command is ``musicfolder`` (singular). Some legacy docs and
-        wrappers use ``musicfolders`` (plural); on Lyrion 9.0.x that
-        variant drops the connection without responding.
-      * Folder entries report the display name under ``filename`` on
-        9.0.x (not ``name``/``folder``), so we accept all three.
-    """
     response = _jsonrpc_request("musicfolder", [0, 999999], user_creds=user_creds)
     if not response:
         return []
@@ -290,7 +271,6 @@ def list_libraries(user_creds=None):
 
 
 def _get_first_player():
-    """Gets the first available player from Lyrion for web interface operations."""
     try:
         response = _jsonrpc_request("players", [0, 1])
         if response and "players_loop" in response and response["players_loop"]:
@@ -299,27 +279,20 @@ def _get_first_player():
             if player_id:
                 logger.info(f"Found Lyrion player: {player_id}")
                 return player_id
-        
-        # Fallback: try to use a common default or return None
+
         logger.warning("No Lyrion players found, using fallback player ID")
-        return "10.42.6.0"  # Use the player from your example as fallback
-    except Exception as e:
-        logger.error(f"Error getting Lyrion player: {e}")
-        return "10.42.6.0"  # Use the player from your example as fallback
+        return "10.42.6.0"
+    except Exception:
+        logger.exception("Error getting Lyrion player")
+        return "10.42.6.0"
+
 
 def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None):
-    """
-    Helper to make a JSON-RPC request to the Lyrion server, optionally using override creds.
-    Returns the 'result' field on success, or None on failure.
-    ``timeout`` overrides the default REQUESTS_TIMEOUT for time-sensitive calls.
-    """
-    base_url = (user_creds.get('url') if user_creds and user_creds.get('url') else config.LYRION_URL).rstrip('/')
+    base_url = (
+        user_creds.get('url') if user_creds and user_creds.get('url') else config.LYRION_URL
+    ).rstrip('/')
     url = f"{base_url}/jsonrpc.js"
-    payload = {
-        "id": 1,
-        "method": "slim.request",
-        "params": [player_id, [method, *params]]
-    }
+    payload = {"id": 1, "method": "slim.request", "params": [player_id, [method, *params]]}
     auth = None
     if user_creds:
         user = user_creds.get('user')
@@ -327,52 +300,46 @@ def _jsonrpc_request(method, params, player_id="", user_creds=None, timeout=None
         if user or password:
             auth = (user or '', password or '')
 
-    # Try with retry logic for connection issues. Use the configured REQUESTS_TIMEOUT
     max_retries = 3
     for attempt in range(max_retries):
         try:
             with requests.Session() as s:
                 s.headers.update({"Content-Type": "application/json"})
-                # Use configured timeout so slow servers can be handled
                 r = s.post(url, json=payload, timeout=timeout or REQUESTS_TIMEOUT, auth=auth)
 
             r.raise_for_status()
             response_data = r.json()
 
             if response_data.get("error"):
-                # JSON-RPC error from the server is fatal for this call
                 msg = response_data['error'].get('message')
                 logger.error(f"Lyrion JSON-RPC Error: {msg}")
                 raise LyrionAPIError(f"Lyrion API error: {msg}")
 
-            # On success, return the result field. It might be None if not present.
             return response_data.get("result")
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            logger.warning(f"Connection issue with Lyrion API (attempt {attempt + 1}/{max_retries}): {e}")
+            logger.warning(
+                f"Connection issue with Lyrion API (attempt {attempt + 1}/{max_retries}): {e}"
+            )
             if attempt < max_retries - 1:
                 import time
-                time.sleep(2)  # Wait 2 seconds before retry
+
+                time.sleep(2)
                 continue
             else:
                 err = f"Failed to connect to Lyrion after {max_retries} attempts: {e}"
-                logger.error(err)
-                raise LyrionAPIError(err)
+                logger.exception(err)
+                raise LyrionAPIError(err) from e
         except LyrionAPIError:
-            # Propagate our custom errors as-is
             raise
         except Exception as e:
-            logger.error(f"Failed to call Lyrion JSON-RPC API with method '{method}': {e}", exc_info=True)
-            raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}")
+            logger.exception(f"Failed to call Lyrion JSON-RPC API with method '{method}'")
+            raise LyrionAPIError(f"Unexpected error calling Lyrion API: {e}") from e
 
-    # Should not reach here; raise to be explicit
     raise LyrionAPIError("Unreachable: exceeded jsonrpc retry loop")
 
 
 def _count_albums(use_sort_new=True, page_size=100):
-    """Count total albums on the Lyrion server using the given paging mode.
-    Returns an integer count or None on fatal error.
-    """
     total = 0
     offset = 0
     while True:
@@ -399,30 +366,26 @@ def _count_albums(use_sort_new=True, page_size=100):
 
     return total
 
+
 def download_track(temp_dir, item):
-    """Downloads a single track from Lyrion using its URL."""
     try:
         track_id = item.get('Id')
         if not track_id:
             logger.error("Lyrion item does not have a track ID.")
             return None
-            
-        # The correct, stable URL format for directly downloading a track from Lyrion/LMS by its ID.
-        # This avoids issues with the /stream endpoint which is often for the currently playing track.
+
         download_url = f"{config.LYRION_URL}/music/{track_id}/download"
-        
-        # A more robust way to handle the file extension.
+
         file_extension = item.get('Path', '.mp3')
         if file_extension and '.' in file_extension:
             file_extension = os.path.splitext(file_extension)[1]
         else:
             file_extension = '.mp3'
-        
+
         local_filename = os.path.join(temp_dir, f"{track_id}{file_extension}")
-        
+
         logger.info(f"Attempting to download from URL: {download_url}")
-        
-        # Use a new session for each download to avoid connection pooling issues.
+
         with requests.Session() as s:
             with s.get(download_url, stream=True, timeout=REQUESTS_TIMEOUT) as r:
                 r.raise_for_status()
@@ -431,37 +394,44 @@ def download_track(temp_dir, item):
                         f.write(chunk)
         logger.info(f"Downloaded '{item.get('title', 'Unknown')}' to '{local_filename}'")
         return local_filename
-    except Exception as e:
-        logger.error(f"Failed to download Lyrion track {item.get('title', 'Unknown')}: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Failed to download Lyrion track {item.get('title', 'Unknown')}")
     return None
 
+
 def _get_all_albums_simple(limit):
-    """Simple album fetching without filtering."""
     albums_accum = []
-    fetch_all = (limit == 0)
+    fetch_all = limit == 0
     page_size = 100
     remaining = None if fetch_all else int(limit)
     offset = 0
 
     pages_fetched = 0
 
-    # Decide whether to use 'sort:new' or fall back to unsorted pagination.
-    # Only perform a full comparison when fetching the entire library (limit==0).
     use_sort_new = True
     if limit == 0:
-        logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode...")
+        logger.info(
+            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode..."
+        )
         sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
         unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
-        logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
-        if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
-            logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
+        logger.info(
+            f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}"
+        )
+        if (
+            unsorted_total is not None
+            and sorted_total is not None
+            and unsorted_total > sorted_total
+        ):
+            logger.info(
+                "Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion."
+            )
             use_sort_new = False
 
     while True:
         req_count = page_size if (remaining is None or remaining > page_size) else remaining
         params = [offset, req_count, "sort:new"] if use_sort_new else [offset, req_count]
 
-        # Per-page retry: don't let a single slow/failed page stop the whole fetch
         page_response = None
         page_error = None
         for attempt in range(3):
@@ -470,28 +440,29 @@ def _get_all_albums_simple(limit):
                 break
             except LyrionAPIError as e:
                 page_error = e
-                logger.warning(f"albums page fetch failed at offset={offset} (attempt {attempt+1}/3): {e}")
+                logger.warning(
+                    f"albums page fetch failed at offset={offset} (attempt {attempt + 1}/3): {e}"
+                )
                 import time
+
                 time.sleep(1)
                 continue
 
         if page_response is None:
-            # After attempts, skip this page and continue to the next to avoid stopping at page 1
-            logger.error(f"Skipping albums page at offset={offset} after repeated failures: {page_error}")
-            # Advance offset by page_size to avoid an infinite loop. This may lose items but avoids halting.
+            logger.error(
+                f"Skipping albums page at offset={offset} after repeated failures: {page_error}"
+            )
             offset += page_size
             continue
 
         response = page_response
 
-        # Normalize response shapes
         page_albums = []
         if isinstance(response, dict) and "albums_loop" in response:
             page_albums = response["albums_loop"]
         elif isinstance(response, list):
             page_albums = response
 
-        # If server legitimately returned an empty page, we've reached the end
         if not page_albums:
             break
 
@@ -510,20 +481,16 @@ def _get_all_albums_simple(limit):
 
         offset += len(page_albums)
 
-    logger.info(f"_get_all_albums_simple: fetched {len(albums_accum)} albums across {pages_fetched} pages (requested limit: {limit})")
+    logger.info(
+        f"_get_all_albums_simple: fetched {len(albums_accum)} albums across {pages_fetched} pages (requested limit: {limit})"
+    )
     return albums_accum
 
+
 def _album_has_tracks_in_target_path(album_id, target_paths):
-    """
-    Check if an album has tracks in the target folder by examining actual file paths.
-    This is the most reliable method for Lyrion folder filtering.
-    """
-    # Request more tracks and retry on transient API errors. Inspect more tracks to increase
-    # chance of finding a path field.
     attempts = 3
     for attempt in range(attempts):
         try:
-            # Ask for up to 20 tracks with richer tags that may include path/url
             response = _jsonrpc_request("titles", [0, 20, f"album_id:{album_id}", "tags:fFlpuoP"])
 
             if not response or "titles_loop" not in response:
@@ -531,25 +498,20 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
 
             tracks = response["titles_loop"]
 
-            # Check various fields that might contain the actual file path
             path_fields = ['url', 'path', 'f', 'F', 'l', 'p', 'u', 'o', 'file', 'filename']
 
-            # Inspect the first N tracks (increase from 3 to 8)
             for track in tracks[:8]:
                 for field in path_fields:
                     if field in track and track[field]:
                         track_path = str(track[field]).lower()
 
-                        # Check if any target path is in this track's path
                         for target_path in target_paths:
                             if target_path in track_path:
                                 return True
 
-                        # Also check if track path contains target path parts
                         for target_path in target_paths:
                             target_parts = target_path.strip('/').split('/')
                             if len(target_parts) >= 2:
-                                # Check if last part of target path is in track path
                                 last_part = target_parts[-1].lower()
                                 if last_part in track_path:
                                     return True
@@ -557,61 +519,65 @@ def _album_has_tracks_in_target_path(album_id, target_paths):
             return False
 
         except LyrionAPIError as e:
-            logger.warning(f"Transient Lyrion API error checking album tracks (attempt {attempt+1}/{attempts}): {e}")
+            logger.warning(
+                f"Transient Lyrion API error checking album tracks (attempt {attempt + 1}/{attempts}): {e}"
+            )
             import time
+
             time.sleep(1)
             continue
         except Exception as e:
-            logger.debug(f"Unexpected error while checking album tracks for {album_id}: {e}", exc_info=True)
+            logger.debug(
+                f"Unexpected error while checking album tracks for {album_id}: {e}", exc_info=True
+            )
             return False
 
-    # If all attempts failed, assume no path info found (caller will decide how to treat this)
     logger.error(f"Failed to fetch tracks for album {album_id} after {attempts} attempts")
     return False
 
+
 def get_recent_albums(limit):
-    """
-    Fetches recently added albums from Lyrion using JSON-RPC.
-    If MUSIC_LIBRARIES is set, filters albums by checking if their tracks' actual file paths match.
-    Scans ALL albums until the requested number is found (or library is exhausted).
-    """
     target_paths = _get_target_paths_for_filtering()
-    
-    # If no filtering needed, use simple approach
+
     if target_paths is None:
         return _get_all_albums_simple(limit)
-    
-    # Use file path checking approach - scan ALL albums until we find enough matches
-    logger.info(f"Scanning Lyrion library for albums in configured folders (limit: {limit or 'all'})")
-    
+
+    logger.info(
+        f"Scanning Lyrion library for albums in configured folders (limit: {limit or 'all'})"
+    )
+
     filtered_albums = []
     page_size = 100
     offset = 0
-    fetch_all = (limit == 0)
-    # Diagnostics counters to help debug why albums are filtered out
+    fetch_all = limit == 0
     pages_fetched = 0
     albums_scanned = 0
     albums_matched = 0
     filtered_no_album_id = 0
     filtered_no_path = 0
-    
-    # Like the simple fetcher, try 'sort:new' first but fall back to
-    # unsorted pagination if that appears to return fewer albums. Only
-    # perform the full comparison when fetching the entire library.
+
     use_sort_new = True
     if fetch_all:
-        logger.info("Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)...")
+        logger.info(
+            "Counting Lyrion albums with and without 'sort:new' to decide pagination mode (analysis of all albums)..."
+        )
         sorted_total = _count_albums(use_sort_new=True, page_size=page_size)
         unsorted_total = _count_albums(use_sort_new=False, page_size=page_size)
-        logger.info(f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}")
-        if unsorted_total is not None and sorted_total is not None and unsorted_total > sorted_total:
-            logger.info("Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion.")
+        logger.info(
+            f"Albums with sort:new = {sorted_total}, albums without sort = {unsorted_total}"
+        )
+        if (
+            unsorted_total is not None
+            and sorted_total is not None
+            and unsorted_total > sorted_total
+        ):
+            logger.info(
+                "Albums without sort are more numerous; proceeding with unsorted pagination for Lyrion."
+            )
             use_sort_new = False
 
     while True:
-        # Get next batch of albums
         params = [offset, page_size, "sort:new"] if use_sort_new else [offset, page_size]
-        # Per-page retry: attempt several times before skipping this page
         page_response = None
         page_error = None
         for attempt in range(3):
@@ -620,35 +586,36 @@ def get_recent_albums(limit):
                 break
             except LyrionAPIError as e:
                 page_error = e
-                logger.warning(f"albums page fetch failed at offset={offset} (attempt {attempt+1}/3): {e}")
+                logger.warning(
+                    f"albums page fetch failed at offset={offset} (attempt {attempt + 1}/3): {e}"
+                )
                 import time
+
                 time.sleep(1)
                 continue
 
         if page_response is None:
-            logger.error(f"Skipping albums page at offset={offset} after repeated failures: {page_error}")
+            logger.error(
+                f"Skipping albums page at offset={offset} after repeated failures: {page_error}"
+            )
             offset += page_size
-            # continue to next page instead of aborting entire scan
             continue
 
         response = page_response
         if not response:
-            # Legitimate empty response -> end of library
             break
 
         pages_fetched += 1
-        
-        # Extract albums from response
+
         page_albums = []
         if isinstance(response, dict) and "albums_loop" in response:
             page_albums = response["albums_loop"]
         elif isinstance(response, list):
             page_albums = response
-        
+
         if not page_albums:
             break
-        
-        # Check each album in this batch
+
         for album in page_albums:
             albums_scanned += 1
             album_id = album.get('id')
@@ -659,7 +626,6 @@ def get_recent_albums(limit):
                 logger.debug(f"Skipping album without ID (page {pages_fetched}): {album}")
                 continue
 
-            # Check if this album's tracks are in our target folder
             try:
                 has_tracks = _album_has_tracks_in_target_path(album_id, target_paths)
             except Exception as e:
@@ -671,44 +637,42 @@ def get_recent_albums(limit):
                 mapped_album = {'Id': album_id, 'Name': album_name}
                 filtered_albums.append(mapped_album)
 
-                # Stop if we have enough albums (unless fetching all)
                 if not fetch_all and len(filtered_albums) >= limit:
-                    logger.info(f"Found {limit} matching albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched})")
+                    logger.info(
+                        f"Found {limit} matching albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched})"
+                    )
                     return filtered_albums
             else:
                 filtered_no_path += 1
-                logger.debug(f"Album {album_id} ('{album_name}') does not appear to have tracks in target paths (page {pages_fetched}).")
-        
-        # If this page had fewer albums than requested, we've reached the end
+                logger.debug(
+                    f"Album {album_id} ('{album_name}') does not appear to have tracks in target paths (page {pages_fetched})."
+                )
+
         if len(page_albums) < page_size:
             break
-        
+
         offset += len(page_albums)
-    
-    logger.info(f"Found {len(filtered_albums)} albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched}, filtered_no_path: {filtered_no_path}, filtered_no_album_id: {filtered_no_album_id})")
+
+    logger.info(
+        f"Found {len(filtered_albums)} albums in configured folders (pages fetched: {pages_fetched}, albums scanned: {albums_scanned}, matched: {albums_matched}, filtered_no_path: {filtered_no_path}, filtered_no_album_id: {filtered_no_album_id})"
+    )
     return filtered_albums
 
+
 def get_all_songs(user_creds=None):
-    """
-    Fetches all songs from Lyrion using JSON-RPC.
-    For now, just gets all songs since folder filtering is complex in Lyrion.
-    """
     target_paths = _get_target_paths_for_filtering()
 
     if target_paths is not None:
         logger.warning("LYRION FOLDER FILTERING IS DISABLED - fetching all songs instead")
-    
-    # Fetch all songs without filtering
+
     logger.info("Fetching all songs from Lyrion")
     response = _jsonrpc_request("titles", [0, 999999, "tags:galduAyR"], user_creds=user_creds)
-    
+
     all_songs = []
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
-        
-        # Map all songs to our standard format
+
         for song in songs:
-            # Prioritize track artist over album artist to avoid "Various Artists"
             if song.get('trackartist'):
                 track_artist = song.get('trackartist')
             elif song.get('contributor'):
@@ -721,7 +685,7 @@ def get_all_songs(user_creds=None):
                 track_artist = song.get('band')
             else:
                 track_artist = 'Unknown Artist'
-            
+
             mapped_song = {
                 'Id': song.get('id'),
                 'Name': song.get('title'),
@@ -742,8 +706,9 @@ def get_all_songs(user_creds=None):
 
 
 def search_albums(query, user_creds=None):
-    """Search Lyrion albums using admin or override credentials."""
-    body = _jsonrpc_request("albums", [0, 10, f"search:{query}", "tags:lyja"], user_creds=user_creds)
+    body = _jsonrpc_request(
+        "albums", [0, 10, f"search:{query}", "tags:lyja"], user_creds=user_creds
+    )
     if not body:
         return []
     albums = []
@@ -759,28 +724,45 @@ def search_albums(query, user_creds=None):
                 year = int(year) if year not in (None, '') else None
             except (TypeError, ValueError):
                 year = None
-        out.append({
-            'id':          str(a.get('id', '')) or None,
-            'name':        a.get('album') or a.get('title'),
-            'artist':      a.get('artist') or a.get('albumartist'),
-            'year':        year,
-            'track_count': a.get('tracks') or a.get('count'),
-        })
+        out.append(
+            {
+                'id': str(a.get('id', '')) or None,
+                'name': a.get('album') or a.get('title'),
+                'artist': a.get('artist') or a.get('albumartist'),
+                'year': year,
+                'track_count': a.get('tracks') or a.get('count'),
+            }
+        )
     return out
 
 
 def test_connection(user_creds=None):
-    """Test Lyrion connectivity using admin or override credentials."""
     warnings = []
-    body = _jsonrpc_request("titles", [0, 100, "tags:galduAyR"], user_creds=user_creds)
-    if body is None:
-        return {'ok': False, 'error': 'Lyrion test_connection failed', 'sample_count': 0, 'path_format': 'none', 'warnings': []}
-
-    raws = _lyrion_titles_response(body)
-    if not raws:
-        # Fallback to a simpler call if the tagged query returns no tracks.
-        body = _jsonrpc_request("titles", [0, 100], user_creds=user_creds)
+    try:
+        body = _jsonrpc_request("titles", [0, 100, "tags:galduAyR"], user_creds=user_creds)
+        if body is None:
+            return {
+                'ok': False,
+                'error': 'Lyrion test_connection failed',
+                'auth_failed': False,
+                'sample_count': 0,
+                'path_format': 'none',
+                'warnings': [],
+            }
         raws = _lyrion_titles_response(body)
+        if not raws:
+            body = _jsonrpc_request("titles", [0, 100], user_creds=user_creds)
+            raws = _lyrion_titles_response(body)
+    except Exception as e:
+        logger.warning(f"Lyrion test_connection failed: {e}")
+        return {
+            'ok': False,
+            'error': str(e),
+            'auth_failed': is_auth_error(e),
+            'sample_count': 0,
+            'path_format': 'none',
+            'warnings': [],
+        }
 
     sample = []
     for r in raws:
@@ -805,195 +787,180 @@ def test_connection(user_creds=None):
 
 
 def _add_to_playlist(playlist_id, item_ids):
-    """Adds songs to a Lyrion playlist using the working player-based method."""
-    if not item_ids: 
+    if not item_ids:
         return True
-    
+
     logger.info(f"Adding {len(item_ids)} songs to Lyrion playlist ID '{playlist_id}'.")
-    
-    # Get a player for the command
+
     player_id = _get_first_player()
     if not player_id:
         logger.error("No Lyrion player available for playlist operations.")
         return False
-    
+
     try:
-        # Get the original playlist name FIRST, before any operations
         logger.debug("Step 0: Getting original playlist name before operations")
-        playlist_info = _jsonrpc_request("playlists", [0, 999999])  # Get all playlists
-        
+        playlist_info = _jsonrpc_request("playlists", [0, 999999])
+
         original_name = None
         if playlist_info and "playlists_loop" in playlist_info:
             for pl in playlist_info["playlists_loop"]:
                 if str(pl.get("id")) == str(playlist_id):
                     original_name = pl.get("playlist")
-                    logger.debug(f"Found original playlist name: '{original_name}' for ID {playlist_id}")
+                    logger.debug(
+                        f"Found original playlist name: '{original_name}' for ID {playlist_id}"
+                    )
                     break
-        
+
         if not original_name:
             logger.error(f"Could not find playlist {playlist_id} in playlists list!")
             return False
-        
-        # Method: Load playlist to player, add tracks, then use playlists edit to update
+
         logger.info("Using method: Load -> Add -> Update original playlist via edit command")
-        
-        # Step 1: Load the saved playlist into the player's current playlist
+
         logger.debug(f"Step 1: Loading playlist {playlist_id} to player {player_id}")
-        load_response = _jsonrpc_request("playlistcontrol", [
-            "cmd:load",
-            f"playlist_id:{playlist_id}"
-        ], player_id)
-        
+        load_response = _jsonrpc_request(
+            "playlistcontrol", ["cmd:load", f"playlist_id:{playlist_id}"], player_id
+        )
+
         logger.debug(f"Load playlist response: {load_response}")
-        
-        # Step 2: Add tracks to the player's current playlist in batches
-        batch_size = 50  # Larger batches since this method works
+
+        batch_size = 50
         total_added = 0
-        
+
         for i in range(0, len(item_ids), batch_size):
-            batch_ids = item_ids[i:i + batch_size]
+            batch_ids = item_ids[i : i + batch_size]
             track_id_list = ",".join(str(track_id) for track_id in batch_ids)
-            
-            logger.debug(f"Step 2: Adding batch {i//batch_size + 1} with {len(batch_ids)} tracks")
-            add_response = _jsonrpc_request("playlistcontrol", [
-                "cmd:add",
-                f"track_id:{track_id_list}"
-            ], player_id)
-            
+
+            logger.debug(f"Step 2: Adding batch {i // batch_size + 1} with {len(batch_ids)} tracks")
+            add_response = _jsonrpc_request(
+                "playlistcontrol", ["cmd:add", f"track_id:{track_id_list}"], player_id
+            )
+
             logger.debug(f"Add batch response: {add_response}")
-            
+
             if add_response and "count" in add_response:
                 batch_added = add_response.get("count", 0)
                 total_added += batch_added
                 logger.debug(f"Added {batch_added} tracks in this batch, total: {total_added}")
-            
-            # Small delay between batches
+
             if i + batch_size < len(item_ids):
                 import time
+
                 time.sleep(0.1)
-        
-        # Step 3: Delete the original empty playlist
+
         logger.debug(f"Step 3: Deleting original empty playlist {playlist_id}")
-        delete_response = _jsonrpc_request("playlists", [
-            "delete",
-            f"playlist_id:{playlist_id}"
-        ])
+        delete_response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
         logger.debug(f"Delete response: {delete_response}")
-        
-        # Step 4: Save the current player playlist with the original name
+
         logger.debug(f"Step 4: Saving current playlist as '{original_name}'")
-        save_response = _jsonrpc_request("playlist", [
-            "save",
-            original_name,
-            "silent:1"
-        ], player_id)
-        
+        save_response = _jsonrpc_request("playlist", ["save", original_name, "silent:1"], player_id)
+
         logger.debug(f"Save playlist response: {save_response}")
-        
-        # Check if we got the expected playlist ID back
+
         if save_response and "__playlist_id" in save_response:
             final_playlist_id = save_response["__playlist_id"]
             if str(final_playlist_id) == str(playlist_id):
-                logger.info(f"✅ Successfully updated original playlist {playlist_id} with {total_added} tracks")
+                logger.info(
+                    f"Successfully updated original playlist {playlist_id} with {total_added} tracks"
+                )
                 return True
             else:
-                logger.warning(f"Created new playlist {final_playlist_id} instead of updating {playlist_id}")
-                # If we got a different ID, try to delete the new one and rename it
+                logger.warning(
+                    f"Created new playlist {final_playlist_id} instead of updating {playlist_id}"
+                )
                 try:
-                    # The new playlist has the tracks, so we need to work with it
-                    logger.info(f"Working with new playlist ID {final_playlist_id} which has the content")
+                    logger.info(
+                        f"Working with new playlist ID {final_playlist_id} which has the content"
+                    )
                     return True
-                except Exception as e:
-                    logger.error(f"Error handling new playlist: {e}")
+                except Exception:
+                    logger.exception("Error handling new playlist")
                     return False
         elif total_added > 0:
-            logger.info(f"✅ Successfully added {total_added} tracks (save response: {save_response})")
+            logger.info(f"Successfully added {total_added} tracks (save response: {save_response})")
             return True
         else:
             logger.warning("No tracks were added to the playlist")
             return False
-            
-    except Exception as e:
-        logger.error(f"Error in playlist update method: {e}")
+
+    except Exception:
+        logger.exception("Error in playlist update method")
         return False
 
+
 def _create_playlist_batched(playlist_name, item_ids):
-    """Creates a new Lyrion playlist and adds tracks using the web interface approach."""
-    logger.info(f"Attempting to create Lyrion playlist '{playlist_name}' with {len(item_ids)} songs using web interface method.")
+    logger.info(
+        f"Attempting to create Lyrion playlist '{playlist_name}' with {len(item_ids)} songs using web interface method."
+    )
 
     try:
-        # Step 1: Create the playlist using JSON-RPC (this part works)
         create_response = _jsonrpc_request("playlists", ["new", f"name:{playlist_name}"])
-        
+
         if create_response:
             playlist_id = (
-                create_response.get("id") or
-                create_response.get("overwritten_playlist_id") or
-                create_response.get("playlist_id")
+                create_response.get("id")
+                or create_response.get("overwritten_playlist_id")
+                or create_response.get("playlist_id")
             )
-            
+
             if playlist_id:
-                logger.info(f"✅ Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
-                
-                # Step 2: Add tracks using the web interface method
+                logger.info(f"Created Lyrion playlist '{playlist_name}' (ID: {playlist_id}).")
+
                 if item_ids:
                     if _add_to_playlist(playlist_id, item_ids):
-                        logger.info(f"✅ Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'.")
+                        logger.info(
+                            f"Successfully added {len(item_ids)} tracks to playlist '{playlist_name}'."
+                        )
                     else:
-                        logger.warning(f"Playlist '{playlist_name}' created but some tracks may not have been added.")
-                
+                        logger.warning(
+                            f"Playlist '{playlist_name}' created but some tracks may not have been added."
+                        )
+
                 return {"Id": playlist_id, "Name": playlist_name}
-        
-        logger.error(f"Failed to create Lyrion playlist '{playlist_name}'. Response: {create_response}")
+
+        logger.error(
+            f"Failed to create Lyrion playlist '{playlist_name}'. Response: {create_response}"
+        )
         return None
-        
-    except Exception as e:
-        logger.error(f"Exception creating Lyrion playlist '{playlist_name}': {e}", exc_info=True)
+
+    except Exception:
+        logger.exception(f"Exception creating Lyrion playlist '{playlist_name}'")
         return None
+
 
 def create_playlist(base_name, item_ids):
-    """Creates a new playlist on Lyrion using admin credentials, with batching."""
-    # Return the result of the batched creation so callers can inspect the new playlist ID
     return _create_playlist_batched(base_name, item_ids)
 
+
 def get_all_playlists():
-    """Fetches all playlists from Lyrion using JSON-RPC."""
     response = _jsonrpc_request("playlists", [0, 999999])
     if response and "playlists_loop" in response:
         playlists = response["playlists_loop"]
         return [{'Id': p.get('id'), 'Name': p.get('playlist')} for p in playlists]
     return []
 
+
 def delete_playlist(playlist_id):
-    """Deletes a playlist on Lyrion using JSON-RPC."""
-    # The correct command is 'playlists delete'.
-    # LMS returns an empty dict ({}) on success; `_jsonrpc_request` raises on
-    # transport/protocol errors. So the only way to reach here with `response`
-    # set is server success — including the empty-dict case, which `if response:`
-    # used to mis-treat as failure.
     response = _jsonrpc_request("playlists", ["delete", f"playlist_id:{playlist_id}"])
     if response is not None:
-        logger.info(f"🗑️ Deleted Lyrion playlist ID: {playlist_id}")
+        logger.info(f"Deleted Lyrion playlist ID: {playlist_id}")
         return True
     logger.error(f"Failed to delete playlist ID '{playlist_id}' on Lyrion")
     return False
 
-# --- User-specific Lyrion functions ---
+
 def get_tracks_from_album(album_id, user_creds=None):
-    """Fetches all audio tracks for an album from Lyrion using JSON-RPC."""
     logger.info(f"Attempting to fetch tracks for album ID: {album_id}")
-    
-    # Lyrion's JSON-RPC doesn't have a direct "get tracks for album" call.
-    # The 'titles' command with a filter is the correct way to get songs for an album.
-    # We now fetch all songs and filter them by the album ID.
+
     try:
-        response = _jsonrpc_request("titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"], user_creds=user_creds)
+        response = _jsonrpc_request(
+            "titles", [0, 999999, f"album_id:{album_id}", "tags:galduAyR"], user_creds=user_creds
+        )
         logger.debug(f"Lyrion API Raw Track Response for Album {album_id}: {response}")
-    except Exception as e:
-        logger.error(f"Lyrion API call for album {album_id} failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception(f"Lyrion API call for album {album_id} failed")
         return []
 
-    # Normalize response shapes: LMS/Lyrion may return a dict with 'titles_loop' or a raw list.
     songs = []
     if not response:
         logger.warning(f"Lyrion API returned empty response for album {album_id}.")
@@ -1003,7 +970,6 @@ def get_tracks_from_album(album_id, user_creds=None):
         if "titles_loop" in response and isinstance(response["titles_loop"], list):
             songs = response["titles_loop"]
         else:
-            # Fallback: try to find the first list value in the response
             for v in response.values():
                 if isinstance(v, list):
                     songs = v
@@ -1012,12 +978,11 @@ def get_tracks_from_album(album_id, user_creds=None):
         songs = response
 
     if not songs:
-        logger.warning(f"Lyrion API response for tracks of album {album_id} did not contain any song entries.")
+        logger.warning(
+            f"Lyrion API response for tracks of album {album_id} did not contain any song entries."
+        )
         return []
 
-    # Filter remote/streaming-service tracks (Spotify, Qobuz, Tidal, Wimp,
-    # YouTube, Deezer, ...) — same detector used by the bootstrap sample
-    # scanner so behavior stays consistent across the codebase.
     local_songs = []
     skipped_tracks = []
     for s in songs:
@@ -1028,28 +993,35 @@ def get_tracks_from_album(album_id, user_creds=None):
 
     if skipped_tracks:
         skipped_count = len(skipped_tracks)
-        logger.info(f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from a remote streaming service (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or are non-downloadable.")
-        # Log concise identifying information for each skipped track so operators can verify.
+        logger.info(
+            f"Skipping {skipped_count} track(s) from album {album_id} because they appear to be from a remote streaming service (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or are non-downloadable."
+        )
         for st in skipped_tracks:
             sk_id = st.get('id') or st.get('Id') or st.get('track_id')
             sk_title = st.get('title') or st.get('name') or st.get('Name')
-            # Use track artist prioritization for logging too
-            sk_artist = (st.get('trackartist') or st.get('contributor') or
-                        st.get('artist') or st.get('albumartist') or
-                        st.get('band') or 'Unknown Artist')
+            sk_artist = (
+                st.get('trackartist')
+                or st.get('contributor')
+                or st.get('artist')
+                or st.get('albumartist')
+                or st.get('band')
+                or 'Unknown Artist'
+            )
             sk_url = st.get('url') or st.get('Path') or st.get('path')
-            logger.info(f"Skipped track - id: {sk_id!r}, title: {sk_title!r}, artist: {sk_artist!r}, url/path: {sk_url!r}")
+            logger.info(
+                f"Skipped track - id: {sk_id!r}, title: {sk_title!r}, artist: {sk_artist!r}, url/path: {sk_url!r}"
+            )
 
     if not local_songs and songs:
-        logger.info(f"Album {album_id} contains only remote streaming-service tracks (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or non-downloadable tracks and will be skipped.")
+        logger.info(
+            f"Album {album_id} contains only remote streaming-service tracks (Spotify, Qobuz, Tidal, Wimp, YouTube, Deezer, ...) or non-downloadable tracks and will be skipped."
+        )
 
-    # Map Lyrion API keys to our standard format with safe fallbacks.
     mapped = []
     for s in local_songs:
         id_val = s.get('id') or s.get('Id') or s.get('track_id')
         title = s.get('title') or s.get('name') or s.get('Name')
-        
-        # Prioritize track artist over album artist to avoid "Various Artists"
+
         if s.get('trackartist'):
             artist = s.get('trackartist')
         elif s.get('contributor'):
@@ -1062,34 +1034,41 @@ def get_tracks_from_album(album_id, user_creds=None):
             artist = s.get('band')
         else:
             artist = 'Unknown Artist'
-        
+
         path = s.get('url') or s.get('Path') or s.get('path') or ''
-        mapped.append({
-            'Id': id_val, 'Name': title, 'AlbumArtist': artist, 'OriginalAlbumArtist': s.get('albumartist'),
-            'Album': s.get('album'),
-            'Path': path, 'url': path,
-            'Year': int(s.get('year')) if s.get('year') else None,
-            'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
-            'FilePath': _decode_lyrion_url(s.get('url')),
-        })
+        mapped.append(
+            {
+                'Id': id_val,
+                'Name': title,
+                'AlbumArtist': artist,
+                'OriginalAlbumArtist': s.get('albumartist'),
+                'Album': s.get('album'),
+                'Path': path,
+                'url': path,
+                'Year': int(s.get('year')) if s.get('year') else None,
+                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                'FilePath': _decode_lyrion_url(s.get('url')),
+            }
+        )
 
     return mapped
 
+
 def get_playlist_by_name(playlist_name):
-    """Finds a Lyrion playlist by its exact name using JSON-RPC."""
-    # Fetch all playlists and filter by name, as direct name search is not standard.
     all_playlists = get_all_playlists()
     for p in all_playlists:
         if p.get('Name') == playlist_name:
-            return p # Return the already formatted playlist dict
+            return p
     return None
 
+
 def get_playlist_track_ids(playlist_id):
-    """Returns the audio track item_ids of a Lyrion playlist via the 'playlists tracks' JSON-RPC call."""
     try:
-        response = _jsonrpc_request("playlists", ["tracks", 0, 999999, f"playlist_id:{playlist_id}", "tags:u"])
-    except Exception as e:
-        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}: {e}")
+        response = _jsonrpc_request(
+            "playlists", ["tracks", 0, 999999, f"playlist_id:{playlist_id}", "tags:u"]
+        )
+    except Exception:
+        logger.exception(f"Lyrion get_playlist_track_ids failed for {playlist_id}")
         return []
     if not response:
         return []
@@ -1106,17 +1085,15 @@ def get_playlist_track_ids(playlist_id):
         loop = response
     return [str(t.get("id")) for t in loop if isinstance(t, dict) and t.get("id")]
 
+
 def get_top_played_songs(limit):
-    """Fetches the top N most played songs from Lyrion for a specific user using JSON-RPC."""
     response = _jsonrpc_request("titles", [0, limit, "sort:popular", "tags:galduAyR"])
     if response and "titles_loop" in response:
         songs = response["titles_loop"]
-        # Map Lyrion API keys to our standard format.
         mapped_songs = []
         for s in songs:
             title = s.get('title', 'Unknown')
-            
-            # Prioritize track artist over album artist to avoid "Various Artists"
+
             if s.get('trackartist'):
                 track_artist = s.get('trackartist')
             elif s.get('contributor'):
@@ -1129,37 +1106,37 @@ def get_top_played_songs(limit):
                 track_artist = s.get('band')
             else:
                 track_artist = 'Unknown Artist'
-            
-            mapped_songs.append({
-                'Id': s.get('id'),
-                'Name': title,
-                'AlbumArtist': track_artist,
-                'OriginalAlbumArtist': s.get('albumartist'),
-                'Album': s.get('album'),
-                'Path': s.get('url'),
-                'url': s.get('url'),
-                'Year': int(s.get('year')) if s.get('year') else None,
-                'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
-                'FilePath': _decode_lyrion_url(s.get('url')),
-            })
+
+            mapped_songs.append(
+                {
+                    'Id': s.get('id'),
+                    'Name': title,
+                    'AlbumArtist': track_artist,
+                    'OriginalAlbumArtist': s.get('albumartist'),
+                    'Album': s.get('album'),
+                    'Path': s.get('url'),
+                    'url': s.get('url'),
+                    'Year': int(s.get('year')) if s.get('year') else None,
+                    'Rating': int(int(s.get('rating')) / 20) if s.get('rating') else None,
+                    'FilePath': _decode_lyrion_url(s.get('url')),
+                }
+            )
         return mapped_songs
     return []
 
 
 def get_last_played_time(item_id):
-    """Fetches the last played time for a track for a specific user. Not supported by Lyrion JSON-RPC API."""
-    logger.warning("Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks.")
+    logger.warning(
+        "Lyrion's JSON-RPC API does not provide a 'last played time' for individual tracks."
+    )
     return None
 
-def get_lyrics(track_id: str, timeout: float = 2.5):
-    """Fetch embedded lyrics from Lyrion (LMS) for a given track ID.
 
-    Uses the LMS JSON-RPC ``songinfo`` command with the ``w`` (lyrics) tag.
-    Returns plain text or None.
-    """
+def get_lyrics(track_id: str, timeout: float = 2.5):
     try:
         result = _jsonrpc_request(
-            'songinfo', [0, 100, f'track_id:{track_id}', 'tags:w'],
+            'songinfo',
+            [0, 100, f'track_id:{track_id}', 'tags:w'],
             timeout=timeout,
         )
         if not result:
@@ -1173,22 +1150,13 @@ def get_lyrics(track_id: str, timeout: float = 2.5):
         logger.debug('Lyrion get_lyrics failed for %s: %s', track_id, exc)
         return None
 
+
 def create_instant_playlist(playlist_name, item_ids):
-    """Creates a new instant playlist on Lyrion for a specific user, with batching."""
     final_playlist_name = f"{playlist_name.strip()}_instant"
     return _create_playlist_batched(final_playlist_name, item_ids)
 
 
 def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
-    """Cron-only upsert for Lyrion.
-
-    Lyrion's `_add_to_playlist` is destructive — it deletes-and-resaves under the original
-    name and may assign a new numeric id. True ID preservation isn't possible with the
-    current primitives, so when the playlist exists we delete it and recreate with the
-    same name. Lyrion clients track playlists by name, so the unstable numeric id rarely
-    matters; the important invariant is that we don't end up with two playlists sharing
-    a name (which is why we bail when delete fails instead of forging ahead).
-    """
     if not item_ids:
         return None
 

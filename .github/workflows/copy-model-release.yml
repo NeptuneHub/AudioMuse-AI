@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           notes=$(cat <<EOF
-          Lean model release — only the assets the Docker images actually download.
+          Lean model release - only the assets the Docker images actually download.
 
           Copied verbatim from \`$SOURCE_TAG\`:
 
@@ -124,7 +124,7 @@ jobs:
           EOF
           )
           gh release create "$NEW_TAG" \
-            --title "Model $NEW_TAG (lean — only used models)" \
+            --title "Model $NEW_TAG (lean - only used models)" \
             --notes "$notes" \
             models/*
           echo "Created release $NEW_TAG:"

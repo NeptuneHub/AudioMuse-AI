@@ -18,6 +18,20 @@ curl -v \
   -d '{}'
 ```
 
+## Session validation and revocation
+
+Every request authenticated with the JWT cookie is also validated against the `audiomuse_users` table:
+
+- The user in the token must still exist; deleting a user immediately terminates their active sessions.
+- Changing a user's password immediately invalidates every session token issued before the change (the token's issue time is compared with the `password_changed_at` column). When you change your own password, the response sets a fresh cookie so your current session keeps working; other devices are logged out.
+- The role stored in the database wins over the role claim inside the token, so a stale token can never keep more privileges than the account currently has.
+
+## Confirming sensitive operations
+
+Creating a user, changing any password (your own, or - as an admin - another user's), and deleting a user require the acting user to re-enter their own password. The Users page asks for it in a dedicated confirmation field; API callers send it as `current_password` in the JSON body of `POST /api/users`, `PUT /api/users/<id>/password` and `DELETE /api/users/<id>`.
+
+Bearer-token (`API_TOKEN`) callers are exempt from `current_password`: the token itself is the credential and it is not tied to an account password.
+
 # Password reset
 
 If you have lost access to all admin accounts, reset admin access by deleting both the legacy admin config entries and the admin rows in `audiomuse_users`.
@@ -51,7 +65,7 @@ If another admin still has access, do not use this procedure; the other admin ca
 
 ## HTTPS
 
-To have a more secure Authentication running everything over HTTPS is needed to avoid that your password go in plain text. This part is something that relay from your infrastracture and not from AudioMuse-AI itself. For example if you're deploy everything on K3S thatr come with Traefik integrated, and you have certmanager with let's encrypt, you can add an IngressRoute like this:
+To have a more secure Authentication running everything over HTTPS is needed to avoid that your password go in plain text. This part is something that relay from your infrastructure and not from AudioMuse-AI itself. For example if you're deploy everything on K3S thatr come with Traefik integrated, and you have certmanager with let's encrypt, you can add an IngressRoute like this:
 
 ```
 apiVersion: traefik.io/v1alpha1
@@ -74,6 +88,6 @@ spec:
 
 ## Plugin 
 
-> Actually Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support
+> Navidrome plugin support it from release v7
 > 
-> Navidrome plugin support it from release v7 
+> Jellyfin plugin `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for jellyfin 10.11) already added this support

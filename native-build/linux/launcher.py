@@ -1,21 +1,21 @@
-"""Standalone Linux entry point (the PyInstaller entry script).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Linux counterpart of ``native-build/macos/launcher.py``. There is no native menu-bar agent
-here (rumps/AppKit are macOS-only); instead the frozen binary is a small
-multi-call launcher:
+"""Entry point and role dispatcher for the Linux standalone build.
 
-* ``AudioMuse-AI`` (no args) or ``AudioMuse-AI start`` -- become the single
-  foreground supervisor: start embedded PostgreSQL + Redis, the Flask web UI and
-  the RQ workers, open the browser, and stay alive until told to stop (SIGINT /
-  SIGTERM, or ``AudioMuse-AI stop`` from another terminal). This is what the
-  desktop launcher (.desktop) runs.
-* ``AudioMuse-AI stop`` -- signal the running instance to shut everything down.
-* ``AudioMuse-AI status`` -- print whether the stack is up.
-* ``AudioMuse-AI open`` -- open the web UI in the browser (starts the stack first
-  if it is not already running).
-* ``AudioMuse-AI --role=<x>`` -- re-invocation by the supervisor to run one child
-  service (the web server, an RQ worker, the janitor or the restart listener),
-  reusing the existing entry points unchanged via runpy.
+Single PyInstaller executable that acts either as the top-level supervisor
+(default, holding a single-instance lock and opening the web UI) or, when
+invoked with ``--role=``, as one of the child processes it re-spawns: the
+Flask/waitress server or an RQ worker/janitor/restart-listener.
+
+Main Features:
+* Runs Flask via waitress or launches a named RQ role in-process.
+* Enforces single-instance startup with an flock-based supervisor lock.
 """
 
 import os
@@ -47,6 +47,7 @@ def _command_from_argv():
 def _run_flask():
     import waitress
     import app as app_module
+
     waitress.serve(
         app_module.app,
         host="0.0.0.0",
@@ -58,10 +59,6 @@ def _run_flask():
 
 
 def _run_role(role):
-    # Strip the launcher's own ``--role=`` flag from argv before handing control
-    # to a child module: the reused entry points (rq_worker, restart_listener,
-    # ...) don't parse argv today, but a future argparse/click in any of them
-    # would otherwise choke on the unrecognized flag.
     sys.argv = [a for a in sys.argv if not a.startswith("--role=")]
     if role == "flask":
         _run_flask()
@@ -73,32 +70,20 @@ def _run_role(role):
         runpy.run_module("rq_janitor", run_name="__main__")
     elif role == "restart-listener":
         import restart_listener
+
         restart_listener.main()
     else:
         raise SystemExit(f"Unknown role: {role}")
 
 
-# Held for the life of the supervisor process so the flock is not released early.
 _INSTANCE_LOCK = None
 
 
 def _acquire_single_instance_lock(paths):
-    """Return True if we are the only supervisor (and hold the lock).
-
-    A second live supervisor is catastrophic: both manage the *same* embedded
-    Postgres/Redis, and a newly started ``redis-server`` unlinks the existing
-    unix socket out from under the running stack, knocking every worker offline.
-    An ``flock`` guarantees only one supervisor runs; the OS releases it if the
-    holder dies, so a crash-relaunch cleanly takes over (and reaps the orphans
-    on boot). The held FD's file also stores the supervisor PID so ``stop`` can
-    find it.
-    """
     global _INSTANCE_LOCK
     import fcntl
+
     lock_path = paths.supervisor_lock_path()
-    # Open with "a+" (not "w"): "w" truncates on open, which would erase the live
-    # holder's PID from the file before we even try the lock. Only rewrite the
-    # PID once we actually own the lock.
     fh = open(lock_path, "a+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -109,25 +94,24 @@ def _acquire_single_instance_lock(paths):
     fh.truncate(0)
     fh.write(str(os.getpid()))
     fh.flush()
-    _INSTANCE_LOCK = fh  # keep the handle (and thus the lock) alive
+    _INSTANCE_LOCK = fh
     return True
 
 
 def _running_supervisor_pid(paths):
-    """PID of the live supervisor, or None. Verifies the flock is actually held."""
     import fcntl
+
     lock_path = paths.supervisor_lock_path()
     if not os.path.exists(lock_path):
         return None
     try:
         with open(lock_path, "r") as fh:
             try:
-                # If we *can* take the lock, nobody holds it -> not running.
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
                 return None
             except OSError:
-                pass  # locked by a live supervisor
+                pass
             fh.seek(0)
             pid_text = fh.read().strip()
         return int(pid_text) if pid_text else None
@@ -136,8 +120,6 @@ def _running_supervisor_pid(paths):
 
 
 def _open_browser():
-    # Prefer xdg-open (respects the user's default browser / desktop session);
-    # fall back to Python's webbrowser if it is missing.
     try:
         subprocess.Popen(
             ["xdg-open", WEB_URL],
@@ -158,7 +140,6 @@ def _run_supervisor(open_browser=True):
     from linux.supervisor import ProcessSupervisor
 
     if not _acquire_single_instance_lock(paths):
-        # Already running -- just surface the UI.
         print("AudioMuse-AI is already running at %s" % WEB_URL)
         if open_browser:
             _open_browser()
@@ -178,13 +159,10 @@ def _run_supervisor(open_browser=True):
         if open_browser:
             _open_browser()
 
-    def _on_error(exc):  # startup already logged; surface a hint too
+    def _on_error(exc):
         print("AudioMuse-AI failed to start: %s" % exc, file=sys.stderr)
         stop_event.set()
 
-    # The supervisor owns the boot thread so stop_all() can join it before
-    # tearing down -- a SIGTERM racing an in-progress boot must not leave the
-    # boot thread spawning children after the teardown sweep.
     supervisor.start_in_background(on_ready=_on_ready, on_error=_on_error)
 
     try:
@@ -197,6 +175,7 @@ def _run_supervisor(open_browser=True):
 
 def _cmd_stop():
     from linux import paths
+
     pid = _running_supervisor_pid(paths)
     if pid is None:
         print("AudioMuse-AI is not running.")
@@ -209,7 +188,6 @@ def _cmd_stop():
     except OSError as exc:
         print("Could not stop AudioMuse-AI (pid %s): %s" % (pid, exc), file=sys.stderr)
         return 1
-    # Give the supervisor a moment to tear the stack down cleanly.
     for _ in range(60):
         if _running_supervisor_pid(paths) is None:
             break
@@ -220,6 +198,7 @@ def _cmd_stop():
 
 def _cmd_status():
     from linux import paths
+
     pid = _running_supervisor_pid(paths)
     if pid is None:
         print("AudioMuse-AI: stopped")
@@ -230,11 +209,8 @@ def _cmd_status():
 
 def _cmd_open():
     from linux import paths
+
     if _running_supervisor_pid(paths) is None:
-        # Not running yet: start it in the foreground (this call becomes the
-        # supervisor and opens the browser once it is up). Honor
-        # AUDIOMUSE_OPEN_BROWSER like `start` does, so a headless/service
-        # invocation does not try to spawn a browser.
         open_browser = os.environ.get("AUDIOMUSE_OPEN_BROWSER", "1") != "0"
         return _run_supervisor(open_browser=open_browser)
     _open_browser()
@@ -242,17 +218,6 @@ def _cmd_open():
 
 
 def _refuse_root_for_stack():
-    """Abort (with guidance) if asked to boot the stack as root.
-
-    The embedded PostgreSQL (pgserver) takes a different, fragile code path when
-    ``euid == 0``: it creates a synthetic ``pgserver`` system user and runs
-    ``initdb`` through a setuid transition, which SIGSEGVs in the frozen bundle.
-    That path is never exercised by the build's smoke test (it runs as a normal
-    user), so a root launch fails opaquely deep inside ``initdb``. This whole
-    build is designed for a normal user anyway (per-user data dir under
-    ``~/.local/share/AudioMuse-AI`` and a ``systemctl --user`` service), so refuse
-    root early with a clear message instead of crashing in Postgres.
-    """
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         print(
             "AudioMuse-AI must not be run as root.\n"
@@ -269,6 +234,7 @@ def main():
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
+
         sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
 
     role = _role_from_argv()

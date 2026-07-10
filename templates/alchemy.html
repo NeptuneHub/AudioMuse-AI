@@ -156,7 +156,7 @@
         </fieldset>
 
         <div class="alchemy-controls task-buttons">
-            <button id="run-alchemy" type="submit">Run Alchemy</button>
+            <button id="run-alchemy" type="submit" class="btn btn-primary btn-block">Run Alchemy</button>
             <button id="add-row" type="button">Add Another Item</button>
         </div>
     </form>
@@ -180,7 +180,7 @@
                 <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My Alchemy Mix">
             </div>
         </div>
-        <button type="submit" style="background-color: var(--color-success);">Create Playlist on Media Server</button>
+        <button type="submit" class="btn btn-success btn-block">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>
@@ -226,7 +226,7 @@
     </div>
     <div style="display:flex; gap:0.5rem; margin-top:1rem;">
         <button type="button" id="save-radios-btn" class="btn btn-primary" style="flex:1;" disabled>Save</button>
-        <button type="button" id="create-radio-playlists-btn" class="btn" style="flex:1; background-color: var(--color-success);">Create Radio Playlists</button>
+        <button type="button" id="create-radio-playlists-btn" class="btn btn-success btn-block" style="flex:1;">Create Radio Playlists</button>
     </div>
 </section>
 
@@ -454,7 +454,7 @@
                 }
             });
 
-            // Mood sunburst — init when mood type is set (triggered lazily)
+            // Mood sunburst - init when mood type is set (triggered lazily)
             let _sbInitialized = false;
             const _initSunburstOnce = () => {
                 if (_sbInitialized) return;
@@ -531,7 +531,7 @@
                                 return;
                             }
                             idEl.value = track.item_id;
-                            selectedSongNameEl.textContent = `${track.title} — ${track.author}`;
+                            selectedSongNameEl.textContent = `${track.title} - ${track.author}`;
                             resultsEl.classList.add('hidden');
                         });
                         resultsEl.appendChild(itemDiv);
@@ -843,17 +843,17 @@
                         const plotEl = document.getElementById('alchemy-plot');
                         if (plotEl && (data.centroid_2d || (data.results && data.results.length) || (data.filtered_out && data.filtered_out.length))) {
                             // Build datasets
-                            const fullLabel = (item) => (item.title ? `${item.title} — ${item.author || ''}` : item.item_id);
-                            const kept = (data.results || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
-                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
+                            const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
+                            const kept = (data.results || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
+                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
                             
                             // Separate songs from artist components
-                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -961,12 +961,10 @@
                                         tooltip: {
                                             callbacks: {
                                                 label: (ctx) => {
-                                                    const label = ctx.raw.label || '';
-                                                    const parts = label.split(' — ');
-                                                    if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' — ')}`];
+                                                    if (ctx.raw.title) {
+                                                        return [`Title: ${ctx.raw.title}`, `Artist: ${ctx.raw.author || ''}`];
                                                     }
-                                                    return label;
+                                                    return ctx.raw.label || '';
                                                 }
                                             },
                                             backgroundColor: '#1F2937',
@@ -1019,17 +1017,17 @@
                      try {
                         const plotEl = document.getElementById('alchemy-plot');
                         if (plotEl && (data.centroid_2d || (data.filtered_out && data.filtered_out.length) || (data.add_points && data.add_points.length) || (data.sub_points && data.sub_points.length))) {
-                            const fullLabel = (item) => (item.title ? `${item.title} — ${item.author || ''}` : item.item_id);
-                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r) }));
+                            const fullLabel = (item) => (item.title ? `${item.title} - ${item.author || ''}` : item.item_id);
+                            const removed = (data.filtered_out || []).map(r => ({ x: r.embedding_2d ? r.embedding_2d[0] : 0, y: r.embedding_2d ? r.embedding_2d[1] : 0, label: fullLabel(r), title: r.title || '', author: r.author || '' }));
                             const kept = [];
                             const add_centroid = data.add_centroid_2d ? { x: data.add_centroid_2d[0], y: data.add_centroid_2d[1], label: 'ADD Centroid' } : null;
                             const subtract_centroid = data.subtract_centroid_2d ? { x: data.subtract_centroid_2d[0], y: data.subtract_centroid_2d[1], label: 'SUBTRACT Centroid' } : null;
                             
                             // Separate songs from artist components
-                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
-                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p) }));
+                            const addSongs = (data.add_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const addArtistComponents = (data.add_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subSongs = (data.sub_points || []).filter(p => !p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
+                            const subArtistComponents = (data.sub_points || []).filter(p => p.is_artist_component).map(p => ({ x: p.embedding_2d ? p.embedding_2d[0] : 0, y: p.embedding_2d ? p.embedding_2d[1] : 0, label: fullLabel(p), title: p.title || '', author: p.author || '' }));
 
                             if (window._alchemyChart) {
                                 window._alchemyChart.destroy();
@@ -1136,12 +1134,10 @@
                                         tooltip: {
                                             callbacks: {
                                                 label: (ctx) => {
-                                                    const label = ctx.raw.label || '';
-                                                    const parts = label.split(' — ');
-                                                    if (parts.length > 1) {
-                                                        return [`Title: ${parts[0]}`, `Artist: ${parts.slice(1).join(' — ')}`];
+                                                    if (ctx.raw.title) {
+                                                        return [`Title: ${ctx.raw.title}`, `Artist: ${ctx.raw.author || ''}`];
                                                     }
-                                                    return label;
+                                                    return ctx.raw.label || '';
                                                 }
                                             },
                                             backgroundColor: '#1F2937',
@@ -1398,7 +1394,7 @@
                     showMessageBox('Radio Saved', `Saved ${saved} radio(s).`);
                 } else {
                     if (saved > 0) await loadRadios();
-                    showMessageBox('Radio', `Saved ${saved} radio(s). Problems — ${problems.join('; ')}`);
+                    showMessageBox('Radio', `Saved ${saved} radio(s). Problems - ${problems.join('; ')}`);
                 }
             } finally {
                 updateSaveRadiosState();

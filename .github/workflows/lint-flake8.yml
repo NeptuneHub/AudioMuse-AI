@@ -27,5 +27,11 @@ jobs:
         pip install flake8==7.3.0
 
     - name: Run flake8 static analysis
+      # E9 (syntax errors), all of pyflakes (F: undefined names, unused imports,
+      # unused locals, %-format errors, f-strings without placeholders, ...), plus
+      # high-value correctness rules: W605 invalid escape sequence, E711-E714
+      # None/True/membership comparisons, E722 bare except, E401 multiple imports
+      # on one line. Bulk formatting rules (E501 line length, W291/W293 trailing
+      # whitespace, E3xx blank lines) are intentionally left out.
       run: |
-        flake8 . --count --select=E9,F63,F7,F82,F401,F811 --show-source --statistics
+        flake8 . --count --select=E9,F,W605,E711,E712,E713,E714,E722,E401 --show-source --statistics

@@ -1,11 +1,21 @@
-"""Regression tests locking in SQL parameterization at the call sites.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-SQL is parameterized today; these tests fail loudly if a future refactor ever
-interpolates a user-controlled value into the query string. They assert that
-the user string is passed in the params tuple and never appears inside the
-executed SQL text. The heavy ``tasks.ivf_manager`` import is stubbed so the
-request-facing endpoint checks stay fast and hermetic.
+"""SQL injection resistance via parameterized queries on id endpoints.
+
+Verifies that item-id endpoints and the AI tool-impl IN clause pass ids as
+bound query parameters rather than interpolating them into the SQL string.
+
+Main Features:
+* Score, embedding and waveform endpoints pass the id as a bound param
+* The song-similarity IN clause is parameterized with placeholders
 """
+
 import importlib.util
 import os
 import sys
@@ -38,6 +48,7 @@ def _import_app_external():
 
 def _import_app_waveform():
     import app_waveform
+
     return app_waveform
 
 
@@ -45,6 +56,8 @@ def _recording_db():
     cur = MagicMock()
     cur.fetchone.return_value = None
     cur.fetchall.return_value = []
+    cur.__enter__ = lambda self: self
+    cur.__exit__ = lambda self, *a: None
     db = MagicMock()
     db.cursor.return_value = cur
     return db, cur
@@ -53,6 +66,7 @@ def _recording_db():
 class TestItemIdEndpointsParameterized:
     def test_score_endpoint_passes_id_as_param(self):
         import app_helper
+
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
@@ -69,6 +83,7 @@ class TestItemIdEndpointsParameterized:
 
     def test_embedding_endpoint_passes_id_as_param(self):
         import app_helper
+
         ext = _import_app_external()
         app = Flask(__name__)
         app.register_blueprint(ext.external_bp)
@@ -111,7 +126,8 @@ class TestToolImplInClauseParameterized:
                 stubs[parent] = types.ModuleType(parent)
         with patch.dict(sys.modules, stubs):
             spec = importlib.util.spec_from_file_location(
-                'tasks.ai.tool_impl', _repo_path('tasks', 'ai', 'tool_impl.py'))
+                'tasks.ai.tool_impl', _repo_path('tasks', 'ai', 'tool_impl.py')
+            )
             mod = importlib.util.module_from_spec(spec)
             sys.modules['tasks.ai.tool_impl'] = mod
             spec.loader.exec_module(mod)
@@ -125,8 +141,7 @@ class TestToolImplInClauseParameterized:
         cur = MagicMock()
         cur.__enter__ = lambda self: self
         cur.__exit__ = lambda self, *a: None
-        cur.fetchone.return_value = {
-            'item_id': seed_id, 'title': 'T', 'author': 'A', 'album': ''}
+        cur.fetchone.return_value = {'item_id': seed_id, 'title': 'T', 'author': 'A', 'album': ''}
         cur.fetchall.return_value = [
             {'item_id': 'id-a', 'title': 'Ta', 'author': 'Aa', 'album': ''},
             {'item_id': 'id-b', 'title': 'Tb', 'author': 'Ab', 'album': ''},
@@ -136,13 +151,16 @@ class TestToolImplInClauseParameterized:
 
         fake_vm = types.ModuleType('tasks.ivf_manager')
         fake_vm.find_nearest_neighbors_by_id = MagicMock(
-            return_value=[{'item_id': s} for s in similar_ids + [seed_id]])
+            return_value=[{'item_id': s} for s in similar_ids + [seed_id]]
+        )
         vm_stubs = {'tasks.ivf_manager': fake_vm}
         if 'tasks' not in sys.modules:
             vm_stubs['tasks'] = types.ModuleType('tasks')
 
-        with patch.object(tool_impl, 'get_db_connection', return_value=conn), \
-                patch.dict(sys.modules, vm_stubs):
+        with (
+            patch.object(tool_impl, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, vm_stubs),
+        ):
             result = tool_impl._song_similarity_api_sync('Song', 'Artist', 2)
 
         assert 'songs' in result

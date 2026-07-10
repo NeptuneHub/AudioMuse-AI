@@ -9,34 +9,6 @@
         padding: 1rem;
         margin-bottom: 1.5rem;
     }
-    .active-button {
-        background-color: var(--color-primary) !important;
-        border-color: var(--color-primary) !important;
-        color: white !important;
-    }
-    .active-button:hover {
-        background-color: var(--color-primary-hover) !important;
-        border-color: var(--color-primary-hover) !important;
-    }
-    .active-button:disabled {
-        background-color: var(--text-muted) !important;
-        border-color: var(--text-muted) !important;
-        cursor: not-allowed;
-    }
-    .danger-button {
-        background-color: var(--color-danger) !important;
-        border-color: var(--color-danger) !important;
-        color: white !important;
-    }
-    .danger-button:hover {
-        background-color: var(--color-danger-hover) !important;
-        border-color: var(--color-danger-hover) !important;
-    }
-    .danger-button:disabled {
-        background-color: var(--text-muted) !important;
-        border-color: var(--text-muted) !important;
-        cursor: not-allowed;
-    }
 </style>
 {% endblock %}
 
@@ -55,8 +27,8 @@
         <p>Run a scan to identify and automatically remove albums that exist in the database but are no longer present on your media server.</p>
 
         <div class="task-buttons">
-            <button id="start-clean-btn" class="active-button">Start Database Cleaning</button>
-            <button id="cancel-clean-btn" class="danger-button" style="display: none;" disabled>Cancel Cleaning</button>
+            <button id="start-clean-btn" class="btn btn-primary btn-block">Start Database Cleaning</button>
+            <button id="cancel-clean-btn" class="btn btn-danger btn-block" style="display: none;" disabled>Cancel Cleaning</button>
         </div>
 
         <!-- Task Status Display -->

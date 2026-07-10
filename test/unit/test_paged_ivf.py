@@ -1,8 +1,23 @@
-"""Unit tests for the disk-paged IVF format and the byte-bounded cell cache.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-These exercise the pure-Python pieces (no database): the directory and cell
-binary round-trips and the LRU cache's eviction invariant.
+"""Disk-paged IVF index format, distance math and cell caches.
+
+Exercises the on-disk directory/cell serialization, quantized distance kernels
+and the L1/global cell caches with their byte bounds, eviction and idle drops.
+
+Main Features:
+* Directory and cell round-trips preserve ids, flags, dtype and record size
+* i8/f16 quantized cell distances match numpy cosine/euclidean within tolerance
+* Cell grouping and over-cap splitting stay within the configured cap
+* Global cache honors byte bounds, per-index invalidation and idle mmap drops
 """
+
 import os
 import sys
 import threading
@@ -26,6 +41,7 @@ from tasks.paged_ivf import (
     _bounded_cell_groups,
     _split_cells_over_cap,
 )
+from tasks import ivf_quant as quant
 
 
 def test_directory_round_trip():
@@ -37,11 +53,12 @@ def test_directory_round_trip():
     item_ids = [f"item-{i}-é" for i in range(n_items)]
 
     blob = pack_directory(centroids, id2cell, item_ids, dim, "angular")
-    c2, id2cell2, ids2, dim2, metric2, normalized2 = unpack_directory(blob)
+    c2, id2cell2, ids2, dim2, metric2, normalized2, storage_dtype2 = unpack_directory(blob)
 
     assert dim2 == dim
     assert metric2 == "angular"
     assert normalized2 is False
+    assert storage_dtype2 == quant.DTYPE_F32
     assert ids2 == item_ids
     np.testing.assert_array_equal(id2cell2, id2cell)
     np.testing.assert_allclose(c2, centroids, rtol=0, atol=0)
@@ -56,13 +73,30 @@ def test_directory_normalized_flag_round_trip():
     item_ids = [f"id-{i}" for i in range(n_items)]
 
     blob = pack_directory(centroids, id2cell, item_ids, dim, "angular", normalized=True)
-    _c, _i, _ids, _dim, metric, normalized = unpack_directory(blob)
+    _c, _i, _ids, _dim, metric, normalized, _sd = unpack_directory(blob)
     assert metric == "angular"
     assert normalized is True
 
     blob_default = pack_directory(centroids, id2cell, item_ids, dim, "angular")
-    *_rest, normalized_default = unpack_directory(blob_default)
+    _c2, _i2, _ids2, _dim2, _metric2, normalized_default, _sd2 = unpack_directory(blob_default)
     assert normalized_default is False
+
+
+def test_directory_storage_dtype_round_trip():
+    dim = 6
+    nlist = 3
+    n_items = 4
+    centroids = np.random.randn(nlist, dim).astype(np.float32)
+    id2cell = np.zeros(n_items, dtype=np.uint32)
+    item_ids = [f"id-{i}" for i in range(n_items)]
+
+    for name in ("f32", "f16", "i8"):
+        code = quant.dtype_code(name)
+        blob = pack_directory(
+            centroids, id2cell, item_ids, dim, "angular", normalized=True, storage_dtype=code
+        )
+        *_rest, storage_dtype = unpack_directory(blob)
+        assert storage_dtype == code, f"{name} dtype did not round-trip"
 
 
 def test_cell_round_trip():
@@ -74,6 +108,96 @@ def test_cell_round_trip():
     ids2, vecs2 = unpack_cell(blob, dim)
     np.testing.assert_array_equal(ids2, ids)
     np.testing.assert_allclose(vecs2, vecs, rtol=0, atol=0)
+
+
+def test_cell_round_trip_f16_preserves_ids_and_record_size():
+    dim = 8
+    n = 7
+    code = quant.DTYPE_F16
+    ids = np.array([3, 1, 9, 4, 2, 8, 0], dtype=np.int32)
+    vecs = np.random.randn(n, dim).astype(np.float32)
+    blob = pack_cell(ids, vecs, code)
+    assert len(blob) == n * (4 + dim * 2)
+    ids2, vecs2 = unpack_cell(blob, dim, code)
+    assert vecs2.dtype == np.float16
+    np.testing.assert_array_equal(ids2, ids)
+    np.testing.assert_allclose(vecs2.astype(np.float32), vecs, rtol=0, atol=1e-2)
+
+
+def test_cell_round_trip_i8_quantizes_unit_vectors_within_tolerance():
+    dim = 64
+    n = 12
+    code = quant.DTYPE_I8
+    rng = np.random.default_rng(0)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    ids = np.arange(n, dtype=np.int32)
+    blob = pack_cell(ids, vecs, code)
+    assert len(blob) == n * (4 + dim)
+    ids2, vecs2 = unpack_cell(blob, dim, code)
+    assert vecs2.dtype == np.int8
+    np.testing.assert_array_equal(ids2, ids)
+    decoded = np.vstack([quant.decode_row(vecs2[i], code) for i in range(n)])
+    np.testing.assert_allclose(decoded, vecs, atol=1.5 / 127.0)
+
+
+def test_quant_cell_distances_i8_matches_numpy_cosine():
+    dim = 128
+    n = 200
+    rng = np.random.default_rng(1)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    q = rng.standard_normal(dim).astype(np.float32)
+    qn = q / np.linalg.norm(q)
+
+    ref = (1.0 - np.clip(vecs @ qn, -1.0, 1.0)).astype(np.float32)
+
+    code = quant.DTYPE_I8
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "angular")
+    got = quant.cell_distances("angular", code, qp, enc, normalized=True)
+
+    assert got.shape == (n,)
+    assert float(np.max(np.abs(got - ref))) < 0.03
+
+
+def test_quant_cell_distances_f16_euclidean_near_lossless():
+    dim = 48
+    n = 150
+    rng = np.random.default_rng(2)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    q = rng.standard_normal(dim).astype(np.float32)
+
+    diffs = vecs - q[None, :]
+    ref = np.sqrt(np.einsum("ij,ij->i", diffs, diffs)).astype(np.float32)
+
+    code = quant.effective_code(quant.DTYPE_I8, "euclidean")
+    assert code == quant.DTYPE_F16
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "euclidean")
+    got = quant.cell_distances("euclidean", code, qp, enc, normalized=False)
+
+    assert got.shape == (n,)
+    np.testing.assert_allclose(got, ref, rtol=0, atol=5e-2)
+
+
+def test_quant_numpy_fallback_matches_numkong(monkeypatch):
+    dim = 64
+    n = 100
+    rng = np.random.default_rng(3)
+    vecs = rng.standard_normal((n, dim)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    q = rng.standard_normal(dim).astype(np.float32)
+
+    code = quant.DTYPE_I8
+    enc = quant.encode_vectors(vecs, code)
+    qp = quant.prepare_query(q, code, "angular")
+
+    primary = quant.cell_distances("angular", code, qp, enc, normalized=True)
+    monkeypatch.setattr(quant, "HAVE_NUMKONG", False)
+    fallback = quant.cell_distances("angular", code, qp, enc, normalized=True)
+
+    np.testing.assert_allclose(primary, fallback, rtol=0, atol=2e-3)
 
 
 def test_cell_cache_byte_bound_holds():
@@ -175,7 +299,9 @@ def test_split_cells_over_cap_noop_when_under():
         (0, np.array([0, 1], dtype=np.int32), np.random.randn(2, dim).astype(np.float32)),
         (1, np.array([2], dtype=np.int32), np.random.randn(1, dim).astype(np.float32)),
     ]
-    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, cells, dim, 100 * record)
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(
+        centroids, id2cell, cells, dim, 100 * record
+    )
     assert out_c.shape[0] == 2
     assert len(out_cells) == 2
     np.testing.assert_array_equal(out_id2cell, id2cell)
@@ -192,7 +318,9 @@ def test_split_cells_over_cap_splits_and_stays_under_cap():
     centroids = np.random.randn(1, dim).astype(np.float32)
     id2cell = np.zeros(n, dtype=np.uint32)
 
-    out_c, out_id2cell, out_cells = _split_cells_over_cap(centroids, id2cell, [(0, ids, vecs)], dim, cap_bytes)
+    out_c, out_id2cell, out_cells = _split_cells_over_cap(
+        centroids, id2cell, [(0, ids, vecs)], dim, cap_bytes
+    )
 
     assert all(c.shape[0] <= cap_records for _cid, c, _v in out_cells)
     assert all(c.shape[0] * record <= cap_bytes for _cid, c, _v in out_cells)
@@ -301,6 +429,163 @@ def test_global_cache_no_idle_drop_when_disabled():
     time.sleep(0.3)
     assert cache.resident_bytes() > 0
     assert cache._timer_thread is None
+
+
+import mmap as _mmap_mod
+
+
+def _vmrss_kb():
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        return None
+    return None
+
+
+@pytest.mark.skipif(
+    not hasattr(_mmap_mod, "MADV_DONTNEED") or _vmrss_kb() is None,
+    reason="MADV_DONTNEED / VmRSS only available on Linux",
+)
+def test_drop_resident_mmap_pages_reduces_rss(tmp_path):
+    import tasks.paged_ivf as pv
+
+    size = 96 * 1024 * 1024
+    path = tmp_path / "cells.bin"
+    with open(path, "wb") as f:
+        block = b"\xab" * (4 * 1024 * 1024)
+        for _ in range(size // len(block)):
+            f.write(block)
+
+    mm = np.memmap(str(path), dtype=np.uint8, mode="r")
+    _ = int(mm.sum(dtype=np.int64))
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub._mmap = mm
+    pv._LIVE_INDEXES.add(stub)
+    try:
+        rss_before = _vmrss_kb()
+        dropped = pv._drop_resident_mmap_pages()
+        rss_after = _vmrss_kb()
+    finally:
+        try:
+            pv._LIVE_INDEXES.discard(stub)
+        except Exception:
+            pass
+
+    assert dropped >= 1
+    assert (rss_before - rss_after) > 30_000, (
+        f"expected >30MB RSS drop, got {rss_before - rss_after} KB"
+    )
+
+
+def test_drop_pages_windows_routing(tmp_path, monkeypatch):
+    import tasks.paged_ivf as pv
+
+    path = tmp_path / "wcells.bin"
+    with open(path, "wb") as f:
+        f.write(b"\xcd" * (2 * 1024 * 1024))
+
+    def make_stub():
+        mm = np.memmap(str(path), dtype=np.uint8, mode="r")
+        stub = type("S", (), {})()
+        stub._mmap = mm
+        return stub, mm
+
+    monkeypatch.setattr(pv.platform, "system", lambda: "Windows")
+
+    stub, mm = make_stub()
+    calls = []
+
+    def unlock_not_locked(addr, size):
+        calls.append((addr, size))
+        return 0
+
+    monkeypatch.setattr(
+        pv, "_win_virtual_unlock", lambda: (unlock_not_locked, lambda: pv._WIN_ERROR_NOT_LOCKED)
+    )
+    assert pv._drop_resident_mmap_pages([stub]) == 1
+    assert calls == [(int(mm.ctypes.data), int(mm.nbytes))]
+
+    stub2, _mm2 = make_stub()
+    monkeypatch.setattr(pv, "_win_virtual_unlock", lambda: ((lambda addr, size: 0), lambda: 5))
+    assert pv._drop_resident_mmap_pages([stub2]) == 0
+
+
+def test_mmap_idle_worker_drops_pages_and_runs_callbacks(monkeypatch):
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 1)
+    fired = {"n": 0}
+
+    def cb():
+        fired["n"] += 1
+
+    pv.register_idle_callback(cb)
+    try:
+        pv._note_mmap_activity()
+        assert pv._MMAP_IDLE_THREAD is not None
+
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline and fired["n"] == 0:
+            time.sleep(0.1)
+
+        assert fired["n"] >= 1, "idle watcher should have run idle callbacks"
+        assert pv._MMAP_IDLE_THREAD is None, "watcher should exit after firing"
+    finally:
+        pv.unregister_idle_callback(cb)
+
+
+def test_note_mmap_activity_noop_when_disabled(monkeypatch):
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 0)
+    monkeypatch.setattr(pv, "_MMAP_IDLE_THREAD", None)
+    pv._note_mmap_activity()
+    assert pv._MMAP_IDLE_THREAD is None
+
+
+def test_idle_watcher_drops_only_the_idle_index(monkeypatch):
+    import tasks.paged_ivf as pv
+
+    monkeypatch.setattr(pv.config, "IVF_DISK_CACHE_IDLE_SECONDS", 2)
+
+    captured = []
+
+    def fake_drop(indexes=None):
+        batch = list(indexes) if indexes is not None else None
+        captured.append(batch)
+        return len(batch) if batch else 0
+
+    monkeypatch.setattr(pv, "_drop_resident_mmap_pages", fake_drop)
+
+    class _Stub:
+        def __init__(self):
+            self._mmap = object()
+            self._mmap_pages_dropped = False
+            self._last_mmap_access = time.monotonic()
+
+    hot = _Stub()
+    idle = _Stub()
+    idle._last_mmap_access = time.monotonic() - 100
+    pv._LIVE_INDEXES.add(hot)
+    pv._LIVE_INDEXES.add(idle)
+    try:
+        pv._note_mmap_activity(hot)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not captured:
+            time.sleep(0.1)
+        assert captured, "watcher never dropped anything"
+        assert captured[0] == [idle], "first drop must target only the idle index"
+        assert idle._mmap_pages_dropped is True
+    finally:
+        pv._LIVE_INDEXES.discard(hot)
+        pv._LIVE_INDEXES.discard(idle)
 
 
 if __name__ == "__main__":

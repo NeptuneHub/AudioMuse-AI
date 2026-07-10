@@ -31,7 +31,7 @@
 </head>
 <body>
     <div class="page-container">
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar" aria-label="Main navigation">
             <nav>
                 {% with %}
                 {% include 'sidebar_navi.html' %}
@@ -40,7 +40,7 @@
         </aside>
 
         <div class="main-content" id="main-content">
-            <button class="menu-toggle">&#9776;</button>
+            <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
             <div class="container">
                 {% block content %}
                     {# content from template will be set here #}

@@ -40,7 +40,7 @@ body:
       value: |
         1. **Docker Image** (tag & SHA256): e.g. `devel@2c541573eb15e42e51bdf176700132db04d78ade991ddc7fef9ccd5ee9c161df`
         2. **System Specs** (Arch, OS, CPU): e.g. `x86, TrueNAS SCALE (Debian), Ryzen 5600G`
-        3. **Albums/Tracks Analyzed**: e.g. `250 albums → 2 138 tracks`
+        3. **Albums/Tracks Analyzed**: e.g. `250 albums -> 2 138 tracks`
         4. **Analysis Duration**: e.g. `2 h 37 m`
     validations:
       required: true

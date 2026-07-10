@@ -113,7 +113,7 @@ services:
 # Using Docker Model Runner (DMR)
 # - Make sure your Docker Engine version supports the AI features and that the docker-model-plugin is installed.
 # - Follow Docker's setup guide: https://docs.docker.com/ai/model-runner/get-started/#docker-engine
-# - Once DMR is configured, you can download and run AI models locally just like Docker images — no code changes to this compose file are required.
+# - Once DMR is configured, you can download and run AI models locally just like Docker images - no code changes to this compose file are required.
 # - For model integration with docker-compose, see: https://docs.docker.com/ai/compose/models-and-compose/
 models:
   llm:

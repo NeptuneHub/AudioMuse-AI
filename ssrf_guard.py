@@ -1,21 +1,29 @@
-# ssrf_guard.py
-"""SSRF guard for user-supplied outbound URLs.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-A dependency-free leaf module (standard library only), so any blueprint, helper,
-or task can validate a URL without pulling in the database / task-queue / Flask
-layers. Keep it that way -- nothing here may import a project module.
+"""SSRF guard for validating user-supplied outbound URLs.
+
+Vets URLs before the application makes outbound HTTP requests on their behalf,
+rejecting non-http(s) schemes and hosts that resolve into blocked special-use
+address ranges. Note: loopback and private (RFC 1918) addresses are NOT rejected
+here; callers needing those blocked must add their own check.
+
+Main Features:
+* ``validate_outbound_url`` checks scheme, resolves the host, and inspects every IP.
+* Blocks link-local, multicast, reserved, and unspecified resolved addresses.
 """
+
 import ipaddress
 import socket
 from urllib.parse import urlparse
 
 
 def validate_outbound_url(url):
-    """SSRF guard for user-supplied outbound HTTP(S) URLs.
-
-    Returns ``(True, None)`` when the URL is safe to fetch, else
-    ``(False, reason)``.
-    """
     if not url:
         return False, 'URL is required'
     try:
@@ -29,7 +37,8 @@ def validate_outbound_url(url):
         return False, 'URL host is required'
     try:
         addrinfo = socket.getaddrinfo(
-            host, parsed.port or (443 if parsed.scheme == 'https' else 80),
+            host,
+            parsed.port or (443 if parsed.scheme == 'https' else 80),
             type=socket.SOCK_STREAM,
         )
     except Exception:

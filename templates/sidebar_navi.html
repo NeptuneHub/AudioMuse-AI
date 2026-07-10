@@ -18,8 +18,8 @@
 <li><a href="{{ url_for('playlist_curator_bp.playlist_extender_page') }}" {% if active == 'playlist_extender' %}class="active"{% endif %}>Playlist Extender</a></li>
 {% if is_admin or auth_enabled %}
 <li class="has-submenu{% if active in ('cleaning', 'cron', 'backup', 'provider_migration', 'setup', 'users') %} open{% endif %}">
-    <a href="#" class="submenu-toggle">Administration <span class="submenu-arrow">›</span></a>
-    <ul class="submenu">
+    <button type="button" class="submenu-toggle" aria-controls="admin-submenu" aria-expanded="{% if active in ('cleaning', 'cron', 'backup', 'provider_migration', 'setup', 'users') %}true{% else %}false{% endif %}">Administration <span class="submenu-arrow" aria-hidden="true">›</span></button>
+    <ul class="submenu" id="admin-submenu">
         {% if is_admin %}
         <li><a href="{{ url_for('analysis_bp.cleaning_page') }}" {% if active == 'cleaning' %}class="active"{% endif %}>Cleaning</a></li>
         <li><a href="{{ url_for('cron_bp.cron_page') }}" {% if active == 'cron' %}class="active"{% endif %}>Scheduled Tasks</a></li>
@@ -29,6 +29,21 @@
         {% endif %}
         {% if auth_enabled %}
         <li><a href="{{ url_for('users_bp.users_page') }}" {% if active == 'users' %}class="active"{% endif %}>Users</a></li>
+        {% endif %}
+    </ul>
+</li>
+{% endif %}
+{% if is_admin or plugin_menu_items %}
+<li class="has-submenu{% if active == 'plugins' %} open{% endif %}">
+    <button type="button" class="submenu-toggle" aria-controls="plugins-submenu" aria-expanded="{% if active == 'plugins' %}true{% else %}false{% endif %}">Plugins <span class="submenu-arrow" aria-hidden="true">›</span></button>
+    <ul class="submenu" id="plugins-submenu">
+        {% for item in plugin_menu_items %}
+        {% if is_admin or not item.admin_only %}
+        <li><a href="{{ item.url }}" {% if request.endpoint == item.endpoint %}class="active"{% endif %}>{{ item.label }}</a></li>
+        {% endif %}
+        {% endfor %}
+        {% if is_admin %}
+        <li><a href="{{ url_for('plugins_bp.plugins_page') }}" {% if request.endpoint == 'plugins_bp.plugins_page' %}class="active"{% endif %}>Manage Plugins</a></li>
         {% endif %}
     </ul>
 </li>

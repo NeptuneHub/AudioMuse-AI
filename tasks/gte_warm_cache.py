@@ -1,14 +1,23 @@
-"""
-Idle warm-cache for the gte-multilingual-base lyrics-search model.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Mirrors the CLAP text-search warmup pattern (tasks/clap_text_search.py): the
-Flask page warms the model on load, searches auto-warm and reset the timer, and
-a background worker unloads the model after an idle period to free RAM.
+"""Idle-based warm cache for the GTE lyrics-search embedding model.
 
-The lock is a REENTRANT lock that doubles as the model-use mutex: a search holds
-it across warmup + inference, and the unload worker must hold it to unload. That
-prevents the background unload (which tears down the ONNX session) from running
-while an in-flight ``session.run()`` is using the model.
+Keeps the gte-multilingual-base ONNX session loaded for a bounded window after
+a lyrics text search so back-to-back queries avoid repeated cold loads, then
+unloads it once the window lapses. Complements tasks.lyrics_manager (which owns
+the index caches) by managing only the ONNX model lifetime.
+
+Main Features:
+* warmup_gte_model: loads the model on demand and (re)arms the expiry timer.
+* _unload_timer_worker: single background thread that unloads gte_onnx and runs
+  comprehensive_memory_cleanup once the warm window expires; guarded by an RLock
+  shared via warm_lock so warmups and the timer never race.
 """
 
 import logging
@@ -28,18 +37,10 @@ _WARM = {
 
 
 def warm_lock() -> threading.RLock:
-    """Return the reentrant model-use lock; hold it across warmup + inference."""
     return _WARM['lock']
 
 
 def _unload_timer_worker():
-    """Unload the gte model once the idle timer expires.
-
-    The expiry re-check AND the unload happen while holding the lock, and a
-    search holds the same lock across warmup + inference. So a search that just
-    reset the timer cancels the unload (expiry is re-read under the lock), and
-    the unload can never run concurrently with an in-flight embedding call.
-    """
     while True:
         with _WARM['lock']:
             expiry = _WARM['expiry_time']
@@ -47,11 +48,13 @@ def _unload_timer_worker():
                 break
             if expiry - time.time() <= 0:
                 from lyrics import gte_onnx
+
                 if gte_onnx.is_loaded():
                     logger.info("GTE warm cache expired - unloading lyrics embedding model")
                     gte_onnx.reset_session()
                     try:
                         from tasks.memory_utils import comprehensive_memory_cleanup
+
                         comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
                     except Exception as e:
                         logger.debug("GTE unload cleanup failed: %s", e)
@@ -63,15 +66,14 @@ def _unload_timer_worker():
 
 
 def warmup_gte_model() -> Dict:
-    """Load the gte model if needed and (re)start the idle-unload timer."""
     from lyrics import gte_onnx
 
     if not gte_onnx.is_loaded():
         logger.info("Warming up gte-multilingual-base lyrics-search model...")
         try:
             gte_onnx.load_gte_model()
-        except Exception as e:
-            logger.error("GTE warmup failed: %s", e)
+        except Exception:
+            logger.exception("GTE warmup failed")
             return {'loaded': False, 'expiry_seconds': 0}
 
     duration = config.LYRICS_GTE_WARMUP_DURATION
@@ -87,7 +89,6 @@ def warmup_gte_model() -> Dict:
 
 
 def get_gte_warm_status() -> Dict:
-    """Return whether the gte model is warm and seconds until idle-unload."""
     from lyrics import gte_onnx
 
     with _WARM['lock']:

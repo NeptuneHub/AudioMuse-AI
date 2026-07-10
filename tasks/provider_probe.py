@@ -1,54 +1,28 @@
-"""Provider migration probe wrappers for target media servers.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module deliberately does NOT read ``config.py`` globals. Every function
-takes a ``creds`` dict so the migration tool can test and migrate to a new
-provider without mutating the running app's active configuration.
+"""Probe a media provider and normalise its track metadata for migration.
 
-Supported providers:
-  * ``jellyfin`` / ``emby`` — X-Emby-Token header API, identical shape
-  * ``navidrome``           — Subsonic JSON API
-  * ``lyrion``              — Logitech Media Server JSON-RPC (``/jsonrpc.js``)
- 
-Unified track dict shape returned by ``fetch_all_tracks`` and
-``get_album_tracks``::
+Thin, provider-agnostic wrapper over the mediaserver clients used by the
+migration flow to test connectivity, enumerate libraries, and pull tracks.
 
-    {
-      'id':           str,   # provider's native item id
-      'path':         str|None,
-      'title':        str|None,
-      'artist':       str|None,
-      'album_artist': str|None,
-      'album':        str|None,
-      'year':         int|None,
-      'track_number': int|None,
-      'disc_number':  int|None,
-    }
-
-Unified album dict shape returned by ``search_albums``::
-
-    {
-      'id':          str,
-      'name':        str,
-      'artist':      str|None,
-      'year':        int|None,
-      'track_count': int|None,
-    }
-
-``test_connection`` returns::
-
-    {
-      'ok':           bool,
-      'error':        str|None,
-      'sample_count': int,
-      'path_format':  'absolute'|'relative'|'none'|'mixed',
-      'warnings':     list[str],
-    }
+Main Features:
+* Supports jellyfin, emby, navidrome, lyrion, and plex, rejecting any other
+  provider type early.
+* Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
+  camelCase, and lower-case variants) into one flat track dict, coercing the
+  year to an int.
 """
+
 from tasks import mediaserver
 
 
 def _normalize_track(item):
-    """Convert provider-specific song dicts into the unified track shape."""
     if item is None:
         return {
             'id': None,
@@ -89,7 +63,7 @@ def _normalize_track(item):
     }
 
 
-_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion'}
+_SUPPORTED_PROVIDERS = {'jellyfin', 'emby', 'navidrome', 'lyrion', 'plex'}
 
 
 def _normalize_provider_type(provider_type):
@@ -104,11 +78,6 @@ def _normalize_provider_type(provider_type):
 
 def fetch_all_tracks(provider_type, creds):
     t = _normalize_provider_type(provider_type)
-    # ``apply_filter=False``: ``config.MUSIC_LIBRARIES`` reflects the *source*
-    # provider's folder selection, not the target's, so applying it during a
-    # migration dry-run would falsely zero out the target catalog. The
-    # migration wizard collects the target's filter choice via its own
-    # checkbox UI and writes ``MUSIC_LIBRARIES`` post-execute.
     items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=False)
     return [_normalize_track(item) for item in items or []]
 
@@ -130,10 +99,5 @@ def test_connection(provider_type, creds):
 
 
 def list_libraries(provider_type, creds):
-    """Return the target provider's music libraries as a list of {id, name}.
-
-    Used by the migration assistant to populate the library-selection
-    checkboxes in step 2 without mutating live config.
-    """
     t = _normalize_provider_type(provider_type)
     return mediaserver.list_libraries(user_creds=creds, provider_type=t)

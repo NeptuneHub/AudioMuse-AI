@@ -134,6 +134,38 @@
     #lyrics-api-config {
         margin-top: 1.5rem;
     }
+    .advanced-section {
+        margin-top: 0.75rem;
+        border: 1px solid var(--border-color, #e0e0e0);
+        border-radius: 10px;
+        padding: 0.5rem 0.95rem;
+        background: var(--bg-card, #fbfbfd);
+    }
+    .advanced-section > summary {
+        cursor: pointer;
+        font-weight: 700;
+        padding: 0.35rem 0;
+        list-style-position: inside;
+    }
+    .advanced-section[open] > summary {
+        margin-bottom: 0.85rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--border-color, #eee);
+    }
+    .advanced-toolbar {
+        display: flex;
+        gap: 0.5rem;
+        margin: 1rem 0 0.25rem;
+    }
+    #advanced-config .advanced-toolbar button {
+        width: auto;
+        padding: 0.45rem 0.95rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        background: var(--bg-input, #fff);
+        color: var(--text-main, #333);
+        border: 1px solid var(--border-color, #ccc);
+    }
 </style>
 {% endblock %}
 
@@ -146,7 +178,7 @@
         </div>
     </section>
 
-    <form id="setup-form">
+    <form id="setup-form" autocomplete="off">
         <section class="section">
                 <h2>Media Server</h2>
                 <div class="field-row">
@@ -154,7 +186,7 @@
                         Media server type
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL.</span>
+                            <span class="tooltip-text">Pick the music server AudioMuse-AI should connect to. Each option asks for slightly different credentials below: Jellyfin/Emby use URL + user ID + API token, Navidrome uses URL + username + password, Lyrion uses just a URL, Plex uses URL + API token.</span>
                         </span>
                     </label>
                     <select id="MEDIASERVER_TYPE" name="MEDIASERVER_TYPE" required>
@@ -162,6 +194,7 @@
                         <option value="navidrome">Navidrome</option>
                         <option value="lyrion">Lyrion</option>
                         <option value="emby">Emby</option>
+                        <option value="plex">Plex</option>
                     </select>
                 </div>
                 <div id="server-config-fields"></div>
@@ -176,7 +209,7 @@
                         Music libraries to scan
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Pick which libraries to analyze. Check "No restriction" to scan every library on the server (including any added later) — this disables the per-library checkboxes. Otherwise check only the specific libraries you want; the rest will be skipped. This list is fetched live from your media server after a successful connection test.</span>
+                            <span class="tooltip-text">Pick which libraries to analyze. Check "No restriction" to scan every library on the server (including any added later) - this disables the per-library checkboxes. Otherwise check only the specific libraries you want; the rest will be skipped. This list is fetched live from your media server after a successful connection test.</span>
                         </span>
                     </label>
                     <div id="music-libraries-list" style="display:flex; flex-direction:column; gap:0.25rem; width:100%;"></div>
@@ -201,10 +234,10 @@
                     </select>
                 </div>
                 <div id="auth-admin-exists" class="field-row" style="display:none;">
-                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--card-bg, #f5f5f5); border:1px solid var(--border-color, #ccc);">
+                    <p style="margin:0; padding:0.75rem 1rem; border-radius:6px; background:var(--bg-card, #f5f5f5); border:1px solid var(--border-color, #ccc);">
                         An admin account already exists. To add, remove, or change
                         admin and normal user accounts, go to the
-                        <a href="/users">Users</a> page.
+                        <a href="{{ url_for('users_bp.users_page') }}">Users</a> page.
                     </p>
                 </div>
                 <div id="auth-credentials" class="field-grid">
@@ -226,7 +259,8 @@
                                 <span class="tooltip-text">The password for the admin user above.</span>
                             </span>
                         </label>
-                        <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123">
+                        <input id="AUDIOMUSE_PASSWORD" name="AUDIOMUSE_PASSWORD" type="password" placeholder="secret123" autocomplete="new-password">
+                        <p id="admin-password-hint" class="inline-feedback status-pending" style="display:none; margin:6px 0 0; width:100%;"></p>
                     </div>
                     <div class="auth-admin-credential">
                         <label for="AUDIOMUSE_PASSWORD_CONFIRM" class="label-with-tooltip">
@@ -236,7 +270,7 @@
                                 <span class="tooltip-text">Re-enter the admin password above to confirm it. Both fields must match before saving.</span>
                             </span>
                         </label>
-                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123">
+                        <input id="AUDIOMUSE_PASSWORD_CONFIRM" type="password" placeholder="secret123" autocomplete="new-password">
                     </div>
                     <div>
                         <label for="JWT_SECRET" class="label-with-tooltip">
@@ -246,7 +280,7 @@
                                 <span class="tooltip-text">Random secret used to sign login tokens. Leave blank to auto-generate a strong one. Changing it invalidates all existing sessions.</span>
                             </span>
                         </label>
-                        <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********">
+                        <input id="JWT_SECRET" name="JWT_SECRET" type="password" placeholder="********" autocomplete="new-password">
                     </div>
                 </div>
                 <div id="api-token-row" class="field-row">
@@ -257,7 +291,7 @@
                             <span class="tooltip-text">Optional bearer token for programmatic API access, needed for AudioMuse-AI plugin.</span>
                         </span>
                     </label>
-                    <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token">
+                    <input id="API_TOKEN" name="API_TOKEN" type="password" placeholder="api-token" autocomplete="new-password">
                 </div>
             </section>
 
@@ -268,6 +302,10 @@
                     These settings tune analysis, clustering and internal behavior. Wrong values can break analysis runs or produce poor playlists. Please review the
                     <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS documentation on GitHub</a>
                     before changing anything here.
+                </div>
+                <div class="advanced-toolbar">
+                    <button type="button" id="advanced-expand-all">Expand all</button>
+                    <button type="button" id="advanced-collapse-all">Collapse all</button>
                 </div>
                 <div id="advanced-fields"></div>
             </details>
@@ -280,7 +318,7 @@
                     If no API is configured, or if all configured APIs fail or time out,
                     AudioMuse-AI will fall back to local transcription with <strong>Whisper</strong>.
                     <br><br>
-                    Paste a real example URL (with actual artist and track values) and click <strong>Analyze</strong>.
+                    Paste a real example URL (with actual artist and track values) including http:// or https:// and click <strong>Analyze</strong>.
                     AudioMuse-AI will call the URL, detect the parameters automatically, and show the JSON response
                     so you can click the field that contains the lyrics.
                 </div>
@@ -349,6 +387,7 @@
 {% endblock %}
 
 {% block bodyAdditions %}
+<script src="{{ url_for('static', filename='plex_link.js') }}"></script>
 <script src="{{ url_for('static', filename='setup.js') }}"></script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
 {% endblock %}

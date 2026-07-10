@@ -1,12 +1,23 @@
-"""Process supervisor for the standalone macOS app.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Owns the full lifecycle of everything the container deployment runs under
-supervisord: embedded PostgreSQL (via pgserver), embedded Redis (the bundled
-binary), the waitress/Flask web server, the two RQ workers, the janitor and the
-restart listener. It boots them in dependency order, captures every child's
-output into one rotating log, replaces children that exit while running
-(supervisord ``autorestart``), and tears the whole tree down without leaving
-orphaned Postgres/Redis processes behind.
+"""Process supervisor for the macOS standalone build.
+
+Boots and monitors the full local stack in dependency order: embedded
+PostgreSQL (via the shared ``database`` module), Redis, the Flask/waitress
+server and the RQ worker/janitor/restart-listener children (each re-spawned
+from ``macos.launcher`` with a ``--role=``). It restarts crashed children,
+serves the Unix-socket control server, and tears everything down on shutdown.
+The Linux/Windows supervisors are the platform-specific siblings.
+
+Main Features:
+* Ordered boot, health polling and automatic restart of Flask + RQ children.
+* Runs the control-socket server and writes newest-first rotating logs.
 """
 
 import json
@@ -55,15 +66,14 @@ class ProcessSupervisor:
         self._control = ControlServer(paths.control_socket_path(), self.dispatch_control)
         self._health_thread = None
         self._health_stop = threading.Event()
+        self._stop_requested = threading.Event()
+        self._boot_thread = None
         self._log = self._setup_logging()
 
     def _setup_logging(self):
         log = logging.getLogger("audiomuse.app")
         log.setLevel(logging.INFO)
         if not log.handlers:
-            # Newest line on top so opening the log shows the latest activity
-            # first. Bounded by line count (~40k) instead of a byte cap; see
-            # native-build/macos/reverse_log.py for why it's not a literal per-line prepend.
             handler = NewestFirstFileHandler(paths.log_file())
             handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
             log.addHandler(handler)
@@ -76,25 +86,49 @@ class ProcessSupervisor:
     def state(self):
         return self._state
 
+    def start_in_background(self, on_ready=None, on_error=None):
+        def _boot():
+            try:
+                self.start_all()
+            except Exception as exc:
+                if on_error is not None:
+                    on_error(exc)
+                return
+            if on_ready is not None and self.is_running():
+                on_ready()
+
+        self._boot_thread = threading.Thread(target=_boot, name="boot", daemon=True)
+        self._boot_thread.start()
+        return self._boot_thread
+
     def start_all(self):
         with self._lock:
             if self._state in ("running", "starting"):
                 return
             self._state = "starting"
+            self._stop_requested.clear()
         self._log.info("=== AudioMuse-AI starting ===")
         try:
             self._reap_orphans()
             self._control.start()
+            if self._stop_requested.is_set():
+                return
             self._database_url = database.start_embedded(paths.pgdata_dir())
             self._log.info("Embedded PostgreSQL ready")
+            if self._stop_requested.is_set():
+                return
             self._start_redis()
             self._log.info("Embedded Redis ready")
             for name in BOOT_ORDER:
+                if self._stop_requested.is_set():
+                    return
                 self.start_child(name)
                 if name == "flask":
                     self._wait_http(FLASK_URL, timeout=180)
             self._write_pidfile()
             with self._lock:
+                if self._stop_requested.is_set():
+                    return
                 self._state = "running"
             self._start_health_loop()
             self._log.info("=== AudioMuse-AI running ===")
@@ -106,11 +140,13 @@ class ProcessSupervisor:
 
     def stop_all(self):
         with self._lock:
-            if self._state == "stopped":
+            if self._state in ("stopping", "stopped"):
                 return
             self._state = "stopping"
+            self._stop_requested.set()
             self._desired.clear()
         self._health_stop.set()
+        self._join_workers()
         for name in reversed(BOOT_ORDER):
             self._terminate_named(name)
         self._terminate_named("redis")
@@ -123,6 +159,12 @@ class ProcessSupervisor:
         with self._lock:
             self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
+
+    def _join_workers(self):
+        current = threading.current_thread()
+        for thread in (self._boot_thread, self._health_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=30)
 
     def _start_redis(self):
         argv, url = taskqueue.build_embedded_redis_argv(
@@ -148,11 +190,13 @@ class ProcessSupervisor:
         role = ROLE_OF.get(name)
         if role is None:
             return False
+        with self._lock:
+            if self._state not in ("starting", "running"):
+                return False
+            self._desired.add(name)
         argv = [sys.executable, f"--role={role}"]
         child_env = env_builder.build_child_env(role, self._database_url, self._redis_url)
         self._spawn(name, argv, child_env)
-        with self._lock:
-            self._desired.add(name)
         return True
 
     def stop_child(self, name):
@@ -178,7 +222,9 @@ class ProcessSupervisor:
         )
         with self._lock:
             self._children[name] = proc
-        threading.Thread(target=self._pump, args=(name, proc), name=f"log-{name}", daemon=True).start()
+        threading.Thread(
+            target=self._pump, args=(name, proc), name=f"log-{name}", daemon=True
+        ).start()
         self._log.info("Started %s (pid %s)", name, proc.pid)
 
     def _pump(self, name, proc):
@@ -208,7 +254,7 @@ class ProcessSupervisor:
             pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=5)  # reap so it doesn't linger as a zombie
+            proc.wait(timeout=5)
         except Exception:
             pass
 
@@ -221,10 +267,6 @@ class ProcessSupervisor:
         while not self._health_stop.wait(5):
             if self._state != "running":
                 continue
-            # Postgres and Redis are infrastructure, not ``_desired`` children,
-            # so the child check below never covers them. Without this, a death
-            # of either (crash, OOM, or a stale sibling unlinking Redis's shared
-            # unix socket) leaves every worker crash-looping forever.
             self._ensure_postgres_healthy()
             self._ensure_redis_healthy()
             for name in list(self._desired):
@@ -235,11 +277,11 @@ class ProcessSupervisor:
                     self.start_child(name)
 
     def _ensure_postgres_healthy(self):
-        """Restart embedded Postgres if it stopped accepting connections."""
         if self._database_url is None:
             return
         try:
             import psycopg2
+
             conn = psycopg2.connect(self._database_url, connect_timeout=3)
             try:
                 cur = conn.cursor()
@@ -249,7 +291,7 @@ class ProcessSupervisor:
                 conn.close()
             return
         except Exception:
-            pass  # unreachable -> restart below
+            pass
         self._log.warning("Embedded PostgreSQL unhealthy; restarting it")
         try:
             self._database_url = database.ensure_embedded_running(paths.pgdata_dir())
@@ -258,8 +300,6 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded PostgreSQL")
 
     def _ensure_redis_healthy(self):
-        """Restart embedded Redis if its process died or its socket stopped
-        answering (mirrors supervisord ``autorestart`` for the broker)."""
         with self._lock:
             proc = self._children.get("redis")
         if proc is not None and proc.poll() is None:
@@ -271,7 +311,7 @@ class ProcessSupervisor:
                 ).ping():
                     return
             except Exception:
-                pass  # alive but unreachable (e.g. socket unlinked) -> restart
+                pass
         self._log.warning("Embedded Redis unhealthy; restarting it")
         try:
             self._start_redis()
@@ -280,17 +320,27 @@ class ProcessSupervisor:
             self._log.exception("Failed to restart embedded Redis")
 
     def dispatch_control(self, action, services):
-        results = []
+        if action not in ("restart", "stop", "start"):
+            return False
+        threading.Thread(
+            target=self._apply_control,
+            args=(action, list(services)),
+            name=f"control-{action}",
+            daemon=True,
+        ).start()
+        return True
+
+    def _apply_control(self, action, services):
         for svc in services:
-            if action == "stop":
-                results.append(self.stop_child(svc))
-            elif action == "start":
-                results.append(self.start_child(svc))
-            elif action == "restart":
-                results.append(self.restart_child(svc))
-            else:
-                results.append(False)
-        return all(results) if results else False
+            try:
+                if action == "stop":
+                    self.stop_child(svc)
+                elif action == "start":
+                    self.start_child(svc)
+                elif action == "restart":
+                    self.restart_child(svc)
+            except Exception:
+                logger.exception("Control %s failed for %s", action, svc)
 
     def _wait_http(self, url, timeout):
         deadline = time.time() + timeout
@@ -341,18 +391,23 @@ class ProcessSupervisor:
                 if psutil is not None:
                     proc = psutil.Process(pid)
                     cmdline = " ".join(proc.cmdline())
-                    if paths.APP_NAME in cmdline or "--role=" in cmdline or "redis-server" in cmdline:
+                    if (
+                        paths.APP_NAME in cmdline
+                        or "--role=" in cmdline
+                        or "redis-server" in cmdline
+                    ):
                         proc.terminate()
                         self._log.info("Reaped orphan %s (pid %s) from a previous run", name, pid)
                 else:
-                    # No psutil: verify the PID is still one of ours before
-                    # killing -- PIDs get recycled, so a stale pidfile entry could
-                    # otherwise name an unrelated process.
                     comm = subprocess.check_output(
                         ["ps", "-p", str(pid), "-o", "command="], text=True
                     ).strip()
-                    if (paths.APP_NAME in comm or "--role=" in comm
-                            or "redis-server" in comm or "postgres" in comm):
+                    if (
+                        paths.APP_NAME in comm
+                        or "--role=" in comm
+                        or "redis-server" in comm
+                        or "postgres" in comm
+                    ):
                         os.kill(pid, signal.SIGTERM)
                         self._log.info("Reaped orphan %s (pid %s) via ps fallback", name, pid)
             except Exception:
@@ -360,13 +415,6 @@ class ProcessSupervisor:
         self._reap_stale_infra()
 
     def _reap_stale_infra(self):
-        """Kill any leftover embedded Redis/Postgres referencing *our* data dirs.
-
-        The pidfile sweep above misses processes from an unclean exit (force-quit
-        or crash, where ``stop_all`` never ran). Multiple ``redis-server``
-        instances share one unix-socket path, so a straggler unlinking that
-        socket on exit breaks the live broker -- hence we match by our own
-        socket/data paths and clear them before starting fresh."""
         try:
             import psutil
         except Exception:
@@ -387,7 +435,8 @@ class ProcessSupervisor:
                     proc.terminate()
                     self._log.info(
                         "Reaped stale %s (pid %s) referencing our data dir",
-                        proc.info.get("name"), proc.info["pid"],
+                        proc.info.get("name"),
+                        proc.info["pid"],
                     )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

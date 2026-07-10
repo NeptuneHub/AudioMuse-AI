@@ -1,20 +1,24 @@
-"""Real-Postgres integration tests for the audiomuse_users layer.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Drives app_auth's user CRUD against a live ``audiomuse_users`` table so the
-argon2 hash round-trip, the ON CONFLICT duplicate guard, and the
-SELECT ... FOR UPDATE last-admin gate all run as production code paths. A
-mocked cursor cannot prove the hash verifies against what was actually stored,
-nor that the last-admin deletion is refused atomically.
+"""User-management tests against a real Postgres database.
 
-Database selection mirrors test_provider_migration_integration.py:
-  * AUDIOMUSE_TEST_DATABASE_URL — a throwaway DB the test fully owns, or
-  * an ephemeral instance via the optional ``pgserver`` package, or
-  * the module is skipped.
+Runs app_auth user create, verify, count, and delete logic against a live
+audiomuse_users table to confirm password hashing and the admin-safety
+gate behave against real SQL.
 
-Run locally:
-    pip install pgserver
-    pytest test/integration/test_auth_users_integration.py -m integration -s -v --tb=short
+Main Features:
+* Argon2 create/verify roundtrip and duplicate-username rejection.
+* Admin-user counting and refusing to delete the last admin.
+* Password updates stamping ``password_changed_at`` for session revocation.
 """
+
+import datetime
 import os
 import sys
 import tempfile
@@ -35,7 +39,8 @@ _USERS_DDL = (
     "CREATE TABLE audiomuse_users (id SERIAL PRIMARY KEY, "
     "username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, "
     "role TEXT NOT NULL DEFAULT 'user', "
-    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+    "password_changed_at TIMESTAMP)"
 )
 
 
@@ -75,6 +80,7 @@ def users_db(pg_dsn, monkeypatch):
         cur.execute(_USERS_DDL)
     conn.commit()
     import app_auth
+
     monkeypatch.setattr(app_auth, '_get_db', lambda: conn)
     yield conn, app_auth
     conn.close()
@@ -141,3 +147,58 @@ class TestDeleteLastAdminGateRealDb:
         status, err = app_auth.delete_additional_user_safe(uid)
         assert status == 'deleted'
         assert app_auth.count_admin_users() == 1
+
+
+def _age_stamp(conn, username, seconds=60):
+    aged = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0, tzinfo=None
+    ) - datetime.timedelta(seconds=seconds)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE audiomuse_users SET password_changed_at = %s WHERE username = %s",
+            (aged, username),
+        )
+    conn.commit()
+    return aged
+
+
+@pytest.mark.integration
+class TestPasswordChangeStampRealDb:
+    def test_create_stamps_password_changed_at(self, users_db):
+        _, app_auth = users_db
+        app_auth.create_additional_user('dave', 'pw', 'user')
+        row = app_auth.get_session_user('dave')
+        assert row is not None
+        assert row['password_changed_at'] is not None
+
+    def test_update_password_advances_changed_at(self, users_db):
+        conn, app_auth = users_db
+        app_auth.create_additional_user('carol', 'old-pw', 'user')
+        uid = _user_id(conn, 'carol')
+        aged = _age_stamp(conn, 'carol')
+        ok, err = app_auth.update_additional_user_password(uid, 'new-pw')
+        assert ok is True
+        assert err is None
+        after = app_auth.get_session_user('carol')
+        assert after['password_changed_at'] is not None
+        assert after['password_changed_at'] > aged
+        assert app_auth.verify_additional_user('carol', 'new-pw') == 'user'
+        assert app_auth.verify_additional_user('carol', 'old-pw') is None
+
+    def test_upsert_admin_advances_changed_at(self, users_db):
+        conn, app_auth = users_db
+        ok, _ = app_auth.upsert_admin_user('wizard', 'pw-1')
+        assert ok is True
+        first = app_auth.get_session_user('wizard')
+        assert first['password_changed_at'] is not None
+        aged = _age_stamp(conn, 'wizard')
+        ok, _ = app_auth.upsert_admin_user('wizard', 'pw-2')
+        assert ok is True
+        second = app_auth.get_session_user('wizard')
+        assert second['password_changed_at'] > aged
+        assert app_auth.verify_additional_user('wizard', 'pw-2') == 'admin'
+        assert app_auth.verify_additional_user('wizard', 'pw-1') is None
+
+    def test_get_session_user_unknown_returns_none(self, users_db):
+        _, app_auth = users_db
+        assert app_auth.get_session_user('ghost') is None

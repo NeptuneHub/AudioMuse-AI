@@ -1,50 +1,24 @@
-"""
-Centralized helpers for streaming embeddings and persisting segmented blobs.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-The per-song similarity indexes (CLAP, lyrics, lyrics-axes, SemGrove, audio)
-are built as disk-paged IVF indexes (see ``tasks.paged_ivf``). This module
-provides the shared building blocks they reuse:
+"""Shared building blocks for constructing and persisting the IVF indexes.
 
-    * ``stream_embeddings_to_buffer`` -- load a BYTEA float32 column into a
-      contiguous numpy buffer over a snapshot-safe side connection.
-    * ``store_segmented_blob`` / ``load_segmented_blob`` -- persist and
-      reassemble arbitrary BYTEA payloads split into <= part-size rows (also
-      used by the 2D map projections).
-    * ``build_and_store_index_streaming`` -- the CLAP/lyrics/lyrics-axes entry
-      point that streams a source column straight into ``build_and_store_paged_ivf``.
+Provides the streaming embedding readers and the segmented-blob storage layer
+used by tasks.ivf_manager and tasks.lyrics_manager to build any of the six
+disk-paged IVF indexes without holding whole libraries in RAM. Sits below
+tasks.paged_ivf, which owns the on-disk IVF format and query path.
 
-Keeping these in one place means any future RAM, snapshot, or storage change
-happens in exactly one location.
-
-Phase 1 design notes
---------------------
-The previous streaming implementation opened a Postgres server-side cursor
-on the worker's shared connection, inside the outer build transaction. That
-left the worker connection idle-in-transaction for the entire build (often
-many minutes), which broke whenever another worker on another container
-modified the same embedding tables, or when Postgres' idle-in-tx timeout
-fired.
-
-``stream_embeddings_to_buffer`` opens its own dedicated short-lived
-read-only connection, runs the SELECT through a server-side named cursor
-inside that connection's own implicit transaction, fills a pre-allocated
-float32 buffer, and closes the connection (auto-rolling-back the read-only
-transaction) before the caller writes anything. Two independent guarantees:
-
-* **Snapshot consistency.** The named cursor sees a stable PG snapshot for
-  its entire lifetime, so concurrent writes from other workers cannot make
-  fetches inconsistent. We deliberately do NOT use ``autocommit=True`` --
-  psycopg2 still permits named cursors in autocommit mode but PG does not
-  hold a snapshot across fetches, which would silently return mixed data.
-* **No fate-sharing with the build's main transaction.** The streaming
-  transaction lives only on the side connection and only for the duration
-  of the SELECT. The worker's main connection (where the index is
-  ultimately written) is never put in idle-in-transaction state by this
-  helper, which is what caused the previous streaming revert.
-
-The worst realistic outcome is an index that omits a handful of rows
-committed AFTER the side connection's snapshot was taken -- acceptable
-because the next batch rebuild picks them up.
+Main Features:
+* stream_embeddings_to_buffer / iter_embedding_batches: read pgvector columns
+  over a read-only side connection with a server-side named cursor.
+* build_and_store_index_streaming and the segmented-blob helpers: split large
+  id maps and index payloads into row-sized fragments (SQL identifiers are
+  regex-validated before interpolation), plus artist-metadata pack/unpack.
 """
 
 from __future__ import annotations
@@ -65,14 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmptyIndexError(ValueError):
-    """Raised when an index builder is asked to serialize zero items.
-
-    Distinguishing this from a generic ``ValueError`` lets callers downgrade
-    "empty source" to a warning while still surfacing real programming errors
-    (wrong dim, batch shape mismatch, mismatched ids length) as exceptions.
-    Subclassing ``ValueError`` preserves backward compatibility with any code
-    that already catches ``ValueError`` here.
-    """
+    pass
 
 
 _STREAM_ITERSIZE = 5000
@@ -81,37 +48,11 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _validate_sql_identifier(ident: str, kind: str) -> None:
-    """Reject anything that isn't a bare SQL identifier.
-
-    psycopg2 cannot parameterize table/column names, so they must be
-    interpolated -- which means callers must not be able to pass arbitrary
-    strings here. Builders always pass module-level literals; this guard is
-    defense in depth.
-    """
     if not isinstance(ident, str) or not _IDENT_RE.match(ident):
         raise ValueError(f"Invalid SQL {kind}: {ident!r}")
 
 
 def _open_side_connection() -> "psycopg2.extensions.connection":
-    """Open a fresh read-only Postgres connection for streaming reads.
-
-    The connection runs in the default transactional mode (NOT autocommit):
-    psycopg2 with ``autocommit=True`` still permits server-side named
-    cursors, but PG does not hold a stable snapshot across fetches in that
-    mode -- concurrent writes from other workers could make iteration
-    return inconsistent data. With autocommit off, psycopg2 issues an
-    implicit ``BEGIN`` before the first statement and the named cursor
-    inherits that transaction's snapshot for its entire lifetime.
-
-    The transaction is closed cheaply: ``conn.close()`` issues an implicit
-    ``ROLLBACK`` (read-only, nothing to commit), and because this is a
-    dedicated short-lived connection, the open transaction never overlaps
-    with the rest of the build the way the previous streaming revert did.
-
-    Statement timeout is disabled here because builds over large libraries
-    can legitimately exceed the default 10-minute global limit. Keepalives
-    match ``app_helper.get_db`` so dead TCP sockets are detected.
-    """
     conn = psycopg2.connect(
         config.DATABASE_URL,
         connect_timeout=30,
@@ -138,30 +79,6 @@ def stream_embeddings_to_buffer(
     where_clause: Optional[str] = None,
     cursor_name: Optional[str] = None,
 ) -> Tuple[np.ndarray, List[str]]:
-    """Stream a fixed-width float32 embedding column into a numpy buffer.
-
-    Args:
-        table: source table (must be a bare SQL identifier).
-        column: BYTEA column holding float32 little-endian vectors
-            (must be a bare SQL identifier).
-        dim: expected number of float32 elements per row.
-        where_clause: optional raw SQL fragment appended after ``WHERE``.
-            Must not contain user input -- only module-level literals are
-            allowed (e.g. ``"embedding IS NOT NULL"``).
-        cursor_name: override for the server-side cursor name (default
-            ``"_idx_stream_<table>_<column>"``).
-
-    Returns:
-        ``(buf, item_ids)`` where ``buf`` is a contiguous ``np.ndarray`` of
-        shape ``(N, dim)`` and dtype ``float32``, and ``item_ids`` is a list
-        of N item_id strings in the same row order. Rows with NULL or
-        wrong-dimension blobs are skipped (counted, logged at warning).
-        Returns an empty buffer and list if the source table has no rows.
-
-    Raises:
-        ValueError: if ``table`` or ``column`` is not a bare SQL identifier.
-        psycopg2.Error: on connection or query failure.
-    """
     _validate_sql_identifier(table, "table")
     _validate_sql_identifier(column, "column")
     if not isinstance(dim, int) or dim <= 0:
@@ -169,7 +86,7 @@ def stream_embeddings_to_buffer(
 
     where_sql = f" WHERE {where_clause}" if where_clause else ""
     count_sql = f"SELECT COUNT(*) FROM {table}{where_sql}"
-    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql}"
+    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql} ORDER BY item_id"
     cname = cursor_name or f"_idx_stream_{table}_{column}"
     _validate_sql_identifier(cname, "cursor name")
 
@@ -217,12 +134,19 @@ def stream_embeddings_to_buffer(
         if skipped_null or skipped_dim:
             logger.warning(
                 "stream_embeddings_to_buffer(%s.%s): kept=%d skipped_null=%d skipped_dim=%d",
-                table, column, write_idx, skipped_null, skipped_dim,
+                table,
+                column,
+                write_idx,
+                skipped_null,
+                skipped_dim,
             )
         else:
             logger.info(
                 "stream_embeddings_to_buffer(%s.%s): loaded %d rows (dim=%d).",
-                table, column, write_idx, dim,
+                table,
+                column,
+                write_idx,
+                dim,
             )
 
         return buf, item_ids
@@ -241,44 +165,6 @@ def iter_embedding_batches(
     where_clause: Optional[str] = None,
     cursor_name: Optional[str] = None,
 ) -> Iterator[Tuple[np.ndarray, List[str]]]:
-    """Yield ``(batch_buf, batch_ids)`` pairs from a BYTEA float32 column.
-
-    Same snapshot-safe pattern as :func:`stream_embeddings_to_buffer`
-    (dedicated short-lived read-only side connection, default transactional
-    mode, server-side named cursor inside the connection's own implicit
-    ``BEGIN``), but each batch is yielded and freed before the next is
-    fetched. Peak RAM per batch is ``batch_size * dim * 4`` bytes plus the
-    per-row item_id strings -- e.g. ~15 MB for a 5000-row batch at 768 dim.
-
-    Each yielded ``batch_buf`` is a fresh, contiguous float32 ndarray of
-    shape ``(actual_batch_n, dim)`` where ``actual_batch_n <= batch_size``
-    (last batch may be partial; rows with NULL or wrong-dim blobs are
-    skipped silently and counted in an aggregate warning at end).
-
-    The side connection is closed in the generator's ``finally`` so it is
-    released both on normal completion and on early ``GeneratorExit``
-    (consumer breaks out of the loop or hits an exception).
-
-    Args:
-        table: source table (must be a bare SQL identifier).
-        column: BYTEA column holding float32 little-endian vectors
-            (must be a bare SQL identifier).
-        dim: expected number of float32 elements per row.
-        batch_size: maximum rows per yielded batch. Defaults to 5000 to
-            match ``_STREAM_ITERSIZE``.
-        where_clause: optional raw SQL fragment appended after ``WHERE``.
-            Must not contain user input.
-        cursor_name: override for the server-side cursor name.
-
-    Yields:
-        ``(batch_buf, batch_ids)`` tuples. Yields nothing if the source has
-        no rows.
-
-    Raises:
-        ValueError: if ``table``/``column`` is not a bare SQL identifier or
-            ``dim``/``batch_size`` is not a positive int.
-        psycopg2.Error: on connection or query failure.
-    """
     _validate_sql_identifier(table, "table")
     _validate_sql_identifier(column, "column")
     if not isinstance(dim, int) or dim <= 0:
@@ -287,7 +173,7 @@ def iter_embedding_batches(
         raise ValueError(f"batch_size must be a positive int, got {batch_size!r}")
 
     where_sql = f" WHERE {where_clause}" if where_clause else ""
-    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql}"
+    select_sql = f"SELECT item_id, {column} FROM {table}{where_sql} ORDER BY item_id"
     cname = cursor_name or f"_idx_iter_{table}_{column}"
     _validate_sql_identifier(cname, "cursor name")
 
@@ -320,7 +206,10 @@ def iter_embedding_batches(
                     total_kept += write_idx
                     logger.info(
                         "iter_embedding_batches(%s.%s): batch %d yielded (%d rows).",
-                        table, column, batch_no, write_idx,
+                        table,
+                        column,
+                        batch_no,
+                        write_idx,
                     )
                     yield batch_buf, batch_ids
                     batch_buf = np.empty((batch_size, dim), dtype=np.float32)
@@ -332,19 +221,31 @@ def iter_embedding_batches(
             total_kept += write_idx
             logger.info(
                 "iter_embedding_batches(%s.%s): batch %d yielded (%d rows, final).",
-                table, column, batch_no, write_idx,
+                table,
+                column,
+                batch_no,
+                write_idx,
             )
             yield batch_buf[:write_idx].copy(), batch_ids
 
         if total_skipped_null or total_skipped_dim:
             logger.warning(
                 "iter_embedding_batches(%s.%s): kept=%d skipped_null=%d skipped_dim=%d across %d batch(es).",
-                table, column, total_kept, total_skipped_null, total_skipped_dim, batch_no,
+                table,
+                column,
+                total_kept,
+                total_skipped_null,
+                total_skipped_dim,
+                batch_no,
             )
         else:
             logger.info(
                 "iter_embedding_batches(%s.%s): streamed %d rows across %d batch(es), dim=%d.",
-                table, column, total_kept, batch_no, dim,
+                table,
+                column,
+                total_kept,
+                batch_no,
+                dim,
             )
     finally:
         try:
@@ -354,7 +255,7 @@ def iter_embedding_batches(
 
 
 def _split_bytes(data: bytes, part_size: int) -> List[bytes]:
-    return [data[i:i + part_size] for i in range(0, len(data), part_size)]
+    return [data[i : i + part_size] for i in range(0, len(data), part_size)]
 
 
 def _split_text(text: str, max_part_bytes: int) -> List[str]:
@@ -363,7 +264,7 @@ def _split_text(text: str, max_part_bytes: int) -> List[str]:
     if len(text.encode("utf-8")) <= max_part_bytes:
         return [text]
     step = max(1, max_part_bytes // 4)
-    return [text[i:i + step] for i in range(0, len(text), step)]
+    return [text[i : i + step] for i in range(0, len(text), step)]
 
 
 def reassemble_segmented_id_map(fragments: Iterable[Tuple[int, Optional[str]]]) -> str:
@@ -381,20 +282,11 @@ def build_and_store_index_streaming(
     where_clause: Optional[str] = None,
     label: Optional[str] = None,
 ) -> bool:
-    """Stream embeddings, build a disk-paged IVF index, and persist it.
-
-    Shared by the CLAP, lyrics, and lyrics-axes builders: streams the source
-    BYTEA column into a buffer and hands it to ``build_and_store_paged_ivf``.
-    Commits on success and rolls back on failure using the caller's
-    ``db_conn``. ``target_table`` is accepted for call-site compatibility and
-    unused (IVF rows live in the shared ``ivf_dir`` / ``ivf_cell`` tables).
-    Returns True on success, False when the source has no usable vectors or the
-    build/store fails.
-    """
     label = label or index_name
 
     try:
         from .paged_ivf import build_and_store_paged_ivf
+
         logger.info("Building %s IVF index (disk-paged)...", label)
         buf, item_ids = stream_embeddings_to_buffer(
             table=source_table,
@@ -410,8 +302,8 @@ def build_and_store_index_streaming(
             db_conn.commit()
             logger.info("%s IVF index build successful.", label)
         return ok
-    except Exception as e:
-        logger.error("Failed to build/store %s IVF index: %s", label, e, exc_info=True)
+    except Exception:
+        logger.exception("Failed to build/store %s IVF index", label)
         try:
             db_conn.rollback()
         except Exception:
@@ -429,37 +321,6 @@ def store_ivf_index_segmented(
     max_part_size_mb: Optional[int] = None,
     binary_column: str = "index_data",
 ) -> None:
-    """Persist a serialized IVF index to a chunked ``*_index_data`` table.
-
-    Atomically replaces any existing rows for ``index_name`` (single or
-    segmented). If the binary is small enough it is written as a single
-    row; otherwise it is split into rows named
-    ``<index_name>_<part>_<total>``. The id_map JSON is itself split across
-    the same part rows (one fragment per row, reassembled in part order by
-    :func:`reassemble_segmented_id_map`) so neither the binary nor the id_map
-    can exceed PG's 1 GB field cap at any library size. For libraries whose
-    id_map still fits in one part (the common case) the whole map lands on
-    part 1 with the rest empty -- byte-identical to the previous layout, so
-    older readers stay compatible.
-
-    The caller's ``db_conn`` is used as-is and is **not** committed by this
-    function -- the caller controls the transaction boundary (matching the
-    existing builders, which commit at the very end).
-
-    Args:
-        db_conn: psycopg2 connection (the build's main connection).
-        target_table: name of the ``*_index_data`` table to write to
-            (must be a bare SQL identifier).
-        index_name: logical index name (e.g. ``"clap_index"``). Must be a
-            bare SQL identifier so the LIKE-escape pattern is unambiguous.
-        index_bytes: serialized index payload (from
-            ``build_ivf_index_bytes_streaming``).
-        id_map: ``{vec_id_int: item_id_str}`` mapping. Serialized to
-            JSON for the first row.
-        embedding_dimension: stored alongside the index for validation on
-            load.
-        max_part_size_mb: override for ``config.IVF_MAX_PART_SIZE_MB``.
-    """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(index_name, "index_name")
     _validate_sql_identifier(binary_column, "column")
@@ -471,8 +332,7 @@ def store_ivf_index_segmented(
     id_map_json = json.dumps(id_map)
 
     delete_sql = (
-        f"DELETE FROM {target_table} "
-        f"WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'"
+        f"DELETE FROM {target_table} WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'"
     )
     like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
 
@@ -522,7 +382,11 @@ def store_ivf_index_segmented(
                 )
             logger.info(
                 "Stored '%s' in %d segmented rows in %s (binary=%d parts, id_map=%d parts).",
-                index_name, num_parts, target_table, len(bin_parts), len(id_map_parts),
+                index_name,
+                num_parts,
+                target_table,
+                len(bin_parts),
+                len(id_map_parts),
             )
 
 
@@ -533,29 +397,6 @@ def rewrite_segmented_id_map(
     rewrite_fn,
     max_part_size_mb: Optional[int] = None,
 ) -> bool:
-    """Rewrite ``id_map_json`` for a possibly-segmented index in place.
-
-    :func:`store_ivf_index_segmented` splits the id_map JSON across part
-    rows, so each segmented row holds a partial-JSON *fragment* rather than a
-    standalone document. A naive per-row ``json.loads`` rewrite therefore
-    silently no-ops on every fragment. This helper instead reassembles the
-    full id_map across all part rows (via :func:`reassemble_segmented_id_map`),
-    applies ``rewrite_fn`` to the whole JSON string, then writes the result
-    back -- re-split across the SAME part rows for a segmented index (the
-    binary columns are left untouched) or as a single field for a single-row
-    index.
-
-    ``rewrite_fn`` receives the full id_map JSON string and returns the
-    rewritten string; returning it unchanged means "nothing to do".
-
-    Every statement runs on the caller's ``cur`` so the rewrite joins the
-    caller's transaction. Returns True if any row was updated.
-
-    Raises ``ValueError`` if the rewritten id_map needs more part rows than the
-    index currently has -- only possible when the id_map dominates the part
-    count and the new ids are substantially longer. The caller should rebuild
-    the index from scratch in that case rather than risk a partial write.
-    """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(index_name, "index_name")
     mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
@@ -579,8 +420,7 @@ def rewrite_segmented_id_map(
 
     like_pattern = index_name.replace("_", r"\_") + r"\_%\_%"
     cur.execute(
-        f"SELECT index_name, id_map_json FROM {target_table} "
-        f"WHERE index_name LIKE %s ESCAPE '\\'",
+        f"SELECT index_name, id_map_json FROM {target_table} WHERE index_name LIKE %s ESCAPE '\\'",
         (like_pattern,),
     )
     seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
@@ -615,7 +455,6 @@ def rewrite_segmented_id_map(
 
 
 def build_id_map(item_ids: Iterable[str]) -> dict:
-    """Return ``{int_vec_id: item_id_str}`` matching the row order."""
     return {i: item_id for i, item_id in enumerate(item_ids)}
 
 
@@ -626,33 +465,6 @@ def store_segmented_blob(
     blob: bytes,
     max_part_size_mb: Optional[int] = None,
 ) -> None:
-    """Persist a single BYTEA payload to a ``(name, blob_data, created_at)`` table.
-
-    Mirrors :func:`store_ivf_index_segmented` but for the simpler 2-column
-    schema used by ``artist_metadata_data``: ``name VARCHAR PRIMARY KEY``,
-    ``blob_data BYTEA NOT NULL``, ``created_at TIMESTAMP``. Any previous rows
-    matching ``name`` or ``name_<part>_<total>`` are deleted in the same
-    transaction before the new payload is written, so readers never see
-    partial state.
-
-    Payloads larger than ``max_part_size_mb`` are split into rows named
-    ``<name>_<part>_<total>``. This is what insulates the artist metadata
-    blob from PG's 1 GB MaxAllocSize cap at any library size: a 2.4 GB blob
-    becomes ~48 rows of 50 MB each, all well under the cap.
-
-    The caller's ``db_conn`` is used as-is and is **not** committed by this
-    function. The caller controls the transaction boundary.
-
-    Args:
-        db_conn: psycopg2 connection (caller's main connection).
-        target_table: ``(name VARCHAR PK, blob_data BYTEA, created_at TIMESTAMP)``
-            target table (must be a bare SQL identifier).
-        name: logical blob name (must be a bare SQL identifier so the
-            LIKE-escape pattern is unambiguous).
-        blob: payload to persist. Empty bytes raises ``ValueError``.
-        max_part_size_mb: override for ``config.IVF_MAX_PART_SIZE_MB``
-            (the existing global tunable for segmented-row sizing).
-    """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(name, "name")
     if not blob:
@@ -661,10 +473,7 @@ def store_segmented_blob(
     mb = config.IVF_MAX_PART_SIZE_MB if max_part_size_mb is None else int(max_part_size_mb)
     max_part_size = mb * 1024 * 1024
 
-    delete_sql = (
-        f"DELETE FROM {target_table} "
-        f"WHERE name = %s OR name LIKE %s ESCAPE '\\'"
-    )
+    delete_sql = f"DELETE FROM {target_table} WHERE name = %s OR name LIKE %s ESCAPE '\\'"
     like_pattern = name.replace("_", r"\_") + r"\_%\_%"
 
     upsert_sql = (
@@ -696,7 +505,9 @@ def store_segmented_blob(
                 cur.execute(insert_sql, (part_name, psycopg2.Binary(part)))
             logger.info(
                 "Stored '%s' in %d segmented rows in %s.",
-                name, num_parts, target_table,
+                name,
+                num_parts,
+                target_table,
             )
 
 
@@ -705,31 +516,12 @@ def load_segmented_blob(
     target_table: str,
     name: str,
 ) -> Optional[bytes]:
-    """Reassemble a payload previously written by :func:`store_segmented_blob`.
-
-    Tries the single-row form first (``name = <name>``), then the segmented
-    form (``name LIKE <name>_<part>_<total>``). Returns ``None`` if neither
-    yields a row -- the loader can use that to detect a legacy deployment
-    that has not yet rebuilt onto the new table and fall back to whatever
-    older storage existed.
-
-    Validates that all expected segments are present before returning. A
-    missing or duplicated segment raises ``ValueError``; this is treated as
-    a corruption signal rather than silently returning a partial blob.
-
-    Args:
-        db_conn: psycopg2 connection.
-        target_table: ``(name VARCHAR PK, blob_data BYTEA, created_at TIMESTAMP)``
-            source table (must be a bare SQL identifier).
-        name: logical blob name (must be a bare SQL identifier).
-    """
     _validate_sql_identifier(target_table, "table")
     _validate_sql_identifier(name, "name")
 
     select_single_sql = f"SELECT blob_data FROM {target_table} WHERE name = %s"
     select_segments_sql = (
-        f"SELECT name, blob_data FROM {target_table} "
-        f"WHERE name LIKE %s ESCAPE '\\'"
+        f"SELECT name, blob_data FROM {target_table} WHERE name LIKE %s ESCAPE '\\'"
     )
     like_pattern = name.replace("_", r"\_") + r"\_%\_%"
     seg_pattern = re.compile(rf"^{re.escape(name)}_(\d+)_(\d+)$")
@@ -784,25 +576,6 @@ def pack_artist_metadata(
     artist_map: Dict[int, str],
     artist_gmms: Dict[str, Dict],
 ) -> bytes:
-    """Serialize the artist index's auxiliary metadata into a single bytes blob.
-
-    Produces a self-describing little-endian binary container that replaces
-    the previous JSON-of-floats storage. Format documented in the plan; in
-    short:
-
-    * 24-byte header (magic ``ARMD``, version=1, artist_count, two section
-      offsets).
-    * Artist-map section: per (vec_id, artist_name) tuple.
-    * GMM-params section: per artist, ``means`` and ``weights`` as raw
-      float32 little-endian bytes. ``covariances`` is deliberately not
-      stored -- nothing reads it.
-
-    Args:
-        artist_map: ``{vec_id_int: artist_name_str}``.
-        artist_gmms: ``{artist_name_str: {means, weights, n_components,
-            n_features, n_tracks, is_few_songs, tracks_hash}}``. Extra keys
-            are ignored; missing keys raise ``KeyError``.
-    """
     buf = io.BytesIO()
     buf.write(b"\x00" * _ARTIST_META_HEADER_SIZE)
 
@@ -811,7 +584,9 @@ def pack_artist_metadata(
     for vec_id, artist_name in artist_map.items():
         name_bytes = artist_name.encode("utf-8")
         if len(name_bytes) > 0xFFFF:
-            raise ValueError(f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix")
+            raise ValueError(
+                f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix"
+            )
         buf.write(struct.pack("<IH", int(vec_id), len(name_bytes)))
         buf.write(name_bytes)
 
@@ -820,12 +595,16 @@ def pack_artist_metadata(
     for artist_name, gmm in artist_gmms.items():
         name_bytes = artist_name.encode("utf-8")
         if len(name_bytes) > 0xFFFF:
-            raise ValueError(f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix")
+            raise ValueError(
+                f"artist_name too long ({len(name_bytes)} bytes) for uint16 length prefix"
+            )
 
         tracks_hash = gmm.get("tracks_hash", "")
         tracks_hash_bytes = tracks_hash.encode("ascii") if tracks_hash else b""
         if len(tracks_hash_bytes) > 0xFF:
-            raise ValueError(f"tracks_hash too long ({len(tracks_hash_bytes)} bytes) for uint8 length prefix")
+            raise ValueError(
+                f"tracks_hash too long ({len(tracks_hash_bytes)} bytes) for uint8 length prefix"
+            )
 
         n_components = int(gmm["n_components"])
         n_features = int(gmm["n_features"])
@@ -841,8 +620,7 @@ def pack_artist_metadata(
             )
         if weights.shape != (n_components,):
             raise ValueError(
-                f"weights shape {weights.shape} != ({n_components},) "
-                f"for artist '{artist_name}'"
+                f"weights shape {weights.shape} != ({n_components},) for artist '{artist_name}'"
             )
 
         buf.write(struct.pack("<H", len(name_bytes)))
@@ -867,17 +645,6 @@ def pack_artist_metadata(
 
 
 def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]]:
-    """Inverse of :func:`pack_artist_metadata`.
-
-    Returns ``(artist_map, artist_gmms)`` reconstructed from the binary blob.
-    ``artist_gmms`` entries have the same in-memory shape the rest of the
-    code expects (``means`` and ``weights`` as Python lists, plus the
-    metadata fields). ``covariances`` and ``covariance_type`` are NOT
-    re-introduced -- nothing live reads them.
-
-    Raises ``ValueError`` if the magic / version don't match or if the blob
-    is truncated.
-    """
     if len(blob) < _ARTIST_META_HEADER_SIZE:
         raise ValueError(f"artist metadata blob too short ({len(blob)} bytes)")
 
@@ -898,7 +665,7 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
     for _ in range(map_count):
         vec_id, name_len = struct.unpack_from("<IH", blob, pos)
         pos += 6
-        name = blob[pos:pos + name_len].decode("utf-8")
+        name = blob[pos : pos + name_len].decode("utf-8")
         pos += name_len
         artist_map[int(vec_id)] = name
 
@@ -907,17 +674,15 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
     (gmm_count,) = struct.unpack_from("<I", blob, pos)
     pos += 4
     if gmm_count != artist_count:
-        raise ValueError(
-            f"header artist_count={artist_count} != gmm section count={gmm_count}"
-        )
+        raise ValueError(f"header artist_count={artist_count} != gmm section count={gmm_count}")
     for _ in range(gmm_count):
         (name_len,) = struct.unpack_from("<H", blob, pos)
         pos += 2
-        name = blob[pos:pos + name_len].decode("utf-8")
+        name = blob[pos : pos + name_len].decode("utf-8")
         pos += name_len
         (tracks_hash_len,) = struct.unpack_from("<B", blob, pos)
         pos += 1
-        tracks_hash = blob[pos:pos + tracks_hash_len].decode("ascii") if tracks_hash_len else ""
+        tracks_hash = blob[pos : pos + tracks_hash_len].decode("ascii") if tracks_hash_len else ""
         pos += tracks_hash_len
         is_few_songs, n_components, n_features, n_tracks = struct.unpack_from("<BHHI", blob, pos)
         pos += 1 + 2 + 2 + 4

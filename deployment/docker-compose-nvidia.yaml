@@ -4,6 +4,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: audiomuse-redis
+    environment:
+      TZ: "${TZ:-UTC}"
     ports:
       - "${REDIS_PORT:-6379}:6379" # Expose Redis port to the host
     volumes:
@@ -15,6 +17,7 @@ services:
     image: postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
+      TZ: "${TZ:-UTC}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: "audiomusedb"
@@ -38,11 +41,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: "audiomusedb"
       POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432" # Internal port — always 5432 inside the Docker network
+      POSTGRES_PORT: "5432" # Internal port - always 5432 inside the Docker network
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-flask:/app/temp_audio # Volume for temporary audio files
+      - plugins-flask:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
       - redis
       - postgres
@@ -67,7 +71,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
       POSTGRES_DB: "audiomusedb"
       POSTGRES_HOST: "postgres" # Service name of the postgres container
-      POSTGRES_PORT: "5432" # Internal port — always 5432 inside the Docker network
+      POSTGRES_PORT: "5432" # Internal port - always 5432 inside the Docker network
       REDIS_URL: "redis://redis:6379/0" # Connects to the 'redis' service
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
@@ -75,6 +79,7 @@ services:
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
+      - plugins-worker:/app/plugin/installed # This container's own plugins cache (code + pip deps)
     depends_on:
       - redis
       - postgres
@@ -93,3 +98,7 @@ volumes:
   postgres-data:
   temp-audio-flask: # Volume for Flask app's temporary audio
   temp-audio-worker: # Volume for Worker's temporary audio
+  # Installed plugins live here (not in the database). Flask and worker each keep
+  # their own copy and install into it, so plugins are reused across restarts.
+  plugins-flask:
+  plugins-worker:

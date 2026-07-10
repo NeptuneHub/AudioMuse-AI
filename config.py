@@ -1,10 +1,28 @@
-#AudioMuse-AI/config.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Single source of truth for environment-variable-driven configuration.
+
+Reads every tunable from ``os.environ`` at import time and exposes it as a
+module-level constant with a baked-in default, so other modules import the
+resolved value instead of re-reading the environment or re-specifying defaults.
+
+Main Features:
+* Centralizes app/media-server/database/Redis/task and index defaults in one place.
+* Keeps the section and per-parameter comments that document each setting.
+* At import, ``_apply_db_overrides`` layers persisted setup-wizard values from the
+  DB over the env defaults (skipping Redis/Postgres/admin/precomputed keys).
+"""
+
 import os
 import tempfile
 
 # --- Task Status Constants ---
-# These are used across the application for task tracking. Placed here so they're
-# available everywhere without creating import chains.
 TASK_STATUS_PENDING = 'PENDING'
 TASK_STATUS_STARTED = 'STARTED'
 TASK_STATUS_PROGRESS = 'PROGRESS'
@@ -13,7 +31,7 @@ TASK_STATUS_FAILURE = 'FAILURE'
 TASK_STATUS_REVOKED = 'REVOKED'
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -41,7 +59,7 @@ PROBE_TOP_PLAYED_LIMIT = int(os.environ.get("PROBE_TOP_PLAYED_LIMIT", "1"))
 # unmatched groups (e.g. wrong path format) and the page becomes unusable
 # beyond a couple hundred entries. The full count is still surfaced as a
 # warning so the user knows the list is truncated.
-MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200"))
+MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT = max(1, int(os.environ.get("MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT", "200")))
 # Hard cap on the per-collision detail rows persisted into migration_session.state.
 # collision_details is display-only (it tells the user which albums to re-match),
 # so storing one entry per collision would let this single JSONB field grow with
@@ -51,9 +69,15 @@ MIGRATION_MAX_COLLISION_DETAILS = int(os.environ.get("MIGRATION_MAX_COLLISION_DE
 TEMP_DIR = os.environ.get("TEMP_DIR", "/app/temp_audio")
 
 
+def jellyfin_auth_header(token):
+    # Jellyfin 12.0 disables the legacy X-Emby-Token header by default; the
+    # Authorization: MediaBrowser scheme works on every supported version.
+    return {"Authorization": f'MediaBrowser Token="{token}"'} if token else {}
+
+
 def _compute_headers():
     if MEDIASERVER_TYPE == "jellyfin":
-        return {"X-Emby-Token": JELLYFIN_TOKEN}
+        return jellyfin_auth_header(JELLYFIN_TOKEN)
     if MEDIASERVER_TYPE == "emby":
         return {"X-Emby-Token": EMBY_TOKEN}
     return {}
@@ -70,11 +94,17 @@ NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "") # Use the password
 # These are used only if MEDIASERVER_TYPE is "lyrion".
 LYRION_URL = os.environ.get("LYRION_URL", "")
 
+# --- Plex Constants ---
+# These are used only if MEDIASERVER_TYPE is "plex".
+PLEX_URL = os.environ.get("PLEX_URL", "") # e.g. http://your-plex-server:32400
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "") # X-Plex-Token for the Plex server
+
 MEDIASERVER_FIELDS_BY_TYPE = {
     'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD'],
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
+    'plex': ['PLEX_URL', 'PLEX_TOKEN'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -102,7 +132,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
     'AUDIOMUSE_PASSWORD',
-    # Computed numpy/precomputed constants — persisting them through
+    # Computed numpy/precomputed constants - persisting them through
     # setup_manager would stringify the ndarray ("[1. 0. 0. ...]") and
     # corrupt the value on reload (cast_value can't reverse str(ndarray)).
     'LYRICS_INSTRUMENTAL_EMBEDDING',
@@ -110,7 +140,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.3.0"
+APP_VERSION = "v2.6.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -118,6 +148,8 @@ MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs p
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.
 SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").lower() == 'true'
+# Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
+RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
 TOP_N_PLAYLISTS = int(os.environ.get("TOP_N_PLAYLISTS", "8")) # *** NEW: Default for Top N diverse playlists ***
 MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", "20")) # Min songs for a playlist to be considered in the first pass of Top-N selection.
@@ -165,7 +197,7 @@ SPECTRAL_N_NEIGHBORS = int(os.getenv("SPECTRAL_N_NEIGHBORS", "20"))
 # --- PCA Constants (Ranges for Evolutionary Approach) ---
 # Default ranges for PCA components
 PCA_COMPONENTS_MIN = int(os.getenv("PCA_COMPONENTS_MIN", "0")) # 0 to disable PCA
-PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max components for PCA 8 for score vectore, 199 for embeding
+PCA_COMPONENTS_MAX = int(os.getenv("PCA_COMPONENTS_MAX", "199")) # Max components for PCA 8 for score vector, 199 for embedding
 
 # --- Clustering Runs for Diversity (New Constant) ---
 CLUSTERING_RUNS = int(os.environ.get("CLUSTERING_RUNS", "1000")) # Default to 100 runs for evolutionary search
@@ -187,6 +219,7 @@ CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_C
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
+ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
@@ -264,15 +297,15 @@ OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(os.environ.get("OTHER_FE
 
 # --- AI Playlist Naming ---
 # USE_AI_PLAYLIST_NAMING is replaced by AI_MODEL_PROVIDER
-OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate") # URL for your Ollama instance
-OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b") # Ollama model to use
+OLLAMA_SERVER_URL = os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate") # URL for your Ollama instance
+OLLAMA_MODEL_NAME = os.environ.get("OLLAMA_MODEL_NAME", "qwen3.5:9b") # Ollama model to use
 
 # Maximum number of songs to include in AI naming prompts (to avoid token limit issues)
 # Large playlists will use only the first N songs for naming
 MAX_SONGS_IN_AI_PROMPT = int(os.environ.get("MAX_SONGS_IN_AI_PROMPT", "25"))
 
 # OpenAI API (also used for OpenRouter) - uses same API standard as Ollama
-OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://192.168.3.211:11434/api/generate"))
+OPENAI_SERVER_URL = os.environ.get("OPENAI_SERVER_URL", os.environ.get("OLLAMA_SERVER_URL", "http://localhost:11434/api/generate"))
 OPENAI_MODEL_NAME = os.environ.get("OPENAI_MODEL_NAME", os.environ.get("OLLAMA_MODEL_NAME", "llama3.1:8b"))
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "no-key-needed") # Set to "no-key-needed" for Ollama, or your actual API key for OpenAI/OpenRouter
 
@@ -287,7 +320,17 @@ MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 # For CPU-only Ollama instances or large models that take longer to generate responses, consider setting to 300-600 seconds.
 # Default: 120 seconds for Ollama (tool calling/instant playlist), 60 seconds for OpenAI/Mistral
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
+
+# Sampling temperature for the tool-calling (playlist planning) LLM request.
+# Qwen3-family models officially warn against greedy decoding (temperature 0 causes
+# repetition loops); 0.7 is the vendor-recommended non-thinking value.
+AI_TOOLCALL_TEMPERATURE = float(os.environ.get("AI_TOOLCALL_TEMPERATURE", "0.7"))
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
+# RQ worker tuning: restart-after-N-jobs (memory-leak guard) and log level.
+RQ_MAX_JOBS = int(os.getenv('RQ_MAX_JOBS', '50'))
+RQ_MAX_JOBS_HIGH = int(os.getenv('RQ_MAX_JOBS_HIGH', '100'))
+RQ_LOGGING_LEVEL = os.getenv('RQ_LOGGING_LEVEL', 'INFO').upper()
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -342,6 +385,7 @@ LYRICS_ENABLED = os.environ.get("LYRICS_ENABLED", "true").lower() == "true"
 # When true, look up lyrics from user-configured external APIs before falling back to Whisper-small ASR.
 LYRICS_API_ENABLE = os.environ.get("LYRICS_API_ENABLE", "true").lower() == "true"
 LYRICS_ASR_ENABLE = os.environ.get("LYRICS_ASR_ENABLE", "true").lower() == "true"
+LYRICS_MUSICNN_SKIP = os.environ.get("LYRICS_MUSICNN_SKIP", "true").lower() == "true"
 # Timeout (seconds) for fetching embedded lyrics from the configured media server
 # (Jellyfin / Emby / Navidrome / Lyrion). Increase if your server fetches lyrics
 # on-the-fly via plugins (e.g. Navidrome lyrics plugins) that may take several
@@ -366,8 +410,8 @@ LYRICS_API_2_APIKEY_VALUE  = os.environ.get("LYRICS_API_2_APIKEY_VALUE",  "")
 LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0"))
 # Beam search width for the Whisper-small ASR decoder. 1 = pure greedy
 # (fastest, most error-prone), 2 = sweet spot (catches stuck-loop
-# attractors at ~2× greedy cost), 5 = Whisper-upstream default (max
-# quality, ~5× cost). Each extra beam adds one decoder.run per generated
+# attractors at ~2x greedy cost), 5 = Whisper-upstream default (max
+# quality, ~5x cost). Each extra beam adds one decoder.run per generated
 # token plus its own KV cache (~30-80 MB at a full 30 s chunk).
 LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
 LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
@@ -401,8 +445,8 @@ LYRICS_EMBEDDING_DIMENSION = int(os.environ.get("LYRICS_EMBEDDING_DIMENSION", "7
 # Minimum number of CHARACTERS (not words) a transcript must have for the
 # lyrics pipeline to compute an embedding. Below this, the song is treated
 # as having no usable lyrics and gets the instrumental sentinel. Char-based
-# instead of word-based so CJK / Thai / Lao scripts — which have no spaces
-# between words — aren't all collapsed to "1 word" by str.split() and
+# instead of word-based so CJK / Thai / Lao scripts - which have no spaces
+# between words - aren't all collapsed to "1 word" by str.split() and
 # spuriously dropped. 250 chars ~ 50 English words at 5 chars/word average,
 # or ~150 CJK chars (roughly equivalent lyrical content).
 LYRICS_MIN_CHARS_FOR_EMBEDDING = int(os.environ.get("LYRICS_MIN_CHARS_FOR_EMBEDDING", "250"))
@@ -418,7 +462,7 @@ LYRICS_TEXT_MAX_COMPRESSION_RATIO = float(os.environ.get("LYRICS_TEXT_MAX_COMPRE
 # real lyrics. Below this the lyrics are dropped to the instrumental sentinel rather
 # than let unidentifiable junk (garbled API responses, mojibake, filler) pollute the
 # embedding (issue #543). Embedding is multilingual now, so this is purely a quality
-# gate — no translation is performed.
+# gate - no translation is performed.
 LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", "0.70"))
 # Minimum fraction of letters that must be CJK script (Hangul / kana / Han) for the
 # lyrics to be treated as genuine CJK regardless of what langdetect reports. Code-mixed
@@ -429,11 +473,24 @@ LYRICS_LANG_CONFIDENCE_MIN = float(os.environ.get("LYRICS_LANG_CONFIDENCE_MIN", 
 LYRICS_CJK_SCRIPT_MIN_RATIO = float(os.environ.get("LYRICS_CJK_SCRIPT_MIN_RATIO", "0.10"))
 # Maximum number of tokens fed to the gte-multilingual-base embedding model per
 # track. The model supports up to 8192; lyrics are truncated here (default 512,
-# roughly a full song — ~500 tokens for English, fewer characters for CJK which
+# roughly a full song - ~500 tokens for English, fewer characters for CJK which
 # fragments into more tokens). Higher values embed more of long songs at extra
 # CPU cost. Changing this alters the embeddings, so re-embed (drop the lyrics
 # tables) afterwards for consistency.
 LYRICS_GTE_MAX_TOKENS = int(os.environ.get("LYRICS_GTE_MAX_TOKENS", "512"))
+
+# Silero VAD tuning for the lyrics ASR pre-pass (16 kHz only). The retry floor is
+# a second, more permissive threshold tried only when the primary pass finds no
+# speech. Durations are in milliseconds.
+LYRICS_VAD_THRESHOLD = float(os.environ.get("LYRICS_VAD_THRESHOLD", "0.2"))
+# Hysteresis floor; derived from the primary threshold when unset.
+LYRICS_VAD_NEG_THRESHOLD = (float(os.environ["LYRICS_VAD_NEG_THRESHOLD"])
+    if "LYRICS_VAD_NEG_THRESHOLD" in os.environ
+    else max(0.01, LYRICS_VAD_THRESHOLD - 0.15))
+LYRICS_VAD_RETRY_FLOOR = float(os.environ.get("LYRICS_VAD_RETRY_FLOOR", "0.15"))
+LYRICS_VAD_MIN_SILENCE_MS = int(os.environ.get("LYRICS_VAD_MIN_SILENCE_MS", "1000"))
+LYRICS_VAD_MIN_SPEECH_MS = int(os.environ.get("LYRICS_VAD_MIN_SPEECH_MS", "250"))
+LYRICS_VAD_SPEECH_PAD_MS = int(os.environ.get("LYRICS_VAD_SPEECH_PAD_MS", "400"))
 
 # --- SemGrove (Semantic + Groove) merged index weights ---
 # Controls how much each signal contributes to the merged cosine similarity.
@@ -531,22 +588,24 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
 IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
 IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
-ARTIST_INDEX_MAX_PART_SIZE_MB = int(os.environ.get("ARTIST_INDEX_MAX_PART_SIZE_MB", "50"))  # Max part size (MB) for artist index storage
 
 # --- Disk-Paged IVF Index Constants ---
-# When enabled, the large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
-# are stored as an inverted-file (IVF) index whose full-precision float32 cells live
-# in Postgres rows. A query reads only the nearest IVF_NPROBE cells, so the Flask
-# container's resident index memory is bounded by IVF_QUERY_CACHE_MB per index instead
-# of growing with the library size. No vector quantization is used.
-IVF_BACKEND_ENABLED = os.environ.get("IVF_BACKEND_ENABLED", "true").lower() == "true"
+# The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
+# are stored as an inverted-file (IVF) index whose cells live in Postgres rows. A
+# query reads only the nearest IVF_NPROBE cells, so the Flask container's resident
+# index memory is bounded by IVF_QUERY_CACHE_MB per index instead of growing with
+# the library size. Cell vectors are quantized per IVF_STORAGE_DTYPE (coarse
+# centroids stay float32, so cell selection / recall is unaffected).
+IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
-IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "120000"))  # Max vectors sampled to train the coarse quantizer
+IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
-IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "256"))  # Cells probed per query (X): the dominant recall/latency knob
+IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob
+IVF_RERANK_OVERFETCH = int(os.environ.get("IVF_RERANK_OVERFETCH", "4"))  # int8 is the coarse stage; the similarity query over-fetches this multiple of the candidate pool and re-ranks it with exact float32 (read from the source embedding table) so top-K ordering matches full precision. Higher = more exact tail recall, more per-query f32 reads.
 IVF_QUERY_CACHE_MB = int(os.environ.get("IVF_QUERY_CACHE_MB", "128"))  # Hard cap (Y) on the per-request vector cache, in MB
 IVF_READ_BATCH_CELLS = int(os.environ.get("IVF_READ_BATCH_CELLS", "16"))  # Cells fetched per DB round-trip during a query
+IVF_QUERY_PARALLEL_MIN_VECTORS = int(os.environ.get("IVF_QUERY_PARALLEL_MIN_VECTORS", "8192"))  # Only fan the per-cell distance scan across threads when a query's probed cells hold at least this many vectors; smaller queries stay serial
 IVF_GLOBAL_CACHE_MB = int(os.environ.get("IVF_GLOBAL_CACHE_MB", "1024"))  # Hard cap (MB) on the process-wide cross-request decoded-cell cache shared by all indexes; 0 disables it
 IVF_PRELOAD_ALL = os.environ.get("IVF_PRELOAD_ALL", "false").lower() == "true"  # When true, stream every cell into the global cache at load time (in-memory IVF), still bounded by IVF_GLOBAL_CACHE_MB
 IVF_GLOBAL_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_GLOBAL_CACHE_IDLE_SECONDS", "300"))  # Drop the whole global cell cache after this many seconds with no access (frees idle RAM); 0 = never drop
@@ -554,10 +613,15 @@ IVF_RESULT_CACHE_SECONDS = int(os.environ.get("IVF_RESULT_CACHE_SECONDS", "300")
 IVF_RESULT_CACHE_MAX = int(os.environ.get("IVF_RESULT_CACHE_MAX", "2048"))  # Max distinct cached query results per result cache
 IVF_MAX_DISTANCE_NPROBE = int(os.environ.get("IVF_MAX_DISTANCE_NPROBE", "256"))  # Farthest cells probed for the max-distance display value (reverse-IVF); 0 or >= nlist = exact full scan
 IVF_DISK_CACHE_ENABLED = os.environ.get("IVF_DISK_CACHE_ENABLED", "true").lower() == "true"  # Export each index's cells to a local file at load and serve queries via mmap (OS page cache), instead of reading from Postgres per query; false = read from Postgres
-IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or (
-    os.path.join(APP_DATA_DIR, "ivf_cache") if APP_DATA_DIR
-    else ("/app/ivf_cache" if os.path.isdir("/app") else os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache"))
-)  # Local dir for the mmap cell files: native build data dir, else /app/ivf_cache in containers, else a temp dir
+IVF_DISK_CACHE_IDLE_SECONDS = int(os.environ.get("IVF_DISK_CACHE_IDLE_SECONDS", "300"))  # Drop the resident (RSS) pages of every disk-cache mmap after this many seconds with no query (MADV_DONTNEED; mapping stays, next query re-faults from disk); frees idle RAM; 0 = never drop
+# Local dir for the mmap cell files: native build data dir, else /app/ivf_cache in containers, else a temp dir
+if APP_DATA_DIR:
+    _ivf_disk_cache_default = os.path.join(APP_DATA_DIR, "ivf_cache")
+elif os.path.isdir("/app"):
+    _ivf_disk_cache_default = "/app/ivf_cache"
+else:
+    _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
+IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -607,6 +671,63 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
 ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
 
+# --- Plugin System ---
+# Master switch for the plugin subsystem (discovery, loading, admin UI).
+PLUGINS_ENABLED = os.environ.get("PLUGINS_ENABLED", "true").lower() == "true"
+# Where installed plugin code and its pip dependencies live. The `plugins` DB table
+# keeps only metadata plus a re-download URL, not the zip, so mount this on a
+# persistent volume to keep plugins across restarts. If it is empty at boot the app
+# re-downloads each plugin from its source URL and reinstalls its deps (logged as a
+# warning). Native/standalone builds set APP_DATA_DIR; containers fall back to
+# <repo>/plugin/installed.
+if APP_DATA_DIR:
+    _plugins_dir_default = os.path.join(APP_DATA_DIR, "plugins")
+else:
+    _plugins_dir_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin", "installed")
+PLUGINS_DIR = os.environ.get("PLUGINS_DIR", "") or _plugins_dir_default
+# Default community catalog (a static Jellyfin-style manifest.json hosted on GitHub raw).
+PLUGIN_DEFAULT_REPO_URL = os.environ.get(
+    "PLUGIN_DEFAULT_REPO_URL",
+    "https://raw.githubusercontent.com/NeptuneHub/AudioMuse-AI-plugins/main/manifest.json",
+)
+# Hard cap on a downloaded plugin package (MB) to bound the DB blob and extraction.
+PLUGIN_MAX_DOWNLOAD_MB = int(os.environ.get("PLUGIN_MAX_DOWNLOAD_MB", "50"))
+# Allow pip-installing plugin requirements into PLUGINS_DIR/_lib (Docker/k8s only;
+# auto-disabled on frozen PyInstaller builds which cannot pip into the bundle).
+PLUGIN_ALLOW_PIP = os.environ.get("PLUGIN_ALLOW_PIP", "true").lower() == "true"
+# Plugin catalog/manifest HTTP timeouts (seconds). PLUGIN_HTTP_FORCE_IPV4 (default true)
+# already avoids the broken-IPv6 stall, so CONNECT no longer needs to be tiny: a container's
+# egress to GitHub's CDN often needs several seconds to complete the TCP handshake even when
+# a browser on the same LAN connects instantly, so a 2s bound was rejecting working hosts.
+PLUGIN_HTTP_CONNECT_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_CONNECT_TIMEOUT", "10"))
+PLUGIN_HTTP_READ_TIMEOUT = float(os.environ.get("PLUGIN_HTTP_READ_TIMEOUT", "20"))
+# Plugin downloads retry transient failures with exponential backoff before giving up.
+# GitHub's raw/Fastly and release CDNs drop connections, rate-limit with 429, and are
+# flaky over IPv6, so one click should not fail on the first hiccup. backoff_factor 0.5
+# with 4 retries waits ~0, 0.5, 1, 2, 4s between attempts.
+PLUGIN_HTTP_RETRIES = int(os.environ.get("PLUGIN_HTTP_RETRIES", "4"))
+PLUGIN_HTTP_BACKOFF = float(os.environ.get("PLUGIN_HTTP_BACKOFF", "0.5"))
+# raw.githubusercontent.com is often unreachable over IPv6 from a container whose pod
+# has an IPv6 address but no IPv6 egress (Errno 101 Network is unreachable). Default true
+# pins all outbound HTTP to IPv4 so the broken AAAA path is never tried; set this to false
+# only on an IPv6-only host.
+PLUGIN_HTTP_FORCE_IPV4 = os.environ.get("PLUGIN_HTTP_FORCE_IPV4", "true").lower() == "true"
+# Concurrency for resolving per-plugin manifests when building the catalog.
+PLUGIN_CATALOG_FETCH_WORKERS = int(os.environ.get("PLUGIN_CATALOG_FETCH_WORKERS", "8"))
+# How long (seconds) the catalog's latest-version map is reused to flag "update available"
+# on the Installed tab before a background refresh re-checks the repos. This is what lets
+# the Installed list show updates instantly instead of blocking on a live GitHub fetch.
+PLUGIN_CATALOG_CACHE_TTL = int(os.environ.get("PLUGIN_CATALOG_CACHE_TTL", "900"))
+# The web process also refreshes the catalog cache on its own: once at startup and then
+# every this many seconds (default 1 hour), so update buttons appear even when nobody
+# opens the Catalog tab. Opening the Catalog tab or clicking Refresh also triggers it.
+PLUGIN_CATALOG_REFRESH_INTERVAL = int(os.environ.get("PLUGIN_CATALOG_REFRESH_INTERVAL", "3600"))
+# How long plugin boot waits for the database to accept connections before giving
+# up (the RQ workers boot plugins before the Postgres pod is guaranteed ready; a
+# transient 'connection refused' would otherwise disable plugins until restart).
+PLUGIN_BOOT_DB_WAIT_SECONDS = int(os.environ.get("PLUGIN_BOOT_DB_WAIT_SECONDS", "60"))
+PLUGIN_BOOT_DB_WAIT_INTERVAL = float(os.environ.get("PLUGIN_BOOT_DB_WAIT_INTERVAL", "2"))
+
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))
 TEMPO_MAX_BPM = float(os.getenv("TEMPO_MAX_BPM", "200.0"))
@@ -627,7 +748,7 @@ CLAP_OTHER_FEATURES_REDIS_KEY = os.environ.get("CLAP_OTHER_FEATURES_REDIS_KEY", 
 # --- Sonic Fingerprint Constants ---
 SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONGS", "20"))
 # Max tracks a single album may contribute to the seed pool, so one large album
-# (e.g. a 100+ track DJ mix) cannot dominate the fingerprint — see issue #603.
+# (e.g. a 100+ track DJ mix) cannot dominate the fingerprint - see issue #603.
 SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
 SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
@@ -686,6 +807,11 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 #   proxy_set_header X-Forwarded-Proto https;
 #   proxy_set_header X-Forwarded-Prefix /audiomuseai;
 # }
+# The trailing slash on BOTH 'location /audiomuseai/' and 'proxy_pass .../' is
+# required: it makes nginx strip the subpath before forwarding. Without it the
+# full path reaches the app while X-Forwarded-Prefix is still sent, doubling the
+# prefix; the app now collapses that duplication (StripDuplicatedScriptName) so
+# it no longer loops to /audiomuseai/setup, but stripping at the proxy is correct.
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 
 # --- Instant Playlist Optimization ---

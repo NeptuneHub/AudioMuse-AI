@@ -16,6 +16,10 @@ var serverFields = {
         {name: 'EMBY_URL', label: 'Emby URL', placeholder: 'http://your-emby-server:8096', tooltip: 'Base URL of your Emby server, including http:// or https:// and the port.'},
         {name: 'EMBY_USER_ID', label: 'Emby user ID', placeholder: 'your-user-id', tooltip: 'The Emby user whose library AudioMuse-AI will read. Find the ID in Emby under Dashboard \u2192 Users \u2192 (your user).'},
         {name: 'EMBY_TOKEN', label: 'Emby API token', placeholder: 'your-api-token', tooltip: 'API key for that Emby user. Create one in Emby under Dashboard \u2192 API Keys.'}
+    ],
+    plex: [
+        {name: 'PLEX_URL', label: 'Plex URL', placeholder: 'http://your-plex-server:32400', tooltip: 'Base URL of your Plex Media Server, including http:// or https:// and the port (default 32400). Must be reachable from the AudioMuse-AI container.'},
+        {name: 'PLEX_TOKEN', label: 'Plex API token', placeholder: 'your-plex-token', tooltip: 'Your X-Plex-Token for the server. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ to find it.'}
     ]
 };
 
@@ -146,7 +150,7 @@ function createInputField(field, value) {
         // 'False', '1', '0', etc. from the API) to canonical 'true'/'false'.
         // For enums, do a case-insensitive match against the canonical
         // options so legacy stale-cased entries (e.g. 'DBSCAN') still display
-        // selected — saving will persist the canonical casing.
+        // selected - saving will persist the canonical casing.
         var normalized = '';
         if (value !== undefined && value !== null && String(value) !== '') {
             var raw = String(value).trim();
@@ -237,6 +241,12 @@ function createInputField(field, value) {
         }
         if (field.secret) {
             input.type = 'password';
+            // Stop the browser password manager from autofilling a saved
+            // credential over the masked '********' placeholder; that wrong
+            // value would then be submitted and overwrite the stored secret.
+            input.setAttribute('autocomplete', 'new-password');
+        } else {
+            input.setAttribute('autocomplete', 'off');
         }
     }
     if (field.required) {
@@ -266,7 +276,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -294,7 +304,183 @@ function renderServerFields(serverType, values, hasValueMap) {
         };
         serverConfigFields.appendChild(createInputField(fieldCopy, value));
     });
+    maybeRenderPlexPin(serverType);
     updateTestButtonState();
+}
+
+function maybeRenderPlexPin(serverType) {
+    if (window.PlexLink) {
+        window.PlexLink.stop();
+    }
+    if (serverType !== 'plex' || !window.PlexLink) {
+        return;
+    }
+    if (!document.getElementById('PLEX_TOKEN')) {
+        return;
+    }
+    var row = document.createElement('div');
+    row.className = 'field-row';
+    row.style.flexDirection = 'column';
+    row.style.alignItems = 'flex-start';
+    serverConfigFields.appendChild(row);
+    window.PlexLink.attach(row, {
+        getTokenInput: function() { return document.getElementById('PLEX_TOKEN'); }
+    });
+}
+
+// Advanced parameters are grouped into collapsible sections so the long, flat
+// list is navigable. Each section is just an ordered list of field names; any
+// advanced field not listed here falls into the catch-all "Other parameters"
+// section, so newly added config keys stay visible instead of being silently
+// dropped. This is purely presentational ordering - the values still
+// round-trip through the form exactly as before.
+var ADVANCED_SECTIONS = [
+    {
+        title: 'Audio Analysis',
+        items: [
+            'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS',
+            'PER_SONG_MODEL_RELOAD', 'CLAP_TOP_QUERIES_COUNT', 'CLAP_TEXT_SEARCH_WARMUP_DURATION',
+            'ENERGY_MIN', 'ENERGY_MAX', 'AUDIO_LOAD_TIMEOUT', 'REBUILD_INDEX_BATCH_SIZE',
+            'MAX_QUEUED_ANALYSIS_JOBS'
+        ]
+    },
+    {
+        title: 'Clustering & Playlist Generation',
+        items: [
+            'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
+            'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_PLAYLISTS',
+            'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
+            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS', 'DB_FETCH_CHUNK_SIZE',
+            'CLUSTERING_BATCH_TIMEOUT_MINUTES', 'CLUSTERING_MAX_FAILED_BATCHES',
+            'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
+            'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
+            'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION',
+            'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
+            'SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY', 'SCORE_WEIGHT_OTHER_FEATURE_PURITY',
+            'SCORE_WEIGHT_SILHOUETTE', 'SCORE_WEIGHT_DAVIES_BOULDIN', 'SCORE_WEIGHT_CALINSKI_HARABASZ',
+            'NUM_CLUSTERS_MIN', 'NUM_CLUSTERS_MAX',
+            'DBSCAN_EPS_MIN', 'DBSCAN_EPS_MAX', 'DBSCAN_MIN_SAMPLES_MIN', 'DBSCAN_MIN_SAMPLES_MAX',
+            'GMM_N_COMPONENTS_MIN', 'GMM_N_COMPONENTS_MAX', 'GMM_COVARIANCE_TYPE',
+            'SPECTRAL_N_CLUSTERS_MIN', 'SPECTRAL_N_CLUSTERS_MAX', 'SPECTRAL_N_NEIGHBORS',
+            'PCA_COMPONENTS_MIN', 'PCA_COMPONENTS_MAX',
+            'MIN_SONGS_PER_GENRE_FOR_STRATIFICATION', 'STRATIFIED_SAMPLING_TARGET_PERCENTILE',
+            'SAMPLING_PERCENTAGE_CHANGE_PER_RUN'
+        ]
+    },
+    {
+        title: 'Similarity & IVF Index',
+        items: [
+            'SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT', 'SIMILARITY_RADIUS_DEFAULT', 'IVF_METRIC',
+            'IVF_NPROBE', 'IVF_NLIST_MAX', 'IVF_TRAIN_POINTS_PER_CELL', 'IVF_MAX_CELL_MB',
+            'IVF_MAX_PART_SIZE_MB', 'IVF_QUERY_CACHE_MB', 'IVF_READ_BATCH_CELLS', 'IVF_GLOBAL_CACHE_MB',
+            'IVF_PRELOAD_ALL', 'IVF_GLOBAL_CACHE_IDLE_SECONDS', 'IVF_RESULT_CACHE_SECONDS',
+            'IVF_RESULT_CACHE_MAX', 'IVF_MAX_DISTANCE_NPROBE', 'IVF_DISK_CACHE_ENABLED',
+            'IVF_DISK_CACHE_IDLE_SECONDS', 'IVF_QUERY_EF'
+        ]
+    },
+    {
+        title: 'Duplicate & Mood Filtering',
+        items: [
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE', 'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
+            'DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 'DUPLICATE_DISTANCE_CHECK_LOOKBACK',
+            'MOOD_SIMILARITY_THRESHOLD', 'MOOD_SIMILARITY_ENABLE'
+        ]
+    },
+    {
+        title: 'Song Path',
+        items: [
+            'PATH_DISTANCE_METRIC', 'PATH_DEFAULT_LENGTH', 'PATH_AVG_JUMP_SAMPLE_SIZE',
+            'PATH_CANDIDATES_PER_STEP', 'PATH_LCORE_MULTIPLIER', 'PATH_FIX_SIZE'
+        ]
+    },
+    {
+        title: 'Song Alchemy',
+        items: [
+            'ALCHEMY_DEFAULT_N_RESULTS', 'ALCHEMY_MAX_N_RESULTS', 'ALCHEMY_TEMPERATURE',
+            'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR', 'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+            'ALCHEMY_PLAYLIST_MAX_SONGS', 'ALCHEMY_PLAYLIST_MAX_CENTROIDS', 'ALCHEMY_MAX_ANCHOR_POINTS'
+        ]
+    },
+    {
+        title: 'Sonic Fingerprint',
+        items: [
+            'SONIC_FINGERPRINT_TOP_N_SONGS', 'SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM',
+            'SONIC_FINGERPRINT_NEIGHBORS', 'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME'
+        ]
+    },
+    {
+        title: 'Lyrics & SemGrove Search',
+        items: [
+            'LYRICS_ENABLED', 'LYRICS_API_ENABLE', 'LYRICS_ASR_ENABLE', 'LYRICS_MUSICNN_SKIP',
+            'MUSICSERVER_LYRICS_TIMEOUT', 'VAD_VOICE_RECOGNITION', 'LYRICS_ASR_BEAM_SIZE',
+            'LYRICS_ASR_MIN_AVG_LOGPROB', 'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB',
+            'LYRICS_MIN_CHARS_FOR_EMBEDDING', 'LYRICS_TEXT_MAX_COMPRESSION_RATIO',
+            'LYRICS_LANG_CONFIDENCE_MIN', 'LYRICS_CJK_SCRIPT_MIN_RATIO', 'LYRICS_GTE_WARMUP_DURATION',
+            'SEM_GROVE_WEIGHT_LYRICS', 'SEM_GROVE_WEIGHT_AUDIO'
+        ]
+    },
+    {
+        title: 'AI Naming & Chat',
+        items: [
+            'AI_MODEL_PROVIDER', 'AI_REQUEST_TIMEOUT_SECONDS', 'MAX_SONGS_IN_AI_PROMPT',
+            'OLLAMA_SERVER_URL', 'OLLAMA_MODEL_NAME', 'OPENAI_SERVER_URL', 'OPENAI_MODEL_NAME',
+            'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_MODEL_NAME', 'MISTRAL_API_KEY', 'MISTRAL_MODEL_NAME'
+        ]
+    }
+];
+var ADVANCED_OTHER_TITLE = 'Other parameters';
+
+function buildAdvancedFieldRow(field) {
+    var secret = false;
+    if (field.secret) {
+        secret = true;
+    }
+    if (field.name.indexOf('_API_KEY') !== -1) {
+        secret = true;
+    }
+    var fieldConfig = {
+        name: field.name,
+        label: field.name,
+        placeholder: field.default ? field.default : '',
+        type: field.type === 'bool' ? 'boolean' : field.type,
+        inputType: 'text',
+        secret: secret,
+        has_value: field.has_value,
+        options: Array.isArray(field.options) ? field.options : null,
+        originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
+    };
+    return createInputField(fieldConfig, field.value);
+}
+
+function renderAdvancedSection(title, items, byName, consumed) {
+    var body = document.createDocumentFragment();
+    var count = 0;
+    items.forEach(function(name) {
+        var field = byName[name];
+        if (!field || consumed[name]) {
+            return;
+        }
+        body.appendChild(buildAdvancedFieldRow(field));
+        consumed[name] = true;
+        count += 1;
+    });
+    if (count === 0) {
+        return;
+    }
+    var details = document.createElement('details');
+    details.className = 'advanced-section';
+    var summary = document.createElement('summary');
+    summary.textContent = title + ' (' + count + ')';
+    details.appendChild(summary);
+    details.appendChild(body);
+    advancedFields.appendChild(details);
+}
+
+function setAllAdvancedSections(open) {
+    var sections = advancedFields.querySelectorAll('details.advanced-section');
+    Array.prototype.forEach.call(sections, function(section) {
+        section.open = open;
+    });
 }
 
 function renderAdvancedFields(fields) {
@@ -302,27 +488,26 @@ function renderAdvancedFields(fields) {
     if (!fields) {
         return;
     }
+    var byName = {};
     fields.forEach(function(field) {
-        var secret = false;
-        if (field.secret) {
-            secret = true;
+        if (field && field.name) {
+            byName[field.name] = field;
         }
-        if (field.name.indexOf('_API_KEY') !== -1) {
-            secret = true;
-        }
-        var fieldConfig = {
-            name: field.name,
-            label: field.name,
-            placeholder: field.default ? field.default : '',
-            type: field.type === 'bool' ? 'boolean' : field.type,
-            inputType: 'text',
-            secret: secret,
-            has_value: field.has_value,
-            options: Array.isArray(field.options) ? field.options : null,
-            originalValue: originalValues[field.name] !== undefined ? originalValues[field.name] : (field.value || '')
-        };
-        advancedFields.appendChild(createInputField(fieldConfig, field.value));
     });
+    var consumed = {};
+    ADVANCED_SECTIONS.forEach(function(section) {
+        renderAdvancedSection(section.title, section.items, byName, consumed);
+    });
+    // Catch-all for any advanced field not claimed by a named section, in the
+    // order the server returned them (alphabetical).
+    var leftovers = fields.filter(function(field) {
+        return field && field.name && !consumed[field.name];
+    }).map(function(field) {
+        return field.name;
+    });
+    if (leftovers.length) {
+        renderAdvancedSection(ADVANCED_OTHER_TITLE, leftovers, byName, consumed);
+    }
 }
 
 function loadSetupData() {
@@ -440,7 +625,7 @@ function loadSetupData() {
 
 function saveCurrentServerValues() {
     var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
-    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'];
+    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
     keys.forEach(function(key) {
         var input = document.getElementById(key);
         if (input) {
@@ -477,7 +662,7 @@ function updateServerFields() {
     // If the user flips back to the original provider, the next render will
     // re-check the matching names. The renderer's case-insensitive name
     // match means stale names against a new provider's libraries simply
-    // miss and leave their boxes unchecked — no leakage into the save.
+    // miss and leave their boxes unchecked - no leakage into the save.
     hideMusicLibrariesSection();
 }
 
@@ -576,7 +761,7 @@ function fetchProviderLibraries(serverType, configOverride) {
             updateMusicLibrariesHint();
         }
     }).catch(function() {
-        // Don't block the user on list failures — the free-text value still
+        // Don't block the user on list failures - the free-text value still
         // works on save (empty string = scan everything).
         hideMusicLibrariesSection();
     });
@@ -649,7 +834,7 @@ function renderLibraryCheckboxes(libraries, selectedNames) {
         // but disabled (the user shouldn't be picking from a list that is
         // already overridden). When off, honor the saved selection.
         cb.checked = noRestriction ? false : !!selectedLower[name.toLowerCase()];
-        // Override `.field-row input { width: 100% }` from setup.html — that
+        // Override `.field-row input { width: 100% }` from setup.html - that
         // global rule would stretch each checkbox across the row and push
         // the label text to the far right.
         cb.style.width = 'auto';
@@ -872,7 +1057,7 @@ setupForm.addEventListener('submit', function(event) {
                 saveFeedback.textContent = 'Configuration saved. Redirecting in ' + countdown + ' seconds...';
             } else {
                 clearInterval(countdownInterval);
-                window.location.href = '/';
+                if (window.appRedirect) { window.appRedirect('/'); } else { window.location.href = '/'; }
             }
         }, 1000);
     }).catch(function(err) {
@@ -895,8 +1080,36 @@ serverConfigFields.addEventListener('input', updateTestButtonState);
 document.getElementById('MEDIASERVER_TYPE').addEventListener('change', updateServerFields);
 document.getElementById('AUTH_ENABLED').addEventListener('change', updateAuthVisibility);
 
+// Advisory-only admin password length recommendation (never blocks saving).
+const RECOMMENDED_ADMIN_PASSWORD_LENGTH = 15;
+function updateAdminPasswordHint() {
+    const input = document.getElementById('AUDIOMUSE_PASSWORD');
+    const hint = document.getElementById('admin-password-hint');
+    if (!input || !hint) { return; }
+    const value = input.value;
+    if (value && value !== '********' && value.length < RECOMMENDED_ADMIN_PASSWORD_LENGTH) {
+        hint.textContent = 'For better security we recommend at least ' + RECOMMENDED_ADMIN_PASSWORD_LENGTH + ' characters. You can still save a shorter password.';
+        hint.style.display = 'block';
+    } else {
+        hint.style.display = 'none';
+    }
+}
+const adminPasswordInput = document.getElementById('AUDIOMUSE_PASSWORD');
+if (adminPasswordInput) {
+    adminPasswordInput.addEventListener('input', updateAdminPasswordHint);
+}
+
+var advancedExpandAll = document.getElementById('advanced-expand-all');
+if (advancedExpandAll) {
+    advancedExpandAll.addEventListener('click', function() { setAllAdvancedSections(true); });
+}
+var advancedCollapseAll = document.getElementById('advanced-collapse-all');
+if (advancedCollapseAll) {
+    advancedCollapseAll.addEventListener('click', function() { setAllAdvancedSections(false); });
+}
+
 // ---------------------------------------------------------------------------
-// Lyrics API section — interactive analyze & configure
+// Lyrics API section - interactive analyze & configure
 // ---------------------------------------------------------------------------
 var lyricsApiState = {};
 [1, 2].forEach(function(s) {
@@ -1330,7 +1543,7 @@ function showLyricsApiSlotSummary(slot, template, artistParam, titleParam, lyric
     summary.appendChild(editBtn);
 }
 
-// Show a "pending deletion" warning — hidden inputs are cleared so the next Save
+// Show a "pending deletion" warning - hidden inputs are cleared so the next Save
 // will commit the deletion, but the user can Undo before that.
 function pendingDeleteLyricsApiSlot(slot, template, artistParam, titleParam, lyricsField, apikeyParam, apikeyHasVal) {
     var pre = 'LYRICS_API_' + slot + '_';

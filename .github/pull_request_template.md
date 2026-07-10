@@ -11,7 +11,7 @@
 <!-- Anything else worth knowing (optional). -->
 
 ## Checklist
-<!-- Not all items are mandatory — just check the ones that apply to your case. -->
+<!-- Not all items are mandatory - just check the ones that apply to your case. -->
 
 **Type of change:**
 - [ ] Bug fix
@@ -27,8 +27,8 @@
 - [ ] NVIDIA image
 
 **Tested on media server:**
-- [ ] Jellyfin
 - [ ] Navidrome
+- [ ] Jellyfin
 - [ ] Emby
 - [ ] Lyrion
 

@@ -1,16 +1,43 @@
-# app_sonic_fingerprint.py
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Sonic Fingerprint Flask blueprint (sonic_fingerprint_bp).
+
+Serves the ``/sonic_fingerprint`` UI and its API, delegating the fingerprint
+computation to ``tasks.sonic_fingerprint_manager.generate_sonic_fingerprint``.
+
+Main Features:
+* Generates a taste-profile "fingerprint" from a user's listening history and
+  returns the nearest tracks for it (resolving the Emby/Jellyfin user id when
+  needed).
+* Exposes ``/api/config/defaults`` to pre-populate the frontend with the
+  configured media-server credentials for trusted-network setups.
+"""
+
 from flask import Blueprint, jsonify, request, render_template
 import logging
 
 from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
-from tasks.mediaserver import resolve_emby_jellyfin_user # Import the new resolver function
-from config import MEDIASERVER_TYPE, JELLYFIN_USER_ID, JELLYFIN_TOKEN, NAVIDROME_USER, NAVIDROME_PASSWORD # Import configs
-from app_helper import top_stratified_genre
+from tasks.mediaserver import resolve_emby_jellyfin_user  # Import the new resolver function
+from config import (
+    MEDIASERVER_TYPE,
+    JELLYFIN_USER_ID,
+    JELLYFIN_TOKEN,
+    NAVIDROME_USER,
+    NAVIDROME_PASSWORD,
+)  # Import configs
+from app_helper import serialize_neighbor_results
 
 logger = logging.getLogger(__name__)
 
 # Create a blueprint for the new feature
 sonic_fingerprint_bp = Blueprint('sonic_fingerprint_bp', __name__, template_folder='../templates')
+
 
 @sonic_fingerprint_bp.route('/sonic_fingerprint', methods=['GET'])
 def sonic_fingerprint_page():
@@ -29,10 +56,16 @@ def sonic_fingerprint_page():
     """
     try:
         # The default user info will now be fetched by an API call from the frontend
-        return render_template('sonic_fingerprint.html', mediaserver_type=MEDIASERVER_TYPE, title = 'AudioMuse-AI - Sonic Fingerprint', active='sonic_fingerprint')
-    except Exception as e:
-         logger.error(f"Error rendering sonic_fingerprint.html: {e}", exc_info=True)
-         return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"
+        return render_template(
+            'sonic_fingerprint.html',
+            mediaserver_type=MEDIASERVER_TYPE,
+            title='AudioMuse-AI - Sonic Fingerprint',
+            active='sonic_fingerprint',
+        )
+    except Exception:
+        logger.exception("Error rendering sonic_fingerprint.html")
+        return "Sonic Fingerprint page not implemented yet. Use the API at /api/sonic_fingerprint/generate"
+
 
 @sonic_fingerprint_bp.route('/api/config/defaults', methods=['GET'])
 def get_media_server_defaults():
@@ -53,13 +86,17 @@ def get_media_server_defaults():
     # MODIFIED: Removed the security credentials from the response.
     # We only return the user ID/username to pre-fill forms, but not the tokens/passwords.
     if MEDIASERVER_TYPE == 'jellyfin':
-        return jsonify({
-            "default_user_id": JELLYFIN_USER_ID,
-        })
+        return jsonify(
+            {
+                "default_user_id": JELLYFIN_USER_ID,
+            }
+        )
     elif MEDIASERVER_TYPE == 'navidrome':
-        return jsonify({
-            "default_user": NAVIDROME_USER,
-        })
+        return jsonify(
+            {
+                "default_user": NAVIDROME_USER,
+            }
+        )
     return jsonify({})
 
 
@@ -128,9 +165,6 @@ def generate_sonic_fingerprint_endpoint():
       500:
         description: Server error during generation.
     """
-    # Local import to prevent circular dependency
-    from app_helper import get_score_data_by_ids
-
     try:
         if request.method == 'POST':
             data = request.get_json()
@@ -145,7 +179,7 @@ def generate_sonic_fingerprint_endpoint():
                 num_results = int(num_results)
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
-        
+
         user_creds = {}
         if MEDIASERVER_TYPE == 'jellyfin':
             user_identifier = data.get('jellyfin_user_identifier')
@@ -153,15 +187,21 @@ def generate_sonic_fingerprint_endpoint():
                 return jsonify({"error": "Jellyfin User Identifier is required."}), 400
 
             token = data.get('jellyfin_token') or JELLYFIN_TOKEN
-            
+
             if not token:
-                return jsonify({"error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."}), 400
+                return jsonify(
+                    {
+                        "error": "Jellyfin API Token is required. Please provide one or set it in the server configuration."
+                    }
+                ), 400
 
             logger.info(f"Resolving Jellyfin user identifier: '{user_identifier}'")
             resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
             if not resolved_user_id:
-                return jsonify({"error": f"Could not resolve Jellyfin user '{user_identifier}'."}), 400
-            
+                return jsonify(
+                    {"error": f"Could not resolve Jellyfin user '{user_identifier}'."}
+                ), 400
+
             logger.info(f"Resolved Jellyfin user ID: '{resolved_user_id}'")
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
@@ -170,38 +210,25 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['user'] = data.get('navidrome_user') or NAVIDROME_USER
             user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
             if not user_creds['user'] or not user_creds['password']:
-                return jsonify({"error": "Navidrome username and password are required. Please provide them or set them in the server configuration."}), 400
-        
+                return jsonify(
+                    {
+                        "error": "Navidrome username and password are required. Please provide them or set them in the server configuration."
+                    }
+                ), 400
+
         fingerprint_results = generate_sonic_fingerprint(
-            num_neighbors=num_results,
-            user_creds=user_creds
+            num_neighbors=num_results, user_creds=user_creds
         )
 
         if not fingerprint_results:
             return jsonify([])
 
-        result_ids = [r['item_id'] for r in fingerprint_results]
-        details_list = get_score_data_by_ids(result_ids)
-        
-        details_map = {d['item_id']: d for d in details_list}
-        distance_map = {r['item_id']: r['distance'] for r in fingerprint_results}
-
-        final_results = []
-        for res_id in result_ids:
-            if res_id in details_map:
-                track_info = details_map[res_id]
-                final_results.append({
-                    "item_id": track_info['item_id'],
-                    "title": track_info['title'],
-                    "author": track_info['author'],
-                    "album": track_info.get('album'),
-                    "distance": distance_map[res_id],
-                    "mood_vector": track_info.get('mood_vector'),
-                    "other_features": track_info.get('other_features'),
-                    "top_genre": top_stratified_genre(track_info.get('mood_vector'))
-                })
-
+        final_results = serialize_neighbor_results(
+            fingerprint_results, missing_album=None, include_album_artist=False
+        )
         return jsonify(final_results)
-    except Exception as e:
-        logger.error(f"Error in sonic_fingerprint endpoint: {e}", exc_info=True)
-        return jsonify({"error": "An unexpected error occurred while generating the sonic fingerprint."}), 500
+    except Exception:
+        logger.exception("Error in sonic_fingerprint endpoint")
+        return jsonify(
+            {"error": "An unexpected error occurred while generating the sonic fingerprint."}
+        ), 500

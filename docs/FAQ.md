@@ -26,9 +26,9 @@ Find answers to common questions about setting up, configuring, and deploying Au
 <details>
 <summary>Can AudioMuse-AI support multiple music libraries?</summary>
 
-> Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Jellyfin and one Navidrome server) at the same time.
+> Yes, it can support multiple music libraries within a single media server instance (e.g., two separate music folders in one Jellyfin server). However, a single AudioMuse-AI instance cannot connect to multiple different media servers (e.g., one Navidrome and one Jellyfin server) at the same time.
 >
-> The parameters `MUSIC_LIBRARIES` can be used for matching multiple music libraries on the same music server. It is a comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Jellyfin/Navidrome: Use library/folder names.
+> The parameters `MUSIC_LIBRARIES` can be used for matching multiple music libraries on the same music server. It is a comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names.
 
 </details>
 
@@ -51,6 +51,17 @@ Find answers to common questions about setting up, configuring, and deploying Au
 > This is most commonly caused by incorrect credentials. In Jellyfin, you must use the **User ID (UID)** instead of the username.
 >
 > You can find instructions on how to retrieve the Jellyfin User ID here: [PARAMETERS](PARAMETERS.md).
+
+</details>
+
+<details>
+<summary>How to get the Plex auth token (X-Plex-Token)</summary>
+
+> Plex authenticates with an auth token instead of a username/password.
+>
+> Sign in to the Plex Web App, open the browser developer tools (F12) and go to the Network tab. Refresh a library, click a request pointing to your server (for example one ending in `/library/sections`), then copy the `X-Plex-Token` value from the request headers or the query string.
+>
+> Reference: [plexapi.dev authentication](https://plexapi.dev/authentication). See also [PARAMETERS](PARAMETERS.md).
 
 </details>
 

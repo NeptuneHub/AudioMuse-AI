@@ -86,7 +86,7 @@ Core components and responsibilities:
 
 - ONNX Models & Audio Stack: Analysis uses ONNX Runtime to run embedding and prediction models. Audio loading uses `librosa` with a `pydub`/ffmpeg fallback for resilient decoding. The Docker image pre-fetches ONNX model files and pins runtime libs to ensure consistent behavior across environments.
 
-- Media Server Adapters: the `tasks/mediaserver/` package provides adapters for Jellyfin, Navidrome, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
+- Media Server Adapters: the `tasks/mediaserver/` package provides adapters for Navidrome, Jellyfin, Emby, etc., enabling playlist creation and reading play-history for the Sonic Fingerprint feature.
 
 Deployment considerations (informed by `Dockerfile`):
 
@@ -103,28 +103,28 @@ Scalability & safety:
 Key environment variables that shape architecture and operational behavior (non-exhaustive):
 
 - Core infra:
-   * `REDIS_URL` — connection string for Redis used by RQ and pub/sub.
-   * `DATABASE_URL` — PostgreSQL connection string for persistent data.
-   * `TEMP_DIR` — path where audio files are downloaded/processed.
+   * `REDIS_URL` - connection string for Redis used by RQ and pub/sub.
+   * `DATABASE_URL` - PostgreSQL connection string for persistent data.
+   * `TEMP_DIR` - path where audio files are downloaded/processed.
 
 - Models & runtime tuning:
-   * `EMBEDDING_MODEL_PATH`, `PREDICTION_MODEL_PATH` — filesystem paths to ONNX model files (when not downloaded by Docker).
-   * `ORT_DISABLE_ALL_OPTIMIZATIONS`, `ORT_DISABLE_AVX512`, `ORT_FORCE_SHARED_PROVIDER` — runtime flags set in Docker to stabilize ONNX behavior across CPUs.
+   * `EMBEDDING_MODEL_PATH`, `PREDICTION_MODEL_PATH` - filesystem paths to ONNX model files (when not downloaded by Docker).
+   * `ORT_DISABLE_ALL_OPTIMIZATIONS`, `ORT_DISABLE_AVX512`, `ORT_FORCE_SHARED_PROVIDER` - runtime flags set in Docker to stabilize ONNX behavior across CPUs.
 
 - Job & queue limits:
-   * `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`, `ITERATIONS_PER_BATCH_JOB` — control parallelism and batch sizes for analysis/clustering.
-   * `REBUILD_INDEX_BATCH_SIZE` — controls how often index rebuilds occur during large analysis runs.
+   * `MAX_QUEUED_ANALYSIS_JOBS`, `MAX_CONCURRENT_BATCH_JOBS`, `ITERATIONS_PER_BATCH_JOB` - control parallelism and batch sizes for analysis/clustering.
+   * `REBUILD_INDEX_BATCH_SIZE` - controls how often index rebuilds occur during large analysis runs.
 
 Additional DB & deployment knobs (explicit)
 
-* `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` — Individual components used to construct `DATABASE_URL` when an explicit `DATABASE_URL` is not provided. Useful in containerized or Kubernetes setups where secrets are mounted per-value.
-* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Optional credentials for a restricted, read-only database role used when executing AI-generated SQL from the Instant Playlist (Chat) feature. The application creates/uses a low-privilege role to run SELECT-only queries when the chat flow is enabled; document these values in the Instant Playlist section as well.
+* `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` - Individual components used to construct `DATABASE_URL` when an explicit `DATABASE_URL` is not provided. Useful in containerized or Kubernetes setups where secrets are mounted per-value.
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` - Optional credentials for a restricted, read-only database role used when executing AI-generated SQL from the Instant Playlist (Chat) feature. The application creates/uses a low-privilege role to run SELECT-only queries when the chat flow is enabled; document these values in the Instant Playlist section as well.
 
 - AI & provider settings:
-   * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — control how AI naming/chat is performed.
+   * `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - control how AI naming/chat is performed.
 
 - Safety & result caps:
-   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` — enforce limits on returned/affected rows.
+   * `ALCHEMY_MAX_N_RESULTS`, `ALCHEMY_DEFAULT_N_RESULTS`, `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST` - enforce limits on returned/affected rows.
 
 Operational notes:
 
@@ -163,8 +163,8 @@ Implementation pointers (current code locations)
 
 Relevant environment variables and tuning knobs
 
-- `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` — tuning these directly affects parallelism, latency to first results, and fault tolerance.
-- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` — control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
+- `ITERATIONS_PER_BATCH_JOB`, `MAX_CONCURRENT_BATCH_JOBS`, `CLUSTERING_BATCH_TIMEOUT_MINUTES`, `CLUSTERING_MAX_FAILED_BATCHES`, `CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS` - tuning these directly affects parallelism, latency to first results, and fault tolerance.
+- `MAX_QUEUED_ANALYSIS_JOBS`, `REBUILD_INDEX_BATCH_SIZE` - control analysis job parallelism and how often the Voyager index is rebuilt during a large analysis run.
 
 Operational recommendations
 
@@ -219,7 +219,7 @@ The technical process is a distributed, multi-stage pipeline orchestrated by a m
 
 This function, running in an RQ worker, acts as the "orchestrator."
 
-1. **Get Albums:** It calls get\_recent\_albums(num\_recent\_albums). This function's behavior is determined by MEDIASERVER\_TYPE (e.g., "jellyfin", "navidrome") and uses the corresponding credentials (e.g., JELLYFIN\_URL, JELLYFIN\_TOKEN, etc.) and MUSIC\_LIBRARIES to filter the scan.  
+1. **Get Albums:** It calls get\_recent\_albums(num\_recent\_albums). This function's behavior is determined by MEDIASERVER\_TYPE (e.g., "navidrome", "jellyfin") and uses the corresponding credentials (e.g., JELLYFIN\_URL, JELLYFIN\_TOKEN, etc.) and MUSIC\_LIBRARIES to filter the scan.  
 2. **Iterate & Check:** It loops through every album, checking against the PostgreSQL database (configured via DATABASE\_URL) to see if all tracks already exist in the score and embedding tables.  
 3. **Spawn Child Tasks:** For new or incomplete albums, it enqueues a tasks.analysis.analyze\_album\_task child task.  
 4. **Manage Parallelism:** The main task monitors the number of active\_jobs and limits concurrent enqueued album tasks to MAX\_QUEUED\_ANALYSIS\_JOBS.  
@@ -266,11 +266,11 @@ The Song Analysis functionality is configured by the following environment varia
 
 #### **Media Server**
 
-* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., jellyfin, navidrome, emby, lyrion).  
+* MEDIASERVER\_TYPE: **(Required)** Specifies the media server to connect to. (e.g., navidrome, jellyfin, emby, lyrion).  
 * MUSIC\_LIBRARIES: (Optional) A comma-separated list of library names to scan. If empty, all music libraries are scanned.  
+* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
 * JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Credentials for Jellyfin (if MEDIASERVER\_TYPE="jellyfin").  
 * EMBY\_URL, EMBY\_USER\_ID, EMBY\_TOKEN: Credentials for Emby (if MEDIASERVER\_TYPE="emby").  
-* NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Credentials for Navidrome (if MEDIASERVER\_TYPE="navidrome").  
 * LYRION\_URL: Credentials for Lyrion (if MEDIASERVER\_TYPE="lyrion").
 
 #### **Task & Performance Tuning**
@@ -286,13 +286,13 @@ The Song Analysis functionality is configured by the following environment varia
 * TOP\_N\_MOODS: The default number of top-scoring moods to save in the score.mood\_vector column.  
 * EMBEDDING\_MODEL\_PATH: Filesystem path to the musicnn\_embedding.onnx model (generates embeddings).  
 * PREDICTION\_MODEL\_PATH: Filesystem path to the musicnn\_prediction.onnx model (generates mood predictions from embeddings).  
-* Other features (danceable, aggressive, happy, party, relaxed, sad) are now computed via CLAP text-audio similarity — no separate model paths needed. Text embeddings for these labels are cached in Redis on first use.
+* Other features (danceable, aggressive, happy, party, relaxed, sad) are now computed via CLAP text-audio similarity - no separate model paths needed. Text embeddings for these labels are cached in Redis on first use.
 
 Additional analysis tuning & normalization constants
 
-* `ENERGY_MIN`, `ENERGY_MAX` — Range used to normalize energy values (BPM- and loudness-derived) into a common scale used across scoring and UI visualizations.
-* `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` — Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
-* `DB_FETCH_CHUNK_SIZE` — Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
+* `ENERGY_MIN`, `ENERGY_MAX` - Range used to normalize energy values (BPM- and loudness-derived) into a common scale used across scoring and UI visualizations.
+* `TEMPO_MIN_BPM`, `TEMPO_MAX_BPM` - Tempo normalization bounds in beats-per-minute used when extracting and scaling tempo for score vectors.
+* `DB_FETCH_CHUNK_SIZE` - Chunk size used by batch jobs when fetching large numbers of tracks from the DB. Useful to tune for memory/IO tradeoffs during clustering/analysis rebuilds.
 
 #### **Voyager Index Building (Used during Analysis)**
 
@@ -484,7 +484,7 @@ The Song Clustering functionality is configured by the following environment var
 
 * REDIS\_URL: **(Required)** The connection string for the Redis server, used for task queueing and status management.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** The connection string for the PostgreSQL database where all analysis results are read from.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Media server credentials are used at the *end* of the process to delete old playlists and create the new ones.
 
 #### **Main Clustering Configuration**
 
@@ -633,7 +633,7 @@ The "Playlist from Similar Song" feature relies on the Voyager index built durin
 
 * REDIS\_URL: **(Required)** Used by the background listener thread that reloads the Voyager index.  
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used to load the index data, fetch track details (Title/Artist), and perform autocomplete searches.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 #### **Voyager Index Querying (Used during Similarity Search)**
 
@@ -752,7 +752,7 @@ The Song Path feature uses the Voyager index and relies on several specific conf
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **5\. Song Alchemy**
 
@@ -858,7 +858,7 @@ Song Alchemy uses the Voyager index and several specific parameters:
 
 #### **Media Server (for Playlist Creation)**
 
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used at the final stage to create the playlist on the media server.
 
 ## **6\. Music Map**
 
@@ -958,7 +958,7 @@ The Music Map relies heavily on data generated during Analysis but has fewer dir
 #### **Core Infrastructure**
 
 * DATABASE\_URL (or POSTGRES\_\* variables): **(Required)** Used by build\_map\_cache to fetch all song data and embeddings at startup, and potentially to load precomputed projections.  
-* MEDIASERVER\_TYPE, JELLYFIN\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
+* MEDIASERVER\_TYPE, NAVIDROME\_URL, etc.: **(Required)** Used by the "Create playlist" button functionality.
 
 #### **Data & Visualization (Implicit)**
 
@@ -1000,7 +1000,7 @@ This feature combines media server interaction for user history with vector anal
 #### **Stage 1: API Call & Credential Handling**
 
 1. **Route:** Clicking "Generate My Sonic Fingerprint" sends a POST (or GET for backward compatibility) request to /api/sonic\_fingerprint/generate (app\_sonic\_fingerprint.py).  
-2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (jellyfin\_user\_identifier, jellyfin\_token or navidrome\_user, navidrome\_password).  
+2. **Payload/Params:** Contains the desired number of results (n) and user-specific credentials (navidrome\_user, navidrome\_password or jellyfin\_user\_identifier, jellyfin\_token).  
 3. **Credential Resolution:**  
    * The backend retrieves the credentials from the request.  
    * For Jellyfin/Emby, it uses resolve\_emby\_jellyfin\_user to convert a username/identifier into the required User ID using the provided token.  
@@ -1045,8 +1045,8 @@ The Sonic Fingerprint feature uses the following configurations:
 #### **Media Server**
 
 * MEDIASERVER\_TYPE: **(Required)** Determines how to interact with the media server API to get play history and create playlists.  
-* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
 * NAVIDROME\_URL, NAVIDROME\_USER, NAVIDROME\_PASSWORD: Default Navidrome credentials (used if user doesn't provide specific ones).  
+* JELLYFIN\_URL, JELLYFIN\_USER\_ID, JELLYFIN\_TOKEN: Default Jellyfin credentials (used if user doesn't provide specific ones, and for resolving usernames).  
 * *(Other media server credentials)*: Used similarly based on MEDIASERVER\_TYPE.
 
 #### **Sonic Fingerprint Parameters**
@@ -1119,7 +1119,7 @@ Stage 5: Execute Query & Post-process Results
 
 Stage 6: Optional Playlist Creation on Media Server
 
-1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Jellyfin/Emby/Navidrome). These adapter functions live in `tasks/mediaserver/`.
+1. The frontend posts the playlist name and `item_ids` to an endpoint that maps internal `item_id`s to media-server-specific IDs and creates the playlist using the configured media server adapter (Navidrome/Jellyfin/Emby). These adapter functions live in `tasks/mediaserver/`.
 2. Return the media server response (success, playlist id, or error) to the frontend and display it in the UI.
 
 Safety & Fallbacks
@@ -1133,28 +1133,28 @@ Instant Playlist (Chat) reuses many existing infra variables and adds a few chat
 
 Core / Shared
 
-* `REDIS_URL`, `DATABASE_URL`, `TEMP_DIR`, etc. — core infra used elsewhere in the app.
+* `REDIS_URL`, `DATABASE_URL`, `TEMP_DIR`, etc. - core infra used elsewhere in the app.
 
 AI / Chat Specific
 
-* `AI_MODEL_PROVIDER` — Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
-* `OLLAMA_SERVER_URL` — Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
-* `OLLAMA_MODEL_NAME` — Default Ollama model name for playlist-related prompts.
-* `GEMINI_API_KEY` — Server-side Google Gemini key used for GEMINI provider.
-* `GEMINI_MODEL_NAME` — Default Gemini model (e.g., `gemini-2.5-pro`).
-* `GEMINI_API_CALL_DELAY_SECONDS` — Optional delay to respect Gemini rate limits (used by `ai.py`).
-* `MISTRAL_API_KEY` — Server-side Mistral key used for MISTRAL provider.
-* `MISTRAL_MODEL_NAME` — Default Mistral model for playlist prompts.
-* `MISTRAL_API_CALL_DELAY_SECONDS` — Optional delay for Mistral calls.
+* `AI_MODEL_PROVIDER` - Default chat AI provider (OLLAMA, GEMINI, MISTRAL, NONE).
+* `OLLAMA_SERVER_URL` - Default Ollama server (e.g., `http://localhost:11434/api/generate`) used when provider is OLLAMA. The frontend may supply an override `ollama_server_url` per-request.
+* `OLLAMA_MODEL_NAME` - Default Ollama model name for playlist-related prompts.
+* `GEMINI_API_KEY` - Server-side Google Gemini key used for GEMINI provider.
+* `GEMINI_MODEL_NAME` - Default Gemini model (e.g., `gemini-2.5-pro`).
+* `GEMINI_API_CALL_DELAY_SECONDS` - Optional delay to respect Gemini rate limits (used by `ai.py`).
+* `MISTRAL_API_KEY` - Server-side Mistral key used for MISTRAL provider.
+* `MISTRAL_MODEL_NAME` - Default Mistral model for playlist prompts.
+* `MISTRAL_API_CALL_DELAY_SECONDS` - Optional delay for Mistral calls.
 
 Database safety for AI chat
 
-* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` — Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
+* `AI_CHAT_DB_USER_NAME`, `AI_CHAT_DB_USER_PASSWORD` - Credentials for a restricted, read-only DB role that the chat/AI flow uses to execute validated, parameterized SELECT queries. The application creates/uses this low-privilege user to ensure any AI-generated SQL runs without write or DDL permissions. Documented here for operators who manage DB roles and secrets.
 
 Limits and Safety
 
-* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` — Caps the number of songs returned by AI-generated queries.
-* `CHAT_SQL_ALLOWED_READ_ONLY` — Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
+* `ALCHEMY_DEFAULT_N_RESULTS` / `ALCHEMY_MAX_N_RESULTS` - Caps the number of songs returned by AI-generated queries.
+* `CHAT_SQL_ALLOWED_READ_ONLY` - Conceptual flag: code enforces read-only SQL execution for AI results. (Enforced in code; not required to be present as an env var.)
 
 Operational Notes
 
@@ -1180,7 +1180,7 @@ Key User Interactions & Workflow
 1. The user opens the Database Cleaning page (`/cleaning`) served by the `analysis_bp` blueprint. The page shows a summary area, Start/Clear buttons, and a status panel (see `templates/cleaning.html`).
 2. The user clicks "Start Cleaning". The frontend requests `/api/cleaning/start` which enqueues a high-priority RQ job (`tasks.cleaning.identify_and_clean_orphaned_albums_task`).
 3. The cleaning job performs these high-level steps:
-   - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Jellyfin/Navidrome/Emby).
+   - Fetch all albums/tracks from the configured media server via the mediaserver adapter (Navidrome/Jellyfin/Emby).
    - Read all tracks currently present in the application's PostgreSQL database (score + embedding tables).
    - Compute the set difference to discover orphaned tracks (in DB but not on the media server).
    - Group orphaned tracks by artist/album and present a summary.
@@ -1234,14 +1234,14 @@ The cleaning process uses core infra variables and a few cleaning-specific ones.
 
 Core Infra
 
-* `REDIS_URL` — Required by RQ for job queueing and for the background listener used elsewhere.
-* `DATABASE_URL` — Required to query and delete database rows, and to rebuild the Voyager index.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, `NAVIDROME_URL`, etc. — Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
+* `REDIS_URL` - Required by RQ for job queueing and for the background listener used elsewhere.
+* `DATABASE_URL` - Required to query and delete database rows, and to rebuild the Voyager index.
+* `MEDIASERVER_TYPE`, `NAVIDROME_URL`, `JELLYFIN_URL`, `JELLYFIN_TOKEN`, etc. - Credentials used by the mediaserver adapter to enumerate media server albums and to resolve track IDs.
 
 Cleaning-Specific
 
-* `CLEANING_SAFETY_LIMIT` — Maximum number of orphaned albums (or a related cap) the automatic cleaning operation will delete in a single run to avoid catastrophic data loss.
-* `MAX_QUEUED_ANALYSIS_JOBS` — Imported in the task module for coordination/limits; not directly user-adjustable for cleaning but used by task orchestration logic when needed.
+* `CLEANING_SAFETY_LIMIT` - Maximum number of orphaned albums (or a related cap) the automatic cleaning operation will delete in a single run to avoid catastrophic data loss.
+* `MAX_QUEUED_ANALYSIS_JOBS` - Imported in the task module for coordination/limits; not directly user-adjustable for cleaning but used by task orchestration logic when needed.
 
 Operational Notes
 
@@ -1294,7 +1294,7 @@ Stage 3: Enqueueing Jobs
 Stage 4: Observability & Safety
 
 1. Each cron-initiated job uses the same task-status/logging machinery as manual jobs, so progress, logs, and final summaries are available in the UI.
-2. The enqueued clustering job uses conservative defaults sourced from environment/config values to avoid accidental heavy runs—these defaults can be tuned in config.
+2. The enqueued clustering job uses conservative defaults sourced from environment/config values to avoid accidental heavy runs-these defaults can be tuned in config.
 
 Error Handling & Resilience
 
@@ -1307,15 +1307,15 @@ Scheduled tasks reuse many core config values and a set of clustering/analysis d
 
 Core Infra
 
-* `DATABASE_URL`, `REDIS_URL` — Required for reading cron rows and enqueueing RQ jobs.
+* `DATABASE_URL`, `REDIS_URL` - Required for reading cron rows and enqueueing RQ jobs.
 
 Analysis & Clustering Defaults (used when enqueueing cron jobs)
 
-* `TOP_N_MOODS` — Number of moods passed to analysis jobs when scheduled.
-* `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` — Default ranges used to compose clustering kwargs.
-* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` — High-level clustering behavior used when cron enqueues clustering.
-* `SCORE_WEIGHT_*` and other scoring weights — Defaults applied to scheduled clustering runs.
-* `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` — AI naming defaults applied when scheduled clustering requests automatic playlist naming.
+* `TOP_N_MOODS` - Number of moods passed to analysis jobs when scheduled.
+* `CLUSTER_ALGORITHM`, `NUM_CLUSTERS_MIN`, `NUM_CLUSTERS_MAX`, `DBSCAN_EPS_MIN`, `DBSCAN_EPS_MAX`, `DBSCAN_MIN_SAMPLES_MIN`, `DBSCAN_MIN_SAMPLES_MAX`, `GMM_N_COMPONENTS_MIN`, `GMM_N_COMPONENTS_MAX`, `SPECTRAL_N_CLUSTERS_MIN`, `SPECTRAL_N_CLUSTERS_MAX`, `PCA_COMPONENTS_MIN`, `PCA_COMPONENTS_MAX` - Default ranges used to compose clustering kwargs.
+* `CLUSTERING_RUNS`, `MAX_SONGS_PER_CLUSTER`, `TOP_N_PLAYLISTS`, `MIN_SONGS_PER_GENRE_FOR_STRATIFICATION`, `STRATIFIED_SAMPLING_TARGET_PERCENTILE` - High-level clustering behavior used when cron enqueues clustering.
+* `SCORE_WEIGHT_*` and other scoring weights - Defaults applied to scheduled clustering runs.
+* `AI_MODEL_PROVIDER`, `OLLAMA_SERVER_URL`, `OLLAMA_MODEL_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL_NAME`, `MISTRAL_API_KEY`, `MISTRAL_MODEL_NAME` - AI naming defaults applied when scheduled clustering requests automatic playlist naming.
 
 Operational Notes
 
@@ -1371,7 +1371,7 @@ CLAP embeddings are generated as part of the song analysis pipeline, running in 
 1. **Model Architecture:** The system uses split ONNX CLAP models:
    * **Audio model** (`model_epoch_36.onnx`, ~20MB): Distilled DCLAP student model loaded in worker containers during analysis to generate embeddings from audio files. Requires companion file `model_epoch_36.onnx.data` in the same directory.
    * **Text model** (`clap_text_model.onnx`, ~478MB): Original LAION CLAP text encoder loaded in Flask containers during search to generate embeddings from text queries.
-   * This split architecture saves memory—workers only load audio, Flask only loads text.
+   * This split architecture saves memory-workers only load audio, Flask only loads text.
 2. **Audio Processing (analyze_track in tasks/analysis.py):**
    * After loading audio with librosa, if `CLAP_ENABLED=true`, the system calls `get_clap_audio_embedding` from `tasks.clap_analyzer`.
    * Audio is resampled to 48kHz mono and converted to a mel-spectrogram.
@@ -1451,7 +1451,7 @@ The Text Search functionality is configured by the following environment variabl
 
 * `REDIS_URL`: **(Required)** Used by RQ workers and pub/sub.
 * `DATABASE_URL` (or `POSTGRES_*` variables): **(Required)** Used to fetch CLAP embeddings and song metadata.
-* `MEDIASERVER_TYPE`, `JELLYFIN_URL`, etc.: **(Required)** Used to create playlists from search results.
+* `MEDIASERVER_TYPE`, `NAVIDROME_URL`, etc.: **(Required)** Used to create playlists from search results.
 
 #### **CLAP Feature Toggle**
 

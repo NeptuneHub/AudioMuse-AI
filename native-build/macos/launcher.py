@@ -1,10 +1,23 @@
-"""Standalone macOS entry point (the PyInstaller entry script).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Double-clicked, this runs as a background menu-bar agent that supervises the
-embedded services and the app. Re-invoked by the supervisor as
-``AudioMuse-AI --role=<x>``, the same frozen binary instead runs one child
-service -- the web server (waitress serving the existing Flask app) or one of the
-RQ worker / janitor / restart-listener entry points, reused unchanged via runpy.
+"""Entry point and role dispatcher for the macOS standalone build.
+
+Single frozen executable that runs as the menu-bar supervisor by default or,
+with ``--role=``, as one of its child processes: the Flask/waitress server or
+an RQ worker/janitor/restart-listener. It also applies the scipy longdouble
+warmup before the RQ fork to avoid the macOS newlocale crash. The
+Linux/Windows launchers are the platform-specific siblings.
+
+Main Features:
+* Runs Flask via waitress or launches a named RQ role in-process.
+* Pins the numeric locale early and warms up scipy longdouble for every role
+  except janitor and restart-listener (macOS newlocale crash fix).
 """
 
 import os
@@ -24,6 +37,7 @@ def _role_from_argv():
 def _run_flask():
     import waitress
     import app as app_module
+
     waitress.serve(
         app_module.app,
         host="0.0.0.0",
@@ -41,6 +55,7 @@ def _run_role(role):
     if role not in _NO_LONGDOUBLE_WARMUP_ROLES:
         try:
             import numeric_bootstrap
+
             numeric_bootstrap.warmup_scipy_longdouble()
         except Exception:
             pass
@@ -54,30 +69,20 @@ def _run_role(role):
         runpy.run_module("rq_janitor", run_name="__main__")
     elif role == "restart-listener":
         import restart_listener
+
         restart_listener.main()
     else:
         raise SystemExit(f"Unknown role: {role}")
 
 
-# Held for the life of the menu-bar process so the flock is not released early.
 _INSTANCE_LOCK = None
 
 
 def _acquire_single_instance_lock(paths):
-    """Return True if we are the only menu-bar agent (and hold the lock).
-
-    A second live supervisor is catastrophic: both manage the *same* embedded
-    Postgres/Redis, and a newly started ``redis-server`` unlinks the existing
-    unix socket out from under the running stack, knocking every worker offline.
-    An ``flock`` guarantees only one agent runs; the OS releases it if the holder
-    dies, so a crash-relaunch cleanly takes over (and reaps the orphans on boot).
-    """
     global _INSTANCE_LOCK
     import fcntl
+
     lock_path = os.path.join(paths.app_support_dir(), "supervisor.lock")
-    # Open with "a+" (not "w"): "w" truncates on open, which would erase the live
-    # holder's PID from the file before we even try the lock. Only rewrite the PID
-    # once we actually own the lock.
     fh = open(lock_path, "a+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -88,14 +93,16 @@ def _acquire_single_instance_lock(paths):
     fh.truncate(0)
     fh.write(str(os.getpid()))
     fh.flush()
-    _INSTANCE_LOCK = fh  # keep the handle (and thus the lock) alive
+    _INSTANCE_LOCK = fh
     return True
 
 
 def _run_menubar():
     import rumps
+
     try:
         from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+
         NSApp().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     except Exception:
         pass
@@ -103,7 +110,6 @@ def _run_menubar():
     from macos import paths
     from macos.supervisor import ProcessSupervisor
 
-    # Refuse to start a second supervisor; just surface the already-running UI.
     if not _acquire_single_instance_lock(paths):
         subprocess.Popen(["open", "http://127.0.0.1:8000"])
         return
@@ -131,14 +137,8 @@ def _run_menubar():
                 None,
                 rumps.MenuItem("Quit", callback=self.on_quit),
             ]
-            threading.Thread(target=self._boot, name="boot", daemon=True).start()
+            supervisor.start_in_background()
             rumps.Timer(self._refresh, 3).start()
-
-        def _boot(self):
-            try:
-                supervisor.start_all()
-            except Exception:
-                pass
 
         def on_open_browser(self, _):
             subprocess.Popen(["open", "http://127.0.0.1:8000"])
@@ -147,8 +147,10 @@ def _run_menubar():
             subprocess.Popen(["open", "-a", "Console", paths.log_file()])
 
         def on_toggle(self, _):
-            target = supervisor.stop_all if supervisor.is_running() else supervisor.start_all
-            threading.Thread(target=target, daemon=True).start()
+            if supervisor.is_running():
+                threading.Thread(target=supervisor.stop_all, daemon=True).start()
+            else:
+                supervisor.start_in_background()
 
         def on_quit(self, _):
             supervisor.stop_all()
@@ -168,11 +170,9 @@ def _run_menubar():
 
 
 def main():
-    # Mitigate the macOS NumPy int->longdouble import crash (issue #658). The
-    # decisive fix is warmup_scipy_longdouble() in _run_role(); this pin is only
-    # locale-churn hygiene. See numeric_bootstrap.py for the full mechanism.
     try:
         import numeric_bootstrap
+
         numeric_bootstrap.pin_numeric_locale()
     except Exception:
         pass
@@ -180,6 +180,7 @@ def main():
     if "--run-restore" in sys.argv:
         i = sys.argv.index("--run-restore")
         from app_backup import _run_restore_runner
+
         sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
 
     role = _role_from_argv()

@@ -1,40 +1,31 @@
-"""Timezone helpers for storing and displaying datetimes consistently
-(see issue #499).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Convention used across the app:
+"""Timezone helpers for storing UTC and displaying local time.
 
-  * Naive ``TIMESTAMP`` columns store UTC wall-clock. INSERTs that fill
-    such columns must use ``UTC_NOW_SQL`` instead of bare ``NOW()`` /
-    relying on a ``DEFAULT CURRENT_TIMESTAMP``, so the stored bytes are
-    UTC regardless of the Postgres session timezone.
+Provides the canonical SQL snippet for UTC-now writes and converters that turn
+naive/UTC datetimes into the host's local timezone for display, keeping storage
+in UTC while presentation is localized.
 
-  * On read, datetimes are passed through ``to_local()`` to convert into
-    the Flask container's local timezone (driven by the ``TZ`` env var)
-    before serialization. The frontend then renders them as-is.
+Main Features:
+* ``UTC_NOW_SQL`` constant for consistent UTC timestamps in queries.
+* ``to_local`` / ``to_local_str`` convert UTC datetimes to local time and formatted strings.
 """
+
 import datetime
 
 
-#: SQL fragment that resolves to "now" expressed as a UTC wall-clock,
-#: independent of the Postgres session timezone. Drop into INSERT/UPDATE
-#: in place of ``NOW()`` for any naive ``TIMESTAMP`` column we want to
-#: render later via :func:`to_local`.
 UTC_NOW_SQL = "NOW() AT TIME ZONE 'UTC'"
 
-#: ``strftime`` format used for every user-visible timestamp the API
-#: returns. Centralised so the wire format stays identical across every
-#: endpoint and every frontend renderer can stay dumb (raw concat).
 LOCAL_TZ_FMT = '%Y-%m-%d %H:%M:%S'
 
 
 def to_local(dt):
-    """Return ``dt`` converted to the local timezone.
-
-    Naive inputs are assumed to be UTC (matching what ``UTC_NOW_SQL``
-    writes). Tz-aware inputs are re-converted to local. ``None`` and
-    non-datetime values pass through unchanged so the helper can be
-    used inline at serialization time without extra guards.
-    """
     if dt is None or not hasattr(dt, 'astimezone'):
         return dt
     if dt.tzinfo is None:
@@ -43,11 +34,6 @@ def to_local(dt):
 
 
 def to_local_str(dt):
-    """Convert ``dt`` to local time and format with ``LOCAL_TZ_FMT``.
-
-    Returns ``None`` for ``None``. Non-datetime values are coerced via
-    ``str()`` to preserve the prior defensive behavior of callers.
-    """
     dt = to_local(dt)
     if dt is None:
         return None

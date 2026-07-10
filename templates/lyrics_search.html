@@ -95,26 +95,6 @@
         min-height: 1.6em;
     }
 
-    #search-form button, #axis-form button, #song-form button, #playlist-form button {
-        width: 100%;
-        padding: 0.75rem 1.5rem;
-        font-size: 1rem;
-        font-weight: 600;
-        background-color: var(--color-primary);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        transition: background-color 0.2s;
-    }
-    #search-form button:hover, #axis-form button:hover, #song-form button:hover, #playlist-form button:hover {
-        background-color: var(--color-primary-hover);
-    }
-    #search-form button:disabled, #axis-form button:disabled, #song-form button:disabled, #playlist-form button:disabled {
-        background-color: var(--text-muted);
-        cursor: not-allowed;
-    }
-
     .loading-spinner {
         text-align: center;
         padding: 2rem;
@@ -183,7 +163,7 @@
                 <div class="axes-intro">
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “— None —” to ignore it. The more axes you set, the more specific the search.</span>
+                        <span class="tooltip-text">Pick one value for one or more axes to compose your search. Each axis describes a different facet of the lyrics (setting, mood, narrative, ...). Leave an axis on “- None -” to ignore it. The more axes you set, the more specific the search.</span>
                     </span>
                     <span class="axes-intro-text">Select one value for one or more axes to compose your search.</span>
                 </div>
@@ -193,7 +173,7 @@
                         <h3>{{ axis_name.split('_')[2:] | join(' ') | title }}</h3>
                         <p class="axis-desc">{{ axis_meta.description }}</p>
                         <select name="axis-{{ axis_name }}" data-axis="{{ axis_name }}">
-                            <option value="" data-desc="">— None —</option>
+                            <option value="" data-desc="">- None -</option>
                             {% for label, label_desc in axis_meta.labels.items() %}
                             <option value="{{ label }}" data-desc="{{ label_desc }}">{{ label }}</option>
                             {% endfor %}
@@ -213,7 +193,7 @@
                     </label>
                     <input type="number" id="axis-limit" name="limit" value="50" min="1" max="500">
                 </div>
-                <button type="submit" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
+                <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
                     🔍 Search by axes
                 </button>
             </form>
@@ -245,7 +225,7 @@
                     </label>
                     <input type="number" id="text-limit" name="limit" value="50" min="1" max="500">
                 </div>
-                <button type="submit" {% if not cache_stats.index_loaded %}disabled{% endif %}>
+                <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.index_loaded %}disabled{% endif %}>
                     🔍 Search by text
                 </button>
             </form>
@@ -274,7 +254,7 @@
                         Seed Song:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Type to find a song in your library. Select it, then search for songs that share both its lyrical meaning (75%) and its acoustic sound (25%). Lyrics dominate — the audio component prevents jumps across distant genres.</span>
+                            <span class="tooltip-text">Type to find a song in your library. Select it, then search for songs that share both its lyrical meaning (75%) and its acoustic sound (25%). Lyrics dominate - the audio component prevents jumps across distant genres.</span>
                         </span>
                     </label>
                     <div class="autocomplete-container" id="sg-autocomplete-container">
@@ -300,7 +280,7 @@
                     <input type="number" id="song-limit" name="limit" value="50" min="1" max="500"
                            {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                 </div>
-                <button type="submit" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
+                <button type="submit" class="btn btn-primary btn-block" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                     🎵 Find Similar Songs
                 </button>
             </form>
@@ -324,7 +304,7 @@
             <input type="text" id="playlist_name" name="playlist_name"
                    placeholder="My Lyrics Search Playlist" required>
         </div>
-        <button type="submit">Create Playlist on Media Server</button>
+        <button type="submit" class="btn btn-success btn-block">Create Playlist on Media Server</button>
     </form>
     <div id="playlist-status"></div>
 </section>

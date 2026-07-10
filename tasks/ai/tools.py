@@ -1,21 +1,24 @@
-"""MCP tool definitions and dispatcher.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This module owns:
-* ``get_mcp_tools()`` -- canonical MCP tool definitions (JSON Schema) used by
-  every AI provider when calling with tools.
-* ``execute_mcp_tool(...)`` -- dispatcher that runs the actual tool body
-  (delegating to the ``_*_sync`` helpers in ``tasks.ai.tool_impl``).
+"""MCP tool schemas and dispatch for the playlist AI.
 
-Surface: 4 LLM-facing tools that collapse the previous 7 into shapes a small
-self-hosted model (qwen2.5:7b-9b on Ollama) can pick reliably:
+Defines the tool surface the LLM sees (seed_search, text_match,
+knowledge_lookup, search_database) via get_mcp_tools, and dispatches each
+emitted call to the grounded implementations in ``tool_impl``. Sits between
+``planner`` (which builds the plan) and the real library queries.
 
-* ``seed_search``     -- replaces song_similarity / artist_similarity / song_alchemy
-* ``text_match``      -- replaces text_search / lyrics_search
-* ``knowledge_lookup`` -- renamed ai_brainstorm
-* ``search_database`` -- unchanged metadata filter
-
-This module is purely MCP plumbing -- no DB queries, no AI calls.
+Main Features:
+* get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled; tool descriptions carry the routing rules (when to use each tool and when to use a sibling instead) so they work as the primary routing signal for small models, with genre/voice/mood enums from the canonical vocab.
+* execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database, expands female/male voice spelling variants deterministically, passes exclude_artists/exclude_genres through as hard SQL cuts, and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
+* Array args carry maxItems/uniqueItems caps so small-model structured output cannot loop a value forever; exclusion fields document that excluded names never go in seeds or positive filters.
 """
+
 import logging
 import re
 from typing import Dict, List, Optional
@@ -26,11 +29,14 @@ from tasks.ai.tool_impl import (
     _ai_brainstorm_sync,
     _artist_similarity_api_sync,
     _database_genre_query_sync,
+    _fuzzy_match_author_title,
     _lyrics_search_sync,
     _song_alchemy_sync,
     _song_similarity_api_sync,
     _text_search_sync,
 )
+from tasks.mcp_helper import get_db_connection as _get_db_connection
+from tasks.ai.vocab import GENRE_VOCAB
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,35 @@ _YEAR_ONLY_RE = re.compile(
     r"^(songs?\s+(from\s+)?)?(\d{4})\s*(songs?|music|tracks?)?$",
     re.IGNORECASE,
 )
+
+VOICE_ENUM = [v for v in config.VOICE_VOCAB if v.endswith('vocalists')]
+
+_VOICE_SPELLING_GROUPS = [
+    [v for v in config.VOICE_VOCAB if v.startswith('female')],
+    [v for v in config.VOICE_VOCAB if v.startswith('male')],
+]
+
+
+def _expand_voice_spellings(voices) -> Optional[List[str]]:
+    if not voices:
+        return None
+    out = [v for v in voices if isinstance(v, str) and v.strip()]
+    lows = {v.strip().lower() for v in out}
+    for group in _VOICE_SPELLING_GROUPS:
+        if any(g.lower() in lows for g in group):
+            for g in group:
+                if g.lower() not in lows:
+                    out.append(g)
+                    lows.add(g.lower())
+    return out or None
+
+
+def _default_text_mode() -> str:
+    if config.CLAP_ENABLED:
+        return "audio"
+    if config.LYRICS_ENABLED:
+        return "lyrics"
+    return "audio"
 
 
 def _seed_to_alchemy_item(seed: Dict) -> Optional[Dict]:
@@ -121,8 +156,9 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
             "message": "seed_search(union) found no songs across seeds\n" + "\n".join(messages),
         }
     return {
-        "songs": all_songs[:get_songs * len(seeds)],
-        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n" + "\n".join(messages),
+        "songs": all_songs[: get_songs * len(seeds)],
+        "message": f"seed_search(union) collected {len(all_songs)} unique songs across {len(seeds)} seed(s)\n"
+        + "\n".join(messages),
     }
 
 
@@ -131,7 +167,7 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
     if not query:
         return {"songs": [], "message": "text_match: empty query"}
 
-    mode = (tool_args.get("mode") or "audio").lower()
+    mode = (tool_args.get("mode") or _default_text_mode()).lower()
     get_songs = int(tool_args.get("get_songs", 200) or 200)
 
     if _YEAR_ONLY_RE.match(query):
@@ -154,8 +190,116 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
     )
 
 
+_SEARCH_OTHER_FILTER_KEYS = (
+    "genres", "moods", "tempo_min", "tempo_max",
+    "energy_min", "energy_max", "key", "scale",
+    "year_min", "year_max", "min_rating",
+    "album", "other_features", "candidate_item_ids",
+    "voices", "instrumental",
+    "exclude_artists", "exclude_genres",
+)
+
+
+def _scale_energy(raw) -> Optional[float]:
+    if raw is None:
+        return None
+    return config.ENERGY_MIN + float(raw) * (config.ENERGY_MAX - config.ENERGY_MIN)
+
+
+def _has_other_search_filters(tool_args: Dict) -> bool:
+    return any(tool_args.get(k) for k in _SEARCH_OTHER_FILTER_KEYS)
+
+
+def _retry_artist_substring(do_query, artist_arg):
+    logger.info(
+        "search_database exact match returned 0 songs; retrying with "
+        "whole-word artist match for '%s'",
+        artist_arg,
+    )
+    result = do_query(artist_arg, fuzzy=True)
+    songs = result.get("songs", [])
+    if songs:
+        msg = result.get("message", "")
+        result["message"] = (
+            f"{msg}\n(artist relaxed to whole-word match: "
+            f"author contains the word '{artist_arg}')"
+        )
+    return result, songs
+
+
+def _retry_fuzzy_artist(do_query, artist_arg, prev_result):
+    try:
+        db_conn = _get_db_connection()
+        try:
+            fuzzy_hit = _fuzzy_match_author_title(db_conn, artist_arg)
+        finally:
+            db_conn.close()
+        if fuzzy_hit and fuzzy_hit.get("author"):
+            canonical = fuzzy_hit["author"]
+            logger.info(
+                "Fuzzy-matched artist '%s' -> '%s' (score %s); re-querying",
+                artist_arg, canonical, fuzzy_hit.get("score", "?"),
+            )
+            result = do_query(canonical, fuzzy=False)
+            if result.get("songs", []):
+                msg = result.get("message", "")
+                result["message"] = (
+                    f"{msg}\n(artist fuzzy-matched: "
+                    f"'{artist_arg}' -> '{canonical}')"
+                )
+            return result
+    except Exception:
+        logger.warning(
+            "Fuzzy artist fallback failed for '%s'", artist_arg, exc_info=True
+        )
+    return prev_result
+
+
+def _dispatch_search_database(tool_args: Dict) -> Dict:
+    energy_min_raw = _scale_energy(tool_args.get("energy_min"))
+    energy_max_raw = _scale_energy(tool_args.get("energy_max"))
+    artist_arg = tool_args.get("artist")
+    album_arg = tool_args.get("album")
+
+    def _do_query(name, fuzzy: bool = False) -> Dict:
+        return _database_genre_query_sync(
+            tool_args.get("genres"),
+            tool_args.get("get_songs", 200),
+            tool_args.get("moods"),
+            tool_args.get("tempo_min"),
+            tool_args.get("tempo_max"),
+            energy_min_raw,
+            energy_max_raw,
+            tool_args.get("key"),
+            tool_args.get("scale"),
+            tool_args.get("year_min"),
+            tool_args.get("year_max"),
+            tool_args.get("min_rating"),
+            album_arg,
+            name,
+            other_features=tool_args.get("other_features"),
+            candidate_item_ids=tool_args.get("candidate_item_ids"),
+            voices=_expand_voice_spellings(tool_args.get("voices")),
+            score_threshold=tool_args.get("score_threshold"),
+            instrumental=tool_args.get("instrumental"),
+            fuzzy_match=fuzzy,
+            exclude_artists=tool_args.get("exclude_artists"),
+            exclude_genres=tool_args.get("exclude_genres"),
+        )
+
+    result = _do_query(artist_arg, fuzzy=False)
+    songs = result.get("songs", [])
+
+    if not songs and artist_arg:
+        result, songs = _retry_artist_substring(_do_query, artist_arg)
+
+    if not songs and artist_arg and not _has_other_search_filters(tool_args):
+        result = _retry_fuzzy_artist(_do_query, artist_arg, result)
+
+    return result
+
+
 def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
-    """Execute an MCP tool. Returns the tool's result dict."""
     try:
         if tool_name == "seed_search":
             return _dispatch_seed_search(tool_args, ai_config)
@@ -168,42 +312,7 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
             return _ai_brainstorm_sync(request, ai_config, tool_args.get("get_songs", 200))
 
         if tool_name == "search_database":
-            energy_min_raw = None
-            energy_max_raw = None
-            e_min = tool_args.get("energy_min")
-            e_max = tool_args.get("energy_max")
-            if e_min is not None:
-                e_min = float(e_min)
-                energy_min_raw = config.ENERGY_MIN + e_min * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
-            if e_max is not None:
-                e_max = float(e_max)
-                energy_max_raw = config.ENERGY_MIN + e_max * (
-                    config.ENERGY_MAX - config.ENERGY_MIN
-                )
-
-            return _database_genre_query_sync(
-                tool_args.get("genres"),
-                tool_args.get("get_songs", 200),
-                tool_args.get("moods"),
-                tool_args.get("tempo_min"),
-                tool_args.get("tempo_max"),
-                energy_min_raw,
-                energy_max_raw,
-                tool_args.get("key"),
-                tool_args.get("scale"),
-                tool_args.get("year_min"),
-                tool_args.get("year_max"),
-                tool_args.get("min_rating"),
-                tool_args.get("album"),
-                tool_args.get("artist"),
-                other_features=tool_args.get("other_features"),
-                candidate_item_ids=tool_args.get("candidate_item_ids"),
-                voices=tool_args.get("voices"),
-                score_threshold=tool_args.get("score_threshold"),
-                instrumental=tool_args.get("instrumental"),
-            )
+            return _dispatch_search_database(tool_args)
 
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -213,7 +322,6 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
 
 def get_mcp_tools() -> List[Dict]:
-    """Return the LLM-facing tool list. Gated by CLAP_ENABLED / LYRICS_ENABLED."""
     from config import CLAP_ENABLED, LYRICS_ENABLED
 
     text_match_modes = ["audio"] if CLAP_ENABLED else []
@@ -224,12 +332,12 @@ def get_mcp_tools() -> List[Dict]:
         {
             "name": "seed_search",
             "description": (
-                "Find songs from one or more SEED songs/artists. Use this for: "
-                "'similar to X', 'songs like A and B', 'sounds like X meets Y', 'X but not Y'. "
-                "Supports multiple songs and/or artists as seeds in a single call. "
-                "Use blend_mode='union' (default) for 'similar to A and similar to B'; "
-                "use blend_mode='alchemy' for vector-blend ('A meets B', requires 2+ seeds); "
-                "use blend_mode='subtract' to remove a flavor ('A but not Y', requires 'subtract')."
+                "Find songs that sound SIMILAR to named seed songs or artists. "
+                "Use when the user asks for something LIKE a name they gave: "
+                "'similar to X', 'songs like X', 'sounds like X', 'X meets Y', 'X but not Y'. "
+                "An artist seed returns that artist plus related artists, so for an artist's "
+                "OWN songs ('songs by X', 'play X') use search_database with artist instead. "
+                "Seeds can mix songs and artists in one call."
             ),
             "inputSchema": {
                 "type": "object",
@@ -237,14 +345,27 @@ def get_mcp_tools() -> List[Dict]:
                     "seeds": {
                         "type": "array",
                         "minItems": 1,
-                        "description": "Seed songs and/or artists.",
+                        "maxItems": 5,
+                        "description": (
+                            "Seed songs and/or artists the results should resemble. "
+                            "Only names the user wants MORE of; never an excluded name."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
                                 "type": {"type": "string", "enum": ["song", "artist"]},
-                                "title": {"type": "string", "description": "Song title (when type='song')"},
-                                "artist": {"type": "string", "description": "Artist name (when type='song')"},
-                                "name": {"type": "string", "description": "Artist name (when type='artist')"},
+                                "title": {
+                                    "type": "string",
+                                    "description": "Song title (when type='song'), e.g. 'Hotel California'",
+                                },
+                                "artist": {
+                                    "type": "string",
+                                    "description": "Artist of that song (when type='song'), e.g. 'Eagles'",
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Artist name (when type='artist'), e.g. 'Nina Simone'",
+                                },
                             },
                             "required": ["type"],
                         },
@@ -253,11 +374,16 @@ def get_mcp_tools() -> List[Dict]:
                         "type": "string",
                         "enum": ["union", "alchemy", "subtract"],
                         "default": "union",
-                        "description": "union (default): similar to each seed, results merged. alchemy: vector blend (needs 2+ seeds). subtract: remove items in 'subtract'.",
+                        "description": (
+                            "union (default): songs similar to each seed, merged. "
+                            "alchemy: one blended flavor of 2+ seeds ('X meets Y'). "
+                            "subtract: like the seeds minus the 'subtract' items ('X but not Y')."
+                        ),
                     },
                     "subtract": {
                         "type": "array",
-                        "description": "Items to subtract (only with blend_mode='subtract'). Same shape as seeds.",
+                        "maxItems": 5,
+                        "description": "Items whose flavor to remove (only with blend_mode='subtract'). Same shape as seeds.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -269,7 +395,6 @@ def get_mcp_tools() -> List[Dict]:
                             "required": ["type"],
                         },
                     },
-                    "get_songs": {"type": "integer", "default": 200},
                 },
                 "required": ["seeds"],
             },
@@ -279,44 +404,46 @@ def get_mcp_tools() -> List[Dict]:
     if text_match_modes:
         mode_desc_parts = []
         if "audio" in text_match_modes:
-            mode_desc_parts.append("'audio' (default): match sound/instruments/textures. Include 'instrumental' in the query to find instrumental-sounding tracks ('calm instrumental piano', 'epic orchestral instrumental').")
+            mode_desc_parts.append(
+                "mode 'audio': how the music SOUNDS (instruments, texture, atmosphere), "
+                "e.g. 'calm solo piano', 'dark heavy synth bass'"
+            )
         if "lyrics" in text_match_modes:
-            mode_desc_parts.append("'lyrics': match lyrical themes ('songs about heartbreak', 'lyrics about freedom').")
+            mode_desc_parts.append(
+                "mode 'lyrics': what the words are ABOUT (topic, story, scenario), "
+                "e.g. 'songs about heartbreak', 'summer road trip'"
+            )
         mode_desc = ". ".join(mode_desc_parts)
 
         tools.append(
             {
                 "name": "text_match",
                 "description": (
-                    "Semantic text search. "
-                    f"{mode_desc}. "
-                    "DO NOT use for year/genre/mood metadata (use search_database). "
-                    "Year-only queries like '2024 songs' are rejected."
+                    f"Find songs from a free-text description. {mode_desc}. "
+                    "Use for sound or topic descriptions that plain metadata cannot express. "
+                    "Write the query in English; when the request is in another language, "
+                    "translate it (the match only understands English). "
+                    "For genre, era, tempo, energy, vocals, artist or album use search_database; "
+                    "for 'similar to <name>' use seed_search."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Free-text description of the audio or lyrical theme.",
+                            "description": (
+                                "Short vivid description of the sound or the lyrical topic. "
+                                "ALWAYS in English: when the user wrote another language, "
+                                "translate the description (the underlying embeddings only "
+                                "understand English)."
+                            ),
                         },
                         "mode": {
                             "type": "string",
                             "enum": text_match_modes,
                             "default": text_match_modes[0],
-                            "description": "'audio' for sound/instruments, 'lyrics' for lyrical themes.",
+                            "description": "'audio' for how it sounds, 'lyrics' for what the words are about.",
                         },
-                        "tempo_filter": {
-                            "type": "string",
-                            "enum": ["slow", "medium", "fast"],
-                            "description": "Optional tempo filter (audio mode only).",
-                        },
-                        "energy_filter": {
-                            "type": "string",
-                            "enum": ["low", "medium", "high"],
-                            "description": "Optional energy filter (audio mode only).",
-                        },
-                        "get_songs": {"type": "integer", "default": 200},
                     },
                     "required": ["query"],
                 },
@@ -327,20 +454,20 @@ def get_mcp_tools() -> List[Dict]:
         {
             "name": "knowledge_lookup",
             "description": (
-                "Popularity / 'best of' / cultural requests that need world knowledge to "
-                "interpret: 'best rap of the 90s', '#1 hits of 1985', 'best festival anthems', "
-                "'Grammy winners 2020'. The model turns the request into a grounded search "
-                "recipe (genre/year/energy filters + 'how it sounds' descriptions + seed "
-                "artists) that is run against THIS library and fused. It never invents song titles."
+                "Answer popularity, cultural or historical requests that need world knowledge: "
+                "'best rap of the 90s', '#1 hits of 1985', 'festival anthems', 'Grammy winners 2020', "
+                "'one hit wonders'. Turns the request into a grounded search recipe (filters, "
+                "sound descriptions, well-known artists) run against this library; it never "
+                "invents song titles. When the request only names plain metadata or a specific "
+                "artist, use search_database instead."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "user_request": {
                         "type": "string",
-                        "description": "The user's cultural / historical query in their own words.",
+                        "description": "The user's popularity/cultural request in their own words.",
                     },
-                    "get_songs": {"type": "integer", "default": 200},
                 },
                 "required": ["user_request"],
             },
@@ -351,57 +478,96 @@ def get_mcp_tools() -> List[Dict]:
         {
             "name": "search_database",
             "description": (
-                "Filter the library by metadata. Use when the user names genres, vocals, "
-                "year/decade, tempo, energy, scale, key, rating, album, artist, or instrumental. "
-                "For instrumental tracks, set instrumental=true (queries musicnn score). "
-                "For non-instrumental, set instrumental=false. "
-                "Can stand alone OR refine a seed_search/text_match/knowledge_lookup pool."
+                "Filter the library by exact metadata. The tool for an artist's OWN songs "
+                "(artist), an album (album), and for genre, vocal type, mood, release year or "
+                "decade, tempo BPM, energy, key, scale, rating and instrumental. "
+                "Also the ONLY tool for exclusions: 'no X', 'without X', 'except X' go in "
+                "exclude_artists/exclude_genres, never in the positive fields. "
+                "Fill only the fields the user asked for. Works alone for pure metadata "
+                "requests, or alongside seed_search/text_match to constrain their results."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "genres": {
                         "type": "array",
-                        "items": {"type": "string", "enum": list(config.STRATIFIED_GENRES)},
-                        "description": "Music genres. Queries mood_vector with score > 0.5.",
+                        "items": {"type": "string", "enum": list(GENRE_VOCAB)},
+                        "maxItems": 5,
+                        "uniqueItems": True,
+                        "description": "Music genres the user WANTS, e.g. ['jazz'] or ['rock', 'blues'].",
                     },
                     "voices": {
                         "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["female vocalists", "female vocalist", "male vocalists"],
-                        },
+                        "items": {"type": "string", "enum": list(VOICE_ENUM)},
+                        "maxItems": 2,
+                        "uniqueItems": True,
                         "description": (
-                            "Vocal type. For 'female voice'/'woman singer' use BOTH "
-                            "['female vocalists','female vocalist'] (catalog has both spellings). "
-                            "For 'male voice' use ['male vocalists']. Queries mood_vector > 0.5."
+                            "Vocal type: 'female vocalists' for any female-voice request, "
+                            "'male vocalists' for any male-voice request."
                         ),
                     },
                     "moods": {
                         "type": "array",
                         "items": {"type": "string", "enum": list(config.OTHER_FEATURE_LABELS)},
+                        "maxItems": 3,
+                        "uniqueItems": True,
+                        "description": "How it feels, e.g. ['sad'] or ['danceable', 'party'].",
+                    },
+                    "tempo_min": {"type": "number", "description": "Min BPM 40-200, e.g. 120"},
+                    "tempo_max": {"type": "number", "description": "Max BPM 40-200, e.g. 90"},
+                    "energy_min": {
+                        "type": "number",
+                        "description": "Min energy from 0.0 (calm) to 1.0 (intense), e.g. 0.7",
+                    },
+                    "energy_max": {
+                        "type": "number",
+                        "description": "Max energy from 0.0 (calm) to 1.0 (intense), e.g. 0.35",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Musical key note name, e.g. 'C', 'F#', 'Eb'",
+                    },
+                    "scale": {"type": "string", "enum": ["major", "minor"]},
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Earliest release year, e.g. 1990 for '90s'",
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Latest release year, e.g. 1999 for '90s'",
+                    },
+                    "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
+                    "album": {"type": "string", "description": "Album name, e.g. 'Abbey Road'"},
+                    "artist": {
+                        "type": "string",
                         "description": (
-                            "Real moods. ONLY these 6 are valid: "
-                            "danceable, aggressive, happy, party, relaxed, sad. "
-                            "Queries other_features > 0.5. Never put genres or vocals here."
+                            "Exact artist name for that artist's OWN songs, e.g. 'Eric Clapton'"
                         ),
                     },
-                    "tempo_min": {"type": "number", "description": "Min BPM (40-200)"},
-                    "tempo_max": {"type": "number", "description": "Max BPM (40-200)"},
-                    "energy_min": {"type": "number", "description": "Min energy 0.0 (calm) to 1.0 (intense)"},
-                    "energy_max": {"type": "number", "description": "Max energy 0.0 (calm) to 1.0 (intense)"},
-                    "key": {"type": "string", "description": "Musical key (C, D, E, F, G, A, B with # or b)"},
-                    "scale": {"type": "string", "enum": ["major", "minor"]},
-                    "year_min": {"type": "integer", "description": "Earliest release year (e.g. 1990)"},
-                    "year_max": {"type": "integer", "description": "Latest release year (e.g. 1999)"},
-                    "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
-                    "album": {"type": "string", "description": "Album name to filter by"},
-                    "artist": {"type": "string", "description": "Single artist name (use seed_search for multiple)"},
                     "instrumental": {
                         "type": "boolean",
-                        "description": "true = only instrumental tracks. false = only tracks with vocals.",
+                        "description": "true = only instrumental tracks, false = only tracks with vocals",
                     },
-                    "get_songs": {"type": "integer", "default": 200},
+                    "exclude_artists": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 10,
+                        "uniqueItems": True,
+                        "description": (
+                            "Artists the user does NOT want ('no 50 Cent' -> ['50 Cent']). "
+                            "Hard-removed from the results; never put these in artist or seeds."
+                        ),
+                    },
+                    "exclude_genres": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(GENRE_VOCAB)},
+                        "maxItems": 5,
+                        "uniqueItems": True,
+                        "description": (
+                            "Genres the user does NOT want ('no rap' -> ['Hip-Hop']). "
+                            "Hard-removed from the results; never put these in genres."
+                        ),
+                    },
                 },
             },
         }

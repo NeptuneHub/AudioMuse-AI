@@ -1,5 +1,29 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""First-run setup wizard routes, registered on the shared Flask ``app``.
+
+Attaches the ``/setup`` page and ``/api/setup*`` endpoints directly to the app
+from ``flask_app`` (no blueprint), persisting configuration through
+``tasks.setup_manager`` and triggering a config reload / restart via
+``restart_manager``.
+
+Main Features:
+* Reads and saves the wizard config (basic server + auth fields plus advanced
+  and lyrics-API fields), masking secrets and treating a blank secret as
+  "keep the stored value" except where blank has its own meaning.
+* Validates enum fields against fixed option sets, tests the media-server
+  connection, and lists provider libraries so the wizard can populate itself.
+"""
+
 import re
 import types
+import requests
 from flask import request, jsonify, render_template, make_response, after_this_request
 import config
 from flask_app import app
@@ -10,25 +34,67 @@ import restart_manager
 import tasks.mediaserver as mediaserver
 from error import error_manager
 from error.error_manager import AudioMuseError
-from error.error_dictionary import ERR_MEDIASERVER_UNREACHABLE
+from error.error_dictionary import (
+    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_CONFIG_MEDIASERVER_CREDENTIALS,
+    ERR_DB_QUERY,
+)
 
 BASIC_SERVER_FIELDS = ["MEDIASERVER_TYPE"] + [
-    field
-    for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values()
-    for field in fields
+    field for fields in config.MEDIASERVER_FIELDS_BY_TYPE.values() for field in fields
 ]
+
+# Plex account-linking (plex.tv/link) proxy. plex.tv's PIN endpoints send no
+# CORS headers, so the browser can't call them directly; these constants back
+# the two /api/setup/plex/pin routes that proxy the request server-side.
+PLEX_PIN_API_BASE = "https://plex.tv/api/v2/pins"
+PLEX_PIN_PRODUCT = "AudioMuse-AI"
+PLEX_PIN_TIMEOUT = 30
+
+
+def _plex_pin_headers(client_id):
+    return {
+        "Accept": "application/json",
+        "X-Plex-Product": PLEX_PIN_PRODUCT,
+        "X-Plex-Version": str(config.APP_VERSION or ""),
+        "X-Plex-Client-Identifier": client_id,
+        "X-Plex-Device-Name": PLEX_PIN_PRODUCT,
+    }
 
 
 AUTH_FIELDS = ["AUTH_ENABLED", "AUDIOMUSE_USER", "AUDIOMUSE_PASSWORD", "API_TOKEN", "JWT_SECRET"]
-SECRET_FIELDS = {"AUDIOMUSE_PASSWORD", "API_TOKEN", "JELLYFIN_TOKEN", "EMBY_TOKEN", "NAVIDROME_PASSWORD", "JWT_SECRET", "AI_CHAT_DB_USER_PASSWORD", "LYRICS_API_1_APIKEY_VALUE", "LYRICS_API_2_APIKEY_VALUE"}
+SECRET_FIELDS = {
+    "AUDIOMUSE_PASSWORD",
+    "API_TOKEN",
+    "JELLYFIN_TOKEN",
+    "EMBY_TOKEN",
+    "NAVIDROME_PASSWORD",
+    "PLEX_TOKEN",
+    "JWT_SECRET",
+    "AI_CHAT_DB_USER_PASSWORD",
+    "LYRICS_API_1_APIKEY_VALUE",
+    "LYRICS_API_2_APIKEY_VALUE",
+}
+# Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
+# through the admin-user path, JWT_SECRET blank means "auto-generate". Every
+# other secret treats a blank submission as "keep the stored value".
+BLANK_KEEP_EXCLUDED_SECRETS = {"AUDIOMUSE_PASSWORD", "JWT_SECRET"}
 BASIC_FIELDS = set(BASIC_SERVER_FIELDS + AUTH_FIELDS)
 
 LYRICS_API_CONFIG_FIELDS = [
-    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
-    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_URL_TEMPLATE',
+    'LYRICS_API_1_ARTIST_PARAM',
+    'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD',
+    'LYRICS_API_1_APIKEY_PARAM',
+    'LYRICS_API_1_APIKEY_VALUE',
     'LYRICS_API_1_TIMEOUT',
-    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
-    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_URL_TEMPLATE',
+    'LYRICS_API_2_ARTIST_PARAM',
+    'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD',
+    'LYRICS_API_2_APIKEY_PARAM',
+    'LYRICS_API_2_APIKEY_VALUE',
     'LYRICS_API_2_TIMEOUT',
 ]
 
@@ -43,7 +109,21 @@ ENUM_FIELD_OPTIONS = {
 }
 
 HIDDEN_ADVANCED_FIELDS = {
+    'AI_BRAINSTORM_GENRE_SCORE_THRESHOLD',
+    'AI_BRAINSTORM_LYRIC_THEMES_MAX',
+    'AI_BRAINSTORM_POOL_FLOOR',
+    'AI_BRAINSTORM_RELAX_YEAR_PAD',
+    'AI_BRAINSTORM_SEED_ARTISTS_MAX',
+    'AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED',
+    'AI_BRAINSTORM_SOUND_DESCRIPTIONS_MAX',
+    'AI_BRAINSTORM_USE_ARTIST_SEEDS',
     'AI_CHAT_DB_USER_NAME',
+    'AI_CHAT_DB_USER_PASSWORD',
+    'AI_FALLBACK_GENRES',
+    'AUDIOMUSE_CONTROL_HOST',
+    'AUDIOMUSE_CONTROL_PORT',
+    'AUDIOMUSE_CONTROL_SOCKET',
+    'AUDIOMUSE_PLATFORM',
     'DATABASE_URL',
     'DATABASE_TYPE',
     'POSTGRES_USER',
@@ -71,13 +151,25 @@ HIDDEN_ADVANCED_FIELDS = {
     'CLAP_OTHER_FEATURES_REDIS_KEY',
     'EMBEDDING_DIMENSION',
     'INDEX_NAME',
+    'IVF_DISK_CACHE_DIR',
+    'IVF_QUERY_PARALLEL_MIN_VECTORS',
     'LYRICS_WHISPER_MODEL_DIR',
     'MINIBATCH_KMEANS_PROCESSING_BATCH_SIZE',
     'OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY',
     'PROBE_TOP_PLAYED_LIMIT',
+    'MIGRATION_MAX_COLLISION_DETAILS',
+    'MIGRATION_UNMATCHED_ALBUMS_PAYLOAD_LIMIT',
+    'QUEUE_TYPE',
+    'VOICE_VOCAB',
     'MOOD_CENTROIDS_FILE',
     'OTHER_FEATURE_LABELS',
     'STRATIFIED_GENRES',
+    'TASK_STATUS_FAILURE',
+    'TASK_STATUS_PENDING',
+    'TASK_STATUS_PROGRESS',
+    'TASK_STATUS_REVOKED',
+    'TASK_STATUS_STARTED',
+    'TASK_STATUS_SUCCESS',
     'TEMPO_MAX_BPM',
     'TEMPO_MIN_BPM',
     'USE_MINIBATCH_KMEANS',
@@ -94,12 +186,56 @@ HIDDEN_ADVANCED_FIELDS = {
     'LYRICS_MAX_SONGS_TO_ANALYZE',
     'LYRICS_MODEL_DIR',
     'LYRICS_SUPPORTED_AUDIO_EXTENSIONS',
+    'LYRICS_VAD_MIN_SILENCE_MS',
+    'LYRICS_VAD_MIN_SPEECH_MS',
+    'LYRICS_VAD_NEG_THRESHOLD',
+    'LYRICS_VAD_RETRY_FLOOR',
+    'LYRICS_VAD_SPEECH_PAD_MS',
+    'LYRICS_VAD_THRESHOLD',
+    # Undocumented internals / quality gates that leaked into the wizard
+    'RADIUS_INSTRUMENTATION',
+    'ENERGY_MIN',
+    'ENERGY_MAX',
+    'CLAP_TEXT_SEARCH_WARMUP_DURATION',
+    'CLAP_TOP_QUERIES_COUNT',
+    'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR',
+    'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
+    'ALCHEMY_PLAYLIST_MAX_SONGS',
+    'ALCHEMY_PLAYLIST_MAX_CENTROIDS',
+    'ALCHEMY_MAX_ANCHOR_POINTS',
+    'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
+    'SONIC_FINGERPRINT_CRON_PLAYLIST_NAME',
+    # Worker / queue / batch-orchestration infra knobs (operator-level)
+    'RQ_MAX_JOBS',
+    'RQ_MAX_JOBS_HIGH',
+    'RQ_LOGGING_LEVEL',
+    'MAX_QUEUED_ANALYSIS_JOBS',
+    'REBUILD_INDEX_BATCH_SIZE',
+    'DB_FETCH_CHUNK_SIZE',
+    'AUDIO_LOAD_TIMEOUT',
+    'ITERATIONS_PER_BATCH_JOB',
+    'MAX_CONCURRENT_BATCH_JOBS',
+    'CLUSTERING_BATCH_TIMEOUT_MINUTES',
+    'CLUSTERING_MAX_FAILED_BATCHES',
+    'CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS',
+    # Pathfinding internals
+    'PATH_AVG_JUMP_SAMPLE_SIZE',
+    'PATH_CANDIDATES_PER_STEP',
+    'PATH_LCORE_MULTIPLIER',
     # Lyrics API config fields are handled by the dedicated /api/setup/lyrics-api routes
-    'LYRICS_API_1_URL_TEMPLATE', 'LYRICS_API_1_ARTIST_PARAM', 'LYRICS_API_1_TITLE_PARAM',
-    'LYRICS_API_1_LYRICS_FIELD', 'LYRICS_API_1_APIKEY_PARAM', 'LYRICS_API_1_APIKEY_VALUE',
+    'LYRICS_API_1_URL_TEMPLATE',
+    'LYRICS_API_1_ARTIST_PARAM',
+    'LYRICS_API_1_TITLE_PARAM',
+    'LYRICS_API_1_LYRICS_FIELD',
+    'LYRICS_API_1_APIKEY_PARAM',
+    'LYRICS_API_1_APIKEY_VALUE',
     'LYRICS_API_1_TIMEOUT',
-    'LYRICS_API_2_URL_TEMPLATE', 'LYRICS_API_2_ARTIST_PARAM', 'LYRICS_API_2_TITLE_PARAM',
-    'LYRICS_API_2_LYRICS_FIELD', 'LYRICS_API_2_APIKEY_PARAM', 'LYRICS_API_2_APIKEY_VALUE',
+    'LYRICS_API_2_URL_TEMPLATE',
+    'LYRICS_API_2_ARTIST_PARAM',
+    'LYRICS_API_2_TITLE_PARAM',
+    'LYRICS_API_2_LYRICS_FIELD',
+    'LYRICS_API_2_APIKEY_PARAM',
+    'LYRICS_API_2_APIKEY_VALUE',
     'LYRICS_API_2_TIMEOUT',
 }
 
@@ -158,10 +294,13 @@ def _test_media_server_connection(filtered_values):
     original_config = _patch_config_for_test(test_config)
     try:
         media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
-        probe_limit = getattr(config, 'PROBE_TOP_PLAYED_LIMIT', 1)
+        probe_limit = config.PROBE_TOP_PLAYED_LIMIT
         items = mediaserver.get_top_played_songs(probe_limit)
         if not items:
-            raise AudioMuseError(ERR_MEDIASERVER_UNREACHABLE, f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.")
+            raise AudioMuseError(
+                ERR_MEDIASERVER_UNREACHABLE,
+                f"No top-played songs were returned from {media_type.capitalize()}; check the URL and credentials.",
+            )
         return {
             'type': media_type,
             'probe_count': len(items),
@@ -169,8 +308,14 @@ def _test_media_server_connection(filtered_values):
         }
     except AudioMuseError:
         raise
+    except ValueError as exc:
+        raise AudioMuseError(
+            ERR_CONFIG_MEDIASERVER_CREDENTIALS, str(exc), cause=exc
+        ) from exc
     except Exception as exc:
-        raise AudioMuseError(error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc) from exc
+        raise AudioMuseError(
+            error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc
+        ) from exc
     finally:
         _restore_config(original_config)
 
@@ -218,6 +363,7 @@ def _has_admin_user():
     """Return True if at least one admin exists in audiomuse_users."""
     try:
         from app_auth import count_admin_users
+
         return count_admin_users() > 0
     except Exception as exc:
         app.logger.error(
@@ -226,6 +372,7 @@ def _has_admin_user():
             exc_info=True,
         )
         return False
+
 
 @app.route('/setup')
 def setup_page():
@@ -240,8 +387,14 @@ def setup_page():
         description: HTML page rendered.
     """
     from config import LYRICS_ENABLED
-    return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
-                           lyrics_enabled=LYRICS_ENABLED)
+
+    return render_template(
+        'setup.html',
+        title='AudioMuse-AI - Setup Wizard',
+        active='setup',
+        lyrics_enabled=LYRICS_ENABLED,
+    )
+
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():
@@ -282,7 +435,7 @@ def setup_api():
         all_fields = setup_manager.get_all_fields(config)
         # Determine which media server fields belong to non-active types
         # so their values are hidden from the UI.
-        active_server_type = getattr(config, 'MEDIASERVER_TYPE', '').strip().lower()
+        active_server_type = config.MEDIASERVER_TYPE.strip().lower()
         inactive_server_fields = set()
         for stype, sfields in config.MEDIASERVER_FIELDS_BY_TYPE.items():
             if stype != active_server_type:
@@ -317,7 +470,7 @@ def setup_api():
             elif should_show_advanced(f['name']):
                 advanced_fields.append(f)
 
-        music_libraries_value = getattr(config, 'MUSIC_LIBRARIES', '') or ''
+        music_libraries_value = config.MUSIC_LIBRARIES or ''
 
         # Build lyrics API field dict: {name: {value, has_value, secret}}
         lyrics_api_raw = setup_manager.get_raw_overrides(ensure_table=False)
@@ -328,16 +481,22 @@ def setup_api():
             if is_secret:
                 lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': '', 'secret': True}
             else:
-                lyrics_api_data[fname] = {'has_value': bool(raw_val), 'value': raw_val, 'secret': False}
+                lyrics_api_data[fname] = {
+                    'has_value': bool(raw_val),
+                    'value': raw_val,
+                    'secret': False,
+                }
 
-        return jsonify({
-            'basic_fields': basic_fields,
-            'advanced_fields': advanced_fields,
-            'music_libraries': music_libraries_value,
-            'lyrics_api_fields': lyrics_api_data,
-            'setup_saved': not check_setup_needed(),
-            'has_admin_user': _has_admin_user(),
-        })
+        return jsonify(
+            {
+                'basic_fields': basic_fields,
+                'advanced_fields': advanced_fields,
+                'music_libraries': music_libraries_value,
+                'lyrics_api_fields': lyrics_api_data,
+                'setup_saved': not check_setup_needed(),
+                'has_admin_user': _has_admin_user(),
+            }
+        )
 
     data = request.get_json(silent=True) or {}
     config_values = data.get('config')
@@ -358,7 +517,22 @@ def setup_api():
     if not is_test_connection:
         for key, value in filtered_values.items():
             if (key in SECRET_FIELDS or key.endswith('_API_KEY')) and value == '********':
-                return jsonify({'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'}), 400
+                return jsonify(
+                    {
+                        'error': 'Placeholder secret values are not accepted on save. Enter the real secret or leave the field blank.'
+                    }
+                ), 400
+
+        # A blank secret means "keep the stored value" so re-saving the wizard
+        # (e.g. to add an API token) never wipes an already-configured
+        # password/token. Drop blanks before they reach the DB.
+        for key in list(filtered_values.keys()):
+            if key in BLANK_KEEP_EXCLUDED_SECRETS:
+                continue
+            if key in SECRET_FIELDS or key.endswith('_API_KEY'):
+                value = filtered_values[key]
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    del filtered_values[key]
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
@@ -368,18 +542,22 @@ def setup_api():
                 if url_val:
                     is_safe, reason = validate_outbound_url(url_val)
                     if not is_safe:
-                        return jsonify({'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}), 400
+                        return jsonify(
+                            {'error': f'Lyrics API slot {slot} URL is not allowed: {reason}'}
+                        ), 400
 
     try:
         if is_test_connection:
             result = _test_media_server_connection(filtered_values)
-            return jsonify({
-                'status': 'ok',
-                'test_connection': True,
-                'media_server': result['type'],
-                'probe_count': result['probe_count'],
-                'probe_limit_hit': result.get('probe_limit_hit', False),
-            }), 200
+            return jsonify(
+                {
+                    'status': 'ok',
+                    'test_connection': True,
+                    'media_server': result['type'],
+                    'probe_count': result['probe_count'],
+                    'probe_limit_hit': result.get('probe_limit_hit', False),
+                }
+            ), 200
 
         new_server_type = filtered_values.get('MEDIASERVER_TYPE', config.MEDIASERVER_TYPE)
         if isinstance(new_server_type, str):
@@ -387,8 +565,9 @@ def setup_api():
         obsolete_fields = config.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(new_server_type, [])
 
         auth_val = filtered_values.get('AUTH_ENABLED')
-        auth_being_disabled = (auth_val is False or
-            (isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')))
+        auth_being_disabled = auth_val is False or (
+            isinstance(auth_val, str) and auth_val.strip().lower() in ('false', '0', 'no', 'off')
+        )
 
         # The setup form collects the install-time admin via AUDIOMUSE_USER /
         # AUDIOMUSE_PASSWORD, but we store admins in audiomuse_users, not in
@@ -426,6 +605,7 @@ def setup_api():
         # via the form (new_admin_user + new_admin_password).
         from app_auth import count_admin_users, upsert_admin_user
         from database import get_db
+
         auth_will_be_enabled = not auth_being_disabled
         if isinstance(simulated.AUTH_ENABLED, str):
             auth_will_be_enabled = simulated.AUTH_ENABLED.strip().lower() == 'true'
@@ -435,15 +615,16 @@ def setup_api():
             try:
                 existing_admins = count_admin_users()
             except Exception as exc:
-                app.logger.error(
-                    'Failed to count admin users during setup save: %s',
-                    exc,
-                    exc_info=True,
+                app.logger.exception('Failed to count admin users during setup save')
+                err, status = error_manager.error_response(
+                    error_manager.classify(exc, ERR_DB_QUERY)
                 )
-                return jsonify({'error': 'Database error while verifying admin count.'}), 500
+                return jsonify(err), status
             provided_admin = bool(new_admin_user and new_admin_password)
             if existing_admins <= 0 and not provided_admin:
-                return jsonify({'error': 'Cannot save: auth is enabled but no admin account was provided.'}), 400
+                return jsonify(
+                    {'error': 'Cannot save: auth is enabled but no admin account was provided.'}
+                ), 400
 
         # Validation passed - apply changes to the database
         if obsolete_fields:
@@ -458,7 +639,9 @@ def setup_api():
                     cur.execute("DELETE FROM audiomuse_users")
                 db.commit()
             except Exception as exc:
-                app.logger.error('Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True)
+                app.logger.error(
+                    'Failed to clear audiomuse_users on auth disable: %s', exc, exc_info=True
+                )
         elif new_admin_user and new_admin_password:
             try:
                 if count_admin_users() > 0:
@@ -469,7 +652,11 @@ def setup_api():
                     exc,
                     exc_info=True,
                 )
-                return jsonify({'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'}), 500
+                return jsonify(
+                    {
+                        'error': 'Unable to verify existing admin accounts. Check the server log and try again later.'
+                    }
+                ), 500
             ok, err = upsert_admin_user(new_admin_user, new_admin_password)
             if not ok:
                 return jsonify({'error': err or 'Failed to save admin account.'}), 400
@@ -485,14 +672,23 @@ def setup_api():
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)
         if is_test_connection:
-            return jsonify({'error': 'Unable to get top player song. Check the server log for details.'}), 500
-        return jsonify({'error': 'Unable to save configuration. Check the server log for details.'}), 500
+            return jsonify(
+                {'error': 'Unable to get top player song. Check the server log for details.'}
+            ), 500
+        return jsonify(
+            {'error': 'Unable to save configuration. Check the server log for details.'}
+        ), 500
 
-    response = make_response(jsonify({
-        'status': 'ok',
-        'saved_keys': list(filtered_values.keys()),
-        'restart_requested': restart_requested,
-    }), 200)
+    response = make_response(
+        jsonify(
+            {
+                'status': 'ok',
+                'saved_keys': list(filtered_values.keys()),
+                'restart_requested': restart_requested,
+            }
+        ),
+        200,
+    )
 
     @after_this_request
     def schedule_restart(response):
@@ -564,12 +760,148 @@ def setup_provider_libraries_api():
         result = _list_provider_libraries(filtered_values)
     except Exception as exc:
         app.logger.error('setup_provider_libraries_api failed: %s', exc, exc_info=True)
-        return jsonify({'error': 'Unable to list libraries. Check the server log for details.'}), 500
+        return jsonify(
+            {'error': 'Unable to list libraries. Check the server log for details.'}
+        ), 500
 
-    return jsonify({
-        'libraries': result.get('libraries', []),
-        'unsupported': bool(result.get('unsupported', False)),
-    }), 200
+    return jsonify(
+        {
+            'libraries': result.get('libraries', []),
+            'unsupported': bool(result.get('unsupported', False)),
+        }
+    ), 200
+
+
+@app.route('/api/setup/plex/pin', methods=['POST'])
+def setup_plex_pin_create():
+    """
+    Start Plex account linking (plex.tv/link).
+    ---
+    tags:
+      - Setup
+    summary: Create a Plex PIN so the user can link their account and auto-fill the token.
+    description: |
+      Proxies ``POST https://plex.tv/api/v2/pins`` (plex.tv sends no CORS
+      headers, so the browser cannot call it directly). Returns the short
+      ``code`` the user types at plex.tv/link and the ``id`` used to poll for
+      the resulting token. The browser supplies a stable
+      ``X-Plex-Client-Identifier`` as ``client_id``; the same value must be
+      used when polling.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [client_id]
+            properties:
+              client_id:
+                type: string
+    responses:
+      200:
+        description: PIN created.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                code:
+                  type: string
+      400:
+        description: Missing client_id.
+      502:
+        description: Could not reach plex.tv.
+    """
+    data = request.get_json(silent=True) or {}
+    client_id = str(data.get('client_id') or '').strip()
+    if not client_id:
+        return jsonify({'error': 'client_id is required'}), 400
+
+    try:
+        resp = requests.post(
+            PLEX_PIN_API_BASE,
+            headers=_plex_pin_headers(client_id),
+            data={'strong': 'false'},
+            timeout=PLEX_PIN_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        app.logger.exception('Plex PIN creation failed')
+        return jsonify({'error': 'Unable to reach Plex to start linking. Check the server log.'}), 502
+
+    pin_id = payload.get('id')
+    code = payload.get('code')
+    if not pin_id or not code:
+        return jsonify({'error': 'Plex did not return a linking code.'}), 502
+    return jsonify({'id': pin_id, 'code': code}), 200
+
+
+@app.route('/api/setup/plex/pin/<pin_id>', methods=['GET'])
+def setup_plex_pin_poll(pin_id):
+    """
+    Poll a Plex PIN for the linked account token.
+    ---
+    tags:
+      - Setup
+    summary: Check whether the user has finished linking at plex.tv/link and return the token.
+    description: |
+      Proxies ``GET https://plex.tv/api/v2/pins/<id>`` using the same
+      ``client_id`` (``X-Plex-Client-Identifier``) that created the PIN.
+      ``token`` is ``null`` until the user has entered the code and accepted.
+    parameters:
+      - in: path
+        name: pin_id
+        required: true
+        schema:
+          type: integer
+      - in: query
+        name: client_id
+        required: true
+        schema:
+          type: string
+    responses:
+      200:
+        description: Link status; ``token`` is null until linking completes.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  nullable: true
+      400:
+        description: Missing client_id or non-numeric PIN id.
+      502:
+        description: Could not reach plex.tv.
+    """
+    client_id = str(request.args.get('client_id') or '').strip()
+    if not client_id:
+        return jsonify({'error': 'client_id is required'}), 400
+    # PIN ids are numeric; reject anything else so it can't alter the plex.tv path.
+    if not str(pin_id).isdigit():
+        return jsonify({'error': 'Invalid PIN id'}), 400
+
+    try:
+        resp = requests.get(
+            f'{PLEX_PIN_API_BASE}/{pin_id}',
+            headers=_plex_pin_headers(client_id),
+            timeout=PLEX_PIN_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        app.logger.exception('Plex PIN poll failed')
+        return jsonify({'error': 'Unable to reach Plex while checking link status.'}), 502
+
+    # The browser polls this URL repeatedly; no-store stops it serving a stale
+    # "token is still null" response from cache once linking completes.
+    poll_response = jsonify({'token': payload.get('authToken')})
+    poll_response.headers['Cache-Control'] = 'no-store'
+    return poll_response, 200
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])
@@ -653,10 +985,35 @@ def setup_lyrics_api_analyze():
 
     # Auto-detect likely roles for each query param
     _ARTIST = {'artist', 'artist_name', 'artistname', 'ar', 'singer', 'performer', 'band'}
-    _TITLE  = {'track', 'track_name', 'trackname', 'title', 'song', 'song_name', 't', 'name', 's', 'q'}
-    _APIKEY = {'apikey', 'api_key', 'key', 'token', 'access_token', 'api_token', 'usertoken', 'user_token'}
-    guesses = {'artist_param': None, 'title_param': None, 'apikey_param': None, 'lyrics_field': None,
-               'path_roles': {}}
+    _TITLE = {
+        'track',
+        'track_name',
+        'trackname',
+        'title',
+        'song',
+        'song_name',
+        't',
+        'name',
+        's',
+        'q',
+    }
+    _APIKEY = {
+        'apikey',
+        'api_key',
+        'key',
+        'token',
+        'access_token',
+        'api_token',
+        'usertoken',
+        'user_token',
+    }
+    guesses = {
+        'artist_param': None,
+        'title_param': None,
+        'apikey_param': None,
+        'lyrics_field': None,
+        'path_roles': {},
+    }
     for pname in flat_params:
         plow = pname.lower().replace('-', '_')
         if plow in _ARTIST and not guesses['artist_param']:
@@ -674,8 +1031,24 @@ def setup_lyrics_api_analyze():
     # user with stray dropdowns.
     _PATH_PREFIX_RE = re.compile(r'^(?:api|v\d+|api[-_]?v\d+)$', re.IGNORECASE)
     _PATH_VERBS = {
-        'get', 'search', 'lookup', 'find', 'fetch', 'query', 'lyrics', 'lyric', 'song', 'songs',
-        'track', 'tracks', 'artist', 'artists', 'album', 'albums', 'public', 'rest',
+        'get',
+        'search',
+        'lookup',
+        'find',
+        'fetch',
+        'query',
+        'lyrics',
+        'lyric',
+        'song',
+        'songs',
+        'track',
+        'tracks',
+        'artist',
+        'artists',
+        'album',
+        'albums',
+        'public',
+        'rest',
     }
     path_parts = [p for p in parsed.path.split('/') if p]
     path_segments = []
@@ -689,7 +1062,7 @@ def setup_lyrics_api_analyze():
             path_segments.append({'index': idx, 'value': decoded})
 
     # For path-based APIs without artist/title query params, the convention is
-    # ``/.../<artist>/<title>`` — guess the last two surfaced segments accordingly.
+    # ``/.../<artist>/<title>`` -- guess the last two surfaced segments accordingly.
     if not guesses['artist_param'] and not guesses['title_param'] and len(path_segments) >= 2:
         guesses['path_roles'][path_segments[-2]['index']] = 'artist'
         guesses['path_roles'][path_segments[-1]['index']] = 'title'
@@ -708,6 +1081,7 @@ def setup_lyrics_api_analyze():
         except Exception:
             ctx = None
         import time as _time
+
         _t0 = _time.monotonic()
         with urllib.request.urlopen(req, timeout=60, context=ctx) as resp:
             raw_bytes = resp.read(512 * 1024)
@@ -724,29 +1098,45 @@ def setup_lyrics_api_analyze():
             pass
 
     # Auto-detect lyrics field by common names + string length heuristic
-    _LYRICS_NAMES = {'lyrics', 'plainlyrics', 'syncedlyrics', 'lyric', 'lyricbody',
-                     'text', 'words', 'content', 'translation'}
+    _LYRICS_NAMES = {
+        'lyrics',
+        'plainlyrics',
+        'syncedlyrics',
+        'lyric',
+        'lyricbody',
+        'text',
+        'words',
+        'content',
+        'translation',
+    }
     if isinstance(json_obj, dict):
+
         def _find_lyrics(obj, prefix=''):
             if guesses['lyrics_field'] or not isinstance(obj, dict):
                 return
             for k, v in obj.items():
                 path = (prefix + '.' + k) if prefix else k
-                if k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES \
-                        and isinstance(v, str) and len(v) > 20:
+                if (
+                    k.lower().replace('_', '').replace('-', '') in _LYRICS_NAMES
+                    and isinstance(v, str)
+                    and len(v) > 20
+                ):
                     guesses['lyrics_field'] = path
                     return
                 elif isinstance(v, dict):
                     _find_lyrics(v, path)
+
         _find_lyrics(json_obj)
 
-    display_raw = (raw_text or '')[:16384] + ('…' if raw_text and len(raw_text) > 16384 else '')
-    return jsonify({
-        'params':        flat_params,
-        'path_segments': path_segments,
-        'guesses':       guesses,
-        'json_obj':      json_obj,
-        'raw_json':      display_raw,
-        'elapsed_ms':    round(elapsed_ms) if elapsed_ms is not None else None,
-        'error':         'Failed to fetch or parse the API response.' if http_error else None,
-    }), 200
+    display_raw = (raw_text or '')[:16384] + ('...' if raw_text and len(raw_text) > 16384 else '')
+    return jsonify(
+        {
+            'params': flat_params,
+            'path_segments': path_segments,
+            'guesses': guesses,
+            'json_obj': json_obj,
+            'raw_json': display_raw,
+            'elapsed_ms': round(elapsed_ms) if elapsed_ms is not None else None,
+            'error': 'Failed to fetch or parse the API response.' if http_error else None,
+        }
+    ), 200

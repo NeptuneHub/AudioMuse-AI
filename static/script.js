@@ -330,8 +330,10 @@ function displayTaskStatus(task) {
     statusTaskType.textContent = task.task_type_from_db || task.task_type || 'N/A';
     const stateUpper = (task.state || task.status || 'IDLE').toUpperCase();
     statusStatus.textContent = stateUpper;
-    statusProgress.textContent = task.progress || 0;
-    progressBar.style.width = `${task.progress || 0}%`;
+    const progressValue = task.progress || 0;
+    statusProgress.textContent = progressValue;
+    progressBar.style.width = `${progressValue}%`;
+    progressBar.setAttribute('aria-valuenow', progressValue);
 
     statusStatus.className = 'status-text'; // Reset classes
     let statusClass = 'status-pending';
@@ -437,7 +439,8 @@ async function startTask(taskType) {
             lastPolledTaskDetails[result.task_id] = { state: 'PENDING', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
         } else {
-            throw new Error(result.message || 'Failed to start task.');
+            const structured = (typeof formatErrorText === 'function' && result?.error_code) ? formatErrorText(result) : '';
+            throw new Error(structured || result.error || result.message || 'Failed to start task.');
         }
     } catch (error) {
         console.error(`Error starting ${taskType} task:`, error);
@@ -514,7 +517,7 @@ function showMessageBox(title, message) {
     const messageBox = document.createElement('div');
     messageBox.id = boxId;
     messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
-    messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${title}</h3><p style="margin:0;">${message}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
+    messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${escapeHtml(title)}</h3><p style="margin:0;">${escapeHtml(message)}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
     
     setTimeout(() => {
         messageBox.remove();

@@ -1,24 +1,20 @@
-"""Centralized task-queue / Redis access, dispatched on ``config.QUEUE_TYPE``.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Companion to :mod:`database`, in the same spirit as ``tasks/mediaserver.py``: one
-module owns the Redis connection and the two RQ queues so the rest of the code
-never builds them itself. ``app_helper`` re-exports the handles below, so every
-module that does ``from app_helper import redis_conn, rq_queue_high`` is untouched.
+"""Redis connection and RQ queue definitions shared across the app.
 
-``redis`` (default) and ``embedded`` both talk to a *real* Redis via
-``config.REDIS_URL`` -- RQ relies on Lua ``EVAL``, pub/sub and job registries, so a
-genuine server is required. The only difference is who starts it: with ``embedded``
-the macOS supervisor launches the bundled ``redis-server`` binary (see
-:func:`build_embedded_redis_argv`) and exports its socket URL as ``REDIS_URL``
-before the app and workers boot.
+Creates the process-wide Redis connection and the ``high`` and ``default`` RQ
+queues that workers and enqueuers import, and re-exports the RQ primitives so
+callers depend on this module rather than on ``rq`` directly.
 
-``rq`` hardcodes ``UnixSignalDeathPenalty`` as every job registry's default, so
-on Windows (no ``signal.SIGALRM``) registry cleanup -- the janitor loop and the
-workers' periodic maintenance -- raises ``AttributeError`` whenever an abandoned
-job carries an ``on_failure`` callback, and the job is never removed.
-``BaseRegistry`` is therefore re-pointed at RQ's own platform dispatcher and
-the queues below are built with the same class: a no-op on POSIX, the
-timer-based penalty (what RQ's workers already use) on Windows.
+Main Features:
+* Configures the Redis connection with keepalive and Unix-socket awareness.
+* Builds the argv for the embedded Redis server used by the standalone build.
 """
 
 from redis import Redis
@@ -46,15 +42,8 @@ __all__ = [
     "redis_socket_options",
 ]
 
-def redis_socket_options(url):
-    """Connection kwargs that depend on the transport.
 
-    ``socket_keepalive`` is a TCP-only option; redis-py's
-    ``UnixDomainSocketConnection`` raises ``TypeError`` if it is passed. The
-    embedded (macOS) queue connects over a unix socket (``unix://``), so the
-    option is omitted there and kept for the TCP ``redis://`` URLs used by the
-    container/cloud deployments.
-    """
+def redis_socket_options(url):
     return {} if str(url).startswith("unix://") else {"socket_keepalive": True}
 
 
@@ -67,27 +56,29 @@ redis_conn = Redis.from_url(
     **redis_socket_options(config.REDIS_URL),
 )
 
-rq_queue_high = Queue('high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
-rq_queue_default = Queue('default', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class)
+rq_queue_high = Queue(
+    'high', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class
+)
+rq_queue_default = Queue(
+    'default', connection=redis_conn, default_timeout=-1, death_penalty_class=_death_penalty_class
+)
 
 
 def build_embedded_redis_argv(server_binary, socket_path, data_dir):
-    """Return ``(argv, redis_url)`` for launching a private embedded Redis.
-
-    Used only by the standalone (macOS) supervisor when ``QUEUE_TYPE`` is
-    ``embedded``. The supervisor owns the resulting process (spawn, log capture,
-    group shutdown). TCP is disabled (``--port 0``) so the instance is reachable
-    only over the unix socket and never collides with a Redis the user already
-    runs on 6379; persistence is off because RQ state is transient queue data.
-    """
     argv = [
         server_binary,
-        "--unixsocket", socket_path,
-        "--unixsocketperm", "700",
-        "--port", "0",
-        "--save", "",
-        "--appendonly", "no",
-        "--dir", data_dir,
+        "--unixsocket",
+        socket_path,
+        "--unixsocketperm",
+        "700",
+        "--port",
+        "0",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--dir",
+        data_dir,
     ]
     redis_url = f"unix://{socket_path}?db=0"
     return argv, redis_url

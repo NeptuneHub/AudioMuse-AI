@@ -1,4 +1,20 @@
-"""Unit tests for app_clustering.py Flask blueprint"""
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Unit tests for the app_clustering blueprint start endpoint.
+
+Registers the clustering blueprint and posts to the start route with mocked
+queue and status calls to check enqueueing and active-task gating.
+
+Main Features:
+* Starts clustering when no task is active.
+* Blocks when a clustering task or another batch is already active.
+"""
 
 import pytest
 from unittest.mock import Mock, patch
@@ -42,7 +58,10 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_called_once()
         mock_save_status.assert_called_once()
 
-    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'})
+    @patch(
+        'app_clustering.get_active_main_task',
+        return_value={'task_id': 'existing-clustering-123', 'status': 'STARTED'},
+    )
     @patch('app_clustering.rq_queue_high')
     @patch('app_clustering.clean_up_previous_main_tasks')
     @patch('app_clustering.save_task_status')
@@ -58,7 +77,14 @@ class TestStartClusteringEndpoint:
         mock_cleanup.assert_not_called()
         mock_queue.enqueue.assert_not_called()
 
-    @patch('app_clustering.get_active_main_task', return_value={'task_id': 'existing-cleaning-123', 'status': 'STARTED', 'task_type': 'cleaning'})
+    @patch(
+        'app_clustering.get_active_main_task',
+        return_value={
+            'task_id': 'existing-cleaning-123',
+            'status': 'STARTED',
+            'task_type': 'cleaning',
+        },
+    )
     @patch('app_clustering.rq_queue_high')
     @patch('app_clustering.clean_up_previous_main_tasks')
     @patch('app_clustering.save_task_status')

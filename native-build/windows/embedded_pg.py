@@ -1,15 +1,21 @@
-"""Embedded PostgreSQL manager for the standalone Windows build (fallback).
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-Used when ``pgserver`` has no Windows wheel. Manages a bundled relocatable
-PostgreSQL with ``initdb`` + ``pg_ctl``, exposing the same ``start`` /
-``ensure_running`` / ``stop`` surface that :mod:`windows.db_backend` routes to.
+"""Bundled-binary embedded PostgreSQL control for the Windows standalone build.
 
-The bundled server is relocatable: PostgreSQL on Windows derives its support-file
-paths from the running executable's location, so the tree works wherever the
-package is installed (``C:\\Program Files\\AudioMuse-AI\\_internal\\pgsql``).
+Drives the vendored PostgreSQL binaries (resolved via ``windows.paths``) when
+pgserver is not used: initializes the data directory on first run and starts,
+ensures-running and stops the server, always spawning with a hidden console.
+``windows.db_backend`` picks this path over pgserver.
 
-Unlike macOS/Linux, there are no Unix sockets on Windows -- PostgreSQL listens on
-TCP 127.0.0.1.
+Main Features:
+* Runs initdb and pg_ctl against the bundled binaries under an RLock.
+* Suppresses child console windows via CREATE_NO_WINDOW on Windows.
 """
 
 import logging
@@ -25,7 +31,7 @@ from windows import paths
 logger = logging.getLogger("audiomuse.embedded_pg")
 
 _lock = threading.RLock()
-_running_proc = None  # the postgres.exe process handle
+_running_proc = None
 
 _READY_MARKER = "audiomuse_initialized"
 
@@ -36,8 +42,13 @@ def _bin(name):
 
 
 def _conn(password):
-    return {"host": "127.0.0.1", "port": paths.pg_port(), "user": "postgres",
-            "password": password, "dbname": "postgres"}
+    return {
+        "host": "127.0.0.1",
+        "port": paths.pg_port(),
+        "user": "postgres",
+        "password": password,
+        "dbname": "postgres",
+    }
 
 
 def _initialized(data_dir):
@@ -54,13 +65,6 @@ def _initialized(data_dir):
 
 
 def _has_cluster_data(data_dir):
-    """True if data_dir holds an initialized PostgreSQL cluster (never auto-delete it).
-
-    Keyed on ``global/pg_control``: written at the END of initdb and required for
-    the server to start, so its presence proves a complete cluster with real data.
-    A half-built dir (interrupted initdb, no pg_control) holds no usable data and
-    is still cleared normally, so this guard never blocks first-run self-heal.
-    """
     return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
 
 
@@ -99,9 +103,18 @@ def start(data_dir, password):
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(password)
                 subprocess.run(
-                    [_bin("initdb"), "-D", data_dir, "-U", "postgres",
-                     "--auth-host=scram-sha-256", "--auth-local=scram-sha-256",
-                     f"--pwfile={pwfile}", "--no-locale", "--encoding=UTF8"],
+                    [
+                        _bin("initdb"),
+                        "-D",
+                        data_dir,
+                        "-U",
+                        "postgres",
+                        "--auth-host=scram-sha-256",
+                        "--auth-local=scram-sha-256",
+                        f"--pwfile={pwfile}",
+                        "--no-locale",
+                        "--encoding=UTF8",
+                    ],
                     check=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -113,7 +126,9 @@ def start(data_dir, password):
                         os.unlink(pwfile)
                     except OSError:
                         pass
-            with open(os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n") as fh:
+            with open(
+                os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n"
+            ) as fh:
                 fh.write("\npassword_encryption = scram-sha-256\n")
             with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
                 fh.write("ok\n")
@@ -121,14 +136,20 @@ def start(data_dir, password):
         port = str(paths.pg_port())
         logger.info("Starting PostgreSQL on 127.0.0.1:%s", port)
         _running_proc = subprocess.Popen(
-            [_bin("pg_ctl"), "start", "-D", data_dir,
-             "-o", f"-p {port} -h 127.0.0.1",
-             "-l", os.path.join(data_dir, "pg.log")],
+            [
+                _bin("pg_ctl"),
+                "start",
+                "-D",
+                data_dir,
+                "-o",
+                f"-p {port} -h 127.0.0.1",
+                "-l",
+                os.path.join(data_dir, "pg.log"),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        # Wait for the server to be ready.
         for _ in range(60):
             result = subprocess.run(
                 [_bin("pg_isready"), "-h", "127.0.0.1", "-p", port, "-q"],
@@ -138,6 +159,7 @@ def start(data_dir, password):
             if result.returncode == 0:
                 break
             import time
+
             time.sleep(0.5)
         else:
             raise RuntimeError("PostgreSQL did not start within 30 seconds")

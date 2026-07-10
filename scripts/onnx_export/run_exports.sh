@@ -6,9 +6,9 @@
 # pre-built artifacts so the Docker build does not have to re-export them.
 #
 # Outputs:
-#   model/gte-multilingual-base-int8.onnx  (~325 MB) — lyrics embedding (INT8 ONNX)
-#   model/gte-multilingual-base/           (~5 MB)   — gte tokenizer files (no weights)
-#   model/whisper-small-onnx/              (~1.1 GB) — speech-to-text (multilingual)
+#   model/gte-multilingual-base-int8.onnx  (~325 MB) - lyrics embedding (INT8 ONNX)
+#   model/gte-multilingual-base/           (~5 MB)   - gte tokenizer files (no weights)
+#   model/whisper-small-onnx/              (~1.1 GB) - speech-to-text (multilingual)
 #
 # Usage:
 #   source .venv/bin/activate
@@ -71,8 +71,8 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu \
     'optimum[onnxruntime]==1.27.0'
 
 # ---------------------------------------------------------------------------
-# 2) Alibaba-NLP/gte-multilingual-base → INT8 ONNX
-#    Download the HF model (custom architecture → trust_remote_code) then call
+# 2) Alibaba-NLP/gte-multilingual-base -> INT8 ONNX
+#    Download the HF model (custom architecture -> trust_remote_code) then call
 #    our export_gte_to_onnx.py script, which exports fp32 and dynamic-INT8
 #    quantizes it. The runtime applies CLS pooling + L2 normalization.
 # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ if [ ! -f "${GTE_OUT}" ]; then
     echo "==> Downloading Alibaba-NLP/gte-multilingual-base to ${GTE_SRC}..."
     python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Alibaba-NLP/gte-multilingual-base', local_dir='${GTE_SRC}')"
 
-    echo "==> Exporting gte → ${GTE_OUT} (INT8)..."
+    echo "==> Exporting gte -> ${GTE_OUT} (INT8)..."
     python scripts/onnx_export/export_gte_to_onnx.py \
         --input "${GTE_SRC}" \
         --output "${GTE_OUT}" \
@@ -90,11 +90,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3) openai/whisper-small → ONNX (encoder + decoder, no past KV cache)
+# 3) openai/whisper-small -> ONNX (encoder + decoder, no past KV cache)
 #    Used by lyrics/whisper_onnx.py with a custom mel + greedy decode loop.
 # ---------------------------------------------------------------------------
 if [ ! -f "${WHISPER_OUT}/encoder_model.onnx" ] || [ ! -f "${WHISPER_OUT}/decoder_model.onnx" ]; then
-    echo "==> Exporting ${WHISPER_SRC} → ${WHISPER_OUT}..."
+    echo "==> Exporting ${WHISPER_SRC} -> ${WHISPER_OUT}..."
     python scripts/onnx_export/export_whisper_to_onnx.py \
         --model "${WHISPER_SRC}" \
         --output "${WHISPER_OUT}"

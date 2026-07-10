@@ -1,14 +1,21 @@
-"""Centralized database access, dispatched on ``config.DATABASE_TYPE``.
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-This mirrors the ``tasks/mediaserver.py`` approach: a single module owns "how do
-we talk to the database" so the rest of the code never constructs a connection
-itself. ``app_helper`` re-exports :func:`get_db`/:func:`close_db` from here, so
-the ~50 modules that do ``from app_helper import get_db`` are untouched.
+"""Postgres data-access layer for the whole application.
 
-``postgres`` (default) and ``embedded`` both connect through ``config.DATABASE_URL``
-with psycopg2 and behave identically at the call site. The only difference is who
-starts the server: with ``embedded`` the macOS supervisor calls :func:`start_embedded`
-first (pgserver), exports the resulting DSN as ``DATABASE_URL``, then boots the app.
+Owns the per-request connection (via Flask ``g``), the embedded-server
+lifecycle, the ``init_db`` schema bootstrap, and every read/write helper for
+tasks, track analysis and embeddings, projections, and alchemy anchors/radios.
+
+Main Features:
+* Connection management plus ``init_db`` table/index creation and migrations.
+* Task-status and history persistence with sanitized fields and capped history rows.
+* Embedding, projection, and alchemy CRUD helpers shared by workers and the web app.
 """
 
 import json
@@ -19,20 +26,17 @@ import time
 import numpy as np
 import psycopg2
 from flask import g
-from psycopg2.extras import DictCursor
+from psycopg2 import sql
+from psycopg2.extras import DictCursor, Json
 
 import config
 
 logger = logging.getLogger(__name__)
 
-# UTC "now" SQL fragment is owned by tz_helper, a leaf module -- importing it
-# adds no depth to the eager import graph, so there is no need to duplicate it.
 from tz_helper import UTC_NOW_SQL
 
-# Shared input sanitizer (leaf module) for cleaning string columns before writes.
 from sanitization import sanitize_db_field
 
-# Task status constants (imported from config, re-exported for backward compatibility)
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -42,18 +46,20 @@ from config import (
     TASK_STATUS_REVOKED,
 )
 
-# Task history constants
 TASK_HISTORY_MAX_ROWS = 10
-MAX_LOG_ENTRIES_STORED = 10  # Max number of recent log entries to store in the database per task
+MAX_LOG_ENTRIES_STORED = 10
 
-# In-memory cache for the precomputed 2D map projection (optional)
+USERS_PASSWORD_CHANGED_AT_DDL = (
+    "ALTER TABLE IF EXISTS audiomuse_users "
+    "ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP"
+)
+
 MAP_PROJECTION_CACHE = None
 
 _embedded_server = None
 
 
 def get_db():
-    """Return a request-scoped psycopg2 connection (cached on Flask ``g``)."""
     if 'db' not in g:
         try:
             g.db = psycopg2.connect(
@@ -62,58 +68,36 @@ def get_db():
                 keepalives_idle=600,
                 keepalives_interval=30,
                 keepalives_count=3,
-                options='-c statement_timeout=600000'
+                options='-c statement_timeout=600000',
             )
-        except psycopg2.OperationalError as e:
-            logger.error(f"Failed to connect to database: {e}")
+        except psycopg2.OperationalError:
+            logger.exception("Failed to connect to database")
             raise
     return g.db
 
 
 def close_db(e=None):
-    """Close and drop the request-scoped connection, if any."""
     db = g.pop('db', None)
     if db is not None:
         db.close()
 
 
 def start_embedded(data_dir):
-    """Start an embedded PostgreSQL server (pgserver) and return its libpq DSN.
-
-    Used only by the standalone (macOS) supervisor when ``DATABASE_TYPE`` is
-    ``embedded``. The data directory must live outside the read-only app bundle
-    and its path must not contain spaces (pgserver doubles it as the unix-socket
-    dir, which ``postgres`` receives via ``pg_ctl -o '-k <dir>'`` and re-splits on
-    whitespace); see ``native-build/macos/paths.py::app_support_dir``. Initializes the cluster
-    on first run, idempotent afterwards.
-    """
     global _embedded_server
     import pgserver
+
     _embedded_server = pgserver.get_server(data_dir)
     return _embedded_server.get_uri()
 
 
 def ensure_embedded_running(data_dir):
-    """(Re)start the embedded Postgres if its postmaster died; return the DSN.
-
-    Used by the macOS supervisor's health loop. ``pgserver.get_server`` caches
-    the server object and returns it *without* a liveness check, so it will not
-    restart a dead postmaster on its own. We drop the cached instance first,
-    forcing a fresh ``get_server`` whose constructor runs (under pgserver's own
-    lock) ``ensure_postgres_running`` -- a no-op when the cluster is up, or a
-    restart (clearing any stale ``postmaster.pid``) when it died. The unix-socket
-    path is derived from the data dir, so the returned DSN is stable across
-    restarts and children's ``DATABASE_URL`` stays valid."""
     global _embedded_server
     if _embedded_server is None:
         return start_embedded(data_dir)
     import pgserver
     from pathlib import Path
+
     try:
-        # pgserver keys _instances by ``Path(pgdata).expanduser().resolve()`` (see
-        # its get_server), so we must resolve too -- a symlinked or relative
-        # data_dir would otherwise not match and the dead instance wouldn't be
-        # dropped, leaving the postmaster un-restarted.
         pgserver.PostgresServer._instances.pop(Path(data_dir).expanduser().resolve(), None)
     except Exception:
         pass
@@ -122,30 +106,19 @@ def ensure_embedded_running(data_dir):
 
 
 def stop_embedded():
-    """Cleanly stop the embedded PostgreSQL server started by :func:`start_embedded`."""
     global _embedded_server
     if _embedded_server is not None:
         _embedded_server.cleanup()
         _embedded_server = None
 
 
-# ---------------------------------------------------------------------------
-# Task status and history operations
-# ---------------------------------------------------------------------------
-
 def _build_task_note(task_type, details_obj, db):
-    """Build a short, human-readable note for a finished task.
-
-    Looks at the ``details`` JSON we stored on the main task and, when needed,
-    queries subtasks to compute a meaningful number (e.g. total songs analyzed
-    across all album_analysis subtasks)."""
     if not isinstance(details_obj, dict):
         details_obj = {}
     t = (task_type or '').lower()
 
     try:
         if 'analysis' in t:
-            # Prefer summing tracks_analyzed from album_analysis subtasks.
             try:
                 with db.cursor() as cur:
                     cur.execute(
@@ -169,23 +142,33 @@ def _build_task_note(task_type, details_obj, db):
                     continue
             if songs > 0:
                 return f"Songs analyzed: {songs}"
-            # Fallback to album-level info from the main task details.
-            albums = details_obj.get('albums_completed') or details_obj.get('total_albums_processed')
+            albums = details_obj.get('albums_completed') or details_obj.get(
+                'total_albums_processed'
+            )
             if albums:
                 return f"Albums analyzed: {albums}"
             return ''
 
         if 'clean' in t:
-            for k in ('tracks_deleted', 'orphans_removed', 'songs_cleaned',
-                     'tracks_removed', 'deleted_count', 'cleaned_tracks'):
+            for k in (
+                'tracks_deleted',
+                'orphans_removed',
+                'songs_cleaned',
+                'tracks_removed',
+                'deleted_count',
+                'cleaned_tracks',
+            ):
                 v = details_obj.get(k)
                 if isinstance(v, (int, float)):
                     return f"Songs cleaned: {int(v)}"
             return ''
 
         if 'cluster' in t:
-            sampled = (details_obj.get('best_params') or {}).get('initial_subset_size') \
-                if isinstance(details_obj.get('best_params'), dict) else None
+            sampled = (
+                (details_obj.get('best_params') or {}).get('initial_subset_size')
+                if isinstance(details_obj.get('best_params'), dict)
+                else None
+            )
             if sampled is None:
                 sampled = details_obj.get('sampled_songs') or details_obj.get('num_sampled_songs')
             n_clusters = details_obj.get('num_playlists_created') or details_obj.get('num_clusters')
@@ -201,25 +184,12 @@ def _build_task_note(task_type, details_obj, db):
 
 
 def record_task_history(task_id, task_type, status, duration_seconds=None, note=None, details=None):
-    """Insert a row into ``task_history`` and trim the table to the most
-    recent ``TASK_HISTORY_MAX_ROWS`` entries.
-
-    Safe to call from anywhere; never raises. ``details`` (dict or None) is
-    used to build a default ``note`` when one is not provided explicitly.
-    If a short note cannot be inferred, fall back to the task's final
-    status_message or message text when available.
-
-    The history table is treated as immutable per task_id: once a task has
-    been recorded, we do not insert a second history row for the same task.
-    """
     if not task_id:
         return
     try:
         db = get_db()
-        # If no note was supplied, try to infer one from details.
         if note is None:
             details_obj = details if isinstance(details, dict) else {}
-            # Pass task_id through so the analysis branch can query subtasks.
             details_obj = dict(details_obj)
             details_obj['_task_id'] = task_id
             note = _build_task_note(task_type, details_obj, db) or ''
@@ -227,10 +197,7 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
                 note = details_obj.get('status_message') or details_obj.get('message') or ''
 
         with db.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM task_history WHERE task_id = %s LIMIT 1",
-                (task_id,)
-            )
+            cur.execute("SELECT 1 FROM task_history WHERE task_id = %s LIMIT 1", (task_id,))
             if cur.fetchone():
                 return
             cur.execute(
@@ -240,7 +207,6 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
                 """,
                 (task_id, task_type, status, duration_seconds, note),
             )
-            # Trim — keep only the most recent rows.
             cur.execute(
                 """
                 DELETE FROM task_history
@@ -259,34 +225,76 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             pass
 
 
-def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task_id=None, sub_type_identifier=None, progress=0, details=None):
-    """
-    Saves or updates a task's status in the database, using Unix timestamps for start and end times.
-    """
+def _normalize_task_details(details, status):
+    if not isinstance(details, dict):
+        return
+
+    if status == TASK_STATUS_SUCCESS:
+        details.pop('log_storage_info', None)
+        if not isinstance(details.get('log'), list) or not details.get('log'):
+            details['log'] = ["Task completed successfully."]
+        return
+
+    if not isinstance(details.get('log'), list):
+        return
+
+    log_list = details['log']
+    if len(log_list) <= MAX_LOG_ENTRIES_STORED:
+        details.pop('log_storage_info', None)
+        return
+
+    original_log_length = len(log_list)
+    details['log'] = log_list[-MAX_LOG_ENTRIES_STORED:]
+    details['log_storage_info'] = (
+        f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
+    )
+
+
+def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, details, current_unix_time):
+    if parent_task_id is not None:
+        return
+    if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
+        return
+    if not task_type or task_type == 'unknown':
+        return
+
+    duration_s = None
+    try:
+        with db.cursor() as hist_cur:
+            hist_cur.execute(
+                "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
+                (task_id,),
+            )
+            row = hist_cur.fetchone()
+        if row and row[0] is not None:
+            end = row[1] if row[1] is not None else current_unix_time
+            duration_s = max(0.0, float(end) - float(row[0]))
+    except Exception:
+        pass
+    record_task_history(task_id, task_type, status, duration_s, details=details)
+
+
+def save_task_status(
+    task_id,
+    task_type,
+    status=TASK_STATUS_PENDING,
+    parent_task_id=None,
+    sub_type_identifier=None,
+    progress=0,
+    details=None,
+):
     db = get_db()
-    cur = db.cursor()
     current_unix_time = time.time()
 
-    if details is not None and isinstance(details, dict):
-        # Log truncation logic remains the same
-        if status != TASK_STATUS_SUCCESS and 'log' in details and isinstance(details['log'], list):
-            log_list = details['log']
-            if len(log_list) > MAX_LOG_ENTRIES_STORED:
-                original_log_length = len(log_list)
-                details['log'] = log_list[-MAX_LOG_ENTRIES_STORED:]
-                details['log_storage_info'] = f"Log in DB truncated to last {MAX_LOG_ENTRIES_STORED} entries. Original length: {original_log_length}."
-            else:
-                details.pop('log_storage_info', None)
-        elif status == TASK_STATUS_SUCCESS:
-            details.pop('log_storage_info', None)
-            if 'log' not in details or not isinstance(details.get('log'), list) or not details.get('log'):
-                details['log'] = ["Task completed successfully."]
+    if details is not None:
+        _normalize_task_details(details, status)
 
     details_json = json.dumps(details) if details is not None else None
-    
+
+    cur = db.cursor()
     try:
-        # This query now handles start_time and end_time using Unix timestamps
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO task_status (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time)
             VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, CASE WHEN %s IN ('SUCCESS', 'FAILURE', 'REVOKED') THEN %s ELSE NULL END)
             ON CONFLICT (task_id) DO UPDATE SET
@@ -302,7 +310,22 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
                                 THEN %s
                                 ELSE task_status.end_time
                            END
-        """, (task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details_json, current_unix_time, status, current_unix_time, current_unix_time, current_unix_time))
+        """,
+            (
+                task_id,
+                parent_task_id,
+                task_type,
+                sub_type_identifier,
+                status,
+                progress,
+                details_json,
+                current_unix_time,
+                status,
+                current_unix_time,
+                current_unix_time,
+                current_unix_time,
+            ),
+        )
         db.commit()
     except psycopg2.Error:
         logger.exception(f"DB Error saving task status for {task_id}")
@@ -314,46 +337,26 @@ def save_task_status(task_id, task_type, status=TASK_STATUS_PENDING, parent_task
     finally:
         cur.close()
 
-    # Record persistent history for MAIN tasks that just reached a terminal state.
-    # Skip the synthetic 'unknown' placeholder inserted by the global cancel
-    # path (app_helper.cancel_all_jobs) — it has no real type and would show
-    # up as an 'unknown' row in the dashboard's recent activity table.
     try:
-        if (
-            parent_task_id is None
-            and status in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            and task_type and task_type != 'unknown'
-        ):
-            duration_s = None
-            try:
-                hist_cur = db.cursor()
-                hist_cur.execute(
-                    "SELECT start_time, end_time FROM task_status WHERE task_id = %s",
-                    (task_id,),
-                )
-                row = hist_cur.fetchone()
-                hist_cur.close()
-                if row and row[0] is not None:
-                    end = row[1] if row[1] is not None else current_unix_time
-                    duration_s = max(0.0, float(end) - float(row[0]))
-            except Exception:
-                pass
-            record_task_history(task_id, task_type, status, duration_s, details=details)
+        _maybe_record_task_history(
+            db, task_id, task_type, status, parent_task_id, details, current_unix_time
+        )
     except Exception as e_hist:
         logger.debug(f"history record skipped for {task_id}: {e_hist}")
 
 
 def get_task_info_from_db(task_id):
-    """Fetches task info from DB and calculates running time in Python."""
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
-    # Fetch raw columns including the Unix timestamps
-    cur.execute("""
+    cur.execute(
+        """
         SELECT
             task_id, parent_task_id, task_type, sub_type_identifier, status, progress, details, timestamp, start_time, end_time
         FROM task_status
         WHERE task_id = %s
-    """, (task_id,))
+    """,
+        (task_id,),
+    )
     row = cur.fetchone()
     cur.close()
     if not row:
@@ -365,23 +368,16 @@ def get_task_info_from_db(task_id):
     start_time = row_dict.get('start_time')
     end_time = row_dict.get('end_time')
 
-    # If start_time is null (old record or pre-start), duration is 0.
     if start_time is None:
         row_dict['running_time_seconds'] = 0.0
     else:
-        # If end_time is null, task is running. Use current time.
         effective_end_time = end_time if end_time is not None else current_unix_time
         row_dict['running_time_seconds'] = max(0, effective_end_time - start_time)
 
     return row_dict
 
 
-# ---------------------------------------------------------------------------
-# Score and map projection utilities
-# ---------------------------------------------------------------------------
-
 def get_score_data_by_ids(item_ids_list):
-    """Fetches only score-related data (excluding embeddings) for a specific list of item_ids."""
     if not item_ids_list:
         return []
     conn = get_db()
@@ -403,13 +399,11 @@ def get_score_data_by_ids(item_ids_list):
 
 
 def get_tracks_by_ids(item_ids_list):
-    """Fetches full track data (including embeddings) for a specific list of item_ids."""
     if not item_ids_list:
         return []
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
 
-    # Convert item_ids to strings to match the text type in database
     item_ids_str = [str(item_id) for item_id in item_ids_list]
 
     query = """
@@ -422,7 +416,6 @@ def get_tracks_by_ids(item_ids_list):
     rows = cur.fetchall()
     cur.close()
 
-    # Convert DictRow objects to regular dicts to allow adding new keys.
     processed_rows = []
     for row in rows:
         row_dict = dict(row)
@@ -436,10 +429,12 @@ def get_tracks_by_ids(item_ids_list):
 
 
 def load_map_projection(index_name, force_reload=False):
-    """Load precomputed projection from DB. Returns (id_map, numpy_array) or (None, None)"""
     global MAP_PROJECTION_CACHE
-    # Try cache first (unless force_reload is True)
-    if not force_reload and MAP_PROJECTION_CACHE and MAP_PROJECTION_CACHE.get('index_name') == index_name:
+    if (
+        not force_reload
+        and MAP_PROJECTION_CACHE
+        and MAP_PROJECTION_CACHE.get('index_name') == index_name
+    ):
         logger.info(f"Map projection '{index_name}' already loaded in cache. Skipping reload.")
         return MAP_PROJECTION_CACHE.get('id_map'), MAP_PROJECTION_CACHE.get('projection')
 
@@ -447,20 +442,26 @@ def load_map_projection(index_name, force_reload=False):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s", (index_name,))
+        cur.execute(
+            "SELECT projection_data, id_map_json FROM map_projection_data WHERE index_name = %s",
+            (index_name,),
+        )
         row = cur.fetchone()
         if row and row[0] is not None:
             proj_blob, id_map_json = row[0], row[1]
         else:
             import re
             from tasks.index_build_helpers import reassemble_segmented_id_map
+
             cur.execute(
                 "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
                 (index_name.replace('_', r'\_') + r"\_%\_%",),
             )
             candidates = cur.fetchall()
             if not candidates:
-                logger.warning(f"Map projection '{index_name}' not found in the database. Cache will be empty.")
+                logger.warning(
+                    f"Map projection '{index_name}' not found in the database. Cache will be empty."
+                )
                 return None, None
             seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
             parts = []
@@ -474,22 +475,27 @@ def load_map_projection(index_name, force_reload=False):
                 if total_expected is None:
                     total_expected = total
                 elif total_expected != total:
-                    logger.error(f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load.")
+                    logger.error(
+                        f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load."
+                    )
                     return None, None
                 parts.append((part_no, part_blob, part_id_map))
             if total_expected is None or len(parts) != total_expected:
-                logger.error(f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load.")
+                logger.error(
+                    f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load."
+                )
                 return None, None
             parts.sort(key=lambda p: p[0])
             proj_blob = b"".join(bytes(p[1]) for p in parts if p[1])
             id_map_json = reassemble_segmented_id_map((p[0], p[2]) for p in parts)
         proj = np.frombuffer(proj_blob, dtype=np.float32)
-        # infer shape as (-1,2) if length divisible by 2
         if proj.size % 2 == 0:
             proj = proj.reshape((-1, 2))
         id_map = json.loads(id_map_json)
         MAP_PROJECTION_CACHE = {'index_name': index_name, 'id_map': id_map, 'projection': proj}
-        logger.info(f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory.")
+        logger.info(
+            f"Map projection '{index_name}' with {len(id_map)} items loaded successfully into memory."
+        )
         return id_map, proj
     except Exception:
         logger.exception("Failed to load map projection")
@@ -498,14 +504,83 @@ def load_map_projection(index_name, force_reload=False):
         cur.close()
 
 
-# ---------------------------------------------------------------------------
-# Analysis and embedding utilities
-# ---------------------------------------------------------------------------
+def _valid_year(year_value):
+    if 1000 <= year_value <= 2100:
+        return year_value
+    return None
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
-    """Saves track analysis and embedding in a single transaction."""
 
-    # Sanitize all string inputs with field-specific limits
+def _parse_year_parts(parts):
+    try:
+        if len(parts[0]) == 4:
+            result = _valid_year(int(parts[0]))
+            if result is not None:
+                return result
+
+        if len(parts[2]) == 4:
+            result = _valid_year(int(parts[2]))
+            if result is not None:
+                return result
+
+        if len(parts[2]) == 2:
+            year = int(parts[2])
+            year += 2000 if year < 30 else 1900
+            return _valid_year(year)
+    except (ValueError, TypeError, IndexError):
+        pass
+    return None
+
+
+def _parse_year_from_date(year_value):
+    if year_value is None:
+        return None
+
+    year_str = str(year_value).strip()
+    if not year_str:
+        return None
+
+    try:
+        result = _valid_year(int(year_str))
+        if result is not None:
+            return result
+    except (ValueError, TypeError):
+        pass
+
+    parts = year_str.replace('/', '-').split('-')
+    if len(parts) == 3:
+        return _parse_year_parts(parts)
+    return None
+
+
+def _clamp_rating(rating):
+    if rating is None:
+        return None
+    try:
+        rating = int(rating)
+        if rating < 0 or rating > 5:
+            return None
+        return rating
+    except (ValueError, TypeError):
+        return None
+
+
+def save_track_analysis_and_embedding(
+    item_id,
+    title,
+    author,
+    tempo,
+    key,
+    scale,
+    moods,
+    embedding_vector,
+    energy=None,
+    other_features=None,
+    album=None,
+    album_artist=None,
+    year=None,
+    rating=None,
+    file_path=None,
+):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
     album = sanitize_db_field(album, max_length=200, field_name="album")
@@ -514,76 +589,17 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     scale = sanitize_db_field(scale, max_length=10, field_name="scale")
     other_features = sanitize_db_field(other_features, max_length=2000, field_name="other_features")
 
-    # year: parse from various date formats and validate
-    def _parse_year_from_date(year_value):
-        """
-        Parse year from various date formats.
-        Supports: YYYY, YYYY-MM-DD, MM-DD-YYYY, DD-MM-YYYY (with - or / separators)
-        """
-        if year_value is None:
-            return None
-
-        year_str = str(year_value).strip()
-        if not year_str:
-            return None
-
-        # Try parsing as pure integer first (YYYY)
-        try:
-            year = int(year_str)
-            if 1000 <= year <= 2100:
-                return year
-        except (ValueError, TypeError):
-            pass
-
-        # Normalize separators
-        normalized = year_str.replace('/', '-')
-        parts = normalized.split('-')
-
-        if len(parts) == 3:
-            try:
-                # YYYY-MM-DD format
-                if len(parts[0]) == 4:
-                    year = int(parts[0])
-                    if 1000 <= year <= 2100:
-                        return year
-
-                # MM-DD-YYYY or DD-MM-YYYY format
-                if len(parts[2]) == 4:
-                    year = int(parts[2])
-                    if 1000 <= year <= 2100:
-                        return year
-
-                # 2-digit year (MM-DD-YY)
-                if len(parts[2]) == 2:
-                    year = int(parts[2])
-                    year += 2000 if year < 30 else 1900
-                    if 1000 <= year <= 2100:
-                        return year
-            except (ValueError, TypeError, IndexError):
-                pass
-
-        return None
-
     year = _parse_year_from_date(year)
-
-    # rating: validate as integer 0-5 (5-star rating system)
-    if rating is not None:
-        try:
-            rating = int(rating)
-            if rating < 0 or rating > 5:
-                rating = None
-        except (ValueError, TypeError):
-            rating = None
-
+    rating = _clamp_rating(rating)
     file_path = sanitize_db_field(file_path, max_length=1000, field_name="file_path")
 
     mood_str = ','.join(f"{k}:{v:.3f}" for k, v in moods.items())
-    
+
     conn = get_db()
     cur = conn.cursor()
     try:
-        # Save analysis to score table
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
@@ -600,15 +616,34 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
                 file_path = EXCLUDED.file_path
-        """, (item_id, title, author, tempo, key, scale, mood_str, energy, other_features, album, album_artist, year, rating, file_path))
+        """,
+            (
+                item_id,
+                title,
+                author,
+                tempo,
+                key,
+                scale,
+                mood_str,
+                energy,
+                other_features,
+                album,
+                album_artist,
+                year,
+                rating,
+                file_path,
+            ),
+        )
 
-        # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-            """, (item_id, psycopg2.Binary(embedding_blob)))
+            """,
+                (item_id, psycopg2.Binary(embedding_blob)),
+            )
 
         conn.commit()
     except Exception:
@@ -620,18 +655,22 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
 
 
 def save_clap_embedding(item_id, clap_embedding_vector):
-    """Saves CLAP embedding for a track."""
-    if clap_embedding_vector is None or (isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0):
+    if clap_embedding_vector is None or (
+        isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0
+    ):
         return
-    
+
     conn = get_db()
     cur = conn.cursor()
     try:
         embedding_blob = clap_embedding_vector.astype(np.float32).tobytes()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO clap_embedding (item_id, embedding) VALUES (%s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
-        """, (item_id, psycopg2.Binary(embedding_blob)))
+        """,
+            (item_id, psycopg2.Binary(embedding_blob)),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -642,11 +681,6 @@ def save_clap_embedding(item_id, clap_embedding_vector):
 
 
 def get_clap_embedding(item_id):
-    """Load CLAP embedding for a track from the database.
-    
-    Returns:
-        numpy array (512-dim float32) or None if not found
-    """
     conn = get_db()
     cur = conn.cursor()
     try:
@@ -663,28 +697,39 @@ def get_clap_embedding(item_id):
 
 
 def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
-    """Saves the lyrics embedding (gte-multilingual-base) and the fixed-order axis vector.
-
-    ``axis_vector`` must be a numpy array (float32) already in canonical
-    MUSIC_ANALYSIS_AXES order (use ``_score_axes`` to produce it). May be None.
-    """
-    if lyrics_embedding_vector is None or (isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0):
+    if lyrics_embedding_vector is None or (
+        isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0
+    ):
         return
 
     conn = get_db()
     cur = conn.cursor()
     try:
-        embedding_blob = lyrics_embedding_vector.astype(np.float32).tobytes() if isinstance(lyrics_embedding_vector, np.ndarray) else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        embedding_blob = (
+            lyrics_embedding_vector.astype(np.float32).tobytes()
+            if isinstance(lyrics_embedding_vector, np.ndarray)
+            else np.asarray(lyrics_embedding_vector, dtype=np.float32).tobytes()
+        )
         axis_blob = None
         if axis_vector is not None:
-            arr = axis_vector if isinstance(axis_vector, np.ndarray) else np.asarray(axis_vector, dtype=np.float32)
+            arr = (
+                axis_vector
+                if isinstance(axis_vector, np.ndarray)
+                else np.asarray(axis_vector, dtype=np.float32)
+            )
             if arr.size > 0:
                 axis_blob = arr.astype(np.float32, copy=False).tobytes()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO lyrics_embedding (item_id, embedding, axis_vector) VALUES (%s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding, axis_vector = EXCLUDED.axis_vector, updated_at = CURRENT_TIMESTAMP
-        """, (item_id, psycopg2.Binary(embedding_blob),
-              psycopg2.Binary(axis_blob) if axis_blob is not None else None))
+        """,
+            (
+                item_id,
+                psycopg2.Binary(embedding_blob),
+                psycopg2.Binary(axis_blob) if axis_blob is not None else None,
+            ),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -694,28 +739,16 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
         cur.close()
 
 
-# In-memory cache for the precomputed 2D artist component projections (optional).
 ARTIST_PROJECTION_CACHE = None
 
+_SCHEMA_ADVISORY_LOCK = 726354821
 
-# ---------------------------------------------------------------------------
-# Database schema
-# ---------------------------------------------------------------------------
 
 def init_db():
     db = get_db()
     with db.cursor() as cur:
-        # Serialize concurrent init_db() runs across gunicorn workers/containers.
-        # Multiple workers racing on CREATE EXTENSION / CREATE OR REPLACE FUNCTION
-        # causes Postgres "tuple concurrently updated" errors on pg_proc/pg_extension.
-        # A session-level advisory lock forces other workers to wait here.
-        # The key is an arbitrary stable bigint specific to this app's init.
-        # Safety: session-level advisory locks are auto-released by Postgres
-        # when the connection ends (normal close, crash, kill, or network drop),
-        # so this lock can NEVER leak permanently even if init_db() raises.
-        cur.execute("SELECT pg_advisory_lock(726354821)")
+        cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
         try:
-            # Enable extensions to fix and assist in searches
             if sys.platform == 'win32':
                 for ext in ('unaccent', 'pg_trgm'):
                     cur.execute("SAVEPOINT ext_create")
@@ -728,66 +761,75 @@ def init_db():
             else:
                 cur.execute('CREATE EXTENSION IF NOT EXISTS unaccent')
                 cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
-            # Create 'score' table
-            cur.execute("CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)")
-            # Add 'energy' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS score (item_id TEXT PRIMARY KEY, title TEXT, author TEXT, album TEXT, album_artist TEXT, tempo REAL, key TEXT, scale TEXT, mood_vector TEXT)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'energy' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
-            # Add 'other_features' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'other_features' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
-            # Add 'album' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'album' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
-            # Add 'album_artist' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'album_artist' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
-            # Add 'year' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'year' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
-            # Add 'rating' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'rating' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
-            # Add 'file_path' column if not exists
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')"
+            )
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
-        
-            # Ensure we have a searchable, accent-stripped `search_u` column.
-            # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
-            # so we store the value in a normal column and keep it in sync via trigger.
-            cur.execute("SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'")
+
+            cur.execute(
+                "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"
+            )
             row = cur.fetchone()
-            search_u_generated = (row and row[0] == 'ALWAYS')
+            search_u_generated = row and row[0] == 'ALWAYS'
 
             if search_u_generated:
-                logger.info("Dropping legacy generated 'search_u' column to replace it with a trigger-updated column.")
+                logger.info(
+                    "Dropping legacy generated 'search_u' column to replace it with a trigger-updated column."
+                )
                 cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS search_u")
                 row = None
 
-            # Create plain `search_u` column if missing
             if not row:
                 logger.info("Adding 'search_u' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN search_u TEXT")
 
-            # Create helper function for accent stripping (safe to run multiple times)
             if sys.platform == 'win32':
                 cur.execute("SAVEPOINT search_setup")
                 try:
-                    cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                    cur.execute(
+                        "CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;"
+                    )
                     cur.execute("""
                         CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
                         BEGIN
@@ -803,14 +845,22 @@ def init_db():
                         FOR EACH ROW
                         EXECUTE FUNCTION score_search_u_sync();
                     """)
-                    cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
-                    cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                    cur.execute(
+                        "UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL"
+                    )
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)"
+                    )
                     cur.execute("RELEASE SAVEPOINT search_setup")
                 except Exception:
-                    logger.warning("unaccent/pg_trgm extensions not available -- accent-insensitive search disabled")
+                    logger.warning(
+                        "unaccent/pg_trgm extensions not available -- accent-insensitive search disabled"
+                    )
                     cur.execute("ROLLBACK TO SAVEPOINT search_setup")
             else:
-                cur.execute("CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;")
+                cur.execute(
+                    "CREATE OR REPLACE FUNCTION immutable_unaccent(text) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT public.unaccent($1) $$;"
+                )
                 cur.execute("""
                     CREATE OR REPLACE FUNCTION score_search_u_sync() RETURNS trigger LANGUAGE plpgsql AS $$
                     BEGIN
@@ -826,20 +876,34 @@ def init_db():
                     FOR EACH ROW
                     EXECUTE FUNCTION score_search_u_sync();
                 """)
-                cur.execute("UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL")
-                cur.execute("CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)")
+                cur.execute(
+                    "UPDATE score SET search_u = lower(immutable_unaccent(concat_ws(' ', title, author, album))) WHERE search_u IS NULL"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS score_search_u_trgm ON score USING gin (search_u gin_trgm_ops)"
+                )
 
-            # Create 'playlist' table
-            cur.execute("CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))")
-            # Create 'task_status' table
-            cur.execute("CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Migrate 'start_time' and 'end_time' columns
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_score_album_artist_album ON score (album_artist, album)"
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
+
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS task_status (id SERIAL PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, parent_task_id TEXT, task_type TEXT NOT NULL, sub_type_identifier TEXT, status TEXT, progress INTEGER DEFAULT 0, details TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)"
+            )
             for col_name in ['start_time', 'end_time']:
-                cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s", (col_name,))
-                if not cur.fetchone(): cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
-            # Create 'task_history' table — a small, persistent log of the last
-            # completed/cancelled MAIN tasks. Survives the global Cancel button
-            # which wipes `task_status`. Capped to the most recent 10 rows.
+                cur.execute(
+                    "SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s",
+                    (col_name,),
+                )
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE task_status ADD COLUMN {col_name} DOUBLE PRECISION")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS task_history (
                     id SERIAL PRIMARY KEY,
@@ -851,60 +915,79 @@ def init_db():
                     note TEXT
                 )
             """)
-            # Create 'embedding' table
-            cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
-            # Create 'lyrics_embedding' table for lyrics similarity and axis scores
-            cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
-            # axis_vector: float32 BYTEA, fixed-order flattened over MUSIC_ANALYSIS_AXES.
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            # Create 'clap_embedding' table for CLAP text search embeddings
-            cur.execute("CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
-            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')")
-            if not cur.fetchone()[0]: cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
-            # Legacy IVF index tables are no longer used: the similarity
-            # indexes are now disk-paged IVF (ivf_dir / ivf_cell below). Drop the
-            # old IVF tables if they exist to reclaim space; nothing reads
-            # them anymore.
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute(
+                    "ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_axes_index_data")
             cur.execute("DROP TABLE IF EXISTS artist_index_data")
-            # Create 'artist_metadata_data' table for the per-artist auxiliary
-            # metadata blob (artist_map + GMM params), used by the artist IVF
-            # index for the GMM-divergence rerank. Segmented so a single column
-            # value never crosses PG's 1 GB MaxAllocSize cap.
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Disk-paged IVF index storage. 'ivf_dir' holds the small resident
-            # directory blob (centroids + id maps) per logical index, reusing the
-            # segmented (name, blob_data) layout. 'ivf_cell' holds one row per IVF
-            # cell of full-precision float32 vectors, paged in at query time so the
-            # Flask container never resident-loads the whole index.
-            cur.execute("CREATE TABLE IF NOT EXISTS ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_metadata_data (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS ivf_dir (name VARCHAR(255) PRIMARY KEY, blob_data BYTEA NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS ivf_cell (index_name VARCHAR(255) NOT NULL, cell_id INTEGER NOT NULL, cell_data BYTEA NOT NULL, PRIMARY KEY (index_name, cell_id))"
+            )
             cur.execute("ALTER TABLE ivf_cell ALTER COLUMN cell_data SET STORAGE EXTERNAL")
-            # Create 'map_projection_data' table for precomputed 2D map projections
-            cur.execute("CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'artist_component_projection' table for precomputed 2D artist component projections
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'cron' table to hold scheduled jobs (very small and simple)
-            cur.execute("CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Create 'audiomuse_users' table. Every account (including the
-            # install-time admin) lives here. 'role' is 'admin' or 'user'.
-            cur.execute("CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Lightweight migration for installs that already have the table without a role column.
-            cur.execute("ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'")
-            # Create 'dashboard_stats' singleton table (id fixed to 1) that holds
-            # precomputed content/library aggregates and index counts. Refreshed
-            # at app startup and hourly by a background job so the dashboard
-            # does not have to scan the whole `score` table on every poll.
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS map_projection_data (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, id_map_json TEXT NOT NULL, embedding_dimension INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_component_projection (index_name VARCHAR(255) PRIMARY KEY, projection_data BYTEA NOT NULL, artist_component_map_json TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS cron (id SERIAL PRIMARY KEY, name TEXT, task_type TEXT NOT NULL, cron_expr TEXT NOT NULL, enabled BOOLEAN DEFAULT FALSE, last_run DOUBLE PRECISION, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "DELETE FROM cron a USING cron b WHERE a.task_type = b.task_type AND a.id > b.id"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_task_type ON cron (task_type)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "ALTER TABLE audiomuse_users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'"
+            )
+            cur.execute(USERS_PASSWORD_CHANGED_AT_DDL)
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS dashboard_stats ("
                 "id INTEGER PRIMARY KEY, "
@@ -913,19 +996,22 @@ def init_db():
                 "indexes JSONB NOT NULL DEFAULT '[]'::jsonb, "
                 "CONSTRAINT dashboard_stats_singleton CHECK (id = 1))"
             )
-            # Ensure older restored DBs still have the primary key constraint.
             cur.execute(
                 "SELECT COUNT(*) FROM information_schema.table_constraints "
                 "WHERE table_name = 'dashboard_stats' AND constraint_type = 'PRIMARY KEY'"
             )
             row = cur.fetchone()
             if row and row[0] == 0:
-                logger.info("Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id")
+                logger.info(
+                    "Cleaning dashboard_stats and adding missing primary key constraint to dashboard_stats.id"
+                )
                 cur.execute("DELETE FROM dashboard_stats")
-                cur.execute("ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)")
-            # Create 'artist_mapping' table to map artist names to media server artist IDs
-            cur.execute("CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)")
-            # Create application configuration table to persist setup values.
+                cur.execute(
+                    "ALTER TABLE dashboard_stats ADD CONSTRAINT dashboard_stats_pkey PRIMARY KEY (id)"
+                )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS artist_mapping (artist_name TEXT PRIMARY KEY, artist_id TEXT)"
+            )
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config')"
             )
@@ -935,10 +1021,12 @@ def init_db():
                     "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
                     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
                 )
-            # Create 'alchemy_anchors' table to persist named user anchors for reuse
-            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            cur.execute("CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
-            # Provider migration tool: wizard session state (one row per migration attempt)
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS alchemy_anchors (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, centroid JSONB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS alchemy_radios (id SERIAL PRIMARY KEY, anchor_id INTEGER UNIQUE NOT NULL REFERENCES alchemy_anchors(id) ON DELETE CASCADE, temperature DOUBLE PRECISION NOT NULL, n_results INTEGER NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS migration_session (
                     id           SERIAL PRIMARY KEY,
@@ -951,7 +1039,19 @@ def init_db():
                     state        JSONB NOT NULL DEFAULT '{}'
                 )
             """)
-            # Create 'text_search_queries' table for precomputed CLAP text search queries
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS migration_target_meta (
+                    session_id   INTEGER NOT NULL REFERENCES migration_session(id) ON DELETE CASCADE,
+                    new_id       TEXT NOT NULL,
+                    path         TEXT,
+                    title        TEXT,
+                    artist       TEXT,
+                    album        TEXT,
+                    album_artist TEXT,
+                    year         INTEGER,
+                    PRIMARY KEY (session_id, new_id)
+                )
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS text_search_queries (
                     id SERIAL PRIMARY KEY,
@@ -962,12 +1062,13 @@ def init_db():
                     UNIQUE(rank)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)")
-        
-            # Insert default queries if table is empty
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)"
+            )
+
             cur.execute("SELECT COUNT(*) FROM text_search_queries")
             count = cur.fetchone()[0]
-        
+
             if count == 0:
                 default_queries = [
                     "female vocal romantic trap",
@@ -1019,53 +1120,414 @@ def init_db():
                     "orchestra whispered romantic",
                     "belting mid-tempo progressive rock",
                     "autotuned pop mid-tempo",
-                    "pop energetic synthesizer"
+                    "pop energetic synthesizer",
                 ]
-            
+
                 for rank, query in enumerate(default_queries, start=1):
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO text_search_queries (query_text, score, rank, created_at)
                         VALUES (%s, %s, %s, NOW())
-                    """, (query, 1.0, rank))
-            
+                    """,
+                        (query, 1.0, rank),
+                    )
+
                 logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
-        
+
+            _create_plugins_table(cur)
+
             db.commit()
-            # Release the advisory lock acquired at the top of init_db().
         finally:
-            cur.execute("SELECT pg_advisory_unlock(726354821)")
+            try:
+                db.rollback()
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            except Exception:
+                logger.exception("Failed to release the schema advisory lock")
 
 
+def connect_raw():
+    """Open a standalone psycopg2 connection (no Flask ``g``).
 
-# ---------------------------------------------------------------------------
-# Task lifecycle: status archival, active-task lookup, child tasks
-# ---------------------------------------------------------------------------
+    For boot-time callers that run before an app/request context exists, such as
+    plugin materialization in the web and worker entrypoints.
+    """
+    return psycopg2.connect(
+        config.DATABASE_URL,
+        connect_timeout=30,
+        keepalives_idle=600,
+        keepalives_interval=30,
+        keepalives_count=3,
+        options='-c statement_timeout=600000',
+    )
+
+
+def _create_plugins_table(cur):
+    """Run the idempotent DDL that creates the plugins registry table.
+
+    Kept as one canonical block so ``init_db`` and the boot-time
+    ``ensure_plugins_table`` never drift. The caller owns the transaction. Plugin
+    code lives on the PLUGINS_DIR volume and is re-downloaded from ``source_url``;
+    the table stores only metadata.
+    """
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS plugins (
+            id           TEXT PRIMARY KEY,
+            name         TEXT,
+            version      TEXT,
+            manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_url   TEXT,
+            checksum     TEXT,
+            requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+            enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+            settings     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            source_repo  TEXT,
+            load_status  TEXT,
+            load_errors  JSONB NOT NULL DEFAULT '{}'::jsonb,
+            installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT")
+    cur.execute(
+        "ALTER TABLE plugins ADD COLUMN IF NOT EXISTS load_errors JSONB NOT NULL DEFAULT '{}'::jsonb"
+    )
+
+
+def ensure_plugins_table(conn=None):
+    """Create the plugins registry table if it does not exist yet.
+
+    The RQ worker entrypoints never run ``init_db``; they rely on the web process
+    for the schema. When a worker boots before that has happened, reading the
+    registry raises ``UndefinedTable``. The plugin subsystem calls this first so
+    it can self-heal its own table. Shares ``init_db``'s advisory lock so a
+    concurrent web-side ``init_db`` can never race the CREATE.
+    """
+    own = conn is None
+    db = conn or connect_raw()
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                _create_plugins_table(cur)
+                db.commit()
+            finally:
+                try:
+                    db.rollback()
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_ADVISORY_LOCK,))
+                except Exception:
+                    logger.exception("Failed to release the schema advisory lock")
+    finally:
+        if own:
+            db.close()
+
+
+_PLUGIN_META_COLUMNS = (
+    "id, name, version, manifest, source_url, checksum, requirements, enabled, settings, "
+    "source_repo, load_status, load_errors, installed_at, updated_at"
+)
+
+
+def _row_to_plugin(row):
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'version': row['version'],
+        'manifest': row['manifest'] or {},
+        'source_url': row['source_url'],
+        'checksum': row['checksum'],
+        'requirements': row['requirements'] or [],
+        'enabled': bool(row['enabled']),
+        'settings': row['settings'] or {},
+        'source_repo': row['source_repo'],
+        'load_status': row['load_status'],
+        'load_errors': row['load_errors'] or {},
+        'installed_at': row['installed_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
+def list_plugins(conn=None):
+    """Return every installed plugin as a dict (without the package bytes)."""
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(f"SELECT {_PLUGIN_META_COLUMNS} FROM plugins ORDER BY id")
+        return [_row_to_plugin(r) for r in cur.fetchall()]
+    finally:
+        cur.close()
+
+
+def get_plugin(plugin_id, conn=None):
+    """Return a single plugin dict (without package bytes) or None."""
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(f"SELECT {_PLUGIN_META_COLUMNS} FROM plugins WHERE id = %s", (plugin_id,))
+        row = cur.fetchone()
+        return _row_to_plugin(row) if row else None
+    finally:
+        cur.close()
+
+
+def upsert_plugin(plugin_id, name, version, manifest, source_url, checksum, requirements,
+                  source_repo=None, conn=None):
+    """Insert or replace a plugin registry row.
+
+    Stores metadata plus the re-download URL and checksum. The plugin code itself
+    lives on the PLUGINS_DIR volume, not in this table.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO plugins (id, name, version, manifest, source_url, checksum,
+                                 requirements, source_repo, enabled, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                version = EXCLUDED.version,
+                manifest = EXCLUDED.manifest,
+                source_url = EXCLUDED.source_url,
+                checksum = EXCLUDED.checksum,
+                requirements = EXCLUDED.requirements,
+                source_repo = EXCLUDED.source_repo,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (plugin_id, name, version, Json(manifest or {}), source_url,
+             checksum, Json(requirements or []), source_repo),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def delete_plugin(plugin_id, conn=None):
+    """Remove a plugin row from the registry."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("DELETE FROM plugins WHERE id = %s", (plugin_id,))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_enabled(plugin_id, enabled, conn=None):
+    """Flip a plugin's enabled flag."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET enabled = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (bool(enabled), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_load_status(plugin_id, status, conn=None, role=None, error=None):
+    """Persist the last-boot load result plus the per-role error text.
+
+    ``load_errors`` maps 'flask'/'worker' to the failing role's message, so a
+    plugin that only breaks on the worker still shows a useful error in the web
+    UI. A success for a role clears that role's entry. With ``status=None`` only
+    the role's error entry is written/cleared and load_status stays untouched.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        if role and error:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    ([role], json.dumps(str(error)), plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = jsonb_set(COALESCE(load_errors, '{}'::jsonb), %s, %s::jsonb, true) "
+                    "WHERE id = %s",
+                    (status, [role], json.dumps(str(error)), plugin_id),
+                )
+        elif role:
+            if status is None:
+                cur.execute(
+                    "UPDATE plugins SET "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (role, plugin_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE plugins SET load_status = %s, "
+                    "load_errors = COALESCE(load_errors, '{}'::jsonb) - %s WHERE id = %s",
+                    (status, role, plugin_id),
+                )
+        elif status is not None:
+            cur.execute("UPDATE plugins SET load_status = %s WHERE id = %s", (status, plugin_id))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def clear_plugin_deps_failed(plugin_id, conn=None):
+    """Reset a stale deps_failed badge once a later install got the dependencies in.
+
+    load_status goes back to NULL (shown as 'pending' until the restart) instead of
+    keeping a failure the plugin no longer has.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET load_status = NULL WHERE id = %s AND load_status = 'deps_failed'",
+            (plugin_id,),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def get_plugin_settings(plugin_id, conn=None):
+    """Return the settings JSONB dict for a plugin (empty dict if none)."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT settings FROM plugins WHERE id = %s", (plugin_id,))
+        row = cur.fetchone()
+        return (row[0] or {}) if row else {}
+    finally:
+        cur.close()
+
+
+def set_plugin_settings(plugin_id, settings, conn=None):
+    """Replace the whole settings JSONB dict for a plugin."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET settings = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (Json(settings or {}), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def set_plugin_cron_tasks(plugin_id, cron_tasks, conn=None):
+    """Store the cron tasks a plugin declared in register() inside its manifest JSONB.
+
+    Captured at install time so the web process, which never imports a
+    worker-only plugin, can still resolve and dispatch its scheduled tasks.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE plugins SET manifest = jsonb_set(manifest, '{cron_tasks}', %s::jsonb, true), "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (json.dumps(cron_tasks or {}), plugin_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def get_app_config_value(key, default=None, conn=None):
+    """Return a single app_config value by key, or ``default`` if absent."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+    finally:
+        cur.close()
+
+
+def set_app_config_value(key, value, conn=None):
+    """Upsert a single app_config key/value pair."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
+            (key, value),
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+def delete_cron_rows_for_plugin(plugin_id, conn=None):
+    """Delete cron rows whose task_type is ``plugin.<id>.<name>`` for this plugin."""
+    db = conn or get_db()
+    cur = db.cursor()
+    try:
+        pattern = 'plugin.' + plugin_id.replace('!', '!!').replace('_', '!_') + '.%'
+        cur.execute("DELETE FROM cron WHERE task_type LIKE %s ESCAPE '!'", (pattern,))
+        db.commit()
+    finally:
+        cur.close()
+
+
+def drop_plugin_data_tables(plugin_id, conn=None):
+    """Drop every table a plugin created under the ``plugin_<id>__`` namespace.
+
+    The character after the prefix must not be an underscore: sanctioned table
+    names (``api.table``) always start with a letter, and skipping underscore
+    continuations keeps a sibling id like ``foo_`` (tables ``plugin_foo___x``)
+    safe when ``foo`` is purged.
+    """
+    db = conn or get_db()
+    cur = db.cursor()
+    dropped = []
+    try:
+        prefix = f"plugin_{plugin_id}__"
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+        )
+        names = [r[0] for r in cur.fetchall()]
+        for tn in names:
+            if tn.startswith(prefix) and not tn[len(prefix):].startswith('_'):
+                cur.execute(sql.SQL('DROP TABLE IF EXISTS {} CASCADE').format(sql.Identifier(tn)))
+                dropped.append(tn)
+        db.commit()
+        return dropped
+    finally:
+        cur.close()
+
 
 def clean_up_previous_main_tasks():
-    """
-    Cleans up all previous main tasks before a new one starts.
-    - Archives tasks in SUCCESS state.
-    - Archives stale tasks stuck in PENDING, STARTED, or PROGRESS states.
-    - DELETES all child tasks associated with archived parent tasks to prevent DB bloat.
-    A main task is identified by having a NULL parent_task_id.
-    """
-    db = get_db() # This now calls the function within this file
+    db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     logger.info("Starting cleanup of all previous main tasks.")
-    
-    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS, TASK_STATUS_SUCCESS)
-    
+
+    non_terminal_statuses = (
+        TASK_STATUS_PENDING,
+        TASK_STATUS_STARTED,
+        TASK_STATUS_PROGRESS,
+        TASK_STATUS_SUCCESS,
+    )
+
     try:
-        cur.execute("SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL", (non_terminal_statuses,))
+        cur.execute(
+            "SELECT task_id, status, details, task_type, start_time, end_time FROM task_status WHERE status IN %s AND parent_task_id IS NULL",
+            (non_terminal_statuses,),
+        )
         tasks_to_archive = cur.fetchall()
 
         archived_count = 0
         deleted_children_count = 0
-        
+
         for task_row in tasks_to_archive:
             task_id = task_row['task_id']
             original_status = task_row['status']
-            
+
             original_details_json = task_row['details']
             original_status_message = f"Task was in '{original_status}' state."
 
@@ -1073,21 +1535,30 @@ def clean_up_previous_main_tasks():
             if original_details_json:
                 try:
                     original_details_dict = json.loads(original_details_json)
-                    original_status_message = original_details_dict.get("status_message", original_status_message)
+                    original_status_message = original_details_dict.get(
+                        "status_message", original_status_message
+                    )
                 except (json.JSONDecodeError, TypeError):
-                     logger.warning(f"Could not parse original details for task {task_id} during archival.")
+                    logger.warning(
+                        f"Could not parse original details for task {task_id} during archival."
+                    )
 
-            # Record into persistent history BEFORE deleting children — the
-            # note builder needs to query subtasks (e.g. tracks_analyzed).
             try:
                 duration_s = None
                 if task_row['start_time'] is not None:
                     end = task_row['end_time'] if task_row['end_time'] is not None else time.time()
                     duration_s = max(0.0, float(end) - float(task_row['start_time']))
-                final_status = TASK_STATUS_SUCCESS if original_status == TASK_STATUS_SUCCESS else TASK_STATUS_REVOKED
+                final_status = (
+                    TASK_STATUS_SUCCESS
+                    if original_status == TASK_STATUS_SUCCESS
+                    else TASK_STATUS_REVOKED
+                )
                 record_task_history(
-                    task_id, task_row['task_type'], final_status,
-                    duration_s, details=original_details_dict,
+                    task_id,
+                    task_row['task_type'],
+                    final_status,
+                    duration_s,
+                    details=original_details_dict,
                 )
             except Exception as e_hist:
                 logger.debug(f"history record skipped during archive of {task_id}: {e_hist}")
@@ -1098,34 +1569,33 @@ def clean_up_previous_main_tasks():
                 archival_reason = f"New main task started, stale task (status: {original_status}) has been archived."
 
             archived_details = {
-                "log": [f"[Archived] {archival_reason}. Original summary: {original_status_message}"],
+                "log": [
+                    f"[Archived] {archival_reason}. Original summary: {original_status_message}"
+                ],
                 "original_status_before_archival": original_status,
-                "archival_reason": archival_reason
+                "archival_reason": archival_reason,
             }
             archived_details_json = json.dumps(archived_details)
 
             with db.cursor() as update_cur:
-                # First, delete all child tasks to prevent DB bloat and avoid counting old tasks
-                update_cur.execute(
-                    "DELETE FROM task_status WHERE parent_task_id = %s",
-                    (task_id,)
-                )
+                update_cur.execute("DELETE FROM task_status WHERE parent_task_id = %s", (task_id,))
                 children_deleted = update_cur.rowcount
                 deleted_children_count += children_deleted
-                
+
                 if children_deleted > 0:
                     logger.info(f"Deleted {children_deleted} child tasks for parent task {task_id}")
-                
-                # Then archive the parent task
+
                 update_cur.execute(
                     "UPDATE task_status SET status = %s, details = %s, progress = 100, timestamp = NOW() WHERE task_id = %s AND status = %s",
-                    (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status)
+                    (TASK_STATUS_REVOKED, archived_details_json, task_id, original_status),
                 )
             archived_count += 1
 
         if archived_count > 0:
             db.commit()
-            logger.info(f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks.")
+            logger.info(
+                f"Archived {archived_count} previous main tasks and deleted {deleted_children_count} child tasks."
+            )
         else:
             logger.info("No previous main tasks found to clean up.")
     except Exception:
@@ -1134,56 +1604,94 @@ def clean_up_previous_main_tasks():
     finally:
         cur.close()
 
-def get_active_main_task(task_type=None):
-    """Return the currently active main task.
 
-    If task_type is provided, only return an active task of that type.
-    If task_type is None, return any active main task.
-    """
+def get_active_main_task(task_type=None):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
 
     if task_type:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT task_id, task_type, status, details
             FROM task_status
             WHERE task_type = %s AND status IN %s AND parent_task_id IS NULL
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (task_type, non_terminal_statuses))
+        """,
+            (task_type, non_terminal_statuses),
+        )
     else:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT task_id, task_type, status, details
             FROM task_status
             WHERE status IN %s AND parent_task_id IS NULL
             ORDER BY timestamp DESC
             LIMIT 1
-        """, (non_terminal_statuses,))
+        """,
+            (non_terminal_statuses,),
+        )
 
     active_task = cur.fetchone()
     cur.close()
     return dict(active_task) if active_task else None
 
+
 def get_child_tasks_from_db(parent_task_id):
-    """Fetches all child tasks for a given parent_task_id from the database."""
-    conn = get_db() # This now calls the function within this file
+    conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
-    # MODIFIED: Select the 'details' column as well for the final check.
-    cur.execute("SELECT task_id, status, sub_type_identifier, details FROM task_status WHERE parent_task_id = %s", (parent_task_id,))
+    cur.execute(
+        "SELECT task_id, status, sub_type_identifier FROM task_status WHERE parent_task_id = %s",
+        (parent_task_id,),
+    )
     tasks = cur.fetchall()
     cur.close()
-    # DictCursor returns a list of dictionary-like objects, convert to plain dicts
     return [dict(row) for row in tasks]
 
 
+def _child_error_from_row(row):
+    raw = row["details"]
+    if isinstance(raw, dict):
+        details = raw
+    elif raw:
+        try:
+            details = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+    else:
+        details = {}
+    structured = details.get("error") if isinstance(details, dict) else None
+    if isinstance(structured, dict) and "error_code" in structured:
+        return {"album_id": row["sub_type_identifier"], **structured}
+    return None
 
-# ---------------------------------------------------------------------------
-# Song Alchemy -- anchors and radios (CRUD)
-# ---------------------------------------------------------------------------
+
+def get_failed_child_summary(parent_task_id, sample_limit=5):
+    conn = get_db()
+    errors = []
+    with conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS failed_count FROM task_status "
+            "WHERE parent_task_id = %s AND status = %s",
+            (parent_task_id, TASK_STATUS_FAILURE),
+        )
+        failed_count = cur.fetchone()["failed_count"]
+        if failed_count:
+            cur.execute(
+                "SELECT sub_type_identifier, details FROM task_status "
+                "WHERE parent_task_id = %s AND status = %s "
+                "ORDER BY timestamp DESC LIMIT %s",
+                (parent_task_id, TASK_STATUS_FAILURE, sample_limit),
+            )
+            for row in cur.fetchall():
+                child_error = _child_error_from_row(row)
+                if child_error is not None:
+                    errors.append(child_error)
+    return failed_count, errors
+
 
 def save_alchemy_anchor(name, centroid):
-    """Save a named anchor centroid into DB."""
     if not name or not centroid or not isinstance(centroid, list):
         raise ValueError('Anchor name and centroid list are required.')
     conn = get_db()
@@ -1194,7 +1702,7 @@ def save_alchemy_anchor(name, centroid):
             "INSERT INTO alchemy_anchors (name, centroid) VALUES (%s, %s) "
             "ON CONFLICT (name) DO UPDATE SET centroid = EXCLUDED.centroid, created_at = NOW() "
             "RETURNING id, name, created_at",
-            (name, centroid_json)
+            (name, centroid_json),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1205,6 +1713,7 @@ def save_alchemy_anchor(name, centroid):
         return None
     finally:
         cur.close()
+
 
 def get_alchemy_anchors():
     conn = get_db()
@@ -1218,6 +1727,7 @@ def get_alchemy_anchors():
         return []
     finally:
         cur.close()
+
 
 def delete_alchemy_anchor(anchor_id):
     conn = get_db()
@@ -1233,11 +1743,14 @@ def delete_alchemy_anchor(anchor_id):
     finally:
         cur.close()
 
+
 def get_alchemy_anchor_by_id(anchor_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
-        cur.execute("SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,))
+        cur.execute(
+            "SELECT id, name, centroid, created_at FROM alchemy_anchors WHERE id = %s", (anchor_id,)
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -1254,6 +1767,7 @@ def get_alchemy_anchor_by_id(anchor_id):
     finally:
         cur.close()
 
+
 def update_alchemy_anchor_name(anchor_id, name):
     if not name or not isinstance(name, str):
         return None
@@ -1262,7 +1776,7 @@ def update_alchemy_anchor_name(anchor_id, name):
     try:
         cur.execute(
             "UPDATE alchemy_anchors SET name = %s WHERE id = %s RETURNING id, name",
-            (name.strip(), anchor_id)
+            (name.strip(), anchor_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1275,6 +1789,7 @@ def update_alchemy_anchor_name(anchor_id, name):
         return None
     finally:
         cur.close()
+
 
 def get_alchemy_radios():
     conn = get_db()
@@ -1293,6 +1808,7 @@ def get_alchemy_radios():
     finally:
         cur.close()
 
+
 def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1300,7 +1816,7 @@ def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
         cur.execute(
             "INSERT INTO alchemy_radios (anchor_id, temperature, n_results, enabled) "
             "VALUES (%s, %s, %s, %s) RETURNING id, anchor_id, temperature, n_results, enabled",
-            (anchor_id, temperature, n_results, bool(enabled))
+            (anchor_id, temperature, n_results, bool(enabled)),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1312,6 +1828,7 @@ def create_alchemy_radio(anchor_id, temperature, n_results, enabled=True):
     finally:
         cur.close()
 
+
 def update_alchemy_radio(radio_id, temperature, n_results, enabled):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1319,7 +1836,7 @@ def update_alchemy_radio(radio_id, temperature, n_results, enabled):
         cur.execute(
             "UPDATE alchemy_radios SET temperature = %s, n_results = %s, enabled = %s "
             "WHERE id = %s RETURNING id, anchor_id, temperature, n_results, enabled",
-            (temperature, n_results, bool(enabled), radio_id)
+            (temperature, n_results, bool(enabled), radio_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -1330,6 +1847,7 @@ def update_alchemy_radio(radio_id, temperature, n_results, enabled):
         return None
     finally:
         cur.close()
+
 
 def delete_alchemy_radio(radio_id):
     conn = get_db()
@@ -1346,17 +1864,7 @@ def delete_alchemy_radio(radio_id):
         cur.close()
 
 
-
-# ---------------------------------------------------------------------------
-# Map and artist projection persistence
-# ---------------------------------------------------------------------------
-
 def save_map_projection(index_name, id_map, projection_array):
-    """
-    Save a precomputed 2D projection into the map_projection_data table.
-    projection_array: numpy array of shape (N,2), dtype=float32
-    id_map: JSON-serializable list/dict mapping rows to item_ids
-    """
     conn = get_db()
     try:
         blob = projection_array.astype(np.float32).tobytes()
@@ -1371,6 +1879,7 @@ def save_map_projection(index_name, id_map, projection_array):
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
         from tasks.index_build_helpers import store_ivf_index_segmented
+
         store_ivf_index_segmented(
             conn,
             target_table="map_projection_data",
@@ -1383,7 +1892,9 @@ def save_map_projection(index_name, id_map, projection_array):
         conn.commit()
         try:
             id_count = len(id_map) if hasattr(id_map, '__len__') else None
-            logger.info(f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}")
+            logger.info(
+                f"Saved map projection '{index_name}' to DB: {len(blob)} bytes, ids={id_count}"
+            )
         except Exception:
             logger.debug("Saved map projection but failed to compute size/id_count for log.")
     except Exception:
@@ -1391,34 +1902,46 @@ def save_map_projection(index_name, id_map, projection_array):
         logger.exception("Failed to save map projection")
         raise
 
+
 def load_artist_projection(index_name='artist_map', force_reload=False):
-    """Load precomputed artist component projection from DB. 
-    Returns (artist_component_map, numpy_array) or (None, None).
-    artist_component_map format: [{'artist_id': '...', 'component_idx': 0, 'weight': 0.3}, ...]
-    """
     global ARTIST_PROJECTION_CACHE
-    # Try cache first (unless force_reload is True)
-    if not force_reload and ARTIST_PROJECTION_CACHE and ARTIST_PROJECTION_CACHE.get('index_name') == index_name:
+    if (
+        not force_reload
+        and ARTIST_PROJECTION_CACHE
+        and ARTIST_PROJECTION_CACHE.get('index_name') == index_name
+    ):
         logger.info(f"Artist projection '{index_name}' already loaded in cache. Skipping reload.")
-        return ARTIST_PROJECTION_CACHE.get('component_map'), ARTIST_PROJECTION_CACHE.get('projection')
+        return ARTIST_PROJECTION_CACHE.get('component_map'), ARTIST_PROJECTION_CACHE.get(
+            'projection'
+        )
 
     logger.info(f"Attempting to load artist projection '{index_name}' from database into memory...")
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT projection_data, artist_component_map_json FROM artist_component_projection WHERE index_name = %s", (index_name,))
+        cur.execute(
+            "SELECT projection_data, artist_component_map_json FROM artist_component_projection WHERE index_name = %s",
+            (index_name,),
+        )
         row = cur.fetchone()
         if not row:
-            logger.warning(f"Artist projection '{index_name}' not found in the database. Cache will be empty.")
+            logger.warning(
+                f"Artist projection '{index_name}' not found in the database. Cache will be empty."
+            )
             return None, None
         proj_blob, component_map_json = row[0], row[1]
         proj = np.frombuffer(proj_blob, dtype=np.float32)
-        # infer shape as (-1,2) if length divisible by 2
         if proj.size % 2 == 0:
             proj = proj.reshape((-1, 2))
         component_map = json.loads(component_map_json)
-        ARTIST_PROJECTION_CACHE = {'index_name': index_name, 'component_map': component_map, 'projection': proj}
-        logger.info(f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory.")
+        ARTIST_PROJECTION_CACHE = {
+            'index_name': index_name,
+            'component_map': component_map,
+            'projection': proj,
+        }
+        logger.info(
+            f"Artist projection '{index_name}' with {len(component_map)} components loaded successfully into memory."
+        )
         return component_map, proj
     except Exception:
         logger.exception("Failed to load artist projection")
@@ -1426,19 +1949,21 @@ def load_artist_projection(index_name='artist_map', force_reload=False):
     finally:
         cur.close()
 
+
 def save_artist_projection(index_name, component_map, projections):
-    """Save artist component projection to database.
-    component_map: [{'artist_id': '...', 'component_idx': 0, 'weight': 0.3}, ...]
-    projections: numpy array of shape (N, 2)
-    """
     conn = get_db()
     cur = conn.cursor()
     try:
         component_map_json = json.dumps(component_map)
         proj_blob = projections.astype(np.float32).tobytes()
-        cur.execute("INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP", (index_name, proj_blob, component_map_json))
+        cur.execute(
+            "INSERT INTO artist_component_projection (index_name, projection_data, artist_component_map_json) VALUES (%s, %s, %s) ON CONFLICT (index_name) DO UPDATE SET projection_data = EXCLUDED.projection_data, artist_component_map_json = EXCLUDED.artist_component_map_json, created_at = CURRENT_TIMESTAMP",
+            (index_name, proj_blob, component_map_json),
+        )
         conn.commit()
-        logger.info(f"Saved artist projection '{index_name}' with {len(component_map)} components to database.")
+        logger.info(
+            f"Saved artist projection '{index_name}' with {len(component_map)} components to database."
+        )
     except Exception:
         conn.rollback()
         logger.exception("Failed to save artist projection")
@@ -1446,20 +1971,17 @@ def save_artist_projection(index_name, component_map, projections):
         cur.close()
 
 
-
-# ---------------------------------------------------------------------------
-# Playlists
-# ---------------------------------------------------------------------------
-
-def update_playlist_table(playlists): # Removed db_path
-    conn = get_db() # This now calls the function within this file
+def update_playlist_table(playlists):
+    conn = get_db()
     cur = conn.cursor()
     try:
-        # Clear all previous conceptual playlists to reflect only the current run.
         cur.execute("DELETE FROM playlist")
         for name, cluster in playlists.items():
             for item_id, title, author in cluster:
-                cur.execute("INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING", (name, item_id, title, author))
+                cur.execute(
+                    "INSERT INTO playlist (playlist_name, item_id, title, author) VALUES (%s, %s, %s, %s) ON CONFLICT (playlist_name, item_id) DO NOTHING",
+                    (name, item_id, title, author),
+                )
         conn.commit()
     except Exception:
         conn.rollback()

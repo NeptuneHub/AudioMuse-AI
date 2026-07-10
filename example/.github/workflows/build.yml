@@ -1,0 +1,166 @@
+name: Build plugins
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'plugins/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-plugins
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build zips, fill plugin.json, and the catalog
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, re, zipfile
+
+          repo = os.environ["REPO"]
+          branch = os.environ["BRANCH"]
+          raw = f"https://raw.githubusercontent.com/{repo}/{branch}"
+          plugins_dir, dist_dir = "plugins", "dist"
+
+          def parse_version(value):
+              nums = [int(re.match(r"\d+", p).group()) if re.match(r"\d+", p) else 0
+                      for p in re.split(r"[.\-+]", str(value or "").strip().lstrip("vV"))]
+              return tuple(nums) if nums else (0,)
+
+          def write_json(path, obj):
+              os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+              with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                  json.dump(obj, fh, indent=2)
+                  fh.write("\n")
+
+          def build_zip(src, out):
+              # Code-only package: plugin.json is deliberately excluded so the zip (and
+              # its md5) never depends on the sourceUrl/checksum CI writes back into
+              # plugin.json. The installer reads the plugin's metadata from the hosted
+              # plugin.json the catalog points at, not from inside the zip.
+              os.makedirs(os.path.dirname(out), exist_ok=True)
+              members = []
+              for root, _d, names in os.walk(src):
+                  if "__pycache__" in root:
+                      continue
+                  for name in names:
+                      if name.endswith(".pyc") or (root == src and name == "plugin.json"):
+                          continue
+                      full = os.path.join(root, name)
+                      arc = os.path.relpath(full, src).replace(os.sep, "/")
+                      members.append((full, arc))
+              members.sort(key=lambda m: m[1])
+              with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                  for full, arc in members:
+                      info = zipfile.ZipInfo(arc, date_time=(1980, 1, 1, 0, 0, 0))
+                      info.compress_type = zipfile.ZIP_DEFLATED
+                      info.external_attr = 0o644 << 16
+                      with open(full, "rb") as fh:
+                          z.writestr(info, fh.read())
+
+          catalog = []
+          failures = []
+          for folder in sorted(os.listdir(plugins_dir)):
+              meta_path = os.path.join(plugins_dir, folder, "plugin.json")
+              if not os.path.isfile(meta_path):
+                  continue
+              # One bad plugin must never stop the others from being built and
+              # published; failures are collected and fail the job in a later step.
+              try:
+                  with open(meta_path, encoding="utf-8") as fh:
+                      meta = json.load(fh)
+                  versions = meta.get("versions") or []
+                  if not versions:
+                      raise ValueError("plugin.json has no versions[] list")
+                  pid = str(meta.get("id") or "")
+                  if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", pid):
+                      raise ValueError(f"invalid plugin id {pid!r} (expected ^[a-z][a-z0-9_]{{1,63}}$)")
+                  for spec in meta.get("requirements") or []:
+                      if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith("-"):
+                          raise ValueError(f"invalid requirement {spec!r}")
+                  versions.sort(key=lambda v: parse_version(v.get("version")), reverse=True)
+                  latest = versions[0]
+                  version = str(latest["version"]).strip()
+                  if not version:
+                      raise ValueError("latest versions[] entry has an empty version")
+                  latest["version"] = version
+                  zip_name = f"{pid}_{version}.zip"
+                  out = os.path.join(dist_dir, pid, zip_name)
+                  build_zip(os.path.join(plugins_dir, folder), out)
+                  checksum = hashlib.md5(open(out, "rb").read()).hexdigest()
+
+                  # Published releases are immutable: if this version was already
+                  # released with a different checksum, the author changed the code
+                  # without bumping the version, which would corrupt every installed
+                  # copy's re-download. Require a new versions[] entry instead.
+                  prior = str(latest.get("checksum") or "").lower()
+                  if prior and prior != checksum:
+                      raise ValueError(
+                          f"code for already-published version {version} changed "
+                          f"(md5 {prior} -> {checksum}); add a new versions[] entry "
+                          "with a bumped version instead"
+                      )
+
+                  # Fill this release's download link and checksum back into the plugin's
+                  # own plugin.json (in place). Older releases keep their existing values.
+                  latest["sourceUrl"] = f"{raw}/{dist_dir}/{pid}/{zip_name}"
+                  latest["checksum"] = checksum
+                  meta["versions"] = versions
+                  write_json(meta_path, meta)
+
+                  catalog.append({
+                      "id": pid,
+                      "name": meta.get("name", pid),
+                      "author": meta.get("author", ""),
+                      "description": meta.get("description", ""),
+                      "pluginUrl": f"{raw}/{plugins_dir}/{folder}/plugin.json",
+                  })
+                  print(f"built {zip_name} (md5 {checksum}); updated {meta_path}")
+              except Exception as exc:
+                  failures.append(f"{folder}: {exc}")
+                  print(f"::error::plugin {folder} failed to build: {exc}")
+
+          catalog.sort(key=lambda e: e["id"])
+          write_json("manifest.json", {"plugins": catalog})
+          print(f"updated manifest.json (catalog) with {len(catalog)} plugin(s)")
+          with open("build_failures.txt", "w", encoding="utf-8") as fh:
+              fh.write("\n".join(failures))
+          PY
+
+      - name: Commit catalog, zips, and updated plugin.json files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist plugins manifest.json
+          if git diff --cached --quiet; then
+            echo "Catalog already up to date; nothing to commit."
+          else
+            git commit -m "Build plugin catalog [skip ci]"
+            git push
+          fi
+
+      - name: Fail if any plugin did not build
+        run: |
+          if [ -s build_failures.txt ]; then
+            echo "The following plugins failed to build (the others were published):"
+            cat build_failures.txt
+            exit 1
+          fi

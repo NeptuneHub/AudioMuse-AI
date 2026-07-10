@@ -7,8 +7,8 @@
  *   SunburstChart.init(containerEl, tree, onSelect);
  *
  * onSelect(node, best) is called when a terminal node is clicked.
- *   node  — the terminal tree node
- *   best  — node.bestCentroid {centroidIndex, nSongs, moodScore, clusterId, tags}
+ *   node  - the terminal tree node
+ *   best  - node.bestCentroid {centroidIndex, nSongs, moodScore, clusterId, tags}
  */
 const SunburstChart = (() => {
     const MOOD_COLORS = {
@@ -215,11 +215,11 @@ const SunburstChart = (() => {
     /**
      * Initialise a sunburst on a container element.
      *
-     * @param {HTMLElement} container — must contain:
+     * @param {HTMLElement} container - must contain:
      *   canvas.sunburst-canvas, .sunburst-selection, .sunburst-breadcrumb
-     * @param {Object} tree — from buildTree()
-     * @param {Function} onSelect(node, best) — called on terminal selection
-     * @param {Function} [onClear] — called when selection is cleared (back/navigate)
+     * @param {Object} tree - from buildTree()
+     * @param {Function} onSelect(node, best) - called on terminal selection
+     * @param {Function} [onClear] - called when selection is cleared (back/navigate)
      * @returns {Object} state object (st) with reset() method
      */
     function init(container, tree, onSelect, onClear) {

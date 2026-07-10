@@ -34,7 +34,7 @@ If applicable, add screenshots to help explain your problem.
  - OS: [e.g. Debian, Windows]
  - Deployment: [e.g. Docker Compose, K3s, Helm]
  - AudioMuse-AI Version: [e.g. v0.4.0-beta, latest]
- - Jellyfin/Navidrome Version: [e.g. Navidrome 0.57.0]
+ - Navidrome/Jellyfin Version: [e.g. Navidrome 0.57.0]
  - Browser: [e.g. chrome, safari]
  - CPU: [e.g. Intel I5-6500, Arm xyz]
  - RAM: [e.g. 8GB DDR4]
@@ -46,4 +46,4 @@ Add any other context about the problem here. For example, logs from the `audiom
 
 If the bug is related to a specific album/songs please share information like format, size, bitrate. On linux you can use `mediainfo yoursong.flac`.
 
-If the bug is related to backup and restore functionality, remeber to attach the log file that you can found in `Flask` container under `/app/backup`
+If the bug is related to backup and restore functionality, remember to attach the log file that you can found in `Flask` container under `/app/backup`
