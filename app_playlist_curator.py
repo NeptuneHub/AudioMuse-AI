@@ -110,227 +110,225 @@ def _compute_centroid_from_ids(ids, weights=None, vector_cache=None):
     return np.sum(vectors_array * weights_array[:, np.newaxis], axis=0) / np.sum(weights_array)
 
 
+_FILTER_FIELD_MAP = {
+    'album': 'album',
+    'artist': 'author',
+    'album_artist': 'album_artist',
+    'title': 'title',
+    'bpm': 'tempo',
+    'energy': 'energy',
+    'key': 'key',
+    'scale': 'scale',
+    'mood': 'mood_vector',
+    'genre': 'mood_vector',
+    'year': 'year',
+    'decade': 'year',
+    'rating': 'rating',
+    'features': 'other_features',
+}
+_RANGE_FILTER_FIELDS = {'bpm', 'energy', 'year', 'decade', 'rating'}
+_LABEL_FILTER_FIELDS = {'features', 'genre', 'mood'}
+
+
+def _range_filter_clause(field, db_column, value):
+    """Build a bounded numeric range clause when the value contains a range."""
+    if field not in _RANGE_FILTER_FIELDS or '-' not in str(value):
+        return None
+    try:
+        minimum, maximum = (float(part) for part in value.split('-', 1))
+    except (TypeError, ValueError):
+        return None
+    if field == 'energy':
+        energy_span = config.ENERGY_MAX - config.ENERGY_MIN
+        minimum = config.ENERGY_MIN + minimum * energy_span
+        maximum = config.ENERGY_MIN + maximum * energy_span
+    return f"({db_column} >= %s AND {db_column} <= %s)", [minimum, maximum]
+
+
+def _identity_filter_clause(field, db_column, operator, value):
+    """Build equality or inequality clauses, including label-aware regex matching."""
+    symbol = '~' if operator == 'is' else '!~'
+    if field in ('mood', 'genre'):
+        return f"{db_column} {symbol} %s", [f"(^|,)\\s*{re.escape(value)}:"]
+    symbol = '=' if operator == 'is' else '!='
+    return f"{db_column} {symbol} %s", [value]
+
+
+def _comparison_filter_clause(field, db_column, operator, value):
+    """Build numeric or label-score comparison clauses."""
+    is_greater = operator == 'greater_than'
+    if field in _LABEL_FILTER_FIELDS and ':' in str(value):
+        label, raw_threshold = value.rsplit(':', 1)
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError):
+            return None
+        symbol = '>=' if is_greater else '<='
+        clause = f"""EXISTS (
+                    SELECT 1 FROM UNNEST(STRING_TO_ARRAY({db_column}, ',')) AS f
+                    WHERE TRIM(SPLIT_PART(f, ':', 1)) = %s
+                    AND CAST(SPLIT_PART(f, ':', 2) AS FLOAT) {symbol} %s
+                )"""
+        return clause, [label.strip(), threshold]
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    symbol = '>' if is_greater else '<'
+    return f"{db_column} {symbol} %s", [numeric_value]
+
+
+def _build_filter_clause(filter_item):
+    """Translate one allowlisted smart-search filter into SQL and parameters."""
+    field = filter_item.get('field')
+    operator = filter_item.get('operator')
+    value = filter_item.get('value')
+    db_column = _FILTER_FIELD_MAP.get(field)
+    if not db_column:
+        return None
+
+    range_clause = _range_filter_clause(field, db_column, value)
+    if range_clause:
+        return range_clause
+    if operator in ('contains', 'does_not_contain'):
+        sql_operator = 'ILIKE' if operator == 'contains' else 'NOT ILIKE'
+        return f"{db_column} {sql_operator} %s", [f"%{value}%"]
+    if operator in ('is', 'is_not'):
+        return _identity_filter_clause(field, db_column, operator, value)
+    if operator in ('greater_than', 'less_than'):
+        return _comparison_filter_clause(field, db_column, operator, value)
+    return None
+
+
 def _build_filter_query(filters, match_mode='all'):
-    """
-    Builds a SQL WHERE clause from smart search filters.
-    Returns (where_clause_string, params_list).
-    """
-    if not filters:
+    """Build a parameterized SQL WHERE clause from smart-search filters."""
+    built_clauses = [_build_filter_clause(item) for item in (filters or [])]
+    valid_clauses = [item for item in built_clauses if item]
+    if not valid_clauses:
         return "1=1", []
+    clauses = [clause for clause, _ in valid_clauses]
+    params = [param for _, values in valid_clauses for param in values]
+    join_operator = " AND " if match_mode == 'all' else " OR "
+    return f"({join_operator.join(clauses)})", params
 
-    clauses = []
-    params = []
 
-    field_map = {
-        'album': 'album',
-        'artist': 'author',
-        'album_artist': 'album_artist',
-        'title': 'title',
-        'bpm': 'tempo',
-        'energy': 'energy',
-        'key': 'key',
-        'scale': 'scale',
-        'mood': 'mood_vector',
-        'genre': 'mood_vector',
-        'year': 'year',
-        'decade': 'year',
-        'rating': 'rating',
-        'features': 'other_features',
+def _normalized_duplicate_vectors(item_ids):
+    """Return ids and normalized vectors for tracks with embeddings."""
+    string_ids = [str(item_id) for item_id in item_ids]
+    vector_cache = get_vectors_by_ids(string_ids)
+    valid_ids = []
+    vectors = []
+    for item_id in string_ids:
+        vector = vector_cache.get(item_id)
+        if vector is not None:
+            valid_ids.append(item_id)
+            vectors.append(np.array(vector, dtype=np.float32))
+    if len(vectors) < 2:
+        return valid_ids, None
+    matrix = np.vstack(vectors)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return valid_ids, matrix / np.where(norms == 0, 1.0, norms)
+
+
+def _duplicate_index_groups(normalized_vectors, threshold):
+    """Cluster vector indices whose cosine distance falls below the threshold."""
+    from collections import defaultdict
+
+    count = len(normalized_vectors)
+    parents = list(range(count))
+
+    def find(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[left_root] = right_root
+
+    distances = 1.0 - np.clip(normalized_vectors @ normalized_vectors.T, -1.0, 1.0)
+    for left in range(count):
+        for right in range(left + 1, count):
+            if distances[left, right] < threshold:
+                union(left, right)
+
+    clusters = defaultdict(list)
+    for index in range(count):
+        clusters[find(index)].append(index)
+    return [indices for indices in clusters.values() if len(indices) >= 2]
+
+
+def _duplicate_track_score(metadata, position, total_tracks):
+    """Score which copy should be retained within one duplicate group."""
+    rating_score = ((metadata.get('rating') or 0) / 5.0) * 3.0
+    complete_fields = sum(
+        metadata.get(field) is not None for field in ('album', 'year', 'album_artist')
+    )
+    completeness_score = (complete_fields / 3.0) * 2.0
+    year = metadata.get('year')
+    year_score = ((2050 - year) / 100.0 * 3.0) if year and year > 1900 else 0.0
+    position_score = (1.0 - (position / max(total_tracks, 1))) * 0.1
+    return round(rating_score + completeness_score + year_score + position_score, 2)
+
+
+def _duplicate_track(item_id, metadata, position_map, total_tracks):
+    """Create the response model for one duplicate track."""
+    return {
+        'item_id': item_id,
+        'title': metadata.get('title'),
+        'author': metadata.get('author'),
+        'album': metadata.get('album'),
+        'album_artist': metadata.get('album_artist'),
+        'year': metadata.get('year'),
+        'rating': metadata.get('rating'),
+        'score': _duplicate_track_score(
+            metadata, position_map.get(item_id, total_tracks), total_tracks
+        ),
     }
 
-    for f in filters:
-        field = f.get('field')
-        operator = f.get('operator')
-        value = f.get('value')
-        db_col = field_map.get(field)
-        if not db_col:
-            continue
 
-        # Range-based values for BPM, Energy, Year, Rating
-        if field in ['bpm', 'energy', 'year', 'decade', 'rating'] and '-' in str(value):
-            try:
-                parts = value.split('-')
-                min_val, max_val = float(parts[0]), float(parts[1])
-
-                # Energy: convert normalized 0-1 range to raw DB range
-                if field == 'energy':
-                    e_min = config.ENERGY_MIN
-                    e_max = config.ENERGY_MAX
-                    e_span = e_max - e_min
-                    min_val = e_min + min_val * e_span
-                    max_val = e_min + max_val * e_span
-
-                clauses.append(f"({db_col} >= %s AND {db_col} <= %s)")
-                params.extend([min_val, max_val])
-                continue
-            except (ValueError, IndexError):
-                pass
-
-        if operator == 'contains':
-            clauses.append(f"{db_col} ILIKE %s")
-            params.append(f"%{value}%")
-        elif operator == 'does_not_contain':
-            clauses.append(f"{db_col} NOT ILIKE %s")
-            params.append(f"%{value}%")
-        elif operator == 'is':
-            if field in ('mood', 'genre'):
-                # Use regex to match genre label within comma-separated mood_vector
-                clauses.append(f"{db_col} ~ %s")
-                params.append(f"(^|,)\\s*{re.escape(value)}:")
-            else:
-                clauses.append(f"{db_col} = %s")
-                params.append(value)
-        elif operator == 'is_not':
-            if field in ('mood', 'genre'):
-                clauses.append(f"{db_col} !~ %s")
-                params.append(f"(^|,)\\s*{re.escape(value)}:")
-            else:
-                clauses.append(f"{db_col} != %s")
-                params.append(value)
-        elif operator in ('greater_than', 'less_than'):
-            if field in ('features', 'genre', 'mood') and ':' in str(value):
-                # Score-aware filter: value is "label:threshold"
-                parts = value.rsplit(':', 1)
-                label = parts[0].strip()
-                try:
-                    threshold = float(parts[1])
-                except (ValueError, IndexError):
-                    continue
-                op_sym = '>=' if operator == 'greater_than' else '<='
-                clauses.append(f"""EXISTS (
-                    SELECT 1 FROM UNNEST(STRING_TO_ARRAY({db_col}, ',')) AS f
-                    WHERE TRIM(SPLIT_PART(f, ':', 1)) = %s
-                    AND CAST(SPLIT_PART(f, ':', 2) AS FLOAT) {op_sym} %s
-                )""")
-                params.extend([label, threshold])
-            else:
-                try:
-                    fval = float(value)
-                except ValueError:
-                    continue
-                op_sym = '>' if operator == 'greater_than' else '<'
-                clauses.append(f"{db_col} {op_sym} %s")
-                params.append(fval)
-
-    if not clauses:
-        return "1=1", []
-
-    join_op = " AND " if match_mode == 'all' else " OR "
-    return f"({join_op.join(clauses)})", params
+def _duplicate_response_groups(index_groups, valid_ids, item_ids):
+    """Load metadata, rank each duplicate group, and build the API response."""
+    duplicate_ids = [valid_ids[index] for group in index_groups for index in group]
+    metadata_map = {
+        metadata['item_id']: metadata for metadata in get_score_data_by_ids(duplicate_ids)
+    }
+    position_map = {item_id: position for position, item_id in enumerate(item_ids)}
+    groups = []
+    for index_group in index_groups:
+        tracks = [
+            _duplicate_track(
+                valid_ids[index],
+                metadata_map.get(valid_ids[index], {}),
+                position_map,
+                len(item_ids),
+            )
+            for index in index_group
+        ]
+        tracks.sort(key=lambda track: track['score'], reverse=True)
+        groups.append({'tracks': tracks})
+    return groups
 
 
 def _find_duplicate_groups(item_ids, threshold=0.015):
-    """
-    Find duplicate groups in a set of tracks using embedding cosine distance.
-
-    Args:
-        item_ids: List of item_id strings
-        threshold: Cosine distance threshold (0.01=strict, 0.15=loose)
-
-    Returns:
-        Dict with 'groups', 'total_groups', 'total_duplicate_tracks'
-    """
-    from collections import defaultdict
-
-    str_ids = [str(iid) for iid in item_ids]
-    vector_cache = get_vectors_by_ids(str_ids)
-    valid_ids = []
-    vectors = []
-    for sid in str_ids:
-        vec = vector_cache.get(sid)
-        if vec is not None:
-            valid_ids.append(sid)
-            vectors.append(np.array(vec, dtype=np.float32))
-
-    if len(vectors) < 2:
-        return {"groups": [], "total_groups": 0, "total_duplicate_tracks": 0}
-
-    vectors_matrix = np.vstack(vectors)
-    norms = np.linalg.norm(vectors_matrix, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1.0, norms)
-    vectors_normed = vectors_matrix / norms
-    similarity_matrix = vectors_normed @ vectors_normed.T
-    np.clip(similarity_matrix, -1.0, 1.0, out=similarity_matrix)
-    distance_matrix = 1.0 - similarity_matrix
-
-    n = len(valid_ids)
-    parent = list(range(n))
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if distance_matrix[i, j] < threshold:
-                union(i, j)
-
-    clusters = defaultdict(list)
-    for idx in range(n):
-        clusters[find(idx)].append(idx)
-
-    duplicate_groups = [indices for indices in clusters.values() if len(indices) >= 2]
-    if not duplicate_groups:
-        return {"groups": [], "total_groups": 0, "total_duplicate_tracks": 0}
-
-    all_dup_ids = []
-    for indices in duplicate_groups:
-        for idx in indices:
-            all_dup_ids.append(valid_ids[idx])
-
-    metadata_list = get_score_data_by_ids(all_dup_ids)
-    metadata_map = {m['item_id']: m for m in metadata_list}
-
-    position_map = {iid: pos for pos, iid in enumerate(item_ids)}
-    total_tracks = len(item_ids)
-
-    groups = []
-    total_duplicate_tracks = 0
-
-    for indices in duplicate_groups:
-        group_tracks = []
-        for idx in indices:
-            iid = valid_ids[idx]
-            meta = metadata_map.get(iid, {})
-
-            rating_score = ((meta.get('rating') or 0) / 5.0) * 3.0
-            completeness = sum(1 for f in ['album', 'year', 'album_artist'] if meta.get(f) is not None)
-            completeness_score = (completeness / 3.0) * 2.0
-            year = meta.get('year')
-            year_score = ((2050 - year) / 100.0 * 3.0) if year and year > 1900 else 0.0
-            pos = position_map.get(iid, total_tracks)
-            position_score = (1.0 - (pos / max(total_tracks, 1))) * 0.1
-
-            score = round(rating_score + completeness_score + year_score + position_score, 2)
-
-            group_tracks.append({
-                'item_id': iid,
-                'title': meta.get('title'),
-                'author': meta.get('author'),
-                'album': meta.get('album'),
-                'album_artist': meta.get('album_artist'),
-                'year': meta.get('year'),
-                'rating': meta.get('rating'),
-                'score': score
-            })
-
-        group_tracks.sort(key=lambda t: t['score'], reverse=True)
-        groups.append({'tracks': group_tracks})
-        total_duplicate_tracks += len(group_tracks)
-
+    """Find duplicate track groups using embedding cosine distance."""
+    valid_ids, normalized_vectors = _normalized_duplicate_vectors(item_ids)
+    if normalized_vectors is None:
+        groups = []
+    else:
+        index_groups = _duplicate_index_groups(normalized_vectors, threshold)
+        groups = (
+            _duplicate_response_groups(index_groups, valid_ids, item_ids)
+            if index_groups
+            else []
+        )
     return {
         "groups": groups,
         "total_groups": len(groups),
-        "total_duplicate_tracks": total_duplicate_tracks
+        "total_duplicate_tracks": sum(len(group['tracks']) for group in groups),
     }
-
 
 # --- Routes -----------------------------------------------------------------
 
@@ -435,309 +433,424 @@ def get_filter_options():
     })
 
 
+def _bounded_integer(value, default, minimum, maximum):
+    """Coerce a request integer and clamp it to the accepted range."""
+    try:
+        return min(max(minimum, int(value)), maximum)
+    except (TypeError, ValueError):
+        return default
+
+
+def _search_duplicate_threshold(value):
+    """Normalize duplicate detection threshold; out-of-range values disable it."""
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return 0.01
+    if threshold <= 0 or threshold >= 1.0:
+        return 0
+    return max(0.005, min(threshold, 0.3))
+
+
+def _parse_search_options(payload):
+    """Normalize Playlist Curator search and extend request options."""
+    return {
+        'playlist_name': payload.get('playlist_name'),
+        'filters': payload.get('filters'),
+        'match_mode': payload.get('match_mode', 'all'),
+        'max_songs': _bounded_integer(payload.get('max_songs', 50), 50, 1, 500),
+        'similarity_threshold': payload.get('similarity_threshold', 0.5),
+        'included_ids': [str(item) for item in payload.get('included_ids', [])],
+        'excluded_ids': [str(item) for item in payload.get('excluded_ids', [])],
+        'min_rating': payload.get('min_rating'),
+        'year_min': payload.get('year_min'),
+        'year_max': payload.get('year_max'),
+        'search_only': payload.get('search_only', False),
+        'source_ids': [str(item) for item in payload.get('source_ids', [])],
+        'page': _bounded_integer(payload.get('page', 1), 1, 1, 2 ** 31 - 1),
+        'per_page': _bounded_integer(payload.get('per_page', 500), 500, 1, 2000),
+        'duplicate_threshold': _search_duplicate_threshold(
+            payload.get('duplicate_threshold', 0.01)
+        ),
+        'source_levels': _sanitize_levels(payload.get('source_weights', {})),
+        'included_levels': _sanitize_levels(payload.get('included_weights', {})),
+    }
+
+
+def _playlist_seed_ids(cursor, playlist_name):
+    """Load ids for one local playlist seed."""
+    cursor.execute(
+        "SELECT item_id FROM playlist WHERE playlist_name = %s", (playlist_name,)
+    )
+    return [row['item_id'] for row in cursor.fetchall()]
+
+
+def _filter_seed_ids(cursor, options):
+    """Load filter seed ids, using SQL pagination for search-only requests."""
+    # _build_filter_query emits only allowlisted SQL identifiers and operators;
+    # every request value remains in the psycopg2 parameter tuples below.
+    where_clause, params = _build_filter_query(
+        options['filters'], options['match_mode']
+    )
+    if not options['search_only']:
+        query = f"SELECT item_id FROM score WHERE {where_clause}"  # nosec B608
+        cursor.execute(query, tuple(params))
+        return [row['item_id'] for row in cursor.fetchall()], None
+
+    offset = (options['page'] - 1) * options['per_page']
+    count_query = f"SELECT COUNT(*) AS total FROM score WHERE {where_clause}"  # nosec B608
+    cursor.execute(count_query, tuple(params))
+    count_row = cursor.fetchone()
+    total = int(count_row['total'] if count_row else 0)
+    page_query = (
+        f"SELECT item_id FROM score WHERE {where_clause} "  # nosec B608
+        "ORDER BY item_id LIMIT %s OFFSET %s"
+    )
+    cursor.execute(page_query, tuple(params + [options['per_page'], offset]))
+    return [row['item_id'] for row in cursor.fetchall()], total
+
+
+def _load_search_seed_ids(options):
+    """Resolve playlist, filter, or explicit track seeds for one request."""
+    connection = get_db()
+    cursor = connection.cursor(cursor_factory=DictCursor)
+    try:
+        if options['playlist_name']:
+            playlist_ids = _playlist_seed_ids(cursor, options['playlist_name'])
+            if not playlist_ids:
+                message = (
+                    f"Playlist '{options['playlist_name']}' not found or is empty"
+                )
+                return [], None, (message, 404)
+            return playlist_ids, None, None
+        if options['filters']:
+            playlist_ids, filter_total = _filter_seed_ids(cursor, options)
+            if not playlist_ids and (filter_total is None or filter_total == 0):
+                return [], filter_total, (
+                    "No songs found matching the filters",
+                    404,
+                )
+            return playlist_ids, filter_total, None
+        return list(options['source_ids']), None, None
+    finally:
+        cursor.close()
+
+
+def _search_only_result(playlist_ids, filter_total, options):
+    """Build one paged Smart Search response while retaining database id order."""
+    offset = (options['page'] - 1) * options['per_page']
+    if filter_total is None:
+        total = len(playlist_ids)
+        page_ids = playlist_ids[offset:offset + options['per_page']]
+    else:
+        total = filter_total
+        page_ids = playlist_ids
+    metadata = get_score_data_lite_by_ids(page_ids) if page_ids else []
+    metadata_by_id = {item['item_id']: item for item in metadata}
+    ordered = []
+    for item_id in page_ids:
+        item = metadata_by_id.get(item_id)
+        if item is not None:
+            item['distance'] = 0.0
+            ordered.append(item)
+    return {
+        "results": ordered,
+        "total": total,
+        "page": options['page'],
+        "per_page": options['per_page'],
+        "has_more": (offset + len(ordered)) < total,
+        "playlist_song_count": total,
+        "included_count": 0,
+        "excluded_count": 0,
+    }
+
+
+def _extend_centroid_context(playlist_ids, options):
+    """Prepare positive/excluded centroids and cached source vectors."""
+    included_ids = options['included_ids']
+    centroid_ids = list(set(list(playlist_ids) + list(included_ids)))
+    combined_levels = {
+        str(item_id): options['source_levels'].get(str(item_id), 0)
+        for item_id in playlist_ids
+    }
+    combined_levels.update({
+        str(item_id): options['included_levels'].get(str(item_id), 0)
+        for item_id in included_ids
+    })
+    weights = _levels_to_weights(combined_levels, len(centroid_ids))
+    upfront_ids = [str(item) for item in centroid_ids + options['excluded_ids']]
+    vector_cache = get_vectors_by_ids(upfront_ids)
+    positive_centroid = _compute_centroid_from_ids(
+        centroid_ids, weights, vector_cache=vector_cache
+    )
+    if positive_centroid is None:
+        return None
+    excluded_centroid = None
+    if options['excluded_ids']:
+        excluded_centroid = _compute_centroid_from_ids(
+            options['excluded_ids'], vector_cache=vector_cache
+        )
+    query_vector = positive_centroid
+    if excluded_centroid is not None:
+        query_vector = positive_centroid - (excluded_centroid * 0.5)
+    return {
+        'query_vector': query_vector,
+        'excluded_centroid': excluded_centroid,
+        'vector_cache': vector_cache,
+    }
+
+
+def _find_extend_candidates(query_vector, source_count, max_songs):
+    """Fetch a bounded neighbor pool sized for downstream filtering attrition."""
+    candidate_count = min(max(max_songs * 10, 500) + source_count // 5, 1500)
+    results = find_nearest_neighbors_by_vector(
+        query_vector, n=candidate_count, eliminate_duplicates=True
+    )
+    logger.info(
+        f"Extend: requested {candidate_count} candidates, got {len(results)}, "
+        f"source_count={source_count}"
+    )
+    return results
+
+
+def _candidate_metadata_allowed(metadata, options):
+    """Apply optional rating and year bounds to one candidate."""
+    if options['min_rating'] is not None:
+        rating = metadata.get('rating')
+        if rating is None or rating < options['min_rating']:
+            return False
+    if options['year_min'] is None and options['year_max'] is None:
+        return True
+    year = metadata.get('year')
+    if year is None or year <= 0:
+        return False
+    if options['year_min'] is not None and year < options['year_min']:
+        return False
+    return options['year_max'] is None or year <= options['year_max']
+
+
+def _candidate_near_excluded(item_id, excluded_centroid, subtract_threshold):
+    """Report whether one candidate falls within the excluded-centroid radius."""
+    vector = get_vector_by_id(str(item_id))
+    if vector is None:
+        return False
+    candidate = np.array(vector, dtype=float)
+    if config.PATH_DISTANCE_METRIC != 'angular':
+        distance = float(np.linalg.norm(excluded_centroid - candidate))
+        return distance < subtract_threshold
+    excluded_unit = excluded_centroid / (np.linalg.norm(excluded_centroid) or 1.0)
+    candidate_unit = candidate / (np.linalg.norm(candidate) or 1.0)
+    cosine = np.clip(np.dot(excluded_unit, candidate_unit), -1.0, 1.0)
+    distance = float(np.arccos(cosine) / np.pi)
+    return distance < subtract_threshold
+
+
+def _enrich_candidate(candidate, metadata):
+    """Attach database metadata without overwriting provider-populated labels."""
+    candidate['album'] = metadata.get('album')
+    candidate['album_artist'] = metadata.get('album_artist')
+    candidate['year'] = metadata.get('year')
+    if not candidate.get('title'):
+        candidate['title'] = metadata.get('title')
+    if not candidate.get('author'):
+        candidate['author'] = metadata.get('author')
+
+
+def _filter_extend_candidates(neighbor_results, playlist_ids, options, context):
+    """Filter, enrich, and cap the candidate neighbor results."""
+    seen_ids = set(playlist_ids) | set(options['included_ids']) | set(options['excluded_ids'])
+    candidate_ids = [result['item_id'] for result in neighbor_results]
+    metadata = get_score_data_by_ids(candidate_ids) if candidate_ids else []
+    metadata_by_id = {item['item_id']: item for item in metadata}
+    subtract_threshold = (
+        config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
+        if config.PATH_DISTANCE_METRIC == 'angular'
+        else config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
+    )
+    filtered = []
+    for result in neighbor_results:
+        item_id = result['item_id']
+        item_metadata = metadata_by_id.get(item_id, {})
+        if item_id in seen_ids or not _candidate_metadata_allowed(item_metadata, options):
+            continue
+        if context['excluded_centroid'] is not None and _candidate_near_excluded(
+            item_id, context['excluded_centroid'], subtract_threshold
+        ):
+            continue
+        if result.get('distance', 0) <= options['similarity_threshold']:
+            _enrich_candidate(result, item_metadata)
+            filtered.append(result)
+        if len(filtered) >= options['max_songs']:
+            break
+    return filtered
+
+
+def _normalized_source_vectors(playlist_ids, vector_cache):
+    """Normalize source vectors for duplicate annotation."""
+    normalized = {}
+    for item_id in playlist_ids:
+        vector = vector_cache.get(str(item_id))
+        if vector is not None:
+            source = np.array(vector, dtype=np.float32)
+            norm = np.linalg.norm(source)
+            normalized[item_id] = source / norm if norm > 0 else source
+    return normalized
+
+
+def _nearest_duplicate_source(candidate_vector, source_vectors):
+    """Find the closest source vector and cosine distance for one candidate."""
+    best_distance = float('inf')
+    best_source_id = None
+    for source_id, source_vector in source_vectors.items():
+        cosine = np.clip(np.dot(source_vector, candidate_vector), -1.0, 1.0)
+        distance = float(1.0 - cosine)
+        if distance < best_distance:
+            best_distance = distance
+            best_source_id = source_id
+    return best_source_id, best_distance
+
+
+def _annotate_duplicate_candidates(results, source_tracks, source_vectors, threshold):
+    """Annotate result tracks whose embeddings duplicate a source track."""
+    if not source_vectors:
+        return
+    result_ids = [str(result['item_id']) for result in results]
+    result_vectors = get_vectors_by_ids(result_ids) if result_ids else {}
+    source_metadata = {item['item_id']: item for item in source_tracks}
+    for result in results:
+        vector = result_vectors.get(str(result['item_id']))
+        if vector is None:
+            continue
+        candidate = np.array(vector, dtype=np.float32)
+        norm = np.linalg.norm(candidate)
+        if norm > 0:
+            candidate = candidate / norm
+        source_id, distance = _nearest_duplicate_source(candidate, source_vectors)
+        if source_id is not None and distance < threshold:
+            metadata = source_metadata.get(source_id, {})
+            result['duplicate_of'] = {
+                'item_id': source_id,
+                'title': metadata.get('title'),
+                'author': metadata.get('author'),
+                'album': metadata.get('album'),
+                'distance': round(distance, 4),
+            }
+
+
+def _extend_search_result(playlist_ids, options):
+    """Run centroid neighbor search and build the extender response."""
+    context = _extend_centroid_context(playlist_ids, options)
+    if context is None:
+        return None, (
+            "Failed to compute playlist centroid - no valid embeddings found",
+            500,
+        )
+    source_count = len(playlist_ids) + len(options['included_ids'])
+    neighbors = _find_extend_candidates(
+        context['query_vector'], source_count, options['max_songs']
+    )
+    results = _filter_extend_candidates(neighbors, playlist_ids, options, context)
+    source_tracks = get_score_data_by_ids(playlist_ids) if playlist_ids else []
+    if options['duplicate_threshold'] > 0:
+        source_vectors = _normalized_source_vectors(
+            playlist_ids, context['vector_cache']
+        )
+        _annotate_duplicate_candidates(
+            results, source_tracks, source_vectors, options['duplicate_threshold']
+        )
+    return {
+        "results": results,
+        "playlist_song_count": len(playlist_ids),
+        "included_count": len(options['included_ids']),
+        "excluded_count": len(options['excluded_ids']),
+        "source_tracks": source_tracks,
+    }, None
+
+
 @playlist_curator_bp.route('/api/curator/search', methods=['POST'])
 def search_api():
-    """
-    Main search/extend endpoint.
-    search_only=true  -> Smart Search (returns filter matches)
-    search_only=false -> Extend mode (weighted centroid + neighbors)
-    """
+    """Search the library or extend a weighted playlist seed."""
     payload = request.get_json() or {}
-
-    playlist_name = payload.get('playlist_name')
-    filters = payload.get('filters')
-    match_mode = payload.get('match_mode', 'all')
-    try:
-        max_songs = min(max(1, int(payload.get('max_songs', 50))), 500)
-    except (TypeError, ValueError):
-        max_songs = 50
-    similarity_threshold = payload.get('similarity_threshold', 0.5)
-    included_ids = [str(i) for i in payload.get('included_ids', [])]
-    excluded_ids = [str(i) for i in payload.get('excluded_ids', [])]
-    min_rating = payload.get('min_rating')
-    year_min = payload.get('year_min')
-    year_max = payload.get('year_max')
-    search_only = payload.get('search_only', False)
-    source_ids = [str(s) for s in payload.get('source_ids', [])]
-
-    # Pagination (only consumed in search_only mode)
-    try:
-        page = max(1, int(payload.get('page', 1)))
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        per_page = min(max(1, int(payload.get('per_page', 500))), 2000)
-    except (TypeError, ValueError):
-        per_page = 500
-
-    try:
-        raw_dup_threshold = float(payload.get('duplicate_threshold', 0.01))
-        if raw_dup_threshold <= 0 or raw_dup_threshold >= 1.0:
-            duplicate_threshold = 0
-        else:
-            duplicate_threshold = max(0.005, min(raw_dup_threshold, 0.3))
-    except (TypeError, ValueError):
-        duplicate_threshold = 0.01
-
-    source_levels = _sanitize_levels(payload.get('source_weights', {}))
-    included_levels = _sanitize_levels(payload.get('included_weights', {}))
-
-    if not playlist_name and not filters and not source_ids:
+    options = _parse_search_options(payload)
+    if not (
+        options['playlist_name'] or options['filters'] or options['source_ids']
+    ):
         return jsonify({"error": "Missing 'playlist_name', 'filters', or 'source_ids'"}), 400
-
     try:
-        conn = get_db()
-        cur = conn.cursor(cursor_factory=DictCursor)
-        playlist_ids = []
-        filter_total = None
-
-        if playlist_name:
-            cur.execute("SELECT item_id FROM playlist WHERE playlist_name = %s", (playlist_name,))
-            rows = cur.fetchall()
-            playlist_ids = [row['item_id'] for row in rows]
-            if not playlist_ids:
-                cur.close()
-                return jsonify({"error": f"Playlist '{playlist_name}' not found or is empty"}), 404
-
-        elif filters:
-            where_clause, params = _build_filter_query(filters, match_mode)
-            # _build_filter_query emits only allowlisted SQL identifiers and operators;
-            # every request value remains in the psycopg2 params tuple below.
-            if search_only:
-                offset = (page - 1) * per_page
-                count_query = f"SELECT COUNT(*) AS total FROM score WHERE {where_clause}"  # nosec B608
-                cur.execute(count_query, tuple(params))
-                count_row = cur.fetchone()
-                filter_total = int(count_row['total'] if count_row else 0)
-                page_query = f"SELECT item_id FROM score WHERE {where_clause} ORDER BY item_id LIMIT %s OFFSET %s"  # nosec B608
-                cur.execute(page_query, tuple(params + [per_page, offset]))
-            else:
-                filter_query = f"SELECT item_id FROM score WHERE {where_clause}"  # nosec B608
-                cur.execute(filter_query, tuple(params))
-            rows = cur.fetchall()
-            playlist_ids = [row['item_id'] for row in rows]
-            if not playlist_ids and (filter_total is None or filter_total == 0):
-                cur.close()
-                return jsonify({"error": "No songs found matching the filters"}), 404
-
-        elif source_ids:
-            playlist_ids = list(source_ids)
-
-        cur.close()
-
-        # -- SEARCH ONLY MODE --------------------------------------------------
-        if search_only:
-            if filter_total is None:
-                total = len(playlist_ids)
-                offset = (page - 1) * per_page
-                page_ids = playlist_ids[offset:offset + per_page]
-            else:
-                total = filter_total
-                offset = (page - 1) * per_page
-                page_ids = playlist_ids
-
-            metadata_list = get_score_data_lite_by_ids(page_ids) if page_ids else []
-            # Preserve the order of page_ids in the response (lite query is unordered)
-            meta_by_id = {m['item_id']: m for m in metadata_list}
-            ordered = []
-            for pid in page_ids:
-                m = meta_by_id.get(pid)
-                if m is None:
-                    continue
-                m['distance'] = 0.0
-                ordered.append(m)
-
-            return jsonify({
-                "results": ordered,
-                "total": total,
-                "page": page,
-                "per_page": per_page,
-                "has_more": (offset + len(ordered)) < total,
-                # Backwards-compat fields used by older client code
-                "playlist_song_count": total,
-                "included_count": 0,
-                "excluded_count": 0
-            })
-
-        # -- EXTEND MODE -------------------------------------------------------
-
-        # Combine source + included for positive centroid
-        all_ids_for_centroid = list(set(list(playlist_ids) + list(included_ids)))
-
-        # Convert influence levels to actual weights based on total track count
-        total_tracks = len(all_ids_for_centroid)
-        combined_levels = {}
-        for pid in playlist_ids:
-            combined_levels[str(pid)] = source_levels.get(str(pid), 0)
-        for inc_id in included_ids:
-            combined_levels[str(inc_id)] = included_levels.get(str(inc_id), 0)
-        combined_weights = _levels_to_weights(combined_levels, total_tracks)
-
-        # Single batch fetch for every vector we'll need before Voyager search
-        # (sources + included + excluded). Candidate vectors are added later.
-        upfront_ids = [str(i) for i in all_ids_for_centroid] + [str(i) for i in excluded_ids]
-        vector_cache = get_vectors_by_ids(upfront_ids)
-
-        positive_centroid = _compute_centroid_from_ids(all_ids_for_centroid, combined_weights, vector_cache=vector_cache)
-        if positive_centroid is None:
-            return jsonify({"error": "Failed to compute playlist centroid - no valid embeddings found"}), 500
-
-        # Excluded centroid (unweighted)
-        excluded_centroid = None
-        if excluded_ids:
-            excluded_centroid = _compute_centroid_from_ids(list(excluded_ids), vector_cache=vector_cache)
-
-        # Adjust query vector
-        query_vector = positive_centroid
-        if excluded_centroid is not None:
-            query_vector = positive_centroid - (excluded_centroid * 0.5)
-
-        # Find similar songs. The previous formula `source_count * 3` asked
-        # Voyager for 4 000+ candidates on big seeds, which (with the library's
-        # internal 5x expansion for eliminate_duplicates) forced HNSW into a
-        # linear scan and burned ~30 s of wallclock. We only ever keep
-        # max_songs (default 50) results, so this needs a fraction of that:
-        #   - max_songs * 10 covers rating/year/dup attrition
-        #   - source_count // 5 buffers the "candidate is also a source" case
-        #     (probability ≈ source/library_size, usually < 15 %)
-        #   - hard cap at 1 500 to keep HNSW well under the library size
-        source_count = len(playlist_ids) + len(included_ids)
-        n_candidates = min(max(max_songs * 10, 500) + source_count // 5, 1500)
-        neighbor_results = find_nearest_neighbors_by_vector(query_vector, n=n_candidates, eliminate_duplicates=True)
-        logger.info(f"Extend: requested {n_candidates} candidates, got {len(neighbor_results)}, source_count={source_count}")
-
-        # Filter results
-        already_seen = set(playlist_ids) | set(included_ids) | set(excluded_ids)
-
-        subtract_threshold = (config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-                              if config.PATH_DISTANCE_METRIC == 'angular'
-                              else config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN)
-
-        candidate_ids = [r['item_id'] for r in neighbor_results]
-        metadata_list = get_score_data_by_ids(candidate_ids) if candidate_ids else []
-        metadata_map = {m['item_id']: m for m in metadata_list}
-
-        # NOTE: don't pre-fetch candidate vectors here. The filter loop below
-        # breaks at max_songs (default 50, max 500) and the dup-annotation
-        # block only needs vectors for the ~max_songs filtered_results - not all
-        # n_candidates (which can be 4000+ for large source playlists).
-
-        filtered_results = []
-        for result in neighbor_results:
-            item_id = result['item_id']
-            distance = result.get('distance', 0)
-
-            if item_id in already_seen:
-                continue
-
-            # Rating filter
-            if min_rating is not None:
-                meta = metadata_map.get(item_id, {})
-                track_rating = meta.get('rating')
-                if track_rating is None or track_rating < min_rating:
-                    continue
-
-            # Year range filter
-            if year_min is not None or year_max is not None:
-                meta = metadata_map.get(item_id, {})
-                track_year = meta.get('year')
-                if track_year is None or track_year <= 0:
-                    continue
-                if year_min is not None and track_year < year_min:
-                    continue
-                if year_max is not None and track_year > year_max:
-                    continue
-
-            # Excluded centroid proximity filter
-            if excluded_centroid is not None:
-                # Bounded by the max_songs break below; per-id lookup keeps the
-                # LRU cache warm without batching the full candidate universe.
-                vec = get_vector_by_id(str(item_id))
-                if vec is not None:
-                    v_cand = np.array(vec, dtype=float)
-                    if config.PATH_DISTANCE_METRIC == 'angular':
-                        v1 = excluded_centroid / (np.linalg.norm(excluded_centroid) or 1.0)
-                        v2 = v_cand / (np.linalg.norm(v_cand) or 1.0)
-                        cosine = np.clip(np.dot(v1, v2), -1.0, 1.0)
-                        dist_to_excluded = float(np.arccos(cosine) / np.pi)
-                    else:
-                        dist_to_excluded = float(np.linalg.norm(excluded_centroid - v_cand))
-
-                    if dist_to_excluded < subtract_threshold:
-                        continue
-
-            if distance <= similarity_threshold:
-                meta = metadata_map.get(item_id, {})
-                result['album'] = meta.get('album')
-                result['album_artist'] = meta.get('album_artist')
-                result['year'] = meta.get('year')
-                if not result.get('title'):
-                    result['title'] = meta.get('title')
-                if not result.get('author'):
-                    result['author'] = meta.get('author')
-                filtered_results.append(result)
-
-            if len(filtered_results) >= max_songs:
-                break
-
-        # Source tracks metadata for drawer display
-        source_tracks_meta = get_score_data_by_ids(playlist_ids) if playlist_ids else []
-
-        # Annotate results with duplicate warnings against source tracks
-        source_vectors = {}
-        if duplicate_threshold > 0:
-            for sid in playlist_ids:
-                vec = vector_cache.get(str(sid))
-                if vec is not None:
-                    v = np.array(vec, dtype=np.float32)
-                    norm = np.linalg.norm(v)
-                    source_vectors[sid] = v / norm if norm > 0 else v
-
-        if source_vectors:
-            # Now (and only now) batch-fetch the small surviving filtered_results
-            # set - bounded by max_songs, not by n_candidates.
-            result_ids_for_dup = [str(r['item_id']) for r in filtered_results]
-            result_vectors = get_vectors_by_ids(result_ids_for_dup) if result_ids_for_dup else {}
-            source_meta_map = {m['item_id']: m for m in source_tracks_meta}
-            for result in filtered_results:
-                cand_vec = result_vectors.get(str(result['item_id']))
-                if cand_vec is None:
-                    continue
-                v_cand = np.array(cand_vec, dtype=np.float32)
-                norm_cand = np.linalg.norm(v_cand)
-                if norm_cand > 0:
-                    v_cand = v_cand / norm_cand
-
-                best_dist = float('inf')
-                best_source_id = None
-                for sid, v_src in source_vectors.items():
-                    cosine = np.clip(np.dot(v_src, v_cand), -1.0, 1.0)
-                    dist = float(1.0 - cosine)
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_source_id = sid
-
-                if best_dist < duplicate_threshold and best_source_id is not None:
-                    src_meta = source_meta_map.get(best_source_id, {})
-                    result['duplicate_of'] = {
-                        'item_id': best_source_id,
-                        'title': src_meta.get('title'),
-                        'author': src_meta.get('author'),
-                        'album': src_meta.get('album'),
-                        'distance': round(best_dist, 4)
-                    }
-
-        return jsonify({
-            "results": filtered_results,
-            "playlist_song_count": len(playlist_ids),
-            "included_count": len(included_ids),
-            "excluded_count": len(excluded_ids),
-            "source_tracks": source_tracks_meta
-        })
-
+        playlist_ids, filter_total, seed_error = _load_search_seed_ids(options)
+        if seed_error:
+            message, status = seed_error
+            return jsonify({"error": message}), status
+        if options['search_only']:
+            return jsonify(_search_only_result(playlist_ids, filter_total, options))
+        result, extend_error = _extend_search_result(playlist_ids, options)
+        if extend_error:
+            message, status = extend_error
+            return jsonify({"error": message}), status
+        return jsonify(result)
     except Exception:
         logger.exception("Playlist curator search failed")
         return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
+
+def _parse_save_playlist_request(payload):
+    """Validate and normalize a create-new or replace-existing save request."""
+    if not isinstance(payload, dict):
+        return None, ("JSON body must be an object", 400)
+    has_new_name = 'new_playlist_name' in payload
+    has_replace_name = 'replace_playlist_name' in payload
+    if has_new_name == has_replace_name:
+        return None, ("Provide exactly one playlist save action", 400)
+
+    name_key = 'replace_playlist_name' if has_replace_name else 'new_playlist_name'
+    raw_name = payload.get(name_key)
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return None, ("Playlist name must be a non-empty string", 400)
+    track_ids = payload.get('track_ids')
+    if not isinstance(track_ids, list) or not track_ids:
+        return None, ("Track IDs must be a non-empty list", 400)
+    return {
+        'action': 'replaced' if has_replace_name else 'created',
+        'playlist_name': raw_name.strip(),
+        'track_ids': list(dict.fromkeys(str(track_id) for track_id in track_ids)),
+    }, None
+
+
+def _replace_saved_playlist(playlist_name, track_ids, replace_playlist):
+    """Replace an exact-name server playlist and validate the provider response."""
+    existing_names = {
+        str(playlist.get('Name') or playlist.get('name') or '').strip()
+        for playlist in (_fetch_server_playlists() or [])
+    }
+    if playlist_name not in existing_names:
+        return None, None, (f"Playlist '{playlist_name}' no longer exists", 404)
+    try:
+        replaced = replace_playlist(playlist_name, track_ids)
+    except NotImplementedError:
+        return None, None, (
+            "Replacing playlists is not supported by this media server",
+            501,
+        )
+    if not replaced:
+        return None, None, ("Media server failed to replace playlist", 502)
+    playlist_id = replaced.get('Id') or replaced.get('id')
+    if not playlist_id:
+        return None, None, ("Media server replacement returned no playlist ID", 502)
+    message = f"Playlist '{playlist_name}' replaced with {len(track_ids)} songs!"
+    return playlist_id, message, None
+
+
+def _execute_playlist_save(save_request, create_playlist, replace_playlist):
+    """Execute one normalized playlist save request."""
+    playlist_name = save_request['playlist_name']
+    track_ids = save_request['track_ids']
+    if save_request['action'] == 'replaced':
+        playlist_id, message, error = _replace_saved_playlist(
+            playlist_name, track_ids, replace_playlist
+        )
+        return playlist_id, message, 200, error
+    playlist_id = create_playlist(playlist_name, track_ids)
+    message = f"Playlist '{playlist_name}' created with {len(track_ids)} songs!"
+    return playlist_id, message, 201, None
 
 
 @playlist_curator_bp.route('/api/curator/save_playlist', methods=['POST'])
@@ -746,71 +859,29 @@ def save_playlist_api():
     from tasks.ivf_manager import create_playlist_from_ids
     from tasks.mediaserver import create_or_replace_playlist
 
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({"error": "JSON body must be an object"}), 400
-    has_new_name = 'new_playlist_name' in payload
-    has_replace_name = 'replace_playlist_name' in payload
-    if has_new_name == has_replace_name:
-        return jsonify({"error": "Provide exactly one playlist save action"}), 400
-
-    action = 'replaced' if has_replace_name else 'created'
-    raw_name = payload.get('replace_playlist_name' if has_replace_name else 'new_playlist_name')
-    if not isinstance(raw_name, str) or not raw_name.strip():
-        return jsonify({"error": "Playlist name must be a non-empty string"}), 400
-    playlist_name = raw_name.strip()
-
-    track_ids = payload.get('track_ids')
-    if not isinstance(track_ids, list) or not track_ids:
-        return jsonify({"error": "Track IDs must be a non-empty list"}), 400
-
-    seen = set()
-    final_ids = []
-    for track_id in track_ids:
-        normalized = str(track_id)
-        if normalized not in seen:
-            seen.add(normalized)
-            final_ids.append(normalized)
-
+    save_request, validation_error = _parse_save_playlist_request(
+        request.get_json(silent=True)
+    )
+    if validation_error:
+        message, status = validation_error
+        return jsonify({"error": message}), status
     try:
-        if has_replace_name:
-            existing_names = {
-                str(playlist.get('Name') or playlist.get('name') or '').strip()
-                for playlist in (_fetch_server_playlists() or [])
-            }
-            if playlist_name not in existing_names:
-                return jsonify({
-                    "error": f"Playlist '{playlist_name}' no longer exists"
-                }), 404
-            try:
-                replaced = create_or_replace_playlist(playlist_name, final_ids)
-            except NotImplementedError:
-                return jsonify({
-                    "error": "Replacing playlists is not supported by this media server"
-                }), 501
-            if not replaced:
-                return jsonify({"error": "Media server failed to replace playlist"}), 502
-            playlist_id = replaced.get('Id') or replaced.get('id')
-            if not playlist_id:
-                return jsonify({"error": "Media server replacement returned no playlist ID"}), 502
-            status = 200
-            message = f"Playlist '{playlist_name}' replaced with {len(final_ids)} songs!"
-        else:
-            playlist_id = create_playlist_from_ids(playlist_name, final_ids)
-            status = 201
-            message = f"Playlist '{playlist_name}' created with {len(final_ids)} songs!"
-
+        playlist_id, message, status, save_error = _execute_playlist_save(
+            save_request, create_playlist_from_ids, create_or_replace_playlist
+        )
+        if save_error:
+            error_message, error_status = save_error
+            return jsonify({"error": error_message}), error_status
         return jsonify({
-            "action": action,
+            "action": save_request['action'],
             "message": message,
             "playlist_id": playlist_id,
-            "playlist_name": playlist_name,
-            "total_songs": len(final_ids),
+            "playlist_name": save_request['playlist_name'],
+            "total_songs": len(save_request['track_ids']),
         }), status
     except Exception:
         logger.exception("Save curator playlist failed")
         return jsonify({"error": INTERNAL_ERROR_MESSAGE}), 500
-
 
 @playlist_curator_bp.route('/api/curator/server_playlists', methods=['GET'])
 def server_playlists_api():
@@ -907,110 +978,142 @@ def _fetch_server_playlist_item_ids(playlist_id):
 _ITEM_ID_RE = re.compile(r'[A-Za-z0-9_\-]{1,128}')
 
 
+def _resolve_stream_target(item_id, media_server_type):
+    """Resolve one media-server track into an authenticated upstream request."""
+    if media_server_type == 'jellyfin':
+        return (
+            f"{config.JELLYFIN_URL.rstrip('/')}/Items/{item_id}/Download",
+            {"X-Emby-Token": config.JELLYFIN_TOKEN},
+            None,
+        ), None
+    if media_server_type == 'emby':
+        return (
+            f"{config.EMBY_URL.rstrip('/')}/Items/{item_id}/Download",
+            {"X-Emby-Token": config.EMBY_TOKEN},
+            None,
+        ), None
+    if media_server_type == 'plex':
+        from tasks.mediaserver.plex import _resolve_part
+
+        part_key, _ = _resolve_part(item_id)
+        if not part_key:
+            return None, ("Track stream not found", 404)
+        return (
+            f"{config.PLEX_URL.rstrip('/')}{part_key}",
+            {"X-Plex-Token": config.PLEX_TOKEN},
+            None,
+        ), None
+    if media_server_type == 'navidrome':
+        from tasks.mediaserver.navidrome import get_navidrome_auth_params
+
+        auth_params = get_navidrome_auth_params()
+        if not auth_params:
+            return None, ("Navidrome credentials not configured", 500)
+        return (
+            f"{config.NAVIDROME_URL.rstrip('/')}/rest/stream.view",
+            {},
+            {"id": item_id, **auth_params},
+        ), None
+    if media_server_type == 'lyrion':
+        return (
+            f"{config.LYRION_URL.rstrip('/')}/music/{item_id}/download",
+            {},
+            None,
+        ), None
+    if media_server_type == 'mpd':
+        return None, ("MPD streaming is not supported by the playlist curator", 501)
+    return None, ("Stream not supported for this media server type", 501)
+
+
+def _fetch_stream_upstream(item_id, media_server_type, target):
+    """Open the upstream media response and convert expected failures to API errors."""
+    upstream_url, upstream_headers, params = target
+    client_range = request.headers.get('Range')
+    if client_range:
+        upstream_headers['Range'] = client_range
+    try:
+        upstream = http_requests.get(
+            upstream_url,
+            params=params,
+            headers=upstream_headers,
+            stream=True,
+            timeout=(10, 60),
+            allow_redirects=True,
+        )
+    except http_requests.exceptions.RequestException as exc:
+        logger.warning(
+            f"Upstream connection failed for item_id={item_id} "
+            f"backend={media_server_type} error_type={type(exc).__name__}"
+        )
+        return None, ("Upstream stream error", 502)
+    if upstream.status_code < 400:
+        return upstream, None
+    logger.warning(
+        f"Upstream stream request failed for item_id={item_id} "
+        f"backend={media_server_type} status={upstream.status_code}"
+    )
+    upstream.close()
+    return None, ("Upstream stream error", 502)
+
+
+def _stream_response_headers(upstream):
+    """Copy safe response headers from the media server."""
+    passthrough = (
+        'Content-Type', 'Content-Length', 'Content-Range',
+        'Accept-Ranges', 'Last-Modified', 'ETag',
+    )
+    headers = {
+        name: upstream.headers[name]
+        for name in passthrough
+        if upstream.headers.get(name) is not None
+    }
+    headers.setdefault('Content-Type', 'audio/mpeg')
+    headers.setdefault('Accept-Ranges', 'bytes')
+    return headers
+
+
+def _build_stream_response(upstream):
+    """Create the streaming Flask response and guarantee upstream closure."""
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response = Response(
+        stream_with_context(generate()),
+        status=upstream.status_code,
+        headers=_stream_response_headers(upstream),
+    )
+    response.call_on_close(upstream.close)
+    return response
+
+
 @playlist_curator_bp.route('/api/curator/stream/<path:item_id>', methods=['GET'])
 def stream_track(item_id):
-    """Proxy the audio stream through the AudioMuse backend so media-server
-    credentials never reach the client."""
+    """Proxy an audio stream without exposing media-server credentials."""
     try:
         if not _ITEM_ID_RE.fullmatch(item_id):
             return jsonify({"error": "Invalid item id"}), 400
-
-        mstype = config.MEDIASERVER_TYPE
-        params = None
-
-        if mstype == 'jellyfin':
-            upstream_url = f"{config.JELLYFIN_URL.rstrip('/')}/Items/{item_id}/Download"
-            upstream_headers = {"X-Emby-Token": config.JELLYFIN_TOKEN}
-
-        elif mstype == 'emby':
-            upstream_url = f"{config.EMBY_URL.rstrip('/')}/Items/{item_id}/Download"
-            upstream_headers = {"X-Emby-Token": config.EMBY_TOKEN}
-
-        elif mstype == 'plex':
-            from tasks.mediaserver.plex import _resolve_part
-            part_key, _ = _resolve_part(item_id)
-            if not part_key:
-                return jsonify({"error": "Track stream not found"}), 404
-            upstream_url = f"{config.PLEX_URL.rstrip('/')}{part_key}"
-            upstream_headers = {"X-Plex-Token": config.PLEX_TOKEN}
-
-        elif mstype == 'navidrome':
-            from tasks.mediaserver.navidrome import get_navidrome_auth_params
-            auth_params = get_navidrome_auth_params()
-            if not auth_params:
-                return jsonify({"error": "Navidrome credentials not configured"}), 500
-            upstream_url = f"{config.NAVIDROME_URL.rstrip('/')}/rest/stream.view"
-            params = {"id": item_id, **auth_params}
-            upstream_headers = {}
-
-        elif mstype == 'lyrion':
-            upstream_url = f"{config.LYRION_URL.rstrip('/')}/music/{item_id}/download"
-            upstream_headers = {}
-
-        elif mstype == 'mpd':
-            return jsonify({"error": "MPD streaming is not supported by the playlist curator"}), 501
-
-        else:
-            return jsonify({"error": "Stream not supported for this media server type"}), 501
-
-        client_range = request.headers.get('Range')
-        if client_range:
-            upstream_headers['Range'] = client_range
-
-        try:
-            upstream = http_requests.get(
-                upstream_url,
-                params=params,
-                headers=upstream_headers,
-                stream=True,
-                timeout=(10, 60),
-                allow_redirects=True,
-            )
-        except http_requests.exceptions.RequestException as e:
-            logger.warning(
-                f"Upstream connection failed for item_id={item_id} "
-                f"backend={mstype} error_type={type(e).__name__}"
-            )
-            return jsonify({"error": "Upstream stream error"}), 502
-
-        if upstream.status_code >= 400:
-            logger.warning(
-                f"Upstream stream request failed for item_id={item_id} "
-                f"backend={mstype} status={upstream.status_code}"
-            )
-            upstream.close()
-            return jsonify({"error": "Upstream stream error"}), 502
-
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
-
-        passthrough = ('Content-Type', 'Content-Length', 'Content-Range',
-                       'Accept-Ranges', 'Last-Modified', 'ETag')
-        response_headers = {}
-        for h in passthrough:
-            v = upstream.headers.get(h)
-            if v is not None:
-                response_headers[h] = v
-        response_headers.setdefault('Content-Type', 'audio/mpeg')
-        response_headers.setdefault('Accept-Ranges', 'bytes')
-
-        resp = Response(
-            stream_with_context(generate()),
-            status=upstream.status_code,
-            headers=response_headers,
+        media_server_type = config.MEDIASERVER_TYPE
+        target, target_error = _resolve_stream_target(item_id, media_server_type)
+        if target_error:
+            message, status = target_error
+            return jsonify({"error": message}), status
+        upstream, upstream_error = _fetch_stream_upstream(
+            item_id, media_server_type, target
         )
-        resp.call_on_close(upstream.close)
-        return resp
-
+        if upstream_error:
+            message, status = upstream_error
+            return jsonify({"error": message}), status
+        return _build_stream_response(upstream)
     except Exception:
-        logger.exception(f"Stream failed for item_id={item_id} backend={config.MEDIASERVER_TYPE}")
+        logger.exception(
+            f"Stream failed for item_id={item_id} backend={config.MEDIASERVER_TYPE}"
+        )
         return jsonify({"error": "Stream error"}), 500
-
 
 @playlist_curator_bp.route('/api/curator/find_duplicates', methods=['POST'])
 def find_duplicates_api():

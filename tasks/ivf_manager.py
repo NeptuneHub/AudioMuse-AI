@@ -369,7 +369,7 @@ def get_vectors_by_ids(item_ids) -> dict:
             unique.append(sid)
 
     if ivf_index is None or reverse_id_map is None:
-        return {sid: None for sid in unique}
+        return dict.fromkeys(unique)
 
     out = {}
     if len(unique) <= 4:

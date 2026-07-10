@@ -45,6 +45,7 @@ def test_ivf_manager_no_longer_references_removed_voyager_index_global():
 def test_smart_search_filters_are_paged_in_sql():
     source = (REPO_ROOT / "app_playlist_curator.py").read_text(encoding="utf-8")
 
+    assert "def _filter_seed_ids(cursor, options):" in source
     assert "SELECT COUNT(*) AS total FROM score WHERE {where_clause}" in source
-    assert "SELECT item_id FROM score WHERE {where_clause} ORDER BY item_id LIMIT %s OFFSET %s" in source
-    assert "if search_only:\n                offset = (page - 1) * per_page" in source
+    assert "ORDER BY item_id LIMIT %s OFFSET %s" in source
+    assert "offset = (options['page'] - 1) * options['per_page']" in source

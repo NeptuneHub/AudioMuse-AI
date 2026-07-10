@@ -128,9 +128,7 @@ async function createHarness() {
                 targetWrites.push(target);
             },
             curatorSetStatus() {},
-            escHtml(value) {
-                return String(value);
-            },
+            escHtml: String,
             getInfluenceInfo() {
                 return {};
             },

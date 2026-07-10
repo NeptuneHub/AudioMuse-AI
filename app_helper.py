@@ -417,137 +417,177 @@ def build_and_store_artist_projection(index_name='artist_map'):
         return False
 
 
-def cancel_job_and_children_recursive(job_id, reason="Task cancellation processed by API."):
-    """Helper to cancel a job and its children based on DB records.
+def _rq_queues():
+    """Return the live queue objects so tests and runtime patches remain visible."""
+    return rq_queue_high, rq_queue_default
 
-    NOTE: Minimal global behavior - when invoked from the API cancel endpoint we clear RQ queues,
-    attempt to stop all jobs known to RQ, delete all rows in `task_status`, and insert a single
-    REVOKED row for the requested `job_id` (so UI sees one canonical cancelled task).
-    This is intentionally simple and destructive (as requested).
-    """
-    cancelled_count = 0
 
-    # --- Scan RQ for job ids to cancel ---
+def _queue_job_ids(queue):
+    """Read and normalize queued job ids from RQ or its Redis list fallback."""
+    ids = getattr(queue, 'job_ids', None)
+    if ids is None:
+        key = f"rq:queue:{getattr(queue, 'name', '')}"
+        ids = redis_conn.lrange(key, 0, -1)
+    return {
+        item.decode() if isinstance(item, (bytes, bytearray)) else str(item)
+        for item in ids
+        if item is not None
+    }
+
+
+def _started_rq_job_ids():
+    """Return ids represented by RQ job keys, including started jobs."""
     job_ids = set()
-    for q in (rq_queue_high, rq_queue_default):
+    for key in redis_conn.keys('rq:job:*'):
+        key_text = key.decode() if isinstance(key, (bytes, bytearray)) else str(key)
+        prefix, separator, job_id = key_text.partition('rq:job:')
+        if not prefix and separator and job_id:
+            job_ids.add(job_id)
+    return job_ids
+
+
+def _discover_rq_job_ids():
+    """Discover queued and started RQ jobs without failing the global cleanup."""
+    job_ids = set()
+    for queue in _rq_queues():
         try:
-            ids = getattr(q, 'job_ids', None)
-            if ids is None:
-                key = f"rq:queue:{getattr(q, 'name', '')}"
-                raw = redis_conn.lrange(key, 0, -1)
-                ids = [x.decode() if isinstance(x, (bytes, bytearray)) else str(x) for x in raw]
-            job_ids.update([str(i) for i in ids if i is not None])
-        except Exception as e_q:
-            logger.warning(f"Could not read queue {getattr(q, 'name', '<unknown>')}: {e_q}")
-
-    # Include job ids from RQ job keys (covers started jobs)
-    try:
-        raw_keys = redis_conn.keys('rq:job:*')
-        for k in raw_keys:
-            kstr = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
-            parts = kstr.split(':')
-            if len(parts) >= 3:
-                jid = ':'.join(parts[2:])
-                job_ids.add(jid)
-    except Exception as e_keys:
-        logger.warning(f"Could not list rq job keys: {e_keys}")
-
-    # Attempt to cancel/stop all discovered jobs
-    for jid in job_ids:
-        try:
-            try:
-                j = Job.fetch(jid, connection=redis_conn)
-                if not j.is_finished and not j.is_failed and not j.is_canceled:
-                    if j.is_started:
-                        send_stop_job_command(redis_conn, jid)
-                    else:
-                        j.cancel()
-                    cancelled_count += 1
-                    logger.info(f"Sent stop/cancel for job {jid} during global cancel")
-            except NoSuchJobError:
-                logger.debug(f"Job {jid} not found in RQ during global cancel")
-        except Exception:
-            logger.exception(f"Error cancelling job {jid} during global cancel")
-
-    # Try to clear the RQ queues using API (preferred) and fallback to key deletion if necessary
-    try:
-        for q in (rq_queue_high, rq_queue_default):
-            try:
-                if hasattr(q, 'empty'):
-                    q.empty()
-                    logger.info(
-                        f"Emptied queue {getattr(q, 'name', '<unknown>')} via Queue.empty() as part of global cancel"
-                    )
-                else:
-                    key = f"rq:queue:{getattr(q, 'name', '')}"
-                    redis_conn.delete(key)
-                    logger.info(
-                        f"Deleted Redis key fallback for queue: {key} as part of global cancel"
-                    )
-            except Exception as e_q:
-                logger.warning(
-                    f"Failed to empty queue {getattr(q, 'name', '<unknown>')} during global cancel: {e_q}"
-                )
-    except Exception as e_qdel:
-        logger.warning(f'Failed to clear queue lists during global cancel: {e_qdel}')
-
-    # Consolidate DB: delete all task_status rows and insert a single REVOKED row for job_id
-    db = get_db()
-    cur = db.cursor()
-    try:
-        # Snapshot the in-flight main tasks into the persistent task_history
-        # *before* we wipe task_status, so the dashboard's history table keeps
-        # showing what was running when the user pressed Cancel.
-        try:
-            with db.cursor(cursor_factory=DictCursor) as snap_cur:
-                snap_cur.execute(
-                    "SELECT task_id, task_type, status, details, start_time, end_time "
-                    "FROM task_status WHERE parent_task_id IS NULL"
-                )
-                now_ts = time.time()
-                for r in snap_cur.fetchall():
-                    duration_s = None
-                    if r['start_time'] is not None:
-                        end = r['end_time'] if r['end_time'] is not None else now_ts
-                        duration_s = max(0.0, float(end) - float(r['start_time']))
-                    details_obj = None
-                    if r['details']:
-                        try:
-                            details_obj = json.loads(r['details'])
-                        except Exception:
-                            details_obj = None
-                    # If the task was already in a terminal status, keep that one;
-                    # otherwise mark it REVOKED.
-                    final_status = (
-                        r['status']
-                        if r['status']
-                        in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-                        else TASK_STATUS_REVOKED
-                    )
-                    record_task_history(
-                        r['task_id'],
-                        r['task_type'],
-                        final_status,
-                        duration_s,
-                        details=details_obj,
-                    )
-        except Exception as e_snap:
+            job_ids.update(_queue_job_ids(queue))
+        except Exception as exc:
             logger.warning(
-                f"Global cancel: failed snapshotting task_status into task_history: {e_snap}"
+                f"Could not read queue {getattr(queue, 'name', '<unknown>')}: {exc}"
+            )
+    try:
+        job_ids.update(_started_rq_job_ids())
+    except Exception as exc:
+        logger.warning(f"Could not list rq job keys: {exc}")
+    return job_ids
+
+
+def _cancel_rq_job(job_id):
+    """Stop or cancel one active RQ job and report whether action was sent."""
+    try:
+        job = Job.fetch(job_id, connection=redis_conn)
+    except NoSuchJobError:
+        logger.debug(f"Job {job_id} not found in RQ during global cancel")
+        return False
+
+    if job.is_finished or job.is_failed or job.is_canceled:
+        return False
+    if job.is_started:
+        send_stop_job_command(redis_conn, job_id)
+    else:
+        job.cancel()
+    logger.info(f"Sent stop/cancel for job {job_id} during global cancel")
+    return True
+
+
+def _cancel_discovered_jobs(job_ids):
+    """Cancel every discovered job while isolating failures per job."""
+    cancelled_count = 0
+    for job_id in job_ids:
+        try:
+            cancelled_count += int(_cancel_rq_job(job_id))
+        except Exception:
+            logger.exception(f"Error cancelling job {job_id} during global cancel")
+    return cancelled_count
+
+
+def _clear_rq_queue(queue):
+    """Empty one RQ queue through its API or its backing Redis key."""
+    queue_name = getattr(queue, 'name', '<unknown>')
+    if hasattr(queue, 'empty'):
+        queue.empty()
+        logger.info(f"Emptied queue {queue_name} via Queue.empty() as part of global cancel")
+        return
+    key = f"rq:queue:{getattr(queue, 'name', '')}"
+    redis_conn.delete(key)
+    logger.info(f"Deleted Redis key fallback for queue: {key} as part of global cancel")
+
+
+def _clear_rq_queues():
+    """Best-effort cleanup of all application RQ queues."""
+    for queue in _rq_queues():
+        try:
+            _clear_rq_queue(queue)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to empty queue {getattr(queue, 'name', '<unknown>')} "
+                f"during global cancel: {exc}"
             )
 
-        cur.execute("DELETE FROM task_status")
-        deleted = cur.rowcount
+
+def _task_history_details(raw_details):
+    """Decode optional task details for the persistent history record."""
+    if not raw_details:
+        return None
+    try:
+        return json.loads(raw_details)
+    except Exception:
+        return None
+
+
+def _task_history_duration(row, now_timestamp):
+    """Calculate a non-negative task duration when a start time is available."""
+    if row['start_time'] is None:
+        return None
+    end_timestamp = row['end_time'] if row['end_time'] is not None else now_timestamp
+    return max(0.0, float(end_timestamp) - float(row['start_time']))
+
+
+def _task_history_status(status):
+    """Keep terminal states and mark every in-flight task as revoked."""
+    terminal_statuses = (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
+    return status if status in terminal_statuses else TASK_STATUS_REVOKED
+
+
+def _record_task_snapshot(row, now_timestamp):
+    """Persist one task-status row in task history before global deletion."""
+    record_task_history(
+        row['task_id'],
+        row['task_type'],
+        _task_history_status(row['status']),
+        _task_history_duration(row, now_timestamp),
+        details=_task_history_details(row['details']),
+    )
+
+
+def _snapshot_task_status(db):
+    """Best-effort snapshot of top-level task status rows into task history."""
+    try:
+        with db.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(
+                "SELECT task_id, task_type, status, details, start_time, end_time "
+                "FROM task_status WHERE parent_task_id IS NULL"
+            )
+            now_timestamp = time.time()
+            for row in cursor.fetchall():
+                _record_task_snapshot(row, now_timestamp)
+    except Exception as exc:
+        logger.warning(
+            f"Global cancel: failed snapshotting task_status into task_history: {exc}"
+        )
+
+
+def _clear_task_status():
+    """Snapshot and delete task status rows as one best-effort database action."""
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        _snapshot_task_status(db)
+        cursor.execute("DELETE FROM task_status")
+        deleted = cursor.rowcount
         db.commit()
         logger.info(f"Global cancel DB cleanup: deleted {deleted} task_status rows")
     except Exception:
         db.rollback()
         logger.exception("Error deleting task_status rows during global cancel")
     finally:
-        cur.close()
+        cursor.close()
 
+
+def _save_cancel_recap(job_id, reason):
+    """Ensure the UI retains one canonical revoked task after global cleanup."""
     try:
-        # Ensure a single REVOKED row exists for job_id
         save_task_status(
             job_id,
             'unknown',
@@ -558,4 +598,12 @@ def cancel_job_and_children_recursive(job_id, reason="Task cancellation processe
     except Exception:
         logger.exception(f"Failed to insert REVOKED recap row for {job_id}")
 
+
+def cancel_job_and_children_recursive(job_id, reason="Task cancellation processed by API."):
+    """Cancel all active jobs and consolidate their task-status records."""
+    job_ids = _discover_rq_job_ids()
+    cancelled_count = _cancel_discovered_jobs(job_ids)
+    _clear_rq_queues()
+    _clear_task_status()
+    _save_cancel_recap(job_id, reason)
     return cancelled_count
