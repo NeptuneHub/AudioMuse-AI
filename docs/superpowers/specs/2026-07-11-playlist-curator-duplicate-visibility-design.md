@@ -1,8 +1,8 @@
-# Playlist Curator: Visible Duplicate Scans in Workbench and Search Results
+# Playlist Curator: Visible Duplicate Scans in Workbench and Result Views
 
 ## Status
 
-Approved design. Duplicate scans remain non-destructive and operate on an explicit, bounded set of tracks.
+Approved design, including the Extender result-surface correction. Duplicate scans remain non-destructive and operate on an explicit, bounded set of tracks.
 
 ## Problem
 
@@ -10,11 +10,14 @@ The existing Workbench duplicate action reaches `POST /api/curator/find_duplicat
 
 Smart Search also has no direct duplicate-scan action in its results overview. Users can scan the Workbench, but cannot inspect duplicate groups among the currently loaded search matches before adding tracks.
 
+The first implementation treated "Search Results" as only the standalone Smart Search page. The requested workflow also includes the candidate results rendered directly on the Playlist Extender page. That page has automatic duplicate mark/hide tuning, but no manual `Find duplicates` review action in its result header.
+
 ## Goals
 
 - Make Workbench duplicate scans visibly start and visibly finish on both curator pages.
 - Keep empty and error states visible until the user closes or reruns the scan.
 - Add a Search Results action that scans the currently loaded results.
+- Add the same action to Playlist Extender candidate results while retaining the Smart Search action.
 - Cap Search Results scans at 500 tracks to bound the pairwise comparison cost.
 - Highlight a recommended keeper and the tracks marked as duplicates.
 - Allow duplicate tracks to be hidden from the current Search Results display without changing the library, a media-server playlist, or the Workbench.
@@ -30,7 +33,7 @@ Smart Search also has no direct duplicate-scan action in its results overview. U
 
 ## Chosen Approach
 
-The shared duplicate finder accepts an explicit scan mode and track list. Workbench mode submits the Workbench tracks exactly as it does today. Search Results mode submits the currently loaded and visible search results, capped at 500 tracks.
+The shared duplicate finder accepts an explicit scan mode and track list. Workbench mode submits the Workbench tracks exactly as it does today. Search Results mode submits the currently loaded and visible result tracks from either Smart Search or Playlist Extender, capped at 500 tracks.
 
 Both modes reuse `POST /api/curator/find_duplicates`. The response panel is revealed and scrolled into view as soon as a scan starts. Loading, empty, success, and error states stay visible until the user closes the panel or starts another scan.
 
@@ -61,6 +64,14 @@ When duplicate groups are found, the highest-ranked track remains the default ke
 
 A new search, clearing the search, or reloading results resets the hidden-result set and any Search Results duplicate review state.
 
+### Playlist Extender Candidate Scan
+
+Playlist Extender adds a `Find duplicates` action to the candidate-results header. The action is disabled until at least two candidates are visible. It coexists with the existing automatic `Search-result duplicates` Off/Mark/Hide setting: the existing setting detects candidates close to the seed or Workbench, while the manual action reviews duplicate groups within the displayed candidate set.
+
+The manual action scans up to the first 500 currently displayed candidates in display order. It reuses Search Results review mode, including the `Hide marked duplicates` action. Hiding is presentation-only: it removes marked candidates from the current Extender result view without changing the Workbench, seed playlist, database, or media server.
+
+The manually hidden candidate set and its review state reset when the user runs another Extender search or changes the seed. Existing automatic mark/hide controls continue to work independently.
+
 ## Frontend State and Data Flow
 
 `curator-shared.js` continues to own the duplicate panel and backend request. Its duplicate scan entry point receives:
@@ -69,14 +80,14 @@ A new search, clearing the search, or reloading results resets the hidden-result
 - the track objects to scan;
 - optional context describing whether the list was capped.
 
-Workbench buttons call the shared entry point with `getWorkbench().tracks`. Smart Search exposes its currently loaded, visible result list through a page-specific hook and calls the same entry point in `search-results` mode.
+Workbench buttons call the shared entry point with `getWorkbench().tracks`. Smart Search and Playlist Extender each expose their currently loaded, visible result list through a page-specific adapter and call the same entry point in `search-results` mode.
 
 The panel stores its active mode alongside `dedupGroups`. Its primary action dispatches by mode:
 
 - `workbench`: remove marked IDs through `workbenchRemove`;
-- `search-results`: call a Smart Search hook that hides marked IDs and rerenders the results.
+- `search-results`: call the active page's hook that hides marked IDs and rerenders its results.
 
-The Search Results button enabled state is updated whenever search results are rendered. The Search Results action depends only on loaded search results, not Workbench size.
+Each result button's enabled state is updated whenever that page renders results. Result duplicate actions depend only on that page's loaded, visible results, not Workbench size.
 
 ## Computational Bound
 
@@ -111,8 +122,17 @@ Smart Search tests will cover:
 - hidden duplicate IDs are filtered from the rendered results;
 - running or clearing a search resets hidden duplicate IDs.
 
+Playlist Extender tests will cover:
+
+- the candidate-results header contains the duplicate action;
+- the action is disabled with fewer than two visible candidates;
+- the scan preserves candidate display order and applies the 500-track cap;
+- applying marked duplicates hides only Extender candidates;
+- a new Extender search or seed change resets manually hidden candidate IDs;
+- the existing automatic duplicate Off/Mark/Hide behavior remains independent.
+
 Backend characterization tests will continue to cover duplicate grouping and keeper ranking. No backend contract change is required.
 
 ## Deployment and Verification
 
-After focused and full checks pass, push the branch and wait for GitHub Actions and SonarCloud. Rebuild the CPU-only image and recreate the isolated `playlist-curator-test` web and worker services only. Verify both duplicate entry points against the cloned test database and re-audit that the production worker identity and start time are unchanged.
+After focused and full checks pass, push the branch and wait for GitHub Actions and SonarCloud. Rebuild the CPU-only image and recreate the isolated `playlist-curator-test` web and worker services only. Verify the Workbench, Smart Search, and Playlist Extender duplicate entry points against the cloned test database and re-audit that the production worker identity and start time are unchanged.
