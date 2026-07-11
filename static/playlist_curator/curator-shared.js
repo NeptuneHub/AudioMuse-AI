@@ -641,7 +641,9 @@
         const threshold = sliderEl ? parseFloat(sliderEl.value) : 0.010;
 
         if (!panel || !container) return;
+        if (titleEl) titleEl.textContent = 'Finding Duplicates';
         panel.classList.remove('hidden');
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         container.innerHTML = '<p class="curator-status loading"><span class="curator-spinner"></span>Scanning for duplicates...</p>';
         attachDedupHandlers();
 
@@ -657,7 +659,6 @@
             if (data.total_groups === 0) {
                 container.innerHTML = '<p class="curator-empty-state">No duplicates found at this sensitivity level.</p>';
                 if (titleEl) titleEl.textContent = 'No Duplicates Found';
-                setTimeout(() => panel.classList.add('hidden'), 3000);
                 return;
             }
             const removable = data.total_duplicate_tracks - data.total_groups;

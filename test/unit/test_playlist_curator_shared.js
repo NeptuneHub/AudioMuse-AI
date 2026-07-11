@@ -108,11 +108,21 @@ function createHarness() {
         'curator-sheet-clear-btn',
         'curator-sheet-name',
         'curator-sheet-backdrop',
+        'curator-dedup-panel',
+        'curator-dedup-groups',
+        'curator-dedup-title',
+        'curator-dedup-threshold',
+        'curator-dedup-removeall',
+        'curator-dedup-close',
     ];
     const elements = new Map(ids.map(id => [
         id,
         element(id, id.endsWith('replace-btn') ? ['hidden'] : []),
-    ]));
+    ]));    const scrollCalls = [];
+    const dedupPanel = elements.get('curator-dedup-panel');
+    dedupPanel.classList.add('hidden');
+    dedupPanel.scrollIntoView = options => scrollCalls.push(options);
+    elements.get('curator-dedup-threshold').value = '0.010';
 
     const document = {
         readyState: 'complete',
@@ -192,6 +202,7 @@ function createHarness() {
         context,
         elements,
         fetchCalls,
+        scrollCalls,
         setExternalWorkbench(tracks) {
             storage.set(STORAGE_KEY, JSON.stringify({ tracks }));
             for (const handler of windowListeners.get('storage') || []) {
@@ -323,5 +334,29 @@ test('successful save preserves externally synchronized tracks while pending', a
     assert.equal(
         harness.elements.get('curator-wb-replace-btn').classList.contains('hidden'),
         true,
+    );
+});
+test('empty Workbench duplicate scan scrolls to persistent feedback', async () => {
+    const harness = createHarness();
+    harness.context.window.workbenchAdd(track('track-1'), 'search');
+    harness.context.window.workbenchAdd(track('track-2'), 'search');
+    harness.setFetchResponse(Promise.resolve(response({
+        groups: [],
+        total_groups: 0,
+        total_duplicate_tracks: 0,
+    })));
+
+    await harness.context.window.curatorFindDuplicates();
+
+    const panel = harness.elements.get('curator-dedup-panel');
+    assert.equal(panel.classList.contains('hidden'), false);
+    assert.equal(harness.scrollCalls.length, 1);
+    assert.match(
+        harness.elements.get('curator-dedup-groups').innerHTML,
+        /No duplicates found/,
+    );
+    assert.equal(
+        harness.elements.get('curator-dedup-title').textContent,
+        'No Duplicates Found',
     );
 });
