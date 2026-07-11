@@ -34,6 +34,18 @@ function response(body, ok = true) {
         },
     };
 }
+function duplicateResponse() {
+    return response({
+        groups: [{
+            tracks: [
+                { item_id: 'keep', title: 'Keep', score: 5 },
+                { item_id: 'hide', title: 'Hide', score: 1 },
+            ],
+        }],
+        total_groups: 1,
+        total_duplicate_tracks: 2,
+    });
+}
 
 function classList(initial = []) {
     const values = new Set(initial);
@@ -359,4 +371,38 @@ test('empty Workbench duplicate scan scrolls to persistent feedback', async () =
         harness.elements.get('curator-dedup-title').textContent,
         'No Duplicates Found',
     );
+});
+test('Search Results duplicate scan uses provided tracks and relabels apply action', async () => {
+    const harness = createHarness();
+    harness.setFetchResponse(Promise.resolve(duplicateResponse()));
+
+    await harness.context.window.curatorFindDuplicatesForTracks(
+        [track('keep'), track('hide')],
+        'search-results',
+        { capped: false, totalAvailable: 2 },
+    );
+
+    const body = JSON.parse(harness.fetchCalls[0].options.body);
+    assert.deepEqual(Array.from(body.track_ids), ['keep', 'hide']);
+    assert.equal(
+        harness.elements.get('curator-dedup-removeall').textContent,
+        'Hide marked duplicates',
+    );
+});
+
+test('Search Results apply hides marked ids without changing Workbench', async () => {
+    const harness = createHarness();
+    const hidden = [];
+    harness.context.window.curatorHideSearchDuplicates = ids => hidden.push(...ids);
+    harness.setFetchResponse(Promise.resolve(duplicateResponse()));
+
+    await harness.context.window.curatorFindDuplicatesForTracks(
+        [track('keep'), track('hide')],
+        'search-results',
+        {},
+    );
+    harness.context.window.curatorRemoveAllMarkedDuplicates();
+
+    assert.deepEqual(hidden, ['hide']);
+    assert.deepEqual(Array.from(harness.context.window.getWorkbench().tracks), []);
 });

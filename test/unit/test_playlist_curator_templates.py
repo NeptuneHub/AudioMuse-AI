@@ -19,6 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKBENCH_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_workbench.html"
+DEDUP_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_dedup.html"
 CURATOR_SHARED_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-shared.js"
 CURATOR_EXTENDER_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-extender.js"
 CURATOR_TEMPLATE_PATHS = [
@@ -116,3 +117,8 @@ def test_extender_clears_replacement_target_for_non_server_seed():
 
     assert "window.curatorSetSeededPlaylistTarget(null);" in source
     assert "seedValue.startsWith('__server__')" in source
+
+def test_duplicate_results_are_announced_as_live_status():
+    template = DEDUP_TEMPLATE.read_text(encoding="utf-8")
+
+    assert 'id="curator-dedup-groups" aria-live="polite"' in template

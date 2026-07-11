@@ -574,11 +574,13 @@
 
     // ---------- Find duplicates panel ----------
     let dedupGroups = [];
+    let dedupMode = 'workbench';
+    let dedupNotice = '';
 
     function renderDedupGroups() {
         const container = document.getElementById('curator-dedup-groups');
         if (!container) return;
-        let html = '';
+        let html = dedupNotice;
         dedupGroups.forEach((group, gi) => {
             html += `<div class="curator-dedup-group">`;
             html += `<div class="curator-dedup-group-header">Group ${gi + 1}</div>`;
@@ -630,46 +632,67 @@
         });
     }
 
-    async function findDuplicates() {
-        const wb = getWorkbench();
-        if (wb.tracks.length < 2) { toast('Need at least 2 tracks to scan.', 'error'); return; }
+    async function findDuplicatesForTracks(tracks, mode, options) {
+        const scanTracks = Array.isArray(tracks) ? tracks : [];
+        const scanMode = mode === 'search-results' ? 'search-results' : 'workbench';
+        const scanOptions = options || {};
+        if (scanTracks.length < 2) {
+            toast('Need at least 2 tracks to scan.', 'error');
+            return;
+        }
+
+        dedupMode = scanMode;
+        const totalAvailable = Number(scanOptions.totalAvailable) || scanTracks.length;
+        dedupNotice = scanOptions.capped
+            ? `<p class="curator-status">Limited to the first ${scanTracks.length} of ${totalAvailable} loaded results.</p>`
+            : '';
 
         const panel = document.getElementById('curator-dedup-panel');
         const container = document.getElementById('curator-dedup-groups');
         const titleEl = document.getElementById('curator-dedup-title');
         const sliderEl = document.getElementById('curator-dedup-threshold');
+        const applyButton = document.getElementById('curator-dedup-removeall');
         const threshold = sliderEl ? parseFloat(sliderEl.value) : 0.010;
 
         if (!panel || !container) return;
         if (titleEl) titleEl.textContent = 'Finding Duplicates';
+        if (applyButton) {
+            applyButton.textContent = dedupMode === 'search-results'
+                ? 'Hide marked duplicates'
+                : 'Remove All Marked';
+        }
         panel.classList.remove('hidden');
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        container.innerHTML = '<p class="curator-status loading"><span class="curator-spinner"></span>Scanning for duplicates...</p>';
+        container.innerHTML = '<p class="curator-status loading"><span class="curator-spinner"></span>Scanning for duplicates...</p>' + dedupNotice;
         attachDedupHandlers();
 
         try {
             const res = await fetch('/api/curator/find_duplicates', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ track_ids: wb.tracks.map(t => t.item_id), threshold }),
+                body: JSON.stringify({ track_ids: scanTracks.map(track => track.item_id), threshold }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed');
             dedupGroups = data.groups || [];
             if (data.total_groups === 0) {
-                container.innerHTML = '<p class="curator-empty-state">No duplicates found at this sensitivity level.</p>';
+                container.innerHTML = dedupNotice + '<p class="curator-empty-state">No duplicates found at this sensitivity level.</p>';
                 if (titleEl) titleEl.textContent = 'No Duplicates Found';
                 return;
             }
             const removable = data.total_duplicate_tracks - data.total_groups;
             if (titleEl) titleEl.textContent = `Duplicates Found: ${data.total_groups} group${data.total_groups > 1 ? 's' : ''} (${removable} to remove)`;
             renderDedupGroups();
-            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         } catch (e) {
-            container.innerHTML = `<p class="curator-status error">${escHtml(e.message)}</p>`;
+            container.innerHTML = dedupNotice + `<p class="curator-status error">${escHtml(e.message)}</p>`;
         }
     }
+
+    async function findDuplicates() {
+        return findDuplicatesForTracks(getWorkbench().tracks, 'workbench', {});
+    }
     window.curatorFindDuplicates = findDuplicates;
+    window.curatorFindDuplicatesForTracks = findDuplicatesForTracks;
 
     function removeAllMarkedDuplicates() {
         const idsToRemove = [];
@@ -680,14 +703,30 @@
             });
         });
         if (idsToRemove.length === 0) return closeDedupPanel();
-        idsToRemove.forEach(id => workbenchRemove(id));
+
+        const appliedMode = dedupMode;
+        if (appliedMode === 'search-results') {
+            if (typeof window.curatorHideSearchDuplicates !== 'function') {
+                toast('Search Results cannot be updated on this page.', 'error');
+                return;
+            }
+            window.curatorHideSearchDuplicates(idsToRemove);
+        } else {
+            idsToRemove.forEach(id => workbenchRemove(id));
+        }
         closeDedupPanel();
-        toast(`Removed ${idsToRemove.length} duplicate${idsToRemove.length > 1 ? 's' : ''} from Workbench.`, 'success');
+        const action = appliedMode === 'search-results' ? 'Hidden' : 'Removed';
+        const destination = appliedMode === 'search-results' ? 'Search Results' : 'Workbench';
+        toast(`${action} ${idsToRemove.length} duplicate${idsToRemove.length === 1 ? '' : 's'} from ${destination}.`, 'success');
     }
     function closeDedupPanel() {
         const panel = document.getElementById('curator-dedup-panel');
+        const applyButton = document.getElementById('curator-dedup-removeall');
         if (panel) panel.classList.add('hidden');
+        if (applyButton) applyButton.textContent = 'Remove All Marked';
         dedupGroups = [];
+        dedupMode = 'workbench';
+        dedupNotice = '';
     }
     window.curatorRemoveAllMarkedDuplicates = removeAllMarkedDuplicates;
     window.curatorCloseDedupPanel = closeDedupPanel;
