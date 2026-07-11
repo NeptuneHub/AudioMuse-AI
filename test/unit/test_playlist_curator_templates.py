@@ -20,7 +20,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKBENCH_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_workbench.html"
 DEDUP_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_dedup.html"
+SEARCH_TEMPLATE = REPO_ROOT / "templates" / "playlist_curator_search.html"
 CURATOR_SHARED_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-shared.js"
+CURATOR_SEARCH_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-search.js"
 CURATOR_EXTENDER_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-extender.js"
 CURATOR_TEMPLATE_PATHS = [
     REPO_ROOT / "templates" / "playlist_curator_search.html",
@@ -59,7 +61,9 @@ def test_curator_inputs_have_explicit_labels():
                 or (input_id in parser.label_targets)
             )
             if not has_accessible_name:
-                unlabeled.append(f"{path.relative_to(REPO_ROOT)} {tag}#{input_id or '<missing-id>'}")
+                unlabeled.append(
+                    f"{path.relative_to(REPO_ROOT)} {tag}#{input_id or '<missing-id>'}"
+                )
 
     assert unlabeled == []
 
@@ -91,7 +95,10 @@ def test_shared_workbench_owns_nonpersistent_seed_target_and_replace_payload():
     assert "window.curatorSetSeededPlaylistTarget = setSeededPlaylistTarget;" in source
     assert "replace_playlist_name: seededServerPlaylist.playlistName" in source
     assert "unresolvedTracks" in source
-    assert "replaceBtn.textContent = `Replace \u201c${seededServerPlaylist.playlistName}\u201d`;" in source
+    assert (
+        "replaceBtn.textContent = `Replace \u201c${seededServerPlaylist.playlistName}\u201d`;"
+        in source
+    )
     assert "confirm(message)" in source
     assert "window.curatorReplaceSeededPlaylist = replaceSeededPlaylist;" in source
     assert "localStorage.setItem(STORAGE_KEY, JSON.stringify(workbench))" in source
@@ -118,7 +125,18 @@ def test_extender_clears_replacement_target_for_non_server_seed():
     assert "window.curatorSetSeededPlaylistTarget(null);" in source
     assert "seedValue.startsWith('__server__')" in source
 
+
 def test_duplicate_results_are_announced_as_live_status():
     template = DEDUP_TEMPLATE.read_text(encoding="utf-8")
 
     assert 'id="curator-dedup-groups" aria-live="polite"' in template
+
+
+def test_search_results_exposes_bounded_duplicate_action():
+    template = SEARCH_TEMPLATE.read_text(encoding="utf-8")
+    source = CURATOR_SEARCH_JS.read_text(encoding="utf-8")
+
+    assert 'id="curator-search-finddups"' in template
+    assert "const DUPLICATE_SCAN_LIMIT = 500;" in source
+    assert "window.curatorFindDuplicatesForTracks(" in source
+    assert "window.curatorHideSearchDuplicates = hideSearchDuplicates;" in source

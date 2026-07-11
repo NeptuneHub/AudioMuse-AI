@@ -52,8 +52,10 @@
     };
 
     let filterOptions = { keys: [], scales: [], moods: [], features: [], bpm_ranges: [], energy_ranges: [], rating_ranges: [], year_ranges: [] };
+    const DUPLICATE_SCAN_LIMIT = 500;
     let lastResults = [];
     let skippedIds = new Set();
+    let hiddenDuplicateIds = new Set();
     let renderToken = 0;
 
     // Pagination state - Smart Search returns pages of `per_page`. lastResults
@@ -278,6 +280,7 @@
             lastPage = data.page || 1;
             lastPerPage = data.per_page || 500;
             skippedIds = new Set();
+            hiddenDuplicateIds = new Set();
             renderResults();
             renderPagination();
             window.curatorSetStatus(statusId, '', '');
@@ -308,6 +311,7 @@
             lastPage = data.page || page;
             lastPerPage = data.per_page || lastPerPage;
             skippedIds = new Set();
+            hiddenDuplicateIds = new Set();
             renderResults();
             renderPagination();
             window.curatorSetStatus(statusId, '', '');
@@ -352,6 +356,7 @@
                 }
             }
             if (!abort.aborted) {
+                hiddenDuplicateIds = new Set();
                 renderResults();
                 renderPagination();
                 const statusEl = document.getElementById(statusId);
@@ -397,8 +402,30 @@
 
     // ---------- Render results ----------
     function visibleResults() {
-        return lastResults.filter(t => !skippedIds.has(t.item_id));
+        return lastResults.filter(track =>
+            !skippedIds.has(track.item_id)
+            && !hiddenDuplicateIds.has(String(track.item_id))
+        );
     }
+
+    function scanSearchResultDuplicates() {
+        const visible = visibleResults();
+        const tracks = visible.slice(0, DUPLICATE_SCAN_LIMIT);
+        return window.curatorFindDuplicatesForTracks(
+            tracks,
+            'search-results',
+            {
+                capped: visible.length > DUPLICATE_SCAN_LIMIT,
+                totalAvailable: visible.length,
+            },
+        );
+    }
+
+    function hideSearchDuplicates(ids) {
+        (ids || []).forEach(id => hiddenDuplicateIds.add(String(id)));
+        renderResults();
+    }
+    window.curatorHideSearchDuplicates = hideSearchDuplicates;
 
     function renderResults() {
         const section = document.getElementById('curator-results-section');
@@ -412,6 +439,8 @@
         if (headSkipped) {
             headSkipped.textContent = skippedIds.size > 0 ? ` · ${skippedIds.size} skipped` : '';
         }
+        const findDuplicatesBtn = document.getElementById('curator-search-finddups');
+        if (findDuplicatesBtn) findDuplicatesBtn.disabled = visible.length < 2;
 
         const sendBtn = document.getElementById('curator-search-send');
         if (sendBtn) {
@@ -590,6 +619,7 @@
             addFilterRow();
             lastResults = [];
             skippedIds = new Set();
+            hiddenDuplicateIds = new Set();
             lastPayload = null;
             lastTotal = 0;
             lastPage = 1;
@@ -602,6 +632,8 @@
         // Send to Extender
         const sendBtn = document.getElementById('curator-search-send');
         if (sendBtn) sendBtn.addEventListener('click', sendAllToExtender);
+        const findDuplicatesBtn = document.getElementById('curator-search-finddups');
+        if (findDuplicatesBtn) findDuplicatesBtn.addEventListener('click', scanSearchResultDuplicates);
 
         // Pagination
         const prevBtn = document.getElementById('curator-page-prev');
