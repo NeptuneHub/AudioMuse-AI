@@ -18,8 +18,10 @@
     const getInfluenceInfo = window.getInfluenceInfo;
 
     const SEED_WORKBENCH = '__workbench__';
+    const DUPLICATE_SCAN_LIMIT = 500;
 
     let lastResults = [];
+    let hiddenDuplicateIds = new Set();
     let yearMin = null;
     let yearMax = null;
     let serverPlaylistsLoaded = false;
@@ -55,6 +57,48 @@
             h = setTimeout(() => { h = null; fn.apply(null, args); }, ms);
         };
     }
+
+    function isAutomaticallyHiddenDuplicate(track) {
+        const mode = document.getElementById('curator-dup-mode');
+        const slider = document.getElementById('curator-dup-threshold');
+        const distance = track.duplicate_of && typeof track.duplicate_of.distance === 'number'
+            ? track.duplicate_of.distance
+            : null;
+        return !!mode && !!slider && mode.value === 'hide'
+            && distance !== null && distance < parseFloat(slider.value);
+    }
+
+    function displayedResults() {
+        return lastResults.filter(track => !hiddenDuplicateIds.has(String(track.item_id)));
+    }
+
+    function duplicateScanResults() {
+        return displayedResults().filter(track => !isAutomaticallyHiddenDuplicate(track));
+    }
+
+    function updateDuplicateButton() {
+        const button = document.getElementById('curator-extender-finddups');
+        if (button) button.disabled = duplicateScanResults().length < 2;
+    }
+
+    function scanResultDuplicates() {
+        const visible = duplicateScanResults();
+        return window.curatorFindDuplicatesForTracks(
+            visible.slice(0, DUPLICATE_SCAN_LIMIT),
+            'search-results',
+            {
+                capped: visible.length > DUPLICATE_SCAN_LIMIT,
+                totalAvailable: visible.length,
+            },
+        );
+    }
+
+    function hideSearchDuplicates(ids) {
+        ids.forEach(id => hiddenDuplicateIds.add(String(id)));
+        renderResults();
+    }
+
+    window.curatorHideSearchDuplicates = hideSearchDuplicates;
 
     // Toggle dup-warn / hidden state on existing rows without rebuilding HTML.
     // Only touches rows that have data-dup-distance (i.e. actual near-dup candidates).
@@ -103,6 +147,7 @@
         }
         const headCount = document.getElementById('curator-results-count');
         if (headCount) headCount.textContent = visibleCount;
+        updateDuplicateButton();
     }
     const applyDupVisibilityDebounced = debounce(applyDupVisibility, 120);
 
@@ -367,6 +412,7 @@
         } else {
             payload.playlist_name = seedValue;
         }
+        hiddenDuplicateIds.clear();
 
         const runBtn = document.getElementById('curator-extender-run');
         if (runBtn) runBtn.disabled = true;
@@ -402,14 +448,16 @@
 
         const wrap = document.getElementById('curator-results-table-wrap');
         const cards = document.getElementById('curator-results-cards');
+        const results = displayedResults();
 
-        if (lastResults.length === 0) {
+        if (results.length === 0) {
             renderToken++;
             const empty = `<div class="curator-empty-state">No similar tracks found. Try raising the threshold.</div>`;
             if (wrap) wrap.innerHTML = empty;
             if (cards) cards.innerHTML = empty;
             const headCount = document.getElementById('curator-results-count');
             if (headCount) headCount.textContent = 0;
+            updateDuplicateButton();
             return;
         }
 
@@ -420,11 +468,11 @@
         if (wrap) {
             wrap.innerHTML = renderTableShell();
             const tbody = wrap.querySelector('tbody');
-            if (tbody) renderInChunks(tbody, lastResults, rowFn);
+            if (tbody) renderInChunks(tbody, results, rowFn);
         }
         if (cards) {
             cards.innerHTML = '';
-            renderInChunks(cards, lastResults, cardFn);
+            renderInChunks(cards, results, cardFn);
         }
         applyDupVisibility();
     }
@@ -594,6 +642,7 @@
         const seedSelect = document.getElementById('curator-seed-select');
         if (seedSelect) seedSelect.addEventListener('change', () => {
             lastResults = [];
+            hiddenDuplicateIds.clear();
             const section = document.getElementById('curator-results-section');
             if (section) section.classList.add('hidden');
             window.curatorSetStatus('curator-extender-status', '', '');
@@ -673,6 +722,8 @@
         // Run button
         const runBtn = document.getElementById('curator-extender-run');
         if (runBtn) runBtn.addEventListener('click', runExtend);
+        const findDuplicatesBtn = document.getElementById('curator-extender-finddups');
+        if (findDuplicatesBtn) findDuplicatesBtn.addEventListener('click', scanResultDuplicates);
 
         // Result row delegation: Add only. The [data-influence-id] click
         // handler lives in curator-shared.js so both pages share it (and to

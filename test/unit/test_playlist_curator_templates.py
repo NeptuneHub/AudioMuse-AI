@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKBENCH_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_workbench.html"
 DEDUP_TEMPLATE = REPO_ROOT / "templates" / "includes" / "_curator_dedup.html"
 SEARCH_TEMPLATE = REPO_ROOT / "templates" / "playlist_curator_search.html"
+EXTENDER_TEMPLATE = REPO_ROOT / "templates" / "playlist_curator_extender.html"
 CURATOR_SHARED_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-shared.js"
 CURATOR_SEARCH_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-search.js"
 CURATOR_EXTENDER_JS = REPO_ROOT / "static" / "playlist_curator" / "curator-extender.js"
@@ -137,6 +138,16 @@ def test_search_results_exposes_bounded_duplicate_action():
     source = CURATOR_SEARCH_JS.read_text(encoding="utf-8")
 
     assert 'id="curator-search-finddups"' in template
+    assert "const DUPLICATE_SCAN_LIMIT = 500;" in source
+    assert "window.curatorFindDuplicatesForTracks(" in source
+    assert "window.curatorHideSearchDuplicates = hideSearchDuplicates;" in source
+
+
+def test_extender_results_exposes_bounded_duplicate_action():
+    template = EXTENDER_TEMPLATE.read_text(encoding="utf-8")
+    source = CURATOR_EXTENDER_JS.read_text(encoding="utf-8")
+
+    assert 'id="curator-extender-finddups"' in template
     assert "const DUPLICATE_SCAN_LIMIT = 500;" in source
     assert "window.curatorFindDuplicatesForTracks(" in source
     assert "window.curatorHideSearchDuplicates = hideSearchDuplicates;" in source
