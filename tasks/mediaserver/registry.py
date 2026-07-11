@@ -89,6 +89,15 @@ def get_server(server_id, conn=None):
     return rows[0] if rows else None
 
 
+def get_server_by_name(name, conn=None):
+    """Find a server by its user-facing display name (case-insensitive)."""
+    if not name:
+        return None
+    db = conn or get_db()
+    rows = _rows(db, "WHERE lower(name) = lower(%s) ORDER BY name ASC LIMIT 1", (name,))
+    return rows[0] if rows else None
+
+
 def get_default_server(conn=None):
     db = conn or get_db()
     rows = _rows(db, "WHERE is_default ORDER BY name ASC LIMIT 1")
@@ -253,21 +262,54 @@ def translate_ids(item_ids, server_id=None, conn=None):
     on the target server. For the default server (or an unset server_id) the
     mapping is the identity, since ``score.item_id`` already holds its ids.
     """
-    ids = [i for i in dict.fromkeys(item_ids) if i]
+    ids = [str(i) for i in dict.fromkeys(item_ids) if i]
     if not ids:
         return {}
     db = conn or get_db()
     default = get_default_server(db)
     default_id = default["server_id"] if default else None
     is_default = (not server_id) or server_id == default_id
-    if is_default and not config.CATALOG_FINGERPRINT_AS_ID:
-        return {i: i for i in ids}
     target = server_id or default_id
+    if target is None:
+        return {i: i for i in ids}
     cur = db.cursor()
     try:
         cur.execute(
             "SELECT item_id, provider_track_id FROM track_server_map "
             "WHERE server_id = %s AND item_id = ANY(%s)",
+            (target, ids),
+        )
+        mapped = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        cur.close()
+    if is_default:
+        return {i: mapped.get(i, i) for i in ids}
+    return mapped
+
+
+def reverse_translate_ids(provider_ids, server_id=None, conn=None):
+    """Map a server's real track ids back to the canonical catalogue item_ids.
+
+    The inverse of ``translate_ids``: returns ``{provider_id: item_id}`` for the
+    ids known on ``server_id`` (default server when None). On the default server
+    unknown ids fall back to themselves, since legacy rows still use the
+    provider id as their catalogue id.
+    """
+    ids = [str(i) for i in dict.fromkeys(provider_ids) if i]
+    if not ids:
+        return {}
+    db = conn or get_db()
+    default = get_default_server(db)
+    default_id = default["server_id"] if default else None
+    is_default = (not server_id) or server_id == default_id
+    target = server_id or default_id
+    if target is None:
+        return {i: i for i in ids}
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT provider_track_id, item_id FROM track_server_map "
+            "WHERE server_id = %s AND provider_track_id = ANY(%s)",
             (target, ids),
         )
         mapped = {r[0]: r[1] for r in cur.fetchall()}
@@ -291,7 +333,7 @@ def upsert_track_maps(server_id, mapping, conn=None):
                 provider_track_id, match_tier = value[0], (value[1] if len(value) > 1 else None)
             else:
                 provider_track_id, match_tier = value, None
-            if not provider_track_id:
+            if provider_track_id is None or provider_track_id == '':
                 continue
             cur.execute(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier, updated_at) "
@@ -299,7 +341,7 @@ def upsert_track_maps(server_id, mapping, conn=None):
                 "ON CONFLICT (item_id, server_id) DO UPDATE SET "
                 "provider_track_id = EXCLUDED.provider_track_id, "
                 "match_tier = EXCLUDED.match_tier, updated_at = now()",
-                (item_id, server_id, provider_track_id, match_tier),
+                (str(item_id), server_id, str(provider_track_id), match_tier),
             )
             written += 1
         db.commit()

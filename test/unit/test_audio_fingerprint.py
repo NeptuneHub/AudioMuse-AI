@@ -6,16 +6,17 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Content-fingerprint SimHash id: determinism, robustness, and BIGINT range.
+"""Embedding-LSH catalogue id: determinism, robustness, and BIGINT encoding.
 
-Verifies the audio -> tokens -> 64-bit SimHash -> signed BIGINT pipeline gives
-the same id for near-identical input and a Postgres-safe signed value, without
-requiring the optional Chromaprint native library.
+Verifies the MusiCNN-embedding -> 64 seeded hyperplanes -> 64-bit SimHash-LSH ->
+signed BIGINT -> fp_<hex> id pipeline: identical embeddings give identical ids,
+near-identical embeddings stay within a small Hamming distance, different
+embeddings diverge, and the id string round-trips the signed fingerprint.
 
 Main Features:
-* SimHash determinism, small-change robustness, and separation of different audio.
-* Signed BIGINT round-trip stays inside the 64-bit signed range.
-* End-to-end librosa chroma fallback yields a stable id for the same waveform.
+* Determinism across calls and input forms (array, list, raw float32 bytes).
+* Near-duplicate robustness and different-content separation via Hamming distance.
+* Signed BIGINT range safety and fp_<hex> id round-trip.
 """
 
 import numpy as np
@@ -27,28 +28,42 @@ def _hamming(a, b):
     return bin(afp.from_signed_bigint(a) ^ afp.from_signed_bigint(b)).count('1')
 
 
-class TestSimHash:
+def _embedding(seed, dim=200):
+    rng = np.random.RandomState(seed)
+    return rng.standard_normal(dim).astype(np.float32)
+
+
+class TestEmbeddingFingerprint:
     def test_deterministic(self):
-        tokens = [i * 2654435761 & 0xFFFFFFFF for i in range(500)]
-        assert afp.simhash64(tokens) == afp.simhash64(list(tokens))
+        emb = _embedding(1)
+        assert afp.embedding_fingerprint(emb) == afp.embedding_fingerprint(emb.copy())
 
-    def test_empty_is_none(self):
-        assert afp.simhash64([]) is None
-        assert afp.simhash64(None) is None
+    def test_bytes_and_array_forms_agree(self):
+        emb = _embedding(2)
+        assert afp.embedding_fingerprint(emb) == afp.embedding_fingerprint(emb.tobytes())
+        assert afp.embedding_fingerprint(emb) == afp.embedding_fingerprint(list(emb))
 
-    def test_small_change_low_hamming(self):
-        tokens = [(i * 1103515245 + 12345) & 0xFFFFFFFF for i in range(1000)]
-        base = afp.simhash64(tokens)
-        perturbed = list(tokens)
-        perturbed[0] = 0
-        perturbed[500] = 42
-        changed = afp.simhash64(perturbed)
-        assert bin(base ^ changed).count('1') <= 2
+    def test_near_identical_embeddings_stay_close(self):
+        emb = _embedding(3)
+        noisy = emb + np.float32(1e-5) * _embedding(99)
+        assert _hamming(afp.embedding_fingerprint(emb), afp.embedding_fingerprint(noisy)) <= 3
 
-    def test_different_audio_differs(self):
-        a = [(i * 2246822519) & 0xFFFFFFFF for i in range(1000)]
-        b = [(i * 3266489917 + 7) & 0xFFFFFFFF for i in range(1000)]
-        assert afp.simhash64(a) != afp.simhash64(b)
+    def test_different_embeddings_diverge(self):
+        a = afp.embedding_fingerprint(_embedding(4))
+        b = afp.embedding_fingerprint(_embedding(5))
+        assert _hamming(a, b) > 10
+
+    def test_invalid_inputs_return_none(self):
+        assert afp.embedding_fingerprint(None) is None
+        assert afp.embedding_fingerprint([]) is None
+        assert afp.embedding_fingerprint(np.zeros(200, dtype=np.float32)) is None
+        bad = np.full(200, np.nan, dtype=np.float32)
+        assert afp.embedding_fingerprint(bad) is None
+
+    def test_fits_signed_bigint(self):
+        for seed in range(10):
+            value = afp.embedding_fingerprint(_embedding(seed))
+            assert -(1 << 63) <= value <= (1 << 63) - 1
 
 
 class TestBigintRange:
@@ -58,35 +73,13 @@ class TestBigintRange:
             assert -(1 << 63) <= signed <= (1 << 63) - 1
             assert afp.from_signed_bigint(signed) == u
 
-    def test_canonical_fits_bigint(self):
-        signed = afp.to_signed_bigint(afp.simhash64([1, 2, 3, 4, 5, 6, 7, 8]))
-        assert -(1 << 63) <= signed <= (1 << 63) - 1
-
-
-class TestChromaFallback:
-    def _tone(self, freq=220.0, sr=16000, seconds=4.0):
-        t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
-        return (0.5 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-
-    def test_same_waveform_same_id(self):
-        sr = 16000
-        wave = self._tone(sr=sr)
-        id1 = afp.canonical_fingerprint(wave, sr)
-        id2 = afp.canonical_fingerprint(wave.copy(), sr)
-        assert id1 is not None
-        assert id1 == id2
-
-    def test_amplitude_scale_stays_close(self):
-        sr = 16000
-        wave = self._tone(sr=sr)
-        scaled = (wave * 0.9).astype(np.float32)
-        assert _hamming(afp.canonical_fingerprint(scaled, sr), afp.canonical_fingerprint(wave, sr)) <= 8
-
-    def test_too_short_returns_none(self):
-        assert afp.canonical_fingerprint(np.zeros(10, dtype=np.float32), 16000) is None
-
 
 class TestCanonicalIdStr:
+    def test_id_encodes_and_recovers_signed_fingerprint(self):
+        for signed in [0, 1, -5, (1 << 63) - 1, -(1 << 63)]:
+            item_id = afp.canonical_id_str(signed)
+            assert afp.fingerprint_from_canonical_id(item_id) == signed
+
     def test_round_trip_and_prefix(self):
         for signed in [0, 1, -5, (1 << 63) - 1, -(1 << 63)]:
             cid = afp.canonical_id_str(signed)
@@ -96,6 +89,12 @@ class TestCanonicalIdStr:
 
     def test_same_fingerprint_same_id(self):
         assert afp.canonical_id_str(123456789) == afp.canonical_id_str(123456789)
+
+    def test_embedding_canonical_id(self):
+        emb = _embedding(7)
+        cid = afp.embedding_canonical_id(emb)
+        assert afp.is_fingerprint_id(cid)
+        assert afp.fingerprint_from_canonical_id(cid) == afp.embedding_fingerprint(emb)
 
     def test_non_fingerprint_ids_rejected(self):
         assert not afp.is_fingerprint_id('abc123')

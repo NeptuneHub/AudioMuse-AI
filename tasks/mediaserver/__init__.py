@@ -249,13 +249,39 @@ def get_playlist_track_ids(playlist_id, user_creds=None):
     return provider.get_playlist_track_ids(playlist_id, user_creds=user_creds)
 
 
+def _to_server_ids(item_ids):
+    """Translate canonical catalogue ids to the active (or default) server's
+    real track ids, dropping any the server does not have. This is the SINGLE
+    translation point for playlist creation: callers pass canonical ids and must
+    never pre-translate. Legacy provider ids map to themselves on the default
+    server, so mixed catalogues pass through unchanged."""
+    from .registry import translate_ids
+
+    server_id = context.active_server_id()
+    try:
+        mapping = translate_ids(item_ids, server_id)
+    except Exception:
+        try:
+            from database import connect_raw
+            raw = connect_raw()
+            try:
+                mapping = translate_ids(item_ids, server_id, conn=raw)
+            finally:
+                raw.close()
+        except Exception:
+            logger.exception("Playlist id translation failed; sending ids unchanged")
+            return list(item_ids)
+    return [mapping[str(i)] for i in item_ids if str(i) in mapping]
+
+
 def create_playlist(base_name, item_ids):
     if not base_name:
         raise ValueError(_PLAYLIST_NAME_REQUIRED)
     if not item_ids:
         raise ValueError(_TRACK_IDS_REQUIRED)
+    item_ids = _to_server_ids(item_ids)
     provider = _provider()
-    if provider is not None:
+    if provider is not None and item_ids:
         provider.create_playlist(base_name, item_ids)
 
 
@@ -266,6 +292,9 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError(_TRACK_IDS_REQUIRED)
 
     user_creds = context.active_creds(user_creds)
+    item_ids = _to_server_ids(item_ids)
+    if not item_ids:
+        return None
     provider = _provider()
     if provider is None:
         return None
@@ -281,6 +310,7 @@ def create_or_replace_playlist(playlist_name, item_ids, user_creds=None):
         raise ValueError(_TRACK_IDS_REQUIRED)
 
     user_creds = context.active_creds(user_creds)
+    item_ids = _to_server_ids(item_ids)
     provider = _provider()
     if provider is None:
         raise NotImplementedError(
@@ -341,7 +371,12 @@ class BoundServer:
         raise AttributeError(name)
 
 
-def for_server(server_id):
-    """Return a BoundServer for ``server_id`` (config default when it is the default/None)."""
+def for_server(server_id, conn=None):
+    """Return a BoundServer for ``server_id`` (config default when it is the default/None).
+
+    Pass ``conn`` (a raw psycopg2 connection) when calling from a worker where no
+    Flask application context exists; the registry lookup uses it instead of the
+    request-scoped connection.
+    """
     from .registry import context_for
-    return BoundServer(context_for(server_id), server_id)
+    return BoundServer(context_for(server_id, conn), server_id)

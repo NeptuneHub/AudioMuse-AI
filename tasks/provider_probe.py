@@ -22,16 +22,6 @@ Main Features:
 from tasks import mediaserver
 
 
-def _extract_mbid(item):
-    provider_ids = item.get('ProviderIds')
-    if isinstance(provider_ids, dict):
-        for key in ('MusicBrainzTrack', 'MusicBrainzRecording'):
-            value = provider_ids.get(key)
-            if value:
-                return value
-    return item.get('musicBrainzId') or item.get('mbid') or item.get('MusicBrainzTrackId')
-
-
 def _normalize_track(item):
     if item is None:
         return {
@@ -44,7 +34,6 @@ def _normalize_track(item):
             'year': None,
             'track_number': None,
             'disc_number': None,
-            'mbid': None,
         }
 
     def _try(*keys):
@@ -71,7 +60,6 @@ def _normalize_track(item):
         'year': year,
         'track_number': _try('IndexNumber', 'track_number', 'track'),
         'disc_number': _try('ParentIndexNumber', 'disc_number', 'disc'),
-        'mbid': _extract_mbid(item),
     }
 
 

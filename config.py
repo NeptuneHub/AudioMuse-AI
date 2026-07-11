@@ -130,33 +130,14 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
 }
 
-# Master switch for the multi-server registry (concurrent Navidrome/Jellyfin/etc).
-# When false the app behaves exactly as the historical single-server build: the
-# global config credentials are the only server and the management UI is hidden.
-MULTI_SERVER_ENABLED = os.environ.get("MULTI_SERVER_ENABLED", "true").lower() == "true"
-
-# Compute a content-based catalogue fingerprint (Chromaprint-or-chroma -> 64-bit
-# SimHash BIGINT) for each analyzed track. The same recording collapses to the
-# same id across media servers, so cross-server matching can be exact. Real
-# Chromaprint is used when its library is present, otherwise a librosa chroma
-# fingerprint (always available) with the identical SimHash pipeline.
-CATALOG_FINGERPRINT_ENABLED = os.environ.get("CATALOG_FINGERPRINT_ENABLED", "true").lower() == "true"
-# Max tracks to backfill a fingerprint for at the end of each analysis run (legacy
-# rows with no fingerprint). Bounded so a huge legacy library catches up over
-# several runs instead of blocking one. 0 disables the backfill.
-CATALOG_FINGERPRINT_BACKFILL_PER_RUN = int(os.environ.get("CATALOG_FINGERPRINT_BACKFILL_PER_RUN", "0"))
-# When true, the catalogue item_id becomes the content fingerprint itself: after
-# analysis the fingerprinted rows are relabelled from the media-server id to the
-# canonical fingerprint id (indexes rebuilt, default server's real ids kept in
-# track_server_map and translated back on output). Server-independent and
-# content-deduplicated, but it rewrites the primary key and rebuilds every index,
-# so it is opt-in. Off = item_id stays the default server's id (fingerprint is
-# only the cross-server match key).
-CATALOG_FINGERPRINT_AS_ID = os.environ.get("CATALOG_FINGERPRINT_AS_ID", "false").lower() == "true"
-# When true, the cross-server matching sweep downloads and fingerprints each
-# secondary server's tracks so matching is exact-by-content. Expensive (one
-# download per track), so off by default; matching falls back to path/metadata.
-MULTISERVER_SWEEP_FINGERPRINT = os.environ.get("MULTISERVER_SWEEP_FINGERPRINT", "false").lower() == "true"
+# The content fingerprint is the catalogue standard, not an option: every
+# analyzed track is fingerprinted (Chromaprint when its library is present,
+# otherwise a librosa chroma fingerprint with the identical 64-bit SimHash
+# pipeline), that fingerprint id IS the canonical item_id used by every index and
+# search, and each media server's own track id (including the single/default
+# server) is kept in the track_server_map table and translated back on output.
+# The cross-server matching sweep fingerprints both sides for exact matching.
+# There are deliberately no feature flags for this behaviour.
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'DATABASE_URL',
@@ -182,7 +163,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v2.6.1"
+APP_VERSION = "v3.0.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering

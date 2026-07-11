@@ -134,24 +134,8 @@ def normalize_meta(s):
     return out
 
 
-_TIERS = ('fingerprint', 'mbid', 'path', 'tail', 'exact_meta', 'norm_meta')
+_TIERS = ('path', 'tail', 'exact_meta', 'norm_meta')
 _OPT_TIER_TITLE_ARTIST = 'title_artist'
-
-
-def normalize_fingerprint(raw):
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def normalize_mbid(raw):
-    if not raw:
-        return None
-    m = str(raw).strip().lower()
-    return m or None
 
 
 def _best_artist_old(row):
@@ -219,20 +203,12 @@ def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
     if allow_title_artist_only:
         tiers.append(_OPT_TIER_TITLE_ARTIST)
 
-    by_fingerprint = {}
-    by_mbid = {}
     by_norm_path = {}
     by_tail = {}
     by_exact_meta = {}
     by_norm_meta = {}
     by_title_artist = {}
     for n in new_tracks:
-        fp = normalize_fingerprint(n.get('fingerprint'))
-        if fp is not None and fp not in by_fingerprint:
-            by_fingerprint[fp] = n['id']
-        mb = normalize_mbid(n.get('mbid'))
-        if mb and mb not in by_mbid:
-            by_mbid[mb] = n['id']
         np = normalize_path(n.get('path'))
         if np and np not in by_norm_path:
             by_norm_path[np] = n['id']
@@ -266,16 +242,6 @@ def match_tracks(old_rows, new_tracks, allow_title_artist_only=False):
     proposals = []
     for old in old_rows:
         matched = False
-        fp = normalize_fingerprint(old.get('fingerprint'))
-        if fp is not None and fp in by_fingerprint:
-            proposals.append(('fingerprint', old, by_fingerprint[fp]))
-            matched = True
-            continue
-        mb = normalize_mbid(old.get('mbid'))
-        if mb and mb in by_mbid:
-            proposals.append(('mbid', old, by_mbid[mb]))
-            matched = True
-            continue
         np = normalize_path(old.get('file_path'))
         if np and np in by_norm_path:
             proposals.append(('path', old, by_norm_path[np]))

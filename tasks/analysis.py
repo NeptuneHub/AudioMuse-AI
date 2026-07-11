@@ -33,8 +33,6 @@ import gc
 import platform
 
 import librosa
-import config
-from . import audio_fingerprint
 import onnxruntime as ort  # noqa: F401  re-exported: tests patch `tasks.analysis.ort.InferenceSession`
 
 from rq import get_current_job, Retry
@@ -286,11 +284,11 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         return None, None
 
 
-def rebuild_all_indexes_task():
+def rebuild_all_indexes_task(log_fn=None):
     logger.info("Starting index rebuild task (enqueued as subtask)...")
     with app.app_context():
         try:
-            _run_all_index_builds()
+            _run_all_index_builds(log_fn=log_fn)
             logger.info("OK Index rebuild task completed successfully")
             return {"status": "SUCCESS", "message": "All indexes rebuilt"}
         except Exception as e:
@@ -709,19 +707,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         )
                         logger.info(f"  - Top Moods: {top_moods}")
                         logger.info(f"  - Other Features: {other_features}")
-                        fingerprint_value = None
-                        if config.CATALOG_FINGERPRINT_ENABLED and track_audio is not None and track_sr:
-                            try:
-                                fingerprint_value = audio_fingerprint.canonical_fingerprint(
-                                    track_audio, track_sr
-                                )
-                            except Exception:
-                                logger.debug(
-                                    "Fingerprint computation failed for %s", item['Id'], exc_info=True
-                                )
                         _ah.persist_musicnn_results(
-                            item, musicnn_analysis, top_moods, musicnn_embedding, other_features,
-                            fingerprint=fingerprint_value,
+                            item, musicnn_analysis, top_moods, musicnn_embedding, other_features
                         )
 
                     _ah.persist_clap_embedding(item['Id'], clap_embedding_for_track, needs_clap)
@@ -1089,6 +1076,13 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 log_and_update_main(status_message, progress)
                 time.sleep(5)
 
+            log_and_update_main("Relabelling catalogue to content fingerprint ids...", 93)
+            try:
+                from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
+                canonicalize_fingerprinted_ids(rebuild=False)
+            except Exception:
+                logger.exception("Fingerprint canonicalization failed; catalogue keeps provider ids")
+
             log_and_update_main("Performing final index rebuild...", 95)
             try:
                 _run_all_index_builds(log_fn=log_and_update_main)
@@ -1101,39 +1095,15 @@ def run_analysis_task(num_recent_albums, top_n_moods):
                 'Analysis complete. CLAP text search uses default queries (no auto-regeneration).'
             )
 
-            if config.CATALOG_FINGERPRINT_ENABLED and config.CATALOG_FINGERPRINT_BACKFILL_PER_RUN > 0:
-                try:
-                    rq_queue_default.enqueue(
-                        'tasks.fingerprint_backfill.backfill_fingerprints',
-                        kwargs={'limit': config.CATALOG_FINGERPRINT_BACKFILL_PER_RUN},
-                        job_id=str(uuid.uuid4()),
-                        job_timeout=-1,
-                    )
-                    logger.info("Enqueued fingerprint backfill for fingerprint-less tracks.")
-                except Exception:
-                    logger.exception("Failed to enqueue fingerprint backfill.")
-
-            if config.CATALOG_FINGERPRINT_AS_ID:
-                try:
-                    rq_queue_default.enqueue(
-                        'tasks.fingerprint_canonicalize.canonicalize_fingerprinted_ids',
-                        job_id=str(uuid.uuid4()),
-                        job_timeout=-1,
-                    )
-                    logger.info("Enqueued fingerprint canonicalization of catalogue item_ids.")
-                except Exception:
-                    logger.exception("Failed to enqueue fingerprint canonicalization.")
-
-            if config.MULTI_SERVER_ENABLED:
-                try:
-                    rq_queue_default.enqueue(
-                        'tasks.multiserver_sync.sweep_all_secondary_servers',
-                        job_id=str(uuid.uuid4()),
-                        job_timeout=-1,
-                    )
-                    logger.info("Enqueued multi-server matching sweep for secondary servers.")
-                except Exception:
-                    logger.exception("Failed to enqueue multi-server matching sweep.")
+            try:
+                rq_queue_default.enqueue(
+                    'tasks.multiserver_sync.sweep_all_secondary_servers',
+                    job_id=str(uuid.uuid4()),
+                    job_timeout=-1,
+                )
+                logger.info("Enqueued multi-server matching sweep for secondary servers.")
+            except Exception:
+                logger.exception("Failed to enqueue multi-server matching sweep.")
 
             failed_count, failed_errors = get_failed_child_summary(current_task_id)
             final_message = (

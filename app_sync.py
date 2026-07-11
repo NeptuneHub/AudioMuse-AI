@@ -123,17 +123,30 @@ def sync_endpoint():
     limit = min(max(1, request.args.get('limit', _DEFAULT_LIMIT, type=int)), max_limit)
     include_embeddings = request.args.get('include_embeddings', 'true').lower() != 'false'
 
+    from app_server_context import resolve_request_server_id
+    from tasks.mediaserver import registry
+
+    try:
+        server_id = resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    server = registry.get_server(server_id) if server_id else registry.get_default_server()
+    provider_type = server['server_type'] if server else config.MEDIASERVER_TYPE
+
     ids_raw = request.args.get('ids')
     id_filter = None
     if ids_raw is not None:
-        id_filter = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
+        provider_ids = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
+        id_filter = list(registry.reverse_translate_ids(provider_ids, server_id).values())
 
     try:
         conn = get_db()
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             if manifest_mode:
-                return _manifest_page(cur, page, limit)
-            return _payload_page(cur, page, limit, include_embeddings, id_filter)
+                return _manifest_page(cur, page, limit, server_id, provider_type)
+            return _payload_page(
+                cur, page, limit, include_embeddings, id_filter, server_id, provider_type
+            )
     except Exception as e:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
@@ -146,7 +159,25 @@ def sync_endpoint():
         return jsonify(err), status
 
 
-def _manifest_page(cur, page, limit):
+def _server_ids_for_rows(rows, server_id):
+    """Canonical -> requested-server id mapping for a page of score rows.
+
+    Identity fallback covers every row on the default server (the historical
+    contract: clients receive their media server's real ids); rows the selected
+    secondary server does not have are absent and get dropped by the caller.
+    Fails open to identity so a registry problem never empties the sync feed.
+    """
+    from tasks.mediaserver import registry
+
+    ids = [r['item_id'] for r in rows]
+    try:
+        return registry.translate_ids(ids, server_id)
+    except Exception:
+        logger.exception("Sync id translation failed; returning canonical ids")
+        return {str(i): str(i) for i in ids}
+
+
+def _manifest_page(cur, page, limit, server_id, provider_type):
     cur.execute("SELECT COUNT(*) AS n FROM score", ())
     total_tracks = cur.fetchone()['n']
     offset = (page - 1) * limit
@@ -156,20 +187,25 @@ def _manifest_page(cur, page, limit):
         (limit, offset),
     )
     rows = cur.fetchall()
-    tracks = [{"id": r['item_id'], "fp": r['fp']} for r in rows]
+    server_ids = _server_ids_for_rows(rows, server_id)
+    tracks = [
+        {"id": server_ids[r['item_id']], "fp": r['fp']}
+        for r in rows
+        if r['item_id'] in server_ids
+    ]
     has_more = (offset + len(rows)) < total_tracks
     return jsonify(
         {
             "tracks": tracks,
             "total_tracks": total_tracks,
-            "provider_type": config.MEDIASERVER_TYPE,
+            "provider_type": provider_type,
             "has_more": has_more,
             "next_page": page + 1 if has_more else None,
         }
     )
 
 
-def _payload_page(cur, page, limit, include_embeddings, id_filter):
+def _payload_page(cur, page, limit, include_embeddings, id_filter, server_id, provider_type):
     clap_on = include_embeddings and config.CLAP_ENABLED
     select_extra = ""
     join_extra = ""
@@ -218,11 +254,14 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
     else:
         umap_lookup = {}
 
+    server_ids = _server_ids_for_rows(rows, server_id)
     tracks = []
     for r in rows:
+        if r['item_id'] not in server_ids:
+            continue
         ux, uy = umap_lookup.get(r['item_id'], (None, None))
         t = {
-            "id": r['item_id'],
+            "id": server_ids[r['item_id']],
             "title": r['title'],
             "artist": r['author'],
             "album_artist": r['album_artist'],
@@ -251,7 +290,7 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter):
         {
             "tracks": tracks,
             "total_tracks": total_tracks,
-            "provider_type": config.MEDIASERVER_TYPE,
+            "provider_type": provider_type,
             "has_more": has_more,
             "next_page": next_page,
         }

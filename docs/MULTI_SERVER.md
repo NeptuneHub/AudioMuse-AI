@@ -58,16 +58,35 @@ sweep for a single server from the Setup page at any time.
 
 ## Selecting a server at runtime
 
-A **Music server** dropdown appears in the menu when more than one server is
-configured. It is remembered in your browser and, when set to a non-default
-server, is sent as an optional `server=<id>` parameter on API calls.
+A **Music server** dropdown appears in the sidebar menu (under Logout) when more
+than one server is configured. It is remembered in your browser and, when set to
+a non-default server, is sent as an optional `server` parameter on API calls.
 
 There is no `v2` API. Every existing endpoint gains one optional `server`
-parameter (query string or JSON body). When it is absent, the request targets the
-default server exactly as before. When it names another server, playlist creation
-translates the selected track ids to that server and creates the playlist there,
-reporting how many tracks were unavailable. Tracks that do not exist on the target
-server are dropped rather than sent with the wrong id.
+parameter (query string or JSON body) that accepts the server's configured
+display NAME - the friendly, unique value from the setup wizard, e.g.
+`?server=Office%20Jellyfin` - or the internal id. External callers (media-server
+plugins, scripts) should use the name, or omit the parameter for the default.
+When it is absent, the request targets the default server exactly as before.
+When it names another server, similarity/search endpoints over-fetch and return
+only tracks available on it, and playlist creation translates the selected track
+ids and creates the playlist there, reporting how many tracks were unavailable.
+Tracks that do not exist on the target server are dropped rather than sent with
+the wrong id.
+
+The matching sweep reports live progress: the setup wizard's Music Servers
+section shows a progress bar and a one-line status while it runs, and the
+dashboard gains a **Music Server Status** section (visible with more than one
+server, refreshed hourly) with the matched-song count per server.
+
+External integrations follow the same rule. ``GET /api/sync`` returns each
+track under the selected server's REAL id (default server when no ``server``
+param), accepts that server's ids in ``?ids=``, and reports that server's
+``provider_type``; tracks the selected secondary server does not have are
+omitted. ``/external/get_score``, ``/external/get_embedding`` and
+``/external/search`` accept and return the selected server's ids the same way.
+``/api/waveform`` and ``/api/sonic_fingerprint/generate`` also honor ``server``
+(listening history, downloads and results come from that server).
 
 ## Registry API
 
@@ -84,31 +103,28 @@ All under `/api/servers`. Listing is available to any authenticated user
 | POST | `/api/servers/test` | Test a connection (before saving) |
 | POST | `/api/servers/<id>/sweep` | Re-run the matching sweep for one server |
 
-## Content fingerprint as the catalogue id (advanced)
+## Content id from the MusiCNN embedding
 
-By default a track's canonical `item_id` is the default server's id, and a
-content fingerprint is computed alongside it (`Audio -> Chromaprint -> 64-bit
-SimHash -> BIGINT`, exact lookup) as the cross-server match key. Real Chromaprint
-is used when its library is present, otherwise a librosa chroma fingerprint with
-the identical pipeline - so every build can fingerprint, no network calls.
+The canonical catalogue id is derived from data every analyzed track already
+has: its MusiCNN embedding. The embedding is projected onto 64 fixed, seeded
+random hyperplanes and the sign of each projection becomes one bit of a 64-bit
+SimHash-LSH value, encoded as the `fp_<hex>` item_id. Nothing is downloaded, no
+external service is contacted, and no extra column is stored - the id itself
+encodes the hash.
 
-Set `CATALOG_FINGERPRINT_AS_ID=true` to go one step further and make the
-**fingerprint itself the catalogue id**. After analysis the fingerprinted rows
-are relabelled from the media-server id to the canonical fingerprint id, the six
-similarity indexes are rebuilt, and the default server's real ids are preserved
-in `track_server_map` and translated back whenever a list or playlist is sent to
-a server. The result is a server-independent, content-deduplicated catalogue.
+Because the id comes from the stored embedding, relabelling is a pure database
+operation: a 180k-track legacy install canonicalizes in seconds. It happens
+automatically at the end of every analysis and at the start of every server
+sweep, so a legacy install is fixed either by its next analysis or the moment a
+secondary server is added - whichever comes first. The media server's real id is
+preserved in `track_server_map` (also for the default/single server) and
+translated back whenever a playlist is sent to a server. Rows analyzed without
+an embedding keep their provider id and keep working unchanged.
 
-Because this rewrites the primary key and rebuilds every index it is opt-in:
-
-- It runs automatically at the end of each analysis when the flag is on, and can
-  be triggered on demand with `POST /api/servers/canonicalize` (admin).
-- `CATALOG_FINGERPRINT_BACKFILL_PER_RUN=<n>` fingerprints up to `n` legacy rows
-  (that predate fingerprinting) per analysis run by re-downloading them.
-- `MULTISERVER_SWEEP_FINGERPRINT=true` makes the cross-server sweep download and
-  fingerprint each secondary server's tracks so matching is exact-by-content
-  (expensive - one download per track - so off by default; matching otherwise
-  uses MusicBrainz id / path / metadata tiers).
+Cross-server matching uses normalized path, path tail, and metadata tiers; in
+practice these align 99%+ of a same-library pair instantly with zero downloads.
+Secondary tracks that do not match are simply left unmapped - the default
+server's catalogue is never touched or reduced.
 
 ## Limitations to know
 

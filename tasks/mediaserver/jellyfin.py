@@ -300,7 +300,7 @@ def download_track(temp_dir, item):
             with open(local_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        logger.info(f"Downloaded '{item['Name']}' to '{local_filename}'")
+        logger.info(f"Downloaded '{item.get('Name', track_id)}' to '{local_filename}'")
         return local_filename
     except Exception:
         logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")

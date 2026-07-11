@@ -34,6 +34,26 @@ logger = logging.getLogger(__name__)
 external_bp = Blueprint('external_bp', __name__)
 
 
+def _resolve_external_id(raw_id):
+    """Resolve a caller-supplied track id to the canonical catalogue id.
+
+    External callers (media-server plugins, scripts) send THEIR server's track
+    id; the optional ``server`` parameter (unique display name or internal id)
+    says which server that is - default when absent. Canonical ids pass through
+    unchanged via the identity fallback. Raises ValueError on an unknown server.
+    """
+    from app_server_context import resolve_request_server_id
+    from tasks.mediaserver import registry
+
+    server_id = resolve_request_server_id()
+    try:
+        mapping = registry.reverse_translate_ids([raw_id], server_id)
+    except Exception:
+        logger.exception("External id resolution failed; using the id as-is")
+        return str(raw_id)
+    return mapping.get(str(raw_id))
+
+
 @external_bp.route('/get_score', methods=['GET'])
 def get_score_endpoint():
     """
@@ -65,23 +85,32 @@ def get_score_endpoint():
     # Local import to prevent circular dependency
     from app_helper import get_db
 
-    item_id = request.args.get('id')
-    if not item_id:
+    raw_id = request.args.get('id')
+    if not raw_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
 
     try:
+        try:
+            item_id = _resolve_external_id(raw_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if not item_id:
+            return jsonify({"error": f"Score not found for id: {raw_id}"}), 404
         db = get_db()
         with db.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM score WHERE item_id = %s", (item_id,))
             score_data = cur.fetchone()
 
         if score_data:
-            # Convert DictRow to a standard dictionary for consistent JSON output
-            return jsonify(dict(score_data))
+            # Convert DictRow to a standard dictionary for consistent JSON output;
+            # echo the id the caller asked with so their key keeps matching.
+            payload = dict(score_data)
+            payload['item_id'] = raw_id
+            return jsonify(payload)
         else:
-            return jsonify({"error": f"Score not found for id: {item_id}"}), 404
+            return jsonify({"error": f"Score not found for id: {raw_id}"}), 404
     except Exception as e:
-        logger.exception(f"Error fetching score for id {item_id}")
+        logger.exception(f"Error fetching score for id {raw_id}")
         err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
         return jsonify(err), status
 
@@ -113,11 +142,17 @@ def get_embedding_endpoint():
     # Local import to prevent circular dependency
     from app_helper import get_db
 
-    item_id = request.args.get('id')
-    if not item_id:
+    raw_id = request.args.get('id')
+    if not raw_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
 
     try:
+        try:
+            item_id = _resolve_external_id(raw_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if not item_id:
+            return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
         db = get_db()
         with db.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
@@ -125,15 +160,16 @@ def get_embedding_endpoint():
 
         if embedding_data:
             embedding_dict = dict(embedding_data)
+            embedding_dict['item_id'] = raw_id
             if embedding_dict.get('embedding'):
                 # The embedding is stored as BYTEA, convert it back to a list of floats
                 embedding_vector = np.frombuffer(embedding_dict['embedding'], dtype=np.float32)
                 embedding_dict['embedding'] = embedding_vector.tolist()
             return jsonify(embedding_dict)
         else:
-            return jsonify({"error": f"Embedding not found for id: {item_id}"}), 404
+            return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
     except Exception as e:
-        logger.exception(f"Error fetching embedding for id {item_id}")
+        logger.exception(f"Error fetching embedding for id {raw_id}")
         err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
         return jsonify(err), status
 
@@ -189,8 +225,27 @@ def search_tracks_endpoint():
         return jsonify({"error": "Query must be at least 1 character long"}), 400
 
     try:
+        from app_server_context import resolve_request_server_id
+        from tasks.mediaserver import registry
+
+        try:
+            server_id = resolve_request_server_id()
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         results = search_tracks_unified(search_query)
-        return jsonify(results)
+        try:
+            mapping = registry.translate_ids([r['item_id'] for r in results], server_id)
+        except Exception:
+            logger.exception("External search id translation failed; returning canonical ids")
+            return jsonify(results)
+        translated = []
+        for r in results:
+            if r['item_id'] not in mapping:
+                continue
+            row = dict(r)
+            row['item_id'] = mapping[r['item_id']]
+            translated.append(row)
+        return jsonify(translated)
     except Exception:
         logger.exception("Error during external track search")
         return jsonify({"error": "An error occurred during search."}), 500

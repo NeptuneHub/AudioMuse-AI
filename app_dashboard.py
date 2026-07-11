@@ -185,8 +185,43 @@ def _collect_task_metrics(cur):
     return recent
 
 
+def _collect_music_server_metrics(cur):
+    """Per-configured-server matched-track counts for the Music Server Status
+    section. The default server owns the whole analyzed catalogue; secondary
+    servers count their rows in track_server_map. Empty list when the registry
+    tables do not exist yet or only one server is configured upstream."""
+    servers = []
+    try:
+        if not _table_exists(cur, 'music_servers'):
+            return servers
+        total = _safe_count(cur, "SELECT COUNT(*) FROM score")
+        cur.execute(
+            "SELECT ms.name, ms.server_type, ms.is_default, ms.enabled, COALESCE(m.cnt, 0) "
+            "FROM music_servers ms LEFT JOIN "
+            "(SELECT server_id, COUNT(*) AS cnt FROM track_server_map GROUP BY server_id) m "
+            "ON m.server_id = ms.server_id "
+            "ORDER BY ms.is_default DESC, ms.name ASC"
+        )
+        for r in cur.fetchall():
+            servers.append(
+                {
+                    'name': r[0],
+                    'server_type': r[1],
+                    'is_default': bool(r[2]),
+                    'enabled': bool(r[3]),
+                    'matched_songs': total if r[2] else int(r[4] or 0),
+                    'total_songs': total,
+                }
+            )
+    except Exception as e:
+        logger.debug(f"dashboard: music server metrics failed: {e}")
+        _safe_rollback(cur)
+    return servers
+
+
 def _collect_content_metrics(cur):
     metrics = {
+        'music_servers': _collect_music_server_metrics(cur),
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _safe_count(
             cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"

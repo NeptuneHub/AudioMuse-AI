@@ -151,49 +151,33 @@ class TestRegistryPureHelpers:
         assert result == {'A': 'provA'}
 
 
-class TestMbidMatcherTier:
-    def test_mbid_matches_even_when_metadata_differs(self):
-        from tasks.provider_migration_matcher import match_tracks
-
-        old = [{
-            'item_id': 'A', 'title': 'Song', 'author': 'Art', 'album': 'Alb',
-            'file_path': '/music/x.flac', 'mbid': 'MB-123',
-        }]
-        new = [{
-            'id': 'n9', 'title': 'unrelated', 'artist': 'other', 'album': 'zzz',
-            'path': '/other/y.flac', 'mbid': 'mb-123',
-        }]
-        result = match_tracks(old, new)
-        assert result['matches'] == {'A': 'n9'}
-        assert result['match_tiers']['A'] == 'mbid'
-        assert result['tier_counts']['mbid'] == 1
-
-    def test_mbid_takes_priority_over_path(self):
+class TestMatcherTiers:
+    def test_path_is_top_tier(self):
         from tasks.provider_migration_matcher import match_tracks
 
         old = [{
             'item_id': 'A', 'title': 't', 'author': 'a', 'album': 'al',
-            'file_path': '/music/same.flac', 'mbid': 'ID1',
+            'file_path': '/music/same.flac',
         }]
         new = [
-            {'id': 'by_path', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/music/same.flac'},
-            {'id': 'by_mbid', 'title': 'x', 'artist': 'y', 'album': 'z', 'path': '/nope.flac', 'mbid': 'id1'},
+            {'id': 'by_path', 'title': 'zzz', 'artist': 'q', 'album': 'w', 'path': '/music/same.flac'},
+            {'id': 'by_meta', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/other.flac'},
         ]
         result = match_tracks(old, new)
-        assert result['matches']['A'] == 'by_mbid'
-        assert result['match_tiers']['A'] == 'mbid'
+        assert result['matches']['A'] == 'by_path'
+        assert result['match_tiers']['A'] == 'path'
 
-    def test_absent_mbid_falls_back_to_existing_tiers(self):
+    def test_metadata_fallback_when_paths_differ(self):
         from tasks.provider_migration_matcher import match_tracks
 
         old = [{
             'item_id': 'A', 'title': 't', 'author': 'a', 'album': 'al',
-            'file_path': '/music/same.flac', 'mbid': None,
+            'file_path': '/jellyfin/x.flac',
         }]
-        new = [{'id': 'n1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/music/same.flac'}]
+        new = [{'id': 'n1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/navidrome/y.flac'}]
         result = match_tracks(old, new)
         assert result['matches'] == {'A': 'n1'}
-        assert result['match_tiers']['A'] == 'path'
+        assert result['match_tiers']['A'] == 'exact_meta'
 
 
 class TestBoundServer:
@@ -205,7 +189,7 @@ class TestBoundServer:
             'server_id': 's2', 'server_type': 'plex',
             'creds': {'url': 'u', 'token': 't'}, 'music_libraries': 'lib',
         }
-        monkeypatch.setattr(registry, 'context_for', lambda sid: fake_ctx)
+        monkeypatch.setattr(registry, 'context_for', lambda sid, conn=None: fake_ctx)
 
         captured = {}
 
@@ -224,7 +208,7 @@ class TestBoundServer:
         from tasks import mediaserver
         from tasks.mediaserver import registry, context
 
-        monkeypatch.setattr(registry, 'context_for', lambda sid: None)
+        monkeypatch.setattr(registry, 'context_for', lambda sid, conn=None: None)
         captured = {}
 
         def fake_get_all_songs(user_creds=None, provider_type=None, apply_filter=True):
@@ -240,10 +224,8 @@ class TestBoundServer:
 
 class TestFingerprintAsId:
     def test_default_translates_via_map_with_identity_fallback(self, monkeypatch):
-        import config
         from tasks.mediaserver import registry
 
-        monkeypatch.setattr(config, 'CATALOG_FINGERPRINT_AS_ID', True, raising=False)
         monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
         cursor = MagicMock()
         cursor.fetchall.return_value = [('fp_1', 'prov1')]
@@ -252,50 +234,184 @@ class TestFingerprintAsId:
         result = registry.translate_ids(['fp_1', 'raw2'], None, conn=conn)
         assert result == {'fp_1': 'prov1', 'raw2': 'raw2'}
 
-    def test_default_identity_when_flag_off(self, monkeypatch):
-        import config
+    def test_default_identity_when_no_default_server(self, monkeypatch):
         from tasks.mediaserver import registry
 
-        monkeypatch.setattr(config, 'CATALOG_FINGERPRINT_AS_ID', False, raising=False)
-        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: None)
         conn = MagicMock()
         assert registry.translate_ids(['a', 'b'], None, conn=conn) == {'a': 'a', 'b': 'b'}
 
-    def test_needs_translation(self, monkeypatch):
-        import config
+    def test_needs_translation_always_true(self):
         import app_server_context as asc
-        from tasks.mediaserver import registry
 
-        monkeypatch.setattr(registry, 'get_default_server_id', lambda conn=None: 'def')
-        monkeypatch.setattr(config, 'CATALOG_FINGERPRINT_AS_ID', False, raising=False)
-        assert asc.needs_translation(None) is False
-        assert asc.needs_translation('def') is False
-        assert asc.needs_translation('sec') is True
-        monkeypatch.setattr(config, 'CATALOG_FINGERPRINT_AS_ID', True, raising=False)
         assert asc.needs_translation(None) is True
         assert asc.needs_translation('def') is True
+        assert asc.needs_translation('sec') is True
 
 
-class TestResolveRequestServer:
-    def _flask_app(self):
-        from flask import Flask
-        return Flask(__name__)
+class TestReverseTranslation:
+    def test_default_maps_known_and_falls_back_to_identity(self, monkeypatch):
+        from tasks.mediaserver import registry
 
-    def test_reads_query_and_body_and_validates(self, monkeypatch):
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [('jelly1', 'fp_1')]
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        result = registry.reverse_translate_ids(['jelly1', 'legacy2'], None, conn=conn)
+        assert result == {'jelly1': 'fp_1', 'legacy2': 'legacy2'}
+
+    def test_secondary_drops_unknown(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [('nav1', 'fp_1')]
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        result = registry.reverse_translate_ids(['nav1', 'ghost'], 'sec', conn=conn)
+        assert result == {'nav1': 'fp_1'}
+
+
+class TestSingleTranslationPoint:
+    def test_dispatcher_translates_once_for_bound_server(self, monkeypatch):
+        from tasks import mediaserver
+        from tasks.mediaserver import registry
+
+        calls = {}
+
+        class FakeProvider:
+            @staticmethod
+            def create_instant_playlist(name, ids, creds=None):
+                calls['ids'] = list(ids)
+                return {'Id': 'p1'}
+
+        monkeypatch.setattr(mediaserver, '_provider', lambda provider_type=None: FakeProvider)
+        seen = []
+
+        def fake_translate(ids, sid, conn=None):
+            seen.append(sid)
+            return {'fp_a': 'nav1'}
+
+        monkeypatch.setattr(registry, 'translate_ids', fake_translate)
+        ctx = {'server_id': 'sec', 'server_type': 'navidrome', 'creds': {'url': 'u'}, 'music_libraries': ''}
+        with mediaserver.use_server(ctx):
+            result = mediaserver.create_instant_playlist('P', ['fp_a', 'fp_b'])
+        assert result == {'Id': 'p1'}
+        assert calls['ids'] == ['nav1']
+        assert seen == ['sec']
+
+    def test_endpoint_helper_passes_untranslated_ids_to_dispatcher(self, monkeypatch):
         import app_server_context as asc
+        from tasks import mediaserver
         from tasks.mediaserver import registry
 
         monkeypatch.setattr(
-            registry, 'get_server',
-            lambda sid, conn=None: {'server_id': sid} if sid == 'known' else None,
+            registry, 'translate_ids', lambda ids, sid, conn=None: {'fp_a': 'nav1'}
         )
-        app = self._flask_app()
-        with app.test_request_context('/api/create_playlist?server=known'):
-            assert asc.resolve_request_server_id() == 'known'
-        with app.test_request_context('/api/create_playlist'):
-            assert asc.resolve_request_server_id({'server': 'known'}) == 'known'
-        with app.test_request_context('/api/create_playlist'):
-            assert asc.resolve_request_server_id() is None
-        with app.test_request_context('/api/create_playlist?server=ghost'):
-            with pytest.raises(ValueError):
-                asc.resolve_request_server_id()
+        captured = {}
+
+        class Bound:
+            def create_instant_playlist(self, name, ids, creds=None):
+                captured['ids'] = list(ids)
+                return {'Id': 'p9'}
+
+        monkeypatch.setattr(mediaserver, 'for_server', lambda sid, conn=None: Bound())
+        info = asc.create_instant_playlist_for_server('P', ['fp_a', 'fp_b'], 'sec')
+        assert captured['ids'] == ['fp_a', 'fp_b']
+        assert info['mapped'] == 1
+        assert info['skipped'] == 1
+        assert info['result'] == {'Id': 'p9'}
+
+    def test_no_available_tracks_raises(self, monkeypatch):
+        import app_server_context as asc
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'translate_ids', lambda ids, sid, conn=None: {})
+        with pytest.raises(ValueError):
+            asc.create_instant_playlist_for_server('P', ['fp_a'], 'sec')
+
+
+class TestEmbeddingCanonicalization:
+    def test_builds_canonical_ids_from_stored_embeddings(self):
+        import numpy as np
+        from tasks import audio_fingerprint as afp
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        emb = np.random.RandomState(11).standard_normal(200).astype(np.float32)
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [
+            [('legacy-provider-id', emb.tobytes())],
+            [],
+        ]
+        mapping, duplicates = canonicalize._build_mapping(cursor)
+        assert mapping == {'legacy-provider-id': afp.embedding_canonical_id(emb)}
+        assert duplicates == 0
+
+    def test_duplicate_embeddings_keep_one_canonical_row(self):
+        import numpy as np
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        emb = np.random.RandomState(12).standard_normal(200).astype(np.float32)
+        cursor = MagicMock()
+        cursor.fetchall.side_effect = [
+            [('copy-one', emb.tobytes()), ('copy-two', emb.tobytes())],
+            [],
+        ]
+        mapping, duplicates = canonicalize._build_mapping(cursor)
+        assert list(mapping.keys()) == ['copy-one']
+        assert duplicates == 1
+
+    def test_preserves_recovered_default_provider_id(self):
+        from tasks.fingerprint_canonicalize import _default_provider_ids
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [('legacy-score-id', 'current-jellyfin-id')]
+
+        result = _default_provider_ids(cursor, 'default-server', {'legacy-score-id': 'fp_hash'})
+
+        assert result == {'legacy-score-id': 'current-jellyfin-id'}
+
+
+class TestSweepAlignment:
+    def test_aligned_server_is_noop_without_fetch(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 5)
+        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: [])
+        fetched = []
+        monkeypatch.setattr(
+            sync.provider_probe, 'fetch_all_tracks',
+            lambda *a: fetched.append(1) or [],
+        )
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+        )
+        assert summary['aligned'] is True
+        assert fetched == []
+
+    def test_unmapped_rows_matched_and_written(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        rows = [{
+            'item_id': 'fp_1', 'title': 't', 'author': 'a', 'album': 'al',
+            'album_artist': 'a', 'file_path': '/x.flac',
+        }]
+        target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: rows)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a: target)
+        written = {}
+        monkeypatch.setattr(
+            sync, '_write_matches',
+            lambda db, sid, result: written.update(result['matches']) or len(result['matches']),
+        )
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+        )
+        assert summary['matched'] == 1
+        assert written == {'fp_1': 'nav1'}
+

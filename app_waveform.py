@@ -239,6 +239,20 @@ def get_waveform_endpoint():
 
     title, author = track_info
 
+    # The catalogue id is canonical; resolve the requested (or default) server and
+    # its real track id before touching the media server.
+    from app_server_context import resolve_request_server_id
+    from tasks.mediaserver import context as ms_context, registry as ms_registry
+
+    try:
+        server_id = resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    provider_id = ms_registry.translate_ids([item_id], server_id).get(str(item_id))
+    if not provider_id:
+        return jsonify({"error": "Track is not available on the selected server"}), 404
+    server_ctx = ms_registry.context_for(server_id)
+
     # Download the track to a temporary location
     temp_file = None
     temp_dir = None
@@ -251,53 +265,56 @@ def get_waveform_endpoint():
         from tasks.mediaserver import download_track
 
         # For better compatibility, we need to fetch the full track details from the media server
-        # This ensures we have all the metadata needed for proper file extension detection
-        if MEDIASERVER_TYPE == "navidrome":
-            # Import Navidrome-specific function to get full song details
-            from tasks.mediaserver.navidrome import _navidrome_request
+        # This ensures we have all the metadata needed for proper file extension detection.
+        # Everything below runs bound to the resolved server (default when no param),
+        # using its real track id.
+        with ms_context.use_server(server_ctx):
+            if ms_context.active_type(MEDIASERVER_TYPE) == "navidrome":
+                # Import Navidrome-specific function to get full song details
+                from tasks.mediaserver.navidrome import _navidrome_request
 
-            song_response = _navidrome_request("getSong", {"id": item_id})
-            if song_response and "song" in song_response:
-                item = song_response["song"]
-                # Navidrome may provide 'suffix' field which is the file extension
-                if 'suffix' in item and item['suffix']:
-                    # Ensure we have the proper extension for soundfile to recognize
-                    item['path'] = f"dummy.{item['suffix']}"
-                elif 'contentType' in item:
-                    # Map MIME type to extension
-                    mime_to_ext = {
-                        'audio/mpeg': '.mp3',
-                        'audio/mp4': '.m4a',
-                        'audio/flac': '.flac',
-                        'audio/ogg': '.ogg',
-                        'audio/opus': '.opus',
-                        'audio/x-wav': '.wav',
-                        'audio/wav': '.wav',
-                    }
-                    item['path'] = mime_to_ext.get(item['contentType'], '.mp3')
+                song_response = _navidrome_request("getSong", {"id": provider_id})
+                if song_response and "song" in song_response:
+                    item = song_response["song"]
+                    # Navidrome may provide 'suffix' field which is the file extension
+                    if 'suffix' in item and item['suffix']:
+                        # Ensure we have the proper extension for soundfile to recognize
+                        item['path'] = f"dummy.{item['suffix']}"
+                    elif 'contentType' in item:
+                        # Map MIME type to extension
+                        mime_to_ext = {
+                            'audio/mpeg': '.mp3',
+                            'audio/mp4': '.m4a',
+                            'audio/flac': '.flac',
+                            'audio/ogg': '.ogg',
+                            'audio/opus': '.opus',
+                            'audio/x-wav': '.wav',
+                            'audio/wav': '.wav',
+                        }
+                        item['path'] = mime_to_ext.get(item['contentType'], '.mp3')
+                else:
+                    return jsonify({"error": "Failed to fetch track details from Navidrome"}), 404
             else:
-                return jsonify({"error": "Failed to fetch track details from Navidrome"}), 404
-        else:
-            # Create a minimal item dict with the item_id for other media servers
-            # The download_track function will handle the specifics for each media server type
-            item = {
-                'Id': item_id,  # Jellyfin/Emby format
-                'id': item_id,  # Navidrome/Lyrion format
-                'Name': title,
-                'Path': '',  # Will be fetched by download_track if needed
-            }
+                # Create a minimal item dict with the provider id for other media servers
+                # The download_track function will handle the specifics for each media server type
+                item = {
+                    'Id': provider_id,  # Jellyfin/Emby format
+                    'id': provider_id,  # Navidrome/Lyrion format
+                    'Name': title,
+                    'Path': '',  # Will be fetched by download_track if needed
+                }
 
-        fetch_time = time.time() - start_time
-        logger.info(f"Fetched track metadata in {fetch_time:.2f}s")
+            fetch_time = time.time() - start_time
+            logger.info(f"Fetched track metadata in {fetch_time:.2f}s")
 
-        # Create a temporary directory for this download
-        temp_dir = tempfile.mkdtemp(prefix='waveform_')
+            # Create a temporary directory for this download
+            temp_dir = tempfile.mkdtemp(prefix='waveform_')
 
-        # Download the track
-        download_start = time.time()
-        temp_file = download_track(temp_dir, item)
-        download_time = time.time() - download_start
-        logger.info(f"Downloaded track in {download_time:.2f}s")
+            # Download the track
+            download_start = time.time()
+            temp_file = download_track(temp_dir, item)
+            download_time = time.time() - download_start
+            logger.info(f"Downloaded track in {download_time:.2f}s")
 
         if not temp_file or not os.path.exists(temp_file):
             body = {

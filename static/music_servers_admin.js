@@ -101,6 +101,73 @@
         });
     }
 
+    function clearLibraryBoxes() {
+        var boxes = el('ms-libraries-boxes');
+        boxes.innerHTML = '';
+        boxes.style.display = 'none';
+    }
+
+    function syncLibraryBoxesToInput() {
+        var boxes = el('ms-libraries-boxes');
+        var all = boxes.querySelector('input[data-lib-all]');
+        var picks = [];
+        boxes.querySelectorAll('input[data-lib-name]').forEach(function (cb) {
+            cb.disabled = !!(all && all.checked);
+            if (cb.checked) { picks.push(cb.getAttribute('data-lib-name')); }
+        });
+        el('ms-libraries').value = (all && all.checked) ? '' : picks.join(',');
+    }
+
+    function renderLibraryBoxes(libraries) {
+        var boxes = el('ms-libraries-boxes');
+        boxes.innerHTML = '';
+        if (!Array.isArray(libraries) || !libraries.length) {
+            clearLibraryBoxes();
+            return;
+        }
+        var title = document.createElement('label');
+        title.textContent = 'Music libraries to use';
+        boxes.appendChild(title);
+        var selected = el('ms-libraries').value.split(',')
+            .map(function (s) { return s.trim().toLowerCase(); })
+            .filter(function (s) { return s; });
+        function row(labelText, attrs, checked) {
+            var label = document.createElement('label');
+            label.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            Object.keys(attrs).forEach(function (k) { cb.setAttribute(k, attrs[k]); });
+            cb.checked = checked;
+            cb.addEventListener('change', syncLibraryBoxesToInput);
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(labelText));
+            return label;
+        }
+        boxes.appendChild(row('No restriction (use all libraries)', { 'data-lib-all': '1' }, selected.length === 0));
+        libraries.forEach(function (lib) {
+            var name = lib.name || lib;
+            boxes.appendChild(row(name, { 'data-lib-name': name }, selected.indexOf(String(name).toLowerCase()) !== -1));
+        });
+        boxes.style.display = 'flex';
+        syncLibraryBoxesToInput();
+    }
+
+    function loadLibrariesIntoForm() {
+        var editing = !!el('ms-edit-id').value;
+        var payload = { server_type: currentType(), creds: collectCreds(editing) };
+        if (editing) { payload.server_id = el('ms-edit-id').value; }
+        jsonPost('/api/servers/libraries', payload)
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+                if (d && Array.isArray(d.libraries) && d.libraries.length) {
+                    renderLibraryBoxes(d.libraries);
+                } else {
+                    clearLibraryBoxes();
+                }
+            })
+            .catch(function () { clearLibraryBoxes(); });
+    }
+
     function collectCreds(editing) {
         var creds = {};
         var fields = CRED_FIELDS[currentType()] || [];
@@ -125,6 +192,7 @@
         el('ms-make-default').parentElement.style.display = '';
         el('music-server-form-title').textContent = 'Add a server';
         feedback(el('ms-feedback'), '', true);
+        clearLibraryBoxes();
         renderCredFields(null, false);
     }
 
@@ -142,8 +210,10 @@
         el('ms-make-default').parentElement.style.display = 'none';
         el('music-server-form-title').textContent = 'Edit ' + server.name;
         feedback(el('ms-feedback'), '', true);
+        clearLibraryBoxes();
         renderCredFields(server.creds, true);
         showRegistryForm();
+        loadLibrariesIntoForm();
     }
 
     function actionButton(text, handler) {
@@ -177,12 +247,12 @@
             tr.appendChild(cell(s.enabled ? 'yes' : 'no', true));
 
             var actions = document.createElement('div');
+            actions.style.whiteSpace = 'nowrap';
             if (s.is_default) {
                 actions.appendChild(actionButton('Edit', showDefaultEditor));
             } else {
                 actions.appendChild(actionButton('Edit', function () { startEditSecondary(s); }));
                 actions.appendChild(actionButton('Set default', function () { setDefault(s.server_id); }));
-                actions.appendChild(actionButton('Sweep', function () { sweep(s.server_id); }));
                 actions.appendChild(actionButton('Delete', function () { removeServer(s); }));
             }
             tr.appendChild(cell(actions));
@@ -190,10 +260,71 @@
         });
     }
 
+    var sweepTimer = null;
+    var currentSweepTaskId = null;
+    var ACTIVE_STATES = ['PENDING', 'STARTED', 'PROGRESS', 'queued', 'started', 'deferred', 'scheduled'];
+
+    function renderSweepProgress(pct, message, active, failed) {
+        var box = el('sweep-progress');
+        if (!box) { return; }
+        box.style.display = 'block';
+        el('sweep-progress-bar').style.width = Math.max(0, Math.min(100, pct)) + '%';
+        el('sweep-progress-bar').style.background = failed ? '#c0392b' : '#4a90d9';
+        el('sweep-progress-pct').textContent = Math.round(pct) + '%';
+        el('sweep-progress-text').textContent = message || (active ? 'Working...' : '');
+        el('sweep-cancel-btn').style.display = active ? '' : 'none';
+    }
+
+    function stopSweepPolling() {
+        if (sweepTimer) {
+            clearInterval(sweepTimer);
+            sweepTimer = null;
+        }
+        currentSweepTaskId = null;
+        var btn = el('sweep-cancel-btn');
+        if (btn) { btn.style.display = 'none'; }
+    }
+
+    function pollSweep(taskId) {
+        if (!taskId) { return; }
+        stopSweepPolling();
+        currentSweepTaskId = taskId;
+        function tick() {
+            fetch('/api/status/' + encodeURIComponent(taskId), { headers: { 'Accept': 'application/json' } })
+                .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+                .then(function (d) {
+                    var msg = (d.details && (d.details.status_message || d.details.message)) || d.status_message || d.state || '';
+                    var state = d.state || '';
+                    var terminal = ['SUCCESS', 'FAILURE', 'REVOKED', 'finished', 'failed', 'canceled'].indexOf(state) !== -1;
+                    var failed = state === 'FAILURE' || state === 'failed';
+                    renderSweepProgress(terminal ? 100 : (d.progress || 0), msg, !terminal, failed);
+                    if (terminal) {
+                        stopSweepPolling();
+                        loadServers();
+                    }
+                })
+                .catch(function () { stopSweepPolling(); });
+        }
+        tick();
+        sweepTimer = setInterval(tick, 3000);
+    }
+
+    function maybeResumeSweep(data) {
+        var t = data && data.sweep_task;
+        if (!t || !t.task_id) { return; }
+        if (ACTIVE_STATES.indexOf(t.status) !== -1) {
+            renderSweepProgress(t.progress || 0, t.message || 'Sweep in progress...', true, false);
+            pollSweep(t.task_id);
+        }
+    }
+
     function loadServers() {
         fetch('/api/servers', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
-            .then(renderTable)
+            .then(function (data) {
+                renderTable(data);
+                maybeResumeSweep(data);
+            })
             .catch(function () {
                 feedback(el('music-servers-error'), 'Could not load servers.', false);
             });
@@ -231,6 +362,10 @@
                 hideRegistryForm();
                 resetForm();
                 loadServers();
+                if (res.d && res.d.sweep_task_id) {
+                    renderSweepProgress(0, 'Matching sweep queued...', true, false);
+                    pollSweep(res.d.sweep_task_id);
+                }
             })
             .catch(function () { feedback(el('ms-feedback'), 'Save failed.', false); });
     }
@@ -245,6 +380,7 @@
             .then(function (d) {
                 if (d.ok) {
                     feedback(el('ms-feedback'), 'Connection OK (' + (d.sample_count || 0) + ' sample tracks).', true);
+                    loadLibrariesIntoForm();
                 } else {
                     feedback(el('ms-feedback'), 'Failed: ' + (d.error || 'unknown error'), false);
                 }
@@ -257,11 +393,14 @@
             .then(function () { loadServers(); });
     }
 
-    function sweep(serverId) {
-        jsonPost('/api/servers/' + encodeURIComponent(serverId) + '/sweep')
+    function alignServers() {
+        jsonPost('/api/servers/align')
             .then(function (r) { return r.json(); })
-            .then(function () {
-                feedback(el('music-servers-error'), 'Matching sweep started for this server.', true);
+            .then(function (d) {
+                if (d && d.task_id) {
+                    renderSweepProgress(0, 'Music server alignment queued...', true, false);
+                    pollSweep(d.task_id);
+                }
             });
     }
 
@@ -281,9 +420,21 @@
     }
 
     el('ms-type').addEventListener('change', function () {
+        clearLibraryBoxes();
         renderCredFields(null, !!el('ms-edit-id').value);
     });
+    el('sweep-cancel-btn').addEventListener('click', function () {
+        if (!currentSweepTaskId) { return; }
+        if (!window.confirm('Cancel the running background task? Only one batch task runs at a time, so this stops whatever is currently running.')) {
+            return;
+        }
+        jsonPost('/api/cancel/' + encodeURIComponent(currentSweepTaskId))
+            .then(function () {
+                el('sweep-progress-text').textContent = 'Cancelling...';
+            });
+    });
     el('ms-add-btn').addEventListener('click', startAdd);
+    el('ms-align-btn').addEventListener('click', alignServers);
     el('ms-save-btn').addEventListener('click', save);
     el('ms-test-btn').addEventListener('click', test);
     el('ms-cancel-btn').addEventListener('click', hideRegistryForm);

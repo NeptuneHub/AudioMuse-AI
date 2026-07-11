@@ -218,6 +218,28 @@
         <div class="dash-grid" id="key-numbers"></div>
     </section>
 
+    <!-- Music Server Status (only when more than one server is configured) -->
+    <section id="music-server-status-section" style="display:none;">
+        <h2>Music Server Status
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">How many analyzed songs are matched (playable) on each configured music server. The default server owns the analyzed catalogue; the other servers are filled in by the background matching sweep.</span>
+            </span>
+        </h2>
+        <p class="muted dash-updated" id="music-servers-updated">Loading…</p>
+        <div class="dash-table-wrap">
+            <table class="dash-table" id="music-servers-status-table">
+                <thead><tr>
+                    <th>Server</th>
+                    <th class="col-medium">Type</th>
+                    <th class="col-narrow">Default</th>
+                    <th>Matched Songs</th>
+                </tr></thead>
+                <tbody><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+            </table>
+        </div>
+    </section>
+
     <!-- Workers -->
     <section>
         <h2>Queue Workers
@@ -661,6 +683,48 @@
         });
     }
 
+    function renderMusicServers(servers) {
+        const section = document.getElementById('music-server-status-section');
+        if (!section) return;
+        if (!Array.isArray(servers) || servers.length < 2) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = '';
+        const tbody = document.querySelector('#music-servers-status-table tbody');
+        tbody.innerHTML = '';
+        servers.forEach(s => {
+            const tr = document.createElement('tr');
+            const total = s.total_songs || 0;
+            const matched = s.matched_songs || 0;
+            const pct = total ? Math.round(100 * matched / total) : 0;
+            const nameTd = document.createElement('td');
+            nameTd.textContent = s.name + (s.enabled ? '' : ' [disabled]');
+            const typeTd = document.createElement('td');
+            typeTd.textContent = s.server_type;
+            const defTd = document.createElement('td');
+            defTd.textContent = s.is_default ? 'yes' : '';
+            const matchTd = document.createElement('td');
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex; align-items:center; gap:0.5rem;';
+            const barOuter = document.createElement('div');
+            barOuter.style.cssText = 'flex:1; max-width:160px; height:10px; border-radius:5px; background:rgba(128,128,128,0.25); overflow:hidden;';
+            const barInner = document.createElement('div');
+            barInner.style.cssText = 'height:100%; width:' + pct + '%; background:var(--color-primary, #4a90d9);';
+            barOuter.appendChild(barInner);
+            const label = document.createElement('span');
+            label.textContent = matched.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + pct + '%)';
+            wrap.appendChild(barOuter);
+            wrap.appendChild(label);
+            matchTd.appendChild(wrap);
+            tr.appendChild(nameTd);
+            tr.appendChild(typeTd);
+            tr.appendChild(defTd);
+            tr.appendChild(matchTd);
+            tbody.appendChild(tr);
+        });
+    }
+
     async function loadDashboard() {
         try {
             const res = await fetch('/api/dashboard/summary', { credentials: 'same-origin' });
@@ -672,6 +736,7 @@
             renderTopGenre((d.content || {}).top_genre);
             renderMoodsCoverage((d.content || {}).moods_coverage);
             renderTempo((d.content || {}).tempo_profile);
+            renderMusicServers((d.content || {}).music_servers);
             renderCron(d.cron);
 
             // Per-section "updated at" captions.
@@ -688,6 +753,10 @@
             const liveSuffix = liveStamp
                 ? 'Last updated: ' + liveStamp + ' (auto-refresh every 30s)'
                 : '';
+            setText('music-servers-updated',
+                libStamp
+                    ? 'As of: ' + libStamp + ' (refreshed hourly)'
+                    : 'Still collecting…');
             setText('workers-updated', liveSuffix);
             setText('recent-updated', liveSuffix);
             setText('cron-updated', liveSuffix);

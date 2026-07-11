@@ -180,8 +180,17 @@ def generate_sonic_fingerprint_endpoint():
             except (ValueError, TypeError):
                 return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
 
+        from app_server_context import resolve_request_server_id, is_default_server, scope_results
+        from tasks.mediaserver import context as ms_context, registry as ms_registry
+
+        try:
+            server_id = resolve_request_server_id(data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        use_default = is_default_server(server_id)
+
         user_creds = {}
-        if MEDIASERVER_TYPE == 'jellyfin':
+        if use_default and MEDIASERVER_TYPE == 'jellyfin':
             user_identifier = data.get('jellyfin_user_identifier')
             if not user_identifier:
                 return jsonify({"error": "Jellyfin User Identifier is required."}), 400
@@ -206,7 +215,7 @@ def generate_sonic_fingerprint_endpoint():
             user_creds['user_id'] = resolved_user_id
             user_creds['token'] = token
 
-        elif MEDIASERVER_TYPE == 'navidrome':
+        elif use_default and MEDIASERVER_TYPE == 'navidrome':
             user_creds['user'] = data.get('navidrome_user') or NAVIDROME_USER
             user_creds['password'] = data.get('navidrome_password') or NAVIDROME_PASSWORD
             if not user_creds['user'] or not user_creds['password']:
@@ -216,9 +225,10 @@ def generate_sonic_fingerprint_endpoint():
                     }
                 ), 400
 
-        fingerprint_results = generate_sonic_fingerprint(
-            num_neighbors=num_results, user_creds=user_creds
-        )
+        with ms_context.use_server(ms_registry.context_for(server_id)):
+            fingerprint_results = generate_sonic_fingerprint(
+                num_neighbors=num_results, user_creds=user_creds
+            )
 
         if not fingerprint_results:
             return jsonify([])
@@ -226,6 +236,7 @@ def generate_sonic_fingerprint_endpoint():
         final_results = serialize_neighbor_results(
             fingerprint_results, missing_album=None, include_album_artist=False
         )
+        final_results = scope_results(final_results, num_results, id_key='item_id')
         return jsonify(final_results)
     except Exception:
         logger.exception("Error in sonic_fingerprint endpoint")

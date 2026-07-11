@@ -43,7 +43,16 @@ def generate_sonic_fingerprint(num_neighbors=None, user_creds=None):
         logger.warning("No top played songs found. Cannot generate sonic fingerprint.")
         return []
 
-    top_song_ids = [str(song['Id']) for song in top_songs]
+    provider_ids = [str(song['Id']) for song in top_songs]
+    from .mediaserver import context as ms_context
+    from .mediaserver.registry import reverse_translate_ids
+    try:
+        top_song_ids = list(
+            reverse_translate_ids(provider_ids, ms_context.active_server_id()).values()
+        )
+    except Exception:
+        logger.exception("Top-played id translation failed; using provider ids as-is")
+        top_song_ids = provider_ids
     logger.info(f"Found {len(top_song_ids)} top played songs to create fingerprint from.")
     logger.debug(f"Top played song IDs: {top_song_ids[:5]}...")
 

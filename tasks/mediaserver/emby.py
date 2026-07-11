@@ -143,11 +143,8 @@ def _emby_user_id(user_creds=None):
 
 
 def _emby_headers_from_creds(user_creds=None):
-    headers = dict(config.HEADERS or {})
     token = _emby_token(user_creds)
-    if token:
-        headers['X-Emby-Token'] = token
-    return headers
+    return {'X-Emby-Token': token} if token else {}
 
 
 def _emby_get_users(token):
@@ -550,7 +547,7 @@ def download_track(temp_dir, item):
             with open(local_filename, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
-        logger.info(f"Downloaded '{item['Name']}' to '{local_filename}'")
+        logger.info(f"Downloaded '{item.get('Name', track_id)}' to '{local_filename}'")
         return local_filename
     except Exception:
         logger.exception(f"Failed to download track {item.get('Name', 'Unknown')}")
@@ -935,8 +932,8 @@ def _get_playlist_entry_ids(playlist_id, user_id, headers):
 
 def get_playlist_track_ids(playlist_id, user_creds=None):
     user_creds = context.active_creds(user_creds)
-    user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
-    headers = {"X-Emby-Token": user_creds.get('token')} if user_creds else config.HEADERS
+    user_id = _emby_user_id(user_creds)
+    headers = _emby_headers_from_creds(user_creds)
     items = _fetch_playlist_items(playlist_id, user_id, headers)
     if not items:
         return []

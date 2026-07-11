@@ -701,11 +701,22 @@ def create_media_server_playlist():
     try:
         if needs_translation(server_id):
             try:
-                info = create_instant_playlist_for_server(playlist_name, final_track_ids, server_id)
+                info = create_instant_playlist_for_server(
+                    playlist_name, final_track_ids, server_id, user_creds=user_creds
+                )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
             result = info['result']
             new_playlist_id = result.get('Id') if isinstance(result, dict) else result
+            if not new_playlist_id:
+                logger.error(
+                    "Playlist '%s' was not created on server %s: the media server "
+                    "returned no playlist (see worker/container logs)",
+                    playlist_name, server_id,
+                )
+                return jsonify(
+                    {"error": "The media server did not create the playlist; check container logs."}
+                ), 502
             logger.info(
                 f"Created playlist '{playlist_name}' on server {server_id} "
                 f"({info['mapped']} mapped, {info['skipped']} unavailable)."

@@ -181,9 +181,10 @@
     <form id="setup-form" autocomplete="off">
         <section class="section" id="music-servers-section">
                 <h2>Music Servers</h2>
-                <p class="subtitle" style="margin-top:-0.5rem;">Manage every media server AudioMuse-AI connects to. One is the default - analysis always runs against it. Add more to use several servers at once (a Navidrome, multiple Jellyfins, Plex, and so on); playlists and searches then target whichever server you pick from the menu. A track that does not exist on the selected server is skipped, since you may not have the same songs everywhere.</p>
-                <div id="music-servers-panel">
-                    <table id="music-servers-table" style="width:100%; border-collapse:collapse;">
+                <p class="subtitle" style="margin-top:0.75rem;">Connect one or more media servers (Jellyfin, Emby, Navidrome, Lyrion, Plex, even several of the same type). Analysis always runs on the default server, then its results are aligned track by track to the other servers, so nothing is analyzed twice. Use the server switcher at the bottom of the menu to pick which server the interface works against: playlists and searches then target that server, and tracks it does not have are skipped. Songs that exist only on a non-default server are never analyzed, so make your most complete library the default.</p>
+                <div id="music-servers-panel" style="max-width:100%;">
+                    <div style="overflow-x:auto; max-width:100%; -webkit-overflow-scrolling:touch;">
+                    <table id="music-servers-table" style="width:100%; border-collapse:collapse; min-width:480px;">
                         <thead>
                             <tr>
                                 <th style="text-align:left; padding:0.35rem;">Name</th>
@@ -195,11 +196,23 @@
                         </thead>
                         <tbody id="music-servers-tbody"></tbody>
                     </table>
+                    </div>
                     <p id="music-servers-empty" style="display:none; opacity:0.8;">No servers configured yet.</p>
                     <p id="music-servers-error" class="inline-feedback" style="display:none;"></p>
+                    <div id="sweep-progress" style="display:none; margin-top:0.75rem;">
+                        <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <div style="flex:1; background:rgba(128,128,128,0.25); border-radius:6px; height:14px; overflow:hidden;">
+                                <div id="sweep-progress-bar" style="height:100%; width:0%; background:#4a90d9; transition:width 0.5s;"></div>
+                            </div>
+                            <span id="sweep-progress-pct" style="font-size:0.85rem; min-width:3em; text-align:right;">0%</span>
+                            <button type="button" id="sweep-cancel-btn" style="display:none;">Cancel</button>
+                        </div>
+                        <p id="sweep-progress-text" style="margin:0.35rem 0 0; font-size:0.85rem; opacity:0.9;"></p>
+                    </div>
                 </div>
-                <div style="margin:0.75rem 0;">
+                <div style="margin:0.75rem 0; display:flex; gap:0.5rem; flex-wrap:wrap;">
                     <button type="button" id="ms-add-btn">+ Add server</button>
+                    <button type="button" id="ms-align-btn">Align music servers</button>
                 </div>
                 <div id="music-server-form" style="display:none; margin-top:1rem; border:1px solid var(--border-color, #ccc); border-radius:8px; padding:1rem;">
                     <h3 id="music-server-form-title" style="margin-top:0;">Add a server</h3>
@@ -216,8 +229,8 @@
                             <option value="plex">Plex</option>
                         </select>
                         <div id="ms-cred-fields" style="display:flex; flex-direction:column; gap:0.5rem;"></div>
-                        <label for="ms-libraries">Music libraries to scan (optional, comma-separated)</label>
-                        <input type="text" id="ms-libraries" placeholder="Leave empty to scan all" style="width:100%;">
+                        <input type="hidden" id="ms-libraries" value="">
+                        <div id="ms-libraries-boxes" style="display:none; flex-direction:column; gap:0.25rem;"></div>
                         <label style="display:flex; align-items:center; gap:0.5rem;"><input type="checkbox" id="ms-make-default"> Set as the default server</label>
                     </div>
                     <div style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">

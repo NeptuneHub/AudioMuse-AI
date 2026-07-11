@@ -33,20 +33,23 @@ CRED_MASK = '__unchanged__'
 def resolve_request_server_id(data=None):
     """Return the requested server id, or None for the default server.
 
-    Raises ValueError if a server id is provided but is not in the registry.
+    The ``server`` parameter accepts either the configured display NAME (the
+    friendly value users see in the setup wizard) or the internal server id.
+    Raises ValueError when the value matches no configured server.
     """
     from tasks.mediaserver import registry
 
-    server_id = None
+    requested = None
     if isinstance(data, dict):
-        server_id = data.get('server') or data.get('server_id')
-    if not server_id:
-        server_id = request.args.get('server') or request.args.get('server_id')
-    if not server_id:
+        requested = data.get('server') or data.get('server_id')
+    if not requested:
+        requested = request.args.get('server') or request.args.get('server_id')
+    if not requested:
         return None
-    if registry.get_server(server_id) is None:
-        raise ValueError(f"Unknown server '{server_id}'")
-    return server_id
+    server = registry.get_server(requested) or registry.get_server_by_name(requested)
+    if server is None:
+        raise ValueError(f"Unknown server '{requested}'")
+    return server['server_id']
 
 
 def is_default_server(server_id):
@@ -57,39 +60,35 @@ def is_default_server(server_id):
 
 
 def needs_translation(server_id):
-    """True when the request's ids must be translated before hitting a server.
-
-    Always for a secondary server; also for the default server once the catalogue
-    id is the content fingerprint (item_id no longer equals the server's id).
-    """
-    import config
-    if config.CATALOG_FINGERPRINT_AS_ID:
-        return True
-    return not is_default_server(server_id)
+    """Every playlist target now translates: the canonical id is the content
+    fingerprint, so it must be turned into the target (or default) server's real
+    id before creating the playlist. Kept as a function for call-site clarity."""
+    return True
 
 
-def create_instant_playlist_for_server(playlist_name, item_ids, server_id):
-    """Create a playlist on ``server_id``, translating canonical ids first.
+def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_creds=None):
+    """Create a playlist on ``server_id`` (default when None).
 
-    Returns ``{'result', 'requested', 'mapped', 'skipped'}``. When no translation
-    is needed (default server, catalogue id == server id) it is a straight
-    passthrough.
+    The canonical ids are passed through UNTRANSLATED: the mediaserver dispatcher
+    is the single place that translates them to the target server's real ids
+    (translating here too would translate twice and send wrong ids). The mapping
+    is still consulted first to report how many tracks the server has and to
+    fail clearly when it has none. Returns ``{'result', 'requested', 'mapped',
+    'skipped'}``.
     """
     from tasks import mediaserver
     from tasks.mediaserver import registry
 
     requested = len(item_ids)
-    if not needs_translation(server_id):
-        result = mediaserver.create_instant_playlist(playlist_name, item_ids)
-        return {'result': result, 'requested': requested, 'mapped': requested, 'skipped': 0}
-
-    translated = registry.translate_ids(item_ids, server_id)
-    target_ids = [translated[i] for i in item_ids if i in translated]
-    skipped = requested - len(target_ids)
-    if not target_ids:
+    available = registry.translate_ids(item_ids, server_id)
+    mapped = sum(1 for i in item_ids if str(i) in available)
+    skipped = requested - mapped
+    if not mapped:
         raise ValueError("None of the selected tracks are available on the target server.")
-    result = mediaserver.for_server(server_id).create_instant_playlist(playlist_name, target_ids)
-    return {'result': result, 'requested': requested, 'mapped': len(target_ids), 'skipped': skipped}
+    result = mediaserver.for_server(server_id).create_instant_playlist(
+        playlist_name, item_ids, user_creds
+    )
+    return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 
 def available_ids_for_server(item_ids, server_id):
@@ -202,7 +201,6 @@ def server_public_dict(server):
 
 def servers_for_ui():
     """List of masked servers plus the default id, for templates and the API."""
-    import config
     from tasks.mediaserver import registry
 
     try:
@@ -213,5 +211,5 @@ def servers_for_ui():
     return {
         'servers': [server_public_dict(s) for s in servers],
         'default_id': next((s['server_id'] for s in servers if s['is_default']), None),
-        'multi_server_enabled': config.MULTI_SERVER_ENABLED,
+        'multi_server_enabled': True,
     }

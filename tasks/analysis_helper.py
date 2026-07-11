@@ -516,7 +516,7 @@ def compute_other_features_str(clap_embedding, needs_clap, label_embeddings, ite
         return zero
 
 
-def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str, fingerprint=None):
+def persist_musicnn_results(item, analysis, top_moods, embedding, other_features_str):
     save_track_analysis_and_embedding(
         item['Id'],
         item['Name'],
@@ -535,7 +535,6 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
         year=item.get('Year'),
         rating=item.get('Rating'),
         file_path=item.get('FilePath'),
-        fingerprint=fingerprint,
     )
 
 

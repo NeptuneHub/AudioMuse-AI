@@ -30,14 +30,24 @@
         return pathname.indexOf('/api/') !== -1 || pathname.indexOf('/chat/') !== -1;
     }
 
+    function selectedServer(id) {
+        return state.servers.filter(function (s) { return s.server_id === id; })[0] || null;
+    }
+
+    function selectedName(id) {
+        var match = selectedServer(id);
+        return match ? match.name : null;
+    }
+
     var chainedFetch = window.fetch;
     window.fetch = function (input, init) {
         try {
             var id = selectedId();
             if (isNonDefaultSelection(id) && typeof input === 'string') {
+                var name = selectedName(id);
                 var u = new URL(input, window.location.origin);
-                if (u.origin === window.location.origin && shouldInject(u.pathname) && !u.searchParams.has('server')) {
-                    u.searchParams.set('server', id);
+                if (name && u.origin === window.location.origin && shouldInject(u.pathname) && !u.searchParams.has('server')) {
+                    u.searchParams.set('server', name);
                     input = u.pathname + u.search + u.hash;
                 }
             }
@@ -64,8 +74,7 @@
             return;
         }
         var current = selectedId() || state.defaultId || '';
-        var html = '<label class="server-selector-label" for="server-selector">Music server</label>'
-            + '<select id="server-selector" class="server-selector">';
+        var html = '<select id="server-selector" class="server-selector" aria-label="Music server">';
         state.servers.forEach(function (s) {
             var label = s.name
                 + (s.is_default ? ' (default)' : '')

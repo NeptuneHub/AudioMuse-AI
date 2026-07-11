@@ -728,7 +728,7 @@ html.dark-mode button:not(.btn):disabled {
     justify-content: center;
     gap: 0.4rem;
     width: fit-content;
-    margin: 1.5rem auto 0;
+    margin: 0.5rem auto 0;
     padding: 0.4rem 1rem;
     font-size: 0.85rem;
     font-weight: 600;

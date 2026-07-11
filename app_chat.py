@@ -682,6 +682,16 @@ def _run_chat_pipeline(data, log_messages):
             f"\nPool: {len(all_songs)} collected -> {len(diversified_pool)} after diversity cap -> {len(final_query_results_list)} in final playlist"
         )
 
+        import app_server_context
+        scoped_results = app_server_context.scope_results(
+            final_query_results_list, None, id_key='item_id'
+        )
+        if len(scoped_results) != len(final_query_results_list):
+            log_messages.append(
+                f"\nServer availability: removed {len(final_query_results_list) - len(scoped_results)} songs not on the selected server"
+            )
+        final_query_results_list = scoped_results
+
         # --- Song Ordering for Smooth Transitions (Phase 3A) ---
         # Only when NO filter drove the result. When a filter/score was applied
         # (e.g. "female vocalist", a genre, year, etc.), the songs are already in

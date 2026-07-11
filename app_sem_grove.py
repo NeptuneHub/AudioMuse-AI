@@ -98,7 +98,9 @@ def sem_grove_search_api():
             return jsonify({"error": 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
-        results = search_by_song(item_id, limit=limit)
+        import app_server_context
+
+        results = search_by_song(item_id, limit=app_server_context.overfetch_limit(limit))
         # results[0] is always the seed itself; if that's the only entry, no similar songs were found
         similar_count = sum(1 for r in results if not r.get("is_seed"))
         if not results or similar_count == 0:
@@ -111,6 +113,7 @@ def sem_grove_search_api():
                 }
             ), 404
 
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         attach_song_features(results)
         return jsonify({"results": results, "count": len(results)})
 

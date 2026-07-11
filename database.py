@@ -581,7 +581,6 @@ def save_track_analysis_and_embedding(
     year=None,
     rating=None,
     file_path=None,
-    fingerprint=None,
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -602,8 +601,8 @@ def save_track_analysis_and_embedding(
     try:
         cur.execute(
             """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path, fingerprint)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 author = EXCLUDED.author,
@@ -617,8 +616,7 @@ def save_track_analysis_and_embedding(
                 album_artist = EXCLUDED.album_artist,
                 year = EXCLUDED.year,
                 rating = EXCLUDED.rating,
-                file_path = EXCLUDED.file_path,
-                fingerprint = COALESCE(EXCLUDED.fingerprint, score.fingerprint)
+                file_path = EXCLUDED.file_path
         """,
             (
                 item_id,
@@ -635,7 +633,6 @@ def save_track_analysis_and_embedding(
                 year,
                 rating,
                 file_path,
-                fingerprint,
             ),
         )
 
@@ -810,21 +807,10 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'mbid')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'mbid' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN mbid TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'fingerprint')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'fingerprint' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN fingerprint BIGINT")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_score_fingerprint ON score (fingerprint) WHERE fingerprint IS NOT NULL"
-            )
+            cur.execute("DROP INDEX IF EXISTS idx_score_fingerprint")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS fingerprint")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS mbid")
+            cur.execute("ALTER TABLE score DROP COLUMN IF EXISTS chromaprint")
 
             cur.execute(
                 "SELECT is_generated FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'search_u'"
@@ -1170,6 +1156,16 @@ def init_db():
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_single_default "
                 "ON music_servers (is_default) WHERE is_default"
             )
+            cur.execute("SAVEPOINT ms_unique_name")
+            try:
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_music_servers_unique_name "
+                    "ON music_servers (lower(name))"
+                )
+                cur.execute("RELEASE SAVEPOINT ms_unique_name")
+            except Exception:
+                logger.warning("music_servers has duplicate names; unique-name index skipped")
+                cur.execute("ROLLBACK TO SAVEPOINT ms_unique_name")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS track_server_map (
                     item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -1511,20 +1507,6 @@ def get_app_config_value(key, default=None, conn=None):
         cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
         row = cur.fetchone()
         return row[0] if row else default
-    finally:
-        cur.close()
-
-
-def set_track_fingerprint(item_id, fingerprint, conn=None):
-    """Store the content fingerprint (signed BIGINT) for a track."""
-    db = conn or get_db()
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "UPDATE score SET fingerprint = %s WHERE item_id = %s",
-            (fingerprint, item_id),
-        )
-        db.commit()
     finally:
         cur.close()
 
