@@ -607,6 +607,21 @@ class TestExecuteMcpToolEnergyConversion:
 
 
 class TestToolSurface:
+    def test_shared_schemas_omit_ollama_only_unique_items(self):
+        ai_mod = _import_ai_mcp_client()
+
+        def contains_unique_items(value):
+            if isinstance(value, dict):
+                return 'uniqueItems' in value or any(
+                    contains_unique_items(child) for child in value.values()
+                )
+            if isinstance(value, list):
+                return any(contains_unique_items(child) for child in value)
+            return False
+
+        for tool in ai_mod.get_mcp_tools():
+            assert not contains_unique_items(tool['inputSchema'])
+
     def test_no_llm_facing_get_songs_or_dead_params(self):
         ai_mod = _import_ai_mcp_client()
         for tool in ai_mod.get_mcp_tools():
