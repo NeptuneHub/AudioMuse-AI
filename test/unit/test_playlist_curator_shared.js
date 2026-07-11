@@ -388,6 +388,11 @@ test('Search Results duplicate scan uses provided tracks and relabels apply acti
         harness.elements.get('curator-dedup-removeall').textContent,
         'Hide marked duplicates',
     );
+    assert.equal(
+        harness.elements.get('curator-dedup-title').textContent,
+        'Duplicates Found: 1 group (1 to hide)',
+    );
+    assert.match(harness.elements.get('curator-dedup-groups').innerHTML, />HIDE</);
 });
 
 test('Search Results apply hides marked ids without changing Workbench', async () => {

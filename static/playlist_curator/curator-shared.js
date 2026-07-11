@@ -588,7 +588,7 @@
                 const isKeeper = ti === 0;
                 const keepState = track._keep !== undefined ? track._keep : isKeeper;
                 const stateClass = keepState ? 'keep' : 'remove';
-                const badgeText = keepState ? 'KEEP' : 'REMOVE';
+                const badgeText = keepState ? 'KEEP' : (dedupMode === 'search-results' ? 'HIDE' : 'REMOVE');
                 const artist = escHtml(track.author || 'Unknown');
                 const title = escHtml(track.title || 'Unknown');
                 const album = escHtml(track.album || '');
@@ -681,7 +681,8 @@
                 return;
             }
             const removable = data.total_duplicate_tracks - data.total_groups;
-            if (titleEl) titleEl.textContent = `Duplicates Found: ${data.total_groups} group${data.total_groups > 1 ? 's' : ''} (${removable} to remove)`;
+            const applyVerb = dedupMode === 'search-results' ? 'hide' : 'remove';
+            if (titleEl) titleEl.textContent = `Duplicates Found: ${data.total_groups} group${data.total_groups > 1 ? 's' : ''} (${removable} to ${applyVerb})`;
             renderDedupGroups();
         } catch (e) {
             container.innerHTML = dedupNotice + `<p class="curator-status error">${escHtml(e.message)}</p>`;
