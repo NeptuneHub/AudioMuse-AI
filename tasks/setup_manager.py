@@ -145,6 +145,41 @@ class SetupManager:
             self.logger.warning(f"Unable to determine app_config state: {exc}")
             return True
 
+    def get_default_music_server(self):
+        """The music_servers default row, the single source of truth for the
+        media-server settings config projects onto its globals. None when the
+        table does not exist yet (pre-migration boot) or on any read problem,
+        so importing config can never fail because of the registry."""
+        if self.database_url is None:
+            return None
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT to_regclass('public.music_servers') IS NOT NULL")
+                    if not cur.fetchone()[0]:
+                        return None
+                    cur.execute(
+                        "SELECT server_type, creds, music_libraries FROM music_servers "
+                        "WHERE is_default LIMIT 1"
+                    )
+                    row = cur.fetchone()
+            if not row:
+                return None
+            creds = row[1]
+            if isinstance(creds, str):
+                try:
+                    creds = json.loads(creds)
+                except ValueError:
+                    creds = {}
+            return {
+                'server_type': row[0],
+                'creds': creds or {},
+                'music_libraries': row[2] or '',
+            }
+        except Exception as exc:
+            self.logger.warning(f"Unable to read default music server from registry: {exc}")
+            return None
+
     def _looks_like_placeholder(self, value):
         if not isinstance(value, str):
             return False
@@ -264,6 +299,15 @@ class SetupManager:
     def save_config_values(self, values):
         if not isinstance(values, dict):
             raise TypeError("Expected a dictionary of config values")
+        try:
+            import config as _config
+
+            media_keys = getattr(_config, 'MEDIASERVER_CONFIG_KEYS', frozenset())
+        except Exception:
+            media_keys = frozenset()
+        values = {k: v for k, v in values.items() if k not in media_keys}
+        if not values:
+            return
         self.ensure_table()
         try:
             with self.get_connection() as conn:

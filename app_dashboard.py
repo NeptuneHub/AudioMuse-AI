@@ -33,6 +33,16 @@ from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
 
+# Short-lived memo for the per-server alignment metrics: every open dashboard
+# tab polls /api/dashboard/summary every ~30s and the metrics cost seconds of
+# GROUP BY / NOT EXISTS work on large libraries, so one computation is shared
+# across tabs for up to 25s instead of recomputed per request.
+_MUSIC_SERVER_METRICS_MEMO = {'ts': 0.0, 'data': None}
+_MUSIC_SERVER_METRICS_TTL_SECONDS = 25.0
+# Per-server flag set once the default server's legacy NOT-EXISTS count hits 0:
+# it only ever shrinks after canonicalization, so the scan can be skipped then.
+_LEGACY_UNMAPPED_DONE = {}
+
 
 @dashboard_bp.route('/')
 def dashboard_page():
@@ -195,9 +205,10 @@ def _collect_music_server_metrics(cur):
     provider-keyed rows predating canonicalization). ``server_songs`` is None
     until a sweep has fetched the server's catalogue at least once.
     ``catalogue_songs`` carries the union total for the section caption.
-    Recomputed live on every dashboard request (not part of the hourly cache)
-    so new servers and running sweeps show up immediately. Empty list when the
-    registry tables do not exist yet."""
+    Not part of the hourly stats cache: ``dashboard_summary`` refreshes it via
+    a short (~25s) memo so new servers and running sweeps show up quickly
+    without redoing the aggregate per request. Empty list when the registry
+    tables do not exist yet."""
     servers = []
     try:
         if not _table_exists(cur, 'music_servers'):
@@ -213,10 +224,10 @@ def _collect_music_server_metrics(cur):
         )
         for r in cur.fetchall():
             matched = int(r[6] or 0)
-            if r[3]:
+            if r[3] and not _LEGACY_UNMAPPED_DONE.get(r[0]):
                 # Legacy rows keep their provider id and are implicitly on the
                 # default server until canonicalization maps them explicitly.
-                matched += _safe_count(
+                legacy = _safe_count(
                     cur,
                     "SELECT COUNT(*) FROM score s "
                     "WHERE s.item_id NOT LIKE 'fp\\_%%' AND NOT EXISTS ("
@@ -224,6 +235,9 @@ def _collect_music_server_metrics(cur):
                     "WHERE m.item_id = s.item_id AND m.server_id = %s)",
                     (r[0],),
                 )
+                if legacy == 0:
+                    _LEGACY_UNMAPPED_DONE[r[0]] = True
+                matched += legacy
             server_songs = r[5]
             if server_songs is None and r[3] and matched:
                 # The default server's library defined the catalogue before the
@@ -452,11 +466,20 @@ def dashboard_summary():
         recent = _collect_task_metrics(cur)
         cron_rows = _collect_cron(cur)
         content, stats_updated_at = _load_dashboard_stats(cur)
-        # Server alignment counts are cheap and change while sweeps run, so
-        # they bypass the hourly cache: new servers and fresh matches show up
-        # on the next page load instead of after the next stats refresh.
+        # Server alignment counts change while sweeps run, so they bypass the
+        # hourly cache; a short memo still shares one computation across the
+        # 30s auto-refresh of every open tab instead of redoing the aggregates
+        # per request.
         content = dict(content or {})
-        content['music_servers'] = _collect_music_server_metrics(cur)
+        now = time.monotonic()
+        memo = _MUSIC_SERVER_METRICS_MEMO
+        if memo['data'] is not None and now - memo['ts'] < _MUSIC_SERVER_METRICS_TTL_SECONDS:
+            content['music_servers'] = memo['data']
+        else:
+            metrics = _collect_music_server_metrics(cur)
+            memo['ts'] = now
+            memo['data'] = metrics
+            content['music_servers'] = metrics
     finally:
         cur.close()
 

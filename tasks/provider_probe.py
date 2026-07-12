@@ -16,7 +16,8 @@ Main Features:
   provider type early.
 * Normalises heterogeneous provider fields (Jellyfin/Emby PascalCase, Subsonic
   camelCase, and lower-case variants) into one flat track dict, coercing the
-  year to an int.
+  year to an int; track lists are normalised in place so the raw provider list
+  never coexists with a full normalised copy.
 """
 
 from tasks import mediaserver
@@ -78,8 +79,12 @@ def _normalize_provider_type(provider_type):
 
 def fetch_all_tracks(provider_type, creds, apply_filter=False):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_all_songs(user_creds=creds, provider_type=t, apply_filter=apply_filter)
-    return [_normalize_track(item) for item in items or []]
+    items = mediaserver.get_all_songs(
+        user_creds=creds, provider_type=t, apply_filter=apply_filter
+    ) or []
+    for i in range(len(items)):
+        items[i] = _normalize_track(items[i])
+    return items
 
 
 def search_albums(provider_type, creds, query):
@@ -89,8 +94,10 @@ def search_albums(provider_type, creds, query):
 
 def get_album_tracks(provider_type, creds, album_id):
     t = _normalize_provider_type(provider_type)
-    items = mediaserver.get_tracks_from_album(album_id, user_creds=creds, provider_type=t)
-    return [_normalize_track(item) for item in items or []]
+    items = mediaserver.get_tracks_from_album(album_id, user_creds=creds, provider_type=t) or []
+    for i in range(len(items)):
+        items[i] = _normalize_track(items[i])
+    return items
 
 
 def test_connection(provider_type, creds):

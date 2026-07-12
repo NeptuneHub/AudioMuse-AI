@@ -255,13 +255,10 @@ if not _is_worker:
         except Exception as _seed_exc:
             app.logger.warning("seed_admin_from_env failed at startup: %s", _seed_exc)
 
-        # Keep the default media-server registry row in sync with the config the
-        # setup wizard edits, so single-server installs have one source of truth.
-        try:
-            from tasks.mediaserver import registry as _mediaserver_registry
-            _mediaserver_registry.sync_default_from_config()
-        except Exception as _sync_exc:
-            app.logger.warning("Default media-server registry sync failed at startup: %s", _sync_exc)
+        # Media-server settings live only in the music_servers registry: config
+        # globals are projected from its default row at import (config module),
+        # init_db migrates legacy app_config rows into it and deletes them, so
+        # no config<->registry sync is needed here anymore.
 
         # Finalize JWT_SECRET - must happen after DB init so the value can be
         # persisted and shared across all gunicorn workers.

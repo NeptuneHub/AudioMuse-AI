@@ -889,6 +889,13 @@ class PagedIvfIndex:
             count=self._n_items,
         )
         with _AVAILABILITY_CACHE_LOCK:
+            stale_keys = [
+                cached_key for cached_key, cached_value in _AVAILABILITY_CACHE.items()
+                if (cached_key[0] == self._index_name and cached_key[2] != self._generation)
+                or now - cached_value[0] >= _AVAILABILITY_CACHE_TTL
+            ]
+            for stale_key in stale_keys:
+                _AVAILABILITY_CACHE.pop(stale_key, None)
             _AVAILABILITY_CACHE[key] = (now, mask)
         return mask
 

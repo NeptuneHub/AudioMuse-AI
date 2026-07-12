@@ -10,7 +10,7 @@
 
 (function () {
     var STORAGE_KEY = 'audiomuse_selected_server';
-    var state = { defaultId: null, servers: [], enabled: false };
+    var state = { defaultId: null, servers: [], enabled: false, loaded: false };
 
     function selectedId() {
         return localStorage.getItem(STORAGE_KEY) || '';
@@ -21,7 +21,10 @@
             return false;
         }
         if (state.servers.length === 0) {
-            return true;
+            // Optimistic only while the server list is still loading; once the
+            // load has completed (or failed) an unknown id must not be injected,
+            // or a stale/deleted selection would 400 every request forever.
+            return !state.loaded;
         }
         return state.servers.some(function (s) { return s.server_id === id && s.enabled; });
     }
@@ -106,6 +109,7 @@
         chainedFetch.call(window, '/api/servers', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (data) {
+                state.loaded = true;
                 if (!data) {
                     return;
                 }
@@ -119,7 +123,9 @@
                 render();
             })
             .catch(function () {
-                // Not authenticated or endpoint unavailable; leave UI untouched.
+                // Not authenticated or endpoint unavailable; leave UI untouched
+                // and stop the optimistic pre-load injection (fail-safe).
+                state.loaded = true;
             });
     }
 

@@ -118,7 +118,7 @@ def identify_and_clean_orphaned_albums_task():
                 )
                 return summary
 
-            per_server_provider_ids = []
+            present_canonical_ids = set()
             failed_servers = []
             zero_album_servers = []
             total_albums = 0
@@ -167,7 +167,15 @@ def identify_and_clean_orphaned_albums_task():
                                 exc_info=True,
                             )
                             continue
-                    per_server_provider_ids.append((server, provider_ids))
+                provider_list = list(provider_ids)
+                provider_ids = None
+                if not failed_servers:
+                    server_id = server['server_id'] if server else None
+                    for start in range(0, len(provider_list), 5000):
+                        chunk = provider_list[start:start + 5000]
+                        mapping = registry.reverse_translate_ids(chunk, server_id)
+                        present_canonical_ids.update(str(v) for v in mapping.values())
+                provider_list = None
 
             if failed_servers or (zero_album_servers and len(servers) > 1):
                 problem_servers = failed_servers + zero_album_servers
@@ -220,16 +228,6 @@ def identify_and_clean_orphaned_albums_task():
                 )
                 return summary
 
-            log_and_update_main("Translating server track ids to canonical catalogue ids...", 76)
-            present_canonical_ids = set()
-            for server, provider_ids in per_server_provider_ids:
-                server_id = server['server_id'] if server else None
-                provider_list = list(provider_ids)
-                for start in range(0, len(provider_list), 5000):
-                    chunk = provider_list[start:start + 5000]
-                    mapping = registry.reverse_translate_ids(chunk, server_id)
-                    present_canonical_ids.update(str(v) for v in mapping.values())
-
             log_and_update_main(
                 f"Found {len(present_canonical_ids)} total tracks across {len(servers)} server(s)",
                 78,
@@ -238,28 +236,32 @@ def identify_and_clean_orphaned_albums_task():
             log_and_update_main("Fetching all track IDs from database...", 80)
             with get_db() as conn, conn.cursor() as cur:
                 cur.execute("""
-                    SELECT DISTINCT s.item_id, s.title, s.author
+                    SELECT DISTINCT s.item_id
                     FROM score s
                     JOIN embedding e ON s.item_id = e.item_id
                 """)
-                database_tracks = cur.fetchall()
+                database_track_ids = {row[0] for row in cur.fetchall()}
 
-            database_track_ids = {row[0] for row in database_tracks}
             log_and_update_main(f"Found {len(database_track_ids)} tracks in database", 85)
 
             orphaned_track_ids = database_track_ids - present_canonical_ids
             log_and_update_main(f"Identified {len(orphaned_track_ids)} orphaned tracks", 90)
 
             orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
-
-            for track_data in database_tracks:
-                track_id, title, author = track_data
-                if track_id in orphaned_track_ids:
-                    album_key = f"{author}" if author else "Unknown Artist"
-                    orphaned_albums_info[album_key]["tracks"].append(
-                        {"item_id": track_id, "title": title, "author": author}
+            orphaned_list = list(orphaned_track_ids)
+            with get_db() as conn, conn.cursor() as cur:
+                for start in range(0, len(orphaned_list), 5000):
+                    chunk = orphaned_list[start:start + 5000]
+                    cur.execute(
+                        "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+                        (chunk,),
                     )
-                    orphaned_albums_info[album_key]["track_count"] += 1
+                    for track_id, title, author in cur.fetchall():
+                        album_key = f"{author}" if author else "Unknown Artist"
+                        orphaned_albums_info[album_key]["tracks"].append(
+                            {"item_id": track_id, "title": title, "author": author}
+                        )
+                        orphaned_albums_info[album_key]["track_count"] += 1
 
             orphaned_albums_list = []
             for artist, info in orphaned_albums_info.items():

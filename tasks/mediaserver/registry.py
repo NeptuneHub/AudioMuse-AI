@@ -10,14 +10,17 @@
 
 Persists every configured media server (the ``music_servers`` table) plus the
 per-track mapping from a canonical library ``item_id`` to that track's id on
-each server (the ``track_server_map`` table). The default server's
-credentials are mirrored from the global ``config`` (still edited by the setup
-wizard), so single-server installs keep one source of truth and behave exactly
-as before; secondary servers store their own credentials in the registry.
+each server (the ``track_server_map`` table). The registry is the ONLY
+persistent home of media-server settings, the default server included: config
+module globals are a read-only projection of the default row (loaded by
+``config._apply_db_overrides`` at import/refresh), the setup wizard writes here
+via ``save_default_server_settings``, and init_db migrates legacy app_config
+rows in once and deletes them.
 
 Main Features:
 * CRUD over the server registry with a single enforced default server.
-* Builds the default server's creds from config and keeps its row in sync.
+* ``save_default_server_settings`` persists the wizard's media settings;
+  ``creds_from_config`` remains only as first-boot migration seed material.
 * Resolves a normalized server context by id and translates canonical item_ids
   to a target server's provider track ids (legacy raw ids may use identity on
   the default server; canonical ids always require a mapping).
@@ -64,7 +67,12 @@ def _rollback(db):
 
 
 def creds_from_config(server_type):
-    """Build a ``user_creds`` dict for ``server_type`` from the config globals."""
+    """Build a ``user_creds`` dict for ``server_type`` from the config globals.
+
+    Only used to seed the registry from a legacy install's env/config at first
+    boot (init_db migration); at runtime the registry row is the source and the
+    config globals are its projection.
+    """
     creds = {}
     for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, []):
         key = config.MEDIASERVER_CRED_KEY_BY_FIELD.get(field)
@@ -318,17 +326,16 @@ def delete_server(server_id, conn=None):
         cur.close()
 
 
-def sync_default_from_config(conn=None):
-    """Overwrite the default server's type/creds/library filter from config.
+def save_default_server_settings(server_type, creds, music_libraries="", conn=None):
+    """Persist the setup wizard's media-server settings into the default row.
 
-    Called after the setup wizard saves media-server settings so the default
-    registry row always mirrors the global config the wizard edits. Creates the
-    default row when the registry is still empty.
+    The registry is the ONLY home of these settings; config module globals are a
+    read-only projection refreshed from this row. Creates the default row when
+    the registry is still empty (fresh install saving the wizard for the first
+    time).
     """
     db = conn or get_db()
-    server_type = config.MEDIASERVER_TYPE
-    creds = creds_from_config(server_type)
-    libraries = config.MUSIC_LIBRARIES or ""
+    server_type = (server_type or "").strip().lower()
     default = get_default_server(db if conn is not None else None)
     if default is None:
         cur = db.cursor()
@@ -341,7 +348,7 @@ def sync_default_from_config(conn=None):
             name=_default_server_name(server_type),
             server_type=server_type,
             creds=creds,
-            music_libraries=libraries,
+            music_libraries=music_libraries or "",
             enabled=True,
             make_default=not has_any,
             conn=db,
@@ -351,7 +358,7 @@ def sync_default_from_config(conn=None):
         default["server_id"],
         server_type=server_type,
         creds=creds,
-        music_libraries=libraries,
+        music_libraries=music_libraries or "",
         conn=db,
     )
 

@@ -23,9 +23,10 @@ import logging
 import uuid
 
 from flask import Blueprint, g, jsonify, request
+from rq.job import Job
 
 import config
-from app_helper import rq_queue_default, save_task_status
+from app_helper import redis_conn, rq_queue_default, save_task_status, send_stop_job_command
 from database import get_db
 from app_server_context import (
     merge_creds,
@@ -55,36 +56,28 @@ def _validate_type(server_type):
 
 
 def _apply_default_to_config():
-    """Mirror the default server's type/creds/libraries into the global config.
+    """Propagate a default-server change to every process.
 
-    Keeps the legacy single-server path (config.MEDIASERVER_TYPE, JELLYFIN_URL, ...)
-    correct so analysis and every context-unaware caller keep targeting the default
-    server. Workers pick up the change on the restart this requests.
+    The registry row that just changed IS the source of truth; the config module
+    globals are only its projection. Reload them here for this process and
+    request a restart so workers re-import config and re-project the row. No
+    values are written anywhere - the registry was already updated by the caller.
     """
-    from tasks.setup_manager import setup_manager
     import restart_manager
 
-    default = registry.get_default_server(get_db())
-    if default is None:
-        return
-    server_type = default['server_type']
-    creds = default['creds'] or {}
-    values = {
-        'MEDIASERVER_TYPE': server_type,
-        'MUSIC_LIBRARIES': default['music_libraries'] or '',
-    }
-    for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, []):
-        key = config.MEDIASERVER_CRED_KEY_BY_FIELD.get(field)
-        values[field] = creds.get(key, '') if key else ''
-    setup_manager.save_config_values(values)
     config.refresh_config()
     restart_manager.publish_restart_request()
 
 
 def _cancel_active_sweeps():
-    """Revoke queued/running alignment sweeps so a consolidated one replaces them."""
-    from app_helper import cancel_job_and_children_recursive
+    """Revoke queued/running alignment sweeps so a consolidated one replaces them.
 
+    Surgical per-sweep cancel: touches ONLY the stale sweep jobs, never the RQ
+    queues or other task_status rows, so a running analysis (or any other job)
+    keeps going when a server is added or edited. The REVOKED row is written
+    first so the sweep's cooperative cancellation check picks it up even when
+    the RQ commands fail.
+    """
     cancelled = []
     try:
         db = get_db()
@@ -105,13 +98,26 @@ def _cancel_active_sweeps():
     for row in rows:
         stale_task_id = row[0]
         try:
-            cancel_job_and_children_recursive(
-                stale_task_id,
-                reason="Superseded by a new alignment covering all enabled servers.",
+            save_task_status(
+                stale_task_id, 'server_sweep', config.TASK_STATUS_REVOKED,
+                progress=100,
+                details={'message': 'Superseded by a new alignment covering all enabled servers.'},
             )
             cancelled.append(stale_task_id)
         except Exception:
-            logger.exception("Could not cancel superseded sweep %s", stale_task_id)
+            logger.exception("Could not revoke superseded sweep %s", stale_task_id)
+            continue
+        try:
+            job = Job.fetch(stale_task_id, connection=redis_conn)
+            status = job.get_status(refresh=True)
+            # str(JobStatus.QUEUED) is 'JobStatus.QUEUED'; .value is 'queued'.
+            status_value = getattr(status, 'value', None) or str(status)
+            if status_value in ('queued', 'deferred', 'scheduled'):
+                job.cancel()
+            elif status_value == 'started':
+                send_stop_job_command(redis_conn, stale_task_id)
+        except Exception:
+            logger.exception("RQ cleanup failed for superseded sweep %s", stale_task_id)
     return cancelled
 
 

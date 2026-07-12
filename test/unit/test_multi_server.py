@@ -21,7 +21,9 @@ Main Features:
 * BoundServer runs dispatcher calls inside the selected server's context.
 """
 
+import gc
 import logging
+import weakref
 
 import pytest
 from unittest.mock import MagicMock
@@ -716,6 +718,50 @@ class TestSweepAlignment:
         assert calls['n'] == 1
         assert 's1' in cache
 
+    def test_catalog_cache_cap_skips_storing_and_releases_catalogue(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        class TrackList(list):
+            pass
+
+        rows = [{
+            'item_id': 'fp_1', 'title': 't', 'author': 'a', 'album': 'al',
+            'album_artist': 'a', 'file_path': '/x.flac',
+        }]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        monkeypatch.setattr(sync, 'MULTISERVER_CATALOG_CACHE_MAX_TRACKS', 2)
+        holder = {}
+
+        def fake_fetch(*a, **k):
+            tracks = TrackList(
+                {'id': f'nav{i}', 'title': 't', 'artist': 'a', 'album': 'al',
+                 'path': f'/x{i}.flac'}
+                for i in range(3)
+            )
+            holder['ref'] = weakref.ref(tracks)
+            return tracks
+
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
+        released = {}
+
+        def fake_iter(conn, sid, **k):
+            gc.collect()
+            released['catalogue_freed'] = holder['ref']() is None
+            return iter([rows])
+
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', fake_iter)
+        cache = {}
+        sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+            catalog_cache=cache,
+        )
+        assert cache == {}
+        assert released.get('catalogue_freed') is True
+
     def test_chunked_matching_never_maps_one_provider_track_twice(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
@@ -774,7 +820,7 @@ class TestSweepAlignment:
 
     def test_cancel_active_sweeps_revokes_each_non_terminal_sweep(self, monkeypatch):
         import app_music_servers as msrv
-        import app_helper
+        import config
 
         cur = MagicMock()
         cur.fetchall.return_value = [('t1',), ('t2',)]
@@ -783,15 +829,40 @@ class TestSweepAlignment:
         monkeypatch.setattr(msrv, 'get_db', lambda: db)
         revoked = []
         monkeypatch.setattr(
-            app_helper, 'cancel_job_and_children_recursive',
-            lambda task_id, reason=None: revoked.append(task_id),
+            msrv, 'save_task_status',
+            lambda task_id, task_type, status, **kw: revoked.append(
+                (task_id, task_type, status)
+            ),
+        )
+        started_job = MagicMock()
+        started_job.get_status.return_value = 'started'
+        queued_job = MagicMock()
+        queued_job.get_status.return_value = 'queued'
+        jobs = {'t1': started_job, 't2': queued_job}
+
+        class _FakeJob:
+            @staticmethod
+            def fetch(task_id, connection=None):
+                return jobs[task_id]
+
+        monkeypatch.setattr(msrv, 'Job', _FakeJob)
+        stopped = []
+        monkeypatch.setattr(
+            msrv, 'send_stop_job_command', lambda conn, task_id: stopped.append(task_id)
         )
         assert msrv._cancel_active_sweeps() == ['t1', 't2']
-        assert revoked == ['t1', 't2']
+        assert revoked == [
+            ('t1', 'server_sweep', config.TASK_STATUS_REVOKED),
+            ('t2', 'server_sweep', config.TASK_STATUS_REVOKED),
+        ]
+        assert stopped == ['t1']
+        queued_job.cancel.assert_called_once()
+        started_job.cancel.assert_not_called()
 
     def test_recover_abandoned_sweeps_replaces_dead_sweep(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.fetchall.return_value = [('dead-sweep',)]
         executed = []
@@ -799,7 +870,7 @@ class TestSweepAlignment:
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_job_is_alive', lambda task_id: False)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'dead')
         enqueued = {}
 
         def fake_enqueue(func, **kwargs):
@@ -818,12 +889,13 @@ class TestSweepAlignment:
     def test_recover_abandoned_sweeps_leaves_healthy_sweeps_alone(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
         cur = MagicMock()
         cur.fetchall.return_value = [('live-sweep',)]
         db = MagicMock()
         db.cursor.return_value = cur
         monkeypatch.setattr(sync, 'connect_raw', lambda: db)
-        monkeypatch.setattr(sync, '_job_is_alive', lambda task_id: True)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'alive')
         import app_helper
         called = []
         monkeypatch.setattr(
@@ -832,6 +904,50 @@ class TestSweepAlignment:
         )
         assert sync.recover_abandoned_sweeps() is None
         assert called == []
+
+    def test_recover_abandoned_sweeps_skips_missing_inline_sweeps(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.fetchall.return_value = [('inline-sweep',)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(sync, 'connect_raw', lambda: db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'missing')
+        import app_helper
+        called = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_default, 'enqueue',
+            lambda *a, **k: called.append(1),
+        )
+        assert sync.recover_abandoned_sweeps() is None
+        assert called == []
+        assert not [e for e in executed if e[0].startswith('UPDATE task_status')]
+
+    def test_recover_abandoned_sweeps_backs_off_after_enqueue(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_recovery_state', {'last': -10000.0})
+        cur = MagicMock()
+        cur.fetchall.return_value = [('dead-sweep',)]
+        db = MagicMock()
+        db.cursor.return_value = cur
+        connections = []
+        monkeypatch.setattr(sync, 'connect_raw', lambda: connections.append(1) or db)
+        monkeypatch.setattr(sync, '_sweep_job_state', lambda task_id: 'dead')
+        import app_helper
+        enqueued = []
+        monkeypatch.setattr(
+            app_helper.rq_queue_default, 'enqueue',
+            lambda *a, **k: enqueued.append(1),
+        )
+        assert sync.recover_abandoned_sweeps() is not None
+        assert sync.recover_abandoned_sweeps() is None
+        assert enqueued == [1]
+        assert connections == [1]
 
     def test_dashboard_metrics_measure_each_server_against_its_own_catalogue(self, monkeypatch):
         import app_dashboard as dash

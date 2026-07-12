@@ -15,6 +15,10 @@ Main Features:
 * ONNX output-name resolution, run_inference, and numerically stable sigmoid.
 * Robust audio load with fallback and analyze_track key/tempo/energy output.
 * OOM-to-CPU inference fallback and media-server auth/unreachable detection.
+* Chromaprint fail-soft: a failed fingerprint keeps the track's analysis alive
+  under its provider id and records the empty-string retry-stop sentinel.
+* run_analysis_task scope handling: empty enabled-server list skips instead of
+  falling back to the config default server.
 """
 
 import numpy as np
@@ -71,6 +75,168 @@ def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypat
     ]
     assert caches and caches[0] is not None
     assert all(cache is caches[0] for cache in caches)
+
+
+def test_run_analysis_task_skips_when_no_enabled_server_matches_scope(monkeypatch):
+    import tasks.analysis as analysis
+
+    monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: [])
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    statuses = []
+    monkeypatch.setattr(
+        analysis,
+        'save_task_status',
+        lambda task_id, task_type, status, **kwargs: statuses.append(status),
+    )
+    server_runs = []
+    monkeypatch.setattr(
+        analysis,
+        'run_analysis_server_task',
+        lambda *args, **kwargs: server_runs.append((args, kwargs)),
+    )
+
+    result = analysis.run_analysis_task(0, 5, server_scope='default')
+
+    assert result['status'] == 'SKIPPED'
+    assert 'default' in result['message']
+    assert not server_runs
+    assert statuses == ['SUCCESS']
+
+
+def test_enabled_analysis_servers_registry_failure_keeps_config_default(monkeypatch):
+    import importlib
+    import tasks.analysis as analysis
+
+    registry = importlib.import_module('tasks.mediaserver.registry')
+
+    def broken_scope(scope):
+        raise RuntimeError('registry down')
+
+    monkeypatch.setattr(registry, 'servers_for_scope', broken_scope)
+
+    assert analysis._enabled_analysis_servers('all') == [None]
+
+
+def test_chromaprint_failure_is_fail_soft_and_marks_sentinel(monkeypatch, tmp_path):
+    import importlib
+    import tasks.analysis as analysis
+    import tasks.analysis_helper as helper
+    import tasks.audio_fingerprint as afp
+    import tasks.clap_analyzer as clap
+
+    registry = importlib.import_module('tasks.mediaserver.registry')
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+
+    monkeypatch.setattr(analysis, 'get_current_job', lambda connection=None: None)
+    monkeypatch.setattr(analysis, 'save_task_status', lambda *args, **kwargs: None)
+    monkeypatch.setattr(analysis, 'get_tracks_from_album', lambda album_id: [item])
+    monkeypatch.setattr(
+        analysis, 'download_track', lambda temp_dir, track: str(tmp_path / 'gone.flac')
+    )
+    monkeypatch.setattr(analysis, 'load_musicnn_sessions', lambda model_paths: {})
+    monkeypatch.setattr(analysis, 'cleanup_musicnn_sessions', lambda *args, **kwargs: None)
+    monkeypatch.setattr(analysis, 'cleanup_optional_models', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        analysis, 'comprehensive_memory_cleanup', lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(analysis, 'cleanup_cuda_memory', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        analysis,
+        'analyze_track',
+        lambda *args, **kwargs: (
+            {
+                'tempo': 120.0,
+                'energy': 0.5,
+                'key': 'C',
+                'scale': 'major',
+                'moods': {'happy': 0.9},
+            },
+            np.zeros(4, dtype=np.float32),
+        ),
+    )
+
+    monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
+    monkeypatch.setattr(afp, 'compute_chromaprint', lambda path, max_seconds=120: None)
+
+    map_upserts = []
+    monkeypatch.setattr(
+        registry, 'upsert_track_maps', lambda *args, **kwargs: map_upserts.append(args)
+    )
+
+    monkeypatch.setattr(
+        helper,
+        'attach_catalog_item_ids',
+        lambda tracks, server_id=None, conn=None: tracks,
+    )
+    monkeypatch.setattr(helper, 'get_existing_track_ids', lambda ids: set())
+    monkeypatch.setattr(helper, 'get_missing_ids_in_table', lambda table, ids: set())
+    monkeypatch.setattr(helper, 'get_missing_chromaprint_ids', lambda ids: {'prov1'})
+    monkeypatch.setattr(
+        helper, 'upsert_artist_mappings_for_tracks', lambda tracks, album_name=None: None
+    )
+    monkeypatch.setattr(helper, 'run_song_analyzed_hook', lambda *args, **kwargs: None)
+    persisted_ids = []
+    monkeypatch.setattr(
+        helper,
+        'persist_musicnn_results',
+        lambda track, *args, **kwargs: persisted_ids.append(helper.catalog_item_id(track)),
+    )
+    sentinel_ids = []
+    monkeypatch.setattr(
+        helper,
+        'mark_chromaprint_failed',
+        lambda item_id: sentinel_ids.append(item_id) or True,
+    )
+
+    result = analysis._analyze_album_task_impl('album1', 'Album One', 5, 'parent1')
+
+    assert result['status'] == 'SUCCESS'
+    assert result['tracks_analyzed'] == 1
+    assert persisted_ids == ['prov1']
+    assert sentinel_ids == ['prov1']
+    assert item.get('_catalog_item_id') is None
+    assert not map_upserts
+
+
+def test_missing_chromaprint_ids_treats_empty_sentinel_as_done(monkeypatch):
+    import tasks.analysis_helper as helper
+    import tasks.audio_fingerprint as afp
+
+    executed = []
+
+    class FakeCursor:
+        def execute(self, query, params=None):
+            executed.append(query)
+
+        def fetchall(self):
+            return [('done-real',), ('done-sentinel',)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(afp, 'fpcalc_available', lambda: True)
+    monkeypatch.setattr(helper, 'get_db', lambda: FakeConn())
+
+    missing = helper.get_missing_chromaprint_ids(['done-real', 'done-sentinel', 'todo'])
+
+    assert missing == {'todo'}
+    assert len(executed) == 1
+    assert 'chromaprint IS NOT NULL' in executed[0]
+    assert "<> ''" not in executed[0]
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

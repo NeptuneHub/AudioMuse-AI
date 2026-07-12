@@ -130,6 +130,16 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
 }
 
+# The ONLY persistent home of these settings is the music_servers registry
+# (default row). They are never written to app_config: init_db migrates any
+# legacy app_config rows into the registry once and deletes them, the setup
+# wizard saves them to the registry, and _apply_db_overrides projects the
+# registry's default row onto these module globals at import/refresh so every
+# legacy read keeps working. Env vars only matter as first-boot seed material.
+MEDIASERVER_CONFIG_KEYS = frozenset(
+    {'MEDIASERVER_TYPE', 'MUSIC_LIBRARIES'} | set(MEDIASERVER_CRED_KEY_BY_FIELD)
+)
+
 # The content fingerprint is the catalogue standard, not an option: every
 # analyzed track is fingerprinted by the bundled fpcalc/Chromaprint tool. The
 # intact Chromaprint is retained and its SHA-256 digest IS the canonical item_id
@@ -150,6 +160,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
     'MEDIASERVER_CRED_KEY_BY_FIELD',
+    'MEDIASERVER_CONFIG_KEYS',
     'APP_VERSION',
     # Admin identity lives in audiomuse_users only. Never mirror it into
     # app_config - stale rows there cause deleted admins to resurrect.
@@ -243,6 +254,7 @@ CLUSTERING_BATCH_CHECK_INTERVAL_SECONDS = int(os.environ.get("CLUSTERING_BATCH_C
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
+MULTISERVER_CATALOG_CACHE_MAX_TRACKS = int(os.environ.get("MULTISERVER_CATALOG_CACHE_MAX_TRACKS", 300000)) # Max total tracks the union-analysis catalogue cache may hold across all servers; catalogues that would exceed the cap are refetched instead of cached to bound RAM.
 
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
@@ -623,6 +635,7 @@ IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored 
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_TRAIN_SAMPLE_MAX = int(os.environ.get("IVF_TRAIN_SAMPLE_MAX", "50000"))  # Hard cap on in-RAM IVF training rows; MiniBatchKMeans does not need the whole catalogue
+MULTISERVER_CATALOG_CACHE_MAX_TRACKS = int(os.environ.get("MULTISERVER_CATALOG_CACHE_MAX_TRACKS", "400000"))  # Cap on tracks kept in the per-run sweep catalogue cache (across all servers); catalogues that would exceed it are refetched instead of cached
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
 IVF_MAX_PART_SIZE_MB = int(os.environ.get("IVF_MAX_PART_SIZE_MB", "50"))  # Hard cap (MB) on every stored BYTEA value (cells and directory parts)
 IVF_NPROBE = int(os.environ.get("IVF_NPROBE", "1024"))  # Cells probed per query (X): the dominant recall/latency knob
@@ -890,6 +903,21 @@ def _apply_db_overrides():
             # Read the value from the db and override the variable
             if _key in globals():
                 globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+
+        # Media-server settings live ONLY in the music_servers registry: project
+        # its default row onto the module globals so every legacy config read
+        # (providers, HEADERS, wizard display) sees the registry values. Legacy
+        # app_config rows may still have applied above on a not-yet-migrated
+        # install; the registry wins whenever its row exists.
+        _default_ms = _setup_manager.get_default_music_server()
+        if _default_ms:
+            globals()['MEDIASERVER_TYPE'] = (_default_ms.get('server_type') or '').lower()
+            globals()['MUSIC_LIBRARIES'] = _default_ms.get('music_libraries') or ''
+            _ms_creds = _default_ms.get('creds') or {}
+            for _field in MEDIASERVER_FIELDS_BY_TYPE.get(globals()['MEDIASERVER_TYPE'], []):
+                _cred_key = MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
+                if _cred_key:
+                    globals()[_field] = _ms_creds.get(_cred_key, '') or ''
 
         HEADERS = _compute_headers()
 

@@ -1250,7 +1250,22 @@ def init_db():
                     (uuid.uuid4().hex, _default_server_name(_seed_type),
                      _seed_type, Json(creds_from_config(_seed_type)), config.MUSIC_LIBRARIES or ""),
                 )
-                logger.info("Seeded default media server '%s' into music_servers registry", _seed_type)
+                logger.info(
+                    "Migrated media-server settings for '%s' into the music_servers registry",
+                    _seed_type,
+                )
+            cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute(
+                    "DELETE FROM app_config WHERE key = ANY(%s)",
+                    (sorted(config.MEDIASERVER_CONFIG_KEYS),),
+                )
+                if cur.rowcount:
+                    logger.info(
+                        "Removed %d legacy media-server keys from app_config; "
+                        "the music_servers registry is now their only home",
+                        cur.rowcount,
+                    )
 
             _create_plugins_table(cur)
 

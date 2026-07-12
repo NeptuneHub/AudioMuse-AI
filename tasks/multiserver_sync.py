@@ -35,12 +35,16 @@ Main Features:
   per-chunk upserts, so neither side is ever fully materialized at once.
 * ``recover_abandoned_sweeps`` (run by the RQ janitor) revokes sweeps whose RQ
   job died mid-run - e.g. killed by the worker restart a default-server change
-  publishes - and enqueues one replacement alignment of all enabled servers.
+  publishes - and enqueues one replacement alignment of all enabled servers,
+  at most once per 10 minutes; rows with no RQ job at all (union analysis runs
+  sweeps inline under synthetic task ids) are left alone.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
   per-server counts stay truthful; pruning is skipped when the fetch looks
   partial so a transient provider error never mass-deletes valid mappings.
 * Optional per-run ``catalog_cache`` lets callers reuse an already fetched
-  server catalogue instead of re-fetching it.
+  server catalogue instead of re-fetching it; the cache holds at most
+  ``MULTISERVER_CATALOG_CACHE_MAX_TRACKS`` tracks across all servers so
+  analysis-time memory stays bounded (oversized catalogues are refetched).
 """
 
 import json
@@ -50,6 +54,7 @@ import uuid
 
 from psycopg2.extras import execute_values
 
+from config import MULTISERVER_CATALOG_CACHE_MAX_TRACKS
 from database import connect_raw
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
@@ -66,15 +71,26 @@ class SweepCancelled(Exception):
     pass
 
 
-def _job_is_alive(task_id):
+def _sweep_job_state(task_id):
+    """Classify a sweep's RQ job as 'alive', 'dead', or 'missing'.
+
+    'missing' means no RQ job exists under that id at all (an inline sweep run
+    with a synthetic task id, or a row whose enqueue failed); 'dead' means the
+    job exists but is no longer queued or running.
+    """
     from rq.job import Job
     from app_helper import redis_conn
 
     try:
         job = Job.fetch(task_id, connection=redis_conn)
-        return str(job.get_status(refresh=True)) in _RQ_ALIVE_STATUSES
+        status = job.get_status(refresh=True)
     except Exception:
-        return False
+        return 'missing'
+    value = getattr(status, 'value', None) or str(status)
+    return 'alive' if value in _RQ_ALIVE_STATUSES else 'dead'
+
+
+_recovery_state = {'last': 0.0}
 
 
 def recover_abandoned_sweeps():
@@ -84,14 +100,23 @@ def recover_abandoned_sweeps():
     default server) can kill a queued or running sweep; RQ later parks the job
     as failed/abandoned while its task_status row stays stuck in PROGRESS and
     the servers it covered are never aligned. Called periodically by the RQ
-    janitor: every non-terminal sweep row whose job is no longer alive in RQ is
+    janitor: every non-terminal sweep row whose RQ job exists but is dead is
     marked REVOKED and one fresh alignment covering all enabled servers is
-    enqueued in their place. Returns the replacement task id, or None when all
-    sweeps are healthy. Uses its own raw connection so it needs no Flask app
-    context.
+    enqueued in their place. Rows with no RQ job at all are skipped: union
+    analysis runs sweeps inline under synthetic task ids that never had an RQ
+    job (revoking one would cancel a live sweep and race the running analysis),
+    and enqueue-failed PENDING rows are archived by the batch-start cleanup.
+    Recovery is throttled to once per 10 minutes after a replacement is
+    enqueued, so a replacement that itself keeps dying (for example OOM during
+    the index rebuild) is not revoked and re-enqueued in a tight loop. Returns
+    the replacement task id, or None when nothing was recovered. Uses its own
+    raw connection so it needs no Flask app context.
     """
     import config
     from app_helper import rq_queue_default
+
+    if time.monotonic() - _recovery_state['last'] < 600:
+        return None
 
     db = connect_raw()
     db.autocommit = True
@@ -107,7 +132,7 @@ def recover_abandoned_sweeps():
             candidates = [r[0] for r in cur.fetchall()]
         finally:
             cur.close()
-        stale = [task_id for task_id in candidates if not _job_is_alive(task_id)]
+        stale = [task_id for task_id in candidates if _sweep_job_state(task_id) == 'dead']
         if not stale:
             return None
 
@@ -144,6 +169,7 @@ def recover_abandoned_sweeps():
             job_id=new_task_id,
             job_timeout=-1,
         )
+        _recovery_state['last'] = time.monotonic()
         logger.warning(
             "Recovered %d interrupted alignment sweep(s); enqueued replacement %s",
             len(stale), new_task_id,
@@ -254,7 +280,10 @@ def _canonicalize_catalog(report, base, span):
     The relabel itself is pure DB work (seconds), but the first run on a legacy
     install also rebuilds every similarity index, which takes a while on a large
     library - so each canonicalization/rebuild step advances the progress bar
-    through the ``base``..``base+span`` window."""
+    through the ``base``..``base+span`` window. A canonicalization or rebuild
+    failure never aborts the sweep: the relabel is transactional (on failure the
+    ids are unchanged, and a rebuild-only failure leaves mappings unaffected),
+    so matching safely continues with the current catalogue ids."""
     from tasks.fingerprint_canonicalize import canonicalize_fingerprinted_ids
 
     step = {'n': 0}
@@ -265,7 +294,15 @@ def _canonicalize_catalog(report, base, span):
         report(message, pct)
 
     report("Checking catalogue ids (Chromaprint hash)...", base)
-    result = canonicalize_fingerprinted_ids(rebuild=True, log_fn=log_fn)
+    try:
+        result = canonicalize_fingerprinted_ids(rebuild=True, log_fn=log_fn)
+    except Exception:
+        logger.exception("Catalogue canonicalization failed; sweep continues with current ids")
+        report(
+            "Canonicalization failed; continuing alignment with current catalogue ids.",
+            base + span,
+        )
+        return
     relabelled = result.get('relabelled', 0) if isinstance(result, dict) else 0
     if relabelled:
         report(
@@ -432,6 +469,12 @@ def _store_server_track_count(db, server_id, track_count):
 def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catalog_cache=None):
     stype = server['server_type']
     server_id = server['server_id']
+    if server.get('music_libraries') and stype in ('jellyfin', 'emby', 'lyrion'):
+        logger.warning(
+            "Library filter for '%s' (%s) is not applied by this provider's "
+            "full-catalogue fetch; the sweep covers the whole server",
+            server['name'], stype,
+        )
     total_local = _local_track_count(db)
     unmapped_count = _unmapped_local_count(db, server_id)
     if not unmapped_count and not full_refresh:
@@ -455,7 +498,16 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catal
                 stype, server['creds'], apply_filter=True
             )
         if catalog_cache is not None:
-            catalog_cache[server_id] = target_tracks
+            cached_total = sum(len(v) for v in catalog_cache.values())
+            if cached_total + len(target_tracks) <= MULTISERVER_CATALOG_CACHE_MAX_TRACKS:
+                catalog_cache[server_id] = target_tracks
+            else:
+                logger.info(
+                    "Catalogue for '%s' (%d tracks) not cached to bound memory "
+                    "(%d already cached, cap %d); it will be refetched if needed",
+                    server['name'], len(target_tracks), cached_total,
+                    MULTISERVER_CATALOG_CACHE_MAX_TRACKS,
+                )
     cancel()
 
     target_total = len(target_tracks)
@@ -476,7 +528,7 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catal
         t for t in target_tracks
         if t.get('id') and str(t.get('id')) not in already_mapped
     )
-    if catalog_cache is None:
+    if catalog_cache is None or server_id not in catalog_cache:
         target_tracks = None
     report(
         f"Aligning {server['name']}: {unmapped_count} tracks to match "

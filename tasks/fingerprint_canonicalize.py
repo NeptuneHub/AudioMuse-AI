@@ -140,8 +140,9 @@ def canonicalize_fingerprinted_ids(
     ``rebuild=False`` skips the index rebuild - used when the caller (analysis)
     rebuilds the indexes itself right afterwards, so they build once. ``log_fn``
     receives ``(message, progress)`` step updates for a caller's progress bar.
-    The session's statement_timeout is lifted for the rewrite (and restored on a
-    caller-provided connection) so large catalogues are not cancelled mid-relabel.
+    The session's statement_timeout is lifted and autocommit forced off for the
+    rewrite (both restored on a caller-provided connection) so large catalogues
+    are not cancelled mid-relabel.
     """
     def _log(message):
         if log_fn is not None:
@@ -152,6 +153,7 @@ def canonicalize_fingerprinted_ids(
 
     own_conn = conn is None
     db = conn or connect_raw()
+    prev_autocommit = getattr(db, 'autocommit', None) if not own_conn else None
     try:
         db.autocommit = False
     except Exception:
@@ -235,6 +237,11 @@ def canonicalize_fingerprinted_ids(
             except Exception:
                 logger.debug("Could not restore statement_timeout", exc_info=True)
         cur.close()
+        if not own_conn and prev_autocommit is not None:
+            try:
+                db.autocommit = prev_autocommit
+            except Exception:
+                logger.debug("Could not restore autocommit", exc_info=True)
         if own_conn:
             db.close()
 

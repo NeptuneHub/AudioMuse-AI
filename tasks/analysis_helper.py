@@ -18,7 +18,9 @@ Main Features:
   build sessions, resolve execution providers, and retry inference on OOM.
 * compute_album_needs / decide_track_needs: per-track dedup deciding which of
   musicnn, CLAP and lyrics embeddings are missing (the real analysis dedup).
-* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors.
+* persist_* helpers upsert mood tags, embeddings, CLAP and lyrics vectors;
+  mark_chromaprint_failed stores an empty-string sentinel so tracks whose
+  fingerprinting failed are never re-selected by get_missing_chromaprint_ids.
 """
 
 import gc
@@ -511,7 +513,7 @@ def get_missing_chromaprint_ids(track_ids):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT item_id FROM score WHERE item_id IN %s "
-            "AND chromaprint IS NOT NULL AND chromaprint <> ''",
+            "AND chromaprint IS NOT NULL",
             (tuple(ids),),
         )
         existing = {str(row[0]) for row in cur.fetchall()}
@@ -522,6 +524,20 @@ def persist_chromaprint(item_id, chromaprint):
     if not chromaprint:
         return False
     return save_track_chromaprint(item_id, chromaprint)
+
+
+def mark_chromaprint_failed(item_id):
+    if not item_id:
+        return False
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE score SET chromaprint = '' "
+            "WHERE item_id = %s AND chromaprint IS NULL",
+            (str(item_id),),
+        )
+        changed = cur.rowcount
+        conn.commit()
+    return bool(changed)
 
 
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):

@@ -19,6 +19,11 @@ Main Features:
   mood tags, MusiCNN embeddings, CLAP and lyrics embeddings, then upsert to the DB.
 * Per-track failures are logged and skipped so one bad track cannot abort a whole
   album; the album is still marked FAILURE afterwards so RQ retries the remainder.
+  Chromaprint fingerprint failures are fail-soft: the track is analyzed under its
+  provider id and an empty-string sentinel marks the fingerprint as permanently
+  failed so it is never re-attempted.
+* run_analysis_task skips (instead of falling back to the config default) when no
+  enabled server matches the requested scope.
 * Media-server reachability and auth probing before enqueuing, so a bad server aborts
   early instead of failing every child job.
 * rebuild_all_indexes_task and _run_all_index_builds rebuild every similarity index
@@ -664,54 +669,64 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
                     track_processed = False
                     chromaprint = None
+                    chromaprint_failed = False
                     if needs_chromaprint:
                         chromaprint = compute_chromaprint(path)
                         candidate_id = chromaprint_canonical_id(chromaprint)
                         if not candidate_id or not chromaprint:
-                            raise RuntimeError(
-                                f"Chromaprint calculation failed for {track_name_full}"
-                            )
-                        source_server_id = (
-                            server_context.active_server_id()
-                            or registry.get_default_server_id()
-                        )
-                        provider_id = str(item.get('Id') or item.get('id'))
-                        candidate_exists = bool(_ah.get_existing_track_ids([candidate_id]))
-                        if source_server_id:
-                            if candidate_exists:
-                                registry.upsert_track_maps(
-                                    source_server_id,
-                                    {candidate_id: (provider_id, 'chromaprint')},
-                                )
-                            else:
-                                pending_track_maps.setdefault(source_server_id, {})[
-                                    candidate_id
-                                ] = (provider_id, 'chromaprint')
-                        if candidate_id != track_id_str:
-                            item['_catalog_item_id'] = candidate_id
-                            track_id_str = candidate_id
-                        if candidate_exists:
-                            needs_musicnn = False
-                            needs_clap = bool(
-                                is_clap_available()
-                                and _ah.get_missing_ids_in_table(
-                                    'clap_embedding', [candidate_id]
-                                )
-                            )
-                            needs_lyrics = bool(
-                                LYRICS_ENABLED
-                                and _ah.get_missing_ids_in_table(
-                                    'lyrics_embedding', [candidate_id]
-                                )
-                            )
-                            needs_chromaprint = False
-                            chromaprint = None
-                            logger.info(
-                                "Chromaprint matched '%s' to existing catalogue id %s; "
-                                "skipping duplicate MusiCNN analysis.",
+                            logger.warning(
+                                "Chromaprint calculation failed for '%s'; continuing "
+                                "analysis under provider id %s without a fingerprint.",
                                 track_name_full,
-                                candidate_id,
+                                track_id_str,
                             )
+                            chromaprint = None
+                            chromaprint_failed = True
+                            needs_chromaprint = False
+                        else:
+                            source_server_id = (
+                                server_context.active_server_id()
+                                or registry.get_default_server_id()
+                            )
+                            provider_id = str(item.get('Id') or item.get('id'))
+                            candidate_exists = bool(
+                                _ah.get_existing_track_ids([candidate_id])
+                            )
+                            if source_server_id:
+                                if candidate_exists:
+                                    registry.upsert_track_maps(
+                                        source_server_id,
+                                        {candidate_id: (provider_id, 'chromaprint')},
+                                    )
+                                else:
+                                    pending_track_maps.setdefault(source_server_id, {})[
+                                        candidate_id
+                                    ] = (provider_id, 'chromaprint')
+                            if candidate_id != track_id_str:
+                                item['_catalog_item_id'] = candidate_id
+                                track_id_str = candidate_id
+                            if candidate_exists:
+                                needs_musicnn = False
+                                needs_clap = bool(
+                                    is_clap_available()
+                                    and _ah.get_missing_ids_in_table(
+                                        'clap_embedding', [candidate_id]
+                                    )
+                                )
+                                needs_lyrics = bool(
+                                    LYRICS_ENABLED
+                                    and _ah.get_missing_ids_in_table(
+                                        'lyrics_embedding', [candidate_id]
+                                    )
+                                )
+                                needs_chromaprint = False
+                                chromaprint = None
+                                logger.info(
+                                    "Chromaprint matched '%s' to existing catalogue id %s; "
+                                    "skipping duplicate MusiCNN analysis.",
+                                    track_name_full,
+                                    candidate_id,
+                                )
 
                     if needs_musicnn:
                         if onnx_sessions is None:
@@ -808,6 +823,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
 
                     if chromaprint and _ah.persist_chromaprint(track_id_str, chromaprint):
                         track_processed = True
+                    elif chromaprint_failed:
+                        _ah.mark_chromaprint_failed(track_id_str)
 
                     _ah.persist_clap_embedding(
                         track_id_str, clap_embedding_for_track, needs_clap
@@ -1412,7 +1429,7 @@ def _enabled_analysis_servers(server_scope):
             return registry.servers_for_scope(server_scope)
         except Exception:
             logger.exception("Server registry unavailable; analyzing the config default only")
-            return []
+            return [None]
 
 
 def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
@@ -1430,8 +1447,20 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     parent_id = current_job.id if current_job else str(uuid.uuid4())
 
     servers = _enabled_analysis_servers(server_scope)
-    if len(servers) <= 1:
-        server = servers[0] if servers else None
+    if not servers:
+        message = f"No enabled server matches scope '{server_scope}'; analysis skipped."
+        logger.warning(message)
+        with app.app_context():
+            save_task_status(
+                parent_id,
+                "main_analysis",
+                TASK_STATUS_SUCCESS,
+                progress=100,
+                details={"message": message},
+            )
+        return {'status': 'SKIPPED', 'message': message}
+    if len(servers) == 1:
+        server = servers[0]
         server_id = server['server_id'] if server else None
         return run_analysis_server_task(num_recent_albums, top_n_moods, server_id=server_id)
 

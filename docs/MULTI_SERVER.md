@@ -21,8 +21,13 @@ Optional ?server=<id> (menu dropdown / API param)
 
 - The **default server** is the one you configure in the Setup wizard. It is
   analyzed first and remains the target when an API omits `server`.
-- **Additional servers** are stored in a registry (`music_servers` table). Each
-  keeps its own credentials and library filter.
+- **Every server lives in the registry** (`music_servers` table), the default
+  included - it is the ONLY persistent home of media-server settings. Each row
+  keeps its own credentials and library filter. Legacy installs are migrated at
+  first start: any media-server keys still in `app_config` are moved into the
+  registry and deleted; environment variables only matter as first-boot seed
+  values. The classic `config` values remain readable but are a read-only
+  projection of the registry's default row.
 - A **mapping table** (`track_server_map`) records, per analyzed track, the real
   provider id on every server, including the default. Database `item_id` values
   are content ids, never Jellyfin/Navidrome/Plex ids after canonicalization.
@@ -63,13 +68,19 @@ Pruning only happens when the fetch looks complete: if the catalogue returns
 fewer tracks than half the mappings already stored, the fetch is treated as
 partial and pruning is skipped, so a transient provider error never
 mass-deletes valid mappings. Only map rows are ever removed, never analyzed
-tracks.
+tracks. Library selections currently narrow catalogue fetches for Navidrome
+and Plex; Jellyfin, Emby and Lyrion sweeps cover the server's entire music
+library.
 
 Matching runs in bounded memory even on very large libraries: the fetched
 catalogue is condensed into a slim lookup index and released, and the local
 catalogue streams through it in chunks (20k tracks at a time) with matches
 written after every chunk, so neither side is ever held fully in RAM and a
-cancelled sweep keeps everything matched so far.
+cancelled sweep keeps everything matched so far. During union analysis, fetched
+catalogues are cached for reuse across alignment passes only up to
+`MULTISERVER_CATALOG_CACHE_MAX_TRACKS` total cached tracks (default 300000);
+larger catalogues are refetched when needed instead of cached, keeping
+analysis-time memory bounded.
 
 Adding or editing servers back to back never leaves a stale alignment running:
 each save cancels any queued or running sweep (matches found so far are kept)
