@@ -450,8 +450,18 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             ('/api/setup/plex/pin/12345', True),
             ('/api/setup/providers/libraries', True),
             ('/api/setup/lyrics-api/analyze', True),
-            ('/api/servers', False),
+            # The wizard configures its media servers through the registry API
+            # and polls the alignment sweep that adding one enqueues.
+            ('/api/servers', True),
+            ('/api/servers/test', True),
+            ('/api/servers/libraries', True),
+            ('/api/servers/align', True),
+            ('/api/servers/abc123/default', True),
+            ('/api/status/task-1', True),
+            ('/api/cancel/task-1', True),
             ('/api/analysis/start', False),
+            ('/api/cancel_all/analysis', False),
+            ('/api/playlists', False),
         ],
     )
     def test_setup_api_subtree_reachable_during_first_run(self, app, monkeypatch, path, allowed):
@@ -463,6 +473,24 @@ class TestSetupBarrierAllowsSetupApiSubtree:
         else:
             assert result is not None
             assert result[1] == 403
+
+    def test_setup_needed_flag_is_exposed_to_handlers(self, app, monkeypatch):
+        from flask import g
+
+        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() is None
+            assert g.setup_needed is True
+
+    def test_no_setup_flag_once_setup_is_complete(self, app, monkeypatch):
+        from flask import g
+
+        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, 'check_auth_needed', lambda secret: None)
+        monkeypatch.setattr(app_auth, 'check_admin_needed', lambda: None)
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() is None
+            assert getattr(g, 'setup_needed', False) is False
 
 
 class TestPasswordHashingUnit:

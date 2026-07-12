@@ -724,6 +724,31 @@ _ADMIN_EXACT_PATHS = (
     '/plugins',
 )
 
+# Paths the FIRST-RUN setup wizard needs while no admin account exists yet.
+# The wizard is unauthenticated by definition, and /api/setup is already fully
+# open in this window (it writes the media-server credentials and creates the
+# first admin). The wizard configures its media servers through the registry
+# API and polls the alignment task that adding one enqueues, so those endpoints
+# are open in exactly the same window and are gated again - admin-only for
+# every mutation - the moment setup completes.
+_SETUP_ALLOWED_PREFIXES = (
+    '/setup',
+    _API_SETUP_PATH,
+    '/api/servers',
+    '/api/status',
+    '/api/cancel',
+)
+
+
+def is_setup_allowed_path(path):
+    """True when ``path`` is one the first-run wizard is allowed to reach."""
+    if not path:
+        return False
+    for prefix in _SETUP_ALLOWED_PREFIXES:
+        if path == prefix or path.startswith(prefix + '/'):
+            return True
+    return False
+
 
 def is_admin_path(path):
     """Return True if ``path`` should only be accessible to admin users."""
@@ -792,10 +817,10 @@ def auth_setup_barrier():
         return
 
     if check_setup_needed():
-        if (
-            request.path in ('/setup', _API_SETUP_PATH)
-            or request.path.startswith(_API_SETUP_PATH + '/')
-        ):
+        # Handlers reached during first run (the media-server registry) read
+        # this to know the wizard - not an authenticated admin - is the caller.
+        g.setup_needed = True
+        if is_setup_allowed_path(request.path):
             return
         if request.path.startswith('/api/'):
             current_app.logger.warning(

@@ -13,11 +13,14 @@ delete and set-default the configured media servers, and trigger the
 cross-server matching sweep. Every configured server is always active; there
 is no per-server enable/disable state. Listing is available to any
 authenticated user (credentials masked); every mutation is admin-only,
-mirroring the setup page.
+mirroring the setup page - EXCEPT during first-run setup, where the wizard
+itself is the (unauthenticated) caller and /api/setup is already open.
 
 Main Features:
 * CRUD over the registry with masked secrets and a preserve-on-mask update.
 * Connection testing and per-server catalogue-matching sweep enqueue.
+* Usable by the first-run setup wizard, so a fresh install can configure its
+  media servers here before any admin account exists.
 """
 
 import json
@@ -45,12 +48,30 @@ music_servers_bp = Blueprint('music_servers_bp', __name__)
 _SUPPORTED_TYPES = ('jellyfin', 'emby', 'navidrome', 'lyrion', 'plex')
 
 
+def _setup_in_progress():
+    """True while the first-run setup wizard is the caller.
+
+    Set by the auth barrier when the install still needs setup: no admin
+    account exists yet, so there is nobody to authenticate as, and the whole
+    /api/setup surface (which writes these same credentials) is already open in
+    that window. It closes the moment setup completes, after which every
+    mutation here is admin-only again.
+    """
+    return bool(getattr(g, 'setup_needed', False))
+
+
+def _is_admin_caller():
+    return (
+        _setup_in_progress()
+        or (not config.AUTH_ENABLED)
+        or getattr(g, 'auth_role', None) == 'admin'
+    )
+
+
 def _forbid_non_admin():
-    if not config.AUTH_ENABLED:
+    if _is_admin_caller():
         return None
-    if getattr(g, 'auth_role', None) != 'admin':
-        return jsonify({"error": "Forbidden"}), 403
-    return None
+    return jsonify({"error": "Forbidden"}), 403
 
 
 def _validate_type(server_type):
@@ -201,6 +222,48 @@ def _missing_cred_keys(server_type, creds):
     return [key for key in required if not creds.get(key)]
 
 
+def _placeholder_default():
+    """The default server row when it is only init_db's credential-less seed.
+
+    A fresh install always carries one (seeded from an unconfigured config), and
+    it is not a server anybody can reach: the first real server added has to
+    take its place, or setup could never complete. Returns None when the default
+    is a properly configured server (or when there is no default at all, which
+    the registry already resolves by making the new server the default).
+    """
+    try:
+        default = registry.get_default_server()
+    except Exception:
+        logger.exception("Could not read the default server")
+        return None
+    if default is None:
+        return None
+    if _missing_cred_keys(default['server_type'], default['creds']):
+        return default
+    return None
+
+
+def _drop_unused_placeholder(placeholder):
+    """Delete the seed row once a real server has replaced it as the default.
+
+    Kept when it owns track mappings: that would mean a once-working server
+    whose credentials were cleared, and its catalogue bindings are not ours to
+    throw away - it just stays as a secondary for the admin to fix or remove.
+    """
+    try:
+        if registry.mapped_count(placeholder['server_id']):
+            return False
+        registry.delete_server(placeholder['server_id'])
+        logger.info(
+            "Removed the unconfigured seed server '%s'; '%s' is the default now.",
+            placeholder['name'], registry.get_default_server_id(),
+        )
+        return True
+    except Exception:
+        logger.exception("Could not remove the unconfigured seed server")
+        return False
+
+
 @music_servers_bp.route('/api/servers', methods=['GET'])
 def list_servers():
     """List configured media servers plus the default id.
@@ -210,8 +273,7 @@ def list_servers():
     """
     payload = servers_for_ui()
     payload['sweep_task'] = _latest_sweep_task()
-    is_admin = (not config.AUTH_ENABLED) or getattr(g, 'auth_role', None) == 'admin'
-    if not is_admin:
+    if not _is_admin_caller():
         for server in payload['servers']:
             server.pop('creds', None)
     return jsonify(payload)
@@ -240,6 +302,12 @@ def add_server():
         return jsonify(
             {"error": f"Missing required credentials for {server_type}: {', '.join(missing)}."}
         ), 400
+    placeholder = _placeholder_default()
+    if placeholder is not None and not make_default:
+        logger.info(
+            "No usable default server is configured; '%s' becomes the default.", name
+        )
+        make_default = True
     server_id = registry.add_server(
         name=name,
         server_type=server_type,
@@ -250,6 +318,8 @@ def add_server():
     sweep_task_id = None
     created = registry.get_server(server_id)
     if created and created['is_default']:
+        if placeholder is not None and placeholder['server_id'] != server_id:
+            _drop_unused_placeholder(placeholder)
         _apply_default_to_config()
     sweep_task_id = _enqueue_sweep()
     body = server_public_dict(created)

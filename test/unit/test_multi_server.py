@@ -1231,3 +1231,130 @@ class TestSweepAlignment:
             assert sync._prune_stale_mappings(db, 's1', target) == 0
         assert 'pruning skipped' in caplog.text
         db.commit.assert_not_called()
+
+
+class TestFirstRunSetupWizardServerApi:
+    """The first-run wizard drives /api/servers before any admin exists.
+
+    The auth barrier opens the registry API while setup is needed (it already
+    opens /api/setup, which writes the same credentials); these tests pin the
+    second gate - the blueprint's own admin check - to the same window, and the
+    promotion of the first real server over init_db's credential-less seed row.
+    """
+
+    @staticmethod
+    def _request_context(**kwargs):
+        from flask import Flask
+
+        return Flask('setup-wizard-test').test_request_context(
+            '/api/servers', **kwargs
+        )
+
+    def test_mutations_allowed_while_setup_is_needed(self, monkeypatch):
+        import app_music_servers as msrv
+        import config
+        from flask import g
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True, raising=False)
+        with self._request_context():
+            g.setup_needed = True
+            assert msrv._is_admin_caller() is True
+            assert msrv._forbid_non_admin() is None
+
+    def test_mutations_forbidden_once_setup_is_complete(self, monkeypatch):
+        import app_music_servers as msrv
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True, raising=False)
+        with self._request_context():
+            result = msrv._forbid_non_admin()
+        assert result is not None
+        assert result[1] == 403
+
+    _SEED_ROW = {
+        'server_id': 'seed', 'name': 'Jellyfin', 'server_type': 'jellyfin',
+        'creds': {}, 'music_libraries': '', 'is_default': True,
+    }
+    _CONFIGURED_ROW = {
+        'server_id': 'd1', 'name': 'Navidrome', 'server_type': 'navidrome',
+        'creds': {'url': 'http://nd:4533', 'user': 'u', 'password': 'p'},
+        'music_libraries': '', 'is_default': True,
+    }
+
+    def test_credential_less_seed_row_is_a_placeholder(self, monkeypatch):
+        import app_music_servers as msrv
+
+        monkeypatch.setattr(
+            msrv.registry, 'get_default_server', lambda conn=None: self._SEED_ROW
+        )
+        assert msrv._placeholder_default() == self._SEED_ROW
+
+    def test_configured_default_is_not_a_placeholder(self, monkeypatch):
+        import app_music_servers as msrv
+
+        monkeypatch.setattr(
+            msrv.registry, 'get_default_server', lambda conn=None: self._CONFIGURED_ROW
+        )
+        assert msrv._placeholder_default() is None
+
+    def _add_plex(self, monkeypatch, default_row, mapped=0):
+        import app_music_servers as msrv
+        from flask import g
+
+        created = {
+            'server_id': 'new', 'name': 'Plex', 'server_type': 'plex',
+            'creds': {'url': 'http://plex:32400', 'token': 'tok'},
+            'music_libraries': '', 'is_default': True,
+        }
+        added = {}
+        deleted = []
+
+        def fake_add(**kwargs):
+            added.update(kwargs)
+            return 'new'
+
+        monkeypatch.setattr(msrv.registry, 'get_default_server', lambda conn=None: default_row)
+        monkeypatch.setattr(msrv.registry, 'get_default_server_id', lambda conn=None: 'new')
+        monkeypatch.setattr(msrv.registry, 'get_server_by_name', lambda name, conn=None: None)
+        monkeypatch.setattr(msrv.registry, 'add_server', fake_add)
+        monkeypatch.setattr(msrv.registry, 'get_server', lambda sid, conn=None: created)
+        monkeypatch.setattr(msrv.registry, 'mapped_count', lambda sid, conn=None: mapped)
+        monkeypatch.setattr(
+            msrv.registry, 'delete_server',
+            lambda sid, conn=None: deleted.append(sid) or True,
+        )
+        monkeypatch.setattr(msrv, '_apply_default_to_config', lambda: None)
+        monkeypatch.setattr(msrv, '_enqueue_sweep', lambda *a, **k: 'sweep-1')
+
+        with self._request_context(
+            method='POST',
+            json={
+                'name': 'Plex', 'server_type': 'plex',
+                'creds': {'url': 'http://plex:32400', 'token': 'tok'},
+            },
+        ):
+            g.setup_needed = True
+            _body, status = msrv.add_server()
+        return added, deleted, status
+
+    def test_first_real_server_replaces_and_removes_the_seed_row(self, monkeypatch):
+        added, deleted, status = self._add_plex(monkeypatch, default_row=self._SEED_ROW)
+        assert status == 201
+        assert added['make_default'] is True
+        assert deleted == ['seed']
+
+    def test_seed_row_with_mappings_is_demoted_but_kept(self, monkeypatch):
+        added, deleted, status = self._add_plex(
+            monkeypatch, default_row=self._SEED_ROW, mapped=42
+        )
+        assert status == 201
+        assert added['make_default'] is True
+        assert deleted == []
+
+    def test_added_server_stays_secondary_when_a_default_is_configured(self, monkeypatch):
+        added, deleted, status = self._add_plex(
+            monkeypatch, default_row=self._CONFIGURED_ROW
+        )
+        assert status == 201
+        assert added['make_default'] is False
+        assert deleted == []

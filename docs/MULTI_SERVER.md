@@ -34,9 +34,14 @@ Optional ?server=<id> (menu dropdown / API param)
 
 ## Configuring servers
 
-Open the **Setup** page (admin only). Under **Music Servers** you can:
+Open the **Setup** page. It is admin-only once the install is set up; during
+the very first run - when no admin account exists yet - the wizard reaches it
+unauthenticated, so a fresh install can add, test and pick its media servers
+right there. Under **Music Servers** you can:
 
-- See every configured server and which one is the default.
+- See every configured server and which one is the default. On a fresh install
+  the first server you add automatically becomes the default (the empty seed
+  entry it replaces is removed).
 - Add a server: pick a type, fill its credentials and (optionally) a library
   filter, test the connection, and save.
 - Edit, set-as-default, delete, or trigger a matching sweep. Every

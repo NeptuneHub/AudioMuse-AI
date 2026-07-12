@@ -369,6 +369,13 @@
                     feedback(el('ms-feedback'), (res.d && res.d.error) || 'Save failed.', false);
                     return;
                 }
+                if (res.d && res.d.is_default) {
+                    // The default server IS what the setup form edits. Reload so
+                    // that form shows the new default instead of re-saving the
+                    // old one over it; the running sweep resumes on load.
+                    window.location.reload();
+                    return;
+                }
                 hideRegistryForm();
                 resetForm();
                 loadServers();
@@ -406,7 +413,9 @@
                     feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
                     return;
                 }
-                loadServers();
+                // Same reason as in save(): the setup form edits the default
+                // server, so it must be re-read from the new one.
+                window.location.reload();
             })
             .catch(function (err) {
                 console.error('Set default failed:', err);
