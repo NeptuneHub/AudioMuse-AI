@@ -57,6 +57,7 @@
     }
 
     function hideRegistryForm() {
+        if (window.PlexLink) { window.PlexLink.stop(); }
         el('music-server-form').style.display = 'none';
     }
 
@@ -72,6 +73,7 @@
     function currentType() { return el('ms-type').value; }
 
     function renderCredFields(values, editing) {
+        if (window.PlexLink) { window.PlexLink.stop(); }
         var fields = CRED_FIELDS[currentType()] || [];
         var mount = el('ms-cred-fields');
         mount.innerHTML = '';
@@ -99,6 +101,15 @@
             wrap.appendChild(input);
             mount.appendChild(wrap);
         });
+        if (currentType() === 'plex' && window.PlexLink) {
+            var plexRow = document.createElement('div');
+            plexRow.id = 'ms-plex-link';
+            plexRow.style.marginTop = '0.25rem';
+            mount.appendChild(plexRow);
+            window.PlexLink.attach(plexRow, {
+                getTokenInput: function () { return el('ms-cred-token'); }
+            });
+        }
     }
 
     function clearLibraryBoxes() {

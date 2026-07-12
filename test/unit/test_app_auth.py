@@ -441,6 +441,30 @@ class TestAdminPathEnforcement:
         assert app_auth.is_admin_path(path) is expected
 
 
+class TestSetupBarrierAllowsSetupApiSubtree:
+    @pytest.mark.parametrize(
+        'path,allowed',
+        [
+            ('/api/setup', True),
+            ('/api/setup/plex/pin', True),
+            ('/api/setup/plex/pin/12345', True),
+            ('/api/setup/providers/libraries', True),
+            ('/api/setup/lyrics-api/analyze', True),
+            ('/api/servers', False),
+            ('/api/analysis/start', False),
+        ],
+    )
+    def test_setup_api_subtree_reachable_during_first_run(self, app, monkeypatch, path, allowed):
+        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+        with app.test_request_context(path):
+            result = app_auth.auth_setup_barrier()
+        if allowed:
+            assert result is None
+        else:
+            assert result is not None
+            assert result[1] == 403
+
+
 class TestPasswordHashingUnit:
     def test_create_user_stores_argon2_hash(self, monkeypatch):
         db, cur = _fake_db(fetchone=(1,))

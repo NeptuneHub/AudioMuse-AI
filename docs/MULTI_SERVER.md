@@ -71,6 +71,13 @@ catalogue streams through it in chunks (20k tracks at a time) with matches
 written after every chunk, so neither side is ever held fully in RAM and a
 cancelled sweep keeps everything matched so far.
 
+Adding or editing servers back to back never leaves a stale alignment running:
+each save cancels any queued or running sweep (matches found so far are kept)
+and enqueues one fresh alignment covering every enabled server, so the newest
+sweep always reflects the full server list. Plex servers can be linked without
+hunting for a token: the add/edit form offers the same sign-in-with-Plex
+(plex.tv/link PIN) flow as the setup wizard and fills the token automatically.
+
 The library cleaning task is multi-server aware: it fetches the current track
 set of every enabled server, translates each server's provider ids to canonical
 catalogue ids, and deletes only tracks that no server still has. If any

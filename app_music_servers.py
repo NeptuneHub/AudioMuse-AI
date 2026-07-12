@@ -81,23 +81,69 @@ def _apply_default_to_config():
     restart_manager.publish_restart_request()
 
 
-def _enqueue_sweep(server_id):
+def _cancel_active_sweeps():
+    """Revoke queued/running alignment sweeps so a consolidated one replaces them."""
+    from app_helper import cancel_job_and_children_recursive
+
+    cancelled = []
+    try:
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                "SELECT task_id FROM task_status WHERE task_type = 'server_sweep' "
+                "AND status NOT IN (%s, %s, %s)",
+                (config.TASK_STATUS_SUCCESS, config.TASK_STATUS_FAILURE,
+                 config.TASK_STATUS_REVOKED),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    except Exception:
+        logger.exception("Could not look up active sweeps to supersede")
+        return cancelled
+    for row in rows:
+        stale_task_id = row[0]
+        try:
+            cancel_job_and_children_recursive(
+                stale_task_id,
+                reason="Superseded by a new alignment covering all enabled servers.",
+            )
+            cancelled.append(stale_task_id)
+        except Exception:
+            logger.exception("Could not cancel superseded sweep %s", stale_task_id)
+    return cancelled
+
+
+def _enqueue_sweep(at_front=False):
+    """Replace any queued/running sweep with one alignment of every enabled server.
+
+    Adding several servers back to back cancels the previous alignment each time
+    and starts a fresh one, so the newest sweep always covers every not-yet-aligned
+    server and no stale sweep for an outdated server set keeps running.
+    """
+    superseded = _cancel_active_sweeps()
     task_id = str(uuid.uuid4())
     try:
         save_task_status(
             task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Server matching sweep queued.'},
+            details={'message': 'Server alignment queued for all enabled servers.'},
         )
         rq_queue_default.enqueue(
-            'tasks.multiserver_sync.sweep_server',
-            args=(server_id,),
+            'tasks.multiserver_sync.sweep_all_secondary_servers',
             kwargs={'task_id': task_id},
             job_id=task_id,
             job_timeout=-1,
+            at_front=at_front,
         )
+        if superseded:
+            logger.info(
+                "Superseded %d active sweep(s) with consolidated alignment %s",
+                len(superseded), task_id,
+            )
         return task_id
     except Exception:
-        logger.exception("Failed to enqueue matching sweep for server %s", server_id)
+        logger.exception("Failed to enqueue the server alignment")
         return None
 
 
@@ -199,7 +245,7 @@ def add_server():
     created = registry.get_server(server_id)
     if created and created['is_default']:
         _apply_default_to_config()
-    sweep_task_id = _enqueue_sweep(server_id)
+    sweep_task_id = _enqueue_sweep()
     body = server_public_dict(created)
     body['sweep_task_id'] = sweep_task_id
     return jsonify(body), 201
@@ -258,7 +304,7 @@ def update_server(server_id):
         or (new_enabled is not None and bool(new_enabled) and not existing['enabled'])
     )
     if needs_sweep:
-        sweep_task_id = _enqueue_sweep(server_id)
+        sweep_task_id = _enqueue_sweep()
     body = server_public_dict(registry.get_server(server_id))
     body['sweep_task_id'] = sweep_task_id
     return jsonify(body)
@@ -286,7 +332,7 @@ def set_default_server(server_id):
     if registry.get_server(server_id) is None:
         return jsonify({"error": "Unknown server."}), 404
     registry.set_default(server_id)
-    sweep_task_id = _enqueue_sweep(server_id)
+    sweep_task_id = _enqueue_sweep()
     _apply_default_to_config()
     payload = servers_for_ui()
     payload['sweep_task_id'] = sweep_task_id
@@ -355,21 +401,8 @@ def align_servers():
     forbidden = _forbid_non_admin()
     if forbidden:
         return forbidden
-    task_id = str(uuid.uuid4())
-    try:
-        save_task_status(
-            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
-            details={'message': 'Music server alignment queued.'},
-        )
-        rq_queue_default.enqueue(
-            'tasks.multiserver_sync.sweep_all_secondary_servers',
-            kwargs={'task_id': task_id},
-            job_id=task_id,
-            job_timeout=-1,
-            at_front=True,
-        )
-    except Exception:
-        logger.exception("Failed to enqueue music server alignment")
+    task_id = _enqueue_sweep(at_front=True)
+    if task_id is None:
         return jsonify({"error": "Could not enqueue the alignment; check container logs."}), 500
     return jsonify({"enqueued": True, "task_id": task_id}), 202
 
@@ -381,7 +414,20 @@ def sweep_server(server_id):
         return forbidden
     if registry.get_server(server_id) is None:
         return jsonify({"error": "Unknown server."}), 404
-    task_id = _enqueue_sweep(server_id)
-    if task_id is None:
+    task_id = str(uuid.uuid4())
+    try:
+        save_task_status(
+            task_id, 'server_sweep', config.TASK_STATUS_PENDING,
+            details={'message': 'Server matching sweep queued.'},
+        )
+        rq_queue_default.enqueue(
+            'tasks.multiserver_sync.sweep_server',
+            args=(server_id,),
+            kwargs={'task_id': task_id},
+            job_id=task_id,
+            job_timeout=-1,
+        )
+    except Exception:
+        logger.exception("Failed to enqueue matching sweep for server %s", server_id)
         return jsonify({"error": "Could not enqueue the sweep; check container logs."}), 500
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

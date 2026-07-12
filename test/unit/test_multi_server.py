@@ -745,6 +745,50 @@ class TestSweepAlignment:
         assert written == {'fp_1': 'nav1'}
         assert summary['matched'] == 1
 
+    def test_enqueue_sweep_supersedes_active_sweeps_with_all_server_alignment(self, monkeypatch):
+        import app_music_servers as msrv
+
+        cancelled = []
+        monkeypatch.setattr(
+            msrv, '_cancel_active_sweeps', lambda: cancelled.append('old-task') or ['old-task']
+        )
+        saved = {}
+        monkeypatch.setattr(
+            msrv, 'save_task_status',
+            lambda task_id, task_type, status, **kw: saved.update(
+                {'task_id': task_id, 'task_type': task_type, 'status': status}
+            ),
+        )
+        enqueued = {}
+
+        def fake_enqueue(func, **kwargs):
+            enqueued['func'] = func
+            enqueued.update(kwargs)
+
+        monkeypatch.setattr(msrv.rq_queue_default, 'enqueue', fake_enqueue)
+        task_id = msrv._enqueue_sweep()
+        assert cancelled == ['old-task']
+        assert enqueued['func'] == 'tasks.multiserver_sync.sweep_all_secondary_servers'
+        assert enqueued['job_id'] == task_id
+        assert saved['task_type'] == 'server_sweep'
+
+    def test_cancel_active_sweeps_revokes_each_non_terminal_sweep(self, monkeypatch):
+        import app_music_servers as msrv
+        import app_helper
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [('t1',), ('t2',)]
+        db = MagicMock()
+        db.cursor.return_value = cur
+        monkeypatch.setattr(msrv, 'get_db', lambda: db)
+        revoked = []
+        monkeypatch.setattr(
+            app_helper, 'cancel_job_and_children_recursive',
+            lambda task_id, reason=None: revoked.append(task_id),
+        )
+        assert msrv._cancel_active_sweeps() == ['t1', 't2']
+        assert revoked == ['t1', 't2']
+
     def test_prune_skipped_when_fetch_looks_partial(self, caplog):
         from tasks import multiserver_sync as sync
 

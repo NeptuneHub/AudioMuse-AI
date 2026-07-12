@@ -792,7 +792,10 @@ def auth_setup_barrier():
         return
 
     if check_setup_needed():
-        if request.path in ('/setup', _API_SETUP_PATH):
+        if (
+            request.path in ('/setup', _API_SETUP_PATH)
+            or request.path.startswith(_API_SETUP_PATH + '/')
+        ):
             return
         if request.path.startswith('/api/'):
             current_app.logger.warning(
