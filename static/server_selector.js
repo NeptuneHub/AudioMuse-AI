@@ -20,7 +20,10 @@
         if (!id || id === state.defaultId) {
             return false;
         }
-        return state.servers.some(function (s) { return s.server_id === id; });
+        if (state.servers.length === 0) {
+            return true;
+        }
+        return state.servers.some(function (s) { return s.server_id === id && s.enabled; });
     }
 
     function shouldInject(pathname) {
@@ -43,12 +46,15 @@
     window.fetch = function (input, init) {
         try {
             var id = selectedId();
-            if (isNonDefaultSelection(id) && typeof input === 'string') {
-                var name = selectedName(id);
-                var u = new URL(input, window.location.origin);
+            if (isNonDefaultSelection(id) && (typeof input === 'string' || input instanceof Request)) {
+                var name = selectedName(id) || (state.servers.length === 0 ? id : null);
+                var rawUrl = input instanceof Request ? input.url : input;
+                var u = new URL(rawUrl, window.location.origin);
                 if (name && u.origin === window.location.origin && shouldInject(u.pathname) && !u.searchParams.has('server')) {
                     u.searchParams.set('server', name);
-                    input = u.pathname + u.search + u.hash;
+                    input = input instanceof Request
+                        ? new Request(u.toString(), input)
+                        : u.pathname + u.search + u.hash;
                 }
             }
         } catch (e) {
@@ -80,7 +86,8 @@
                 + (s.is_default ? ' (default)' : '')
                 + (s.enabled ? '' : ' [disabled]');
             var sel = (s.server_id === current) ? ' selected' : '';
-            html += '<option value="' + escapeHtml(s.server_id) + '"' + sel + '>' + escapeHtml(label) + '</option>';
+            var disabled = s.enabled ? '' : ' disabled';
+            html += '<option value="' + escapeHtml(s.server_id) + '"' + sel + disabled + '>' + escapeHtml(label) + '</option>';
         });
         html += '</select>';
         mount.innerHTML = html;
@@ -106,7 +113,7 @@
                 state.servers = data.servers || [];
                 state.defaultId = data.default_id;
                 var current = selectedId();
-                if (current && !state.servers.some(function (s) { return s.server_id === current; })) {
+                if (current && !state.servers.some(function (s) { return s.server_id === current && s.enabled; })) {
                     localStorage.removeItem(STORAGE_KEY);
                 }
                 render();

@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 def _build_mapping(cur):
     cur.execute(
         "SELECT s.item_id, s.chromaprint FROM score s "
-        "WHERE s.chromaprint IS NOT NULL AND s.chromaprint <> ''"
+        "WHERE s.chromaprint IS NOT NULL AND s.chromaprint <> '' "
+        "AND s.item_id <> 'fp_' || "
+        "left(encode(sha256(convert_to(s.chromaprint, 'UTF8')), 'hex'), 32)"
     )
     candidates = []
     for old_id, chromaprint in cur.fetchall():
@@ -67,8 +69,13 @@ def _build_mapping(cur):
     return mapping, duplicate_mapping
 
 
-def _merge_duplicate_rows(cur, duplicate_mapping, lyrics_exists):
-    """Merge provider-keyed duplicate analysis rows into existing canonical rows."""
+def _merge_duplicate_rows(cur, duplicate_mapping):
+    """Merge provider-keyed duplicate analysis rows into existing canonical rows.
+
+    The source track_server_map rows are snapshotted and deleted before the
+    canonical copies are inserted, so the per-server provider-id unique index
+    is never violated while both keys exist.
+    """
     if not duplicate_mapping:
         return
     cur.execute(
@@ -84,10 +91,19 @@ def _merge_duplicate_rows(cur, duplicate_mapping, lyrics_exists):
             [value for pair in chunk for value in pair],
         )
     cur.execute(
+        "CREATE TEMP TABLE duplicate_server_map_rows ON COMMIT DROP AS "
+        "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier "
+        "FROM track_server_map t JOIN duplicate_item_id_map d ON d.old_id = t.item_id"
+    )
+    cur.execute(
+        "DELETE FROM track_server_map t USING duplicate_item_id_map d "
+        "WHERE t.item_id = d.old_id"
+    )
+    cur.execute(
         "INSERT INTO track_server_map "
         "(item_id, server_id, provider_track_id, match_tier, updated_at) "
-        "SELECT d.new_id, t.server_id, t.provider_track_id, t.match_tier, now() "
-        "FROM track_server_map t JOIN duplicate_item_id_map d ON d.old_id = t.item_id "
+        "SELECT r.new_id, r.server_id, r.provider_track_id, r.match_tier, now() "
+        "FROM duplicate_server_map_rows r "
         "ON CONFLICT (item_id, server_id) DO NOTHING"
     )
     cur.execute(
@@ -99,8 +115,6 @@ def _merge_duplicate_rows(cur, duplicate_mapping, lyrics_exists):
     cur.execute(
         "DELETE FROM playlist p USING duplicate_item_id_map d WHERE p.item_id = d.old_id"
     )
-    # Deleting score now cascades the redundant embeddings and old mappings;
-    # the canonical analysis row and copied mappings remain intact.
     cur.execute(
         "DELETE FROM score s USING duplicate_item_id_map d WHERE s.item_id = d.old_id"
     )
@@ -126,6 +140,8 @@ def canonicalize_fingerprinted_ids(
     ``rebuild=False`` skips the index rebuild - used when the caller (analysis)
     rebuilds the indexes itself right afterwards, so they build once. ``log_fn``
     receives ``(message, progress)`` step updates for a caller's progress bar.
+    The session's statement_timeout is lifted for the rewrite (and restored on a
+    caller-provided connection) so large catalogues are not cancelled mid-relabel.
     """
     def _log(message):
         if log_fn is not None:
@@ -143,7 +159,12 @@ def canonicalize_fingerprinted_ids(
     cur = db.cursor()
     relabelled = 0
     duplicates = 0
+    prev_timeout = None
     try:
+        if not own_conn:
+            cur.execute("SHOW statement_timeout")
+            prev_timeout = cur.fetchone()[0]
+        cur.execute("SET statement_timeout = 0")
         source_id = source_server_id or registry.get_default_server_id(db)
         if source_id is None:
             logger.warning(
@@ -176,7 +197,7 @@ def canonicalize_fingerprinted_ids(
             _populate_migration_map_table(cur, mapping)
             _rewrite_item_ids(cur, lyrics_exists)
         _readd_fk_constraints(cur, fk_embedding, fk_clap, lyrics_exists, fk_lyrics)
-        _merge_duplicate_rows(cur, duplicate_mapping, lyrics_exists)
+        _merge_duplicate_rows(cur, duplicate_mapping)
 
         _log("Preserving the server's real track ids in track_server_map...")
         rows = [
@@ -207,15 +228,18 @@ def canonicalize_fingerprinted_ids(
         logger.exception("Fingerprint canonicalization failed; catalogue left unchanged")
         raise
     finally:
+        if not own_conn and prev_timeout is not None:
+            try:
+                cur.execute("SET statement_timeout = %s", (prev_timeout,))
+                db.commit()
+            except Exception:
+                logger.debug("Could not restore statement_timeout", exc_info=True)
         cur.close()
         if own_conn:
             db.close()
 
     if rebuild and relabelled:
-        try:
-            from tasks.analysis import rebuild_all_indexes_task
-            rebuild_all_indexes_task(log_fn=log_fn)
-        except Exception:
-            logger.exception("Index rebuild after canonicalization failed; run a rebuild manually")
+        from tasks.analysis import rebuild_all_indexes_task
+        rebuild_all_indexes_task(log_fn=log_fn)
 
     return {'relabelled': relabelled, 'duplicates': duplicates}

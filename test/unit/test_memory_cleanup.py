@@ -269,7 +269,8 @@ class TestAnalyzeAlbumMemoryCleanup:
             16000,
         )
 
-        with patch('tasks.clap_analyzer.is_clap_available', return_value=False):
+        with patch('tasks.clap_analyzer.is_clap_available', return_value=False), \
+                patch('tasks.analysis._ah.run_lyrics_for_track', return_value=True):
             analyze_album_task("album_123", "Test Album", 5, None)
 
         assert mock_session_cleanup.call_count >= 2

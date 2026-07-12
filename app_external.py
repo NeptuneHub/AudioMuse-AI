@@ -232,7 +232,21 @@ def search_tracks_endpoint():
             server_id = resolve_request_server_id()
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        results = search_tracks_unified(search_query)
+        selected_server_id = server_id
+        include_legacy = False
+        try:
+            default_id = registry.get_default_server_id()
+            selected_server_id = server_id or default_id
+            include_legacy = selected_server_id == default_id
+        except Exception:
+            logger.exception(
+                "Default server resolution failed; searching without availability filter"
+            )
+        results = search_tracks_unified(
+            search_query,
+            server_id=selected_server_id,
+            include_legacy_default=include_legacy,
+        )
         try:
             mapping = registry.translate_ids([r['item_id'] for r in results], server_id)
         except Exception:

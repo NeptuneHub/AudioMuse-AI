@@ -923,6 +923,10 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_status_parent ON task_status (parent_task_id)"
             )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_task_status_type_timestamp "
+                "ON task_status (task_type, timestamp DESC)"
+            )
             for col_name in ['start_time', 'end_time']:
                 cur.execute(
                     "SELECT data_type FROM information_schema.columns WHERE table_name = 'task_status' AND column_name = %s",
@@ -1204,20 +1208,41 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_track_server_map_reverse "
                 "ON track_server_map (server_id, provider_track_id)"
             )
+            cur.execute(
+                "SELECT to_regclass('public.idx_track_server_map_provider_unique') IS NULL"
+            )
+            if cur.fetchone()[0]:
+                cur.execute(
+                    "DELETE FROM track_server_map older USING track_server_map newer "
+                    "WHERE older.server_id = newer.server_id "
+                    "AND older.provider_track_id = newer.provider_track_id "
+                    "AND (older.updated_at < newer.updated_at OR "
+                    "(older.updated_at = newer.updated_at AND older.item_id > newer.item_id))"
+                )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_track_server_map_provider_unique "
+                "ON track_server_map (server_id, provider_track_id)"
+            )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS artist_server_map (
+                    artist_name TEXT NOT NULL,
+                    server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE,
+                    provider_artist_id TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (artist_name, server_id),
+                    UNIQUE (server_id, provider_artist_id)
+                )
+            """)
             cur.execute("SELECT COUNT(*) FROM music_servers")
             if cur.fetchone()[0] == 0:
+                from tasks.mediaserver.registry import creds_from_config, _default_server_name
                 _seed_type = config.MEDIASERVER_TYPE
-                _seed_creds = {}
-                for _field in config.MEDIASERVER_FIELDS_BY_TYPE.get(_seed_type, []):
-                    _key = config.MEDIASERVER_CRED_KEY_BY_FIELD.get(_field)
-                    if _key:
-                        _seed_creds[_key] = getattr(config, _field, "") or ""
                 cur.execute(
                     "INSERT INTO music_servers "
                     "(server_id, name, server_type, creds, music_libraries, is_default, enabled) "
                     "VALUES (%s, %s, %s, %s, %s, TRUE, TRUE)",
-                    (uuid.uuid4().hex, (_seed_type or 'media server').capitalize(),
-                     _seed_type, Json(_seed_creds), config.MUSIC_LIBRARIES or ""),
+                    (uuid.uuid4().hex, _default_server_name(_seed_type),
+                     _seed_type, Json(creds_from_config(_seed_type)), config.MUSIC_LIBRARIES or ""),
                 )
                 logger.info("Seeded default media server '%s' into music_servers registry", _seed_type)
 
@@ -1692,7 +1717,7 @@ def clean_up_previous_main_tasks():
         cur.close()
 
 
-def get_active_main_task(task_type=None):
+def get_active_main_task(task_type=None, exclude_task_types=('server_sweep',)):
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
@@ -1709,16 +1734,17 @@ def get_active_main_task(task_type=None):
             (task_type, non_terminal_statuses),
         )
     else:
-        cur.execute(
-            """
-            SELECT task_id, task_type, status, details
-            FROM task_status
-            WHERE status IN %s AND parent_task_id IS NULL
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """,
-            (non_terminal_statuses,),
+        query = (
+            "SELECT task_id, task_type, status, details "
+            "FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL"
         )
+        params = [non_terminal_statuses]
+        if exclude_task_types:
+            query += " AND task_type <> ALL(%s)"
+            params.append(list(exclude_task_types))
+        query += " ORDER BY timestamp DESC LIMIT 1"
+        cur.execute(query, tuple(params))
 
     active_task = cur.fetchone()
     cur.close()

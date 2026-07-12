@@ -460,7 +460,14 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
             last_id_by_name[name] = aid
         elif name:
             last_id_by_name.setdefault(name, None)
-    upsert_artist_mappings((n, a) for n, a in last_id_by_name.items() if a)
+    from tasks.mediaserver import context, registry
+
+    valid = {name: artist_id for name, artist_id in last_id_by_name.items() if artist_id}
+    server_id = context.active_server_id() or registry.get_default_server_id()
+    if valid and server_id:
+        registry.upsert_artist_maps(server_id, valid)
+    if server_id == registry.get_default_server_id():
+        upsert_artist_mappings(valid.items())
     for name, aid in last_id_by_name.items():
         if not aid:
             scope = f" in album '{album_name}'" if album_name else ""
@@ -657,7 +664,9 @@ def run_lyrics_for_track(
             source_path=str(path) if path is not None else None,
             artist=item.get('AlbumArtist') or item.get('Artist'),
             track=item.get('Name'),
-            track_id=catalog_item_id(item),
+            # Provider lyrics APIs require the selected server's real track id;
+            # only database persistence uses the canonical catalogue id.
+            track_id=str(item.get('Id') or item.get('id') or catalog_item_id(item)),
             top_moods=top_moods,
             audio_loader=audio_loader,
         )

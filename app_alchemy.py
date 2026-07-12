@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 alchemy_bp = Blueprint('alchemy_bp', __name__, template_folder='../templates')
 
-_PLAYLIST_CACHE = {'ts': 0.0, 'data': None}
+_PLAYLIST_CACHE = {}
 _PLAYLIST_CACHE_TTL = 30.0
 _PLAYLIST_CACHE_LOCK = threading.Lock()
 
@@ -100,29 +100,41 @@ def search_artists():
     offset = start
 
     try:
-        results = search_artists_by_name(query, limit=limit, offset=offset)
+        from tasks.mediaserver import registry
+
+        server_id = app_server_context.resolve_request_server_id()
+        server_id = server_id or registry.get_default_server_id()
+        results = search_artists_by_name(
+            query,
+            limit=limit,
+            offset=offset,
+            server_id=server_id,
+            include_legacy_default=(server_id == registry.get_default_server_id()),
+        )
+        results = app_server_context.scope_artist_results(results)
         return jsonify(results)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception:
         logger.exception("Artist search failed")
         return jsonify([]), 200  # Return empty list on error
 
 
-def _cached_all_playlists():
+def _cached_all_playlists(server_id):
+    cache_key = server_id or '__default__'
     now = time.monotonic()
-    if _PLAYLIST_CACHE['data'] is not None and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL:
-        return _PLAYLIST_CACHE['data']
+    cached = _PLAYLIST_CACHE.get(cache_key)
+    if cached is not None and (now - cached['ts']) < _PLAYLIST_CACHE_TTL:
+        return cached['data']
     with _PLAYLIST_CACHE_LOCK:
         now = time.monotonic()
-        if (
-            _PLAYLIST_CACHE['data'] is not None
-            and (now - _PLAYLIST_CACHE['ts']) < _PLAYLIST_CACHE_TTL
-        ):
-            return _PLAYLIST_CACHE['data']
+        cached = _PLAYLIST_CACHE.get(cache_key)
+        if cached is not None and (now - cached['ts']) < _PLAYLIST_CACHE_TTL:
+            return cached['data']
         from tasks.mediaserver import get_all_playlists
 
         data = get_all_playlists() or []
-        _PLAYLIST_CACHE['data'] = data
-        _PLAYLIST_CACHE['ts'] = now
+        _PLAYLIST_CACHE[cache_key] = {'data': data, 'ts': now}
         return data
 
 
@@ -145,7 +157,10 @@ def search_playlists():
     """
     query = (request.args.get('query', '') or '').strip().lower()
     try:
-        playlists = _cached_all_playlists()
+        with app_server_context.use_request_server() as server_id:
+            playlists = _cached_all_playlists(server_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception:
         logger.exception("Playlist search failed")
         return jsonify([]), 200
@@ -216,6 +231,10 @@ def alchemy_api():
         description: Internal error.
     """
     payload = request.get_json() or {}
+    try:
+        app_server_context.resolve_request_server_id(payload)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     items = payload.get('items', [])
     try:
         n = int(payload.get('n', config.ALCHEMY_DEFAULT_N_RESULTS))
@@ -248,16 +267,23 @@ def alchemy_api():
         if entry.get('type', 'song') == 'song':
             entry['id'] = resolved_seed_ids.get(str(entry['id']), entry['id'])
 
+    # Artist IDs are provider-specific too. The shared artist index is keyed by
+    # normalized artist name, so resolve selected-server IDs before querying it.
+    for entry in add_items + subtract_items:
+        if entry.get('type') == 'artist':
+            entry['id'] = app_server_context.resolve_artist_identifier(entry['id'], payload)
+
     # Allow optional override for subtract distance (from frontend slider)
     subtract_distance = payload.get('subtract_distance')
     try:
-        results = song_alchemy(
-            add_items=add_items,
-            subtract_items=subtract_items,
-            n_results=app_server_context.overfetch_limit(n),
-            subtract_distance=subtract_distance,
-            temperature=temperature,
-        )
+        with app_server_context.use_request_server(payload):
+            results = song_alchemy(
+                add_items=add_items,
+                subtract_items=subtract_items,
+                n_results=n,
+                subtract_distance=subtract_distance,
+                temperature=temperature,
+            )
         attach_song_features(results.get('results'))
         results['results'] = app_server_context.scope_results(
             results.get('results'), n, id_key='item_id'

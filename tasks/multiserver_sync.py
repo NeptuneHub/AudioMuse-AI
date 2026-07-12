@@ -30,8 +30,14 @@ Main Features:
   percentage progress, one-line status, and cooperative cancellation.
 * Zero-download alignment: canonical ids from stored embeddings, matching from
   catalogue metadata only.
+* Bounded memory: the target catalogue is condensed into a slim CandidateIndex
+  and the local catalogue streams through it in keyset-paginated chunks with
+  per-chunk upserts, so neither side is ever fully materialized at once.
 * Full-refresh sweeps re-fetch even aligned servers and prune stale mappings so
-  per-server counts stay truthful.
+  per-server counts stay truthful; pruning is skipped when the fetch looks
+  partial so a transient provider error never mass-deletes valid mappings.
+* Optional per-run ``catalog_cache`` lets callers reuse an already fetched
+  server catalogue instead of re-fetching it.
 """
 
 import logging
@@ -43,11 +49,12 @@ from psycopg2.extras import execute_values
 from database import connect_raw
 from tasks import provider_probe
 from tasks.mediaserver import context as ms_context, registry
-from tasks.provider_migration_matcher import match_tracks
+from tasks.provider_migration_matcher import CandidateIndex
 
 logger = logging.getLogger(__name__)
 
 SWEEP_TASK_TYPE = 'server_sweep'
+_PRUNE_MIN_FETCH_RATIO = 0.5
 
 
 class SweepCancelled(Exception):
@@ -162,23 +169,20 @@ def _canonicalize_catalog(report, base, span):
         pct = min(base + span * 0.1 + step['n'] * (span * 0.85 / 12), base + span * 0.95)
         report(message, pct)
 
-    report("Checking catalogue ids (embedding hash)...", base)
-    try:
-        result = canonicalize_fingerprinted_ids(rebuild=True, log_fn=log_fn)
-        relabelled = result.get('relabelled', 0) if isinstance(result, dict) else 0
-        if relabelled:
-            report(
-                f"Relabelled {relabelled} tracks to canonical ids and rebuilt the indexes.",
-                base + span,
-            )
-        else:
-            report("Catalogue ids already canonical.", base + span)
-    except Exception:
-        logger.exception("Canonicalization before sweep failed; matching continues with current ids")
+    report("Checking catalogue ids (Chromaprint hash)...", base)
+    result = canonicalize_fingerprinted_ids(rebuild=True, log_fn=log_fn)
+    relabelled = result.get('relabelled', 0) if isinstance(result, dict) else 0
+    if relabelled:
+        report(
+            f"Relabelled {relabelled} tracks to canonical ids and rebuilt the indexes.",
+            base + span,
+        )
+    else:
+        report("Catalogue ids already canonical.", base + span)
 
 
-def _unmapped_local_rows(conn, server_id):
-    """Analyzed tracks with no mapping for ``server_id`` yet - the only work left.
+def _unmapped_local_count(conn, server_id):
+    """How many analyzed tracks still lack a mapping for ``server_id``.
 
     Already-mapped tracks are aligned and never reconsidered, so a sweep over an
     aligned server is a no-op and the end-of-analysis alignment only processes
@@ -187,12 +191,40 @@ def _unmapped_local_rows(conn, server_id):
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.file_path "
-            "FROM score s WHERE NOT EXISTS ("
+            "SELECT COUNT(*) FROM score s WHERE NOT EXISTS ("
             "SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id AND m.server_id = %s)",
             (server_id,),
         )
-        return [
+        return cur.fetchone()[0]
+    finally:
+        cur.close()
+
+
+def _iter_unmapped_local_rows(conn, server_id, chunk_size=20000):
+    """Yield the still-unmapped analyzed tracks in bounded-memory chunks.
+
+    Keyset pagination on item_id keeps each page cheap and survives the
+    per-chunk commits the caller performs between pages, so the whole local
+    catalogue is never materialized at once.
+    """
+    last_id = ''
+    while True:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.file_path "
+                "FROM score s WHERE s.item_id > %s AND NOT EXISTS ("
+                "SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id AND m.server_id = %s) "
+                "ORDER BY s.item_id LIMIT %s",
+                (last_id, server_id, chunk_size),
+            )
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+        if not rows:
+            return
+        last_id = rows[-1][0]
+        yield [
             {
                 'item_id': r[0],
                 'title': r[1],
@@ -201,10 +233,8 @@ def _unmapped_local_rows(conn, server_id):
                 'album_artist': r[4],
                 'file_path': r[5],
             }
-            for r in cur.fetchall()
+            for r in rows
         ]
-    finally:
-        cur.close()
 
 
 def _local_track_count(conn):
@@ -235,16 +265,28 @@ def _write_matches(db, server_id, result):
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
-def _prune_stale_mappings(db, server_id, target_tracks):
+def _prune_stale_mappings(db, server_id, present_ids):
     """Remove map rows whose provider track is no longer on (or is filtered out
     of) the server. Only track_server_map shrinks; the catalogue never does.
-    Skipped entirely when the fetch produced nothing, so a fetch problem can
-    never wipe a server's mappings."""
-    present = [(str(t['id']),) for t in target_tracks if t.get('id')]
+    Skipped entirely when the fetch produced nothing or looks partial (fewer
+    tracks than half the existing mappings), so a fetch problem can never wipe
+    a server's mappings."""
+    present = [(pid,) for pid in present_ids]
     if not present:
         return 0
     cur = db.cursor()
     try:
+        cur.execute(
+            "SELECT COUNT(*) FROM track_server_map WHERE server_id = %s", (server_id,)
+        )
+        current = cur.fetchone()[0]
+        if current > 0 and len(present) < current * _PRUNE_MIN_FETCH_RATIO:
+            logger.warning(
+                "Multi-server sweep for server %s: fetch returned %d tracks but %d "
+                "mappings exist; fetch looks partial, pruning skipped",
+                server_id, len(present), current,
+            )
+            return 0
         cur.execute(
             "CREATE TEMP TABLE IF NOT EXISTS sweep_present_ids "
             "(provider_track_id TEXT PRIMARY KEY)"
@@ -271,12 +313,12 @@ def _prune_stale_mappings(db, server_id, target_tracks):
         cur.close()
 
 
-def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
+def _sweep_one(server, db, report, base, span, cancel, full_refresh=False, catalog_cache=None):
     stype = server['server_type']
     server_id = server['server_id']
     total_local = _local_track_count(db)
-    unmapped = _unmapped_local_rows(db, server_id)
-    if not unmapped and not full_refresh:
+    unmapped_count = _unmapped_local_count(db, server_id)
+    if not unmapped_count and not full_refresh:
         report(
             f"{server['name']} is already aligned ({total_local} tracks mapped); nothing to do.",
             base + span,
@@ -287,48 +329,78 @@ def _sweep_one(server, db, report, base, span, cancel, full_refresh=False):
             'matched': 0, 'aligned': True, 'tier_counts': {},
         }
 
-    report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
-    with ms_context.use_server(server):
-        target_tracks = provider_probe.fetch_all_tracks(
-            stype, server['creds'], apply_filter=True
-        )
+    if catalog_cache is not None and server_id in catalog_cache:
+        report(f"Reusing fetched catalogue for {server['name']} ({stype})...", base + span * 0.1)
+        target_tracks = catalog_cache[server_id]
+    else:
+        report(f"Fetching catalogue from {server['name']} ({stype})...", base + span * 0.1)
+        with ms_context.use_server(server):
+            target_tracks = provider_probe.fetch_all_tracks(
+                stype, server['creds'], apply_filter=True
+            )
+        if catalog_cache is not None:
+            catalog_cache[server_id] = target_tracks
     cancel()
 
+    target_total = len(target_tracks)
+    present_ids = {str(t['id']) for t in target_tracks if t.get('id')}
     pruned = 0
     if full_refresh:
-        pruned = _prune_stale_mappings(db, server_id, target_tracks)
+        pruned = _prune_stale_mappings(db, server_id, present_ids)
         if pruned:
             logger.info(
                 "Multi-server sweep for '%s': pruned %d stale mappings no longer on the server",
                 server['name'], pruned,
             )
-            unmapped = _unmapped_local_rows(db, server_id)
+            unmapped_count = _unmapped_local_count(db, server_id)
 
     already_mapped = _already_mapped_ids(db, server_id)
-    candidates = [
-        t for t in target_tracks if t.get('id') and str(t.get('id')) not in already_mapped
-    ]
-    report(
-        f"Aligning {server['name']}: {len(unmapped)} tracks to match "
-        f"({total_local - len(unmapped)} already aligned)...",
-        base + span * 0.6,
+    index = CandidateIndex(
+        t for t in target_tracks
+        if t.get('id') and str(t.get('id')) not in already_mapped
     )
-    result = match_tracks(unmapped, candidates)
-    written = _write_matches(db, server_id, result)
+    if catalog_cache is None:
+        target_tracks = None
+    report(
+        f"Aligning {server['name']}: {unmapped_count} tracks to match "
+        f"({total_local - unmapped_count} already aligned)...",
+        base + span * 0.5,
+    )
+
+    written = 0
+    processed = 0
+    tier_counts = {}
+    claimed = set()
+    if index.size:
+        for chunk in _iter_unmapped_local_rows(db, server_id):
+            cancel()
+            result = index.match_chunk(chunk, claimed)
+            written += _write_matches(db, server_id, result)
+            processed += len(chunk)
+            for tier, count in result['tier_counts'].items():
+                if count:
+                    tier_counts[tier] = tier_counts.get(tier, 0) + count
+            if unmapped_count:
+                pct = base + span * (0.5 + 0.45 * min(1.0, processed / unmapped_count))
+                report(
+                    f"Aligning {server['name']}: {min(processed, unmapped_count)}/"
+                    f"{unmapped_count} checked, {written} matched...",
+                    pct,
+                )
     logger.info(
         "Multi-server sweep for '%s': mapped %d/%d unmapped tracks (target=%d, tiers=%s)",
-        server['name'], written, len(unmapped), len(target_tracks), result['tier_counts'],
+        server['name'], written, unmapped_count, target_total, tier_counts,
     )
     return {
         'server_id': server_id,
         'name': server['name'],
         'server_type': stype,
-        'target_tracks': len(target_tracks),
+        'target_tracks': target_total,
         'local_tracks': total_local,
-        'unmapped': len(unmapped),
+        'unmapped': unmapped_count,
         'matched': written,
         'pruned': pruned,
-        'tier_counts': result['tier_counts'],
+        'tier_counts': tier_counts,
     }
 
 
@@ -385,7 +457,8 @@ def sweep_server(server_id, task_id=None, conn=None):
             db.close()
 
 
-def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None):
+def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_refresh=None,
+                                catalog_cache=None):
     """Align enabled servers, optionally limited to ``server_ids``.
 
     The optional filter lets union analysis align only sources that have not had
@@ -393,6 +466,8 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
     ``full_refresh`` defaults to True for unfiltered (manual) sweeps so aligned
     servers are still re-fetched and their stale mappings pruned, and to False
     for the filtered post-phase sweeps analysis runs, which only need matching.
+    ``catalog_cache`` (a per-run dict) lets a caller that already fetched a
+    server's catalogue share it with the sweep instead of re-fetching.
     """
     import config
 
@@ -430,7 +505,7 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
                 results.append(
                     _sweep_one(
                         server, db, report, 60 + i * span, span, cancel,
-                        full_refresh=full_refresh,
+                        full_refresh=full_refresh, catalog_cache=catalog_cache,
                     )
                 )
             except SweepCancelled:
@@ -450,6 +525,18 @@ def sweep_all_secondary_servers(task_id=None, conn=None, server_ids=None, full_r
             100, task_state=TASK_STATUS_SUCCESS,
         )
         return results
+    except SweepCancelled:
+        report("Alignment cancelled; matches found so far are kept.", 100,
+               task_state=config.TASK_STATUS_REVOKED)
+        return []
+    except Exception:
+        logger.exception("Multi-server alignment failed")
+        report(
+            "Alignment failed; check the container logs for details.",
+            100,
+            task_state=config.TASK_STATUS_FAILURE,
+        )
+        return []
     finally:
         close_cancel()
         if own_conn:

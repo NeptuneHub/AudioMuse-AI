@@ -17,6 +17,8 @@ Main Features:
   in memory as pre-serialized JSON plus a gzip-compressed copy for fast reads.
 * Endpoints to report cache status and to rebuild the cache on demand; songs
   are labelled by their top mood parsed from the stored mood_vector string.
+* Multi-server: responses are filtered per request to the selected server's
+  catalogue; the shared cache always holds the full union.
 """
 
 import gc
@@ -29,6 +31,7 @@ import gzip
 
 from database import get_db
 from app_helper import load_map_projection
+import app_server_context
 
 # Try to reuse the shared projection helpers
 try:
@@ -367,6 +370,31 @@ def map_api():
     entry = MAP_JSON_CACHE.get(pct)
     if not entry:
         return jsonify({'items': [], 'projection': 'none'})
+
+    # Multi-server: filter the cached union per request. Single-server installs
+    # with no explicit selection keep the zero-cost pre-serialized path below.
+    try:
+        server_id = app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    from tasks.mediaserver import registry
+
+    if server_id is not None or registry.has_secondary_servers():
+        raw = entry.get('json_gzip_bytes')
+        raw = gzip.decompress(raw) if raw else entry.get('json_bytes')
+        if not raw:
+            return jsonify({'items': [], 'projection': 'none'})
+        payload = json.loads(raw)
+        items = app_server_context.filter_rows_for_request_server(
+            payload.get('items') or [], id_key='item_id'
+        )
+        payload['items'] = items
+        payload['count'] = len(items)
+        resp = jsonify(payload)
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
 
     accept_enc = request.headers.get('Accept-Encoding', '')
     gz = entry.get('json_gzip_bytes')

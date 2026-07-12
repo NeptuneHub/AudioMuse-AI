@@ -23,6 +23,7 @@ Main Features:
 """
 
 import logging
+from contextlib import contextmanager
 
 from flask import request
 
@@ -53,6 +54,8 @@ def resolve_request_server_id(data=None):
     server = registry.get_server(requested) or registry.get_server_by_name(requested)
     if server is None:
         raise ValueError(f"Unknown server '{requested}'")
+    if not server.get('enabled', True):
+        raise ValueError(f"Server '{server['name']}' is disabled")
     return server['server_id']
 
 
@@ -69,17 +72,13 @@ def resolve_input_item_ids(item_ids, data=None):
     The request-level face of ``registry.canonical_input_ids``: provider ids from
     the selected (or default) server become canonical catalogue ids before they
     reach the shared indexes; canonical or unknown ids pass through unchanged.
-    Fail-open - a resolution problem never breaks the endpoint.
     """
     ids = [str(i) for i in (item_ids or []) if i]
     if not ids:
         return {}
     from tasks.mediaserver import registry
 
-    try:
-        server_id = resolve_request_server_id(data)
-    except Exception:
-        server_id = None
+    server_id = resolve_request_server_id(data)
     try:
         return registry.canonical_input_ids(ids, server_id)
     except Exception:
@@ -94,11 +93,49 @@ def resolve_input_item_id(raw_id, data=None):
     return resolve_input_item_ids([raw_id], data).get(str(raw_id), str(raw_id))
 
 
-def needs_translation(server_id):
-    """Every playlist target now translates: the canonical id is the content
-    fingerprint, so it must be turned into the target (or default) server's real
-    id before creating the playlist. Kept as a function for call-site clarity."""
-    return True
+def resolve_artist_identifier(identifier, data=None):
+    """Turn a selected-server artist id into the shared artist name."""
+    if not identifier:
+        return identifier
+    from tasks.mediaserver import registry
+
+    server_id = resolve_request_server_id(data) or registry.get_default_server_id()
+    return registry.artist_names_for_ids([identifier], server_id).get(
+        str(identifier), identifier
+    )
+
+
+def scope_artist_results(rows, requested_n=None):
+    """Keep artists represented on the selected server and expose its IDs/counts."""
+    if not rows:
+        return rows
+    from tasks.mediaserver import registry
+
+    server_id = resolve_request_server_id() or registry.get_default_server_id()
+    names = [row.get('artist') for row in rows if row.get('artist')]
+    counts = registry.artist_track_counts(names, server_id)
+    ids = registry.artist_ids_for_names(names, server_id)
+    scoped = []
+    for source in rows:
+        name = source.get('artist')
+        if not counts.get(name):
+            continue
+        row = dict(source)
+        row['artist_id'] = ids.get(name)
+        row['track_count'] = counts[name]
+        scoped.append(row)
+    return scoped[:requested_n] if requested_n is not None else scoped
+
+
+@contextmanager
+def use_request_server(data=None):
+    """Bind provider calls to the request's selected server for one block."""
+    from tasks.mediaserver import context, registry
+
+    server_id = resolve_request_server_id(data)
+    server_ctx = registry.context_for(server_id) if server_id else None
+    with context.use_server(server_ctx):
+        yield server_id
 
 
 def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_creds=None):
@@ -126,26 +163,6 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 
-def available_ids_for_server(item_ids, server_id):
-    """Return the subset of item_ids that exist on ``server_id``.
-
-    Only ids with a provider mapping on the requested server are returned. Raw
-    legacy provider ids retain the registry's safe identity fallback.
-    """
-    from tasks.mediaserver import registry
-    mapping = registry.translate_ids(item_ids, server_id)
-    return [i for i in item_ids if i in mapping]
-
-
-def overfetch_limit(requested_n, multiplier=2):
-    """How many rows to request from the index for this request.
-
-    Availability is filtered inside the shared index before ranking, so callers
-    keep their original limits and input caps.
-    """
-    return requested_n
-
-
 def scope_results(rows, requested_n=None, id_key='item_id'):
     """Drop rows not on the selected server, then trim to ``requested_n``.
 
@@ -161,14 +178,17 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
     """Drop result rows whose track is not on the request's selected server.
 
     ``id_key`` is a dict key or a callable that extracts the canonical item_id.
+    Raises ValueError for an unknown or disabled ``server`` parameter so the
+    endpoint can answer 400; a registry failure fails open (rows unchanged).
+    Single-server installs with no explicit selection skip translation entirely.
     """
     if not rows:
         return rows
-    try:
-        server_id = resolve_request_server_id()
-    except Exception:
-        return rows
+    server_id = resolve_request_server_id()
     from tasks.mediaserver import registry
+
+    if server_id is None and not registry.has_secondary_servers():
+        return rows
 
     def _get(row):
         if callable(id_key):
@@ -178,7 +198,11 @@ def filter_rows_for_request_server(rows, id_key='item_id'):
         return None
 
     ids = [i for i in (_get(r) for r in rows) if i]
-    mapping = registry.translate_ids(ids, server_id)
+    try:
+        mapping = registry.translate_ids(ids, server_id)
+    except Exception:
+        logger.exception("Server availability filtering failed; returning rows unfiltered")
+        return rows
     return [r for r in rows if _get(r) in mapping]
 
 

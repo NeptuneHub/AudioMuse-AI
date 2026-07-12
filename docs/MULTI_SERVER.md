@@ -29,7 +29,7 @@ Optional ?server=<id> (menu dropdown / API param)
 
 ## Configuring servers
 
-Open the **Setup** page (admin only). Under **Additional Music Servers** you can:
+Open the **Setup** page (admin only). Under **Music Servers** you can:
 
 - See every configured server, which one is the default, and whether it is enabled.
 - Add a server: pick a type, fill its credentials and (optionally) a library
@@ -43,7 +43,9 @@ field blank when editing to keep the stored value.
 
 Analysis processes every enabled server sequentially, with the **default**
 server first. After each source phase a matching sweep aligns the canonical
-catalogue to the remaining servers. Tracks already mapped to an analyzed
+catalogue to the servers that have not had their own phase yet, and a final
+alignment pass across all enabled servers runs once the last phase completes,
+before the shared indexes are rebuilt. Tracks already mapped to an analyzed
 canonical id are skipped, while tracks unique to the next server are analyzed
 once and added to the union catalogue. Alignment uses these tiers:
 
@@ -54,7 +56,26 @@ once and added to the union catalogue. Alignment uses these tiers:
 
 Confident pairs are written to `track_server_map`. A track that does not match on
 an additional server is simply left unmapped - never guessed. You can re-run the
-sweep for a single server from the Setup page at any time.
+sweep for a single server from the Setup page at any time. Manual sweeps (and
+the **Align music servers** action) re-fetch the server's full catalogue and
+prune mappings whose track is no longer on, or is filtered out of, that server.
+Pruning only happens when the fetch looks complete: if the catalogue returns
+fewer tracks than half the mappings already stored, the fetch is treated as
+partial and pruning is skipped, so a transient provider error never
+mass-deletes valid mappings. Only map rows are ever removed, never analyzed
+tracks.
+
+Matching runs in bounded memory even on very large libraries: the fetched
+catalogue is condensed into a slim lookup index and released, and the local
+catalogue streams through it in chunks (20k tracks at a time) with matches
+written after every chunk, so neither side is ever held fully in RAM and a
+cancelled sweep keeps everything matched so far.
+
+The library cleaning task is multi-server aware: it fetches the current track
+set of every enabled server, translates each server's provider ids to canonical
+catalogue ids, and deletes only tracks that no server still has. If any
+server's catalogue cannot be fully fetched, the run aborts without deleting
+anything.
 
 ## Selecting a server at runtime
 

@@ -127,6 +127,13 @@ def clap_search_api():
             }
         ), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
     try:
         data = request.get_json()
 
@@ -152,7 +159,7 @@ def clap_search_api():
             ), 503
 
         # Perform search
-        results = search_by_text(query, limit=app_server_context.overfetch_limit(limit))
+        results = search_by_text(query, limit=limit)
         attach_song_features(results)
 
         results = app_server_context.scope_results(results, limit, id_key='item_id')

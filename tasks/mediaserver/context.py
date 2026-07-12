@@ -18,6 +18,9 @@ Main Features:
 * ``use_server`` context manager binds a normalized server dict for a scope.
 * ``active_type`` / ``active_creds`` / ``active_libraries`` / ``active_server_id``
   let provider backends resolve the active server before falling back to config.
+* When a server is bound, ``active_creds`` uses the server's creds as the base
+  and lets caller-supplied creds override only non-empty fields, so a bound
+  secondary server's URL/token always win over stale defaults.
 """
 
 import contextvars
@@ -63,12 +66,14 @@ def active_type(default=None):
 
 
 def active_creds(user_creds=None):
-    if user_creds:
-        return user_creds
     server = _active_server.get()
-    if server:
-        return server.get("creds") or None
-    return None
+    if server is None:
+        return user_creds or None
+    merged = dict(server.get("creds") or {})
+    for key, value in (user_creds or {}).items():
+        if value:
+            merged[key] = value
+    return merged or None
 
 
 def active_libraries(default=""):

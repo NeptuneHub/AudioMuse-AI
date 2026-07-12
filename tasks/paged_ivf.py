@@ -37,6 +37,7 @@ import platform
 import struct
 import threading
 import time
+import uuid
 import weakref
 from collections import OrderedDict
 from typing import Callable, Dict, List, Optional, Tuple
@@ -83,9 +84,12 @@ def _metric_code(metric: str) -> int:
     return _METRIC_TO_CODE.get((metric or "angular").lower(), 0)
 
 
-def _normalize_rows(mat: np.ndarray) -> np.ndarray:
+def _normalize_rows(mat: np.ndarray, inplace: bool = False) -> np.ndarray:
     norms = np.linalg.norm(mat, axis=1, keepdims=True).astype(np.float32)
     norms[norms == 0.0] = np.float32(1.0)
+    if inplace:
+        mat /= norms
+        return mat
     return (mat / norms).astype(np.float32, copy=False)
 
 
@@ -567,7 +571,11 @@ def invalidate_availability_cache(server_id=None):
 
 
 def active_availability_scope():
-    """Return the current request/job server, or None for union/background scope."""
+    """Return the current request/job server, or None for union/background scope.
+
+    An unknown or disabled requested server maps to a fail-closed sentinel scope;
+    any other resolution error fails open to None (union scope).
+    """
     try:
         from tasks.mediaserver import context
 
@@ -586,7 +594,10 @@ def active_availability_scope():
 
         requested = resolve_request_server_id()
         return str(requested or registry.get_default_server_id() or '') or None
+    except ValueError:
+        return '__invalid_server__'
     except Exception:
+        logger.exception("Could not resolve request availability scope")
         return None
 
 
@@ -825,6 +836,7 @@ class PagedIvfIndex:
         else:
             self._centroids = np.ascontiguousarray(centroids, dtype=np.float32)
         self._num_cells = int(self._centroids.shape[0])
+        self._generation = uuid.uuid4().hex
         self._tl = threading.local()
         self._last_mmap_access = time.monotonic()
         self._mmap_pages_dropped = False
@@ -836,9 +848,16 @@ class PagedIvfIndex:
         server_id = active_availability_scope()
         if server_id is None:
             return None
-        # Include the live index instance so a rebuild with the same name can
-        # never reuse a mask whose length/order belongs to the previous id map.
-        key = (self._index_name, server_id, id(self))
+        try:
+            from tasks.mediaserver import registry
+
+            if server_id == str(
+                registry.get_default_server_id() or ''
+            ) and not registry.has_secondary_servers():
+                return None
+        except Exception:
+            logger.debug("Single-server availability fast path failed.", exc_info=True)
+        key = (self._index_name, server_id, self._generation)
         now = time.monotonic()
         with _AVAILABILITY_CACHE_LOCK:
             cached = _AVAILABILITY_CACHE.get(key)
@@ -858,8 +877,6 @@ class PagedIvfIndex:
             )
             is_default = bool(cur.fetchone()[0])
         if is_default:
-            # A legacy default-server catalogue may predate track_server_map.
-            # Its provider ids are safe identity ids; canonical fp_ ids are not.
             from tasks.audio_fingerprint import is_fingerprint_id
 
             available.update(
@@ -1360,11 +1377,9 @@ def build_and_store_paged_ivf(
     normalized = metric == "angular"
     storage_dtype = quant.effective_code(quant.dtype_code(config.IVF_STORAGE_DTYPE), metric)
     if normalized:
-        train_mat = vectors if consume_vectors else vectors.copy()
-        norms = np.linalg.norm(train_mat, axis=1, keepdims=True).astype(np.float32)
-        norms[norms == 0.0] = np.float32(1.0)
-        train_mat /= norms
-        del norms
+        train_mat = _normalize_rows(
+            vectors if consume_vectors else vectors.copy(), inplace=True
+        )
     else:
         train_mat = vectors
 

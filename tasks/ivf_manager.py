@@ -1265,7 +1265,12 @@ def get_item_id_by_title_and_artist(title: str, artist: str):
 
 
 def search_tracks_unified(
-    search_query: str, limit: int = 20, offset: int = 0, item_id_filter: set | None = None
+    search_query: str,
+    limit: int = 20,
+    offset: int = 0,
+    item_id_filter: set | None = None,
+    server_id: str | None = None,
+    include_legacy_default: bool = False,
 ):
     from app_helper import get_db
     from psycopg2.extras import DictCursor
@@ -1303,6 +1308,9 @@ def search_tracks_unified(
         where_sql = " AND ".join(where_clauses)
         score_sql = " + ".join(score_clauses)
 
+        if item_id_filter is not None and not item_id_filter:
+            return []
+
         id_filter_sql = ""
         id_filter_params: list = []
         if item_id_filter:
@@ -1310,12 +1318,27 @@ def search_tracks_unified(
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
-        all_params = params[: len(tokens)] + id_filter_params + params[len(tokens) :]
+        availability_sql = ""
+        availability_params: list = []
+        if server_id:
+            availability_sql = (
+                " AND (EXISTS (SELECT 1 FROM track_server_map availability "
+                "WHERE availability.item_id = score.item_id AND availability.server_id = %s) "
+                "OR (%s AND left(score.item_id, 3) <> 'fp_'))"
+            )
+            availability_params = [server_id, bool(include_legacy_default)]
+
+        all_params = (
+            params[: len(tokens)]
+            + id_filter_params
+            + availability_params
+            + params[len(tokens) :]
+        )
 
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}{id_filter_sql}
+            WHERE {where_sql}{id_filter_sql}{availability_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,

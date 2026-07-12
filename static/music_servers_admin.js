@@ -390,17 +390,36 @@
 
     function setDefault(serverId) {
         jsonPost('/api/servers/' + encodeURIComponent(serverId) + '/default')
-            .then(function () { loadServers(); });
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (res) {
+                if (!res.ok) {
+                    feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
+                    return;
+                }
+                loadServers();
+            })
+            .catch(function (err) {
+                console.error('Set default failed:', err);
+                feedback(el('music-servers-error'), 'Could not set the default server.', false);
+            });
     }
 
     function alignServers() {
         jsonPost('/api/servers/align')
-            .then(function (r) { return r.json(); })
-            .then(function (d) {
-                if (d && d.task_id) {
-                    renderSweepProgress(0, 'Music server alignment queued...', true, false);
-                    pollSweep(d.task_id);
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (res) {
+                if (!res.ok) {
+                    feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not start the alignment.', false);
+                    return;
                 }
+                if (res.d && res.d.task_id) {
+                    renderSweepProgress(0, 'Music server alignment queued...', true, false);
+                    pollSweep(res.d.task_id);
+                }
+            })
+            .catch(function (err) {
+                console.error('Alignment request failed:', err);
+                feedback(el('music-servers-error'), 'Could not start the alignment.', false);
             });
     }
 
@@ -416,6 +435,10 @@
                     return;
                 }
                 loadServers();
+            })
+            .catch(function (err) {
+                console.error('Delete failed:', err);
+                feedback(el('music-servers-error'), 'Delete failed.', false);
             });
     }
 

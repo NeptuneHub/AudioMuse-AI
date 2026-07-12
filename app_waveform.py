@@ -230,7 +230,10 @@ def get_waveform_endpoint():
     # Accept the selected server's provider id too: canonicalize before the
     # catalogue lookup (canonical or unknown ids pass through unchanged).
     from app_server_context import resolve_input_item_id
-    item_id = resolve_input_item_id(item_id)
+    try:
+        item_id = resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     # Get track information from database
     db = get_db()

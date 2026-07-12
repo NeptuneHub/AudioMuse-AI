@@ -150,7 +150,7 @@ class TestAlchemyNClamp:
 
 class TestIvfCreatePlaylistName:
     def test_empty_name_rejected_400(self, client):
-        with patch.object(app_ivf, 'create_playlist_from_ids') as backend:
+        with patch('app_server_context.create_instant_playlist_for_server') as backend:
             resp = client.post(
                 '/api/create_playlist', json={'playlist_name': '', 'track_ids': ['a']}
             )
@@ -158,13 +158,16 @@ class TestIvfCreatePlaylistName:
         backend.assert_not_called()
 
     def test_missing_name_rejected_400(self, client):
-        with patch.object(app_ivf, 'create_playlist_from_ids') as backend:
+        with patch('app_server_context.create_instant_playlist_for_server') as backend:
             resp = client.post('/api/create_playlist', json={'track_ids': ['a']})
         assert resp.status_code == 400
         backend.assert_not_called()
 
     def test_non_string_name_rejected_4xx(self, client):
-        with patch.object(app_ivf, 'create_playlist_from_ids', return_value='pid') as backend:
+        with patch(
+            'app_server_context.create_instant_playlist_for_server',
+            return_value={'result': 'pid', 'requested': 1, 'mapped': 1, 'skipped': 0},
+        ) as backend:
             resp = client.post(
                 '/api/create_playlist', json={'playlist_name': 123, 'track_ids': ['a']}
             )

@@ -39,7 +39,6 @@ from tasks.ivf_manager import (
     find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
-    create_playlist_from_ids,
     search_tracks_unified,
     get_item_id_by_title_and_artist,
 )
@@ -254,11 +253,22 @@ def search_tracks_endpoint():
     offset = start
 
     try:
+        from tasks.mediaserver import registry
+
+        try:
+            requested_server_id = app_server_context.resolve_request_server_id()
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        selected_server_id = requested_server_id or registry.get_default_server_id()
         raw_results = search_tracks_unified(
             search_query,
-            limit=app_server_context.overfetch_limit(limit),
+            limit=limit,
             offset=offset,
             item_id_filter=item_id_filter,
+            server_id=selected_server_id,
+            include_legacy_default=(
+                selected_server_id == registry.get_default_server_id()
+            ),
         )
         results = []
         for r in raw_results:
@@ -415,6 +425,13 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 instead of surfacing later as a 500.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
         _ensure_mood_centroids_loaded()
@@ -435,7 +452,7 @@ def get_similar_tracks_endpoint():
         centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
             centroid_vector,
-            app_server_context.overfetch_limit(num_neighbors),
+            num_neighbors,
             eliminate_duplicates,
             "mood centroid",
             "No similar tracks found for this mood centroid.",
@@ -457,7 +474,7 @@ def get_similar_tracks_endpoint():
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
             anchor_vector,
-            app_server_context.overfetch_limit(num_neighbors),
+            num_neighbors,
             eliminate_duplicates,
             f"anchor {anchor_id_param}",
             "No similar tracks found for this anchor.",
@@ -470,7 +487,10 @@ def get_similar_tracks_endpoint():
     target_item_id = None
 
     if item_id:
-        target_item_id = app_server_context.resolve_input_item_id(item_id)
+        try:
+            target_item_id = app_server_context.resolve_input_item_id(item_id)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
@@ -488,7 +508,7 @@ def get_similar_tracks_endpoint():
     try:
         neighbor_results = find_nearest_neighbors_by_id(
             target_item_id,
-            n=app_server_context.overfetch_limit(num_neighbors),
+            n=num_neighbors,
             eliminate_duplicates=eliminate_duplicates,
             mood_similarity=mood_similarity,
             radius_similarity=radius_similarity,
@@ -542,7 +562,10 @@ def get_max_distance_endpoint():
     item_id = request.args.get('item_id')
     if not item_id:
         return jsonify({"error": "Missing 'item_id' parameter."}), 400
-    item_id = app_server_context.resolve_input_item_id(item_id)
+    try:
+        item_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
     try:
         result = get_max_distance_for_id(item_id)
@@ -692,7 +715,6 @@ def create_media_server_playlist():
     from app_server_context import (
         resolve_request_server_id,
         create_instant_playlist_for_server,
-        needs_translation,
     )
     try:
         server_id = resolve_request_server_id(data)
@@ -700,47 +722,33 @@ def create_media_server_playlist():
         return jsonify({"error": str(exc)}), 400
 
     try:
-        if needs_translation(server_id):
-            try:
-                info = create_instant_playlist_for_server(
-                    playlist_name, final_track_ids, server_id, user_creds=user_creds
-                )
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
-            result = info['result']
-            new_playlist_id = result.get('Id') if isinstance(result, dict) else result
-            if not new_playlist_id:
-                logger.error(
-                    "Playlist '%s' was not created on server %s: the media server "
-                    "returned no playlist (see worker/container logs)",
-                    playlist_name, server_id,
-                )
-                return jsonify(
-                    {"error": "The media server did not create the playlist; check container logs."}
-                ), 502
-            logger.info(
-                f"Created playlist '{playlist_name}' on server {server_id} "
-                f"({info['mapped']} mapped, {info['skipped']} unavailable)."
+        try:
+            info = create_instant_playlist_for_server(
+                playlist_name, final_track_ids, server_id, user_creds=user_creds
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        result = info['result']
+        new_playlist_id = result.get('Id') if isinstance(result, dict) else result
+        if not new_playlist_id:
+            logger.error(
+                "Playlist '%s' was not created on server %s: the media server "
+                "returned no playlist (see worker/container logs)",
+                playlist_name, server_id,
             )
             return jsonify(
-                {
-                    "message": f"Playlist '{playlist_name}' created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
-                    "playlist_id": new_playlist_id,
-                    "mapped": info['mapped'],
-                    "skipped": info['skipped'],
-                }
-            ), 201
-
-        new_playlist_id = create_playlist_from_ids(
-            playlist_name, final_track_ids, user_creds=user_creds
+                {"error": "The media server did not create the playlist; check container logs."}
+            ), 502
+        logger.info(
+            f"Created playlist '{playlist_name}' on server {server_id} "
+            f"({info['mapped']} mapped, {info['skipped']} unavailable)."
         )
-
-        logger.info(f"Successfully created playlist '{playlist_name}' with ID {new_playlist_id}.")
-
         return jsonify(
             {
-                "message": f"Playlist '{playlist_name}' created successfully!",
+                "message": f"Playlist '{playlist_name}' created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
                 "playlist_id": new_playlist_id,
+                "mapped": info['mapped'],
+                "skipped": info['skipped'],
             }
         ), 201
 

@@ -624,7 +624,13 @@ def find_similar_artists(
     ]
 
 
-def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List[Dict]:
+def search_artists_by_name(
+    query: str,
+    limit: int = 20,
+    offset: int = 0,
+    server_id: str | None = None,
+    include_legacy_default: bool = False,
+) -> List[Dict]:
     if not query:
         return []
 
@@ -637,16 +643,28 @@ def search_artists_by_name(query: str, limit: int = 20, offset: int = 0) -> List
     try:
         query_pattern = f"%{query}%"
 
+        availability = ""
+        availability_params = []
+        if server_id:
+            availability = """
+              AND (EXISTS (
+                    SELECT 1 FROM track_server_map availability
+                    WHERE availability.item_id = score.item_id
+                      AND availability.server_id = %s
+                  ) OR (%s AND left(score.item_id, 3) <> 'fp_'))
+            """
+            availability_params = [server_id, bool(include_legacy_default)]
         cur.execute(
             """
             SELECT DISTINCT author, COUNT(*) as track_count
             FROM score
             WHERE author ILIKE %s AND author IS NOT NULL AND author != ''
+            """ + availability + """
             GROUP BY author
             ORDER BY track_count DESC, author
             LIMIT %s OFFSET %s
         """,
-            (query_pattern, limit, offset),
+            tuple([query_pattern] + availability_params + [limit, offset]),
         )
 
         results = []

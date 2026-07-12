@@ -134,6 +134,7 @@ HIDDEN_ADVANCED_FIELDS = {
     'REDIS_URL',
     'MEDIASERVER_FIELDS_BY_TYPE',
     'MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE',
+    'MEDIASERVER_CRED_KEY_BY_FIELD',
     'SETUP_BOOTSTRAP_EXCLUDED_KEYS',
     'MOOD_LABELS',
     'APP_VERSION',
@@ -663,6 +664,15 @@ def setup_api():
 
         setup_manager.save_config_values(filtered_values)
         config.refresh_config()
+
+        # Keep the server registry's default row in step with the freshly saved
+        # config so multi-server callers see the new credentials before the
+        # restart lands. Best-effort: the restart bootstrap syncs it anyway.
+        try:
+            from tasks.mediaserver import registry as ms_registry
+            ms_registry.sync_default_from_config()
+        except Exception:
+            app.logger.exception('Default server registry sync failed; it will resync at restart')
 
         restart_manager.publish_restart_request()
         restart_requested = True

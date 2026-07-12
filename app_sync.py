@@ -46,6 +46,15 @@ _MAX_MANIFEST_LIMIT = 1000
 _DEFAULT_LIMIT = 500
 _DEFAULT_PROJECTION_NAME = 'main_map'
 
+
+class _IdTranslationError(Exception):
+    """Raised when the canonical->server id translation for a sync page fails.
+
+    Surfaced as a 503 so sync clients retry the page instead of interpreting an
+    empty track list as a mass deletion.
+    """
+
+
 # Read-time fingerprint over the audio-analysis columns. Opaque to the client
 # (compared for equality only). Changes whenever a track is re-analyzed, so a
 # manifest diff catches in-place updates. UMAP/rating are deliberately excluded
@@ -130,14 +139,26 @@ def sync_endpoint():
         server_id = resolve_request_server_id()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    server = registry.get_server(server_id) if server_id else registry.get_default_server()
+    try:
+        server = registry.get_server(server_id) if server_id else registry.get_default_server()
+    except Exception:
+        # Single-server/unit-test compatibility: the historical sync feed can
+        # still operate directly from config when the registry is unavailable.
+        logger.warning("Music-server registry unavailable for sync; using config default")
+        server = None
+    if server is not None:
+        server_id = server['server_id']
     provider_type = server['server_type'] if server else config.MEDIASERVER_TYPE
 
     ids_raw = request.args.get('ids')
     id_filter = None
     if ids_raw is not None:
         provider_ids = [i for i in ids_raw.split(',') if i][:_MAX_PAYLOAD_LIMIT]
-        id_filter = list(registry.reverse_translate_ids(provider_ids, server_id).values())
+        id_filter = (
+            list(registry.reverse_translate_ids(provider_ids, server_id).values())
+            if server_id
+            else provider_ids
+        )
 
     try:
         conn = get_db()
@@ -147,6 +168,8 @@ def sync_endpoint():
             return _payload_page(
                 cur, page, limit, include_embeddings, id_filter, server_id, provider_type
             )
+    except _IdTranslationError:
+        return jsonify({'error': 'Track id translation failed; check container logs'}), 503
     except Exception as e:
         logger.exception(
             "GET /api/sync failed (manifest=%s ids=%s page=%s limit=%s)",
@@ -165,26 +188,48 @@ def _server_ids_for_rows(rows, server_id):
     Identity fallback covers every row on the default server (the historical
     contract: clients receive their media server's real ids); rows the selected
     secondary server does not have are absent and get dropped by the caller.
-    Fails open to identity so a registry problem never empties the sync feed.
+    A registry failure raises ``_IdTranslationError`` so the endpoint answers
+    503 and the client retries instead of diffing an empty page.
     """
     from tasks.mediaserver import registry
 
     ids = [r['item_id'] for r in rows]
+    if not server_id:
+        return {str(i): str(i) for i in ids}
     try:
         return registry.translate_ids(ids, server_id)
-    except Exception:
-        logger.exception("Sync id translation failed; returning canonical ids")
-        return {str(i): str(i) for i in ids}
+    except Exception as exc:
+        logger.exception("Sync id translation failed")
+        raise _IdTranslationError() from exc
+
+
+def _availability_sql(alias='s'):
+    return (
+        "(EXISTS (SELECT 1 FROM track_server_map availability "
+        f"WHERE availability.item_id = {alias}.item_id AND availability.server_id = %s) "
+        f"OR (%s AND left({alias}.item_id, 3) <> 'fp_'))"
+    )
 
 
 def _manifest_page(cur, page, limit, server_id, provider_type):
-    cur.execute("SELECT COUNT(*) AS n FROM score", ())
+    if server_id:
+        from tasks.mediaserver import registry
+        is_default = server_id == registry.get_default_server_id()
+        availability = _availability_sql('s')
+        count_sql = "SELECT COUNT(*) AS n FROM score s WHERE " + availability
+        count_params = (server_id, is_default)
+        page_where = " WHERE " + availability
+        page_params = (server_id, is_default)
+    else:
+        count_sql, count_params = "SELECT COUNT(*) AS n FROM score", ()
+        page_where, page_params = "", ()
+    cur.execute(count_sql, count_params)
     total_tracks = cur.fetchone()['n']
     offset = (page - 1) * limit
     cur.execute(
         "SELECT s.item_id, " + _FP_SQL + " AS fp "
-        "FROM score s ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
-        (limit, offset),
+        "FROM score s" + page_where + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
+        page_params + (limit, offset),
     )
     rows = cur.fetchall()
     server_ids = _server_ids_for_rows(rows, server_id)
@@ -206,6 +251,15 @@ def _manifest_page(cur, page, limit, server_id, provider_type):
 
 
 def _payload_page(cur, page, limit, include_embeddings, id_filter, server_id, provider_type):
+    if server_id:
+        from tasks.mediaserver import registry
+        is_default = server_id == registry.get_default_server_id()
+        availability = _availability_sql('s')
+        availability_where = availability
+        availability_params = (server_id, is_default)
+    else:
+        availability_where = "TRUE"
+        availability_params = ()
     clap_on = include_embeddings and config.CLAP_ENABLED
     select_extra = ""
     join_extra = ""
@@ -229,20 +283,25 @@ def _payload_page(cur, page, limit, include_embeddings, id_filter, server_id, pr
         else:
             placeholders = ",".join(["%s"] * len(id_filter))
             cur.execute(
-                base_select + " WHERE s.item_id IN (" + placeholders + ") ORDER BY s.item_id ASC",
-                tuple(id_filter),
+                base_select + " WHERE s.item_id IN (" + placeholders + ") AND "
+                + availability_where
+                + " ORDER BY s.item_id ASC",
+                tuple(id_filter) + availability_params,
             )
             rows = cur.fetchall()
             total_tracks = len(rows)
         has_more = False
         next_page = None
     else:
-        cur.execute("SELECT COUNT(*) AS n FROM score", ())
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM score s WHERE " + availability_where,
+            availability_params,
+        )
         total_tracks = cur.fetchone()['n']
         offset = (page - 1) * limit
         cur.execute(
-            base_select + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
-            (limit, offset),
+            base_select + " WHERE " + availability_where + " ORDER BY s.item_id ASC LIMIT %s OFFSET %s",
+            availability_params + (limit, offset),
         )
         rows = cur.fetchall()
         has_more = (offset + len(rows)) < total_tracks

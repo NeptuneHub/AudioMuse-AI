@@ -54,6 +54,7 @@ if ENABLE_PROXY_FIX:
 from flask_app import app
 
 # Import helper functions
+import app_server_context
 from app_helper import (
     get_db,
     close_db,
@@ -791,8 +792,12 @@ def get_playlists_endpoint():
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     cur.execute("SELECT playlist_name, item_id, title, author FROM playlist ORDER BY playlist_name")
-    rows = cur.fetchall()
+    rows = [dict(row) for row in cur.fetchall()]
     cur.close()
+    try:
+        rows = app_server_context.filter_rows_for_request_server(rows, id_key='item_id')
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     playlists_data = defaultdict(list)
     for row in rows:
         playlists_data[row['playlist_name']].append(

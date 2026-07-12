@@ -14,7 +14,9 @@ auth and JSON responses. Dispatched by tasks/mediaserver/__init__.py when
 config.MEDIASERVER_TYPE == 'plex'.
 
 Main Features:
-* Auto-discovers music library sections (type 'artist') and honours MUSIC_LIBRARIES.
+* Auto-discovers music library sections (type 'artist') and honours MUSIC_LIBRARIES;
+  explicit-credential calls with no bound server context (provider migration)
+  bypass the library filter, since it targets a foreign server.
 * Fetches recent albums, album tracks and all songs with container pagination.
 * Downloads tracks, reads play stats/lyrics and manages audio playlists via
   server:// metadata URIs.
@@ -140,6 +142,8 @@ def list_libraries(user_creds=None):
 def _target_sections(user_creds=None):
     user_creds = context.active_creds(user_creds)
     sections = _music_sections(user_creds)
+    if user_creds and context.active_server() is None:
+        return sections
     names_str = context.active_libraries(config.MUSIC_LIBRARIES)
     if not names_str or not names_str.strip():
         return sections

@@ -13,11 +13,15 @@ single-server design, asserting that an unset context reproduces the default
 behaviour and that a bound server overrides credentials and library filters.
 
 Main Features:
-* Active-server context accessors, nesting, and reset isolation.
+* Active-server context accessors, nesting, reset isolation, and the
+  bound-server-base credential merge.
 * Credential masking/merge, config-derived creds, and registry row normalization.
 * Matcher tiers and safe canonical/provider id translation.
+* Server-scope resolution (``servers_for_scope`` / ``has_secondary_servers``).
 * BoundServer runs dispatcher calls inside the selected server's context.
 """
+
+import logging
 
 import pytest
 from unittest.mock import MagicMock
@@ -68,6 +72,20 @@ class TestServerContext:
         with context.use_server(None):
             assert context.active_type('jellyfin') == 'jellyfin'
             assert context.active_creds() is None
+
+    def test_bound_server_creds_win_over_empty_caller_fields(self):
+        from tasks.mediaserver import context
+
+        server = {
+            'server_id': 's1',
+            'server_type': 'plex',
+            'creds': {'url': 'http://secondary', 'token': 'stok'},
+            'music_libraries': '',
+        }
+        with context.use_server(server):
+            merged = context.active_creds({'url': '', 'token': 'caller-token'})
+            assert merged == {'url': 'http://secondary', 'token': 'caller-token'}
+            assert context.active_creds() == {'url': 'http://secondary', 'token': 'stok'}
 
 
 class TestCredHelpers:
@@ -183,6 +201,86 @@ class TestRegistryPureHelpers:
         }
 
 
+class TestServerScopes:
+    @staticmethod
+    def _server(server_id, enabled=True, default=False):
+        return {
+            'server_id': server_id, 'name': server_id, 'server_type': 'jellyfin',
+            'creds': {}, 'music_libraries': '', 'is_default': default, 'enabled': enabled,
+        }
+
+    def test_empty_registry_means_legacy_default(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: [])
+        assert registry.servers_for_scope('all') == [None]
+        assert registry.servers_for_scope('default') == [None]
+
+    def test_registry_failure_means_legacy_default(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        def boom(conn=None):
+            raise RuntimeError('registry down')
+
+        monkeypatch.setattr(registry, 'list_servers', boom)
+        assert registry.servers_for_scope('all') == [None]
+
+    def test_all_disabled_means_nothing_to_do(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        servers = [self._server('a', enabled=False, default=True)]
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
+        assert registry.servers_for_scope('all') == []
+        assert registry.servers_for_scope('default') == []
+
+    def test_default_scope_returns_only_enabled_default(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        default = self._server('a', default=True)
+        secondary = self._server('b')
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: [default, secondary])
+        assert registry.servers_for_scope('default') == [default]
+        assert registry.servers_for_scope('all') == [default, secondary]
+
+    def test_default_scope_empty_when_default_disabled(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        servers = [self._server('a', enabled=False, default=True), self._server('b')]
+        monkeypatch.setattr(registry, 'list_servers', lambda conn=None: servers)
+        assert registry.servers_for_scope('default') == []
+        assert registry.servers_for_scope('all') == [servers[1]]
+
+    def test_has_secondary_servers_queries_registry(self):
+        from tasks.mediaserver import registry
+
+        cursor = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        cursor.fetchone.return_value = (True,)
+        assert registry.has_secondary_servers(conn=conn) is True
+        cursor.fetchone.return_value = (False,)
+        assert registry.has_secondary_servers(conn=conn) is False
+
+    def test_has_secondary_servers_cached_until_invalidated(self, monkeypatch):
+        from tasks.mediaserver import registry
+
+        registry.invalidate_server_cache()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (True,)
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        monkeypatch.setattr(registry, 'get_db', lambda: conn)
+        try:
+            assert registry.has_secondary_servers() is True
+            assert registry.has_secondary_servers() is True
+            assert cursor.execute.call_count == 1
+            registry.invalidate_server_cache()
+            assert registry.has_secondary_servers() is True
+            assert cursor.execute.call_count == 2
+        finally:
+            registry.invalidate_server_cache()
+
+
 class TestMatcherTiers:
     def test_path_is_top_tier(self):
         from tasks.provider_migration_matcher import match_tracks
@@ -273,12 +371,18 @@ class TestFingerprintAsId:
         conn = MagicMock()
         assert registry.translate_ids(['a', 'b'], None, conn=conn) == {'a': 'a', 'b': 'b'}
 
-    def test_needs_translation_always_true(self):
-        import app_server_context as asc
+    def test_default_dropped_canonical_ids_log_warning(self, monkeypatch, caplog):
+        from tasks.mediaserver import registry
 
-        assert asc.needs_translation(None) is True
-        assert asc.needs_translation('def') is True
-        assert asc.needs_translation('sec') is True
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: {'server_id': 'def'})
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        with caplog.at_level(logging.WARNING):
+            result = registry.translate_ids(['fp_deadbeef', 'legacy'], None, conn=conn)
+        assert result == {'legacy': 'legacy'}
+        assert 'no mapping on the default server' in caplog.text
 
 
 class TestReverseTranslation:
@@ -511,7 +615,7 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 5)
-        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: [])
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 0)
         fetched = []
         monkeypatch.setattr(
             sync.provider_probe, 'fetch_all_tracks',
@@ -533,7 +637,8 @@ class TestSweepAlignment:
         }]
         target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
-        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: rows)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([rows]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
         written = {}
@@ -553,7 +658,8 @@ class TestSweepAlignment:
         from tasks import multiserver_sync as sync
 
         monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
-        monkeypatch.setattr(sync, '_unmapped_local_rows', lambda conn, sid: [])
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 0)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([]))
         monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
         seen = {}
 
@@ -564,8 +670,9 @@ class TestSweepAlignment:
 
         monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
-        def fake_prune(db, sid, tracks):
+        def fake_prune(db, sid, present_ids):
             seen['pruned_for'] = sid
+            seen['present_ids'] = present_ids
             return 2
 
         monkeypatch.setattr(sync, '_prune_stale_mappings', fake_prune)
@@ -578,4 +685,75 @@ class TestSweepAlignment:
         assert seen['apply_filter'] is True
         assert seen['bound_server'] == 's1'
         assert seen['pruned_for'] == 's1'
+        assert seen['present_ids'] == {'nav1'}
         assert summary['pruned'] == 2
+
+    def test_catalog_cache_avoids_refetch(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        rows = [{
+            'item_id': 'fp_1', 'title': 't', 'author': 'a', 'album': 'al',
+            'album_artist': 'a', 'file_path': '/x.flac',
+        }]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 1)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([rows]))
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync, '_write_matches', lambda db, sid, result: 0)
+        calls = {'n': 0}
+
+        def fake_fetch(*a, **k):
+            calls['n'] += 1
+            return [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
+
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', fake_fetch)
+        cache = {}
+        server = {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}}
+        sync._sweep_one(server, MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+                        catalog_cache=cache)
+        sync._sweep_one(server, MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+                        catalog_cache=cache)
+        assert calls['n'] == 1
+        assert 's1' in cache
+
+    def test_chunked_matching_never_maps_one_provider_track_twice(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        row = {
+            'title': 't', 'author': 'a', 'album': 'al',
+            'album_artist': 'a', 'file_path': '/x.flac',
+        }
+        chunk1 = [dict(row, item_id='fp_1')]
+        chunk2 = [dict(row, item_id='fp_2')]
+        target = [{'id': 'nav1', 'title': 't', 'artist': 'a', 'album': 'al', 'path': '/x.flac'}]
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 2)
+        monkeypatch.setattr(sync, '_unmapped_local_count', lambda conn, sid: 2)
+        monkeypatch.setattr(
+            sync, '_iter_unmapped_local_rows', lambda conn, sid, **k: iter([chunk1, chunk2])
+        )
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: target)
+        written = {}
+        monkeypatch.setattr(
+            sync, '_write_matches',
+            lambda db, sid, result: written.update(result['matches']) or len(result['matches']),
+        )
+        summary = sync._sweep_one(
+            {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+            MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
+        )
+        assert written == {'fp_1': 'nav1'}
+        assert summary['matched'] == 1
+
+    def test_prune_skipped_when_fetch_looks_partial(self, caplog):
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (100,)
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        target = {str(i) for i in range(10)}
+        with caplog.at_level(logging.WARNING):
+            assert sync._prune_stale_mappings(db, 's1', target) == 0
+        assert 'pruning skipped' in caplog.text
+        db.commit.assert_not_called()

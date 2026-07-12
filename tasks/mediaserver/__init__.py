@@ -271,7 +271,14 @@ def _to_server_ids(item_ids):
         except Exception:
             logger.exception("Playlist id translation failed; sending ids unchanged")
             return list(item_ids)
-    return [mapping[str(i)] for i in item_ids if str(i) in mapping]
+    translated = [mapping[str(i)] for i in item_ids if str(i) in mapping]
+    if item_ids and not translated:
+        logger.warning(
+            "Playlist id translation dropped all %d input ids for server %s; "
+            "the provider call becomes a no-op",
+            len(item_ids), server_id or 'default',
+        )
+    return translated
 
 
 def create_playlist(base_name, item_ids):

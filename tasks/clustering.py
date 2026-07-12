@@ -691,11 +691,7 @@ def run_clustering_task(
             final_shuffled_playlists = final_playlists_with_details
             from .mediaserver import context as server_context, registry
 
-            target_servers = [s for s in registry.list_servers() if s['enabled']]
-            if output_server_scope == 'default' and target_servers:
-                target_servers = [target_servers[0]]
-            if not target_servers:
-                target_servers = [None]
+            target_servers = registry.servers_for_scope(output_server_scope)
 
             _log_and_update(
                 f"Creating {len(final_shuffled_playlists)} playlists on "
@@ -703,6 +699,22 @@ def run_clustering_task(
                 98,
             )
             for target_server in target_servers:
+                if target_server and not target_server.get('is_default'):
+                    try:
+                        mapped = registry.mapped_count(target_server['server_id'])
+                    except Exception:
+                        logger.exception(
+                            "Could not check track mappings for server '%s'; skipping it.",
+                            target_server.get('name'),
+                        )
+                        continue
+                    if mapped <= 0:
+                        logger.warning(
+                            "Server '%s' has no mapped tracks yet; skipping playlist "
+                            "cleanup and creation on it.",
+                            target_server.get('name'),
+                        )
+                        continue
                 ctx = (
                     registry.context_for(target_server['server_id'])
                     if target_server

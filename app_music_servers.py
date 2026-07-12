@@ -64,7 +64,7 @@ def _apply_default_to_config():
     from tasks.setup_manager import setup_manager
     import restart_manager
 
-    default = registry.get_default_server()
+    default = registry.get_default_server(get_db())
     if default is None:
         return
     server_type = default['server_type']
@@ -94,7 +94,6 @@ def _enqueue_sweep(server_id):
             kwargs={'task_id': task_id},
             job_id=task_id,
             job_timeout=-1,
-            at_front=True,
         )
         return task_id
     except Exception:
@@ -130,15 +129,22 @@ def _latest_sweep_task():
 
 
 def _name_taken(name, exclude_server_id=None):
-    wanted = (name or '').strip().lower()
+    wanted = (name or '').strip()
     if not wanted:
         return False
-    for server in registry.list_servers():
-        if server['server_id'] == exclude_server_id:
-            continue
-        if (server['name'] or '').strip().lower() == wanted:
-            return True
-    return False
+    server = registry.get_server_by_name(wanted)
+    return server is not None and server['server_id'] != exclude_server_id
+
+
+def _missing_cred_keys(server_type, creds):
+    """Required-but-empty cred keys for ``server_type`` (url/token/... style keys)."""
+    required = [
+        config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
+        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, [])
+        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
+    ]
+    creds = creds or {}
+    return [key for key in required if not creds.get(key)]
 
 
 @music_servers_bp.route('/api/servers', methods=['GET'])
@@ -175,6 +181,12 @@ def add_server():
     if _name_taken(name):
         return jsonify({"error": f"A server named '{name}' already exists; names must be unique."}), 400
     make_default = bool(data.get('make_default', False))
+    if not make_default:
+        missing = _missing_cred_keys(server_type, creds)
+        if missing:
+            return jsonify(
+                {"error": f"Missing required credentials for {server_type}: {', '.join(missing)}."}
+            ), 400
     server_id = registry.add_server(
         name=name,
         server_type=server_type,
@@ -184,11 +196,11 @@ def add_server():
         make_default=make_default,
     )
     sweep_task_id = None
-    if make_default:
+    created = registry.get_server(server_id)
+    if created and created['is_default']:
         _apply_default_to_config()
-    else:
-        sweep_task_id = _enqueue_sweep(server_id)
-    body = server_public_dict(registry.get_server(server_id))
+    sweep_task_id = _enqueue_sweep(server_id)
+    body = server_public_dict(created)
     body['sweep_task_id'] = sweep_task_id
     return jsonify(body), 201
 
@@ -208,11 +220,22 @@ def update_server(server_id):
         if not _validate_type(server_type):
             return jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
     new_name = data.get('name').strip() if isinstance(data.get('name'), str) else None
+    if isinstance(data.get('name'), str) and not new_name:
+        return jsonify({"error": "Server name cannot be empty"}), 400
     if new_name and _name_taken(new_name, exclude_server_id=server_id):
         return jsonify({"error": f"A server named '{new_name}' already exists; names must be unique."}), 400
     creds = None
     if 'creds' in data and isinstance(data['creds'], dict):
         creds = merge_creds(existing['creds'], data['creds'])
+    is_default = registry.get_default_server_id(get_db()) == server_id
+    if not is_default and (server_type is not None or creds is not None):
+        effective_type = server_type or existing['server_type']
+        effective_creds = creds if creds is not None else existing['creds']
+        missing = _missing_cred_keys(effective_type, effective_creds)
+        if missing:
+            return jsonify(
+                {"error": f"Missing required credentials for {effective_type}: {', '.join(missing)}."}
+            ), 400
     registry.update_server(
         server_id,
         name=new_name,
@@ -222,9 +245,19 @@ def update_server(server_id):
         enabled=data.get('enabled'),
     )
     sweep_task_id = None
-    if registry.get_default_server_id() == server_id:
+    if is_default:
         _apply_default_to_config()
-    else:
+    # Sweep only on changes that can alter track matching; renames and
+    # disable-toggles never re-match the catalogue.
+    new_libraries = data.get('music_libraries')
+    new_enabled = data.get('enabled')
+    needs_sweep = (
+        (server_type is not None and server_type != existing['server_type'])
+        or (creds is not None and creds != (existing['creds'] or {}))
+        or (new_libraries is not None and new_libraries != existing['music_libraries'])
+        or (new_enabled is not None and bool(new_enabled) and not existing['enabled'])
+    )
+    if needs_sweep:
         sweep_task_id = _enqueue_sweep(server_id)
     body = server_public_dict(registry.get_server(server_id))
     body['sweep_task_id'] = sweep_task_id

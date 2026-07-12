@@ -50,13 +50,13 @@ def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypat
         lambda *args, server_id=None, **kwargs: events.append(('analyze', server_id))
         or {'status': 'SUCCESS'},
     )
-    monkeypatch.setattr(
-        sync,
-        'sweep_all_secondary_servers',
-        lambda *args, server_ids=None, **kwargs: events.append(
-            ('align', tuple(server_ids or ()))
-        ),
-    )
+    caches = []
+
+    def fake_sweep(*args, server_ids=None, catalog_cache=None, **kwargs):
+        caches.append(catalog_cache)
+        events.append(('align', tuple(server_ids or ())))
+
+    monkeypatch.setattr(sync, 'sweep_all_secondary_servers', fake_sweep)
 
     result = analysis.run_analysis_task(0, 5)
 
@@ -67,7 +67,10 @@ def test_union_analysis_runs_features_before_only_remaining_alignments(monkeypat
         ('analyze', 'b'),
         ('align', ('c',)),
         ('analyze', 'c'),
+        ('align', ()),
     ]
+    assert caches and caches[0] is not None
+    assert all(cache is caches[0] for cache in caches)
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

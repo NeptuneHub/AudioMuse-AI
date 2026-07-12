@@ -17,10 +17,14 @@ similarity and radio features consume the vectors this stage produces.
 Main Features:
 * analyze_track / analyze_album_task / run_analysis_task: decode audio and extract
   mood tags, MusiCNN embeddings, CLAP and lyrics embeddings, then upsert to the DB.
+* Per-track failures are logged and skipped so one bad track cannot abort a whole
+  album; the album is still marked FAILURE afterwards so RQ retries the remainder.
 * Media-server reachability and auth probing before enqueuing, so a bad server aborts
   early instead of failing every child job.
 * rebuild_all_indexes_task and _run_all_index_builds rebuild every similarity index
-  after new embeddings land; freed audio RAM is returned to the OS between albums.
+  after new embeddings land, plus periodically every REBUILD_INDEX_BATCH_SIZE
+  completed albums during large runs; freed audio RAM is returned to the OS
+  between albums.
 """
 
 import os
@@ -50,6 +54,7 @@ from config import (
     AUDIO_LOAD_TIMEOUT,
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
+    REBUILD_INDEX_BATCH_SIZE,
 )
 
 
@@ -452,6 +457,8 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
 
 def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
+    from .audio_fingerprint import chromaprint_canonical_id, compute_chromaprint
+    from .mediaserver import context as server_context, registry
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
@@ -587,6 +594,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         f"in '{album_name}' (used as lyrics-pipeline prior)"
                     )
 
+            _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
+
+            pending_track_maps = {}
+            failed_tracks = []
+
             for idx, item in enumerate(tracks, 1):
                 if current_job:
                     task_info = get_task_info_from_db(current_task_id)
@@ -608,8 +620,6 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     progress,
                     current_track_name=track_name_full,
                 )
-
-                _ah.upsert_artist_mappings_for_tracks([item], album_name=album_name)
 
                 track_id_str = _ah.catalog_item_id(item)
                 needs_musicnn, needs_clap, needs_lyrics, needs_chromaprint = (
@@ -636,54 +646,51 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     )
                     continue
 
-                needs_audio_upfront = needs_musicnn or needs_clap or needs_chromaprint
-                if needs_audio_upfront:
-                    path = download_track(TEMP_DIR, item)
-                    if not path:
-                        continue
-                else:
-                    path = None
-
-                def _ensure_track_download(item=item):
-                    nonlocal path
-                    if path is None:
-                        path = download_track(TEMP_DIR, item)
-                    return path
-
+                path = None
                 try:
+                    needs_audio_upfront = needs_musicnn or needs_clap or needs_chromaprint
+                    if needs_audio_upfront:
+                        path = download_track(TEMP_DIR, item)
+                        if not path:
+                            raise RuntimeError(
+                                f"Failed to download required audio for {track_name_full}"
+                            )
+
+                    def _ensure_track_download(item=item):
+                        nonlocal path
+                        if path is None:
+                            path = download_track(TEMP_DIR, item)
+                        return path
+
                     track_processed = False
                     chromaprint = None
                     if needs_chromaprint:
-                        from .audio_fingerprint import (
-                            chromaprint_canonical_id,
-                            compute_chromaprint,
-                        )
-
                         chromaprint = compute_chromaprint(path)
                         candidate_id = chromaprint_canonical_id(chromaprint)
-                        if (
-                            candidate_id
-                            and candidate_id != track_id_str
-                            and _ah.get_existing_track_ids([candidate_id])
-                        ):
-                            from .mediaserver import context as server_context, registry
-
-                            source_server_id = (
-                                server_context.active_server_id()
-                                or registry.get_default_server_id()
+                        if not candidate_id or not chromaprint:
+                            raise RuntimeError(
+                                f"Chromaprint calculation failed for {track_name_full}"
                             )
-                            if source_server_id:
+                        source_server_id = (
+                            server_context.active_server_id()
+                            or registry.get_default_server_id()
+                        )
+                        provider_id = str(item.get('Id') or item.get('id'))
+                        candidate_exists = bool(_ah.get_existing_track_ids([candidate_id]))
+                        if source_server_id:
+                            if candidate_exists:
                                 registry.upsert_track_maps(
                                     source_server_id,
-                                    {
-                                        candidate_id: (
-                                            str(item.get('Id') or item.get('id')),
-                                            'chromaprint',
-                                        )
-                                    },
+                                    {candidate_id: (provider_id, 'chromaprint')},
                                 )
+                            else:
+                                pending_track_maps.setdefault(source_server_id, {})[
+                                    candidate_id
+                                ] = (provider_id, 'chromaprint')
+                        if candidate_id != track_id_str:
                             item['_catalog_item_id'] = candidate_id
                             track_id_str = candidate_id
+                        if candidate_exists:
                             needs_musicnn = False
                             needs_clap = bool(
                                 is_clap_available()
@@ -736,11 +743,9 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                                 path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
                             )
                         if analysis is None:
-                            logger.warning(
-                                f"Skipping track {track_name_full} as analysis returned None."
+                            raise RuntimeError(
+                                f"MusiCNN analysis returned no result for {track_name_full}"
                             )
-                            tracks_skipped_count += 1
-                            continue
 
                         top_moods = dict(
                             sorted(analysis['moods'].items(), key=lambda i: i[1], reverse=True)[
@@ -774,6 +779,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     )
                     if clap_embedding_for_track is not None:
                         track_processed = True
+                    elif needs_clap:
+                        raise RuntimeError(
+                            f"DCLAP analysis returned no embedding for {track_name_full}"
+                        )
                     elif not needs_clap and is_clap_available():
                         logger.info("  - CLAP embedding already exists, skipping")
 
@@ -804,7 +813,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         track_id_str, clap_embedding_for_track, needs_clap
                     )
 
-                    if _ah.run_lyrics_for_track(
+                    lyrics_saved = _ah.run_lyrics_for_track(
                         item,
                         path,
                         track_audio,
@@ -815,8 +824,13 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         robust_load_audio_with_fallback,
                         top_moods=top_moods,
                         download_fn=_ensure_track_download,
-                    ):
+                    )
+                    if lyrics_saved:
                         track_processed = True
+                    elif needs_lyrics:
+                        raise RuntimeError(
+                            f"Lyrics analysis returned no embedding for {track_name_full}"
+                        )
 
                     if track_processed:
                         _ah.run_song_analyzed_hook(
@@ -825,15 +839,52 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                             parent_task_id,
                         )
                         tracks_analyzed_count += 1
+                except OperationalError:
+                    raise
+                except Exception as e:
+                    logger.exception(
+                        f"Track analysis failed for '{track_name_full}'; continuing with the next track."
+                    )
+                    failed_tracks.append(f"{track_name_full}: {e}")
                 finally:
                     if path and os.path.exists(path):
                         os.remove(path)
+
+            map_flush_errors = []
+            for map_server_id, pending in pending_track_maps.items():
+                try:
+                    ready_ids = _ah.get_existing_track_ids(list(pending))
+                    filtered = {cid: pending[cid] for cid in pending if cid in ready_ids}
+                    if filtered:
+                        registry.upsert_track_maps(map_server_id, filtered)
+                except Exception:
+                    logger.exception(
+                        "Failed to persist %d pending track map(s) for server %s in album '%s'",
+                        len(pending),
+                        map_server_id,
+                        album_name,
+                    )
+                    map_flush_errors.append(str(map_server_id))
 
             cleanup_musicnn_sessions(onnx_sessions, context="album end")
             onnx_sessions = None
             cleanup_optional_models(context="album end")
             logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+
+            failure_reasons = []
+            if failed_tracks:
+                preview = "; ".join(failed_tracks[:3])
+                failure_reasons.append(
+                    f"{len(failed_tracks)}/{total_tracks_in_album} tracks failed analysis; "
+                    f"first failures: {preview}"
+                )
+            if map_flush_errors:
+                failure_reasons.append(
+                    f"track-server map flush failed for server(s): {', '.join(map_flush_errors)}"
+                )
+            if failure_reasons:
+                raise RuntimeError(" | ".join(failure_reasons))
 
             summary = {
                 "tracks_analyzed": tracks_analyzed_count,
@@ -1030,9 +1081,10 @@ def _run_analysis_server_task_impl(
             from .audio_fingerprint import fpcalc_available
 
             if not fpcalc_available():
-                raise RuntimeError(
-                    "Required Chromaprint executable 'fpcalc' is not available in the "
-                    "analysis worker. Rebuild/redeploy the updated container before analysis."
+                logger.warning(
+                    "Chromaprint executable 'fpcalc' is not available in this worker; "
+                    "content-id fingerprinting is disabled and the catalogue stays "
+                    "keyed by provider ids."
                 )
             clean_temp(TEMP_DIR)
             all_albums = get_recent_albums(num_recent_albums)
@@ -1047,6 +1099,8 @@ def _run_analysis_server_task_impl(
             active_jobs = {}
             launched_job_ids = set()
             albums_skipped, albums_launched, albums_completed = 0, 0, 0
+            albums_errored = 0
+            last_rebuild_count = 0
             albums_no_tracks = 0
             albums_needing_musicnn = 0
             albums_needing_clap = 0
@@ -1055,7 +1109,7 @@ def _run_analysis_server_task_impl(
             last_monitor_db_check = float('-inf')
 
             def monitor_and_clear_jobs():
-                nonlocal albums_completed, last_monitor_db_check
+                nonlocal albums_completed, last_rebuild_count, last_monitor_db_check
                 removed = 0
                 for job_id in list(active_jobs.keys()):
                     if job_id not in launched_job_ids:
@@ -1106,6 +1160,20 @@ def _run_analysis_server_task_impl(
                     except Exception:
                         logger.exception("Failed to reconcile child tasks from DB")
 
+                if albums_completed - last_rebuild_count >= REBUILD_INDEX_BATCH_SIZE:
+                    log_and_update_main(
+                        f"Batch of {albums_completed - last_rebuild_count} albums complete. Enqueueing index rebuild...",
+                        current_progress,
+                    )
+                    rebuild_job = rq_queue_default.enqueue(
+                        'tasks.analysis.rebuild_all_indexes_task',
+                        job_id=str(uuid.uuid4()),
+                        job_timeout=-1,
+                        retry=Retry(max=3),
+                    )
+                    logger.info(f"Enqueued index rebuild job {rebuild_job.id} on default queue")
+                    last_rebuild_count = albums_completed
+
             for idx, album in enumerate(all_albums):
                 if album['Id'] in checked_album_ids:
                     albums_skipped += 1
@@ -1141,16 +1209,16 @@ def _run_analysis_server_task_impl(
                             server_id=server_id,
                         )
                     )
-                except Exception as e:
+                except Exception:
                     logger.exception(
-                        "Cannot determine feature needs for album '%s' (ID: %s). "
-                        "Stopping instead of silently skipping real analysis.",
+                        "Cannot determine feature needs for album '%s' (ID: %s); "
+                        "skipping this album.",
                         album.get('Name'),
                         album.get('Id'),
                     )
-                    raise RuntimeError(
-                        f"Cannot determine analysis needs for album '{album.get('Name')}': {e}"
-                    ) from e
+                    albums_errored += 1
+                    checked_album_ids.add(album['Id'])
+                    continue
 
                 needs_musicnn_analysis = existing_count < len(tracks)
 
@@ -1210,6 +1278,12 @@ def _run_analysis_server_task_impl(
                         'lyrics': albums_needing_lyrics,
                         'chromaprint': albums_needing_chromaprint,
                     },
+                )
+
+            if total_albums_to_check > 0 and albums_errored == total_albums_to_check:
+                raise RuntimeError(
+                    f"Feature-needs computation failed for all {albums_errored} album(s); "
+                    "aborting the analysis run."
                 )
 
             if (
@@ -1284,7 +1358,8 @@ def _run_analysis_server_task_impl(
             failed_count, failed_errors = get_failed_child_summary(current_task_id)
             final_message = (
                 f"Main analysis complete. Launched {albums_launched}, "
-                f"Skipped {albums_skipped}, Failed {failed_count}. "
+                f"Skipped {albums_skipped}, Errored {albums_errored}, "
+                f"Failed {failed_count}. "
                 f"Feature albums: MusiCNN {albums_needing_musicnn}, "
                 f"DCLAP {albums_needing_clap}, Lyrics {albums_needing_lyrics}, "
                 f"Chromaprint {albums_needing_chromaprint}."
@@ -1334,14 +1409,10 @@ def _enabled_analysis_servers(server_scope):
 
     with app.app_context():
         try:
-            servers = [s for s in registry.list_servers() if s['enabled']]
+            return registry.servers_for_scope(server_scope)
         except Exception:
             logger.exception("Server registry unavailable; analyzing the config default only")
             return []
-    if server_scope == 'default':
-        default_only = [s for s in servers if s['is_default']]
-        return default_only or servers[:1]
-    return servers
 
 
 def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
@@ -1352,17 +1423,21 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
     a 'high' worker while the album jobs run on the 'default' workers. Nesting a
     per-server job on the 'default' queue instead would let a phase occupy the only
     default worker while waiting for album jobs on that same queue, which deadlocks.
+    After the last phase a final full alignment sweep maps late-phase duplicate
+    content onto earlier servers before the single final index build.
     """
     current_job = get_current_job(redis_conn)
     parent_id = current_job.id if current_job else str(uuid.uuid4())
 
     servers = _enabled_analysis_servers(server_scope)
     if len(servers) <= 1:
-        server_id = servers[0]['server_id'] if servers else None
+        server = servers[0] if servers else None
+        server_id = server['server_id'] if server else None
         return run_analysis_server_task(num_recent_albums, top_n_moods, server_id=server_id)
 
     summaries = []
     failed = []
+    catalog_cache = {}
     span = 90.0 / len(servers)
     for index, server in enumerate(servers):
         with app.app_context():
@@ -1399,10 +1474,21 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
                 from tasks.multiserver_sync import sweep_all_secondary_servers
 
                 sweep_all_secondary_servers(
-                    task_id=str(uuid.uuid4()), server_ids=remaining_server_ids
+                    task_id=str(uuid.uuid4()),
+                    server_ids=remaining_server_ids,
+                    catalog_cache=catalog_cache,
                 )
             except Exception:
                 logger.exception("Post-phase server alignment failed after %s", server['name'])
+
+    try:
+        from tasks.multiserver_sync import sweep_all_secondary_servers
+
+        sweep_all_secondary_servers(
+            task_id=str(uuid.uuid4()), full_refresh=False, catalog_cache=catalog_cache
+        )
+    except Exception:
+        logger.exception("Final cross-server alignment sweep failed")
 
     with app.app_context():
         save_task_status(
@@ -1412,7 +1498,24 @@ def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
             progress=92,
             details={"message": "Building union catalogue indexes once..."},
         )
-        _run_all_index_builds()
+        try:
+            _run_all_index_builds()
+        except Exception:
+            logger.exception("Final union index build failed")
+            save_task_status(
+                parent_id,
+                "main_analysis",
+                TASK_STATUS_FAILURE,
+                progress=100,
+                details={
+                    "message": (
+                        "Union analysis failed during the final index rebuild. "
+                        "Check container logs."
+                    ),
+                    "failed_servers": failed,
+                },
+            )
+            raise
         message = (
             f"Union analysis complete across {len(servers)} servers; "
             f"{len(failed)} source phase(s) failed."

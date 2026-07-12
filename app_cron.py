@@ -470,52 +470,49 @@ def run_due_cron_jobs():
                     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
 
                     try:
-                        try:
-                            servers = [s for s in registry.list_servers() if s['enabled']]
-                        except Exception:
-                            logger.debug(
-                                "Server registry unavailable; using legacy default context",
-                                exc_info=True,
-                            )
-                            servers = []
-                        if server_scope == 'default' and servers:
-                            servers = [servers[0]]
-                        if not servers:
-                            servers = [None]
+                        servers = registry.servers_for_scope(server_scope)
                         for server in servers:
-                            ctx = registry.context_for(server['server_id']) if server else None
-                            with server_context.use_server(ctx):
-                                fingerprint_results = generate_sonic_fingerprint()
-                                if not fingerprint_results:
-                                    logger.warning(
-                                        "Cron: sonic fingerprint found no results on %s; "
-                                        "preserving previous playlist (job_id=%s)",
-                                        server['name'] if server else 'default server', job_id,
-                                    )
-                                    continue
-                                track_ids = [
-                                    row['item_id'] for row in fingerprint_results
-                                    if 'item_id' in row
-                                ]
-                                try:
-                                    upserted = create_or_replace_playlist(
-                                        SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
-                                    )
-                                    playlist_id = upserted.get('Id') if upserted else None
-                                    logger.info(
-                                        f"Cron: upserted '{SONIC_FINGERPRINT_CRON_PLAYLIST_NAME}' "
-                                        f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
-                                    )
-                                except NotImplementedError:
-                                    # Unsupported backend: keep the legacy date-suffixed behavior.
-                                    legacy_name = (
-                                        f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
-                                    )
-                                    playlist_id = create_playlist_from_ids(legacy_name, track_ids)
-                                    logger.info(
-                                        f"Cron: created sonic fingerprint playlist '{legacy_name}' "
-                                        f"(playlist_id={playlist_id}, job_id={job_id})"
-                                    )
+                            server_name = server['name'] if server else 'default server'
+                            try:
+                                ctx = registry.context_for(server['server_id']) if server else None
+                                with server_context.use_server(ctx):
+                                    fingerprint_results = generate_sonic_fingerprint()
+                                    if not fingerprint_results:
+                                        logger.warning(
+                                            "Cron: sonic fingerprint found no results on %s; "
+                                            "preserving previous playlist (job_id=%s)",
+                                            server_name, job_id,
+                                        )
+                                        continue
+                                    track_ids = [
+                                        row['item_id'] for row in fingerprint_results
+                                        if 'item_id' in row
+                                    ]
+                                    try:
+                                        upserted = create_or_replace_playlist(
+                                            SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, track_ids
+                                        )
+                                        playlist_id = upserted.get('Id') if upserted else None
+                                        logger.info(
+                                            f"Cron: upserted '{SONIC_FINGERPRINT_CRON_PLAYLIST_NAME}' "
+                                            f"(playlist_id={playlist_id}, tracks={len(track_ids)}, job_id={job_id})"
+                                        )
+                                    except NotImplementedError:
+                                        # Unsupported backend: keep the legacy date-suffixed behavior.
+                                        legacy_name = (
+                                            f"Sonic Fingerprint (Cron {time.strftime('%Y-%m-%d')})"
+                                        )
+                                        playlist_id = create_playlist_from_ids(legacy_name, track_ids)
+                                        logger.info(
+                                            f"Cron: created sonic fingerprint playlist '{legacy_name}' "
+                                            f"(playlist_id={playlist_id}, job_id={job_id})"
+                                        )
+                            except Exception:
+                                logger.exception(
+                                    "Cron: sonic fingerprint failed on %s; "
+                                    "continuing with remaining servers", server_name,
+                                )
+                                continue
                         logger.info(f"Cron: ran sonic fingerprint synchronously (job_id={job_id})")
                     except Exception:
                         logger.exception("Cron: error running sonic fingerprint")

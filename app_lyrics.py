@@ -131,6 +131,13 @@ def lyrics_search_axes_api():
     if not LYRICS_ENABLED:
         return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
     try:
         data = request.get_json() or {}
         targets_raw = data.get('targets') or {}
@@ -151,7 +158,7 @@ def lyrics_search_axes_api():
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
-        results = search_by_axes(targets, limit=app_server_context.overfetch_limit(limit))
+        results = search_by_axes(targets, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'results': []}), 404
         attach_song_features(results)
@@ -216,6 +223,13 @@ def lyrics_search_text_api():
     if not LYRICS_ENABLED:
         return jsonify({'error': 'Lyrics search is disabled.', 'results': []}), 400
 
+    # Validate the optional 'server' selection up front so an unknown or
+    # disabled server answers 400 with a clear message.
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
     try:
         data = request.get_json() or {}
         query = (data.get('query') or '').strip()
@@ -230,7 +244,7 @@ def lyrics_search_text_api():
             return jsonify({'error': 'Invalid "limit" value.'}), 400
         limit = min(max(1, limit), 500)
 
-        results = search_by_text(query, limit=app_server_context.overfetch_limit(limit))
+        results = search_by_text(query, limit=limit)
         if not results:
             return jsonify({'error': 'No lyrics found.', 'query': query, 'results': []}), 404
         attach_song_features(results)
