@@ -383,7 +383,7 @@ def translate_ids(item_ids, server_id=None, conn=None):
     is_default = (not server_id) or server_id == default_id
     target = server_id or default_id
     if target is None:
-        from tasks.audio_fingerprint import is_fingerprint_id
+        from tasks.simhash import is_fingerprint_id
         return {i: i for i in ids if not is_fingerprint_id(i)}
     cur = db.cursor()
     try:
@@ -396,7 +396,7 @@ def translate_ids(item_ids, server_id=None, conn=None):
     finally:
         cur.close()
     if is_default:
-        from tasks.audio_fingerprint import is_fingerprint_id
+        from tasks.simhash import is_fingerprint_id
         dropped = sum(1 for i in ids if is_fingerprint_id(i) and i not in mapped)
         if dropped:
             logger.warning(

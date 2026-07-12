@@ -626,35 +626,66 @@ class TestSingleTranslationPoint:
             asc.create_instant_playlist_for_server('P', ['fp_a'], 'sec')
 
 
+def _legacy_cursor(legacy_rows):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    cursor.fetchone.return_value = (len(legacy_rows),)
+    cursor.fetchmany.side_effect = [legacy_rows, []]
+    return cursor
+
+
 class TestEmbeddingCanonicalization:
     def test_builds_canonical_ids_from_stored_embeddings(self):
-        from tasks import audio_fingerprint as afp
+        import numpy as np
+        from tasks import simhash
         from tasks import fingerprint_canonicalize as canonicalize
 
-        embedding = [0.5, -1.25, 2.0, 0.75]
-        cursor = MagicMock()
-        cursor.fetchall.side_effect = [
-            [],
-            [('legacy-provider-id', embedding)],
-        ]
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([('legacy-provider-id', embedding)])
         mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert mapping == {
-            'legacy-provider-id': afp.embedding_canonical_id(embedding)
+            'legacy-provider-id': simhash.embedding_canonical_id(embedding)
         }
         assert duplicate_mapping == {}
 
-    def test_duplicate_embeddings_keep_one_canonical_row(self):
+    def test_same_audio_copies_merge(self):
+        import numpy as np
         from tasks import fingerprint_canonicalize as canonicalize
 
-        embedding = [0.5, -1.25, 2.0, 0.75]
-        cursor = MagicMock()
-        cursor.fetchall.side_effect = [
-            [],
-            [('copy-one', embedding), ('copy-two', embedding)],
-        ]
+        embedding = np.sin(np.arange(200, dtype=np.float32)).tobytes()
+        cursor = _legacy_cursor([
+            ('copy-one', embedding),
+            ('copy-two', embedding),
+        ])
         mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
         assert list(mapping.keys()) == ['copy-one']
         assert duplicate_mapping == {'copy-two': next(iter(mapping.values()))}
+
+    def test_same_signature_different_audio_never_merges(self):
+        import numpy as np
+        from tasks import simhash
+        from tasks import fingerprint_canonicalize as canonicalize
+
+        half = simhash.SIGNATURE_BITS // 2
+        first = np.concatenate(
+            [np.full(half, 1.0), np.full(half, -1.0)]
+        ).astype(np.float32)
+        second = first.copy()
+        second[0:half:2] = 2.0
+        second[1:half:2] = 0.1
+        second[half::2] = -2.0
+        second[half + 1::2] = -0.1
+        assert simhash.embedding_signature(first) == simhash.embedding_signature(second)
+        assert simhash.cosine_distance(first, second) > 0.01
+
+        cursor = _legacy_cursor([
+            ('copy-one', first.tobytes()),
+            ('copy-two', second.tobytes()),
+        ])
+        mapping, duplicate_mapping = canonicalize._build_mapping(cursor)
+        assert duplicate_mapping == {}
+        assert set(mapping.keys()) == {'copy-one', 'copy-two'}
+        assert mapping['copy-one'] != mapping['copy-two']
 
     def test_preserves_recovered_default_provider_id(self):
         from tasks.fingerprint_canonicalize import _default_provider_ids

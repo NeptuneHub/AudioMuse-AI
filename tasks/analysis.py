@@ -462,7 +462,6 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
 
 def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
-    from .audio_fingerprint import canonical_id_str, embedding_fingerprint
     from .mediaserver import context as server_context, registry
 
     current_job = get_current_job(redis_conn)
@@ -708,46 +707,43 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         session_recycler.increment()
                         cleanup_cuda_memory(force=False)
 
-                        fingerprint = embedding_fingerprint(musicnn_embedding)
-                        candidate_id = canonical_id_str(fingerprint)
                         source_server_id = (
                             server_context.active_server_id()
                             or registry.get_default_server_id()
                         )
                         provider_id = str(item.get('Id') or item.get('id'))
-                        if candidate_id:
-                            if fingerprint_index is None:
-                                fingerprint_index = _ah.load_fingerprint_index()
-                            existing_id = fingerprint_index.find(fingerprint)
-                            if existing_id is not None:
-                                if source_server_id:
-                                    registry.upsert_track_maps(
-                                        source_server_id,
-                                        {existing_id: (provider_id, 'fingerprint')},
-                                    )
-                                logger.info(
-                                    "Embedding hash matched '%s' to existing catalogue "
-                                    "id %s; marked it for this server and skipped the "
-                                    "duplicate persist.",
-                                    track_name_full,
-                                    existing_id,
-                                )
-                                tracks_analyzed_count += 1
-                                continue
-                            item['_catalog_item_id'] = candidate_id
-                            track_id_str = candidate_id
-                            fingerprint_index.add(candidate_id, fingerprint)
-                            if source_server_id:
-                                pending_track_maps.setdefault(source_server_id, {})[
-                                    candidate_id
-                                ] = (provider_id, 'fingerprint')
-                        else:
+                        if fingerprint_index is None:
+                            fingerprint_index = _ah.load_fingerprint_index()
+                        kind, resolved_id = fingerprint_index.resolve(musicnn_embedding)
+                        if resolved_id is None:
                             logger.warning(
-                                "Embedding fingerprint unavailable for '%s'; keeping "
+                                "Embedding signature unavailable for '%s'; keeping "
                                 "provider id %s for this row.",
                                 track_name_full,
                                 track_id_str,
                             )
+                        elif kind == 'existing':
+                            if source_server_id:
+                                registry.upsert_track_maps(
+                                    source_server_id,
+                                    {resolved_id: (provider_id, 'fingerprint')},
+                                )
+                            logger.info(
+                                "Embedding signature + cosine matched '%s' to existing "
+                                "catalogue id %s; marked it for this server and "
+                                "skipped the duplicate persist.",
+                                track_name_full,
+                                resolved_id,
+                            )
+                            tracks_analyzed_count += 1
+                            continue
+                        else:
+                            item['_catalog_item_id'] = resolved_id
+                            track_id_str = resolved_id
+                            if source_server_id:
+                                pending_track_maps.setdefault(source_server_id, {})[
+                                    resolved_id
+                                ] = (provider_id, 'fingerprint')
                     else:
                         musicnn_analysis = musicnn_embedding = None
                         top_moods = existing_top_moods_by_id.get(track_id_str) or None

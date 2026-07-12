@@ -498,21 +498,33 @@ def compute_album_needs(tracks, clap_available, lyrics_enabled, server_id=None):
     )
 
 
+def _fetch_embedding_blob(item_id):
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT embedding FROM embedding WHERE item_id = %s", (str(item_id),))
+        row = cur.fetchone()
+    return bytes(row[0]) if row and row[0] is not None else None
+
+
 def load_fingerprint_index():
-    """Hamming-tolerant index over every canonical id already in the catalogue.
+    """Identity resolver over every canonical row already in the catalogue.
 
-    Built from the item_id strings alone (the id encodes the hash), so loading
-    it never reads embedding blobs. Analysis consults it after MusiCNN to decide
-    whether a just-analyzed track is content the catalogue already has.
+    Built from item_id strings alone (the id encodes the 200-bit signature), so
+    loading it never reads embedding blobs; a candidate row's raw embedding is
+    fetched lazily only when the signature proposes it, and the exact cosine
+    (the Similar Songs duplicate rule) takes the final same/different decision.
     """
-    from tasks.audio_fingerprint import FingerprintIndex
+    from tasks.simhash import CANONICAL_ID_LEN, CatalogResolver
 
+    resolver = CatalogResolver(embedding_fetcher=_fetch_embedding_blob)
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT item_id FROM score "
-            "WHERE item_id LIKE 'fp\\_%' AND length(item_id) = 19"
+            "WHERE item_id LIKE 'fp\\_2%%' AND length(item_id) = %s",
+            (CANONICAL_ID_LEN,),
         )
-        return FingerprintIndex.from_item_ids(row[0] for row in cur.fetchall())
+        for (item_id,) in cur.fetchall():
+            resolver.register(item_id)
+    return resolver
 
 
 def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):

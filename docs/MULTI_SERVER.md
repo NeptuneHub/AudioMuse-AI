@@ -166,23 +166,30 @@ All under `/api/servers`. Listing is available to any authenticated user
 
 ## Content id from the MusiCNN embedding
 
-The canonical `score.item_id` IS the content fingerprint: the analysis
-embedding every track already gets is projected onto 64 fixed seeded
-hyperplanes and the sign bits form a 64-bit SimHash, encoded as `fp_<16hex>`.
-Nothing extra is downloaded, no external binary is needed, and no extra column
-is stored - the id itself encodes the hash. The hash is similarity-preserving:
-the same song analyzed from two servers (different file, encoder, bitrate)
-lands within a few bits, so catalogue membership is checked with a
-Hamming-tolerant lookup rather than exact equality, and the two copies become
-ONE row with two server mappings.
+The canonical `score.item_id` IS the content signature (`tasks/simhash.py`, a
+home-made similarity hash): one bit per embedding dimension - "is this
+dimension above the song's own average" - giving a 200-bit code encoded as the
+scheme-versioned `fp_2<50hex>`. No random projections, no external binary, no
+extra column, no metadata: the id is the shape of the song's MusiCNN profile.
 
-Legacy installs migrate ONCE, at Flask container startup: item_ids are
-relabelled from the already-stored embeddings (a pure database operation,
-seconds even on 180k tracks) and the index rebuild is queued in the
-background. Every later boot is an instant no-op. The media server's real id
-is preserved in `track_server_map` and translated back whenever a playlist is
-sent to a server. Rows whose hash collides with an existing catalogue row are
-the same content and are merged into it, keeping every server mapping.
+The signature is similarity-preserving and only PROPOSES identity. The same
+song analyzed from two servers (different file, encoder, bitrate) lands within
+a few bits, so candidates are found with a Hamming-tolerant lookup - and the
+final same/different decision is the EXACT cosine distance between the raw
+embeddings, using the same `DUPLICATE_DISTANCE_THRESHOLD_COSINE` the Similar
+Songs duplicate filter has always trusted (plus a duration check when both
+durations are known). Everything deciding identity is derived from the audio
+itself. Two copies of one song become ONE row with N server mappings; two
+similar-sounding DIFFERENT songs never merge, even on a signature collision
+(the second simply gets the next free id).
+
+Legacy installs migrate ONCE, at Flask container startup, directly on the
+Flask container (never through the job queue): item_ids are relabelled from
+the already-stored embeddings - a pure database operation, computed vectorized
+in chunks across max(2, half the CPU cores) threads - and the index rebuild is
+queued in the background. Every later boot is an instant no-op. The media
+server's real id is preserved in `track_server_map` and translated back
+whenever a playlist is sent to a server.
 
 Tracks unavailable on the selected server are filtered from results and are
 never sent to that provider as canonical ids.

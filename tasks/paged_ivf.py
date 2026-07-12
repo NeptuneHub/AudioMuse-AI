@@ -877,7 +877,7 @@ class PagedIvfIndex:
             )
             is_default = bool(cur.fetchone()[0])
         if is_default:
-            from tasks.audio_fingerprint import is_fingerprint_id
+            from tasks.simhash import is_fingerprint_id
 
             available.update(
                 item_id for item_id in self._item_ids

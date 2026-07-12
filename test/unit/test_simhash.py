@@ -1,0 +1,189 @@
+# AudioMuse-AI - https://github.com/NeptuneHub/AudioMuse-AI
+# Copyright (C) 2025 NeptuneHub
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU Affero General Public License v3.0. See the LICENSE file
+# in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
+
+"""Home-made similarity-hash identity behaviour.
+
+Verifies the 200-bit per-dimension sign signature: deterministic across input
+forms, similarity-preserving (a re-encode flips few bits, distinct songs flip
+many), the fp_2<50hex> id round-trip, the banded candidate index, and the
+resolver contract: identity is decided by the raw-embedding cosine (the Similar
+Songs duplicate rule) with the signature only proposing candidates - two songs
+sharing a signature but failing the cosine stay separate rows.
+
+Main Features:
+* Signature determinism, similarity window, invalid-input handling.
+* fp_2 id round-trip and legacy-scheme rejection.
+* Resolver: cosine confirms, collisions mint the next free id.
+"""
+
+import numpy as np
+
+from tasks import simhash
+
+
+def _embedding(seed, dim=simhash.SIGNATURE_BITS):
+    rng = np.random.RandomState(seed)
+    return rng.standard_normal(dim).astype(np.float32)
+
+
+def _same_signature_different_song():
+    half = simhash.SIGNATURE_BITS // 2
+    first = np.concatenate([np.full(half, 1.0), np.full(half, -1.0)]).astype(np.float32)
+    second = first.copy()
+    second[0:half:2] = 2.0
+    second[1:half:2] = 0.1
+    second[half::2] = -2.0
+    second[half + 1::2] = -0.1
+    return first, second
+
+
+class TestSignature:
+    def test_deterministic_across_input_forms(self):
+        emb = _embedding(1)
+        from_array = simhash.embedding_signature(emb)
+        from_bytes = simhash.embedding_signature(emb.tobytes())
+        from_list = simhash.embedding_signature(list(emb))
+        assert from_array == from_bytes == from_list
+        assert isinstance(from_array, int)
+
+    def test_shared_offset_does_not_collapse_signatures(self):
+        offset = np.float32(25.0)
+        a = simhash.embedding_signature(_embedding(20) + offset)
+        b = simhash.embedding_signature(_embedding(21) + offset)
+        assert simhash.hamming_distance(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
+
+    def test_reencode_stays_within_tolerance(self):
+        emb = _embedding(2)
+        nudged = emb + np.float32(1e-4) * _embedding(3)
+        a = simhash.embedding_signature(emb)
+        b = simhash.embedding_signature(nudged)
+        assert simhash.hamming_distance(a, b) <= simhash.SIGNATURE_MATCH_MAX_HAMMING
+
+    def test_distinct_songs_land_far_apart(self):
+        a = simhash.embedding_signature(_embedding(4))
+        b = simhash.embedding_signature(_embedding(5))
+        assert simhash.hamming_distance(a, b) > simhash.SIGNATURE_MATCH_MAX_HAMMING
+
+    def test_invalid_embeddings_have_no_signature(self):
+        assert simhash.embedding_signature(None) is None
+        assert simhash.embedding_signature([]) is None
+        assert simhash.embedding_signature(np.zeros(simhash.SIGNATURE_BITS)) is None
+        assert simhash.embedding_signature(np.full(simhash.SIGNATURE_BITS, 3.0)) is None
+        assert simhash.embedding_signature(_embedding(6, dim=64)) is None
+        assert simhash.embedding_canonical_id(None) is None
+
+    def test_batch_matches_single(self):
+        embeddings = [_embedding(7), None, _embedding(8)]
+        batch = simhash.signature_batch(embeddings)
+        assert batch[0] == simhash.embedding_signature(embeddings[0])
+        assert batch[1] is None
+        assert batch[2] == simhash.embedding_signature(embeddings[2])
+
+
+class TestCanonicalId:
+    def test_id_round_trip(self):
+        signature = simhash.embedding_signature(_embedding(9))
+        cid = simhash.canonical_id_str(signature)
+        assert cid.startswith('fp_2') and len(cid) == simhash.CANONICAL_ID_LEN
+        assert simhash.is_fingerprint_id(cid)
+        assert simhash.signature_from_canonical_id(cid) == signature
+
+    def test_legacy_scheme_ids_do_not_decode(self):
+        assert simhash.signature_from_canonical_id('fp_' + 'a' * 16) is None
+        assert simhash.signature_from_canonical_id('fp_1' + 'a' * 16) is None
+        assert simhash.signature_from_canonical_id('fp_' + 'a' * 32) is None
+        assert simhash.signature_from_canonical_id('provider-1') is None
+        assert simhash.signature_from_canonical_id(None) is None
+        assert simhash.is_fingerprint_id('fp_' + 'a' * 16)
+        assert not simhash.is_fingerprint_id('plain')
+
+
+class TestSignatureIndex:
+    def test_finds_exact_and_near(self):
+        base = simhash.embedding_signature(_embedding(10))
+        index = simhash.SignatureIndex()
+        index.add('one', base)
+        assert index.find(base) == 'one'
+        flipped = base ^ 0b1011
+        assert simhash.hamming_distance(base, flipped) == 3
+        assert index.find(flipped) == 'one'
+
+    def test_rejects_beyond_tolerance(self):
+        base = simhash.embedding_signature(_embedding(11))
+        index = simhash.SignatureIndex()
+        index.add('one', base)
+        far = base
+        for bit in range(simhash.SIGNATURE_MATCH_MAX_HAMMING + 1):
+            far ^= (1 << (bit * 7))
+        assert (
+            simhash.hamming_distance(base, far)
+            == simhash.SIGNATURE_MATCH_MAX_HAMMING + 1
+        )
+        assert index.find(far) is None
+
+    def test_candidates_sorted_nearest_first(self):
+        base = simhash.embedding_signature(_embedding(12))
+        index = simhash.SignatureIndex()
+        index.add('two-bits', base ^ 0b11)
+        index.add('exact', base)
+        assert index.find_candidates(base) == ['exact', 'two-bits']
+
+
+class TestCatalogResolver:
+    def test_same_audio_resolves_to_existing(self):
+        emb = _embedding(13)
+        resolver = simhash.CatalogResolver()
+        kind, first = resolver.resolve(emb)
+        assert kind == 'new' and first.startswith('fp_2')
+        reencoded = emb + np.float32(1e-4) * _embedding(14)
+        kind2, second = resolver.resolve(reencoded)
+        assert (kind2, second) == ('existing', first)
+
+    def test_same_signature_different_audio_gets_own_id(self):
+        first, second = _same_signature_different_song()
+        assert (
+            simhash.embedding_signature(first)
+            == simhash.embedding_signature(second)
+        )
+        assert simhash.cosine_distance(first, second) > 0.01
+        resolver = simhash.CatalogResolver()
+        _kind, first_id = resolver.resolve(first)
+        kind, second_id = resolver.resolve(second)
+        assert kind == 'new'
+        assert second_id != first_id
+        kind3, again = resolver.resolve(second)
+        assert (kind3, again) == ('existing', second_id)
+
+    def test_duration_mismatch_blocks_the_merge(self):
+        emb = _embedding(15)
+        resolver = simhash.CatalogResolver()
+        _kind, first = resolver.resolve(emb, duration=180.0)
+        kind, second = resolver.resolve(emb, duration=240.0)
+        assert kind == 'new'
+        assert second != first
+
+    def test_lazy_fetcher_supplies_preexisting_embeddings(self):
+        emb = _embedding(16)
+        signature = simhash.embedding_signature(emb)
+        cid = simhash.canonical_id_str(signature)
+        fetched = []
+
+        def fetcher(item_id):
+            fetched.append(item_id)
+            return emb.tobytes()
+
+        resolver = simhash.CatalogResolver(embedding_fetcher=fetcher)
+        resolver.register(cid)
+        kind, resolved = resolver.resolve(emb)
+        assert (kind, resolved) == ('existing', cid)
+        assert fetched == [cid]
+
+    def test_unusable_embedding_resolves_to_nothing(self):
+        resolver = simhash.CatalogResolver()
+        assert resolver.resolve(None) == ('new', None)
+        assert resolver.resolve(np.zeros(simhash.SIGNATURE_BITS)) == ('new', None)

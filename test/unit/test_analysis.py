@@ -110,7 +110,11 @@ def test_enabled_analysis_servers_registry_failure_keeps_config_default(monkeypa
     assert analysis._enabled_analysis_servers('all') == [None]
 
 
-def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts):
+_FAKE_EMBEDDING = np.sin(np.arange(1, 201, dtype=np.float32))
+
+
+def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts,
+                    analyzed_embedding=None):
     import importlib
     import tasks.analysis as analysis
     import tasks.analysis_helper as helper
@@ -131,6 +135,9 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
         analysis, 'comprehensive_memory_cleanup', lambda *args, **kwargs: None
     )
     monkeypatch.setattr(analysis, 'cleanup_cuda_memory', lambda *args, **kwargs: None)
+    fake_embedding = (
+        _FAKE_EMBEDDING if analyzed_embedding is None else analyzed_embedding
+    )
     monkeypatch.setattr(
         analysis,
         'analyze_track',
@@ -142,7 +149,7 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
                 'scale': 'major',
                 'moods': {'happy': 0.9},
             },
-            np.ones(8, dtype=np.float32),
+            fake_embedding,
         ),
     )
 
@@ -182,16 +189,16 @@ def _run_album_impl(monkeypatch, tmp_path, item, known_index, persisted_ids, map
     return analysis._analyze_album_task_impl('album1', 'Album One', 5, 'parent1')
 
 
-def test_new_track_persists_under_embedding_hash_id_and_maps_it(monkeypatch, tmp_path):
-    import tasks.audio_fingerprint as afp
+def test_new_track_persists_under_signature_id_and_maps_it(monkeypatch, tmp_path):
+    from tasks import simhash
 
     item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
     persisted_ids, map_upserts = [], []
     result = _run_album_impl(
-        monkeypatch, tmp_path, item, afp.FingerprintIndex(), persisted_ids, map_upserts
+        monkeypatch, tmp_path, item, simhash.CatalogResolver(), persisted_ids, map_upserts
     )
 
-    expected_id = afp.embedding_canonical_id(np.ones(8, dtype=np.float32))
+    expected_id = simhash.embedding_canonical_id(_FAKE_EMBEDDING)
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == [expected_id]
@@ -199,23 +206,54 @@ def test_new_track_persists_under_embedding_hash_id_and_maps_it(monkeypatch, tmp
     assert map_upserts == [('srv-def', {expected_id: ('prov1', 'fingerprint')})]
 
 
-def test_known_hash_skips_duplicate_persist_and_just_maps_the_server(monkeypatch, tmp_path):
-    import tasks.audio_fingerprint as afp
+def test_same_audio_skips_persist_and_just_maps_the_server(monkeypatch, tmp_path):
+    from tasks import simhash
 
-    fingerprint = afp.embedding_fingerprint(np.ones(8, dtype=np.float32))
-    known_index = afp.FingerprintIndex()
-    known_index.add('fp_known', fingerprint)
+    known_id = simhash.embedding_canonical_id(_FAKE_EMBEDDING)
+    catalog = simhash.CatalogResolver()
+    catalog.register(known_id, embedding=_FAKE_EMBEDDING)
 
     item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
     persisted_ids, map_upserts = [], []
     result = _run_album_impl(
-        monkeypatch, tmp_path, item, known_index, persisted_ids, map_upserts
+        monkeypatch, tmp_path, item, catalog, persisted_ids, map_upserts
     )
 
     assert result['status'] == 'SUCCESS'
     assert result['tracks_analyzed'] == 1
     assert persisted_ids == []
-    assert map_upserts == [('srv-def', {'fp_known': ('prov1', 'fingerprint')})]
+    assert map_upserts == [('srv-def', {known_id: ('prov1', 'fingerprint')})]
+
+
+def test_same_signature_different_audio_gets_its_own_id(monkeypatch, tmp_path):
+    from tasks import simhash
+
+    half = simhash.SIGNATURE_BITS // 2
+    first = np.concatenate([np.full(half, 1.0), np.full(half, -1.0)]).astype(np.float32)
+    second = first.copy()
+    second[0:half:2] = 2.0
+    second[1:half:2] = 0.1
+    second[half::2] = -2.0
+    second[half + 1::2] = -0.1
+    assert simhash.embedding_signature(first) == simhash.embedding_signature(second)
+    assert simhash.cosine_distance(first, second) > 0.01
+
+    taken_id = simhash.embedding_canonical_id(first)
+    catalog = simhash.CatalogResolver()
+    catalog.register(taken_id, embedding=first)
+
+    item = {'Id': 'prov1', 'Name': 'Song', 'AlbumArtist': 'Artist'}
+    persisted_ids, map_upserts = [], []
+    result = _run_album_impl(
+        monkeypatch, tmp_path, item, catalog, persisted_ids, map_upserts,
+        analyzed_embedding=second,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert len(persisted_ids) == 1
+    assert persisted_ids[0] != taken_id
+    assert persisted_ids[0].startswith('fp_2')
+    assert map_upserts == [('srv-def', {persisted_ids[0]: ('prov1', 'fingerprint')})]
 
 
 def test_unknown_catalogue_track_requires_real_musicnn_analysis():

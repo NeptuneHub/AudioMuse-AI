@@ -6,32 +6,37 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Relabel legacy catalogue rows so item_id becomes the embedding fingerprint.
+"""Relabel legacy catalogue rows so item_id becomes the embedding signature.
 
-The canonical id is the similarity-preserving 64-bit SimHash of each track's
-stored MusiCNN embedding, so this is a pure database operation: no downloads,
-no binaries, no audio decoding, seconds even on a 180k-track legacy install.
-It runs ONCE per lifetime of a legacy row, at Flask container startup, and is
-an instant no-op afterwards; analysis mints canonical ids directly at analyze
-time so nothing here runs during analysis. The rewrite uses the same proven
-transactional key-rewrite the provider-migration feature uses (score, playlist,
-and all embedding tables, with the embedding foreign keys dropped and re-added
-around it). Rows whose hash lands within Hamming tolerance of an existing
-catalogue row are the same content and are merged into it, keeping every
-server mapping. The source server's real ids are preserved in track_server_map
-so output can be translated back; rows without an embedding keep their provider
+The canonical id is the 200-bit per-dimension sign signature of each track's
+stored MusiCNN embedding (tasks.simhash), so this is a pure database operation:
+no downloads, no binaries, no audio decoding. It runs ONCE per lifetime of a
+legacy row, at Flask container startup, and is an instant no-op afterwards;
+analysis mints canonical ids directly at analyze time so nothing here runs
+during analysis. Signatures are computed vectorized in chunks across a small
+thread pool so large legacy installs migrate as fast as the machine allows.
+The rewrite uses the same proven transactional key-rewrite the
+provider-migration feature uses (score, playlist, and all embedding tables,
+with the embedding foreign keys dropped and re-added around it). A legacy row
+merges into an existing catalogue row ONLY when its signature is within
+tolerance AND the exact raw-embedding cosine confirms it is the same audio
+(the Similar Songs duplicate rule) - identity is decided purely by the
+content. The source server's real ids are preserved in track_server_map so
+output can be translated back; rows without an embedding keep their provider
 id and keep working via the identity translation fallback.
 
 Main Features:
-* One-time, idempotent startup relabel of embedding-bearing legacy rows.
-* Hamming-tolerant duplicate merge into existing canonical rows.
+* One-time, idempotent, multi-threaded startup relabel of legacy rows.
+* Cosine-confirmed duplicate merge into existing canonical rows.
 * Records the source-server mapping in track_server_map.
 """
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 from database import connect_raw
-from tasks import audio_fingerprint
+from tasks import simhash
 from tasks.mediaserver import registry
 from tasks.provider_migration_tasks import (
     find_fk,
@@ -43,62 +48,115 @@ from tasks.provider_migration_tasks import (
 
 logger = logging.getLogger(__name__)
 
+_CHUNK_ROWS = 20000
+
+
+def _migration_workers():
+    return max(2, (os.cpu_count() or 4) // 2)
+
+
+def _resolve_legacy_rows(row_batches, resolver, total):
+    """Assign every legacy row its identity: relabel new content, merge duplicates.
+
+    ``row_batches`` yields lists of ``(old_id, embedding_blob, signature)``.
+    Identity is decided purely from the audio: the signature proposes, the raw
+    embedding cosine (the Similar Songs duplicate rule) confirms.
+    """
+    mapping = {}
+    duplicate_mapping = {}
+    done = 0
+    next_pct = 10
+    for batch in row_batches:
+        for old_id, embedding_blob, signature in batch:
+            kind, resolved = resolver.resolve(embedding_blob, signature=signature)
+            if resolved is not None:
+                if kind == 'existing':
+                    duplicate_mapping[str(old_id)] = resolved
+                else:
+                    mapping[str(old_id)] = resolved
+            done += 1
+            if total >= 10 and done * 100 >= next_pct * total:
+                logger.info(
+                    "Legacy catalogue migration: %d%% (%d/%d tracks resolved)",
+                    next_pct, done, total,
+                )
+                next_pct += 10
+    return mapping, duplicate_mapping
+
 
 def _build_mapping(cur):
     """{legacy_id: canonical_id} to relabel plus {legacy_id: existing_id} to merge.
 
-    Legacy rows are everything whose item_id is not a current-scheme embedding
-    hash id: provider ids and ids minted by retired schemes alike. A legacy row
-    whose hash lands within Hamming tolerance of a row already in the catalogue
-    (or of another legacy row processed first) is the same content and is merged
-    into that id instead of claiming its own.
+    Legacy rows are everything whose item_id is not a current-scheme signature
+    id: provider ids and ids minted by retired schemes alike. Signatures are
+    computed vectorized in chunks across a small thread pool (max(2, half the
+    cores)) so the one-time startup migration finishes as fast as the machine
+    allows; resolution then runs in submission order, so the outcome is
+    identical to a sequential pass.
     """
+    head_len = simhash.CANONICAL_ID_LEN
+    resolver = simhash.CatalogResolver()
     cur.execute(
-        "SELECT s.item_id FROM score s "
-        "WHERE s.item_id LIKE 'fp\\_%' AND length(s.item_id) = 19"
+        "SELECT s.item_id, e.embedding FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE s.item_id LIKE 'fp\\_2%%' AND length(s.item_id) = %s",
+        (head_len,),
     )
-    index = audio_fingerprint.FingerprintIndex.from_item_ids(
-        r[0] for r in cur.fetchall()
+    for item_id, embedding_blob in cur.fetchall():
+        resolver.register(item_id, embedding=bytes(embedding_blob))
+    cur.execute(
+        "SELECT COUNT(*) FROM score s "
+        "JOIN embedding e ON e.item_id = s.item_id "
+        "WHERE e.embedding IS NOT NULL "
+        "AND (s.item_id NOT LIKE 'fp\\_2%%' OR length(s.item_id) <> %s)",
+        (head_len,),
     )
+    total = cur.fetchone()[0]
+    if not total:
+        return {}, {}
+    logger.info("=" * 64)
+    logger.info(
+        "LEGACY CATALOGUE MIGRATION STARTING: computing content ids for "
+        "%d tracks from their stored embeddings.", total,
+    )
+    logger.info(
+        "One-time step (first start after upgrade only); no downloads, pure "
+        "database work on %d threads. Progress every 10%%.",
+        _migration_workers(),
+    )
+    logger.info("=" * 64)
     cur.execute(
         "SELECT s.item_id, e.embedding FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         "WHERE e.embedding IS NOT NULL "
-        "AND (s.item_id NOT LIKE 'fp\\_%' OR length(s.item_id) <> 19)"
+        "AND (s.item_id NOT LIKE 'fp\\_2%%' OR length(s.item_id) <> %s)",
+        (head_len,),
     )
-    rows = cur.fetchall()
-    total = len(rows)
-    if total:
-        logger.info("=" * 64)
-        logger.info(
-            "LEGACY CATALOGUE MIGRATION STARTING: computing content ids for "
-            "%d tracks from their stored embeddings.", total,
-        )
-        logger.info(
-            "One-time step (first start after upgrade only); no downloads, "
-            "pure database work. Progress every 10%%."
-        )
-        logger.info("=" * 64)
-    mapping = {}
-    duplicate_mapping = {}
-    next_pct = 10
-    for done, (old_id, embedding_blob) in enumerate(rows, 1):
-        fingerprint = audio_fingerprint.embedding_fingerprint(embedding_blob)
-        canonical = audio_fingerprint.canonical_id_str(fingerprint)
-        if canonical is not None:
-            existing = index.find(fingerprint)
-            if existing is not None:
-                duplicate_mapping[str(old_id)] = existing
-            else:
-                mapping[str(old_id)] = canonical
-                index.add(canonical, fingerprint)
-        if total >= 10 and done * 100 >= next_pct * total:
-            logger.info(
-                "Legacy catalogue migration: %d%% (%d/%d content ids computed)",
-                next_pct, done, total,
-            )
-            next_pct += 10
-    return mapping, duplicate_mapping
+
+    def _signed_batches():
+        with ThreadPoolExecutor(max_workers=_migration_workers()) as pool:
+            pending = []
+            while True:
+                rows = cur.fetchmany(_CHUNK_ROWS)
+                if rows:
+                    chunk = [(str(r[0]), bytes(r[1])) for r in rows]
+                    pending.append(
+                        (chunk, pool.submit(
+                            simhash.signature_batch,
+                            [blob for _old, blob in chunk],
+                        ))
+                    )
+                while pending and (len(pending) > _migration_workers() or not rows):
+                    chunk, future = pending.pop(0)
+                    signatures = future.result()
+                    yield [
+                        (old_id, blob, signature)
+                        for (old_id, blob), signature in zip(chunk, signatures)
+                    ]
+                if not rows:
+                    break
+
+    return _resolve_legacy_rows(_signed_batches(), resolver, total)
 
 
 def _merge_duplicate_rows(cur, duplicate_mapping):
