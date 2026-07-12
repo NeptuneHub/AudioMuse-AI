@@ -104,3 +104,62 @@ def test_sonic_fingerprint_branch_falls_back_for_unsupported_backend(mock_get_db
     legacy_name = legacy.call_args[0][0]
     assert legacy_name.startswith('Sonic Fingerprint (Cron ')
     assert legacy.call_args[0][1] == ['a']
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_plugin_branch_forwards_the_schedules_server_scope(mock_get_db, _matches):
+    """A plugin schedule runs per server, like every other scheduled task."""
+    from app_cron import run_due_cron_jobs
+
+    row = _make_cron_row(task_type='plugin.demo.sync')
+    row['options'] = {'server_scope': 'default'}
+    cur = MagicMock()
+    cur.fetchall.return_value = [row]
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    plugin_manager = MagicMock()
+    plugin_manager.get_cron_task.return_value = {
+        'dotted': 'audiomuse_plugins.demo.tasks.sync', 'queue': 'default',
+    }
+    fake_plugin_module = MagicMock()
+    fake_plugin_module.plugin_manager = plugin_manager
+
+    with patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}), \
+            patch('app_cron.save_task_status'), \
+            patch('app_cron.rq_queue_default') as queue:
+        run_due_cron_jobs()
+
+    assert queue.enqueue.called
+    kwargs = queue.enqueue.call_args.kwargs
+    assert kwargs['args'] == ('audiomuse_plugins.demo.tasks.sync',)
+    assert kwargs['kwargs'] == {'server_scope': 'default'}
+
+
+@patch('app_cron.cron_matches_now', return_value=True)
+@patch('app_cron.get_db')
+def test_plugin_branch_defaults_to_all_servers(mock_get_db, _matches):
+    from app_cron import run_due_cron_jobs
+
+    row = _make_cron_row(task_type='plugin.demo.sync')
+    cur = MagicMock()
+    cur.fetchall.return_value = [row]
+    db = MagicMock()
+    db.cursor.return_value = cur
+    mock_get_db.return_value = db
+
+    plugin_manager = MagicMock()
+    plugin_manager.get_cron_task.return_value = {
+        'dotted': 'audiomuse_plugins.demo.tasks.sync', 'queue': 'default',
+    }
+    fake_plugin_module = MagicMock()
+    fake_plugin_module.plugin_manager = plugin_manager
+
+    with patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}), \
+            patch('app_cron.save_task_status'), \
+            patch('app_cron.rq_queue_default') as queue:
+        run_due_cron_jobs()
+
+    assert queue.enqueue.call_args.kwargs['kwargs'] == {'server_scope': 'all'}

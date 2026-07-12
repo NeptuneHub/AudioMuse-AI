@@ -167,6 +167,16 @@ def _build_sql_handlers(mock_cur, session_row, ivf_rows, mproj_rows, authors, ly
             lambda up: _matches(up, 'TO_REGCLASS', 'MIGRATION_TARGET_META'),
             lambda up, params: _set_one((None,)),
         ),
+        # The registry and the legacy config table both exist in a real install:
+        # the migration repoints music_servers and purges app_config's copies.
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'MUSIC_SERVERS'),
+            lambda up, params: _set_one((True,)),
+        ),
+        (
+            lambda up: _matches(up, 'TO_REGCLASS', 'APP_CONFIG'),
+            lambda up, params: _set_one((True,)),
+        ),
         (
             lambda up: _matches(up, 'FROM MIGRATION_SESSION', 'SELECT'),
             lambda up, params: _set_one(session_row),
@@ -221,6 +231,7 @@ def _install_fake_psycopg2(
                 return
 
     mock_cur.execute.side_effect = _execute
+    mock_cur.rowcount = 0
     mock_cur.__enter__ = lambda self: self
     mock_cur.__exit__ = lambda self, *a: None
 
@@ -264,8 +275,12 @@ class TestExecuteProviderMigration:
         assert 'DELETE FROM ARTIST_INDEX_DATA' in joined
         assert 'DELETE FROM ARTIST_COMPONENT_PROJECTION' in joined
         assert 'DELETE FROM ARTIST_MAPPING' in joined
-        assert 'INSERT INTO APP_CONFIG' in joined
-        assert 'CREATE TABLE IF NOT EXISTS APP_CONFIG' in joined
+        # The registry is the only home of media-server settings: the default
+        # row is repointed and the legacy app_config copies are cleared, never
+        # rewritten (they would keep serving the OLD provider on the next boot).
+        assert 'UPDATE MUSIC_SERVERS' in joined
+        assert 'DELETE FROM APP_CONFIG' in joined
+        assert 'INSERT INTO APP_CONFIG' not in joined
         assert 'UPDATE MIGRATION_SESSION' in joined
 
     def test_delete_orphans_runs_before_updates(self, mig):
@@ -335,8 +350,16 @@ class TestExecuteProviderMigration:
         assert len(upd_ivf) >= 1
 
 
-class TestWriteProviderToAppConfigMusicLibraries:
-    def _run(self, mig, selected_libraries):
+class TestMigrationWritesTheRegistryOnly:
+    """The music_servers registry is the ONLY home of media-server settings.
+
+    The migration points its default row at the target provider and clears any
+    legacy app_config copies, instead of maintaining a second one that would
+    keep serving the OLD provider (config projects the registry row) and leave
+    stale credentials behind until the next restart.
+    """
+
+    def _write(self, mig, selected_libraries):
         cur = MagicMock()
         executed = []
         params = []
@@ -344,14 +367,13 @@ class TestWriteProviderToAppConfigMusicLibraries:
         def _execute(sql, p=None):
             executed.append(sql.strip() if isinstance(sql, str) else str(sql))
             params.append(p)
-            up = sql.upper() if isinstance(sql, str) else ''
-            if 'INFORMATION_SCHEMA' in up and 'APP_CONFIG' in up:
-                cur.fetchone.return_value = (True,)
+            cur.fetchone.return_value = (True,)
 
         cur.execute.side_effect = _execute
+        cur.rowcount = 0
 
         target_creds = {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
-        mig._write_provider_to_app_config(
+        mig._write_provider_to_default_server(
             cur,
             'navidrome',
             target_creds,
@@ -359,55 +381,61 @@ class TestWriteProviderToAppConfigMusicLibraries:
         )
         return executed, params
 
-    def test_none_selection_deletes_music_libraries_row(self, mig):
-        executed, params = self._run(mig, selected_libraries=None)
-        joined = '\n'.join(executed).upper()
-        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined, (
-            "None selection must DELETE the MUSIC_LIBRARIES row so post-migration scans use 'scan everything' (and the source provider's old filter is wiped)."
-        )
+    def _default_row_update(self, executed, params):
+        for sql, p in zip(executed, params):
+            if 'UPDATE music_servers' in sql and 'is_default' in sql:
+                return p
+        raise AssertionError('the default music_servers row was never updated')
 
-    def test_empty_list_selection_also_deletes(self, mig):
-        executed, _ = self._run(mig, selected_libraries=[])
-        joined = '\n'.join(executed).upper()
-        assert "DELETE FROM APP_CONFIG WHERE KEY = 'MUSIC_LIBRARIES'" in joined
+    def test_target_provider_and_creds_land_in_the_registry(self, mig):
+        executed, params = self._write(mig, selected_libraries=['A'])
+        server_type, creds, libraries = self._default_row_update(executed, params)
+        assert server_type == 'navidrome'
+        assert creds.adapted == {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
+        assert libraries == 'A'
 
-    def test_non_empty_selection_upserts_comma_joined_value(self, mig):
-        executed, params = self._run(
-            mig,
-            selected_libraries=['Main Music', 'Podcasts'],
-        )
-        ml_upserts = [
-            (sql, p)
-            for sql, p in zip(executed, params)
-            if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
-        ]
-        assert len(ml_upserts) == 1, (
-            "Non-empty selection must UPSERT MUSIC_LIBRARIES, not delete it."
-        )
-        _, upsert_params = ml_upserts[0]
-        assert upsert_params == ('Main Music,Podcasts',)
+    def test_none_selection_clears_the_library_filter(self, mig):
+        executed, params = self._write(mig, selected_libraries=None)
+        assert self._default_row_update(executed, params)[2] == ''
+
+    def test_empty_list_selection_also_clears_it(self, mig):
+        executed, params = self._write(mig, selected_libraries=[])
+        assert self._default_row_update(executed, params)[2] == ''
+
+    def test_non_empty_selection_is_comma_joined(self, mig):
+        executed, params = self._write(mig, selected_libraries=['Main Music', 'Podcasts'])
+        assert self._default_row_update(executed, params)[2] == 'Main Music,Podcasts'
 
     def test_whitespace_only_entries_are_filtered(self, mig):
-        executed, params = self._run(
-            mig,
-            selected_libraries=['Main Music', '  ', '', 'Podcasts'],
+        executed, params = self._write(
+            mig, selected_libraries=['Main Music', '  ', '', 'Podcasts']
         )
-        ml_upserts = [
-            (sql, p)
-            for sql, p in zip(executed, params)
-            if 'MUSIC_LIBRARIES' in sql.upper() and 'INSERT' in sql.upper()
-        ]
-        assert len(ml_upserts) == 1
-        assert ml_upserts[0][1] == ('Main Music,Podcasts',)
+        assert self._default_row_update(executed, params)[2] == 'Main Music,Podcasts'
 
-    def test_provider_creds_still_written_alongside(self, mig):
-        executed, _ = self._run(mig, selected_libraries=['A'])
-        joined = '\n'.join(executed).upper()
-        assert 'INSERT INTO APP_CONFIG' in joined
-        insert_count = joined.count('INSERT INTO APP_CONFIG')
-        assert insert_count >= 2, (
-            "expected multiple app_config upserts (type + creds + MUSIC_LIBRARIES)"
-        )
+    def test_legacy_media_keys_are_purged_from_app_config(self, mig):
+        import config
+
+        cur = MagicMock()
+        executed = []
+        params = []
+
+        def _execute(sql, p=None):
+            executed.append(sql.strip() if isinstance(sql, str) else str(sql))
+            params.append(p)
+            cur.fetchone.return_value = (True,)
+
+        cur.execute.side_effect = _execute
+        cur.rowcount = 3
+
+        mig._purge_media_keys_from_app_config(cur)
+
+        deletes = [
+            (sql, p) for sql, p in zip(executed, params)
+            if 'DELETE FROM app_config' in sql
+        ]
+        assert len(deletes) == 1
+        assert deletes[0][1] == (sorted(config.MEDIASERVER_CONFIG_KEYS),)
+        assert not any('INSERT INTO app_config' in sql for sql in executed)
 
 
 class TestExecuteProviderMigrationForwardsSelectedLibraries:

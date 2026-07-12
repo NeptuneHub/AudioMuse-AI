@@ -917,7 +917,7 @@ class PluginManager:
 plugin_manager = PluginManager()
 
 
-def run_plugin_task(dotted, *args, **kwargs):
+def run_plugin_task(dotted, *args, server_scope=None, **kwargs):
     """RQ entrypoint: import a plugin task by dotted path and run it in an app context.
 
     When the plugin code is missing on this worker's volume (fresh pod, plugin-sync
@@ -927,6 +927,13 @@ def run_plugin_task(dotted, *args, **kwargs):
     SimpleWorker runs jobs inside the long-lived worker process.
     Cron-enqueued jobs have a task_status row (created by the dispatcher); that row
     is transitioned to SUCCESS/FAILURE here so it can never sit PENDING forever.
+
+    ``server_scope`` (from the schedule, never forwarded to the plugin) runs the
+    task once per media server in that scope, each inside that server's context,
+    exactly like the built-in scheduled tasks: servers hold different catalogues,
+    so a plugin creating playlists or reading listening history must see the one
+    it is running against. Unset (a plugin's own ``api.enqueue``) means one run
+    against the default server, as before.
     """
     from flask_app import app
     from rq import get_current_job
@@ -951,7 +958,7 @@ def run_plugin_task(dotted, *args, **kwargs):
                 importlib.invalidate_caches()
                 module = importlib.import_module(module_path)
             func = getattr(module, fn_name)
-            result = func(*args, **kwargs)
+            result = _run_per_server(func, server_scope, args, kwargs)
             if row:
                 database.save_task_status(
                     task_id, row['task_type'], config.TASK_STATUS_SUCCESS, progress=100
@@ -964,6 +971,28 @@ def run_plugin_task(dotted, *args, **kwargs):
                     details={'error': str(exc)},
                 )
             raise
+
+
+def _run_per_server(func, server_scope, args, kwargs):
+    """Call ``func`` once per server in ``server_scope``, bound to that server.
+
+    No scope means a single unbound run (the default server), byte-identical to
+    the historical behaviour. A single-server install resolves to the default
+    server, whose context is None, so that run is unbound too. Returns the lone
+    result when only one server ran, else the list of results.
+    """
+    from tasks.mediaserver import context as ms_context, registry as ms_registry
+
+    if not server_scope:
+        return func(*args, **kwargs)
+
+    servers = ms_registry.servers_for_scope(server_scope)
+    results = []
+    for server in servers:
+        server_ctx = ms_registry.context_for(server['server_id']) if server else None
+        with ms_context.use_server(server_ctx):
+            results.append(func(*args, **kwargs))
+    return results[0] if len(results) == 1 else results
 
 
 _presync_lock = threading.Lock()

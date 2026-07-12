@@ -88,49 +88,53 @@
                 Enter your personal credentials to generate a fingerprint from your listening history.
             </p>
             <div class="param-group">
-                {% if mediaserver_type == 'jellyfin' %}
-                <div>
-                    <label for="jellyfin_user_identifier" class="label-with-tooltip">
-                        Jellyfin Username or User ID:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Your Jellyfin username or user ID. This is used to fetch your personal listening history from the media server.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" required placeholder="Enter Jellyfin Username or User ID">
+                <!-- Both credential blocks are rendered and the one matching the
+                     SELECTED server (see /api/config/defaults) is shown by JS:
+                     the selected server may not be the default one. -->
+                <div id="jellyfin-creds" class="server-creds" style="display:none;">
+                    <div>
+                        <label for="jellyfin_user_identifier" class="label-with-tooltip">
+                            <span id="jellyfin_user_label">Jellyfin Username or User ID:</span>
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Your username or user ID on the selected server. This is used to fetch your personal listening history.</span>
+                            </span>
+                        </label>
+                        <input type="text" id="jellyfin_user_identifier" name="jellyfin_user_identifier" placeholder="Enter your Username or User ID">
+                    </div>
+                    <div>
+                        <label for="jellyfin_token" class="label-with-tooltip">
+                            API Token:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Optional: your API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
+                            </span>
+                        </label>
+                        <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
+                    </div>
                 </div>
-                <div>
-                    <label for="jellyfin_token" class="label-with-tooltip">
-                        API Token:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Optional: Your Jellyfin API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
-                        </span>
-                    </label>
-                    <input type="password" id="jellyfin_token" name="jellyfin_token" placeholder="Optional for default user, specify for other users">
+                <div id="navidrome-creds" class="server-creds" style="display:none;">
+                    <div>
+                        <label for="navidrome_user" class="label-with-tooltip">
+                            Navidrome Username:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Your Navidrome username. This is used to fetch your personal listening history from the media server.</span>
+                            </span>
+                        </label>
+                        <input type="text" id="navidrome_user" name="navidrome_user">
+                    </div>
+                    <div>
+                        <label for="navidrome_password" class="label-with-tooltip">
+                            Password/API Token:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Optional: Your Navidrome password or API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
+                            </span>
+                        </label>
+                        <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
+                    </div>
                 </div>
-                {% elif mediaserver_type == 'navidrome' %}
-                <div>
-                    <label for="navidrome_user" class="label-with-tooltip">
-                        Navidrome Username:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Your Navidrome username. This is used to fetch your personal listening history from the media server.</span>
-                        </span>
-                    </label>
-                    <input type="text" id="navidrome_user" name="navidrome_user" required>
-                </div>
-                <div>
-                    <label for="navidrome_password" class="label-with-tooltip">
-                        Password/API Token:
-                        <span class="info-tooltip" tabindex="0">
-                            <span class="info-icon"></span>
-                            <span class="tooltip-text">Optional: Your Navidrome password or API token. Only needed if you're not the default user or if accessing another user's fingerprint.</span>
-                        </span>
-                    </label>
-                    <input type="password" id="navidrome_password" name="navidrome_password" placeholder="Optional for default user, specify for other user">
-                </div>
-                {% endif %}
             </div>
         </fieldset>
 
@@ -194,7 +198,9 @@
         (() => {
             let currentTrackIds = [];
             let radarChart = null;
-            const mediaserverType = "{{ mediaserver_type }}";
+            // Starts as the DEFAULT server's type and is corrected to the
+            // SELECTED server's type by /api/config/defaults on load.
+            let mediaserverType = "{{ mediaserver_type }}";
 
             const fingerprintForm = document.getElementById('fingerprint-form');
             const playlistForm = document.getElementById('playlist-form');
@@ -278,17 +284,36 @@
                 fingerprintSummary.classList.remove('hidden');
             };
 
+            const applyServerType = (type) => {
+                mediaserverType = type || mediaserverType;
+                const usesUserId = (mediaserverType === 'jellyfin' || mediaserverType === 'emby');
+                document.getElementById('jellyfin-creds').style.display = usesUserId ? '' : 'none';
+                document.getElementById('navidrome-creds').style.display =
+                    (mediaserverType === 'navidrome') ? '' : 'none';
+                if (usesUserId) {
+                    const label = (mediaserverType === 'emby') ? 'Emby' : 'Jellyfin';
+                    document.getElementById('jellyfin_user_label').textContent =
+                        label + ' Username or User ID:';
+                }
+            };
+
             window.addEventListener('DOMContentLoaded', async () => {
+                applyServerType(mediaserverType);
                 try {
+                    // The menu's server selector appends ?server=<name>, so this
+                    // returns the SELECTED server's type and default account.
                     const response = await fetch("{{ url_for('sonic_fingerprint_bp.get_media_server_defaults') }}");
                     if (!response.ok) return;
 
                     const data = await response.json();
+                    applyServerType(data.server_type);
 
-                    if (mediaserverType === 'jellyfin' && data.default_user_id) {
+                    if (mediaserverType === 'navidrome') {
+                        if (data.default_user) {
+                            document.getElementById('navidrome_user').value = data.default_user;
+                        }
+                    } else if (data.default_user_id) {
                         document.getElementById('jellyfin_user_identifier').value = data.default_user_id;
-                    } else if (mediaserverType === 'navidrome' && data.default_user) {
-                        document.getElementById('navidrome_user').value = data.default_user;
                     }
                 } catch (error) {
                     console.error('Failed to fetch default config:', error);
@@ -302,10 +327,12 @@
                     n: parseInt(document.getElementById('n').value, 10)
                 };
 
-                if (mediaserverType === 'jellyfin') {
+                if (mediaserverType === 'jellyfin' || mediaserverType === 'emby') {
                     payload.jellyfin_user_identifier = document.getElementById('jellyfin_user_identifier').value;
                     payload.jellyfin_token = document.getElementById('jellyfin_token').value;
-                    if (!payload.jellyfin_user_identifier) {
+                    // Emby may profile the server's own account, so an empty
+                    // identifier is valid there; Jellyfin has always required one.
+                    if (!payload.jellyfin_user_identifier && mediaserverType === 'jellyfin') {
                         statusDiv.textContent = 'Jellyfin User Identifier is required.';
                         statusDiv.className = 'status-error';
                         resultsContainer.classList.remove('hidden');
@@ -380,7 +407,7 @@
                     user_creds: {}
                 };
 
-                if (mediaserverType === 'jellyfin') {
+                if (mediaserverType === 'jellyfin' || mediaserverType === 'emby') {
                     payload.user_creds.user_identifier = document.getElementById('jellyfin_user_identifier').value;
                     payload.user_creds.token = document.getElementById('jellyfin_token').value;
                 } else if (mediaserverType === 'navidrome') {

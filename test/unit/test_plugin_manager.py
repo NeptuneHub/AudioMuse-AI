@@ -1034,3 +1034,86 @@ class TestRunSongAnalyzedHookHelper:
         assert pm.received['metadata']['album_id'] == 'alb-id'
         assert pm.received['analysis'] == {'tempo': 120}
         assert pm.received['top_moods'] == {'happy': 0.9}
+
+
+class TestPluginTaskRunsPerServer:
+    """A scheduled plugin task runs once per server in its schedule's scope.
+
+    Servers hold different catalogues, so a plugin creating playlists or reading
+    listening history has to see the server it is running against - the same rule
+    the built-in scheduled tasks follow. Without a scope (a plugin's own
+    api.enqueue) it stays a single unbound run against the default server.
+    """
+
+    @staticmethod
+    def _servers(monkeypatch, servers):
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(registry, 'servers_for_scope', lambda scope, conn=None: servers)
+        monkeypatch.setattr(
+            registry, 'context_for',
+            lambda sid, conn=None: next(
+                (s for s in servers if s and s['server_id'] == sid and not s['is_default']),
+                None,
+            ),
+        )
+
+    def test_no_scope_runs_once_unbound(self, monkeypatch):
+        from plugin.manager import _run_per_server
+        from tasks.mediaserver import context
+
+        seen = []
+        result = _run_per_server(
+            lambda: seen.append(context.active_server_id()) or 'done', None, (), {}
+        )
+        assert result == 'done'
+        assert seen == [None]
+
+    def test_scope_binds_each_server_in_turn(self, monkeypatch):
+        from plugin.manager import _run_per_server
+        from tasks.mediaserver import context
+
+        servers = [
+            {'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+             'creds': {}, 'music_libraries': '', 'is_default': True},
+            {'server_id': 's2', 'name': 'Second', 'server_type': 'plex',
+             'creds': {}, 'music_libraries': '', 'is_default': False},
+        ]
+        self._servers(monkeypatch, servers)
+
+        seen = []
+        results = _run_per_server(
+            lambda: seen.append(context.active_server_id()) or 'ran', 'all', (), {}
+        )
+        # The default server's context is None (config fallback), the secondary binds.
+        assert seen == [None, 's2']
+        assert results == ['ran', 'ran']
+
+    def test_single_server_scope_returns_one_result(self, monkeypatch):
+        from plugin.manager import _run_per_server
+
+        servers = [
+            {'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+             'creds': {}, 'music_libraries': '', 'is_default': True},
+        ]
+        self._servers(monkeypatch, servers)
+        assert _run_per_server(lambda: 'only', 'all', (), {}) == 'only'
+
+    def test_scope_is_never_forwarded_to_the_plugin_function(self, monkeypatch):
+        from plugin.manager import _run_per_server
+
+        servers = [
+            {'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+             'creds': {}, 'music_libraries': '', 'is_default': True},
+        ]
+        self._servers(monkeypatch, servers)
+
+        captured = {}
+
+        def plugin_task(*args, **kwargs):
+            captured['args'] = args
+            captured['kwargs'] = kwargs
+
+        _run_per_server(plugin_task, 'all', ('x',), {'y': 1})
+        assert captured['args'] == ('x',)
+        assert captured['kwargs'] == {'y': 1}

@@ -86,9 +86,10 @@ Pruning only happens when the fetch looks complete: if the catalogue returns
 fewer tracks than half the mappings already stored, the fetch is treated as
 partial and pruning is skipped, so a transient provider error never
 mass-deletes valid mappings. Only map rows are ever removed, never analyzed
-tracks. Library selections currently narrow catalogue fetches for Navidrome
-and Plex; Jellyfin, Emby and Lyrion sweeps cover the server's entire music
-library.
+tracks. A server's library filter is honoured by every provider: Jellyfin and
+Emby fetch only the selected libraries, Plex only the selected sections,
+Navidrome only the selected music folders, and Lyrion only the selected paths -
+so nothing outside the libraries you picked is ever mapped, counted or pruned.
 
 Matching runs in bounded memory even on very large libraries: the fetched
 catalogue is condensed into a slim lookup index and released, and the local
@@ -103,11 +104,10 @@ sweep always reflects the full server list. Plex servers can be linked without
 hunting for a token: the add/edit form offers the same sign-in-with-Plex
 (plex.tv/link PIN) flow as the setup wizard and fills the token automatically.
 
-The library cleaning task is multi-server aware: it fetches the current track
-set of every server, translates each server's provider ids to canonical
-catalogue ids, and deletes only tracks that no server still has. If any
-server's catalogue cannot be fully fetched, the run aborts without deleting
-anything.
+The library cleaning task is multi-server aware and never shrinks the catalogue:
+it fetches the current track set of every server with the same full-catalogue
+enumeration the sweeps use, and removes only that server's stale mapping rows
+(see "Cleaning never shrinks the catalogue" below).
 
 ## Selecting a server at runtime
 
@@ -230,12 +230,13 @@ hardware sizing for very large libraries is the operator's call.
 
 ## Scheduled tasks
 
-Analysis, Clustering, Sonic Fingerprint and Radio schedules have an **All music
-servers** / **Default server only** selector. Analysis deduplicates work across
-sources. Clustering, Sonic Fingerprint and Radio all run once per selected
-server, inside that server's context and against that server's own available
-tracks - results are never computed once and pushed to other servers. From the
-UI, these features target the server selected in the server dropdown.
+Analysis, Clustering, Sonic Fingerprint, Radio **and plugin tasks** all have an
+**All music servers** / **Default server only** selector. Analysis deduplicates
+work across sources. Every other scheduled task runs once per selected server,
+inside that server's context and against that server's own available tracks -
+results are never computed once and pushed to other servers. From the UI, these
+features target the server selected in the server dropdown, and the Sonic
+Fingerprint page asks for the credentials of the server you selected.
 
 ## Limitations to know
 

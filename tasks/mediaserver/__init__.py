@@ -59,10 +59,20 @@ def _provider(provider_type=None):
     return import_module('.' + name, __name__)
 
 
-def resolve_emby_jellyfin_user(identifier, token):
-    if context.active_type(config.MEDIASERVER_TYPE) in ('jellyfin', 'emby'):
-        return _provider().resolve_user(identifier, token)
-    return []
+def resolve_emby_jellyfin_user(identifier, token=None):
+    """Resolve a username to its provider user id on the ACTIVE server.
+
+    The provider's base URL already follows the bound server (its helpers read
+    the active context), and the token does too: a caller-supplied one wins,
+    otherwise the bound server's own token is used, falling back to config for
+    the unbound default.
+    """
+    stype = context.active_type(config.MEDIASERVER_TYPE)
+    if stype not in ('jellyfin', 'emby'):
+        return []
+    creds = context.active_creds({'token': token} if token else None) or {}
+    fallback = config.JELLYFIN_TOKEN if stype == 'jellyfin' else config.EMBY_TOKEN
+    return _provider(stype).resolve_user(identifier, creds.get('token') or fallback)
 
 
 def _delete_matching_playlists(playlists_to_check, delete_function, suffix):

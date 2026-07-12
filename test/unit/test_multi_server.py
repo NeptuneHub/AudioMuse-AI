@@ -1358,3 +1358,95 @@ class TestFirstRunSetupWizardServerApi:
         assert status == 201
         assert added['make_default'] is False
         assert deleted == []
+
+
+class TestSonicFingerprintDefaultsPerServer:
+    """The Sonic Fingerprint form must describe the SELECTED server.
+
+    Its credential fields and pre-filled account come from /api/config/defaults;
+    reading them off the config globals would describe the DEFAULT server, so a
+    Navidrome secondary behind a Jellyfin default rendered the wrong fields and
+    the generate call then rejected them.
+    """
+
+    @staticmethod
+    def _call(monkeypatch, selected, server_row):
+        import app_server_context
+        import app_sonic_fingerprint as sf
+        from flask import Flask
+        from tasks.mediaserver import registry
+
+        monkeypatch.setattr(
+            app_server_context, 'resolve_request_server_id',
+            lambda data=None: selected,
+        )
+        monkeypatch.setattr(registry, 'get_server', lambda sid, conn=None: server_row)
+        monkeypatch.setattr(registry, 'get_default_server', lambda conn=None: server_row)
+
+        app = Flask('sonic-defaults-test')
+        with app.test_request_context('/api/config/defaults'):
+            return sf.get_media_server_defaults().get_json()
+
+    def test_selected_navidrome_secondary_describes_itself(self, monkeypatch):
+        payload = self._call(
+            monkeypatch,
+            selected='s2',
+            server_row={
+                'server_id': 's2', 'name': 'Nav', 'server_type': 'navidrome',
+                'creds': {'url': 'http://nd', 'user': 'bob', 'password': 'p'},
+                'music_libraries': '', 'is_default': False,
+            },
+        )
+        assert payload['server_type'] == 'navidrome'
+        assert payload['default_user'] == 'bob'
+        assert 'password' not in payload
+
+    def test_selected_emby_secondary_returns_its_user_id(self, monkeypatch):
+        payload = self._call(
+            monkeypatch,
+            selected='s3',
+            server_row={
+                'server_id': 's3', 'name': 'Emb', 'server_type': 'emby',
+                'creds': {'url': 'http://emby', 'user_id': 'uid-9', 'token': 'secret'},
+                'music_libraries': '', 'is_default': False,
+            },
+        )
+        assert payload['server_type'] == 'emby'
+        assert payload['default_user_id'] == 'uid-9'
+        assert 'token' not in payload
+        assert 'secret' not in str(payload)
+
+    def test_no_selection_describes_the_default_server(self, monkeypatch):
+        payload = self._call(
+            monkeypatch,
+            selected=None,
+            server_row={
+                'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+                'creds': {'url': 'http://jf', 'user_id': 'uid-1', 'token': 't'},
+                'music_libraries': '', 'is_default': True,
+            },
+        )
+        assert payload['server_type'] == 'jellyfin'
+        assert payload['default_user_id'] == 'uid-1'
+
+    def test_registry_failure_falls_back_to_config(self, monkeypatch):
+        import app_server_context
+        import app_sonic_fingerprint as sf
+        from flask import Flask
+        from tasks.mediaserver import registry
+
+        def boom(conn=None):
+            raise RuntimeError('registry down')
+
+        monkeypatch.setattr(
+            app_server_context, 'resolve_request_server_id', lambda data=None: None
+        )
+        monkeypatch.setattr(registry, 'get_default_server', boom)
+        monkeypatch.setattr(sf, 'MEDIASERVER_TYPE', 'jellyfin')
+        monkeypatch.setattr(sf, 'JELLYFIN_USER_ID', 'cfg-user')
+
+        app = Flask('sonic-defaults-test')
+        with app.test_request_context('/api/config/defaults'):
+            payload = sf.get_media_server_defaults().get_json()
+        assert payload['server_type'] == 'jellyfin'
+        assert payload['default_user_id'] == 'cfg-user'

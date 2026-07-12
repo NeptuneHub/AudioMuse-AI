@@ -505,9 +505,7 @@ def _run_migration_transaction(
     _write_provider_to_default_server(
         cur, target_type, target_creds, selected_libraries=selected_libraries
     )
-    _write_provider_to_app_config(
-        cur, target_type, target_creds, selected_libraries=selected_libraries
-    )
+    _purge_media_keys_from_app_config(cur)
 
     cur.execute(
         "UPDATE migration_session SET status = 'completed', completed_at = NOW() WHERE id = %s",
@@ -515,19 +513,6 @@ def _run_migration_transaction(
     )
 
     return index_rebuild_needed
-
-
-_CREDS_TO_CONFIG = {
-    'jellyfin': {'url': 'JELLYFIN_URL', 'user_id': 'JELLYFIN_USER_ID', 'token': 'JELLYFIN_TOKEN'},
-    'emby': {'url': 'EMBY_URL', 'user_id': 'EMBY_USER_ID', 'token': 'EMBY_TOKEN'},
-    'navidrome': {
-        'url': 'NAVIDROME_URL',
-        'user': 'NAVIDROME_USER',
-        'password': 'NAVIDROME_PASSWORD',
-    },
-    'lyrion': {'url': 'LYRION_URL'},
-    'plex': {'url': 'PLEX_URL', 'token': 'PLEX_TOKEN'},
-}
 
 
 def _cleaned_libraries_value(selected_libraries):
@@ -565,54 +550,28 @@ def _write_provider_to_default_server(cur, target_type, target_creds, selected_l
         )
 
 
-def _write_provider_to_app_config(cur, target_type, target_creds, selected_libraries=None):
+def _purge_media_keys_from_app_config(cur):
+    """Drop any media-server rows a legacy install still has in app_config.
+
+    The music_servers registry is the ONLY home of these settings (config
+    globals are a read-only projection of its default row, and init_db deletes
+    these keys at boot). The migration therefore writes the registry and clears
+    the legacy copies instead of maintaining a second one, which would leave a
+    stale provider - credentials included - behind until the next restart.
+    """
     import config as cfg
 
-    cur.execute("SELECT pg_advisory_lock(726354821)")
-    try:
-        cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'app_config')"
-        )
-        if not cur.fetchone()[0]:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS app_config ("
-                "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-                "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-            )
-    finally:
-        cur.execute("SELECT pg_advisory_unlock(726354821)")
-
-    values = {'MEDIASERVER_TYPE': target_type}
-    key_map = _CREDS_TO_CONFIG.get(target_type, {})
-    for cred_key, config_key in key_map.items():
-        val = target_creds.get(cred_key)
-        if val is not None:
-            values[config_key] = str(val)
-
-    for key, value in values.items():
-        cur.execute(
-            "INSERT INTO app_config (key, value) VALUES (%s, %s) "
-            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
-            "updated_at = CURRENT_TIMESTAMP",
-            (_sanitize_text(key), _sanitize_text(value)),
-        )
-
-    ml_value = _cleaned_libraries_value(selected_libraries)
-    if ml_value:
-        cur.execute(
-            "INSERT INTO app_config (key, value) VALUES ('MUSIC_LIBRARIES', %s) "
-            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
-            "updated_at = CURRENT_TIMESTAMP",
-            (_sanitize_text(ml_value),),
-        )
-    else:
-        cur.execute("DELETE FROM app_config WHERE key = 'MUSIC_LIBRARIES'")
-
-    obsolete = cfg.MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE.get(target_type, [])
-    if obsolete:
-        cur.execute(
-            "DELETE FROM app_config WHERE key = ANY(%s)",
-            (list(obsolete),),
+    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return
+    cur.execute(
+        "DELETE FROM app_config WHERE key = ANY(%s)",
+        (sorted(cfg.MEDIASERVER_CONFIG_KEYS),),
+    )
+    if cur.rowcount:
+        logger.info(
+            "provider migration: removed %d legacy media-server key(s) from app_config",
+            cur.rowcount,
         )
 
 

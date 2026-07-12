@@ -235,7 +235,31 @@ def register(ctx):
     ctx.add_cron_task("daily", daily_job)
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field, an Enable checkbox and a music-server selector. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+
+### Scheduled tasks and multiple music servers
+
+Music servers hold different catalogues, so a scheduled plugin task runs **once
+per music server** in the schedule's scope ("All music servers" by default,
+"Default server only" if the admin picks it), each run bound to that server. Your
+function does not change: every media-server call inside it - playlist creation,
+listening history, downloads - already targets the server of the current run.
+Ask who that is, or target another server explicitly, through the API:
+
+```python
+from plugin.api import active_server_id, list_servers, use_server
+
+def daily_job():
+    logger.info("running against server %s", active_server_id() or "default")
+    # ... playlists created here land on the server of this run
+
+    with use_server(some_other_server_id):   # only if you need a specific one
+        ...
+```
+
+Tracks are stored once in a shared catalogue under a canonical id, so a task
+that only reads the database sees the same songs on every run; use
+`active_server_id()` when the work is server-specific.
 
 You can also ship a default schedule (disabled, so the admin stays in control) by inserting the cron row in your `on_install` hook. SongCounter does this for its `index_log` task: every hour it stores a timestamped snapshot of the index sizes in its own table, keeps only the last 10 rows, and shows them as a small log on its page.
 

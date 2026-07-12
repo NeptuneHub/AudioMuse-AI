@@ -549,6 +549,7 @@ def run_due_cron_jobs():
                             queue.enqueue(
                                 'plugin.manager.run_plugin_task',
                                 args=(cron_task['dotted'],),
+                                kwargs={'server_scope': server_scope},
                                 job_id=job_id,
                                 description=f'Cron {task_type}',
                                 job_timeout=-1,

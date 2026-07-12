@@ -28,6 +28,7 @@ from config import (
     MEDIASERVER_TYPE,
     JELLYFIN_USER_ID,
     JELLYFIN_TOKEN,
+    EMBY_USER_ID,
     EMBY_TOKEN,
     NAVIDROME_USER,
     NAVIDROME_PASSWORD,
@@ -71,34 +72,55 @@ def sonic_fingerprint_page():
 @sonic_fingerprint_bp.route('/api/config/defaults', methods=['GET'])
 def get_media_server_defaults():
     """
-    Provides default credentials from the server configuration based on the media server type.
-    This is intended for trusted network environments to pre-populate frontend forms.
+    Provides the SELECTED server's type and default user, to pre-populate the form.
     ---
     tags:
       - Configuration
+    parameters:
+      - name: server
+        in: query
+        required: false
+        description: Server name or id; the default server when omitted.
+        schema:
+          type: string
     responses:
       200:
-        description: A JSON object with default credentials for the configured media server.
+        description: The selected server's type and its default user (never a secret).
         content:
           application/json:
             schema:
               type: object
     """
-    # MODIFIED: Removed the security credentials from the response.
-    # We only return the user ID/username to pre-fill forms, but not the tokens/passwords.
-    if MEDIASERVER_TYPE == 'jellyfin':
-        return jsonify(
-            {
-                "default_user_id": JELLYFIN_USER_ID,
-            }
+    # Never returns tokens/passwords: only the type the form must render and the
+    # account id to pre-fill. Both come from the SELECTED server, so switching
+    # servers in the menu switches the credential fields with it.
+    from app_server_context import resolve_request_server_id
+    from tasks.mediaserver import registry as ms_registry
+
+    try:
+        server_id = resolve_request_server_id()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        server = (
+            ms_registry.get_server(server_id) if server_id
+            else ms_registry.get_default_server()
         )
-    elif MEDIASERVER_TYPE == 'navidrome':
-        return jsonify(
-            {
-                "default_user": NAVIDROME_USER,
-            }
+    except Exception:
+        logger.exception("Could not read the selected server; using the config default")
+        server = None
+
+    server_type = (server['server_type'] if server else MEDIASERVER_TYPE) or ''
+    creds = (server or {}).get('creds') or {}
+    payload = {"server_type": server_type}
+    if server_type in ('jellyfin', 'emby'):
+        payload["default_user_id"] = creds.get('user_id') or (
+            JELLYFIN_USER_ID if server_type == 'jellyfin' else EMBY_USER_ID
         )
-    return jsonify({})
+    elif server_type == 'navidrome':
+        payload["default_user"] = creds.get('user') or NAVIDROME_USER
+    return jsonify(payload)
 
 
 @sonic_fingerprint_bp.route('/api/sonic_fingerprint/generate', methods=['GET', 'POST'])
@@ -198,35 +220,38 @@ def generate_sonic_fingerprint_endpoint():
         with ms_context.use_server(ms_registry.context_for(server_id)):
             user_creds = {}
             if stype in ('jellyfin', 'emby'):
-                # Emby shares Jellyfin's user-resolution flow and accepts the
-                # same jellyfin_* request fields the UI already sends.
+                # Emby shares Jellyfin's user-resolution flow and the same
+                # jellyfin_* request fields. Jellyfin has always required an
+                # identifier; Emby has not, so an absent one keeps its historical
+                # behaviour of profiling the server's own configured account.
                 label = 'Jellyfin' if stype == 'jellyfin' else 'Emby'
                 user_identifier = data.get('jellyfin_user_identifier')
-                if not user_identifier:
+                if not user_identifier and stype == 'jellyfin':
                     return jsonify({"error": f"{label} User Identifier is required."}), 400
 
-                fallback_token = JELLYFIN_TOKEN if stype == 'jellyfin' else EMBY_TOKEN
-                token = data.get('jellyfin_token') or (
-                    server_creds.get('token') if server_row else fallback_token
-                )
+                if user_identifier:
+                    fallback_token = JELLYFIN_TOKEN if stype == 'jellyfin' else EMBY_TOKEN
+                    token = data.get('jellyfin_token') or (
+                        server_creds.get('token') if server_row else fallback_token
+                    )
 
-                if not token:
-                    return jsonify(
-                        {
-                            "error": f"{label} API Token is required. Please provide one or set it in the server configuration."
-                        }
-                    ), 400
+                    if not token:
+                        return jsonify(
+                            {
+                                "error": f"{label} API Token is required. Please provide one or set it in the server configuration."
+                            }
+                        ), 400
 
-                logger.info(f"Resolving {label} user identifier: '{user_identifier}'")
-                resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
-                if not resolved_user_id:
-                    return jsonify(
-                        {"error": f"Could not resolve {label} user '{user_identifier}'."}
-                    ), 400
+                    logger.info(f"Resolving {label} user identifier: '{user_identifier}'")
+                    resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
+                    if not resolved_user_id:
+                        return jsonify(
+                            {"error": f"Could not resolve {label} user '{user_identifier}'."}
+                        ), 400
 
-                logger.info(f"Resolved {label} user ID: '{resolved_user_id}'")
-                user_creds['user_id'] = resolved_user_id
-                user_creds['token'] = token
+                    logger.info(f"Resolved {label} user ID: '{resolved_user_id}'")
+                    user_creds['user_id'] = resolved_user_id
+                    user_creds['token'] = token
 
             elif stype == 'navidrome':
                 user_creds['user'] = data.get('navidrome_user') or (
