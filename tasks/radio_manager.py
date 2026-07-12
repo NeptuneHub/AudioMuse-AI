@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def run_radio_playlists(server_scope="all"):
     from database import get_alchemy_radios
-    from .mediaserver import context, registry
+    from .mediaserver import registry
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]
     servers = registry.servers_for_scope(server_scope)
@@ -44,9 +44,7 @@ def run_radio_playlists(server_scope="all"):
     for server in servers:
         server_name = server['name'] if server else 'default server'
         try:
-            with context.use_server(
-                registry.context_for(server['server_id']) if server else None
-            ):
+            with registry.bind(server):
                 for radio in radios:
                     playlist_name = radio['name']
                     try:

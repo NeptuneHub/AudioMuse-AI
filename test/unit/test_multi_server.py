@@ -1450,3 +1450,86 @@ class TestSonicFingerprintDefaultsPerServer:
             payload = sf.get_media_server_defaults().get_json()
         assert payload['server_type'] == 'jellyfin'
         assert payload['default_user_id'] == 'cfg-user'
+
+
+class TestRegistrySeeding:
+    """A fresh install starts with a BLANK server table.
+
+    init_db seeds the registry only from a legacy install that really has a
+    reachable server configured; MEDIASERVER_TYPE merely defaulting to
+    'jellyfin' with empty credentials is NOT a server, and seeding it put a
+    phantom Jellyfin row in the setup wizard. Rows like that (from earlier
+    builds) are removed at boot unless they own track mappings.
+    """
+
+    @staticmethod
+    def _cursor(existing=0, rows=None):
+        cur = MagicMock()
+        cur.fetchone.return_value = (existing,)
+        cur.fetchall.return_value = rows or []
+        cur.rowcount = 0
+        cur.executed = []
+        cur.execute.side_effect = lambda sql, params=None: cur.executed.append((sql, params))
+        return cur
+
+    def test_unconfigured_install_seeds_nothing(self, monkeypatch):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_URL', '', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', '', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', '', raising=False)
+
+        cur = self._cursor(existing=0)
+        database._seed_registry_from_legacy_config(cur)
+
+        assert not any('INSERT INTO music_servers' in sql for sql, _p in cur.executed)
+
+    def test_configured_legacy_install_is_migrated(self, monkeypatch):
+        import config
+        import database
+
+        monkeypatch.setattr(config, 'MEDIASERVER_TYPE', 'jellyfin', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_URL', 'http://jf:8096', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_USER_ID', 'uid', raising=False)
+        monkeypatch.setattr(config, 'JELLYFIN_TOKEN', 'tok', raising=False)
+
+        cur = self._cursor(existing=0)
+        database._seed_registry_from_legacy_config(cur)
+
+        inserts = [p for sql, p in cur.executed if 'INSERT INTO music_servers' in sql]
+        assert len(inserts) == 1
+        assert inserts[0][2] == 'jellyfin'
+
+    def test_existing_registry_is_never_reseeded(self, monkeypatch):
+        import database
+
+        cur = self._cursor(existing=1)
+        database._seed_registry_from_legacy_config(cur)
+
+        assert not any('INSERT INTO music_servers' in sql for sql, _p in cur.executed)
+
+    def test_phantom_row_is_removed_at_boot(self):
+        import database
+
+        cur = self._cursor(rows=[('seed', 'Jellyfin', 'jellyfin', {})])
+        database._drop_unconfigured_servers(cur)
+
+        deletes = [(sql, p) for sql, p in cur.executed if 'DELETE FROM music_servers' in sql]
+        assert len(deletes) == 1
+        assert deletes[0][1] == (['seed'],)
+        # Never drops a server that still owns catalogue bindings.
+        assert 'NOT EXISTS' in deletes[0][0]
+        assert 'track_server_map' in deletes[0][0]
+
+    def test_configured_rows_are_left_alone(self):
+        import database
+
+        cur = self._cursor(rows=[
+            ('d1', 'Nav', 'navidrome',
+             {'url': 'http://nd', 'user': 'u', 'password': 'p'}),
+        ])
+        database._drop_unconfigured_servers(cur)
+
+        assert not any('DELETE FROM music_servers' in sql for sql, _p in cur.executed)

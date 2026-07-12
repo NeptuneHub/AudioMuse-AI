@@ -81,7 +81,7 @@ from database import update_playlist_table, get_child_tasks_from_db
 from sanitization import sanitize_for_json
 
 from .mediaserver import create_playlist, delete_automatic_playlists
-from .mediaserver import context as server_context, registry
+from .mediaserver import registry
 from .clustering_helper import (
     _get_stratified_song_subset,
     get_job_result_safely,
@@ -904,9 +904,8 @@ def _cluster_one_server(
         mistral_model_name_param,
     )
 
-    ctx = registry.context_for(target_server['server_id']) if target_server else None
     report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
-    with server_context.use_server(ctx):
+    with registry.bind(target_server):
         if CLUSTERING_CLEANING:
             delete_automatic_playlists()
         for name, songs_with_details in final_playlists_with_details.items():

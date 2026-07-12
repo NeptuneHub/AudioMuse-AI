@@ -103,8 +103,11 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     monkeypatch.setattr(cleaning.registry, 'reverse_translate_ids', fake_reverse)
 
+    from tasks.mediaserver import context as ms_context
+
     def fake_fetch(stype, creds, apply_filter=False):
-        sid = cleaning.ms_context.active_server_id()
+        # The cleaning loop must have bound this server's context before fetching.
+        sid = ms_context.active_server_id()
         result = tracks_by_server[sid]
         if isinstance(result, Exception):
             raise result

@@ -32,7 +32,7 @@ from rq.job import Job
 
 import config
 from app_helper import redis_conn, rq_queue_default, save_task_status, send_stop_job_command
-from database import get_db
+from database import get_db, missing_required_creds
 from app_server_context import (
     merge_creds,
     server_public_dict,
@@ -213,13 +213,7 @@ def _name_taken(name, exclude_server_id=None):
 
 def _missing_cred_keys(server_type, creds):
     """Required-but-empty cred keys for ``server_type`` (url/token/... style keys)."""
-    required = [
-        config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
-        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(server_type, [])
-        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
-    ]
-    creds = creds or {}
-    return [key for key in required if not creds.get(key)]
+    return missing_required_creds(server_type, creds)
 
 
 def _placeholder_default():

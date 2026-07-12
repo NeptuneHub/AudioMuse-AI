@@ -764,6 +764,88 @@ def purge_media_keys_from_app_config(cur):
     return cur.rowcount or 0
 
 
+def missing_required_creds(server_type, creds):
+    """Required-but-empty credential keys for ``server_type``."""
+    required = [
+        config.MEDIASERVER_CRED_KEY_BY_FIELD[field]
+        for field in config.MEDIASERVER_FIELDS_BY_TYPE.get(
+            (server_type or '').strip().lower(), []
+        )
+        if field in config.MEDIASERVER_CRED_KEY_BY_FIELD
+    ]
+    creds = creds or {}
+    return [key for key in required if not creds.get(key)]
+
+
+def _seed_registry_from_legacy_config(cur):
+    """Move an ALREADY CONFIGURED legacy install's server into the registry.
+
+    Only a config that really describes a reachable server is migrated. A fresh
+    install has none - MEDIASERVER_TYPE merely defaults to 'jellyfin' with empty
+    credentials - so the registry stays EMPTY and the setup wizard opens on a
+    blank table: the user adds whichever server they actually want, and it
+    becomes the default.
+    """
+    from tasks.mediaserver.registry import creds_from_config, _default_server_name
+
+    cur.execute("SELECT COUNT(*) FROM music_servers")
+    if cur.fetchone()[0]:
+        return
+
+    seed_type = (config.MEDIASERVER_TYPE or '').strip().lower()
+    seed_creds = creds_from_config(seed_type)
+    if not config.MEDIASERVER_FIELDS_BY_TYPE.get(seed_type) or missing_required_creds(
+        seed_type, seed_creds
+    ):
+        logger.info(
+            "No media server is configured yet; the registry starts empty and the "
+            "setup wizard will add the first one."
+        )
+        return
+
+    cur.execute(
+        "INSERT INTO music_servers "
+        "(server_id, name, server_type, creds, music_libraries, is_default) "
+        "VALUES (%s, %s, %s, %s, %s, TRUE)",
+        (uuid.uuid4().hex, _default_server_name(seed_type), seed_type,
+         Json(seed_creds), config.MUSIC_LIBRARIES or ""),
+    )
+    logger.info(
+        "Migrated media-server settings for '%s' into the music_servers registry",
+        seed_type,
+    )
+
+
+def _drop_unconfigured_servers(cur):
+    """Remove credential-less rows an earlier build seeded from an empty config.
+
+    Such a row is not a server anybody can reach - it only made the setup wizard
+    show a phantom entry. One that somehow owns track mappings is kept: that was
+    a working server whose credentials were cleared, and its catalogue bindings
+    are not ours to throw away.
+    """
+    cur.execute("SELECT server_id, name, server_type, creds FROM music_servers")
+    unconfigured = [
+        (server_id, name)
+        for server_id, name, server_type, creds in cur.fetchall()
+        if missing_required_creds(server_type, creds)
+    ]
+    if not unconfigured:
+        return
+    cur.execute(
+        "DELETE FROM music_servers ms WHERE ms.server_id = ANY(%s) "
+        "AND NOT EXISTS (SELECT 1 FROM track_server_map t WHERE t.server_id = ms.server_id)",
+        ([server_id for server_id, _name in unconfigured],),
+    )
+    if cur.rowcount:
+        logger.info(
+            "Removed %d unconfigured media server(s) from the registry (%s); "
+            "add a real one from the setup wizard",
+            cur.rowcount,
+            ', '.join(name for _sid, name in unconfigured),
+        )
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1241,21 +1323,8 @@ def init_db():
                     UNIQUE (server_id, provider_artist_id)
                 )
             """)
-            cur.execute("SELECT COUNT(*) FROM music_servers")
-            if cur.fetchone()[0] == 0:
-                from tasks.mediaserver.registry import creds_from_config, _default_server_name
-                _seed_type = config.MEDIASERVER_TYPE
-                cur.execute(
-                    "INSERT INTO music_servers "
-                    "(server_id, name, server_type, creds, music_libraries, is_default) "
-                    "VALUES (%s, %s, %s, %s, %s, TRUE)",
-                    (uuid.uuid4().hex, _default_server_name(_seed_type),
-                     _seed_type, Json(creds_from_config(_seed_type)), config.MUSIC_LIBRARIES or ""),
-                )
-                logger.info(
-                    "Migrated media-server settings for '%s' into the music_servers registry",
-                    _seed_type,
-                )
+            _seed_registry_from_legacy_config(cur)
+            _drop_unconfigured_servers(cur)
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
                 logger.info(

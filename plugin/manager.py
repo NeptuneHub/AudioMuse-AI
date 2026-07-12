@@ -981,16 +981,14 @@ def _run_per_server(func, server_scope, args, kwargs):
     server, whose context is None, so that run is unbound too. Returns the lone
     result when only one server ran, else the list of results.
     """
-    from tasks.mediaserver import context as ms_context, registry as ms_registry
+    from tasks.mediaserver import registry as ms_registry
 
     if not server_scope:
         return func(*args, **kwargs)
 
-    servers = ms_registry.servers_for_scope(server_scope)
     results = []
-    for server in servers:
-        server_ctx = ms_registry.context_for(server['server_id']) if server else None
-        with ms_context.use_server(server_ctx):
+    for server in ms_registry.servers_for_scope(server_scope):
+        with ms_registry.bind(server):
             results.append(func(*args, **kwargs))
     return results[0] if len(results) == 1 else results
 

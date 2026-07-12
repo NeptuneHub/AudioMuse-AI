@@ -41,7 +41,7 @@ from error import error_manager
 from error.error_dictionary import ERR_CLEANING_FAILED, ERR_DB_CONNECTION
 
 from . import provider_probe
-from .mediaserver import context as ms_context, registry
+from .mediaserver import registry
 
 from psycopg2 import OperationalError
 
@@ -134,12 +134,11 @@ def identify_and_clean_orphaned_albums_task():
                 server_id = server['server_id'] if server else None
                 stype = server['server_type'] if server else config.MEDIASERVER_TYPE
                 creds = server['creds'] if server else None
-                ctx = registry.context_for(server_id) if server else None
                 window_start = 10 + int(70 * server_idx / len(servers))
                 log_and_update_main(
                     f"Fetching the track list from {server_name}...", window_start
                 )
-                with ms_context.use_server(ctx):
+                with registry.bind(server):
                     try:
                         tracks = provider_probe.fetch_all_tracks(
                             stype, creds, apply_filter=True

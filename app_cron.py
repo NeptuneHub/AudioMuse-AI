@@ -468,7 +468,7 @@ def run_due_cron_jobs():
                     # keeps tracking the same server playlist across runs (issue #336).
                     from tasks.sonic_fingerprint_manager import generate_sonic_fingerprint
                     from tasks.mediaserver import create_or_replace_playlist
-                    from tasks.mediaserver import context as server_context, registry
+                    from tasks.mediaserver import registry
                     from tasks.ivf_manager import create_playlist_from_ids
                     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
 
@@ -477,8 +477,7 @@ def run_due_cron_jobs():
                         for server in servers:
                             server_name = server['name'] if server else 'default server'
                             try:
-                                ctx = registry.context_for(server['server_id']) if server else None
-                                with server_context.use_server(ctx):
+                                with registry.bind(server):
                                     fingerprint_results = generate_sonic_fingerprint()
                                     if not fingerprint_results:
                                         logger.warning(

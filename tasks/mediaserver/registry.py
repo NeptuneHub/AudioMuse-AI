@@ -221,6 +221,23 @@ def context_for(server_id, conn=None):
     return get_server(server_id, db)
 
 
+def bind(server, conn=None):
+    """Context manager binding one server row from ``servers_for_scope``.
+
+    ``with registry.bind(server):`` is the ONE way a per-server loop targets its
+    server. ``None`` (the legacy config default) binds nothing, exactly as
+    ``context_for`` resolves it. Every scheduled feature that iterates servers -
+    analysis, clustering, cleaning, radio, sonic fingerprint, plugin cron tasks -
+    uses this instead of re-deriving the context itself: an omitted or wrong
+    binding silently talks to the DEFAULT server, which is invisible until a
+    playlist lands on the wrong machine.
+    """
+    from . import context as ms_context
+
+    server_id = server['server_id'] if server else None
+    return ms_context.use_server(context_for(server_id, conn) if server_id else None)
+
+
 def _clear_default(db):
     cur = db.cursor()
     try:
